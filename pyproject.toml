@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nnx"
+version = "0.1.0"
+description = "Lightweight PyTorch training/eval/visualization toolkit"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Kaveh Razavi", email = "kaveh.razavi@gmail.com" }
+]
+requires-python = ">=3.10"
+keywords = ["pytorch", "deep-learning", "graph-neural-networks", "training"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "torch_geometric>=2.4",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "plotly>=5.18",
+    "kaleido>=0.2.1",
+    "prettytable>=3.9",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+    "ipython>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/thekaveh/NNx"
+Repository = "https://github.com/thekaveh/NNx"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Start permissive; tighten later if desired.
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line too long — large library, gradual cleanup
+    "E731",  # lambda assignment
+    "E741",  # ambiguous var name (e.g., `l`)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
