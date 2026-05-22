@@ -102,12 +102,16 @@ class NNRun:
             data=[idp.state() for idp in self.idps]
         ).to_csv(csv_path)
             
-        if not os.path.exists(best_run_path):
+        if not os.path.lexists(best_run_path):
+            os.symlink(src=run_path, dst=best_run_path)
+        elif not os.path.exists(best_run_path):
+            # Dangling symlink (e.g. after moving the repo) — replace it.
+            os.remove(path=best_run_path)
             os.symlink(src=run_path, dst=best_run_path)
         else:
             best_err = NNCheckpoint.load(run="best", type=Checkpoints.BEST).idp.val_edp.error
             curr_err = NNCheckpoint.load(run=self.id, type=Checkpoints.BEST).idp.val_edp.error
-            
+
             if curr_err < best_err:
                 os.remove(path=best_run_path)
                 os.symlink(src=run_path, dst=best_run_path)
