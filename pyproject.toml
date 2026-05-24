@@ -92,3 +92,9 @@ ignore = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+filterwarnings = [
+    # Upstream deprecations we can't act on — silenced so pytest output
+    # stays focused on nnx-relevant warnings.
+    "ignore:`torch_geometric.distributed` has been deprecated:DeprecationWarning",
+    "ignore:`torch.jit.script` is deprecated:DeprecationWarning",
+]

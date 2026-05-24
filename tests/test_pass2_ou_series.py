@@ -118,6 +118,109 @@ def test_o3_extra_omitted_from_state_when_empty():
     assert "extra" not in edp.state()
 
 
+def test_review_mean_of_propagates_extra():
+    """Round-6 regression: NNEvaluationDataPoint.mean_of dropped the
+    `extra` dict from every input EDP, so averaging two batches with
+    custom metrics gave back an EDP with empty extras."""
+    e1 = NNEvaluationDataPoint(
+        f1=0.8, recall=0.8, accuracy=0.8, precision=0.8,
+        loss=0.1, error=0.2,
+        extra={"my_metric": 1.0, "shared": 10.0},
+    )
+    e2 = NNEvaluationDataPoint(
+        f1=0.6, recall=0.6, accuracy=0.6, precision=0.6,
+        loss=0.2, error=0.4,
+        extra={"other_metric": 2.0, "shared": 20.0},
+    )
+    avg = NNEvaluationDataPoint.mean_of([e1, e2])
+
+    # Standard fields averaged as before.
+    assert abs(avg.f1 - 0.7) < 1e-9
+    assert abs(avg.loss - 0.15) < 1e-9
+
+    # Extras: shared key averaged across both; per-EDP keys taken from the
+    # EDPs that have them (not zero-filled).
+    assert "shared" in avg.extra
+    assert abs(avg.extra["shared"] - 15.0) < 1e-9
+    assert avg.extra["my_metric"] == 1.0      # only in e1
+    assert avg.extra["other_metric"] == 2.0   # only in e2
+
+
+def test_review_load_optimizer_state_uses_weights_only(tmp_path, monkeypatch):
+    """Round-6 hardening: NNCheckpoint.load_optimizer_state loads its
+    sidecar with weights_only=True. Train a tiny run, then verify the
+    sidecar loads cleanly under the strict loader (no UnpicklingError)."""
+    monkeypatch.chdir(tmp_path)
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx.nn.enum.checkpoints import Checkpoints
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    model = _model()
+    X = torch.randn(16, 4)
+    y = torch.randint(0, 3, (16,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=8)
+
+    run = model.train(params=NNTrainParams(
+        n_epochs=1,
+        train_loader=loader,
+        optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+    ))
+
+    state = NNCheckpoint.load_optimizer_state(run=run.id, type=Checkpoints.LAST)
+    assert state is not None
+    assert "state" in state
+    assert "param_groups" in state
+
+
+def test_review_extra_metrics_survive_run_save_load_round_trip(tmp_path, monkeypatch):
+    """Round-4 regression: NNTrainParams.extra_metrics produces extras in
+    edp.extra, then NNRun.save writes them as `train_edp.extra.<name>`
+    columns in idps.csv. NNRun.load must reassemble them — previously
+    NNIterationDataPoint.from_state ignored the flat keys and the extra
+    dict came back empty."""
+    monkeypatch.chdir(tmp_path)
+
+    model = _model()
+    X = torch.randn(16, 4)
+    y = torch.randint(0, 3, (16,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=8)
+
+    from nnx.nn.params.nn_run import NNRun
+
+    run = model.train(params=NNTrainParams(
+        n_epochs=1,
+        train_loader=loader,
+        val_loader=loader,
+        optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        extra_metrics={"my_metric": lambda y, y_hat: float(y_hat.mean())},
+    ))
+
+    # Original idps carry the extra metric on each batch's train_edp.
+    for idp in run.idps:
+        assert "my_metric" in idp.train_edp.extra
+    # And the LAST idp of the epoch has val_edp populated with the extra too.
+    last = run.idps[-1]
+    assert last.val_edp is not None
+    assert "my_metric" in last.val_edp.extra
+
+    # Reload from disk — extras must survive the CSV round-trip.
+    reloaded = NNRun.load(id=run.id)
+    for idp in reloaded.idps:
+        assert "my_metric" in idp.train_edp.extra, (
+            f"my_metric missing from reloaded idp #{idp.iter_idx} train_edp.extra; "
+            f"got extra={idp.train_edp.extra!r}"
+        )
+    # val_edp.extra survives too.
+    last_reloaded = reloaded.idps[-1]
+    assert last_reloaded.val_edp is not None
+    assert "my_metric" in last_reloaded.val_edp.extra
+
+
 def test_o3_extra_metrics_threaded_through_train(tmp_path, monkeypatch):
     """NNTrainParams.extra_metrics produces edps with the extra dict filled."""
     monkeypatch.chdir(tmp_path)

@@ -178,6 +178,37 @@ def test_v3_env_snapshot_returns_serializable_dict():
     assert snap["numpy"] is not None
 
 
+def test_v3_env_snapshot_is_cached_across_calls():
+    """Round-6 perf hardening: env_snapshot subprocesses `git rev-parse`
+    every call, which the incremental NNRun.save fires every epoch.
+    The cache should reuse the first computed snapshot until
+    force_refresh=True is requested."""
+    from nnx import seeding
+
+    # Reset module cache so this test is independent of test ordering.
+    seeding._ENV_SNAPSHOT_CACHE = None
+
+    # Prime the cache; subsequent calls should hit it.
+    env_snapshot()
+    # Sabotage the cache with a sentinel; a second call must observe it.
+    seeding._ENV_SNAPSHOT_CACHE = {"sentinel": "from_cache"}
+    snap2 = env_snapshot()
+    assert snap2 == {"sentinel": "from_cache"}, (
+        "env_snapshot should reuse the cached result instead of re-computing"
+    )
+
+    # force_refresh=True bypasses the cache.
+    snap3 = env_snapshot(force_refresh=True)
+    assert "nnx" in snap3
+    assert "torch" in snap3
+    # The cache is now repopulated with the fresh values.
+    snap4 = env_snapshot()
+    assert "nnx" in snap4
+
+    # Restore for downstream tests.
+    seeding._ENV_SNAPSHOT_CACHE = None
+
+
 def test_v3_metadata_yaml_written_by_run_save(tmp_path, monkeypatch):
     """NNRun.save() writes runs/<id>/metadata.yaml alongside run.yaml.
     The metadata file is NOT used in run.id computation."""

@@ -78,7 +78,18 @@ class NNEvaluationDataPoint:
         )
 
     @staticmethod
-    def mean_of(edps: list[NNEvaluationDataPoint]):
+    def mean_of(edps: list[NNEvaluationDataPoint]) -> NNEvaluationDataPoint:
+        """Mean-reduce a list of EDPs across every metric, including any
+        `extra` entries. An extra key present on some but not all edps is
+        averaged over the edps where it IS present (skipped on the rest).
+
+        Note: with unequal sample counts per edp, this is a simple mean
+        across edps, not a sample-weighted mean. For sample-weighted
+        metrics across batches, prefer the aggregating path in
+        NNModel.evaluate() (which concatenates predictions then computes
+        once).
+        """
+        # Aggregate the standard fields with the existing logic.
         ret = NNEvaluationDataPoint(
             f1=np.mean([edp.f1 for edp in edps])
             , recall=np.mean([edp.recall for edp in edps])
@@ -91,6 +102,20 @@ class NNEvaluationDataPoint:
 
         if len([edp.error for edp in edps if edp.error is not None]) > 0:
             ret = ret.with_error(np.mean([edp.error for edp in edps if edp.error is not None]))
+
+        # Propagate extras: union the key set across edps, mean per key
+        # over the edps that have it. Keys missing from some edps are
+        # skipped on those, not zero-filled.
+        all_extra_keys: set[str] = set()
+        for edp in edps:
+            all_extra_keys.update(edp.extra.keys())
+        if all_extra_keys:
+            extra_mean: dict[str, float] = {}
+            for k in all_extra_keys:
+                values = [edp.extra[k] for edp in edps if k in edp.extra]
+                if values:
+                    extra_mean[k] = float(np.mean(values))
+            ret = replace(ret, extra=extra_mean)
 
         return ret
 

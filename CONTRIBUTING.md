@@ -49,7 +49,7 @@ pytest -k "graph"               # name filter
 pytest --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
-Tests live under `tests/`. The `conftest.py` exposes shared fixtures (`tiny_model`, `tiny_classification_loaders`, `tmp_runs_root`). Use them when the test doesn't need anything custom.
+Tests live under `tests/`. The `conftest.py` is intentionally minimal — it only suppresses tqdm output during the session. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
 
 ## Submitting a PR
 

@@ -23,3 +23,12 @@ env/
 .vscode/
 .idea/
 .DS_Store
+
+# nnx training artifacts
+runs/
+tb_logs/
+*.onnx
+
+# Coverage / docs build output
+coverage.xml
+site/

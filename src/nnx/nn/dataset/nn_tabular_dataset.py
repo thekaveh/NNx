@@ -25,7 +25,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
@@ -64,9 +63,22 @@ class NNTabularDataset(NNDatasetBase):
                 f"{self.val_proportion + self.test_proportion}"
             )
 
-        # Coerce features + target → tensors.
+        # Validate columns up-front so missing-column errors point at user
+        # input rather than failing deep inside torch.tensor with a KeyError.
+        missing_features = [c for c in self.feature_cols if c not in self.df.columns]
+        if missing_features:
+            raise KeyError(
+                f"NNTabularDataset feature_cols not in DataFrame: {missing_features}"
+            )
+        if self.target_col not in self.df.columns:
+            raise KeyError(
+                f"NNTabularDataset target_col {self.target_col!r} not in DataFrame"
+            )
+
+        # Coerce features + target → tensors. Trust `dtype=` on torch.tensor
+        # rather than going through an extra np.float32 intermediate copy.
         X = torch.tensor(
-            self.df[self.feature_cols].to_numpy(dtype=np.float32),
+            self.df[self.feature_cols].to_numpy(),
             dtype=self.feature_dtype,
         )
         y = torch.tensor(

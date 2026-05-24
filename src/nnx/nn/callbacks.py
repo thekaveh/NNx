@@ -13,8 +13,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
-from IPython.display import clear_output
-
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
 if TYPE_CHECKING:
@@ -49,6 +47,10 @@ class _LegacyCallback(Callback):
         self._fn = fn
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
+        # Lazy import — keeps `import nnx` from pulling in IPython for
+        # users who never use a legacy lambda-style callback.
+        from IPython.display import clear_output
+
         clear_output(wait=True)
         self._fn(ctx.idps)
 

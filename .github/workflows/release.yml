@@ -23,13 +23,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install build tooling
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build twine
 
       - name: Build sdist + wheel
         run: python -m build
+
+      - name: Verify built distributions
+        # twine check catches the most common metadata issues (missing
+        # long_description, invalid RST/MD, malformed classifiers) before
+        # uploading. Cheap pre-flight; failure here aborts the publish.
+        run: twine check dist/*
 
       - name: Publish to PyPI
         # Only runs on tag pushes; workflow_dispatch builds without publishing

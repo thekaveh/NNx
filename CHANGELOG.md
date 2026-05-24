@@ -68,6 +68,25 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - `Utils.print_tree` / `print_table` / `flatten_dict` are now module-level functions in `nnx.utils`. The `Utils` class is a thin shim binding the same functions as staticmethods, so existing `Utils.method(...)` callers continue to work with no semantic change.
 - `VisUtils` plotting helpers get module-level aliases (`from nnx.vis_utils import confusion_matrix` works).
 
+### Additional fixes (post-initial-pass)
+
+- `runs/best` POINTER.txt fallback wasn't read during BEST comparison; env_snapshot subprocessed git on every save; `.gitignore` missed `runs/`, `tb_logs/`, `*.onnx`, `coverage.xml`, `site/`.
+- **Critical:** `NNOptimParams.state()` unconditionally emitted `grad_clip_norm=None`, changing every existing `run.id` hash. Plus `callbacks.py` top-level IPython import (pulling IPython into every `import nnx`); `NNRun.all()` crashed on missing `runs/` and tried to load stray files.
+- `mkdocs build --strict` had 4 warnings (specs in docs but not nav; griffe couldn't parse a docstring; missing type annotation on `to_onnx.example_input`).
+- **Critical:** `NNEvaluationDataPoint.extra` didn't actually round-trip through `idps.csv`. json_normalize flattened the dict on save but `NNIterationDataPoint.from_state` never reassembled the `train_edp.extra.*` columns. The pass-2 claim that "extra survives idps.csv" was false until this fix.
+- `pytest-cov` listed in dev extras but not installed locally. CI handles via `pip install -e ".[dev]"`; surfaced via cov-run on a fresh venv.
+- `NNEvaluationDataPoint.mean_of` silently dropped the `extra` dict from inputs. `NNCheckpoint.load_optimizer_state` now uses `weights_only=True` (the state dict is structured tensors + dicts; the strict loader works AND removes the ACE risk).
+- Six conftest fixtures (`tiny_model`, `tiny_classification_loaders`, etc.) defined but unused — premature abstractions deleted; CONTRIBUTING.md updated to match.
+- `NNTabularDataset` now validates `feature_cols` / `target_col` against `df.columns` up-front with a clear KeyError; new test for `env_snapshot` cache (introduced in R1 but never explicitly tested).
+- stray leading blank line in `nn_graph_dataset.py`.
+- **Real recovery gap:** `NNRun.save()`'s three writes (run.yaml, metadata.yaml, idps.csv) were non-atomic. A Ctrl-C mid-write left half-written files. New `_atomic_write_text` helper does tmp + fsync + os.replace.
+- `NNCheckpoint.to_file` had the same non-atomic gap (torch.save direct to destination). New `_atomic_torch_save` helper applies the same tmp + rename pattern to both the main checkpoint and the `.opt.pt` sidecar.
+- Atomicity also applied to the Windows POINTER.txt fallback; helper reordered (defined before its caller); pyproject `filterwarnings` for the upstream `torch_geometric.distributed` / `torch.jit.script` DeprecationWarnings; fix the scheduler test's optimizer-before-scheduler step order so the runtime UserWarning doesn't fire.
+- README "Other models" was a non-functional snippet (imported classes without showing how to wire them through `NNModel`). Replaced with concrete `NNModelParams(net=Nets.GRAPH_*)` examples + a pointer at the `examples/` folder. Added README subsections for Reproducibility, Warm-resume, and Custom metrics so the pass-2 features are visible from the top-level doc.
+- `test_imports.py` was missing smoke imports for `nnx.seeding`, `nnx.nn.callbacks`, `nnx.nn.net.graph_nn_base`, `nnx.nn.dataset.nn_tabular_dataset`, and `nnx.nn.enum.schedulers`. The test predated pass-1 and never grew with the codebase. Closed the gap so the cheapest-possible refactor signal is exhaustive again.
+- `release.yml` skipped `twine check` between `python -m build` and the PyPI upload step. A malformed README or invalid classifier would only surface when PyPI rejected the upload — by then the tag is burned. Added a `twine check dist/*` verification step; also added `cache: pip` to the setup-python step for parity with the other workflows.
+- **R18-R19** — Final sweeps: ran the literal README quickstart end-to-end, manually exercised the four `predict()` input forms (ndarray, tensor, tuple-of-each), verified all internal markdown links resolve, and confirmed `mkdocs build --strict` is silent. No additional actionable findings.
+
 ### Deferred (with rationale)
 
 - **D3** (split `NNModel.train()` into a `TrainingLoop` runner): the existing helpers (`_train_step`, `_save_checkpoints`, `_step_scheduler`, `_build_scheduler`, ...) already break the loop body into testable units. A full extraction would be churn without proportional value.

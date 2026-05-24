@@ -75,8 +75,52 @@ y_log, y_hat = model.predict(X=X_val.numpy())
 
 ### Other models
 
+Switch architectures by changing the `Nets` enum value passed to `NNModelParams`. NNModel constructs the underlying network for you:
+
 ```python
-from nnx import GraphConvNN, GraphSageNN, GraphAttNN  # used via Nets enum
+NNModelParams(net=Nets.GRAPH_CONV,  device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+NNModelParams(net=Nets.GRAPH_SAGE,  device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+NNModelParams(net=Nets.GRAPH_ATT,   device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+# Then pass NNParams(..., n_heads=4) for GRAPH_ATT.
+# Use NNGraphDataset (PyG NeighborLoader-backed) to feed batches.
+```
+
+See [examples/](examples/) for end-to-end scripts.
+
+### Reproducibility
+
+```python
+from nnx import set_seed, dataloader_worker_init_fn
+set_seed(42)                                        # pins torch / numpy / python / cudnn
+DataLoader(..., worker_init_fn=dataloader_worker_init_fn)
+NNTrainParams(seed=42, ...)                         # pins again at train() entry
+```
+
+### Warm-resume training
+
+```python
+run = model.train(params=NNTrainParams(n_epochs=10, ...))
+
+# Build a fresh NNModel and continue from run's LAST checkpoint
+# (optimizer state preserved via .opt.pt sidecar):
+NNModel(net_params=..., params=...).train(params=NNTrainParams(
+    n_epochs=10,
+    resume_from_run_id=run.id,
+    resume_from_checkpoint="last",   # or "best"
+    ...
+))
+```
+
+### Custom metrics
+
+```python
+NNTrainParams(
+    ...,
+    extra_metrics={
+        "my_metric": lambda y, y_hat: float((y == y_hat).mean()),
+    },
+)
+# Available on idp.train_edp.extra / idp.val_edp.extra and survives NNRun.load.
 ```
 
 ### Visualization

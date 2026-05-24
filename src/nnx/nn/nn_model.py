@@ -62,7 +62,7 @@ class NNModel:
     def to_onnx(
         self,
         path: str,
-        example_input,
+        example_input: Union[torch.Tensor, tuple, np.ndarray],
         input_names: Optional[list[str]] = None,
         output_names: Optional[list[str]] = None,
         dynamic_batch: bool = True,
@@ -72,9 +72,10 @@ class NNModel:
 
         Args:
             path: output filename (e.g., "model.onnx").
-            example_input: a tensor with realistic shape/dtype used to trace
-                the network. For multi-input nets, pass a tuple of tensors.
-            input_names / output_names: optional human-readable names.
+            example_input: a tensor (or tuple of tensors for multi-input
+                nets) with realistic shape/dtype used to trace the network.
+            input_names: optional list of human-readable input port names.
+            output_names: optional list of human-readable output port names.
             dynamic_batch: when True (default), marks dim 0 as dynamic so
                 the exported model accepts any batch size at inference.
             opset_version: ONNX opset to target. 17 is broadly supported

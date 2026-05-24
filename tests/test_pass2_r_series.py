@@ -130,6 +130,32 @@ def test_r2_grad_clip_norm_actually_clips(tmp_path, monkeypatch):
     assert any(n > clip for n in seen_norms)
 
 
+def test_r3_atomic_writes_use_tmp_rename(tmp_path):
+    """Round-10 hardening: NNRun.save uses _atomic_write_text which writes
+    to <path>.tmp then renames into place. Verifies the helper directly —
+    a write that crashes mid-stream leaves the destination file intact."""
+    import os
+
+    from nnx.nn.params.nn_run import _atomic_write_text
+
+    target = str(tmp_path / "run.yaml")
+
+    # First write succeeds — file appears.
+    _atomic_write_text(target, "first: 1\n")
+    assert os.path.exists(target)
+    with open(target) as f:
+        assert f.read() == "first: 1\n"
+
+    # Simulate a process that crashed leaving the .tmp behind from a
+    # prior incomplete write. The next call should still succeed and
+    # produce the new content atomically.
+    with open(target + ".tmp", "w") as f:
+        f.write("garbage stale half-write")
+    _atomic_write_text(target, "second: 2\n")
+    with open(target) as f:
+        assert f.read() == "second: 2\n"
+
+
 def test_r3_incremental_save_leaves_loadable_partial_run(tmp_path, monkeypatch):
     """After each epoch NNRun.save() is invoked; a 2-epoch run that's
     interrupted after the first epoch should still produce a loadable

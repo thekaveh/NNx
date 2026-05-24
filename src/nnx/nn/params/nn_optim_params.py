@@ -44,10 +44,13 @@ class NNOptimParams:
             , momentum      = str(self.momentum)
             , name          = str(self.name)
             , weight_decay  = self.weight_decay
-            , grad_clip_norm= self.grad_clip_norm
         )
-        # accumulate_grad_batches: only emit when != default 1 to preserve
-        # back-compat with pre-accumulate runs' run.id.
+        # grad_clip_norm / accumulate_grad_batches: only emit when set to a
+        # non-default value, so a NNOptimParams with neither set hashes to
+        # the same run.id as before these fields existed. Existing on-disk
+        # YAML without these keys is loadable via the .get() defaults below.
+        if self.grad_clip_norm is not None:
+            d['grad_clip_norm'] = self.grad_clip_norm
         if self.accumulate_grad_batches != 1:
             d['accumulate_grad_batches'] = self.accumulate_grad_batches
         return d

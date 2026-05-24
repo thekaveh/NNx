@@ -67,14 +67,24 @@ def dataloader_worker_init_fn(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
-def env_snapshot() -> dict:
+_ENV_SNAPSHOT_CACHE: Optional[dict] = None
+
+
+def env_snapshot(force_refresh: bool = False) -> dict:
     """Capture a snapshot of the runtime environment for reproducibility.
 
     Returned dict is JSON-serializable. Includes Python / torch / numpy
     versions, GPU info if any, OS, and the git commit hash if running
     inside a git repo. Safe to call from anywhere — failures degrade to
     `None` per field rather than raising.
+
+    Result is memoized within the process (env doesn't change between
+    calls). Pass ``force_refresh=True`` to re-compute — useful in tests
+    that mutate the environment.
     """
+    global _ENV_SNAPSHOT_CACHE
+    if _ENV_SNAPSHOT_CACHE is not None and not force_refresh:
+        return dict(_ENV_SNAPSHOT_CACHE)
     import platform
     import subprocess
 
@@ -104,7 +114,7 @@ def env_snapshot() -> dict:
         except Exception:
             return None
 
-    return {
+    snap = {
         "nnx": _nnx_version(),
         "python": platform.python_version(),
         # torch.__version__ is a TorchVersion subclass that yaml.dump
@@ -118,3 +128,5 @@ def env_snapshot() -> dict:
         "git_commit": _git_commit(),
         "git_dirty": _git_dirty(),
     }
+    _ENV_SNAPSHOT_CACHE = dict(snap)
+    return snap
