@@ -223,7 +223,7 @@ class NNModel:
 
         return (
             NNEvaluationDataPoint.of(Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy())
-                .with_loss(value=float(train_loss))
+                .with_loss(value=float(train_loss.detach()))
                 .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
         )
 
