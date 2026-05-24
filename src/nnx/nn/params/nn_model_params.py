@@ -11,28 +11,34 @@ class NNModelParams:
     net   : Nets
     device: Devices = Devices.CPU
     loss  : Losses  = Losses.CROSS_ENTROPY
-    
-    def __str__(self):
-        return f"[net={self.net}, device={self.device}, loss={self.loss}]"
-    
-    def is_valid(self):
+
+    # Opt-in fp16 autocast + GradScaler in train(). Only effective on CUDA;
+    # silently bypassed on CPU/MPS where torch.cuda.amp is a no-op or unavailable.
+    mixed_precision: bool = False
+
+    def __str__(self) -> str:
+        return f"[net={self.net}, device={self.device}, loss={self.loss}, mixed_precision={self.mixed_precision}]"
+
+    def is_valid(self) -> bool:
         return (
             self.net is not None
             and self.device is not None
             and self.loss is not None
         )
-        
+
     def state(self) -> dict:
         return dict(
-            net         = str(self.net)
-            , loss      = str(self.loss)
-            , device    = str(self.device)
+            net               = str(self.net),
+            loss              = str(self.loss),
+            device            = str(self.device),
+            mixed_precision   = self.mixed_precision,
         )
-        
+
     @staticmethod
     def from_state(state: dict) -> NNModelParams:
         return NNModelParams(
-            net         = Nets(state['net'])
-            , loss      = Losses(state['loss'])
-            , device    = Devices(state['device'])
+            net               = Nets(state['net']),
+            loss              = Losses(state['loss']),
+            device            = Devices(state['device']),
+            mixed_precision   = state.get('mixed_precision', False),
         )

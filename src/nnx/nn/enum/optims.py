@@ -10,21 +10,22 @@ class Optims(Enum):
     ADAM_AMSGRAD    = "adam_amsgrad"
     SGD_NESTEROV    = "sgd_nesterov"
     
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self)
-    
+
     def __call__(
         self
         , net           : nn.Module
         , lr_start      : float
         , weight_decay  : float
         , momentum      : Union[float, Tuple[float, float]]
-    ):
-        assert net is not None
-        
+    ) -> optim.Optimizer:
+        if net is None:
+            raise ValueError("net must not be None")
+
         match self:
             case Optims.SGD:
                 return optim.SGD(

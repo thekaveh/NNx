@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch.nn.functional as F
 
 from enum import Enum
+from typing import Callable
 
 class Activations(Enum):
     ELU         = 'elu'
@@ -14,13 +15,13 @@ class Activations(Enum):
     SOFTPLUS    = 'softplus'
     LEAKY_RELU  = 'leaky_relu'
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
-    
-    def __repr__(self):
+
+    def __repr__(self) -> str:
         return str(self)
-        
-    def __call__(self):
+
+    def __call__(self) -> Callable:
         match self:
             case Activations.ELU           : return F.elu
             case Activations.SELU          : return F.selu
