@@ -37,12 +37,16 @@ class NNCheckpoint:
     def from_file(path: str) -> Optional[NNCheckpoint]:
         if not os.path.exists(path):
             return None
-        
-        ret = torch.load(path)
-        
+
+        # NNCheckpoint files are pickled Python objects (not bare state dicts),
+        # so the weights_only=True default introduced in torch>=2.6 would raise
+        # UnpicklingError. Trust the file (it was produced by NNCheckpoint.save
+        # on the local machine) and load with weights_only=False.
+        ret = torch.load(path, weights_only=False)
+
         if not isinstance(ret, NNCheckpoint):
             return None
-        
+
         return ret
     
     @staticmethod

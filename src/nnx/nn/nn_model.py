@@ -6,7 +6,6 @@ import numpy as np
 from tqdm import tqdm
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
-from IPython.display import clear_output
 from typing import Callable, List, Optional, Union, TYPE_CHECKING
 
 from .enum.checkpoints import Checkpoints
@@ -31,7 +30,7 @@ LegacyCallback = Callable[[List[NNIterationDataPoint]], None]
 CallbackLike = Union["Callback", LegacyCallback]
 
 
-class NNModel():
+class NNModel:
     def __init__(
         self
         , net_params: NNParams
@@ -200,7 +199,7 @@ class NNModel():
         self,
         batch,
         optimizer: torch.optim.Optimizer,
-        scaler: Optional[torch.cuda.amp.GradScaler],
+        scaler: Optional["torch.amp.GradScaler"],
     ) -> NNEvaluationDataPoint:
         self.net.train()
         self.net.zero_grad()
@@ -210,7 +209,7 @@ class NNModel():
         amp_enabled = scaler is not None and self.device.type == "cuda"
 
         if amp_enabled:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type="cuda"):
                 X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
                 train_loss = self.loss_fn(Y_hat_log, Y)
             scaler.scale(train_loss).backward()
@@ -254,9 +253,9 @@ class NNModel():
         # config. The enum's __call__ knows how to construct.
         return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs)
 
-    def _build_grad_scaler(self) -> Optional[torch.cuda.amp.GradScaler]:
+    def _build_grad_scaler(self) -> Optional["torch.amp.GradScaler"]:
         if getattr(self.params, "mixed_precision", False) and self.device.type == "cuda":
-            return torch.cuda.amp.GradScaler()
+            return torch.amp.GradScaler("cuda")
         return None
 
     def _save_checkpoints(
