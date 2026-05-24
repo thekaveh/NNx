@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
@@ -29,8 +30,20 @@ class NNTrainParams:
 
     seed            : Optional[int]         = None
 
+    # When True (default, back-compat), train() saves FIRST + Q1 + Q2 + Q3
+    # phase checkpoints in addition to LAST + BEST. Set False to skip the
+    # FIRST/Q* writes — useful for tiny experiments or huge models where
+    # per-epoch checkpoint I/O dominates wall-clock time.
+    save_phase_checkpoints: bool            = True
+
     train_loader    : Optional[DataLoader]  = field(repr=False, default=None)
     val_loader      : Optional[DataLoader]  = field(repr=False, default=None)
+
+    # Custom metrics: name -> callable(Y_true, Y_pred) -> float. Runtime-only
+    # (functions don't round-trip through YAML), so this lives outside
+    # state() / from_state() — like train_loader/val_loader. Each is invoked
+    # on every train batch and on every evaluate() aggregate.
+    extra_metrics   : Optional[Mapping[str, Callable]] = field(repr=False, default=None)
 
     def with_train_loader(self, value: DataLoader) -> NNTrainParams:
         return replace(self, train_loader=value)
@@ -47,12 +60,15 @@ class NNTrainParams:
             , optim     = self.optim.state()
             , scheduler = self.scheduler.state()
         )
-        # Only emit `seed` into state() when it's set, so a NNTrainParams
-        # created without a seed hashes to the same run.id as before this
-        # field existed. Existing on-disk runs without a seed are loadable
-        # via the default below.
+        # Only emit `seed` / `save_phase_checkpoints` into state() when they
+        # diverge from their defaults so a NNTrainParams created without
+        # them hashes to the same run.id as before these fields existed.
+        # Existing on-disk runs without these keys are loadable via .get()
+        # defaults in from_state below.
         if self.seed is not None:
             d['seed'] = self.seed
+        if self.save_phase_checkpoints is not True:
+            d['save_phase_checkpoints'] = self.save_phase_checkpoints
         return d
 
     @staticmethod
@@ -62,4 +78,5 @@ class NNTrainParams:
             , optim     = NNOptimParams.from_state(state['optim'])
             , scheduler = NNSchedulerParams.from_state(state['scheduler'])
             , seed      = state.get('seed')
+            , save_phase_checkpoints = state.get('save_phase_checkpoints', True)
         )

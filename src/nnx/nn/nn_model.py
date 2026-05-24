@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, NamedTuple, Optional, Union
 
 import numpy as np
 import torch
@@ -29,6 +29,18 @@ if TYPE_CHECKING:
 # _LegacyCallback (in callbacks.py).
 LegacyCallback = Callable[[list[NNIterationDataPoint]], None]
 CallbackLike = Union["Callback", LegacyCallback]
+
+
+class PredictResult(NamedTuple):
+    """Structured result of NNModel.predict().
+
+    Unpacks positionally as ``(logits, classes)`` so callers doing
+    ``log, hat = model.predict(X)`` keep working after the upgrade from
+    the original 2-tuple. Field access (``result.logits``, ``result.classes``)
+    is preferred for new code.
+    """
+    logits: np.ndarray
+    classes: np.ndarray
 
 
 class NNModel:
@@ -126,6 +138,7 @@ class NNModel:
                     train_edp = self._train_step(
                         batch, optimizer, scaler,
                         grad_clip_norm=params.optim.grad_clip_norm,
+                        extra_metrics=params.extra_metrics,
                     )
 
                     idps.append(NNIterationDataPoint(
@@ -139,7 +152,7 @@ class NNModel:
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                val_edp = self.evaluate(loader=params.val_loader) if validate else None
+                val_edp = self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics) if validate else None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
                 checkpoint = self._save_checkpoints(
@@ -148,6 +161,7 @@ class NNModel:
                     idx_epoch=idx_epoch,
                     n_epochs=params.n_epochs,
                     best_checkpoint=best_checkpoint,
+                    save_phase_checkpoints=params.save_phase_checkpoints,
                 )
                 if best_checkpoint is None or checkpoint.idp.val_edp is None or (
                     best_checkpoint.idp.val_edp is None
@@ -181,7 +195,7 @@ class NNModel:
         print(f"Run saved to {runs_root_path}")
         return run.with_idps(idps).save()
 
-    def evaluate(self, loader: DataLoader) -> NNEvaluationDataPoint:
+    def evaluate(self, loader: DataLoader, extra_metrics=None) -> NNEvaluationDataPoint:
         """Aggregate predictions across all batches in `loader` and compute
         a single NNEvaluationDataPoint. Aggregating (rather than averaging
         per-batch metrics) gives correct sample-weighted f1/precision/recall
@@ -219,23 +233,62 @@ class NNModel:
         Y_hat_concat = np.concatenate(all_Y_hat)
 
         return (
-            NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat)
+            NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat, extra_metrics=extra_metrics)
                 .with_loss(value=loss_sum / n_samples)
                 .with_error(value=float(1 - (Y_concat == Y_hat_concat).sum() / n_samples))
         )
 
-    def predict(self, X: np.ndarray):
+    def predict(self, X) -> PredictResult:
+        """Run the network in eval mode and return logits + argmax classes.
+
+        Accepts any of:
+
+        - ``np.ndarray`` (single input tensor) — historical API.
+        - ``tuple[np.ndarray, ...]`` — for multi-input networks.
+        - ``torch.Tensor`` / ``tuple[torch.Tensor, ...]`` — skips the numpy
+          conversion when callers already have tensors.
+        - ``DataLoader`` — iterates the loader, runs predictions per batch,
+          concatenates and returns the full result. Y labels in the batch
+          (if present) are ignored.
+
+        Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
+        that unpacks like the original 2-tuple.
+        """
+        self.net.eval()
+
+        if isinstance(X, DataLoader):
+            logits_chunks: list[np.ndarray] = []
+            classes_chunks: list[np.ndarray] = []
+            with torch.no_grad():
+                for batch in X:
+                    # net.unpack_batch handles both (X, Y) tuples and PyG Data,
+                    # returning the X-tuple. The label is discarded for predict.
+                    X_in, _ = self.net.unpack_batch(batch)
+                    X_in = tuple(x.to(self.device) for x in X_in)
+                    log = self.net(*X_in).cpu().numpy()
+                    logits_chunks.append(log)
+                    classes_chunks.append(log.argmax(axis=1))
+            return PredictResult(
+                logits=np.concatenate(logits_chunks),
+                classes=np.concatenate(classes_chunks),
+            )
+
+        # Single input (any of: ndarray, Tensor, or a tuple thereof).
         if not isinstance(X, tuple):
             X = (X,)
 
-        X = tuple(torch.from_numpy(x).to(self.device) for x in X)
+        def _to_tensor(x):
+            if isinstance(x, torch.Tensor):
+                return x.to(self.device)
+            # Fall through to numpy → tensor for arrays and array-likes.
+            return torch.from_numpy(np.asarray(x)).to(self.device)
 
-        self.net.eval()
+        X_t = tuple(_to_tensor(x) for x in X)
+
         with torch.no_grad():
-            Y_hat_log = self.net(*X).cpu().numpy()
+            Y_hat_log = self.net(*X_t).cpu().numpy()
             Y_hat = Y_hat_log.argmax(axis=1)
-
-            return Y_hat_log, Y_hat
+            return PredictResult(logits=Y_hat_log, classes=Y_hat)
 
     def __fwd_pass(self, batch):
         X, Y = self.net.unpack_batch(batch)
@@ -254,6 +307,7 @@ class NNModel:
         optimizer: torch.optim.Optimizer,
         scaler: Optional[torch.amp.GradScaler],
         grad_clip_norm: Optional[float] = None,
+        extra_metrics=None,
     ) -> NNEvaluationDataPoint:
         self.net.train()
         self.net.zero_grad()
@@ -293,7 +347,10 @@ class NNModel:
             )
 
         return (
-            NNEvaluationDataPoint.of(Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy())
+            NNEvaluationDataPoint.of(
+                Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(),
+                extra_metrics=extra_metrics,
+            )
                 .with_loss(value=loss_value)
                 .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
         )
@@ -336,6 +393,7 @@ class NNModel:
         idx_epoch: int,
         n_epochs: int,
         best_checkpoint: Optional[NNCheckpoint],
+        save_phase_checkpoints: bool = True,
     ) -> NNCheckpoint:
         checkpoint = NNCheckpoint(
             idp           = idp
@@ -346,15 +404,16 @@ class NNModel:
 
         # Phase markers at epoch boundaries — fractions are nominal (1/4, 2/4,
         # 3/4 of the planned epoch count); off-by-one allowed when n_epochs
-        # isn't divisible by 4.
-        if idx_epoch == 0:
-            checkpoint.save(run=run_id, type=Checkpoints.FIRST)
-        elif idx_epoch == int(n_epochs * 1 / 4) - 1:
-            checkpoint.save(run=run_id, type=Checkpoints.Q1)
-        elif idx_epoch == int(n_epochs * 2 / 4) - 1:
-            checkpoint.save(run=run_id, type=Checkpoints.Q2)
-        elif idx_epoch == int(n_epochs * 3 / 4) - 1:
-            checkpoint.save(run=run_id, type=Checkpoints.Q3)
+        # isn't divisible by 4. Opt-out via NNTrainParams.save_phase_checkpoints.
+        if save_phase_checkpoints:
+            if idx_epoch == 0:
+                checkpoint.save(run=run_id, type=Checkpoints.FIRST)
+            elif idx_epoch == int(n_epochs * 1 / 4) - 1:
+                checkpoint.save(run=run_id, type=Checkpoints.Q1)
+            elif idx_epoch == int(n_epochs * 2 / 4) - 1:
+                checkpoint.save(run=run_id, type=Checkpoints.Q2)
+            elif idx_epoch == int(n_epochs * 3 / 4) - 1:
+                checkpoint.save(run=run_id, type=Checkpoints.Q3)
 
         checkpoint.save(run=run_id, type=Checkpoints.LAST)
 

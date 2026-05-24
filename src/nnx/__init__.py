@@ -7,6 +7,19 @@ without forbidding the deep paths existing notebook code relies on.
 """
 from __future__ import annotations
 
+try:
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _version
+
+    try:
+        __version__ = _version("nnx")
+    except PackageNotFoundError:
+        # Editable install before metadata exists, or run from the source
+        # tree without installation.
+        __version__ = "0.1.0+local"
+except ImportError:  # pragma: no cover — Python <3.8.
+    __version__ = "0.1.0+local"
+
 from .nn.callbacks import Callback, EarlyStopping, LRMonitor, ModelCheckpoint
 from .nn.dataset.nn_dataset import NNDataset
 from .nn.dataset.nn_dataset_base import NNDatasetBase
@@ -57,4 +70,6 @@ __all__ = [
     "Utils", "VisUtils",
     # Reproducibility
     "set_seed", "dataloader_worker_init_fn", "env_snapshot",
+    # Metadata
+    "__version__",
 ]
