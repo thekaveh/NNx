@@ -7,10 +7,31 @@ without forbidding the deep paths existing notebook code relies on.
 """
 from __future__ import annotations
 
-from .nn.callbacks import Callback, EarlyStopping, LRMonitor, ModelCheckpoint
+try:
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _version
+
+    try:
+        __version__ = _version("nnx")
+    except PackageNotFoundError:
+        # Editable install before metadata exists, or run from the source
+        # tree without installation.
+        __version__ = "0.1.0+local"
+except ImportError:  # pragma: no cover — Python <3.8.
+    __version__ = "0.1.0+local"
+
+from .nn.callbacks import (
+    Callback,
+    EarlyStopping,
+    LRMonitor,
+    ModelCheckpoint,
+    TensorBoardCallback,
+    WandbCallback,
+)
 from .nn.dataset.nn_dataset import NNDataset
 from .nn.dataset.nn_dataset_base import NNDatasetBase
 from .nn.dataset.nn_graph_dataset import NNGraphDataset
+from .nn.dataset.nn_tabular_dataset import NNTabularDataset
 from .nn.enum.activations import Activations
 from .nn.enum.checkpoints import Checkpoints
 from .nn.enum.devices import Devices
@@ -33,6 +54,7 @@ from .nn.params.nn_params import NNParams
 from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams
+from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
 from .utils import Utils
 from .vis_utils import VisUtils
 
@@ -41,6 +63,7 @@ __all__ = [
     "NNModel",
     # Callbacks
     "Callback", "EarlyStopping", "LRMonitor", "ModelCheckpoint",
+    "TensorBoardCallback", "WandbCallback",
     # Params
     "NNParams", "NNRun", "NNCheckpoint",
     "NNModelParams", "NNTrainParams", "NNOptimParams", "NNSchedulerParams",
@@ -51,7 +74,11 @@ __all__ = [
     # Networks
     "FeedFwdNN", "GraphNNBase", "GraphConvNN", "GraphSageNN", "GraphAttNN",
     # Datasets
-    "NNDataset", "NNGraphDataset", "NNDatasetBase",
+    "NNDataset", "NNGraphDataset", "NNTabularDataset", "NNDatasetBase",
     # Helpers
     "Utils", "VisUtils",
+    # Reproducibility
+    "set_seed", "dataloader_worker_init_fn", "env_snapshot",
+    # Metadata
+    "__version__",
 ]

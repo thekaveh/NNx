@@ -22,6 +22,64 @@ def _runs_root(root: Optional[str] = None) -> str:
     return os.path.join(root if root is not None else os.getcwd(), "runs")
 
 
+def _atomic_write_text(path: str, content: str) -> None:
+    """Write `content` to `path` atomically — fsync, rename. A
+    KeyboardInterrupt during the rename either leaves the prior file
+    intact OR the new file fully written; never a half-written file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(content)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            # fsync isn't supported on every filesystem (e.g., some
+            # network mounts). Atomic rename is still useful even
+            # without the fsync guarantee.
+            pass
+    os.replace(tmp, path)
+
+
+def _point_best(best_run_path: str, run_path: str) -> None:
+    """Make `best_run_path` point at `run_path`. Uses a symlink where the
+    platform supports it (POSIX and Windows-with-developer-mode); falls
+    back to writing a `best/POINTER.txt` text file with the run path.
+    Either way ``_read_best_pointer`` can recover the target run."""
+    if os.path.lexists(best_run_path):
+        if os.path.islink(best_run_path):
+            os.remove(best_run_path)
+        else:
+            # Existing pointer directory from a prior fallback — clear it.
+            import shutil
+            shutil.rmtree(best_run_path)
+    try:
+        os.symlink(src=run_path, dst=best_run_path)
+    except (OSError, NotImplementedError):
+        # Windows without developer mode: write a pointer file instead.
+        # Atomic write so a KeyboardInterrupt during the fallback can't
+        # leave a half-written POINTER.txt that confuses _read_best_pointer.
+        os.makedirs(best_run_path, exist_ok=True)
+        _atomic_write_text(os.path.join(best_run_path, "POINTER.txt"), run_path)
+
+
+def _read_best_pointer(best_run_path: str) -> Optional[str]:
+    """Return the run id currently pointed to by `runs/best`, or None when
+    nothing is pointed there yet. Supports both symlink and POINTER.txt
+    fallback layouts."""
+    if not os.path.lexists(best_run_path):
+        return None
+    if os.path.islink(best_run_path):
+        # Resolve the symlink to a run path → the basename is the run id.
+        target = os.readlink(best_run_path)
+        return os.path.basename(target.rstrip(os.sep)) or None
+    pointer_file = os.path.join(best_run_path, "POINTER.txt")
+    if os.path.isfile(pointer_file):
+        with open(pointer_file) as f:
+            target = f.read().strip()
+        return os.path.basename(target.rstrip(os.sep)) or None
+    return None
+
+
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
     """Pull the error metric from a checkpoint, preferring val over train.
     Returns +inf for missing checkpoints or fully missing metrics so caller
@@ -107,30 +165,48 @@ class NNRun:
 
         csv_path = os.path.join(run_path, "idps.csv")
         yaml_path = os.path.join(run_path, "run.yaml")
+        metadata_path = os.path.join(run_path, "metadata.yaml")
 
         if not os.path.exists(run_path):
             os.makedirs(run_path)
 
-        with open(yaml_path, 'w') as f:
-            yaml.dump(self.state(), f)
+        # All three writes go through the atomic write helper so a
+        # KeyboardInterrupt mid-save leaves either the old file or the
+        # new file, never a half-written one. This is what makes the
+        # post-R3 "incremental save" claim actually safe — without
+        # atomicity, a partial write here corrupts the run.
+        _atomic_write_text(yaml_path, yaml.dump(self.state()))
 
-        pd.json_normalize(
-            data=[idp.state() for idp in self.idps]
-        ).to_csv(csv_path)
+        # Env snapshot: written separately so it does NOT contribute to
+        # run.id (which is md5(state())). Captures library/torch/python
+        # versions + git commit so a run.yaml from six months ago is
+        # debuggable even if the library has moved on.
+        from ...seeding import env_snapshot
+        _atomic_write_text(metadata_path, yaml.safe_dump(env_snapshot()))
 
-        if not os.path.lexists(best_run_path):
-            os.symlink(src=run_path, dst=best_run_path)
-        elif not os.path.exists(best_run_path):
-            # Dangling symlink (e.g. after moving the repo) — replace it.
-            os.remove(path=best_run_path)
-            os.symlink(src=run_path, dst=best_run_path)
+        _atomic_write_text(
+            csv_path,
+            pd.json_normalize(data=[idp.state() for idp in self.idps]).to_csv(),
+        )
+
+        if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
+            # Either no symlink yet, or one dangling after a repo move — repoint.
+            _point_best(best_run_path, run_path)
         else:
-            best_err = _best_err(NNCheckpoint.load(run="best", type=Checkpoints.BEST, root=root))
+            # Resolve the current best target via the symlink OR pointer file —
+            # `NNCheckpoint.load(run="best", ...)` only works under a symlink
+            # layout, so on the Windows pointer-file fallback we go through
+            # the run id explicitly to make a fair comparison.
+            best_run_id = _read_best_pointer(best_run_path)
+            best_ckpt = (
+                NNCheckpoint.load(run=best_run_id, type=Checkpoints.BEST, root=root)
+                if best_run_id is not None else None
+            )
+            best_err = _best_err(best_ckpt)
             curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST, root=root))
 
             if curr_err < best_err:
-                os.remove(path=best_run_path)
-                os.symlink(src=run_path, dst=best_run_path)
+                _point_best(best_run_path, run_path)
 
         return self
 
@@ -154,5 +230,22 @@ class NNRun:
 
     @staticmethod
     def all(root: Optional[str] = None) -> list[NNRun]:
+        """List every saved NNRun under the runs root, skipping the `best`
+        pointer. Returns [] when the runs/ directory doesn't exist yet.
+        Non-directory entries (stray files, .DS_Store) are filtered out
+        so they don't trigger spurious NNRun.load failures."""
         runs_root = _runs_root(root)
-        return [NNRun.load(id=id, root=root) for id in os.listdir(runs_root) if id != "best"]
+        if not os.path.isdir(runs_root):
+            return []
+        result: list[NNRun] = []
+        for entry in os.listdir(runs_root):
+            if entry == "best":
+                continue
+            if not os.path.isdir(os.path.join(runs_root, entry)):
+                continue
+            # Defensive: a directory in runs/ that lacks run.yaml isn't a
+            # real run (could be a leftover from an aborted experiment).
+            if not os.path.isfile(os.path.join(runs_root, entry, "run.yaml")):
+                continue
+            result.append(NNRun.load(id=entry, root=root))
+        return result

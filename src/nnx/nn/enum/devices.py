@@ -19,6 +19,11 @@ class Devices(Enum):
     def __call__(self) -> torch.device:
         return torch.device(self.value)
 
+    def torch_device(self) -> torch.device:
+        """Explicit alias for ``self()`` — more readable in code that mixes
+        the enum and torch.device usage."""
+        return torch.device(self.value)
+
     @staticmethod
     def get() -> Devices:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -27,3 +32,9 @@ class Devices(Enum):
             return Devices.CUDA
         else:
             return Devices.CPU
+
+    @staticmethod
+    def get_torch_device() -> torch.device:
+        """Convenience: auto-detect and return the corresponding torch.device
+        directly. Equivalent to ``Devices.get().torch_device()``."""
+        return Devices.get().torch_device()

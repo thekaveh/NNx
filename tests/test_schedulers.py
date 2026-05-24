@@ -52,7 +52,13 @@ def test_linear_warmup_decay():
         opt, _base_params(warmup_steps=5, total_steps=20), n_epochs=20,
     )
     assert isinstance(sched, lr_scheduler.LambdaLR)
-    # LR at step 0 should be 0 (start of warmup)
+    # PyTorch (since 1.1) wants optimizer.step before lr_scheduler.step.
+    # Step optimizer once with a fake loss so the warning doesn't fire.
+    opt.zero_grad()
+    for p in opt.param_groups[0]["params"]:
+        p.grad = torch.zeros_like(p)
+    opt.step()
+
     sched.step()
     lr_after_step1 = opt.param_groups[0]["lr"]
     # After warmup, LR should be at or near base_lr

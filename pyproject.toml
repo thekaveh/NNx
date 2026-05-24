@@ -12,7 +12,11 @@ authors = [
     { name = "Kaveh Razavi", email = "kaveh.razavi@gmail.com" }
 ]
 requires-python = ">=3.10"
-keywords = ["pytorch", "deep-learning", "graph-neural-networks", "training"]
+keywords = [
+    "pytorch", "deep-learning", "graph-neural-networks", "training",
+    "checkpointing", "callbacks", "experiments", "reproducibility",
+    "neural-networks", "research",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -43,7 +47,18 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
+    "pytest-cov>=4.1",
     "ruff>=0.4",
+    "tensorboard>=2.15",   # exercises TensorBoardCallback path in tests
+    "onnx>=1.15",          # exercises NNModel.to_onnx in tests
+]
+tensorboard = ["tensorboard>=2.15"]
+wandb = ["wandb>=0.16"]
+onnx = ["onnx>=1.15"]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
 ]
 
 [project.urls]
@@ -77,3 +92,9 @@ ignore = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+filterwarnings = [
+    # Upstream deprecations we can't act on — silenced so pytest output
+    # stays focused on nnx-relevant warnings.
+    "ignore:`torch_geometric.distributed` has been deprecated:DeprecationWarning",
+    "ignore:`torch.jit.script` is deprecated:DeprecationWarning",
+]
