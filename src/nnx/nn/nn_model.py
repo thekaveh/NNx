@@ -66,6 +66,14 @@ class NNModel:
         if params is None or params.optim is None or not params.optim.is_valid():
             raise ValueError("train params must be non-None and have a valid optim config")
 
+        # V1: seed every RNG before constructing the run so dataset shuffling,
+        # weight init, dropout — anything stochastic — is reproducible. The
+        # `seed` field only affects state() (and run.id) when explicitly set,
+        # so back-compat for no-seed callers is preserved.
+        if params.seed is not None:
+            from ..seeding import set_seed
+            set_seed(params.seed)
+
         validate    : bool  = params.val_loader is not None
         run         : NNRun = NNRun(
             train   = params

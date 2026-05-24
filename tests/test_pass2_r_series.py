@@ -10,8 +10,6 @@ Covers reliability gaps surfaced in the pass-2 audit:
 """
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset

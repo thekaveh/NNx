@@ -8,7 +8,6 @@ Covers correctness gaps surfaced in the pass-2 audit:
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -128,6 +127,7 @@ def test_n6_best_symlink_falls_back_to_pointer_file_when_symlink_fails(tmp_path,
     # Drive a tiny run end-to-end so NNRun.save() is exercised through
     # the symlink path.
     from torch.utils.data import DataLoader, TensorDataset
+
     from nnx.nn.params.nn_optim_params import NNOptimParams
     from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
     from nnx.nn.params.nn_train_params import NNTrainParams

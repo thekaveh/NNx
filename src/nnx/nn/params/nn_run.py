@@ -128,12 +128,21 @@ class NNRun:
 
         csv_path = os.path.join(run_path, "idps.csv")
         yaml_path = os.path.join(run_path, "run.yaml")
+        metadata_path = os.path.join(run_path, "metadata.yaml")
 
         if not os.path.exists(run_path):
             os.makedirs(run_path)
 
         with open(yaml_path, 'w') as f:
             yaml.dump(self.state(), f)
+
+        # Env snapshot: written separately so it does NOT contribute to
+        # run.id (which is md5(state())). Captures library/torch/python
+        # versions + git commit so a run.yaml from six months ago is
+        # debuggable even if the library has moved on.
+        from ...seeding import env_snapshot
+        with open(metadata_path, 'w') as f:
+            yaml.safe_dump(env_snapshot(), f)
 
         pd.json_normalize(
             data=[idp.state() for idp in self.idps]
