@@ -41,6 +41,17 @@ class VisUtils:
         , margin_size       = MARGIN_SIZE
         , renderer          = RENDERER
     ):
+        """Render a multi-group line chart and return the Plotly Figure.
+
+        Each group in `yss` is drawn with a distinct color; each line within
+        a group uses a distinct dash style. `yss_legend` is a (group_labels,
+        line_labels) tuple — both legends are added as no-trace markers so
+        the legend reads cleanly.
+
+        Returns the Figure. If `renderer` is non-None, also calls
+        `fig.show(renderer=renderer)` so notebook callers see the chart
+        inline; pass `renderer=None` (the default) for headless usage.
+        """
         if not yss:
             raise ValueError("multi_line_plot requires at least one series in `yss`")
 
@@ -116,6 +127,13 @@ class VisUtils:
         , title_size: str   = TITLE_SIZE
         , margin_size       = MARGIN_SIZE
     ):
+        """Render a colored scatter plot from a view-model dict and return
+        the Plotly Figure.
+
+        `vm` is the structure produced by `get_scatter_plot_vm`: title, xs/ys
+        column views, plus a `ts` group axis carrying labels + colors per
+        category. Honors `renderer` the same way as `multi_line_plot`.
+        """
         fig = go.Figure()
 
         for t_idx, _ in enumerate(vm["ts"]["uni_vals"]):
@@ -148,6 +166,12 @@ class VisUtils:
 
     @staticmethod
     def get_scatter_plot_vm(data, title, col_xs, label_xs, col_ys, label_ys, col_ts, labels_ts, colors_ts, uni_ts):
+        """Build the view-model dict consumed by `scatter_plot`.
+
+        Splits the input dataframe by the categorical column `col_ts`, attaches
+        per-category colors and labels, and precomputes the per-category
+        x/y slices so the plotting function stays simple.
+        """
         vm = {
             "title": title,
             "xs": {
@@ -182,6 +206,13 @@ class VisUtils:
         , label_size: int           = LABEL_SIZE
         , margin_size               = MARGIN_SIZE
     ):
+        """Project the first `n_samples` test logits of `checkpoint` to 2D
+        via t-SNE and render them colored by ground-truth class.
+
+        Useful for eyeballing class separability of an intermediate
+        checkpoint — pass the BEST checkpoint to see how well-trained the
+        decision space ended up. Returns the Plotly Figure.
+        """
         model = NNModel.from_checkpoint(checkpoint=checkpoint)
 
         ts = [t for t in range(ds.output_dim)]
