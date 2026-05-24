@@ -85,7 +85,12 @@ class NNModel:
         normalized_callbacks = self._normalize_callbacks(callbacks)
 
         idps        : list[NNIterationDataPoint] = []
-        n_iter      : int                          = int(params.n_epochs * len(params.train_loader))
+        # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
+        # Fall back to None so tqdm renders without a total instead of crashing.
+        try:
+            n_iter: Optional[int] = int(params.n_epochs * len(params.train_loader))
+        except TypeError:
+            n_iter = None
         best_checkpoint : Optional[NNCheckpoint]   = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 
         Utils.print_table(
@@ -156,20 +161,47 @@ class NNModel:
         return run.with_idps(idps).save()
 
     def evaluate(self, loader: DataLoader) -> NNEvaluationDataPoint:
+        """Aggregate predictions across all batches in `loader` and compute
+        a single NNEvaluationDataPoint. Aggregating (rather than averaging
+        per-batch metrics) gives correct sample-weighted f1/precision/recall
+        when the final batch is short.
+
+        Raises ValueError if the loader yields zero batches — previously
+        produced NaN metrics silently from np.mean over an empty list.
+        """
+        # Ensure loss_fn lives on the same device as the model — guards
+        # against callers reassigning self.device after construction.
+        self.loss_fn = self.loss_fn.to(self.device)
         self.net.eval()
-        edps = []
+
+        all_Y: list[np.ndarray] = []
+        all_Y_hat: list[np.ndarray] = []
+        loss_sum = 0.0
+        n_samples = 0
 
         with torch.no_grad():
             for batch in loader:
                 _, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
+                batch_n = int(Y.size(0))
+                # Aggregate predictions / labels across the entire loader so
+                # metrics are computed on the full eval set, not per-batch.
+                all_Y.append(Y.cpu().numpy())
+                all_Y_hat.append(Y_hat.cpu().numpy())
+                # Sum-weight the loss by samples; divide once at the end.
+                loss_sum += float(self.loss_fn(Y_hat_log, Y).detach()) * batch_n
+                n_samples += batch_n
 
-                edps.append(
-                    NNEvaluationDataPoint.of(Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy())
-                        .with_loss(value=float(self.loss_fn(Y_hat_log, Y)))
-                        .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
-                )
+        if n_samples == 0:
+            raise ValueError("evaluate() loader produced zero samples")
 
-        return NNEvaluationDataPoint.mean_of(edps)
+        Y_concat = np.concatenate(all_Y)
+        Y_hat_concat = np.concatenate(all_Y_hat)
+
+        return (
+            NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat)
+                .with_loss(value=loss_sum / n_samples)
+                .with_error(value=float(1 - (Y_concat == Y_hat_concat).sum() / n_samples))
+        )
 
     def predict(self, X: np.ndarray):
         if not isinstance(X, tuple):

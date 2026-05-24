@@ -8,6 +8,16 @@ from .nn_evaluation_data_point import NNEvaluationDataPoint
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNIterationDataPoint:
+    """One row in the per-iteration training log.
+
+    `train_edp` is computed from the current batch only. `val_edp` is the
+    per-epoch validation evaluation — populated **only on the last idp of
+    each epoch** (the idp at which the validation loop ran). Other idps in
+    the same epoch have `val_edp=None`. When reading idps.csv, group by
+    epoch_idx and take the row with val_edp set for per-epoch validation
+    metrics.
+    """
+
     lr          : float
     iter_idx    : int
     epoch_idx   : int

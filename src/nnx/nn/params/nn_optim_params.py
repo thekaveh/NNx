@@ -43,12 +43,15 @@ class NNOptimParams:
             , momentum      = ast.literal_eval(rep['momentum'])
         )
 
-    def is_valid(self):
+    def is_valid(self) -> bool:
         if self.name == Optims.SGD or self.name == Optims.SGD_NESTEROV:
             return isinstance(self.momentum, float)
-        elif self.name == Optims.ADAM or self.name == Optims.ADAM_AMSGRAD:
+        if self.name == Optims.ADAM or self.name == Optims.ADAM_AMSGRAD:
             return (
                 isinstance(self.momentum, tuple)
                 and len(self.momentum) == 2
                 and all(isinstance(x, float) for x in self.momentum)
             )
+        # Unknown enum variant — refuse rather than implicitly returning None
+        # (which would short-circuit `not params.optim.is_valid()` in train()).
+        return False

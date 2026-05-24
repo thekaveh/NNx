@@ -22,6 +22,27 @@ def _runs_root(root: Optional[str] = None) -> str:
     return os.path.join(root if root is not None else os.getcwd(), "runs")
 
 
+def _point_best(best_run_path: str, run_path: str) -> None:
+    """Make `best_run_path` point at `run_path`. Uses a symlink where the
+    platform supports it (POSIX and Windows-with-developer-mode); falls
+    back to writing a `best/POINTER.txt` text file with the run id. Either
+    way callers can recover the best run path."""
+    if os.path.lexists(best_run_path):
+        if os.path.islink(best_run_path):
+            os.remove(best_run_path)
+        else:
+            # Existing pointer directory from a prior fallback — clear it.
+            import shutil
+            shutil.rmtree(best_run_path)
+    try:
+        os.symlink(src=run_path, dst=best_run_path)
+    except (OSError, NotImplementedError):
+        # Windows without developer mode: write a pointer file instead.
+        os.makedirs(best_run_path, exist_ok=True)
+        with open(os.path.join(best_run_path, "POINTER.txt"), "w") as f:
+            f.write(run_path)
+
+
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
     """Pull the error metric from a checkpoint, preferring val over train.
     Returns +inf for missing checkpoints or fully missing metrics so caller
@@ -118,19 +139,15 @@ class NNRun:
             data=[idp.state() for idp in self.idps]
         ).to_csv(csv_path)
 
-        if not os.path.lexists(best_run_path):
-            os.symlink(src=run_path, dst=best_run_path)
-        elif not os.path.exists(best_run_path):
-            # Dangling symlink (e.g. after moving the repo) — replace it.
-            os.remove(path=best_run_path)
-            os.symlink(src=run_path, dst=best_run_path)
+        if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
+            # Either no symlink yet, or one dangling after a repo move — repoint.
+            _point_best(best_run_path, run_path)
         else:
             best_err = _best_err(NNCheckpoint.load(run="best", type=Checkpoints.BEST, root=root))
             curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST, root=root))
 
             if curr_err < best_err:
-                os.remove(path=best_run_path)
-                os.symlink(src=run_path, dst=best_run_path)
+                _point_best(best_run_path, run_path)
 
         return self
 
