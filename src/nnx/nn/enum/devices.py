@@ -9,17 +9,17 @@ class Devices(Enum):
     MPS     = "mps"
     CUDA    = "cuda"
     
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
-    
-    def __repr__(self):
+
+    def __repr__(self) -> str:
         return str(self)
 
-    def __call__(self):
+    def __call__(self) -> torch.device:
         return torch.device(self.value)
 
     @staticmethod
-    def get():
+    def get() -> "Devices":
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return Devices.MPS
         elif torch.cuda.is_available():

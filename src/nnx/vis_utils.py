@@ -226,3 +226,66 @@ class VisUtils:
                 , title     = f"2D t-SNE of output logits of best checkpoint @ epoch={checkpoint.idp.epoch_idx}"
             )
         )
+
+    @staticmethod
+    def confusion_matrix(
+        Y_true,
+        Y_pred,
+        class_names=None,
+        title: str = "Confusion matrix",
+        normalize: bool = False,
+    ):
+        """Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays
+        of integer class labels. If `class_names` is provided, axis labels use
+        the named classes; otherwise integer indices."""
+        from sklearn.metrics import confusion_matrix as _sk_cm
+
+        Y_true = np.asarray(Y_true)
+        Y_pred = np.asarray(Y_pred)
+        cm = _sk_cm(Y_true, Y_pred)
+        if normalize:
+            row_sums = cm.sum(axis=1, keepdims=True)
+            row_sums[row_sums == 0] = 1
+            cm = cm / row_sums
+
+        n_classes = cm.shape[0]
+        labels = class_names if class_names is not None else list(range(n_classes))
+
+        fig = go.Figure(data=go.Heatmap(
+            z=cm,
+            x=labels,
+            y=labels,
+            colorscale="Blues",
+            text=cm.round(3) if normalize else cm.astype(int),
+            texttemplate="%{text}",
+        ))
+        fig.update_layout(
+            title=title,
+            xaxis_title="Predicted",
+            yaxis_title="True",
+            width=VisUtils.FIG_SIZE[0],
+            height=VisUtils.FIG_SIZE[1],
+            margin=VisUtils.MARGIN_SIZE,
+            yaxis=dict(autorange="reversed"),
+        )
+        fig.show(renderer=VisUtils.RENDERER)
+
+    @staticmethod
+    def classification_report(Y_true, Y_pred, class_names=None) -> pd.DataFrame:
+        """Per-class precision / recall / f1 / support as a DataFrame. Use the
+        return value for tabular display (`print(df.to_string())` or notebook
+        auto-display) or to feed back into downstream analysis."""
+        from sklearn.metrics import classification_report as _sk_report
+
+        target_names = (
+            [str(c) for c in class_names]
+            if class_names is not None
+            else None
+        )
+        report = _sk_report(
+            Y_true, Y_pred,
+            target_names=target_names,
+            output_dict=True,
+            zero_division=0,
+        )
+        return pd.DataFrame(report).transpose()

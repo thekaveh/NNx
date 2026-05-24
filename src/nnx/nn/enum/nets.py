@@ -17,15 +17,16 @@ class Nets(Enum):
     GRAPH_CONV  = "graph_conv"
     GRAPH_SAGE  = "graph_sage"
     
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self)
-    
-    def __call__(self, params: NNParams):
-        assert params is not None
-        
+
+    def __call__(self, params: NNParams) -> nn.Module:
+        if params is None:
+            raise ValueError("params must not be None")
+
         match self:
             case Nets.FEED_FWD:
                 return FeedFwdNN(params=params)
