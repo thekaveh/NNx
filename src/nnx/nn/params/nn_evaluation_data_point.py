@@ -23,12 +23,21 @@ class NNEvaluationDataPoint:
         return replace(self, error=value)
     
     @staticmethod
-    def of(Y: np.ndarray, Y_hat: np.ndarray):
+    def of(Y: np.ndarray, Y_hat: np.ndarray, average: str = "macro"):
+        """Compute per-batch evaluation metrics.
+
+        `average` controls how f1/precision/recall reduce across classes.
+        Default "macro" treats all classes equally — the right choice for
+        multi-class classification and the only one that makes f1/precision/
+        recall mathematically distinct from accuracy. Pass "micro" to
+        recover the legacy behavior (numerically identical to accuracy for
+        single-label multi-class). Accuracy itself is not affected.
+        """
         return NNEvaluationDataPoint(
             accuracy=metrics.accuracy_score(y_true=Y, y_pred=Y_hat)
-            , f1=metrics.f1_score(y_true=Y, y_pred=Y_hat, average="micro", zero_division=0)
-            , recall=metrics.recall_score(y_true=Y, y_pred=Y_hat, average="micro", zero_division=0)
-            , precision=metrics.precision_score(y_true=Y, y_pred=Y_hat, average="micro", zero_division=0)
+            , f1=metrics.f1_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
+            , recall=metrics.recall_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
+            , precision=metrics.precision_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
         )
     
     @staticmethod

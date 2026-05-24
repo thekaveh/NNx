@@ -27,7 +27,9 @@ class Activations(Enum):
             case Activations.SELU          : return F.selu
             case Activations.TANH          : return F.tanh
             case Activations.RELU          : return F.relu
-            case Activations.SOFTMAX       : return F.softmax
+            # F.softmax/log_softmax need an explicit dim; -1 matches the
+            # last-axis convention used everywhere in nnx (batch-major).
+            case Activations.SOFTMAX       : return lambda x: F.softmax(x, dim=-1)
             case Activations.SIGMOID       : return F.sigmoid
             case Activations.SOFTPLUS      : return F.softplus
             case Activations.LEAKY_RELU    : return F.leaky_relu

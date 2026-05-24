@@ -45,12 +45,15 @@ class VisUtils:
         , margin_size       = MARGIN_SIZE
         , renderer          = RENDERER
     ):
+        if not yss:
+            raise ValueError("multi_line_plot requires at least one series in `yss`")
+
         fig = make_subplots()
 
         ls  = ["solid", "dash", "dot", "dashdot"]
-        cs  = px.colors.qualitative.Plotly[:len(yss)]
         cs  = VisUtils.generate_colors(n=len(yss))
-        
+        n_lines_per_series = len(yss[0])
+
         for ys_idx, (ys, ys_legend) in enumerate(zip(yss, yss_legend[1])):
             for y_idx, y in enumerate(ys):
                 fig.add_trace(
@@ -68,7 +71,7 @@ class VisUtils:
                     )
                 )
 
-        for idx, linestyle in enumerate(ls[:len(ys)]):
+        for idx, linestyle in enumerate(ls[:n_lines_per_series]):
             fig.add_trace(
                 go.Scatter(
                     x       = [None]
@@ -103,8 +106,10 @@ class VisUtils:
             , legend    = dict(orientation="v", yanchor="top", y=0.99, xanchor="right", x=0.99)
             , xaxis     = dict(title=dict(text=x_axis_label, font=dict(size=label_size)), tickmode='array', tickvals=list(range(0, len(x), x_ticks_inc)))
         )
-        
-        fig.show(renderer)
+
+        if renderer is not None:
+            fig.show(renderer=renderer)
+        return fig
 
     @staticmethod
     def scatter_plot(
@@ -130,7 +135,7 @@ class VisUtils:
                     )
                 )
             )
-        
+
         fig.update_layout(
             width       = fig_size[0]
             , height    = fig_size[1]
@@ -140,8 +145,10 @@ class VisUtils:
             , yaxis     = dict(title=dict(text=vm["ys"]["label"], font=dict(size=label_size)))
             , xaxis     = dict(title=dict(text=vm["xs"]["label"], font=dict(size=label_size)))
         )
-        
-        fig.show(renderer)
+
+        if renderer is not None:
+            fig.show(renderer=renderer)
+        return fig
 
     @staticmethod
     def get_scatter_plot_vm(data, title, col_xs, label_xs, col_ys, label_ys, col_ts, labels_ts, colors_ts, uni_ts):
@@ -178,21 +185,21 @@ class VisUtils:
         , title_size: int           = TITLE_SIZE
         , label_size: int           = LABEL_SIZE
         , margin_size               = MARGIN_SIZE
-    ) -> None:
+    ):
         model = NNModel.from_checkpoint(checkpoint=checkpoint)
-        
+
         ts = [t for t in range(ds.output_dim)]
         cs = VisUtils.generate_colors(n=ds.output_dim)
-        
+
         test_batch = next(iter(ds.test_loader))
         test_X, test_Y = model.net.unpack_batch(test_batch)
         test_X, test_Y = tuple(x.numpy() for x in test_X), test_Y.numpy()
-        
+
         df_test_Y = pd.DataFrame(data=test_Y, columns=["target"])
 
         test_Y_hat = model.predict(X=test_X)
-        
-        VisUtils.scatter_plot(
+
+        return VisUtils.scatter_plot(
             renderer        = renderer
             , title_size    = title_size
             , label_size    = label_size
@@ -268,7 +275,9 @@ class VisUtils:
             margin=VisUtils.MARGIN_SIZE,
             yaxis=dict(autorange="reversed"),
         )
-        fig.show(renderer=VisUtils.RENDERER)
+        if VisUtils.RENDERER is not None:
+            fig.show(renderer=VisUtils.RENDERER)
+        return fig
 
     @staticmethod
     def classification_report(Y_true, Y_pred, class_names=None) -> pd.DataFrame:

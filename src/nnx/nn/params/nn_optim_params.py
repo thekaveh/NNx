@@ -9,6 +9,15 @@ from ..enum.optims import Optims
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNOptimParams:
+    """Optimizer config.
+
+    `momentum` is overloaded by optimizer kind:
+      - For SGD / SGD_NESTEROV: a single float, the SGD momentum coefficient.
+      - For ADAM / ADAM_AMSGRAD: a (beta1, beta2) tuple, passed as the
+        Adam `betas=` argument. The name is retained for backwards
+        compatibility — `is_valid()` enforces the per-optim shape.
+    """
+
     name            : Optims
     max_lr          : float
     weight_decay    : float

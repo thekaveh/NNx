@@ -18,6 +18,18 @@ from ..params.nn_train_params import NNTrainParams
 from ..params.nn_model_params import NNModelParams
 from ..params.nn_iteration_data_point import NNIterationDataPoint
 
+
+def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
+    """Pull the error metric from a checkpoint, preferring val over train.
+    Returns +inf for missing checkpoints or fully missing metrics so caller
+    comparisons always prefer the *new* run when there's no prior signal."""
+    if checkpoint is None:
+        return float("inf")
+    edp = checkpoint.idp.val_edp if checkpoint.idp.val_edp is not None else checkpoint.idp.train_edp
+    if edp is None or edp.error is None:
+        return float("inf")
+    return edp.error
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
     net     : NNParams
@@ -88,20 +100,20 @@ class NNRun:
     def save(self) -> NNRun:
         run_path = os.path.join(os.getcwd(), "runs", self.id)
         best_run_path = os.path.join(os.getcwd(), "runs", "best")
-        
+
         csv_path = os.path.join(run_path, "idps.csv")
         yaml_path = os.path.join(run_path, "run.yaml")
 
         if not os.path.exists(run_path):
             os.makedirs(run_path)
-        
+
         with open(yaml_path, 'w') as f:
             yaml.dump(self.state(), f)
-        
+
         pd.json_normalize(
             data=[idp.state() for idp in self.idps]
         ).to_csv(csv_path)
-            
+
         if not os.path.lexists(best_run_path):
             os.symlink(src=run_path, dst=best_run_path)
         elif not os.path.exists(best_run_path):
@@ -109,13 +121,13 @@ class NNRun:
             os.remove(path=best_run_path)
             os.symlink(src=run_path, dst=best_run_path)
         else:
-            best_err = NNCheckpoint.load(run="best", type=Checkpoints.BEST).idp.val_edp.error
-            curr_err = NNCheckpoint.load(run=self.id, type=Checkpoints.BEST).idp.val_edp.error
+            best_err = _best_err(NNCheckpoint.load(run="best", type=Checkpoints.BEST))
+            curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST))
 
             if curr_err < best_err:
                 os.remove(path=best_run_path)
                 os.symlink(src=run_path, dst=best_run_path)
-        
+
         return self
     
     @staticmethod
