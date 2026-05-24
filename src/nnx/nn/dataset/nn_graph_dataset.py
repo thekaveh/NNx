@@ -1,21 +1,23 @@
-import torch_geometric as pyg
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Optional
+
 from torch_geometric.data import Dataset
 from torch_geometric.loader import NeighborLoader
-from typing import Callable, Type, Tuple, Optional, List
 
 from .nn_dataset_base import NNDatasetBase
 
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNGraphDataset(NNDatasetBase):
-    ds_class        : Type[Dataset]
-    n_neighbors     : List[int]
+    ds_class        : type[Dataset]
+    n_neighbors     : list[int]
     root_dir        : str                   = "./data"
     transform       : Optional[Callable]    = None
     n_workers       : int                   = 4
-    batch_sizes     : Tuple[int, int, int]  = (None, None, None)
-    
+    batch_sizes     : tuple[int, int, int]  = (None, None, None)
+
     def __post_init__(self):
         dataset = self.ds_class(root=self.root_dir, transform=self.transform)
         # Single-graph datasets expose the underlying Data via dataset[0].
@@ -70,19 +72,19 @@ class NNGraphDataset(NNDatasetBase):
                 , input_nodes=data.test_mask
             )
         )
-        
+
         object.__setattr__(
             self
             , 'input_dim'
             , dataset.num_features
         )
-        
+
         object.__setattr__(
             self
             , 'output_dim'
             , dataset.num_classes
         )
-        
+
         state = dict(
             name                = self.name
             , input_dim         = self.input_dim
@@ -93,5 +95,5 @@ class NNGraphDataset(NNDatasetBase):
             , n_workers         = self.n_workers
             , n_neighbors       = self.n_neighbors
         )
-        
+
         object.__setattr__(self, '_state', state)

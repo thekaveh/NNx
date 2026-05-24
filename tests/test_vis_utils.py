@@ -12,6 +12,7 @@ def test_vis_utils_importable():
 def test_vis_utils_module_has_callables():
     """vis_utils should expose at least one callable for figure generation."""
     import inspect
+
     import nnx.vis_utils as vis_utils
 
     callables = [

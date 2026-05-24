@@ -1,38 +1,43 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Optional
+
 import torch
 
-from typing import Optional
-from dataclasses import dataclass
-from collections import OrderedDict
-
 from ..enum.checkpoints import Checkpoints
-
-from ..params.nn_params import NNParams
-from ..params.nn_model_params import NNModelParams
 from ..params.nn_iteration_data_point import NNIterationDataPoint
-    
+from ..params.nn_model_params import NNModelParams
+from ..params.nn_params import NNParams
+
+
+def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) -> str:
+    """Resolve the on-disk path for a checkpoint. Defaults to cwd-relative
+    so existing notebook code stays untouched."""
+    base = root if root is not None else "."
+    return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNCheckpoint:
     net_params  : NNParams
     net_state   : OrderedDict
     model_params: NNModelParams
     idp         : NNIterationDataPoint
-    
+
     def to_file(self, path: str) -> None:
         dir_path = os.path.dirname(path)
-        
+
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
-        
+
         torch.save(self, path)
-        
-    def save(self, run: str, type: Checkpoints) -> None:
-        self.to_file(
-            path=os.path.join(".", "runs", run, "checkpoints", str(type) + ".pt")
-        )
-        
+
+    def save(self, run: str, type: Checkpoints, root: Optional[str] = None) -> None:
+        self.to_file(path=_checkpoint_path(run, type, root=root))
+
     @staticmethod
     def from_file(path: str) -> Optional[NNCheckpoint]:
         if not os.path.exists(path):
@@ -48,9 +53,7 @@ class NNCheckpoint:
             return None
 
         return ret
-    
+
     @staticmethod
-    def load(run: str, type: Checkpoints) -> Optional[NNCheckpoint]:
-        return NNCheckpoint.from_file(
-            path=os.path.join(".", "runs", run, "checkpoints", str(type) + ".pt")
-        )
+    def load(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[NNCheckpoint]:
+        return NNCheckpoint.from_file(path=_checkpoint_path(run, type, root=root))

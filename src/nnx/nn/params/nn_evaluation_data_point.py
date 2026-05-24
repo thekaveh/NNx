@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import numpy as np
+from dataclasses import dataclass, replace
+from typing import Optional
 
+import numpy as np
 from sklearn import metrics
 
-from typing import List, Optional
-from dataclasses import dataclass, replace
-    
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNEvaluationDataPoint:
     f1          : float
@@ -15,13 +15,13 @@ class NNEvaluationDataPoint:
     precision   : float
     loss        : Optional[float]   = None
     error       : Optional[float]   = None
-    
+
     def with_loss(self, value: float):
         return replace(self, loss=value)
-    
+
     def with_error(self, value: float):
         return replace(self, error=value)
-    
+
     @staticmethod
     def of(Y: np.ndarray, Y_hat: np.ndarray, average: str = "macro"):
         """Compute per-batch evaluation metrics.
@@ -39,9 +39,9 @@ class NNEvaluationDataPoint:
             , recall=metrics.recall_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
             , precision=metrics.precision_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
         )
-    
+
     @staticmethod
-    def mean_of(edps: List[NNEvaluationDataPoint]):
+    def mean_of(edps: list[NNEvaluationDataPoint]):
         ret = NNEvaluationDataPoint(
             f1=np.mean([edp.f1 for edp in edps])
             , recall=np.mean([edp.recall for edp in edps])
@@ -51,12 +51,12 @@ class NNEvaluationDataPoint:
 
         if len([edp.loss for edp in edps if edp.loss is not None]) > 0:
             ret = ret.with_loss(np.mean([edp.loss for edp in edps if edp.loss is not None]))
-            
+
         if len([edp.error for edp in edps if edp.error is not None]) > 0:
             ret = ret.with_error(np.mean([edp.error for edp in edps if edp.error is not None]))
 
         return ret
-    
+
     def state(self) -> dict:
         return dict(
             f1          = self.f1
@@ -66,7 +66,7 @@ class NNEvaluationDataPoint:
             , loss      = self.loss
             , error     = self.error
         )
-    
+
     @staticmethod
     def from_state(state: dict) -> NNEvaluationDataPoint:
         return NNEvaluationDataPoint(

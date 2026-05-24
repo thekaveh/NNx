@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from torch import nn
 from enum import Enum
-    
+
+from torch import nn
+
+
 class Losses(Enum):
     CROSS_ENTROPY           = "cross_entropy"
     MEAN_SQUARED_ERROR      = "mean_squared_error"

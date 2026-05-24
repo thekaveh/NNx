@@ -10,7 +10,8 @@ notebooks keep working.
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Optional
 
 from IPython.display import clear_output
 
@@ -23,16 +24,16 @@ if TYPE_CHECKING:
 class Callback:
     """Base class for training callbacks. Override any subset of the hooks."""
 
-    def on_train_begin(self, ctx: "_CallbackContext") -> None:
+    def on_train_begin(self, ctx: _CallbackContext) -> None:
         pass
 
-    def on_epoch_begin(self, ctx: "_CallbackContext") -> None:
+    def on_epoch_begin(self, ctx: _CallbackContext) -> None:
         pass
 
-    def on_epoch_end(self, ctx: "_CallbackContext") -> None:
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
         pass
 
-    def on_train_end(self, ctx: "_CallbackContext") -> None:
+    def on_train_end(self, ctx: _CallbackContext) -> None:
         pass
 
 
@@ -44,10 +45,10 @@ class _LegacyCallback(Callback):
     idps list and a `clear_output(wait=True)` first. This shim preserves both.
     """
 
-    def __init__(self, fn: Callable[[List[NNIterationDataPoint]], None]):
+    def __init__(self, fn: Callable[[list[NNIterationDataPoint]], None]):
         self._fn = fn
 
-    def on_epoch_end(self, ctx: "_CallbackContext") -> None:
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
         clear_output(wait=True)
         self._fn(ctx.idps)
 
@@ -91,7 +92,7 @@ class EarlyStopping(Callback):
             return current < best - self.min_delta
         return current > best + self.min_delta
 
-    def on_epoch_end(self, ctx: "_CallbackContext") -> None:
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
         if ctx.idp is None:
             return
         current = self._resolve_metric(ctx.idp)
@@ -115,11 +116,11 @@ class ModelCheckpoint(Callback):
     matches the current epoch.
     """
 
-    def __init__(self, epochs: Optional[List[int]] = None, tag: str = "custom"):
+    def __init__(self, epochs: Optional[list[int]] = None, tag: str = "custom"):
         self.epochs = set(epochs or [])
         self.tag = tag
 
-    def on_epoch_end(self, ctx: "_CallbackContext") -> None:
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
         # Intentionally minimal — train()'s _save_checkpoints already handles
         # the standard tags. Custom-tag saving was not in the prior API; this
         # callback is a hook for future expansion.
@@ -131,8 +132,8 @@ class LRMonitor(Callback):
     """Logs the current LR each epoch. History exposed at `.history`."""
 
     def __init__(self):
-        self.history: List[float] = []
+        self.history: list[float] = []
 
-    def on_epoch_end(self, ctx: "_CallbackContext") -> None:
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)

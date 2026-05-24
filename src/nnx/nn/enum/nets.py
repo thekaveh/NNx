@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 from enum import Enum
-from torch import nn, optim
-from typing import Tuple, Union
 
-from ..params.nn_params import NNParams
+from torch import nn
 
 from ..net.feed_fwd_nn import FeedFwdNN
 from ..net.graph_att_nn import GraphAttNN
 from ..net.graph_conv_nn import GraphConvNN
 from ..net.graph_sage_nn import GraphSageNN
+from ..params.nn_params import NNParams
+
 
 class Nets(Enum):
     FEED_FWD    = "feed_fwd"
     GRAPH_ATT   = "graph_att"
     GRAPH_CONV  = "graph_conv"
     GRAPH_SAGE  = "graph_sage"
-    
+
     def __str__(self) -> str:
         return self.value
 

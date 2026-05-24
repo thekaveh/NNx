@@ -1,11 +1,13 @@
-from functools import reduce
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Type, Tuple, Optional
+from functools import reduce
+from typing import Optional
 
-from torchvision.datasets import VisionDataset
 from torch.utils.data import DataLoader, random_split
+from torchvision.datasets import VisionDataset
 
 from .nn_dataset_base import NNDatasetBase
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNDataset(NNDatasetBase):
@@ -13,11 +15,11 @@ class NNDataset(NNDatasetBase):
     out of the source `train=True` split (NOT out of the test split, which
     stays untouched for final evaluation)."""
 
-    ds_class        : Type[VisionDataset]
+    ds_class        : type[VisionDataset]
     root_dir        : str                   = "./data"
     download        : bool                  = True
     transform       : Optional[Callable]    = None
-    batch_sizes     : Tuple[int, int, int]  = (None, None, None)
+    batch_sizes     : tuple[int, int, int]  = (None, None, None)
     val_proportion  : float                 = 0.1
 
     def __post_init__(self):
@@ -72,7 +74,7 @@ class NNDataset(NNDatasetBase):
                 , batch_size=resolved_batch_sizes[2]
             )
         )
-        
+
         # train_loader.dataset is now a Subset (from random_split); shape/classes
         # come from the underlying full_train_dataset instead.
         object.__setattr__(
@@ -86,7 +88,7 @@ class NNDataset(NNDatasetBase):
             , 'output_dim'
             , len(full_train_dataset.classes)
         )
-        
+
         state = dict(
             name                = self.name
             , input_dim         = self.input_dim
@@ -95,5 +97,5 @@ class NNDataset(NNDatasetBase):
             , val_batch_size    = f"{self.batch_sizes[1]:,}"
             , test_batch_size   = f"{self.batch_sizes[2]:,}"
         )
-        
+
         object.__setattr__(self, '_state', state)

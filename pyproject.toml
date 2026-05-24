@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -57,12 +58,19 @@ line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-# Start permissive; tighten later if desired.
-select = ["E", "F", "W"]
+# E/F/W catch core style + pyflakes errors. B adds bugbear (mutable defaults,
+# common foot-guns). I keeps imports ordered. UP nudges toward modern Python
+# 3.10+ syntax.
+select = ["E", "F", "W", "B", "I", "UP"]
 ignore = [
     "E501",  # line too long — large library, gradual cleanup
+    "E701",  # multiple statements on one line (colon) — keep `case X: return Y` style
     "E731",  # lambda assignment
     "E741",  # ambiguous var name (e.g., `l`)
+    "B008",  # function calls in argument defaults — dataclass field defaults are fine here
+    "B024",  # ABC with no abstract methods — NNDatasetBase is a structural base
+    "UP007", # Optional[X] vs X | None — keep Optional for readability
+    "UP045", # Optional[X] vs X | None in annotations (same as UP007)
 ]
 
 [tool.pytest.ini_options]

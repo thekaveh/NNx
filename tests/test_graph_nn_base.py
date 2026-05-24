@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
 
 from nnx.nn.enum.activations import Activations
-from nnx.nn.net.graph_nn_base import GraphNNBase
-from nnx.nn.net.graph_conv_nn import GraphConvNN
-from nnx.nn.net.graph_sage_nn import GraphSageNN
 from nnx.nn.net.graph_att_nn import GraphAttNN
+from nnx.nn.net.graph_conv_nn import GraphConvNN
+from nnx.nn.net.graph_nn_base import GraphNNBase
+from nnx.nn.net.graph_sage_nn import GraphSageNN
 from nnx.nn.params.nn_params import NNParams
 
 

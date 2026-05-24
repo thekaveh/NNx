@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from enum import Enum
+
 import torch.nn.functional as F
 
-from enum import Enum
-from typing import Callable
 
 class Activations(Enum):
     ELU         = 'elu'

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import ast
-
-from typing import Tuple, Union
 from dataclasses import dataclass
+from typing import Union
 
 from ..enum.optims import Optims
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNOptimParams:
@@ -21,11 +21,11 @@ class NNOptimParams:
     name            : Optims
     max_lr          : float
     weight_decay    : float
-    momentum        : Union[float, Tuple[float, float]]
-    
+    momentum        : Union[float, tuple[float, float]]
+
     def __str__(self):
         return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}]"
-    
+
     def state(self):
         return dict(
             max_lr          = self.max_lr
@@ -33,7 +33,7 @@ class NNOptimParams:
             , name          = str(self.name)
             , weight_decay  = self.weight_decay
         )
-    
+
     @staticmethod
     def from_state(rep: dict) -> NNOptimParams:
         return NNOptimParams(
@@ -42,7 +42,7 @@ class NNOptimParams:
             , weight_decay  = rep['weight_decay']
             , momentum      = ast.literal_eval(rep['momentum'])
         )
-    
+
     def is_valid(self):
         if self.name == Optims.SGD or self.name == Optims.SGD_NESTEROV:
             return isinstance(self.momentum, float)

@@ -2,18 +2,14 @@ import colorsys
 
 import numpy as np
 import pandas as pd
-
-
-import plotly.express as px
 import plotly.graph_objects as go
-
-from scipy import stats
-from sklearn.manifold import TSNE
 from plotly.subplots import make_subplots
+from sklearn.manifold import TSNE
 
-from nnx.nn.nn_model import NNModel
 from nnx.nn.dataset.nn_dataset import NNDataset
+from nnx.nn.nn_model import NNModel
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
 
 class VisUtils:
     TITLE_SIZE  = 14
@@ -21,13 +17,13 @@ class VisUtils:
     RENDERER    = None
     FIG_SIZE    = (1000, 600)
     MARGIN_SIZE = dict(l=15, r=15, t=30, b=15, pad=0)
-    
+
     @staticmethod
     def generate_colors(n):
         hues = np.linspace(0, 1, n)
         rgb_colors = [colorsys.hsv_to_rgb(h, 0.6, 0.95) for h in hues]
-        hex_colors = ['#%02x%02x%02x' % (int(r*255), int(g*255), int(b*255)) for r, g, b in rgb_colors]
-        
+        hex_colors = [f'#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}' for r, g, b in rgb_colors]
+
         return hex_colors
 
     @staticmethod
@@ -54,7 +50,7 @@ class VisUtils:
         cs  = VisUtils.generate_colors(n=len(yss))
         n_lines_per_series = len(yss[0])
 
-        for ys_idx, (ys, ys_legend) in enumerate(zip(yss, yss_legend[1])):
+        for ys_idx, (ys, ys_legend) in enumerate(zip(yss, yss_legend[1], strict=False)):
             for y_idx, y in enumerate(ys):
                 fig.add_trace(
                     go.Scatter(
@@ -96,7 +92,7 @@ class VisUtils:
                     , name  = yss_legend[1][idx]
                 )
             )
-        
+
         fig.update_layout(
             width       = fig_size[0]
             , height    = fig_size[1]

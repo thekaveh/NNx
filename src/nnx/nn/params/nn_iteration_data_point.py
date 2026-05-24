@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-from typing import Optional
 from dataclasses import dataclass, replace
+from typing import Optional
 
 from .nn_evaluation_data_point import NNEvaluationDataPoint
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNIterationDataPoint:
     lr          : float
     iter_idx    : int
     epoch_idx   : int
-    batch_idx   : int  
+    batch_idx   : int
     train_edp   : NNEvaluationDataPoint
     val_edp     : Optional[NNEvaluationDataPoint]   = None
-    
+
     def with_val_edp(self, value: NNEvaluationDataPoint):
         return replace(self, val_edp=value)
-    
+
     def state(self) -> dict:
         return dict(
             lr          = self.lr
@@ -26,7 +27,7 @@ class NNIterationDataPoint:
             , train_edp = self.train_edp.state()
             , val_edp   = self.val_edp.state() if self.val_edp is not None else None
         )
-    
+
     @staticmethod
     def from_state(state: dict) -> NNIterationDataPoint:
         val_edp = None

@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-import torch
-import numpy as np
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Optional, Union
 
-from tqdm import tqdm
+import numpy as np
+import torch
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
-from typing import Callable, List, Optional, Union, TYPE_CHECKING
-
-from .enum.checkpoints import Checkpoints
+from tqdm import tqdm
 
 from ..utils import Utils
-from .params.nn_run import NNRun
-from .params.nn_params import NNParams
+from .enum.checkpoints import Checkpoints
 from .params.nn_checkpoint import NNCheckpoint
-from .params.nn_train_params import NNTrainParams
-from .params.nn_model_params import NNModelParams
-from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_evaluation_data_point import NNEvaluationDataPoint
+from .params.nn_iteration_data_point import NNIterationDataPoint
+from .params.nn_model_params import NNModelParams
+from .params.nn_params import NNParams
+from .params.nn_run import NNRun
+from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
     from .callbacks import Callback
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 # Legacy callback signature retained for backwards compatibility with notebooks
 # that pass `callbacks=[lambda idps: plot(...)]`. Adapted internally via
 # _LegacyCallback (in callbacks.py).
-LegacyCallback = Callable[[List[NNIterationDataPoint]], None]
+LegacyCallback = Callable[[list[NNIterationDataPoint]], None]
 CallbackLike = Union["Callback", LegacyCallback]
 
 
@@ -47,7 +47,7 @@ class NNModel:
         self.net        = self.params.net(params=net_params).to(self.device)
 
     @staticmethod
-    def from_checkpoint(checkpoint: NNCheckpoint) -> "NNModel":
+    def from_checkpoint(checkpoint: NNCheckpoint) -> NNModel:
         model = NNModel(
             params=checkpoint.model_params
             , net_params=checkpoint.net_params
@@ -60,7 +60,7 @@ class NNModel:
     def train(
         self,
         params: NNTrainParams,
-        callbacks: Optional[List[CallbackLike]] = None,
+        callbacks: Optional[list[CallbackLike]] = None,
     ) -> NNRun:
         if params is None or params.optim is None or not params.optim.is_valid():
             raise ValueError("train params must be non-None and have a valid optim config")
@@ -84,7 +84,7 @@ class NNModel:
 
         normalized_callbacks = self._normalize_callbacks(callbacks)
 
-        idps        : List[NNIterationDataPoint] = []
+        idps        : list[NNIterationDataPoint] = []
         n_iter      : int                          = int(params.n_epochs * len(params.train_loader))
         best_checkpoint : Optional[NNCheckpoint]   = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 
@@ -199,7 +199,7 @@ class NNModel:
         self,
         batch,
         optimizer: torch.optim.Optimizer,
-        scaler: Optional["torch.amp.GradScaler"],
+        scaler: Optional[torch.amp.GradScaler],
     ) -> NNEvaluationDataPoint:
         self.net.train()
         self.net.zero_grad()
@@ -253,7 +253,7 @@ class NNModel:
         # config. The enum's __call__ knows how to construct.
         return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs)
 
-    def _build_grad_scaler(self) -> Optional["torch.amp.GradScaler"]:
+    def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:
         if getattr(self.params, "mixed_precision", False) and self.device.type == "cuda":
             return torch.amp.GradScaler("cuda")
         return None
@@ -323,14 +323,14 @@ class NNModel:
 
     @staticmethod
     def _normalize_callbacks(
-        callbacks: Optional[List[CallbackLike]],
-    ) -> List["Callback"]:
+        callbacks: Optional[list[CallbackLike]],
+    ) -> list[Callback]:
         # Lazy import to keep nn_model.py importable before callbacks module exists.
         from .callbacks import Callback, _LegacyCallback
 
         if callbacks is None:
             return []
-        out: List[Callback] = []
+        out: list[Callback] = []
         for cb in callbacks:
             if isinstance(cb, Callback):
                 out.append(cb)
@@ -353,5 +353,5 @@ class _CallbackContext:
         self.optimizer = optimizer
         self.epoch: int = 0
         self.idp: Optional[NNIterationDataPoint] = None
-        self.idps: List[NNIterationDataPoint] = []
+        self.idps: list[NNIterationDataPoint] = []
         self.should_stop: bool = False

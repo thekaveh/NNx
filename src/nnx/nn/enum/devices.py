@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from enum import Enum
+
 import torch
 
-from enum import Enum
 
 class Devices(Enum):
     CPU     = "cpu"
     MPS     = "mps"
     CUDA    = "cuda"
-    
+
     def __str__(self) -> str:
         return self.value
 
@@ -19,7 +20,7 @@ class Devices(Enum):
         return torch.device(self.value)
 
     @staticmethod
-    def get() -> "Devices":
+    def get() -> Devices:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return Devices.MPS
         elif torch.cuda.is_available():
