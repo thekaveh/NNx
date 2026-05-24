@@ -29,6 +29,21 @@ class NNIterationDataPoint:
     
     @staticmethod
     def from_state(state: dict) -> NNIterationDataPoint:
+        val_edp = None
+        if state.get('val_edp.loss') is not None or any(
+            state.get(f'val_edp.{k}') is not None
+            for k in ('error', 'accuracy', 'f1', 'recall', 'precision')
+        ):
+            val_edp = NNEvaluationDataPoint.from_state(
+                dict(
+                    loss=state.get('val_edp.loss')
+                    , error=state.get('val_edp.error')
+                    , accuracy=state.get('val_edp.accuracy')
+                    , f1=state.get('val_edp.f1')
+                    , recall=state.get('val_edp.recall')
+                    , precision=state.get('val_edp.precision')
+                )
+            )
         return NNIterationDataPoint(
             lr          = state['lr']
             , iter_idx  = state['iter_idx']
@@ -44,14 +59,5 @@ class NNIterationDataPoint:
                     , precision=state['train_edp.precision']
                 )
             )
-            , val_edp = NNEvaluationDataPoint.from_state(
-                dict(
-                    loss=state['val_edp.loss']
-                    , error=state['val_edp.error']
-                    , accuracy=state['val_edp.accuracy']
-                    , f1=state['val_edp.f1']
-                    , recall=state['val_edp.recall']
-                    , precision=state['val_edp.precision']
-                )
-            )
+            , val_edp = val_edp
         )

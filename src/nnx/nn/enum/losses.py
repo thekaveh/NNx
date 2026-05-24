@@ -18,6 +18,6 @@ class Losses(Enum):
     def __call__(self):
         match self:
             case Losses.CROSS_ENTROPY             : return nn.CrossEntropyLoss()
-            case Losses.MEAN_SQUARED_ERROR        : return nn.BCELoss()
-            case Losses.BINARY_CROSS_ENTROPY      : return nn.MSELoss()
+            case Losses.MEAN_SQUARED_ERROR        : return nn.MSELoss()
+            case Losses.BINARY_CROSS_ENTROPY      : return nn.BCELoss()
             case Losses.NEGATIVE_LOG_LIKELIHOOD   : return nn.NLLLoss()
