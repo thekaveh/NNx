@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Union
+
 from torch import nn, optim
-from typing import Tuple, Union
+
 
 class Optims(Enum):
     SGD             = "sgd"
     ADAM            = "adam"
     ADAM_AMSGRAD    = "adam_amsgrad"
     SGD_NESTEROV    = "sgd_nesterov"
-    
+
     def __str__(self) -> str:
         return self.value
 
@@ -21,7 +23,7 @@ class Optims(Enum):
         , net           : nn.Module
         , lr_start      : float
         , weight_decay  : float
-        , momentum      : Union[float, Tuple[float, float]]
+        , momentum      : Union[float, tuple[float, float]]
     ) -> optim.Optimizer:
         if net is None:
             raise ValueError("net must not be None")

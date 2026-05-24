@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..enum.nets import Nets
-from ..enum.losses import Losses
 from ..enum.devices import Devices
+from ..enum.losses import Losses
+from ..enum.nets import Nets
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNModelParams:

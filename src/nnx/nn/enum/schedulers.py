@@ -31,7 +31,7 @@ class Schedulers(Enum):
     def __call__(
         self,
         optimizer: Optimizer,
-        params: "NNSchedulerParams",
+        params: NNSchedulerParams,
         n_epochs: int,
     ):
         match self:

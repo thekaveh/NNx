@@ -6,8 +6,6 @@ _build_layers() to provide the PyG conv constructor.
 """
 from __future__ import annotations
 
-from typing import Tuple
-
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -38,5 +36,5 @@ class GraphNNBase(nn.Module):
             X = F.dropout(X, p=self.params.dropout_prob, training=self.training)
         return self.layers[-1](X, E)
 
-    def unpack_batch(self, batch) -> Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def unpack_batch(self, batch) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
         return (batch.x, batch.edge_index), batch.y

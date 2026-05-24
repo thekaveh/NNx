@@ -1,57 +1,86 @@
 """Smoke tests: every module in nnx imports without error.
 
 This catches broken imports early — most common rot when restructuring.
+The full list below is intentionally exhaustive: when a new module lands
+under src/nnx/, add it here so the next refactor surfaces broken imports
+loudly rather than letting them linger until someone tries to use the
+affected feature.
 """
 
 
 def test_top_level_imports():
     import nnx
-    from nnx import utils, vis_utils
+    from nnx import seeding, utils, vis_utils
+    assert nnx is not None
     assert utils is not None
     assert vis_utils is not None
+    assert seeding is not None
 
 
 def test_nn_subpackage_imports():
-    from nnx.nn import nn_model
+    from nnx.nn import callbacks, nn_model
     assert nn_model is not None
+    assert callbacks is not None
 
 
 def test_net_modules_import():
-    from nnx.nn.net import feed_fwd_nn, graph_conv_nn, graph_sage_nn, graph_att_nn
+    from nnx.nn.net import (
+        feed_fwd_nn,
+        graph_att_nn,
+        graph_conv_nn,
+        graph_nn_base,
+        graph_sage_nn,
+    )
     assert feed_fwd_nn is not None
     assert graph_conv_nn is not None
     assert graph_sage_nn is not None
     assert graph_att_nn is not None
+    assert graph_nn_base is not None
 
 
 def test_dataset_modules_import():
-    from nnx.nn.dataset import nn_dataset_base, nn_dataset, nn_graph_dataset
+    from nnx.nn.dataset import (
+        nn_dataset,
+        nn_dataset_base,
+        nn_graph_dataset,
+        nn_tabular_dataset,
+    )
     assert nn_dataset_base is not None
     assert nn_dataset is not None
     assert nn_graph_dataset is not None
+    assert nn_tabular_dataset is not None
 
 
 def test_enum_modules_import():
-    from nnx.nn.enum import activations, checkpoints, devices, losses, nets, optims
+    from nnx.nn.enum import (
+        activations,
+        checkpoints,
+        devices,
+        losses,
+        nets,
+        optims,
+        schedulers,
+    )
     assert activations is not None
     assert checkpoints is not None
     assert devices is not None
     assert losses is not None
     assert nets is not None
     assert optims is not None
+    assert schedulers is not None
 
 
 def test_params_modules_import():
     from nnx.nn.params import (
-        nn_model_params,
-        nn_train_params,
-        nn_optim_params,
         nn_checkpoint,
-        nn_run,
         nn_evaluation_data_point,
         nn_iteration_data_point,
-        nn_scheduler_params,
+        nn_model_params,
+        nn_optim_params,
         nn_params,
+        nn_run,
+        nn_scheduler_params,
+        nn_train_params,
     )
     assert nn_model_params is not None
     assert nn_train_params is not None

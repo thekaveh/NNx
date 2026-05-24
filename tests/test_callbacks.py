@@ -36,13 +36,16 @@ def test_callback_base_class_hooks_are_no_op():
 def test_early_stopping_triggers_after_patience():
     es = EarlyStopping(monitor="val_edp.error", patience=2, mode="min")
     ctx = _make_ctx(epoch=0, val_error=0.5)
-    es.on_epoch_end(ctx); assert not ctx.should_stop
+    es.on_epoch_end(ctx)
+    assert not ctx.should_stop
 
     # No improvement for `patience` epochs → should_stop
     ctx = _make_ctx(epoch=1, val_error=0.5)
-    es.on_epoch_end(ctx); assert not ctx.should_stop
+    es.on_epoch_end(ctx)
+    assert not ctx.should_stop
     ctx = _make_ctx(epoch=2, val_error=0.5)
-    es.on_epoch_end(ctx); assert ctx.should_stop
+    es.on_epoch_end(ctx)
+    assert ctx.should_stop
 
 
 def test_early_stopping_resets_on_improvement():
@@ -55,8 +58,10 @@ def test_early_stopping_resets_on_improvement():
 
 def test_early_stopping_max_mode():
     es = EarlyStopping(monitor="val_edp.error", patience=1, mode="max")
-    ctx = _make_ctx(epoch=0, val_error=0.7); es.on_epoch_end(ctx)
-    ctx = _make_ctx(epoch=1, val_error=0.7); es.on_epoch_end(ctx)
+    ctx = _make_ctx(epoch=0, val_error=0.7)
+    es.on_epoch_end(ctx)
+    ctx = _make_ctx(epoch=1, val_error=0.7)
+    es.on_epoch_end(ctx)
     assert ctx.should_stop
 
 

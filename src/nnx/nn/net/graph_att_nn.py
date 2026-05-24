@@ -11,7 +11,7 @@ class GraphAttNN(GraphNNBase):
                 f"GraphAttNN requires NNParams.n_heads > 0, got {self.params.n_heads!r}"
             )
         n_heads = self.params.n_heads
-        dim_pairs = list(zip(self.params.dims, self.params.dims[1:]))
+        dim_pairs = list(zip(self.params.dims, self.params.dims[1:], strict=False))
         return nn.ModuleList([
             pyg.nn.GATConv(
                 out_channels=out_dim,

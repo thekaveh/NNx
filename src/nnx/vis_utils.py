@@ -2,18 +2,14 @@ import colorsys
 
 import numpy as np
 import pandas as pd
-
-
-import plotly.express as px
 import plotly.graph_objects as go
-
-from scipy import stats
-from sklearn.manifold import TSNE
 from plotly.subplots import make_subplots
+from sklearn.manifold import TSNE
 
-from nnx.nn.nn_model import NNModel
 from nnx.nn.dataset.nn_dataset import NNDataset
+from nnx.nn.nn_model import NNModel
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
 
 class VisUtils:
     TITLE_SIZE  = 14
@@ -21,13 +17,13 @@ class VisUtils:
     RENDERER    = None
     FIG_SIZE    = (1000, 600)
     MARGIN_SIZE = dict(l=15, r=15, t=30, b=15, pad=0)
-    
+
     @staticmethod
     def generate_colors(n):
         hues = np.linspace(0, 1, n)
         rgb_colors = [colorsys.hsv_to_rgb(h, 0.6, 0.95) for h in hues]
-        hex_colors = ['#%02x%02x%02x' % (int(r*255), int(g*255), int(b*255)) for r, g, b in rgb_colors]
-        
+        hex_colors = [f'#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}' for r, g, b in rgb_colors]
+
         return hex_colors
 
     @staticmethod
@@ -45,13 +41,27 @@ class VisUtils:
         , margin_size       = MARGIN_SIZE
         , renderer          = RENDERER
     ):
+        """Render a multi-group line chart and return the Plotly Figure.
+
+        Each group in `yss` is drawn with a distinct color; each line within
+        a group uses a distinct dash style. `yss_legend` is a (group_labels,
+        line_labels) tuple — both legends are added as no-trace markers so
+        the legend reads cleanly.
+
+        Returns the Figure. If `renderer` is non-None, also calls
+        `fig.show(renderer=renderer)` so notebook callers see the chart
+        inline; pass `renderer=None` (the default) for headless usage.
+        """
+        if not yss:
+            raise ValueError("multi_line_plot requires at least one series in `yss`")
+
         fig = make_subplots()
 
         ls  = ["solid", "dash", "dot", "dashdot"]
-        cs  = px.colors.qualitative.Plotly[:len(yss)]
         cs  = VisUtils.generate_colors(n=len(yss))
-        
-        for ys_idx, (ys, ys_legend) in enumerate(zip(yss, yss_legend[1])):
+        n_lines_per_series = len(yss[0])
+
+        for ys_idx, (ys, ys_legend) in enumerate(zip(yss, yss_legend[1], strict=False)):
             for y_idx, y in enumerate(ys):
                 fig.add_trace(
                     go.Scatter(
@@ -68,7 +78,7 @@ class VisUtils:
                     )
                 )
 
-        for idx, linestyle in enumerate(ls[:len(ys)]):
+        for idx, linestyle in enumerate(ls[:n_lines_per_series]):
             fig.add_trace(
                 go.Scatter(
                     x       = [None]
@@ -93,7 +103,7 @@ class VisUtils:
                     , name  = yss_legend[1][idx]
                 )
             )
-        
+
         fig.update_layout(
             width       = fig_size[0]
             , height    = fig_size[1]
@@ -103,8 +113,10 @@ class VisUtils:
             , legend    = dict(orientation="v", yanchor="top", y=0.99, xanchor="right", x=0.99)
             , xaxis     = dict(title=dict(text=x_axis_label, font=dict(size=label_size)), tickmode='array', tickvals=list(range(0, len(x), x_ticks_inc)))
         )
-        
-        fig.show(renderer)
+
+        if renderer is not None:
+            fig.show(renderer=renderer)
+        return fig
 
     @staticmethod
     def scatter_plot(
@@ -115,6 +127,13 @@ class VisUtils:
         , title_size: str   = TITLE_SIZE
         , margin_size       = MARGIN_SIZE
     ):
+        """Render a colored scatter plot from a view-model dict and return
+        the Plotly Figure.
+
+        `vm` is the structure produced by `get_scatter_plot_vm`: title, xs/ys
+        column views, plus a `ts` group axis carrying labels + colors per
+        category. Honors `renderer` the same way as `multi_line_plot`.
+        """
         fig = go.Figure()
 
         for t_idx, _ in enumerate(vm["ts"]["uni_vals"]):
@@ -130,7 +149,7 @@ class VisUtils:
                     )
                 )
             )
-        
+
         fig.update_layout(
             width       = fig_size[0]
             , height    = fig_size[1]
@@ -140,11 +159,19 @@ class VisUtils:
             , yaxis     = dict(title=dict(text=vm["ys"]["label"], font=dict(size=label_size)))
             , xaxis     = dict(title=dict(text=vm["xs"]["label"], font=dict(size=label_size)))
         )
-        
-        fig.show(renderer)
+
+        if renderer is not None:
+            fig.show(renderer=renderer)
+        return fig
 
     @staticmethod
     def get_scatter_plot_vm(data, title, col_xs, label_xs, col_ys, label_ys, col_ts, labels_ts, colors_ts, uni_ts):
+        """Build the view-model dict consumed by `scatter_plot`.
+
+        Splits the input dataframe by the categorical column `col_ts`, attaches
+        per-category colors and labels, and precomputes the per-category
+        x/y slices so the plotting function stays simple.
+        """
         vm = {
             "title": title,
             "xs": {
@@ -178,21 +205,28 @@ class VisUtils:
         , title_size: int           = TITLE_SIZE
         , label_size: int           = LABEL_SIZE
         , margin_size               = MARGIN_SIZE
-    ) -> None:
+    ):
+        """Project the first `n_samples` test logits of `checkpoint` to 2D
+        via t-SNE and render them colored by ground-truth class.
+
+        Useful for eyeballing class separability of an intermediate
+        checkpoint — pass the BEST checkpoint to see how well-trained the
+        decision space ended up. Returns the Plotly Figure.
+        """
         model = NNModel.from_checkpoint(checkpoint=checkpoint)
-        
+
         ts = [t for t in range(ds.output_dim)]
         cs = VisUtils.generate_colors(n=ds.output_dim)
-        
+
         test_batch = next(iter(ds.test_loader))
         test_X, test_Y = model.net.unpack_batch(test_batch)
         test_X, test_Y = tuple(x.numpy() for x in test_X), test_Y.numpy()
-        
+
         df_test_Y = pd.DataFrame(data=test_Y, columns=["target"])
 
         test_Y_hat = model.predict(X=test_X)
-        
-        VisUtils.scatter_plot(
+
+        return VisUtils.scatter_plot(
             renderer        = renderer
             , title_size    = title_size
             , label_size    = label_size
@@ -268,7 +302,9 @@ class VisUtils:
             margin=VisUtils.MARGIN_SIZE,
             yaxis=dict(autorange="reversed"),
         )
-        fig.show(renderer=VisUtils.RENDERER)
+        if VisUtils.RENDERER is not None:
+            fig.show(renderer=VisUtils.RENDERER)
+        return fig
 
     @staticmethod
     def classification_report(Y_true, Y_pred, class_names=None) -> pd.DataFrame:
@@ -289,3 +325,28 @@ class VisUtils:
             zero_division=0,
         )
         return pd.DataFrame(report).transpose()
+
+
+# Module-level aliases so callers can `from nnx.vis_utils import confusion_matrix`
+# (preferred for new code) without giving up the `VisUtils.confusion_matrix`
+# class API existing notebooks depend on. Each alias points at the same
+# underlying function object as the class static method — there is no
+# duplication of behavior.
+generate_colors = VisUtils.generate_colors
+multi_line_plot = VisUtils.multi_line_plot
+scatter_plot = VisUtils.scatter_plot
+get_scatter_plot_vm = VisUtils.get_scatter_plot_vm
+two_dim_tsne_checkpoint_logits = VisUtils.two_dim_tsne_checkpoint_logits
+confusion_matrix = VisUtils.confusion_matrix
+classification_report = VisUtils.classification_report
+
+__all__ = [
+    "VisUtils",
+    "generate_colors",
+    "multi_line_plot",
+    "scatter_plot",
+    "get_scatter_plot_vm",
+    "two_dim_tsne_checkpoint_logits",
+    "confusion_matrix",
+    "classification_report",
+]

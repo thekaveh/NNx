@@ -1,51 +1,49 @@
-from functools import reduce
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Type, Tuple, Optional
+from functools import reduce
+from typing import Optional
 
-from torchvision.datasets import VisionDataset
 from torch.utils.data import DataLoader, random_split
+from torchvision.datasets import VisionDataset
 
 from .nn_dataset_base import NNDatasetBase
 
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNDataset(NNDatasetBase):
-    ds_class        : Type[VisionDataset]
+    """Vision dataset wrapper. `val_proportion` carves a validation slice
+    out of the source `train=True` split (NOT out of the test split, which
+    stays untouched for final evaluation)."""
+
+    ds_class        : type[VisionDataset]
     root_dir        : str                   = "./data"
     download        : bool                  = True
     transform       : Optional[Callable]    = None
-    batch_sizes     : Tuple[int, int, int]  = (None, None, None)
+    batch_sizes     : tuple[int, int, int]  = (None, None, None)
     val_proportion  : float                 = 0.1
-    
-    def __post_init__(self):        
-        train_dataset, non_train_dataset = (
+
+    def __post_init__(self):
+        full_train_dataset, test_dataset = (
             self.ds_class(root=self.root_dir, train=True, download=self.download, transform=self.transform)
             , self.ds_class(root=self.root_dir, train=False, download=self.download, transform=self.transform)
         )
-        
-        val_dataset, test_dataset = random_split(
-            non_train_dataset
-            , [
-                int(len(non_train_dataset) * self.val_proportion)
-                , int(len(non_train_dataset) * (1 - self.val_proportion))
-            ]
-        )
-        
-        object.__setattr__(
-            self
-            , 'name'
-            , self.ds_class.__name__
-        )
-        
+
+        # Carve val out of train so the test set stays held-out for final eval.
+        # Compute val_size first, derive train_size as the remainder so the two
+        # sum exactly to len(full_train_dataset) (int truncation safe).
+        full_train_len = len(full_train_dataset)
+        val_size = int(full_train_len * self.val_proportion)
+        train_size = full_train_len - val_size
+        train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size])
+
+        object.__setattr__(self, 'name', self.ds_class.__name__)
+
         train_batch_size    = self.batch_sizes[0] or len(train_dataset)
         val_batch_size      = self.batch_sizes[1] or len(val_dataset)
         test_batch_size     = self.batch_sizes[2] or len(test_dataset)
-        batch_sizes         = (train_batch_size, val_batch_size, test_batch_size)
-        
-        object.__setattr__(
-            self
-            , 'batch_sizes'
-            , batch_sizes
-        )
+        resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
+
+        object.__setattr__(self, 'batch_sizes', resolved_batch_sizes)
 
         object.__setattr__(
             self
@@ -53,7 +51,7 @@ class NNDataset(NNDatasetBase):
             , DataLoader(
                 shuffle=True
                 , dataset=train_dataset
-                , batch_size=self.batch_sizes[0]
+                , batch_size=resolved_batch_sizes[0]
             )
         )
 
@@ -63,7 +61,7 @@ class NNDataset(NNDatasetBase):
             , DataLoader(
                 shuffle=False
                 , dataset=val_dataset
-                , batch_size=self.batch_sizes[1]
+                , batch_size=resolved_batch_sizes[1]
             )
         )
 
@@ -73,22 +71,24 @@ class NNDataset(NNDatasetBase):
             , DataLoader(
                 shuffle=False
                 , dataset=test_dataset
-                , batch_size=self.batch_sizes[2]
+                , batch_size=resolved_batch_sizes[2]
             )
         )
-        
+
+        # train_loader.dataset is now a Subset (from random_split); shape/classes
+        # come from the underlying full_train_dataset instead.
         object.__setattr__(
             self
             , 'input_dim'
-            , reduce(lambda x, y: x * y, self.train_loader.dataset[0][0].shape)
+            , reduce(lambda x, y: x * y, full_train_dataset[0][0].shape)
         )
-        
+
         object.__setattr__(
             self
             , 'output_dim'
-            , len(self.train_loader.dataset.classes)
+            , len(full_train_dataset.classes)
         )
-        
+
         state = dict(
             name                = self.name
             , input_dim         = self.input_dim
@@ -97,5 +97,5 @@ class NNDataset(NNDatasetBase):
             , val_batch_size    = f"{self.batch_sizes[1]:,}"
             , test_batch_size   = f"{self.batch_sizes[2]:,}"
         )
-        
+
         object.__setattr__(self, '_state', state)
