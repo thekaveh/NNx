@@ -45,6 +45,14 @@ class NNTrainParams:
     # on every train batch and on every evaluate() aggregate.
     extra_metrics   : Optional[Mapping[str, Callable]] = field(repr=False, default=None)
 
+    # Resume control. When `resume_from_run_id` is set, train() loads that
+    # run's checkpoint of the named type and warm-restarts training from
+    # its model weights AND optimizer state (when an .opt.pt sidecar exists).
+    # Runtime-only (knowing the prior run id isn't part of *this* run's
+    # configuration identity).
+    resume_from_run_id    : Optional[str] = field(repr=False, default=None)
+    resume_from_checkpoint: Optional[str] = field(repr=False, default="last")
+
     def with_train_loader(self, value: DataLoader) -> NNTrainParams:
         return replace(self, train_loader=value)
 

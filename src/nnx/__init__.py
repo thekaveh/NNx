@@ -20,10 +20,18 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
-from .nn.callbacks import Callback, EarlyStopping, LRMonitor, ModelCheckpoint
+from .nn.callbacks import (
+    Callback,
+    EarlyStopping,
+    LRMonitor,
+    ModelCheckpoint,
+    TensorBoardCallback,
+    WandbCallback,
+)
 from .nn.dataset.nn_dataset import NNDataset
 from .nn.dataset.nn_dataset_base import NNDatasetBase
 from .nn.dataset.nn_graph_dataset import NNGraphDataset
+from .nn.dataset.nn_tabular_dataset import NNTabularDataset
 from .nn.enum.activations import Activations
 from .nn.enum.checkpoints import Checkpoints
 from .nn.enum.devices import Devices
@@ -55,6 +63,7 @@ __all__ = [
     "NNModel",
     # Callbacks
     "Callback", "EarlyStopping", "LRMonitor", "ModelCheckpoint",
+    "TensorBoardCallback", "WandbCallback",
     # Params
     "NNParams", "NNRun", "NNCheckpoint",
     "NNModelParams", "NNTrainParams", "NNOptimParams", "NNSchedulerParams",
@@ -65,7 +74,7 @@ __all__ = [
     # Networks
     "FeedFwdNN", "GraphNNBase", "GraphConvNN", "GraphSageNN", "GraphAttNN",
     # Datasets
-    "NNDataset", "NNGraphDataset", "NNDatasetBase",
+    "NNDataset", "NNGraphDataset", "NNTabularDataset", "NNDatasetBase",
     # Helpers
     "Utils", "VisUtils",
     # Reproducibility

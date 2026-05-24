@@ -59,6 +59,74 @@ class NNModel:
         self.loss_fn    = self.params.loss().to(self.device)
         self.net        = self.params.net(params=net_params).to(self.device)
 
+    def to_onnx(
+        self,
+        path: str,
+        example_input,
+        input_names: Optional[list[str]] = None,
+        output_names: Optional[list[str]] = None,
+        dynamic_batch: bool = True,
+        opset_version: int = 17,
+    ) -> str:
+        """Export the underlying network to ONNX format.
+
+        Args:
+            path: output filename (e.g., "model.onnx").
+            example_input: a tensor with realistic shape/dtype used to trace
+                the network. For multi-input nets, pass a tuple of tensors.
+            input_names / output_names: optional human-readable names.
+            dynamic_batch: when True (default), marks dim 0 as dynamic so
+                the exported model accepts any batch size at inference.
+            opset_version: ONNX opset to target. 17 is broadly supported
+                by current runtimes.
+
+        Returns the path written. Network is put in eval mode for tracing.
+        """
+        if isinstance(example_input, torch.Tensor):
+            example_input = (example_input.to(self.device),)
+        else:
+            example_input = tuple(
+                (e.to(self.device) if isinstance(e, torch.Tensor)
+                 else torch.from_numpy(np.asarray(e)).to(self.device))
+                for e in example_input
+            )
+
+        in_names = input_names or [f"input_{i}" for i in range(len(example_input))]
+        out_names = output_names or ["output"]
+
+        dynamic_axes = None
+        if dynamic_batch:
+            dynamic_axes = {n: {0: "batch"} for n in in_names + out_names}
+
+        self.net.eval()
+        # torch>=2.5 defaults torch.onnx.export to the dynamo-based exporter,
+        # which requires `onnxscript`. We use the legacy tracing exporter
+        # (dynamo=False) so plain `pip install onnx` is enough.
+        try:
+            torch.onnx.export(
+                self.net,
+                example_input,
+                path,
+                input_names=in_names,
+                output_names=out_names,
+                dynamic_axes=dynamic_axes,
+                opset_version=opset_version,
+                dynamo=False,
+            )
+        except TypeError:
+            # Older torch versions don't accept the `dynamo` kwarg — they
+            # already use the legacy path by default.
+            torch.onnx.export(
+                self.net,
+                example_input,
+                path,
+                input_names=in_names,
+                output_names=out_names,
+                dynamic_axes=dynamic_axes,
+                opset_version=opset_version,
+            )
+        return path
+
     @staticmethod
     def from_checkpoint(checkpoint: NNCheckpoint) -> NNModel:
         model = NNModel(
@@ -100,6 +168,25 @@ class NNModel:
             , weight_decay=params.optim.weight_decay
         )
 
+        # Warm resume: load weights + optimizer state from a prior run's
+        # checkpoint. The .opt.pt sidecar is best-effort — pre-resume
+        # checkpoints don't have it, in which case we still load weights
+        # but the optimizer starts fresh.
+        if params.resume_from_run_id is not None:
+            ckpt_type = Checkpoints(params.resume_from_checkpoint)
+            resume_ckpt = NNCheckpoint.load(run=params.resume_from_run_id, type=ckpt_type)
+            if resume_ckpt is None:
+                raise ValueError(
+                    f"resume_from_run_id={params.resume_from_run_id!r}/"
+                    f"{ckpt_type} not found on disk"
+                )
+            self.net.load_state_dict(resume_ckpt.net_state)
+            opt_state = NNCheckpoint.load_optimizer_state(
+                run=params.resume_from_run_id, type=ckpt_type,
+            )
+            if opt_state is not None:
+                optimizer.load_state_dict(opt_state)
+
         scheduler = self._build_scheduler(optimizer, params)
         scaler = self._build_grad_scaler()
 
@@ -139,6 +226,8 @@ class NNModel:
                         batch, optimizer, scaler,
                         grad_clip_norm=params.optim.grad_clip_norm,
                         extra_metrics=params.extra_metrics,
+                        accumulate_grad_batches=params.optim.accumulate_grad_batches,
+                        batch_idx=idx_batch,
                     )
 
                     idps.append(NNIterationDataPoint(
@@ -162,6 +251,7 @@ class NNModel:
                     n_epochs=params.n_epochs,
                     best_checkpoint=best_checkpoint,
                     save_phase_checkpoints=params.save_phase_checkpoints,
+                    optimizer=optimizer,
                 )
                 if best_checkpoint is None or checkpoint.idp.val_edp is None or (
                     best_checkpoint.idp.val_edp is None
@@ -308,9 +398,17 @@ class NNModel:
         scaler: Optional[torch.amp.GradScaler],
         grad_clip_norm: Optional[float] = None,
         extra_metrics=None,
+        accumulate_grad_batches: int = 1,
+        batch_idx: int = 0,
     ) -> NNEvaluationDataPoint:
         self.net.train()
-        self.net.zero_grad()
+
+        # Gradient accumulation: only zero grads at the start of a fresh
+        # accumulation cycle, and only step the optimizer at the end of one.
+        is_cycle_start = (batch_idx % accumulate_grad_batches) == 0
+        is_cycle_end = ((batch_idx + 1) % accumulate_grad_batches) == 0
+        if is_cycle_start:
+            self.net.zero_grad()
 
         # Mixed precision is opt-in via NNModelParams.mixed_precision; only
         # takes effect on CUDA where autocast + GradScaler are meaningful.
@@ -320,21 +418,24 @@ class NNModel:
             with torch.amp.autocast(device_type="cuda"):
                 X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
                 train_loss = self.loss_fn(Y_hat_log, Y)
-            scaler.scale(train_loss).backward()
-            if grad_clip_norm is not None:
-                # Unscale before clipping so the clip threshold applies in
-                # the original gradient space, not the scaled one.
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
-            scaler.step(optimizer)
-            scaler.update()
+            # Scale loss by 1/N so accumulated grads = mean across batches.
+            scaler.scale(train_loss / accumulate_grad_batches).backward()
+            if is_cycle_end:
+                if grad_clip_norm is not None:
+                    # Unscale before clipping so the clip threshold applies
+                    # in the original gradient space, not the scaled one.
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
+                scaler.step(optimizer)
+                scaler.update()
         else:
             X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
             train_loss = self.loss_fn(Y_hat_log, Y)
-            train_loss.backward()
-            if grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
-            optimizer.step()
+            (train_loss / accumulate_grad_batches).backward()
+            if is_cycle_end:
+                if grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
+                optimizer.step()
 
         loss_value = float(train_loss.detach())
         # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
@@ -394,6 +495,7 @@ class NNModel:
         n_epochs: int,
         best_checkpoint: Optional[NNCheckpoint],
         save_phase_checkpoints: bool = True,
+        optimizer: Optional[torch.optim.Optimizer] = None,
     ) -> NNCheckpoint:
         checkpoint = NNCheckpoint(
             idp           = idp
@@ -401,6 +503,9 @@ class NNModel:
             , net_params  = self.net_params
             , net_state   = self.net.state_dict()
         )
+        # The optimizer state-dict goes only into LAST and BEST sidecars
+        # (resume points). Phase markers (FIRST/Q*) don't carry one.
+        opt_state = optimizer.state_dict() if optimizer is not None else None
 
         # Phase markers at epoch boundaries — fractions are nominal (1/4, 2/4,
         # 3/4 of the planned epoch count); off-by-one allowed when n_epochs
@@ -415,7 +520,7 @@ class NNModel:
             elif idx_epoch == int(n_epochs * 3 / 4) - 1:
                 checkpoint.save(run=run_id, type=Checkpoints.Q3)
 
-        checkpoint.save(run=run_id, type=Checkpoints.LAST)
+        checkpoint.save(run=run_id, type=Checkpoints.LAST, optimizer_state=opt_state)
 
         # BEST is decided by validation error if available, else training error.
         def _err(c: NNCheckpoint) -> float:
@@ -423,7 +528,7 @@ class NNModel:
             return edp.error if edp is not None else float("inf")
 
         if best_checkpoint is None or _err(checkpoint) < _err(best_checkpoint):
-            checkpoint.save(run=run_id, type=Checkpoints.BEST)
+            checkpoint.save(run=run_id, type=Checkpoints.BEST, optimizer_state=opt_state)
 
         return checkpoint
 

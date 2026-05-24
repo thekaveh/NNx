@@ -35,8 +35,41 @@ class NNCheckpoint:
 
         torch.save(self, path)
 
-    def save(self, run: str, type: Checkpoints, root: Optional[str] = None) -> None:
+    def save(
+        self,
+        run: str,
+        type: Checkpoints,
+        root: Optional[str] = None,
+        optimizer_state: Optional[OrderedDict] = None,
+    ) -> None:
+        """Save the checkpoint to disk.
+
+        When `optimizer_state` is supplied, a sibling file is written at
+        ``<id>/checkpoints/<type>.opt.pt`` holding the optimizer state dict.
+        This sidecar is used by NNModel.train(resume_from=...) to warm-resume
+        with the prior optimizer momentum / Adam state.
+        """
         self.to_file(path=_checkpoint_path(run, type, root=root))
+        if optimizer_state is not None:
+            torch.save(
+                optimizer_state,
+                _checkpoint_path(run, type, root=root) + ".opt.pt",
+            )
+
+    @staticmethod
+    def load_optimizer_state(
+        run: str,
+        type: Checkpoints,
+        root: Optional[str] = None,
+    ) -> Optional[OrderedDict]:
+        """Load the optimizer state sidecar for a checkpoint. Returns None
+        when no sidecar exists (e.g., checkpoints written before resume
+        support was added)."""
+        path = _checkpoint_path(run, type, root=root) + ".opt.pt"
+        if not os.path.exists(path):
+            return None
+        # Optimizer state is a plain dict of tensors — safe under weights_only.
+        return torch.load(path, weights_only=False)
 
     @staticmethod
     def from_file(path: str) -> Optional[NNCheckpoint]:

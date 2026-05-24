@@ -137,3 +137,103 @@ class LRMonitor(Callback):
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
+
+
+def _edp_metric_iter(edp):
+    """Yield (name, value) pairs for the standard EDP fields plus any
+    user-supplied extras. Skips None values."""
+    if edp is None:
+        return
+    for name in ("loss", "error", "accuracy", "f1", "precision", "recall"):
+        v = getattr(edp, name, None)
+        if v is not None:
+            yield name, v
+    for name, v in (getattr(edp, "extra", None) or {}).items():
+        yield f"extra/{name}", v
+
+
+class TensorBoardCallback(Callback):
+    """Stream train/val metrics + LR to a TensorBoard SummaryWriter.
+
+    Requires `tensorboard` to be installed — imported lazily so users who
+    don't use this callback don't pay the dependency cost.
+
+    Args:
+        log_dir: directory passed to SummaryWriter. None lets TensorBoard
+            pick its default (runs/<datetime>).
+        flush_each_epoch: when True (default), calls writer.flush() so
+            partial training is visible in TB even if the process crashes.
+    """
+
+    def __init__(self, log_dir: Optional[str] = None, flush_each_epoch: bool = True):
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError as e:
+            raise ImportError(
+                "TensorBoardCallback requires `tensorboard`. "
+                "Install with `pip install tensorboard` or `pip install nnx[tensorboard]`."
+            ) from e
+        self._writer = SummaryWriter(log_dir=log_dir)
+        self._flush_each_epoch = flush_each_epoch
+
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
+        idp = ctx.idp
+        if idp is None:
+            return
+        step = idp.epoch_idx
+
+        for name, v in _edp_metric_iter(idp.train_edp):
+            self._writer.add_scalar(f"train/{name}", v, step)
+        for name, v in _edp_metric_iter(idp.val_edp):
+            self._writer.add_scalar(f"val/{name}", v, step)
+        self._writer.add_scalar("lr", ctx.optimizer.param_groups[0]["lr"], step)
+
+        if self._flush_each_epoch:
+            self._writer.flush()
+
+    def on_train_end(self, ctx: _CallbackContext) -> None:
+        self._writer.close()
+
+
+class WandbCallback(Callback):
+    """Stream train/val metrics + LR to Weights & Biases.
+
+    Requires `wandb` — lazily imported. Pass `project=` to start a new run,
+    or `wandb_run=` to attach to an externally-managed run.
+    """
+
+    def __init__(
+        self,
+        project: Optional[str] = None,
+        wandb_run=None,
+        **init_kwargs,
+    ):
+        if wandb_run is None:
+            try:
+                import wandb
+            except ImportError as e:
+                raise ImportError(
+                    "WandbCallback requires `wandb`. "
+                    "Install with `pip install wandb` or `pip install nnx[wandb]`."
+                ) from e
+            self._run = wandb.init(project=project, **init_kwargs)
+            self._owns_run = True
+        else:
+            self._run = wandb_run
+            self._owns_run = False
+
+    def on_epoch_end(self, ctx: _CallbackContext) -> None:
+        idp = ctx.idp
+        if idp is None:
+            return
+
+        log: dict = {"epoch": idp.epoch_idx, "lr": ctx.optimizer.param_groups[0]["lr"]}
+        for name, v in _edp_metric_iter(idp.train_edp):
+            log[f"train/{name}"] = v
+        for name, v in _edp_metric_iter(idp.val_edp):
+            log[f"val/{name}"] = v
+        self._run.log(log, step=idp.epoch_idx)
+
+    def on_train_end(self, ctx: _CallbackContext) -> None:
+        if self._owns_run:
+            self._run.finish()

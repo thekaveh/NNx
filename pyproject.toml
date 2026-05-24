@@ -47,7 +47,18 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
+    "pytest-cov>=4.1",
     "ruff>=0.4",
+    "tensorboard>=2.15",   # exercises TensorBoardCallback path in tests
+    "onnx>=1.15",          # exercises NNModel.to_onnx in tests
+]
+tensorboard = ["tensorboard>=2.15"]
+wandb = ["wandb>=0.16"]
+onnx = ["onnx>=1.15"]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
 ]
 
 [project.urls]
