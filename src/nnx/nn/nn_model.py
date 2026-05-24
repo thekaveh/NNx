@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -114,7 +115,10 @@ class NNModel:
                     cb.on_epoch_begin(ctx)
 
                 for idx_batch, batch in enumerate(params.train_loader):
-                    train_edp = self._train_step(batch, optimizer, scaler)
+                    train_edp = self._train_step(
+                        batch, optimizer, scaler,
+                        grad_clip_norm=params.optim.grad_clip_norm,
+                    )
 
                     idps.append(NNIterationDataPoint(
                         iter_idx    = idx_iter
@@ -146,6 +150,13 @@ class NNModel:
                 self._step_scheduler(scheduler, val_edp, train_edp)
                 self._update_tqdm_postfix(tqdm_bar, optimizer, val_edp, train_edp)
 
+                # Incremental persistence: write idps.csv + run.yaml after
+                # every epoch. KeyboardInterrupt / OOM during training now
+                # leaves a partial-but-loadable run on disk. The extra
+                # writes are O(idps so far) per epoch — negligible vs the
+                # checkpoint write that already happens.
+                run.with_idps(idps).save()
+
                 ctx.idp = idps[-1]
                 ctx.idps = idps
                 for cb in normalized_callbacks:
@@ -158,6 +169,8 @@ class NNModel:
                 cb.on_train_end(ctx)
 
         print()
+        runs_root_path = os.path.join(os.getcwd(), "runs", run.id)
+        print(f"Run saved to {runs_root_path}")
         return run.with_idps(idps).save()
 
     def evaluate(self, loader: DataLoader) -> NNEvaluationDataPoint:
@@ -232,6 +245,7 @@ class NNModel:
         batch,
         optimizer: torch.optim.Optimizer,
         scaler: Optional[torch.amp.GradScaler],
+        grad_clip_norm: Optional[float] = None,
     ) -> NNEvaluationDataPoint:
         self.net.train()
         self.net.zero_grad()
@@ -245,17 +259,34 @@ class NNModel:
                 X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
                 train_loss = self.loss_fn(Y_hat_log, Y)
             scaler.scale(train_loss).backward()
+            if grad_clip_norm is not None:
+                # Unscale before clipping so the clip threshold applies in
+                # the original gradient space, not the scaled one.
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
             X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
             train_loss = self.loss_fn(Y_hat_log, Y)
             train_loss.backward()
+            if grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
             optimizer.step()
+
+        loss_value = float(train_loss.detach())
+        # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
+        # weights. Raise so the training session terminates loudly.
+        if not np.isfinite(loss_value):
+            raise FloatingPointError(
+                f"non-finite training loss ({loss_value!r}) — training diverged. "
+                "Check learning rate, gradient clipping (NNOptimParams.grad_clip_norm), "
+                "or input normalization."
+            )
 
         return (
             NNEvaluationDataPoint.of(Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy())
-                .with_loss(value=float(train_loss.detach()))
+                .with_loss(value=loss_value)
                 .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
         )
 
