@@ -325,3 +325,28 @@ class VisUtils:
             zero_division=0,
         )
         return pd.DataFrame(report).transpose()
+
+
+# Module-level aliases so callers can `from nnx.vis_utils import confusion_matrix`
+# (preferred for new code) without giving up the `VisUtils.confusion_matrix`
+# class API existing notebooks depend on. Each alias points at the same
+# underlying function object as the class static method — there is no
+# duplication of behavior.
+generate_colors = VisUtils.generate_colors
+multi_line_plot = VisUtils.multi_line_plot
+scatter_plot = VisUtils.scatter_plot
+get_scatter_plot_vm = VisUtils.get_scatter_plot_vm
+two_dim_tsne_checkpoint_logits = VisUtils.two_dim_tsne_checkpoint_logits
+confusion_matrix = VisUtils.confusion_matrix
+classification_report = VisUtils.classification_report
+
+__all__ = [
+    "VisUtils",
+    "generate_colors",
+    "multi_line_plot",
+    "scatter_plot",
+    "get_scatter_plot_vm",
+    "two_dim_tsne_checkpoint_logits",
+    "confusion_matrix",
+    "classification_report",
+]
