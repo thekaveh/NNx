@@ -212,9 +212,13 @@ class NNModel:
             cb.on_train_begin(ctx)
 
         idx_iter = 0
+        # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
+        # the progress bar doesn't pollute output. Same env var works as
+        # well in subprocess contexts where the user can't pass a flag.
+        tqdm_disabled = os.environ.get("NNX_TQDM_DISABLE", "").lower() in {"1", "true", "yes"}
         with (
             torch.set_grad_enabled(True)
-            , tqdm(colour="blue", total=n_iter, desc="Training") as tqdm_bar
+            , tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar
         ):
             for idx_epoch in range(params.n_epochs):
                 ctx.epoch = idx_epoch
