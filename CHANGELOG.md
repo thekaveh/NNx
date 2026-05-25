@@ -6,7 +6,7 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ### Added
 
-- **`train_step_fn` hook on `NNModel.train()`.** One optional kwarg that swaps out the supervised forward/backward/step for any user-supplied function. Unblocks non-supervised training paradigms (autoencoder, VAE, link prediction, recommendation, diffusion) without modifying NNx core. Default-None path is byte-identical to the prior loop. New public surface: `TrainStepContext` (frozen dataclass carrying model/batch/optimizer/scaler/grad_clip_norm/extra_metrics/accumulate_grad_batches/batch_idx/epoch_idx), `default_train_step(ctx)` (the standard supervised step, exported for users who want to layer behavior on top), `TrainStepFn` (type alias). Six tests in `tests/test_train_step_hook.py`; runnable autoencoder example at `examples/05_custom_train_step_autoencoder.py`.
+- **`train_step_fn` hook on `NNModel.train()`.** One optional kwarg that swaps out the supervised forward/backward/step for any user-supplied function. Unblocks non-supervised training paradigms (autoencoder, VAE, link prediction, recommendation, diffusion) without modifying NNx core. Default-None path is byte-identical to the prior loop. New public surface: `TrainStepContext` (frozen dataclass carrying model/batch/optimizer/scaler/grad_clip_norm/extra_metrics/accumulate_grad_batches/batch_idx/epoch_idx), `default_train_step(ctx)` (the standard supervised step, exported for users who want to layer behavior on top), `TrainStepFn` (type alias). Seven tests in `tests/test_train_step_hook.py`; runnable autoencoder example at `examples/05_custom_train_step_autoencoder.py`.
 - Public alias for `nnx.PredictResult` (was reachable only via `nnx.nn.nn_model`).
 
 ### Changed — internal

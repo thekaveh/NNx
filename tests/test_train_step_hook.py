@@ -185,6 +185,37 @@ def test_custom_step_extra_survives_run_save_load(tmp_path, monkeypatch):
         assert idp.train_edp.extra.get("custom_key") == 42.0 + idp.batch_idx
 
 
+def test_back_compat_train_step_wrapper_still_callable(tmp_path, monkeypatch):
+    """NNModel._train_step kept as a one-line wrapper around default_train_step
+    so any hypothetical subclass that overrode the old _train_step keeps
+    working. Train() no longer dispatches through it; this test exists to
+    prove the wrapper itself still returns a valid EDP for callers that
+    invoke it directly (e.g., a `super()._train_step(...)` call from a
+    subclass override)."""
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+
+    model = _make_model()
+    # Need an optimizer on hand; build the same way train() does.
+    from nnx.nn.enum.optims import Optims
+    optimizer = Optims.ADAM(
+        net=model.net, lr_start=1e-2,
+        momentum=(0.9, 0.999), weight_decay=0.0,
+    )
+
+    loader = _make_loader(n=8)
+    batch = next(iter(loader))
+
+    edp = model._train_step(
+        batch=batch,
+        optimizer=optimizer,
+        scaler=None,
+    )
+    assert isinstance(edp, NNEvaluationDataPoint)
+    assert edp.loss is not None
+    assert edp.error is not None
+
+
 def test_autoencoder_style_step_trains_end_to_end(tmp_path, monkeypatch):
     """A reconstruction-loss step (no labels) trains end-to-end and the
     loss decreases across an epoch. Demonstrates the hook's actual reason
