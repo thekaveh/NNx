@@ -352,7 +352,9 @@ class NNModel:
         # override. Custom step gets dispatched from inside the batch loop
         # below so the rest of train() (scheduler, callbacks, checkpoint
         # cadence, val loop, incremental save) is identical either way.
-        step_fn: TrainStepFn = train_step_fn or default_train_step
+        # Explicit None check (not `or`) so a hypothetical callable that
+        # happens to be falsy by __bool__ doesn't silently fall back.
+        step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
 
         idx_iter = 0
         # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
