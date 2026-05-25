@@ -86,6 +86,37 @@ ctx.should_stop   # writable — set True to break out of training
 
 Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need.
 
+## Custom training paradigms
+
+`NNModel.train()` runs a supervised loop by default — for every batch, it does `loss_fn(net(X), Y)` → backward → step. If your task doesn't fit that shape (autoencoders, VAEs, link prediction with negative sampling, recommendation pairwise losses, diffusion noise prediction), pass a `train_step_fn`:
+
+```python
+from nnx import TrainStepContext, NNEvaluationDataPoint
+
+def my_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+    X, _ = ctx.model.net.unpack_batch(ctx.batch)
+    X = tuple(x.to(ctx.model.device) for x in X)
+    recon, mu, logvar = ctx.model.net(*X)
+    recon_loss = F.mse_loss(recon, X[0])
+    kl = -0.5 * torch.sum(1 + logvar - mu**2 - logvar.exp())
+    loss = recon_loss + kl
+    loss.backward()
+    ctx.optimizer.step()
+    return NNEvaluationDataPoint(
+        f1=0, recall=0, accuracy=0, precision=0,
+        loss=float(loss.detach()),
+        extra={"recon": float(recon_loss), "kl": float(kl)},
+    )
+
+model.train(params=train_params, train_step_fn=my_step)
+```
+
+The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`); honoring them is on you. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
+
+See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
+
+`evaluate()` and `predict()` still assume supervised classification; they'll grow `eval_step_fn` / `predict_fn` equivalents when the first task that needs them lands.
+
 ## Reproducibility
 
 ```python

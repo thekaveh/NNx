@@ -13,3 +13,4 @@ python examples/01_synthetic_classification.py
 | `02_resume_training.py` | Warm-resume training from a prior run's LAST checkpoint with optimizer state preserved. |
 | `03_custom_metrics.py` | Plug a custom `metric_fn(Y, Y_hat)` into `NNTrainParams.extra_metrics`; inspect `idp.train_edp.extra` and `idp.val_edp.extra`. |
 | `04_onnx_export.py` | Export a trained model to ONNX, validate via `onnx.checker`. |
+| `05_custom_train_step_autoencoder.py` | Use `train_step_fn` to replace the supervised step with a reconstruction-loss step (tiny linear autoencoder). |

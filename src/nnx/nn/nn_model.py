@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple, Optional, Union
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union
 
 import numpy as np
 import torch
@@ -41,6 +42,109 @@ class PredictResult(NamedTuple):
     """
     logits: np.ndarray
     classes: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class TrainStepContext:
+    """Frozen bundle of state passed into a training-step function.
+
+    The default `default_train_step` runs the standard supervised
+    forward/backward/step. Users can pass their own
+    `train_step_fn: Callable[[TrainStepContext], NNEvaluationDataPoint]`
+    to NNModel.train() for non-supervised paradigms (autoencoder, VAE,
+    link prediction, recommendation, diffusion, etc.). The custom step
+    is fully responsible for forward, backward, optimizer.step,
+    gradient accumulation, AMP scale/unscale, grad clipping, and the
+    NaN/Inf guard — the context tells it what knobs are set; honoring
+    them is on the caller.
+    """
+
+    model:                    NNModel
+    batch:                    Any
+    optimizer:                torch.optim.Optimizer
+    scaler:                   Optional[torch.amp.GradScaler]
+    grad_clip_norm:           Optional[float]
+    extra_metrics:            Optional[Mapping[str, Callable]]
+    accumulate_grad_batches:  int
+    batch_idx:                int
+    epoch_idx:                int
+
+
+TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
+
+
+def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+    """Standard supervised training step: forward → loss → backward → step.
+
+    This is the body that `NNModel.train()` runs when no custom
+    `train_step_fn` is supplied. It honors:
+      - gradient accumulation (zero_grad at cycle start, step at cycle end)
+      - AMP (unscales before grad clip; scaler.step + update at cycle end)
+      - grad clipping by L2 norm
+      - the NaN/Inf guard (raises FloatingPointError on divergent loss)
+      - extra_metrics injection on the returned NNEvaluationDataPoint
+
+    Custom training-step functions can call this directly to layer on
+    behavior (e.g., extra logging) without reimplementing the standard
+    forward/backward dance.
+    """
+    model = ctx.model
+    model.net.train()
+
+    # Gradient accumulation: only zero grads at the start of a fresh
+    # accumulation cycle, and only step the optimizer at the end of one.
+    accumulate_grad_batches = ctx.accumulate_grad_batches
+    is_cycle_start = (ctx.batch_idx % accumulate_grad_batches) == 0
+    is_cycle_end = ((ctx.batch_idx + 1) % accumulate_grad_batches) == 0
+    if is_cycle_start:
+        model.net.zero_grad()
+
+    # Mixed precision is opt-in via NNModelParams.mixed_precision; only
+    # takes effect on CUDA where autocast + GradScaler are meaningful.
+    scaler = ctx.scaler
+    amp_enabled = scaler is not None and model.device.type == "cuda"
+
+    if amp_enabled:
+        with torch.amp.autocast(device_type="cuda"):
+            X, Y, Y_hat_log, Y_hat = model._fwd_pass(ctx.batch)
+            train_loss = model.loss_fn(Y_hat_log, Y)
+        # Scale loss by 1/N so accumulated grads = mean across batches.
+        scaler.scale(train_loss / accumulate_grad_batches).backward()
+        if is_cycle_end:
+            if ctx.grad_clip_norm is not None:
+                # Unscale before clipping so the clip threshold applies
+                # in the original gradient space, not the scaled one.
+                scaler.unscale_(ctx.optimizer)
+                torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
+            scaler.step(ctx.optimizer)
+            scaler.update()
+    else:
+        X, Y, Y_hat_log, Y_hat = model._fwd_pass(ctx.batch)
+        train_loss = model.loss_fn(Y_hat_log, Y)
+        (train_loss / accumulate_grad_batches).backward()
+        if is_cycle_end:
+            if ctx.grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
+            ctx.optimizer.step()
+
+    loss_value = float(train_loss.detach())
+    # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
+    # weights. Raise so the training session terminates loudly.
+    if not np.isfinite(loss_value):
+        raise FloatingPointError(
+            f"non-finite training loss ({loss_value!r}) — training diverged. "
+            "Check learning rate, gradient clipping (NNOptimParams.grad_clip_norm), "
+            "or input normalization."
+        )
+
+    return (
+        NNEvaluationDataPoint.of(
+            Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(),
+            extra_metrics=ctx.extra_metrics,
+        )
+            .with_loss(value=loss_value)
+            .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+    )
 
 
 class NNModel:
@@ -143,6 +247,7 @@ class NNModel:
         self,
         params: NNTrainParams,
         callbacks: Optional[list[CallbackLike]] = None,
+        train_step_fn: Optional[TrainStepFn] = None,
     ) -> NNRun:
         if params is None or params.optim is None or not params.optim.is_valid():
             raise ValueError("train params must be non-None and have a valid optim config")
@@ -212,6 +317,12 @@ class NNModel:
         for cb in normalized_callbacks:
             cb.on_train_begin(ctx)
 
+        # Default to the standard supervised step when the caller doesn't
+        # override. Custom step gets dispatched from inside the batch loop
+        # below so the rest of train() (scheduler, callbacks, checkpoint
+        # cadence, val loop, incremental save) is identical either way.
+        step_fn: TrainStepFn = train_step_fn or default_train_step
+
         idx_iter = 0
         # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
         # the progress bar doesn't pollute output. Same env var works as
@@ -227,13 +338,18 @@ class NNModel:
                     cb.on_epoch_begin(ctx)
 
                 for idx_batch, batch in enumerate(params.train_loader):
-                    train_edp = self._train_step(
-                        batch, optimizer, scaler,
+                    step_ctx = TrainStepContext(
+                        model=self,
+                        batch=batch,
+                        optimizer=optimizer,
+                        scaler=scaler,
                         grad_clip_norm=params.optim.grad_clip_norm,
                         extra_metrics=params.extra_metrics,
                         accumulate_grad_batches=params.optim.accumulate_grad_batches,
                         batch_idx=idx_batch,
+                        epoch_idx=idx_epoch,
                     )
+                    train_edp = step_fn(step_ctx)
 
                     idps.append(NNIterationDataPoint(
                         iter_idx    = idx_iter
@@ -311,7 +427,7 @@ class NNModel:
 
         with torch.no_grad():
             for batch in loader:
-                _, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
+                _, Y, Y_hat_log, Y_hat = self._fwd_pass(batch)
                 batch_n = int(Y.size(0))
                 # Aggregate predictions / labels across the entire loader so
                 # metrics are computed on the full eval set, not per-batch.
@@ -385,7 +501,11 @@ class NNModel:
             Y_hat = Y_hat_log.argmax(axis=1)
             return PredictResult(logits=Y_hat_log, classes=Y_hat)
 
-    def __fwd_pass(self, batch):
+    def _fwd_pass(self, batch):
+        """Standard supervised forward pass: unpack batch, move to device,
+        run net, take argmax over class logits. Used by `default_train_step`
+        and `evaluate()`; custom train_step_fn's may call this directly
+        or roll their own forward pass."""
         X, Y = self.net.unpack_batch(batch)
 
         X = tuple(x.to(self.device) for x in X)
@@ -406,60 +526,22 @@ class NNModel:
         accumulate_grad_batches: int = 1,
         batch_idx: int = 0,
     ) -> NNEvaluationDataPoint:
-        self.net.train()
-
-        # Gradient accumulation: only zero grads at the start of a fresh
-        # accumulation cycle, and only step the optimizer at the end of one.
-        is_cycle_start = (batch_idx % accumulate_grad_batches) == 0
-        is_cycle_end = ((batch_idx + 1) % accumulate_grad_batches) == 0
-        if is_cycle_start:
-            self.net.zero_grad()
-
-        # Mixed precision is opt-in via NNModelParams.mixed_precision; only
-        # takes effect on CUDA where autocast + GradScaler are meaningful.
-        amp_enabled = scaler is not None and self.device.type == "cuda"
-
-        if amp_enabled:
-            with torch.amp.autocast(device_type="cuda"):
-                X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
-                train_loss = self.loss_fn(Y_hat_log, Y)
-            # Scale loss by 1/N so accumulated grads = mean across batches.
-            scaler.scale(train_loss / accumulate_grad_batches).backward()
-            if is_cycle_end:
-                if grad_clip_norm is not None:
-                    # Unscale before clipping so the clip threshold applies
-                    # in the original gradient space, not the scaled one.
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
-                scaler.step(optimizer)
-                scaler.update()
-        else:
-            X, Y, Y_hat_log, Y_hat = self.__fwd_pass(batch)
-            train_loss = self.loss_fn(Y_hat_log, Y)
-            (train_loss / accumulate_grad_batches).backward()
-            if is_cycle_end:
-                if grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.net.parameters(), grad_clip_norm)
-                optimizer.step()
-
-        loss_value = float(train_loss.detach())
-        # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
-        # weights. Raise so the training session terminates loudly.
-        if not np.isfinite(loss_value):
-            raise FloatingPointError(
-                f"non-finite training loss ({loss_value!r}) — training diverged. "
-                "Check learning rate, gradient clipping (NNOptimParams.grad_clip_norm), "
-                "or input normalization."
-            )
-
-        return (
-            NNEvaluationDataPoint.of(
-                Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(),
-                extra_metrics=extra_metrics,
-            )
-                .with_loss(value=loss_value)
-                .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
-        )
+        """Thin wrapper around `default_train_step` kept for back-compat with
+        any subclass that overrode `_train_step` directly. The `train()`
+        loop itself no longer goes through this method — it builds a
+        TrainStepContext and dispatches to `train_step_fn or default_train_step`.
+        """
+        return default_train_step(TrainStepContext(
+            model=self,
+            batch=batch,
+            optimizer=optimizer,
+            scaler=scaler,
+            grad_clip_norm=grad_clip_norm,
+            extra_metrics=extra_metrics,
+            accumulate_grad_batches=accumulate_grad_batches,
+            batch_idx=batch_idx,
+            epoch_idx=0,
+        ))
 
     def _build_scheduler(
         self,

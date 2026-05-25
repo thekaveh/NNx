@@ -2,7 +2,25 @@
 
 All notable changes to NNx are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is roughly [SemVer](https://semver.org/) — pre-1.0, we allow behavior changes (typically bug fixes) without renaming public APIs.
 
-## [Unreleased] — comprehensive improvements pass 2
+## [Unreleased]
+
+### Added
+
+- **`train_step_fn` hook on `NNModel.train()`.** One optional kwarg that swaps out the supervised forward/backward/step for any user-supplied function. Unblocks non-supervised training paradigms (autoencoder, VAE, link prediction, recommendation, diffusion) without modifying NNx core. Default-None path is byte-identical to the prior loop. New public surface: `TrainStepContext` (frozen dataclass carrying model/batch/optimizer/scaler/grad_clip_norm/extra_metrics/accumulate_grad_batches/batch_idx/epoch_idx), `default_train_step(ctx)` (the standard supervised step, exported for users who want to layer behavior on top), `TrainStepFn` (type alias). Five tests in `tests/test_train_step_hook.py`; runnable autoencoder example at `examples/05_custom_train_step_autoencoder.py`.
+- Public alias for `nnx.PredictResult` (was reachable only via `nnx.nn.nn_model`).
+
+### Changed — internal
+
+- `NNModel.__fwd_pass` → `NNModel._fwd_pass`. Required so the free `default_train_step` can reach it without Python name-mangling. Single underscore is still "weak private"; no external consumer touched the mangled `_NNModel__fwd_pass` name.
+- `NNModel._train_step` becomes a one-line wrapper around `default_train_step` for back-compat with any hypothetical subclass that overrode it. The `train()` loop itself no longer dispatches through `_train_step`.
+
+### Deferred
+
+- `eval_step_fn` / `predict_fn` — same pattern, but `evaluate()` and `predict()` still assume supervised classification. First ml-lab task that needs custom eval (autoencoder, VAE, DDPM) will drive that.
+- Network registry (`Nets.register(...)`) — each new architecture lands a `Nets` enum variant via its task's PR.
+- Loss registry — custom losses live inside `train_step_fn` today (the user computes the loss tensor manually). Lift to a registry when multiple tasks duplicate the same custom loss.
+
+## [Pass-2 unreleased] — comprehensive improvements pass 2
 
 Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, building on pass-1. Strict back-compat preserved throughout — every new field on a params dataclass defaults to its old value and omits itself from `state()` when the default holds, so existing `run.id` hashes are unchanged.
 

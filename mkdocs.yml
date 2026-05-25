@@ -32,11 +32,12 @@ nav:
   - Concepts: concepts.md
   - API Reference: api.md
 
-# Internal design docs / specs aren't user-facing — exclude them from the
-# published site (they remain in-tree at docs/superpowers/specs/ for the
-# brainstorming → planning workflow).
+# Working design docs aren't user-facing — exclude them from the
+# published site. Local-only spec files under docs/specs/ shouldn't break
+# `mkdocs build --strict` if one ever lands accidentally.
 exclude_docs: |
   superpowers/
+  specs/
 
 plugins:
   - search

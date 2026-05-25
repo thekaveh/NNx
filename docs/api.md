@@ -18,6 +18,10 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.nn_model.PredictResult
 
+::: nnx.nn.nn_model.TrainStepContext
+
+::: nnx.nn.nn_model.default_train_step
+
 ## Params
 
 ::: nnx.nn.params.nn_params.NNParams

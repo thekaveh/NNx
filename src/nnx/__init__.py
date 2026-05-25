@@ -44,7 +44,13 @@ from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN
 from .nn.net.graph_nn_base import GraphNNBase
 from .nn.net.graph_sage_nn import GraphSageNN
-from .nn.nn_model import NNModel
+from .nn.nn_model import (
+    NNModel,
+    PredictResult,
+    TrainStepContext,
+    TrainStepFn,
+    default_train_step,
+)
 from .nn.params.nn_checkpoint import NNCheckpoint
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .nn.params.nn_iteration_data_point import NNIterationDataPoint
@@ -60,7 +66,8 @@ from .vis_utils import VisUtils
 
 __all__ = [
     # Orchestration
-    "NNModel",
+    "NNModel", "PredictResult",
+    "TrainStepContext", "TrainStepFn", "default_train_step",
     # Callbacks
     "Callback", "EarlyStopping", "LRMonitor", "ModelCheckpoint",
     "TensorBoardCallback", "WandbCallback",

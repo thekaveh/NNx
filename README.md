@@ -14,6 +14,7 @@ Lightweight PyTorch training / eval / visualization toolkit, with first-class su
 - **Visualization** — `VisUtils` (and module-level aliases) returns Plotly `Figure` objects: `confusion_matrix`, `classification_report` (returns a DataFrame), `multi_line_plot`, `scatter_plot`, `two_dim_tsne_checkpoint_logits`.
 - **Reproducibility** — `nnx.set_seed(seed, strict=False)` pins every RNG + cuDNN; `nnx.dataloader_worker_init_fn` for per-worker seeds; `NNTrainParams.seed` runs `set_seed` at `train()` entry.
 - **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via legacy `torch.onnx.export` (no `onnxscript` dep needed).
+- **Custom training step** — `NNModel.train(..., train_step_fn=...)` swaps out the supervised forward/backward/step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion paradigms without modifying NNx core. See `docs/concepts.md` and `examples/05_custom_train_step_autoencoder.py`.
 
 ## Install
 

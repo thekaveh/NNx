@@ -111,3 +111,7 @@ run  = NNRun.load(id="<md5>")                              # rehydrate idps + pa
 ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 model = NNModel.from_checkpoint(checkpoint=ckpt)
 ```
+
+### Non-supervised paradigms (autoencoder, VAE, etc.)
+
+For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#custom-training-paradigms).
