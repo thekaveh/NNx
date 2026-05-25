@@ -35,8 +35,13 @@ site/
 
 # Local-only working specs / design docs (per repo convention,
 # planning artifacts are not committed — only the implementation is).
-# Without this, a stray local file under docs/specs/ would show up
-# untracked in `git status` and be vulnerable to an accidental
-# `git add -A`. Belt-and-braces; mkdocs.yml already excludes it from
-# the published site.
+# Without this, a stray local file under docs/specs/ or docs/superpowers/
+# would show up untracked in `git status` and be vulnerable to an
+# accidental `git add -A`. Belt-and-braces; mkdocs.yml already excludes
+# both from the published site.
 docs/specs/
+docs/superpowers/
+
+# Same family: CLAUDE.md is a working artifact for Claude Code sessions
+# that doesn't belong in the public repo.
+CLAUDE.md
