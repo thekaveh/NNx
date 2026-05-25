@@ -32,3 +32,11 @@ tb_logs/
 # Coverage / docs build output
 coverage.xml
 site/
+
+# Local-only working specs / design docs (per repo convention,
+# planning artifacts are not committed — only the implementation is).
+# Without this, a stray local file under docs/specs/ would show up
+# untracked in `git status` and be vulnerable to an accidental
+# `git add -A`. Belt-and-braces; mkdocs.yml already excludes it from
+# the published site.
+docs/specs/
