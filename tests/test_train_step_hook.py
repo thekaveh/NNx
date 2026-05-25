@@ -8,12 +8,12 @@ Covers:
 - batch_idx / epoch_idx in the context sequence correctly across the
   epoch boundary.
 - An autoencoder-style step (no labels, MSE reconstruction loss) trains
-  end-to-end and the loss decreases monotonically across epochs.
+  end-to-end and the mean loss in the last epoch is below the mean loss
+  in the first (real, measurable training).
 """
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -218,66 +218,65 @@ def test_back_compat_train_step_wrapper_still_callable(tmp_path, monkeypatch):
 
 def test_autoencoder_style_step_trains_end_to_end(tmp_path, monkeypatch):
     """A reconstruction-loss step (no labels) trains end-to-end and the
-    loss decreases across an epoch. Demonstrates the hook's actual reason
-    for existing: unblocking non-supervised paradigms."""
+    loss decreases meaningfully across the run. Mirrors example 05:
+    FeedFwdNN with input_dim == output_dim is structurally an
+    autoencoder (d → bottleneck → d), no separate decoder needed."""
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 
-    # Tiny linear autoencoder: 4 → 2 → 4. Use FeedFwdNN as encoder; the
-    # decoder lives outside the model.net for simplicity (this is just a
-    # test; production autoencoder PRs would land a proper AutoencoderNN).
-    X = torch.randn(64, 4)
-    y_dummy = torch.zeros(64, dtype=torch.long)  # required by the loader contract
+    d = 8
+    n = 128
+    X = torch.randn(n, d)
+    y_dummy = torch.zeros(n, dtype=torch.long)  # satisfies the (X, Y) loader contract
     loader = DataLoader(TensorDataset(X, y_dummy), batch_size=16, shuffle=False)
 
     model = NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=None,
+            input_dim=d, output_dim=d, hidden_dims=[3],  # bottleneck at 3 < d
             dropout_prob=0.0, activation=Activations.RELU,
         ),
         params=NNModelParams(
             net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
         ),
     )
-    decoder = nn.Linear(2, 4)
-    # Park the decoder on the model so the step function can reach it.
-    model.decoder = decoder  # type: ignore[attr-defined]
 
     def autoencoder_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
         m.net.train()
-        m.decoder.train()
         m.net.zero_grad()
-        m.decoder.zero_grad()
 
-        X_batch, _Y = m.net.unpack_batch(ctx.batch)
+        X_batch, _ = m.net.unpack_batch(ctx.batch)
         X_batch = tuple(x.to(m.device) for x in X_batch)
-        encoded = m.net(*X_batch)
-        decoded = m.decoder(encoded)
-        loss = torch.nn.functional.mse_loss(decoded, X_batch[0])
+        reconstructed = m.net(*X_batch)
+        loss = torch.nn.functional.mse_loss(reconstructed, X_batch[0])
         loss.backward()
         ctx.optimizer.step()
 
+        loss_val = float(loss.detach())
         return NNEvaluationDataPoint(
             f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
-            loss=float(loss.detach()),
-            error=float(loss.detach()),  # use loss as the proxy error so BEST tracking works
-            extra={},
+            loss=loss_val,
+            error=loss_val,  # loss serves as the proxy error for BEST tracking
         )
 
-    # The Adam optimizer only sees model.net parameters — decoder isn't
-    # registered. Add it manually post-construction.
-    train_params = _make_train_params(loader, n_epochs=3)
+    train_params = _make_train_params(loader, n_epochs=5)
     run = model.train(params=train_params, train_step_fn=autoencoder_step)
 
-    losses_first_epoch = [idp.train_edp.loss for idp in run.idps if idp.epoch_idx == 0]
-    losses_last_epoch = [idp.train_edp.loss for idp in run.idps if idp.epoch_idx == run.idps[-1].epoch_idx]
-    # The decoder is not being trained (its params aren't in the optimizer)
-    # so we can't assert strict monotone decrease. Verify that the loop
-    # ran the right number of times and produced finite losses.
-    assert len(run.idps) == 4 * 3  # 4 batches × 3 epochs
+    # 8 batches per epoch × 5 epochs = 40 idps.
+    assert len(run.idps) == 8 * 5
     assert all(torch.isfinite(torch.tensor(idp.train_edp.loss)) for idp in run.idps)
-    assert losses_first_epoch and losses_last_epoch
+
+    # Loss should actually decrease: the autoencoder is real, its params
+    # are in the optimizer (because input_dim == output_dim collapses
+    # encoder+decoder into one FeedFwdNN), so training is meaningful.
+    # Compare the mean loss of the first vs last epoch — bottleneck=3
+    # on Gaussian inputs in 8d won't reach zero but should drop clearly.
+    first_epoch_mean = sum(idp.train_edp.loss for idp in run.idps if idp.epoch_idx == 0) / 8
+    last_epoch_mean = sum(idp.train_edp.loss for idp in run.idps if idp.epoch_idx == 4) / 8
+    assert last_epoch_mean < first_epoch_mean, (
+        f"autoencoder loss should decrease across epochs; "
+        f"got first={first_epoch_mean:.4f}, last={last_epoch_mean:.4f}"
+    )
 
     # On-disk artifacts exist.
     assert (tmp_path / "runs" / run.id / "run.yaml").exists()
