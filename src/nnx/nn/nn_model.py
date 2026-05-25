@@ -249,6 +249,37 @@ class NNModel:
         callbacks: Optional[list[CallbackLike]] = None,
         train_step_fn: Optional[TrainStepFn] = None,
     ) -> NNRun:
+        """Run the training loop and return the resulting NNRun.
+
+        Args:
+            params: dataloaders + optim + scheduler + epochs + seed. The
+                train_loader is required; val_loader is optional (skips the
+                per-epoch evaluation when absent).
+            callbacks: optional list of `Callback` instances (or legacy
+                `Callable[[List[IDP]], None]` for back-compat). Each hook
+                runs at the documented lifecycle point (on_train_begin,
+                on_epoch_begin/end, on_train_end).
+            train_step_fn: optional override for the per-batch training
+                step. When None (default), runs `default_train_step` —
+                supervised forward → loss_fn(net(X), Y) → backward → step.
+                Pass a `Callable[[TrainStepContext], NNEvaluationDataPoint]`
+                for non-supervised paradigms (autoencoder, VAE, link
+                prediction, recommendation, diffusion). The custom function
+                is responsible for forward/backward/step and honoring the
+                grad-clip/accumulation/AMP knobs the context carries. See
+                `docs/concepts.md` and `examples/05_*.py`.
+
+        Returns:
+            An `NNRun` with per-iteration `idps`, persisted under
+            `runs/<run.id>/` along with per-tag checkpoints. The same
+            object is returned with the in-memory idps list attached.
+
+        Raises:
+            ValueError: if `params` is None or `params.optim` is invalid.
+            FloatingPointError: from `default_train_step` if training
+                loss becomes non-finite (custom `train_step_fn` hooks are
+                responsible for their own divergence checks).
+        """
         if params is None or params.optim is None or not params.optim.is_valid():
             raise ValueError("train params must be non-None and have a valid optim config")
 
