@@ -134,6 +134,33 @@ def test_train_step_context_carries_batch_and_epoch_idx(tmp_path, monkeypatch):
     assert seen == [(0, 0), (1, 0), (0, 1), (1, 1)]
 
 
+def test_custom_step_without_error_field_doesnt_crash_best_compare(tmp_path, monkeypatch):
+    """A custom train_step_fn that returns an EDP with error=None must not
+    crash the BEST-checkpoint comparison. The pre-existing `_err` helper
+    inside _save_checkpoints would do `None < float('inf')` and raise.
+    Custom hooks shouldn't be required to populate the error field
+    (the supervised proxy doesn't apply to all paradigms)."""
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+
+    def no_error_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+        edp = default_train_step(ctx)
+        # Explicitly drop the error field; loss is still set.
+        from dataclasses import replace
+        return replace(edp, error=None)
+
+    model = _make_model()
+    # 2 epochs ensures _save_checkpoints runs the BEST comparison at
+    # least once with a non-None best_checkpoint already on hand.
+    run = model.train(
+        params=_make_train_params(_make_loader(n=16), n_epochs=2),
+        train_step_fn=no_error_step,
+    )
+    assert all(idp.train_edp.error is None for idp in run.idps)
+    # Run completed without TypeError.
+    assert (tmp_path / "runs" / run.id / "checkpoints" / "best.pt").exists()
+
+
 def test_custom_step_extra_survives_run_save_load(tmp_path, monkeypatch):
     """A custom hook that populates EDP.extra must have those values round-
     trip through NNRun.save → idps.csv → NNRun.load. Validates that the

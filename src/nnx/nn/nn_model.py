@@ -610,9 +610,14 @@ class NNModel:
         checkpoint.save(run=run_id, type=Checkpoints.LAST, optimizer_state=opt_state)
 
         # BEST is decided by validation error if available, else training error.
+        # Mirrors `_best_err` in nn_run.py — return +inf when the edp is
+        # missing OR its error field is None (custom train_step_fn hooks
+        # are allowed to leave error unset on the EDP they return).
         def _err(c: NNCheckpoint) -> float:
             edp = c.idp.val_edp if c.idp.val_edp is not None else c.idp.train_edp
-            return edp.error if edp is not None else float("inf")
+            if edp is None or edp.error is None:
+                return float("inf")
+            return edp.error
 
         if best_checkpoint is None or _err(checkpoint) < _err(best_checkpoint):
             checkpoint.save(run=run_id, type=Checkpoints.BEST, optimizer_state=opt_state)
@@ -627,7 +632,23 @@ class NNModel:
     ) -> None:
         # ReduceLROnPlateau wants a metric; other schedulers step on epoch index.
         if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-            metric = val_edp.error if val_edp is not None else train_edp.error
+            # Prefer val_edp over train_edp, and prefer .error over .loss
+            # (both are lower-is-better). Custom train_step_fn hooks may leave
+            # either unset; ReduceLROnPlateau.step(None) crashes inside
+            # float() — fall back through the four candidates rather than
+            # forcing every paradigm to populate the supervised error field.
+            metric = None
+            for edp in (val_edp, train_edp):
+                if edp is None:
+                    continue
+                metric = edp.error if edp.error is not None else edp.loss
+                if metric is not None:
+                    break
+            if metric is None:
+                # No signal to feed the scheduler — skip the step. The user
+                # picked a metric-driven scheduler without producing a metric;
+                # better to no-op than to crash mid-train.
+                return
             scheduler.step(metric)
         else:
             scheduler.step()
@@ -640,8 +661,18 @@ class NNModel:
         train_edp: NNEvaluationDataPoint,
     ) -> None:
         lr = optimizer.param_groups[0]['lr']
-        err = val_edp.error if val_edp is not None else train_edp.error
-        tqdm_bar.set_postfix_str(f"error={err:.4f}, lr={lr:.4f}")
+        # Custom train_step_fn hooks may leave .error unset — fall back to
+        # .loss for display so the progress bar doesn't crash mid-train on
+        # an `f"{None:.4f}"` format error.
+        err = None
+        for edp in (val_edp, train_edp):
+            if edp is None:
+                continue
+            err = edp.error if edp.error is not None else edp.loss
+            if err is not None:
+                break
+        err_str = f"{err:.4f}" if err is not None else "n/a"
+        tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")
 
     @staticmethod
     def _normalize_callbacks(
