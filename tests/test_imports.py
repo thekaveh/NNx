@@ -10,13 +10,14 @@ affected feature.
 
 def test_top_level_imports():
     import nnx
-    from nnx import finetune, seeding, trainer, utils, vis_utils
+    from nnx import diffusion, finetune, seeding, trainer, utils, vis_utils
     assert nnx is not None
     assert utils is not None
     assert vis_utils is not None
     assert seeding is not None
     assert finetune is not None
     assert trainer is not None
+    assert diffusion is not None
 
 
 def test_finetune_submodules_import():
@@ -30,6 +31,14 @@ def test_trainer_submodules_import():
     from nnx.trainer import params, trainer
     assert params is not None
     assert trainer is not None
+
+
+def test_diffusion_submodules_import():
+    from nnx.diffusion import nets, sampling, schedules, training
+    assert nets is not None
+    assert sampling is not None
+    assert schedules is not None
+    assert training is not None
 
 
 def test_nn_subpackage_imports():

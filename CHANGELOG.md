@@ -4,6 +4,19 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — diffusion (Track C)
+
+- **`nnx.diffusion` package** — DDPM-style diffusion training and sampling, layered entirely on top of the existing `train_step_fn` hook on `NNModel.train()` (no Trainer, no NNModel internals touched).
+  - **`NoiseSchedulers`** — enum-as-factory with two variants: `LINEAR(T, beta_min, beta_max)` (original DDPM linear betas) and `COSINE(T, s)` (Improved-DDPM cosine schedule). Each enum value's `__call__` returns a precomputed `NoiseSchedule`.
+  - **`NoiseSchedule`** — frozen dataclass holding the derived tensors (`betas`, `alphas`, `alphas_cumprod`, `sqrt_alphas_cumprod`, `sqrt_one_minus_alphas_cumprod`, `posterior_variance`). All 1D of length T. `.to(device)` returns a copy with every tensor migrated. Not `state()`-serialized — recoverable from `(kind, T, kind-specific knobs)`.
+  - **`DiffusionMLP(input_dim, hidden_dims, time_embed_dim)`** — small conditional MLP: sinusoidal time embed → projection → concat with flat x → MLP → noise prediction. `forward(x, t) → ε_pred`. Handles arbitrary-rank inputs by flattening + un-flattening. Intentionally minimal; image-space diffusion calls for a U-Net the user supplies, with the same schedule / step / sampler machinery.
+  - **`diffusion_train_step_factory(schedule) -> TrainStepFn`** — closes over the schedule and returns a `TrainStepFn` suitable for `NNModel.train(train_step_fn=...)`. Per batch: samples `t ~ Uniform[0, T)`, samples `ε ~ N(0, I)`, computes `x_t`, predicts noise, backprops MSE. Reports loss as both `.loss` and `.error` on the EDP so BEST tracking + ReduceLROnPlateau work.
+  - **`sample(model, schedule, shape, device=, generator=)`** — reverse-diffusion sampler. Runs T backward steps under `torch.no_grad()` and `model.net.eval()`. The optional `generator=` enables reproducible sampling for notebooks.
+  - **`sinusoidal_time_embed(t, dim)`** — standalone helper for the standard sinusoidal positional embedding, exposed for users building their own t-conditioned nets.
+- **`NNModel.train()` net-params fallback** — the run-construction line now reads `self.net_params` (always set in `__init__`) instead of `self.net.params` (FeedFwdNN-specific attribute). Back-compat-safe: the values are identical for the existing supervised path. Lets callers swap `model.net` for a custom `nn.Module` post-construction (the same idiom Track G's GAN demo uses) without breaking `NNModel.train()`.
+- Runnable diffusion demo: `examples/08_diffusion_2d_mixture.py` — DDPM on a 2D mixture of 4 Gaussians at (±2, ±2). Verified end-to-end (loss 1.0078 → 0.6048; samples land in all four modes at roughly equal counts).
+- 27 new tests across `tests/test_diffusion_{schedules,nets,training,sampling}.py` covering schedule shape/monotonicity/clamping, net forward shape, full training + loss-decreases, sampling shape / finiteness / reproducibility / mode coverage.
+
 ### Added — multi-optimizer Trainer (Track G)
 
 - **`nnx.trainer` package** — `Trainer` class that parallels `NNModel.train()` for scenarios where the per-batch update isn't a single supervised forward/backward/step. Built around the GAN G/D pattern, but applicable to actor-critic, EBM, contrastive multi-head, or any other multi-optimizer paradigm.
