@@ -199,6 +199,43 @@ Strict back-compat: `NNRun` built without a trainer (the standard `NNModel.train
 
 See [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py) for a tiny GAN on a 1D mixture-of-Gaussians distribution. Warm-resume from trainer-mode checkpoints (multi-optim sidecars) is a planned follow-up.
 
+## Diffusion (DDPM)
+
+Diffusion lives entirely on top of the [`train_step_fn` hook](#custom-training-paradigms) — no Trainer, no NNModel changes, no new params dataclass. The pieces are under `nnx.diffusion`:
+
+```python
+from nnx import (
+    DiffusionMLP, NoiseSchedulers,
+    diffusion_train_step_factory, sample,
+    NNModel, NNModelParams, NNParams, NNTrainParams, NNOptimParams,
+    Activations, Devices, Losses, Nets, Optims,
+)
+
+model = NNModel(net_params=..., params=NNModelParams(net=Nets.FEED_FWD, ...))
+# The Nets.FEED_FWD factory builds a classifier — wrong shape for diffusion
+# (`forward(x_t, t) → ε`). Swap it for the DiffusionMLP. NNModel.train()
+# reads model.net.parameters() + model.net_params, both of which survive
+# this substitution.
+model.net = DiffusionMLP(input_dim=2, hidden_dims=[64, 64], time_embed_dim=16)
+
+schedule = NoiseSchedulers.LINEAR(T=200)         # or NoiseSchedulers.COSINE
+step_fn  = diffusion_train_step_factory(schedule)
+model.train(params=NNTrainParams(..., train_loader=loader), train_step_fn=step_fn)
+
+# Sample by running the reverse-diffusion loop.
+samples = sample(model, schedule, shape=(256, 2))
+```
+
+`NoiseSchedulers` is an enum-as-factory matching the rest of the library (`Optims`, `Schedulers`, `Nets`): `NoiseSchedulers.LINEAR(T, beta_min, beta_max)` and `NoiseSchedulers.COSINE(T, s)` each return a `NoiseSchedule` — a frozen dataclass of precomputed tensors (`betas`, `alphas`, `alphas_cumprod`, `sqrt_alphas_cumprod`, `sqrt_one_minus_alphas_cumprod`, `posterior_variance`). The factory builds tensors on CPU; the train step and sampler migrate them to `model.device` on first use. There's no `state()` / `from_state()` round-trip — the tensors are recoverable from `(kind, T, beta_min, beta_max | s)`, so on-disk runs reconstruct the schedule from the call arguments rather than serializing the tensors.
+
+`DiffusionMLP` is a small conditional MLP: sinusoidal time embed → MLP projection → concat with flattened `x` → MLP → noise prediction. It's *not* a U-Net — for image-space diffusion the same schedule / train step / sampler work against any user-supplied `nn.Module` with the `forward(x, t)` signature.
+
+`diffusion_train_step_factory(schedule)` returns a [`TrainStepFn`](#custom-training-paradigms) that for each batch samples `t ~ Uniform[0, T)`, samples `ε ~ N(0, I)`, computes `x_t = √ᾱ_t · x_0 + √(1 - ᾱ_t) · ε`, predicts noise via `model.net(x_t, t)`, and backprops the MSE between predicted and true noise. The returned EDP sets both `loss` and `error` to the noise-prediction MSE so BEST checkpoint tracking and ReduceLROnPlateau have a metric.
+
+`sample(model, schedule, shape, device=, generator=)` runs `T` reverse steps under `torch.no_grad()` and returns generated samples. The optional `generator=` argument enables reproducible sampling — useful for notebook visualization.
+
+See [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py) for an end-to-end run on a 2D mixture of four Gaussians. After training, samples cluster around all four modes (~25% each).
+
 ## Reproducibility
 
 ```python

@@ -116,6 +116,20 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.trainer.params.NNTrainerParams
 
+## Diffusion (`nnx.diffusion`)
+
+::: nnx.diffusion.schedules.NoiseSchedulers
+
+::: nnx.diffusion.schedules.NoiseSchedule
+
+::: nnx.diffusion.nets.DiffusionMLP
+
+::: nnx.diffusion.nets.sinusoidal_time_embed
+
+::: nnx.diffusion.training.diffusion_train_step_factory
+
+::: nnx.diffusion.sampling.sample
+
 ## Visualization
 
 ::: nnx.vis_utils

@@ -325,10 +325,17 @@ class NNModel:
             set_seed(params.seed)
 
         validate    : bool  = params.val_loader is not None
+        # Use self.net_params (always set in __init__) rather than
+        # self.net.params: the latter is FeedFwdNN-specific and fails when
+        # the caller substitutes a custom nn.Module post-construction
+        # (the same idiom Trainer's GAN demo uses and that diffusion
+        # demos use for DiffusionMLP). They're identical for the
+        # standard supervised path; the rename is a back-compat-safe
+        # robustness fix.
         run         : NNRun = NNRun(
             train   = params
             , model = self.params
-            , net   = self.net.params
+            , net   = self.net_params
         )
 
         optimizer = params.optim.name(

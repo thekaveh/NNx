@@ -20,6 +20,13 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
+from .diffusion import (
+    DiffusionMLP,
+    NoiseSchedule,
+    NoiseSchedulers,
+    diffusion_train_step_factory,
+    sample,
+)
 from .finetune import (
     LoadPretrainedResult,
     NNParamGroupSpec,
@@ -99,6 +106,9 @@ __all__ = [
     "NNParamGroupSpec",
     # Multi-optimizer Trainer
     "Trainer", "TrainerStepContext", "TrainerStepFn", "NNTrainerParams",
+    # Diffusion
+    "DiffusionMLP", "NoiseSchedule", "NoiseSchedulers",
+    "diffusion_train_step_factory", "sample",
     # Reproducibility
     "set_seed", "dataloader_worker_init_fn", "env_snapshot",
     # Metadata
