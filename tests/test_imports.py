@@ -10,11 +10,19 @@ affected feature.
 
 def test_top_level_imports():
     import nnx
-    from nnx import seeding, utils, vis_utils
+    from nnx import finetune, seeding, utils, vis_utils
     assert nnx is not None
     assert utils is not None
     assert vis_utils is not None
     assert seeding is not None
+    assert finetune is not None
+
+
+def test_finetune_submodules_import():
+    from nnx.finetune import freezing, loading, param_groups
+    assert freezing is not None
+    assert loading is not None
+    assert param_groups is not None
 
 
 def test_nn_subpackage_imports():

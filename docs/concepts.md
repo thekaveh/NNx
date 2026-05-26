@@ -117,6 +117,43 @@ See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh
 
 `evaluate()` and `predict()` still assume supervised classification; they'll grow `eval_step_fn` / `predict_fn` equivalents when the first task that needs them lands.
 
+## Fine-tuning (transfer learning)
+
+The standard transfer-learning recipe — "load pretrained weights, freeze most of the model, train only the head" — has three moving parts in nnx, all under `nnx.finetune`:
+
+```python
+from nnx import NNModel, load_pretrained, NNParamGroupSpec, NNOptimParams, Optims
+
+model = NNModel(net_params=..., params=...)
+
+# 1. Load weights from an external state-dict / .pt file / other nn.Module.
+#    Pass key_map= to rewrite foreign naming (e.g., {"backbone.": "net."}).
+result = load_pretrained(model.net, "resnet18.pt", strict=False)
+print(f"loaded {len(result.loaded_keys)}, missing {len(result.missing_keys)}")
+
+# 2. Freeze whatever shouldn't train. Glob patterns match the dotted
+#    parameter name. `model.freeze` is a shortcut for nnx.finetune.freeze.
+model.freeze("layers.0.*", "layers.1.*")          # freeze the backbone
+# `model.unfreeze("*")` would reverse it; `frozen(model.net)` lists what's frozen.
+
+# 3. (Optional) Run the unfrozen part with a smaller LR than a fresh head.
+#    NNOptimParams.param_groups takes a list of NNParamGroupSpec; each
+#    matches parameters by glob and overrides lr / lr_multiplier / weight_decay.
+optim = NNOptimParams(
+    name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=5e-4,
+    param_groups=[
+        NNParamGroupSpec(name_pattern="layers.0.*", lr_multiplier=0.01),
+        NNParamGroupSpec(name_pattern="*.bias",     weight_decay=0.0),
+    ],
+)
+```
+
+`NNModel.export_state_dict(path)` saves the inverse — `self.net.state_dict()` only, no NNCheckpoint wrapper — for users who want to share weights with non-nnx consumers.
+
+Strict back-compat: `NNOptimParams` with `param_groups=None` (the default) produces exactly the same `state()` dict as before this field existed. Existing `run.id` hashes are unchanged.
+
+See [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py) for the end-to-end recipe.
+
 ## Reproducibility
 
 ```python

@@ -15,6 +15,7 @@ Lightweight PyTorch training / eval / visualization toolkit, with first-class su
 - **Reproducibility** — `nnx.set_seed(seed, strict=False)` pins every RNG + cuDNN; `nnx.dataloader_worker_init_fn` for per-worker seeds; `NNTrainParams.seed` runs `set_seed` at `train()` entry.
 - **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via legacy `torch.onnx.export` (no `onnxscript` dep needed).
 - **Custom training step** — `NNModel.train(..., train_step_fn=...)` swaps out the supervised forward/backward/step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion paradigms without modifying NNx core. See `docs/concepts.md` and `examples/05_custom_train_step_autoencoder.py`.
+- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`. See `docs/concepts.md` and `examples/06_finetune_with_layer_freezing.py`.
 
 ## Install
 

@@ -60,6 +60,33 @@ def test_nn_optim_params_round_trip_adam():
     assert NNOptimParams.from_state(obj.state()) == obj
 
 
+def test_nn_optim_params_round_trip_with_param_groups():
+    from nnx import NNParamGroupSpec
+
+    obj = NNOptimParams(
+        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=5e-4,
+        param_groups=[
+            NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01),
+            NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0),
+        ],
+    )
+    rt = NNOptimParams.from_state(obj.state())
+    assert rt == obj
+
+
+def test_nn_param_group_spec_round_trip():
+    from nnx import NNParamGroupSpec
+
+    cases = [
+        NNParamGroupSpec(name_pattern="*"),
+        NNParamGroupSpec(name_pattern="encoder.*", lr=1e-5),
+        NNParamGroupSpec(name_pattern="*.bias", lr_multiplier=0.1),
+        NNParamGroupSpec(name_pattern="head.*", lr=1e-3, weight_decay=0.0),
+    ]
+    for spec in cases:
+        assert NNParamGroupSpec.from_state(spec.state()) == spec
+
+
 def test_nn_scheduler_params_round_trip_plateau():
     obj = NNSchedulerParams(
         min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3,

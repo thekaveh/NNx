@@ -20,6 +20,14 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
+from .finetune import (
+    LoadPretrainedResult,
+    NNParamGroupSpec,
+    freeze,
+    frozen,
+    load_pretrained,
+    unfreeze,
+)
 from .nn.callbacks import (
     Callback,
     EarlyStopping,
@@ -84,6 +92,10 @@ __all__ = [
     "NNDataset", "NNGraphDataset", "NNTabularDataset", "NNDatasetBase",
     # Helpers
     "Utils", "VisUtils",
+    # Fine-tuning
+    "freeze", "unfreeze", "frozen",
+    "load_pretrained", "LoadPretrainedResult",
+    "NNParamGroupSpec",
     # Reproducibility
     "set_seed", "dataloader_worker_init_fn", "env_snapshot",
     # Metadata

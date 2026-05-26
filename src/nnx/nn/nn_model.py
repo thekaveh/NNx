@@ -243,6 +243,39 @@ class NNModel:
 
         return model
 
+    def freeze(self, *patterns: str) -> int:
+        """Freeze parameters under ``self.net`` matching any of ``patterns``
+        (fnmatch globs against the dotted parameter name). Returns the
+        number of parameters newly frozen.
+
+        Convenience wrapper around :func:`nnx.finetune.freezing.freeze`
+        — use the standalone function when freezing a module that isn't
+        ``self.net`` (e.g., a custom decoder hanging off this model).
+        """
+        from ..finetune.freezing import freeze as _freeze
+        return _freeze(self.net, *patterns)
+
+    def unfreeze(self, *patterns: str) -> int:
+        """Mirror of :meth:`freeze` — set ``requires_grad=True`` on
+        matching parameters."""
+        from ..finetune.freezing import unfreeze as _unfreeze
+        return _unfreeze(self.net, *patterns)
+
+    def export_state_dict(self, path: str) -> str:
+        """Save just ``self.net.state_dict()`` to ``path``.
+
+        The file is a plain ``torch.save`` of a state-dict — loadable by
+        any torch consumer without nnx installed, and by
+        :func:`nnx.finetune.load_pretrained` for the fine-tuning round-trip.
+        Companion to the NNCheckpoint format, which carries the params +
+        idp wrapper alongside the weights; ``export_state_dict`` strips
+        all of that and leaves just the weights.
+
+        Returns ``path`` so calls can be chained.
+        """
+        torch.save(self.net.state_dict(), path)
+        return path
+
     def train(
         self,
         params: NNTrainParams,
@@ -303,6 +336,7 @@ class NNModel:
             , lr_start=params.optim.max_lr
             , momentum=params.optim.momentum
             , weight_decay=params.optim.weight_decay
+            , param_groups=params.optim.param_groups
         )
 
         # Warm resume: load weights + optimizer state from a prior run's

@@ -92,6 +92,22 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.enum.schedulers.Schedulers
 
+## Fine-tuning (`nnx.finetune`)
+
+::: nnx.finetune.freezing.freeze
+
+::: nnx.finetune.freezing.unfreeze
+
+::: nnx.finetune.freezing.frozen
+
+::: nnx.finetune.loading.load_pretrained
+
+::: nnx.finetune.loading.LoadPretrainedResult
+
+::: nnx.finetune.param_groups.NNParamGroupSpec
+
+::: nnx.finetune.param_groups.build_param_groups
+
 ## Visualization
 
 ::: nnx.vis_utils

@@ -4,6 +4,15 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — fine-tuning infrastructure (Track A)
+
+- **`nnx.finetune` package** with three submodules:
+  - **`freezing`** — `freeze(module, *patterns)` / `unfreeze(module, *patterns)` / `frozen(module)`. Glob-pattern (`fnmatch`) toggling of `requires_grad` on submodule parameters; the standard transfer-learning idiom. `NNModel.freeze` / `NNModel.unfreeze` are convenience methods delegating to the free functions.
+  - **`loading`** — `load_pretrained(module, source, *, key_map, strict, prefix)` returns a `LoadPretrainedResult` with `loaded_keys` / `missing_keys` / `unexpected_keys`. Sources: file paths (loaded with `weights_only=True` for safety), state-dicts, or other `nn.Module`s. Key remapping handles foreign naming conventions (torchvision / HuggingFace / etc.).
+  - **`param_groups`** — `NNParamGroupSpec` (frozen, kw_only, slots dataclass) for declarative per-layer LR / weight_decay overrides. The fine-tuning idiom of "small LR on the backbone, large LR on the head" expressed as a list of specs on `NNOptimParams.param_groups`. `build_param_groups(module, specs, default_lr, default_weight_decay)` is the helper the `Optims` enum factory dispatches through.
+- **`NNOptimParams.param_groups: Optional[list[NNParamGroupSpec]]`** field. When set, the optimizer factory builds per-group dicts with the spec's lr / lr_multiplier / weight_decay overrides; frozen parameters are dropped. **Strict back-compat:** `param_groups=None` (default) is OMITTED from `state()`, so existing `run.id` hashes are unchanged.
+- **`NNModel.export_state_dict(path)`** — saves `self.net.state_dict()` to disk as a plain torch file (no NNCheckpoint wrapper). Companion to `load_pretrained` for the round-trip.
+
 ### Added
 
 - **`train_step_fn` hook on `NNModel.train()`.** One optional kwarg that swaps out the supervised forward/backward/step for any user-supplied function. Unblocks non-supervised training paradigms (autoencoder, VAE, link prediction, recommendation, diffusion) without modifying NNx core. Default-None path is byte-identical to the prior loop. New public surface: `TrainStepContext` (frozen dataclass carrying model/batch/optimizer/scaler/grad_clip_norm/extra_metrics/accumulate_grad_batches/batch_idx/epoch_idx), `default_train_step(ctx)` (the standard supervised step, exported for users who want to layer behavior on top), `TrainStepFn` (type alias). Seven tests in `tests/test_train_step_hook.py`; runnable autoencoder example at `examples/05_custom_train_step_autoencoder.py`.
