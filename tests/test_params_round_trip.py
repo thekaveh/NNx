@@ -135,6 +135,54 @@ def test_evaluation_data_point_round_trip_no_loss_no_error():
     assert rt == obj
 
 
+def test_nn_trainer_params_round_trip():
+    """NNTrainerParams must round-trip — multi-optim dict serializes
+    deterministically, schedulers default to empty, seed honors
+    omit-when-default."""
+    from nnx import NNParamGroupSpec, NNTrainerParams
+
+    obj = NNTrainerParams(
+        n_epochs=4,
+        optims={
+            "G": NNOptimParams(
+                name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+                param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=2e-4)],
+            ),
+            "D": NNOptimParams(
+                name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+                param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=2e-4)],
+            ),
+        },
+        schedulers={
+            "G": NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3),
+        },
+        seed=42,
+    )
+    rt = NNTrainerParams.from_state(obj.state())
+    assert rt == obj
+
+
+def test_nn_run_state_omits_trainer_when_none():
+    """CRITICAL back-compat invariant: NNRun built without a trainer
+    field (the NNModel.train path) must emit the same state() — and
+    therefore the same run.id — as before this field existed."""
+    from nnx.nn.params.nn_run import NNRun
+
+    run = NNRun(
+        net=NNParams(
+            input_dim=4, output_dim=2, dropout_prob=0.0,
+            activation=Activations.RELU, hidden_dims=[8],
+        ),
+        train=NNTrainParams(n_epochs=1),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    state = run.state()
+    assert "trainer" not in state, (
+        "NNRun with trainer=None must omit the key to preserve existing run.id hashes; "
+        f"got keys {sorted(state.keys())}"
+    )
+
+
 def test_iteration_data_point_round_trip_with_val():
     train_edp = NNEvaluationDataPoint(
         loss=0.5, error=0.2, accuracy=0.8, f1=0.79, recall=0.78, precision=0.81,

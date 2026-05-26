@@ -119,3 +119,7 @@ For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, 
 ### Fine-tuning (transfer learning)
 
 Load external pretrained weights, freeze layers by glob pattern, and (optionally) train them at different learning rates. See [Concepts → Fine-tuning](concepts.md#fine-tuning-transfer-learning) and [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py).
+
+### Multi-optimizer training (GANs, actor-critic)
+
+When per-batch updates need multiple optimizers (G + D for GANs, policy + value for actor-critic), use `nnx.trainer.Trainer` — accepts one `NNModel` and a dict of `NNOptimParams`, scoped via `NNParamGroupSpec` globs. See [Concepts → Multi-optimizer training](concepts.md#multi-optimizer-training-gans-actor-critic) and [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py).

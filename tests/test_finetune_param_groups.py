@@ -135,6 +135,51 @@ def test_build_param_groups_unmatched_fall_into_default_group():
     assert default["weight_decay"] == 5e-4
 
 
+def test_build_param_groups_strict_drops_unmatched():
+    """Strict mode: unmatched params are dropped from the optimizer entirely
+    instead of going into a default bucket. This is the Trainer's contract
+    for disjoint multi-optimizer setups."""
+    net = _net()
+    groups = build_param_groups(
+        net,
+        [NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],   # matches 0.weight + 0.bias
+        default_lr=1e-2, default_weight_decay=5e-4,
+        strict=True,
+    )
+    # Only the matched spec group exists — no default bucket.
+    assert len(groups) == 1
+    assert groups[0]["lr"] == 1e-5
+    assert len(groups[0]["params"]) == 2
+
+
+def test_build_param_groups_strict_raises_when_nothing_matches():
+    """Strict mode + no specs matching ANY param should raise so the
+    misconfiguration is caught at construction, not silently during
+    the first .step()."""
+    net = _net()
+    with pytest.raises(ValueError, match="strict mode"):
+        build_param_groups(
+            net,
+            [NNParamGroupSpec(name_pattern="nonexistent.*", lr=1e-5)],
+            default_lr=1e-2, default_weight_decay=0.0,
+            strict=True,
+        )
+
+
+def test_optims_strict_param_groups_passes_through():
+    """The Optims.__call__ wrapper should thread strict_param_groups
+    through to build_param_groups."""
+    net = _net()
+    optimizer = Optims.ADAM(
+        net=net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        param_groups=[NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],
+        strict_param_groups=True,
+    )
+    # Only the matched group, no default.
+    assert len(optimizer.param_groups) == 1
+    assert len(optimizer.param_groups[0]["params"]) == 2
+
+
 def test_build_param_groups_lr_multiplier_scales_default():
     net = _net()
     groups = build_param_groups(
