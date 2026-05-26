@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
 import yaml
@@ -14,6 +14,9 @@ from ..params.nn_iteration_data_point import NNIterationDataPoint
 from ..params.nn_model_params import NNModelParams
 from ..params.nn_params import NNParams
 from ..params.nn_train_params import NNTrainParams
+
+if TYPE_CHECKING:
+    from ...trainer.params import NNTrainerParams
 
 
 def _runs_root(root: Optional[str] = None) -> str:
@@ -97,6 +100,11 @@ class NNRun:
     train   : NNTrainParams
     model   : NNModelParams
 
+    # Optional trainer-mode marker. Populated by Trainer.train(); None for
+    # NNModel.train()-produced runs. state() omits it when None so existing
+    # run.id hashes for NNModel runs are preserved exactly.
+    trainer : Optional[NNTrainerParams]           = field(default=None)
+
     _id     : Optional[str]                         = field(repr=False, default=None)
     _state  : Optional[dict]                        = field(repr=False, default=None)
     idps    : Optional[list[NNIterationDataPoint]]  = field(repr=False, default=None)
@@ -137,6 +145,12 @@ class NNRun:
             , net   = self.net.state()
             , train = self.train.state()
         )
+        # `trainer` is omitted when None so existing NNModel runs hash to
+        # the same run.id as before this field existed. Same omit-when-
+        # default pattern as NNTrainParams.seed / save_phase_checkpoints
+        # and NNOptimParams.param_groups.
+        if self.trainer is not None:
+            state['trainer'] = self.trainer.state()
 
         id = hashlib.md5(str(state).encode('utf-8')).hexdigest()
 
@@ -221,10 +235,21 @@ class NNRun:
 
         idps = pd.read_csv(csv_path).to_dict(orient='records')
 
+        # Lazy import for trainer params — keeps `nnx.nn.params` importable
+        # without dragging the trainer subpackage in, and avoids a cycle
+        # if anything in `nnx.trainer` ever needs to import NNRun.
+        trainer_state = rep.get('trainer')
+        if trainer_state is not None:
+            from ...trainer.params import NNTrainerParams
+            trainer = NNTrainerParams.from_state(trainer_state)
+        else:
+            trainer = None
+
         return NNRun(
             net     = NNParams.from_state(rep['net'])
             , train = NNTrainParams.from_state(rep['train'])
             , model = NNModelParams.from_state(rep['model'])
+            , trainer = trainer
             , idps  = [NNIterationDataPoint.from_state(idp) for idp in idps]
         )
 

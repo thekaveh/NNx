@@ -16,6 +16,7 @@ Lightweight PyTorch training / eval / visualization toolkit, with first-class su
 - **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via legacy `torch.onnx.export` (no `onnxscript` dep needed).
 - **Custom training step** — `NNModel.train(..., train_step_fn=...)` swaps out the supervised forward/backward/step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion paradigms without modifying NNx core. See `docs/concepts.md` and `examples/05_custom_train_step_autoencoder.py`.
 - **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`. See `docs/concepts.md` and `examples/06_finetune_with_layer_freezing.py`.
+- **Multi-optimizer Trainer** — `nnx.trainer.Trainer` accepts an `NNModel` plus a name-keyed dict of `NNOptimParams` and builds one disjoint optimizer per entry (scoped by `NNParamGroupSpec` globs under strict semantics). The user supplies a `trainer_step_fn` that coordinates the multi-step update — unblocks GAN G/D, actor-critic, EBM, etc. without modifying NNx core. Writes the same `NNRun` + checkpoint artifacts `NNModel.train()` does, with a `trainer` block in `run.yaml`. See `docs/concepts.md` and `examples/09_gan_with_trainer.py`.
 
 ## Install
 

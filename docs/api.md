@@ -108,6 +108,14 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.finetune.param_groups.build_param_groups
 
+## Multi-optimizer Trainer (`nnx.trainer`)
+
+::: nnx.trainer.trainer.Trainer
+
+::: nnx.trainer.trainer.TrainerStepContext
+
+::: nnx.trainer.params.NNTrainerParams
+
 ## Visualization
 
 ::: nnx.vis_utils

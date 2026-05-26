@@ -20,11 +20,12 @@ class Optims(Enum):
 
     def __call__(
         self
-        , net           : nn.Module
-        , lr_start      : float
-        , weight_decay  : float
-        , momentum      : Union[float, tuple[float, float]]
-        , param_groups  : Optional[list] = None
+        , net                 : nn.Module
+        , lr_start            : float
+        , weight_decay        : float
+        , momentum            : Union[float, tuple[float, float]]
+        , param_groups        : Optional[list] = None
+        , strict_param_groups : bool = False
     ) -> optim.Optimizer:
         """Build the underlying torch optimizer.
 
@@ -38,6 +39,13 @@ class Optims(Enum):
         parameters by fnmatch pattern and apply per-group LR /
         weight_decay overrides. Frozen parameters (``requires_grad=False``)
         are dropped — the optimizer doesn't need to know about them.
+
+        ``strict_param_groups`` toggles between fine-tuning and
+        multi-optimizer-Trainer semantics: when False (default),
+        unmatched parameters go into a default group at ``lr_start``;
+        when True, unmatched parameters are dropped from the optimizer
+        entirely. The Trainer passes True so disjoint optimizers don't
+        end up co-owning the same params via implicit default buckets.
         """
         if net is None:
             raise ValueError("net must not be None")
@@ -50,6 +58,7 @@ class Optims(Enum):
                 net, param_groups,
                 default_lr=lr_start,
                 default_weight_decay=weight_decay,
+                strict=strict_param_groups,
             )
         else:
             params_or_groups = net.parameters()

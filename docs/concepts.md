@@ -154,6 +154,51 @@ Strict back-compat: `NNOptimParams` with `param_groups=None` (the default) produ
 
 See [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py) for the end-to-end recipe.
 
+## Multi-optimizer training (GANs, actor-critic)
+
+When the per-batch update isn't "one forward → one loss → one optimizer step" but a coordinated dance between multiple optimizers — GAN G/D alternation, actor-critic policy + value, energy-based models — use `nnx.trainer.Trainer` in place of `NNModel.train()`. It accepts one `NNModel` and a name-keyed dict of `NNOptimParams`, builds one `torch.optim.Optimizer` per entry, and hands the dict to a user-supplied `trainer_step_fn`:
+
+```python
+from nnx import Trainer, NNTrainerParams, TrainerStepContext, NNEvaluationDataPoint
+from nnx import NNOptimParams, NNParamGroupSpec, Optims
+
+trainer = Trainer(model=model)   # `model.net` wraps both G and D as sub-modules
+
+def gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+    opt_G, opt_D = ctx.optimizers["G"], ctx.optimizers["D"]
+    # ... D step: opt_D.zero_grad() → d_loss.backward() → opt_D.step()
+    # ... G step: opt_G.zero_grad() → g_loss.backward() → opt_G.step()
+    return NNEvaluationDataPoint(loss=..., error=..., ...)
+
+run = trainer.train(
+    params=NNTrainerParams(
+        n_epochs=10,
+        train_loader=loader,
+        optims={
+            "G": NNOptimParams(
+                name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+                param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=2e-4)],
+            ),
+            "D": NNOptimParams(
+                name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+                param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=2e-4)],
+            ),
+        },
+    ),
+    trainer_step_fn=gan_step,
+)
+```
+
+The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from Track A apply, just with unmatched params dropped instead of bucketed.
+
+The Trainer writes the same `NNRun` + `NNCheckpoint` artifacts `NNModel.train()` does, with one extra `trainer` block in `run.yaml` capturing the multi-optim config so `NNRun.load(id)` round-trips. There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn.
+
+Callbacks work in trainer mode too: `ctx.optimizer` is the **primary** (sorted-first) optimizer for back-compat with `LRMonitor` / `TensorBoardCallback`, and `ctx.optimizers` / `ctx.trainer` are added attributes for trainer-aware callbacks.
+
+Strict back-compat: `NNRun` built without a trainer (the standard `NNModel.train()` path) emits exactly the same `state()` as before — existing `run.id` hashes are unchanged.
+
+See [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py) for a tiny GAN on a 1D mixture-of-Gaussians distribution. Warm-resume from trainer-mode checkpoints (multi-optim sidecars) is a planned follow-up.
+
 ## Reproducibility
 
 ```python

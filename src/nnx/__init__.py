@@ -69,6 +69,7 @@ from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
+from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .utils import Utils
 from .vis_utils import VisUtils
 
@@ -96,6 +97,8 @@ __all__ = [
     "freeze", "unfreeze", "frozen",
     "load_pretrained", "LoadPretrainedResult",
     "NNParamGroupSpec",
+    # Multi-optimizer Trainer
+    "Trainer", "TrainerStepContext", "TrainerStepFn", "NNTrainerParams",
     # Reproducibility
     "set_seed", "dataloader_worker_init_fn", "env_snapshot",
     # Metadata

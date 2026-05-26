@@ -90,6 +90,7 @@ def build_param_groups(
     *,
     default_lr: float,
     default_weight_decay: float,
+    strict: bool = False,
 ) -> list[dict]:
     """Walk ``module``'s parameters, bucket them by the first matching
     spec (or into a fallback default group), and return the list of
@@ -109,6 +110,14 @@ def build_param_groups(
             for specs that omit both ``lr`` and ``lr_multiplier``.
         default_weight_decay: WD for parameters that don't match any
             spec's ``weight_decay`` override.
+        strict: when False (default, fine-tuning semantics), parameters
+            that match no spec go into a default group at ``default_lr``
+            so every trainable parameter ends up in the optimizer. When
+            True (multi-optimizer Trainer semantics), unmatched parameters
+            are DROPPED from the optimizer entirely — the contract is
+            "this optimizer owns only what the specs explicitly select",
+            which is what allows disjoint optimizers in
+            :class:`nnx.trainer.Trainer`.
 
     Returns:
         A list of dicts suitable for ``torch.optim.Optimizer(
@@ -149,7 +158,11 @@ def build_param_groups(
         )
         out.append(group)
 
-    if default_bucket:
+    # Default bucket: included under fine-tuning semantics (every trainable
+    # param ends up in the optimizer), suppressed under strict mode (the
+    # caller — typically nnx.trainer.Trainer — wants this optimizer to own
+    # only what the specs explicitly select).
+    if default_bucket and not strict:
         out.append({
             "params": default_bucket,
             "lr": default_lr,
@@ -159,7 +172,8 @@ def build_param_groups(
     if not out:
         raise ValueError(
             "build_param_groups produced no parameter groups — every parameter "
-            "is either frozen or unmatched and the default bucket is also empty."
+            "is either frozen, unmatched (under strict mode), or the module "
+            "has none. Check the specs' name_pattern against module.named_parameters()."
         )
 
     return out

@@ -4,6 +4,18 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — multi-optimizer Trainer (Track G)
+
+- **`nnx.trainer` package** — `Trainer` class that parallels `NNModel.train()` for scenarios where the per-batch update isn't a single supervised forward/backward/step. Built around the GAN G/D pattern, but applicable to actor-critic, EBM, contrastive multi-head, or any other multi-optimizer paradigm.
+  - **`Trainer(model: NNModel).train(params, trainer_step_fn, callbacks=)`** — builds one `torch.optim.Optimizer` per entry in `NNTrainerParams.optims`, dispatches to a user-supplied `trainer_step_fn(ctx) -> NNEvaluationDataPoint` per batch, writes the same `NNRun` + per-tag `NNCheckpoint` artifacts as `NNModel.train()`. No `default_trainer_step` — multi-optim updates are scenario-specific and silently running the wrong update is worse than requiring an explicit fn.
+  - **`NNTrainerParams`** — frozen dataclass with `optims: Mapping[str, NNOptimParams]` (name-keyed multi-optim config), `schedulers: Mapping[str, NNSchedulerParams]` (one per optim, defaults to ReduceLROnPlateau when missing), plus the standard `n_epochs` / `train_loader` / `val_loader` / `seed` / `save_phase_checkpoints` / `extra_metrics`. Validates non-empty `optims` and that every scheduler key matches an optim key. `state()` keys sorted for deterministic `run.id`.
+  - **`TrainerStepContext`** — frozen bundle passed into a `trainer_step_fn`: `model`, `batch`, `optimizers` (dict), `schedulers` (dict), `extra_metrics`, `batch_idx`, `epoch_idx`. The companion `TrainerStepFn` type alias is exported.
+- **Strict `param_groups` semantics** for multi-optim — `build_param_groups(..., strict=True)` (new keyword) drops parameters that match no spec instead of bucketing them into a default group. Threaded through `Optims.__call__(..., strict_param_groups=True)`. The Trainer passes True so disjoint optimizers don't co-own parameters via implicit default buckets. Default `strict=False` preserves Track A fine-tuning semantics exactly.
+- **`NNRun.trainer: Optional[NNTrainerParams]`** — populated by the Trainer; None for `NNModel.train()` runs. **Strict back-compat:** OMITTED from `state()` when None so existing `NNModel` run.id hashes are unchanged. `NNRun.load(id)` round-trips trainer-mode runs by lazy-importing `NNTrainerParams.from_state` when the YAML carries a `trainer` block.
+- Runnable GAN demo: `examples/09_gan_with_trainer.py` — generator + discriminator packed into one nn.Module, two disjoint optimizers scoped via `NNParamGroupSpec(name_pattern="G.*" | "D.*")`, alternating updates on a 1D mixture-of-Gaussians. Verified end-to-end on CPU.
+
+**Deferred from this PR:** trainer-mode warm-resume. The Trainer writes only the model net's `state_dict` to its `NNCheckpoint`s — there is no per-optimizer `.opt.<name>.pt` sidecar yet. `NNTrainerParams` does not carry `resume_from_run_id` / `resume_from_checkpoint`. Resuming a GAN's Adam state for both G and D will land as its own follow-up PR once the use case is exercised.
+
 ### Added — fine-tuning infrastructure (Track A)
 
 - **`nnx.finetune` package** with three submodules:
