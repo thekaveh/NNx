@@ -115,3 +115,7 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 ### Non-supervised paradigms (autoencoder, VAE, etc.)
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#custom-training-paradigms).
+
+### Fine-tuning (transfer learning)
+
+Load external pretrained weights, freeze layers by glob pattern, and (optionally) train them at different learning rates. See [Concepts → Fine-tuning](concepts.md#fine-tuning-transfer-learning) and [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py).

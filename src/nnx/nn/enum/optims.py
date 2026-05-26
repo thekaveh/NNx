@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Union
+from typing import Optional, Union
 
 from torch import nn, optim
 
@@ -24,38 +24,64 @@ class Optims(Enum):
         , lr_start      : float
         , weight_decay  : float
         , momentum      : Union[float, tuple[float, float]]
+        , param_groups  : Optional[list] = None
     ) -> optim.Optimizer:
+        """Build the underlying torch optimizer.
+
+        When ``param_groups`` is None (back-compat default), constructs
+        the optimizer with a single group: every trainable parameter of
+        ``net`` at ``lr=lr_start``, ``weight_decay=weight_decay``.
+
+        When ``param_groups`` is set to a list of
+        :class:`nnx.finetune.NNParamGroupSpec`, dispatches to
+        :func:`nnx.finetune.param_groups.build_param_groups` to bucket
+        parameters by fnmatch pattern and apply per-group LR /
+        weight_decay overrides. Frozen parameters (``requires_grad=False``)
+        are dropped — the optimizer doesn't need to know about them.
+        """
         if net is None:
             raise ValueError("net must not be None")
+
+        if param_groups is not None:
+            # Lazy import to avoid a cycle: build_param_groups lives in
+            # nnx.finetune, which depends on this module via NNOptimParams.
+            from ...finetune.param_groups import build_param_groups
+            params_or_groups = build_param_groups(
+                net, param_groups,
+                default_lr=lr_start,
+                default_weight_decay=weight_decay,
+            )
+        else:
+            params_or_groups = net.parameters()
 
         match self:
             case Optims.SGD:
                 return optim.SGD(
-                    lr=lr_start
-                    , momentum=momentum
-                    , params=net.parameters()
-                    , weight_decay=weight_decay
+                    params_or_groups,
+                    lr=lr_start,
+                    momentum=momentum,
+                    weight_decay=weight_decay,
                 )
             case Optims.ADAM:
                 return optim.Adam(
-                    lr=lr_start
-                    , betas=momentum
-                    , params=net.parameters()
-                    , weight_decay=weight_decay
+                    params_or_groups,
+                    lr=lr_start,
+                    betas=momentum,
+                    weight_decay=weight_decay,
                 )
             case Optims.ADAM_AMSGRAD:
                 return optim.Adam(
-                    amsgrad=True
-                    , lr=lr_start
-                    , betas=momentum
-                    , params=net.parameters()
-                    , weight_decay=weight_decay
+                    params_or_groups,
+                    amsgrad=True,
+                    lr=lr_start,
+                    betas=momentum,
+                    weight_decay=weight_decay,
                 )
             case Optims.SGD_NESTEROV:
                 return optim.SGD(
-                    nesterov=True
-                    , lr=lr_start
-                    , momentum=momentum
-                    , params=net.parameters()
-                    , weight_decay=weight_decay
+                    params_or_groups,
+                    nesterov=True,
+                    lr=lr_start,
+                    momentum=momentum,
+                    weight_decay=weight_decay,
                 )
