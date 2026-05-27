@@ -110,6 +110,10 @@ class NNRun:
     idps    : Optional[list[NNIterationDataPoint]]  = field(repr=False, default=None)
 
     def __str__(self):
+        # Delegate to NNSchedulerParams.__str__ for the scheduler block —
+        # it knows which fields apply to the configured `kind` (the
+        # plateau-only `patience`/`cooldown`/`threshold` are misleading
+        # for cosine/onecycle/linear-warmup schedulers).
         return (
             "{"
             f"loss={self.model.loss}"
@@ -127,11 +131,7 @@ class NNRun:
             f", momentum={self.train.optim.momentum}"
             f", decay={self.train.optim.weight_decay}"
 
-            f", factor={self.train.scheduler.factor}"
-            f", patience={self.train.scheduler.patience}"
-            f", cooldown={self.train.scheduler.cooldown}"
-            f", threshold={self.train.scheduler.threshold}"
-            f", min_lr={self.train.scheduler.min_lr}"
+            f", scheduler={self.train.scheduler}"
             "}"
         )
 

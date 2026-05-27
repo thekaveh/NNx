@@ -79,15 +79,26 @@ class NNEvaluationDataPoint:
 
     @staticmethod
     def mean_of(edps: list[NNEvaluationDataPoint]) -> NNEvaluationDataPoint:
-        """Mean-reduce a list of EDPs across every metric, including any
-        `extra` entries. An extra key present on some but not all edps is
-        averaged over the edps where it IS present (skipped on the rest).
+        """Unweighted-mean reduce a list of EDPs across every metric.
 
-        Note: with unequal sample counts per edp, this is a simple mean
-        across edps, not a sample-weighted mean. For sample-weighted
-        metrics across batches, prefer the aggregating path in
-        NNModel.evaluate() (which concatenates predictions then computes
-        once).
+        .. warning::
+
+            This is a **simple mean across edps**, NOT a sample-weighted
+            mean. With unequal batch sizes (the common case), the result
+            is statistically incorrect — a 1024-sample batch counts the
+            same as an 8-sample tail batch. For correct sample-weighted
+            metrics across batches, use :meth:`NNModel.evaluate`, which
+            concatenates predictions across the loader and computes once
+            on the full sample.
+
+            ``mean_of`` is kept for back-compat with callers that already
+            depend on the unweighted-mean semantics; new code should
+            prefer :meth:`NNModel.evaluate` unless the unweighted form is
+            specifically what's wanted (e.g., averaging across runs, not
+            across batches within a run).
+
+        An ``extra`` key present on some but not all edps is averaged over
+        the edps where it IS present (skipped on the rest).
         """
         # Aggregate the standard fields with the existing logic.
         ret = NNEvaluationDataPoint(
