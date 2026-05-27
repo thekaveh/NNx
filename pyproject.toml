@@ -100,6 +100,11 @@ ignore = [
     "B024",  # ABC with no abstract methods — NNDatasetBase is a structural base
     "UP007", # Optional[X] vs X | None — keep Optional for readability
     "UP045", # Optional[X] vs X | None in annotations (same as UP007)
+    "UP038", # isinstance(x, (A, B)) vs isinstance(x, A | B) — the tuple form
+             # reuses a static tuple at runtime; the union form constructs a
+             # new types.UnionType each call. ruff itself deprecated this
+             # rule in 0.11 for that reason — opt out explicitly so the
+             # 0.6-0.10 pin range doesn't trip on it.
 ]
 
 [tool.pytest.ini_options]
