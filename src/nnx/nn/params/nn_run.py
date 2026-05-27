@@ -187,8 +187,8 @@ class NNRun:
         # All three writes go through the atomic write helper so a
         # KeyboardInterrupt mid-save leaves either the old file or the
         # new file, never a half-written one. This is what makes the
-        # post-R3 "incremental save" claim actually safe — without
-        # atomicity, a partial write here corrupts the run.
+        # per-epoch incremental save actually safe — without atomicity,
+        # a partial write here corrupts the run.
         _atomic_write_text(yaml_path, yaml.dump(self.state()))
 
         # Env snapshot: written separately so it does NOT contribute to

@@ -107,17 +107,18 @@ def test_diffusion_train_step_runs_and_loss_decreases(tmp_path, monkeypatch):
 
 def test_diffusion_train_step_cosine_schedule(tmp_path, monkeypatch):
     """COSINE schedule should produce a working training step just like
-    LINEAR — the factory is schedule-agnostic."""
+    LINEAR — the factory is schedule-agnostic. Mirrors LINEAR's
+    loss-decreases check rather than just asserting "ran without error"."""
     monkeypatch.chdir(tmp_path)
     set_seed(0)
 
     model = _make_model()
-    loader = _gaussian_mixture_loader(n=64, batch_size=16)
-    schedule = NoiseSchedulers.COSINE(T=50)
+    loader = _gaussian_mixture_loader()
+    schedule = NoiseSchedulers.COSINE(T=100)
 
     run = model.train(
         params=NNTrainParams(
-            n_epochs=2,
+            n_epochs=4,
             train_loader=loader,
             optim=NNOptimParams(
                 name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
@@ -128,5 +129,43 @@ def test_diffusion_train_step_cosine_schedule(tmp_path, monkeypatch):
         ),
         train_step_fn=diffusion_train_step_factory(schedule),
     )
-    assert len(run.idps) > 0
-    assert all(idp.train_edp.loss is not None for idp in run.idps)
+    losses = [idp.train_edp.loss for idp in run.idps]
+    assert len(losses) > 0
+    for lo in losses:
+        assert lo is not None and torch.isfinite(torch.tensor(lo)).item()
+    n = len(losses)
+    early = sum(losses[: n // 4]) / max(1, n // 4)
+    late = sum(losses[3 * n // 4:]) / max(1, n - 3 * n // 4)
+    assert late < early, (
+        f"diffusion COSINE loss did not decrease: early {early:.4f} vs late {late:.4f}"
+    )
+
+
+def test_diffusion_step_reports_loss_and_error_equal(tmp_path, monkeypatch):
+    """Documented invariant in diffusion/training.py: train_edp.loss and
+    train_edp.error must be set to the same value so BEST tracking and
+    ReduceLROnPlateau have a metric. Without this, the scheduler falls
+    back through edp.error → edp.loss and works anyway, but the contract
+    deserves a regression test — a future refactor could break it silently."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = _make_model()
+    schedule = NoiseSchedulers.LINEAR(T=50)
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=_gaussian_mixture_loader(n=32, batch_size=8),
+            optim=NNOptimParams(
+                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+            ),
+        ),
+        train_step_fn=diffusion_train_step_factory(schedule),
+    )
+    for idp in run.idps:
+        assert idp.train_edp.loss == idp.train_edp.error, (
+            f"diffusion step contract violated: loss={idp.train_edp.loss} "
+            f"!= error={idp.train_edp.error}"
+        )

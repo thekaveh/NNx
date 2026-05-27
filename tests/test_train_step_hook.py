@@ -136,10 +136,12 @@ def test_train_step_context_carries_batch_and_epoch_idx(tmp_path, monkeypatch):
 
 def test_custom_step_without_error_field_doesnt_crash_best_compare(tmp_path, monkeypatch):
     """A custom train_step_fn that returns an EDP with error=None must not
-    crash the BEST-checkpoint comparison. The pre-existing `_err` helper
-    inside _save_checkpoints would do `None < float('inf')` and raise.
-    Custom hooks shouldn't be required to populate the error field
-    (the supervised proxy doesn't apply to all paradigms)."""
+    crash the BEST-checkpoint comparison. The shared `_best_err` helper
+    (imported by both NNModel._save_checkpoints and the inline
+    best_checkpoint tracking) falls through val_edp → train_edp → +inf
+    so missing .error fields are tolerated. Custom hooks shouldn't be
+    required to populate the error field (the supervised proxy doesn't
+    apply to all paradigms)."""
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 
@@ -162,9 +164,10 @@ def test_custom_step_without_error_field_doesnt_crash_best_compare(tmp_path, mon
 
 
 def test_custom_step_extra_survives_run_save_load(tmp_path, monkeypatch):
-    """A custom hook that populates EDP.extra must have those values round-
-    trip through NNRun.save → idps.csv → NNRun.load. Validates that the
-    new dispatch path doesn't break the pass-2 R4 plumbing."""
+    """A custom hook that populates EDP.extra must have those values
+    round-trip through NNRun.save → idps.csv → NNRun.load. Validates
+    that the train_step_fn dispatch path doesn't break the EDP-extra
+    persistence machinery."""
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 

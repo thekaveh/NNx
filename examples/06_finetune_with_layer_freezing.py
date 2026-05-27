@@ -39,8 +39,13 @@ from nnx import (
 
 
 def _make_loaders(seed: int, n: int = 256, d: int = 8, n_classes: int = 3):
-    """Two slightly-different distributions. The 'pretrain' loader has
-    class-conditional Gaussians; the 'finetune' loader rotates them."""
+    """Random-feature / random-label dataset. The seed differs between the
+    pretrain and fine-tune calls so the two loaders draw distinct samples
+    — sufficient for showing that loss decreases on the new distribution
+    while the backbone stays frozen and only the head trains. (A
+    class-conditional Gaussian setup would make the demo more
+    informative; kept simple to minimize dependencies.)
+    """
     torch.manual_seed(seed)
     X = torch.randn(n, d)
     y = torch.randint(0, n_classes, (n,))

@@ -80,10 +80,19 @@ def test_scheduler_params_state_round_trip():
 
 
 def test_scheduler_params_backwards_compat_no_kind():
-    """A params object without `kind` set deserializes as None — preserves
-    pre-Schedulers behavior (ReduceLROnPlateau in train())."""
+    """A params object without `kind` set must OMIT `kind` from state()
+    so a plain ReduceLROnPlateau NNSchedulerParams hashes to the same
+    run.id as before the Schedulers enum existed. Also: from_state
+    tolerates either the omitted form (post-audit) or the explicit
+    None form (pre-audit on-disk runs) — both deserialize to kind=None."""
     p = NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3)
     state = p.state()
-    assert state["kind"] is None
+    assert "kind" not in state, (
+        "kind=None must be omitted from state() to preserve run.id back-compat"
+    )
+    # Round-trip from the omit-form.
     reconstructed = NNSchedulerParams.from_state(state)
     assert reconstructed.kind is None
+    # And from the legacy explicit-None form (older on-disk run.yaml files).
+    reconstructed_legacy = NNSchedulerParams.from_state({**state, "kind": None})
+    assert reconstructed_legacy.kind is None

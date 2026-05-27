@@ -123,8 +123,8 @@ class VisUtils:
         vm
         , renderer          = RENDERER
         , fig_size  : tuple = FIG_SIZE
-        , label_size: str   = LABEL_SIZE
-        , title_size: str   = TITLE_SIZE
+        , label_size: int   = LABEL_SIZE
+        , title_size: int   = TITLE_SIZE
         , margin_size       = MARGIN_SIZE
     ):
         """Render a colored scatter plot from a view-model dict and return

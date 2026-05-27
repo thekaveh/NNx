@@ -19,6 +19,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from .._step_helpers import finalize_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .schedules import NoiseSchedule
@@ -87,10 +88,8 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
 
         eps_pred = m.net(x_t, t)
         loss = F.mse_loss(eps_pred, eps)
-        loss.backward()
-        ctx.optimizer.step()
+        loss_val = finalize_step(loss, ctx, paradigm="diffusion")
 
-        loss_val = float(loss.detach())
         return NNEvaluationDataPoint(
             f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
             loss=loss_val,

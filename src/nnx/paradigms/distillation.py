@@ -5,7 +5,7 @@ Classic Hinton/Vinyals/Dean formulation: the student's loss is a
 weighted mix of the standard hard-label loss and a temperature-softened
 KL divergence between student and teacher logits.
 
-    L = α · KL(softmax(s/T) || softmax(t/T)) · T² + (1 − α) · L_hard
+    L = α · KL(softmax(t/T) || softmax(s/T)) · T² + (1 − α) · L_hard
 
 The factory returns a :class:`nnx.TrainStepFn` that plugs straight into
 :meth:`NNModel.train` via the ``train_step_fn=`` hook. The teacher's
@@ -15,10 +15,10 @@ unnecessary in practice — once a teacher is a teacher, it stays one.
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .._step_helpers import finalize_step
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
@@ -70,21 +70,24 @@ def kd_train_step_factory(
         m.net.train()
         m.net.zero_grad()
 
+        # unpack_batch returns ((X,), Y); the singleton destructure asserts
+        # a single-input net and binds X to that one tensor.
         (X,), Y = m.net.unpack_batch(ctx.batch)
-        X = tuple(x.to(m.device) for x in X) if isinstance(X, tuple) else (X.to(m.device),)
+        X = X.to(m.device)
         Y = Y.to(m.device)
 
-        student_logits = m.net(*X)
+        student_logits = m.net(X)
         with torch.no_grad():
             # Teacher might live on a different device; migrate the
-            # inputs into its frame for the forward pass. Cheap when
+            # input into its frame for the forward pass. Cheap when
             # student.device == teacher.device.
-            t_inputs = tuple(x.to(teacher.device) for x in X)
-            teacher_logits = teacher.net(*t_inputs).to(m.device)
+            teacher_logits = teacher.net(X.to(teacher.device)).to(m.device)
 
-        # KL(student || teacher) with both softened by T. F.kl_div
-        # expects the FIRST argument in log-space and the second in
-        # plain probability space; we obey that convention.
+        # KL(teacher || student) with both softened by T — the standard
+        # Hinton direction. F.kl_div's contract is
+        # ``sum target*(log target - input)``, with `input` in log-space
+        # and `target` in probability space; that evaluates to
+        # KL(target || exp(input)) = KL(teacher_soft || student_soft).
         soft_loss = F.kl_div(
             F.log_softmax(student_logits / temperature, dim=-1),
             F.softmax(teacher_logits / temperature, dim=-1),
@@ -92,16 +95,7 @@ def kd_train_step_factory(
         ) * (temperature ** 2)
         hard_loss = m.loss_fn(student_logits, Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
-
-        loss.backward()
-        ctx.optimizer.step()
-
-        loss_val = float(loss.detach())
-        if not np.isfinite(loss_val):
-            raise FloatingPointError(
-                f"non-finite distillation loss ({loss_val!r}) — training diverged. "
-                "Check learning rate, alpha, temperature, or input normalization."
-            )
+        loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
         Y_hat = student_logits.argmax(dim=-1)
         return (

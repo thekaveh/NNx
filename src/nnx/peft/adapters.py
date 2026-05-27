@@ -39,9 +39,10 @@ class AdapterLayer(nn.Module):
             ``dim`` (e.g., dim=768 → bottleneck=64 in the original
             Houlsby setup). Lower bottleneck = fewer params,
             potentially less expressive.
-        activation: callable applied between down- and up-projection.
-            Defaults to ``torch.nn.GELU()`` — the modern adapter
-            choice; ReLU works too.
+        activation: ``nn.Module`` factory (called with no args inside
+            ``__init__`` to produce the activation module). Defaults to
+            ``torch.nn.GELU`` — the modern adapter choice; ``nn.ReLU``
+            works too.
     """
 
     def __init__(

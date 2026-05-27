@@ -172,6 +172,118 @@ def test_trainer_run_yaml_carries_trainer_block(tmp_path, monkeypatch):
     assert loaded.trainer is not None
     assert "main" in loaded.trainer.optims
     assert loaded.trainer.seed == 7
+    # idps must round-trip too — without this, the run.yaml load
+    # would silently drop training history.
+    assert loaded.idps is not None
+    assert len(loaded.idps) == len(run.idps)
+    for orig, rt in zip(run.idps, loaded.idps, strict=True):
+        assert orig.iter_idx == rt.iter_idx
+        assert orig.epoch_idx == rt.epoch_idx
+        assert orig.train_edp.loss == rt.train_edp.loss
+
+
+def test_trainer_invokes_callbacks(tmp_path, monkeypatch):
+    """Trainer.train must dispatch the same Callback lifecycle hooks
+    NNModel.train does — on_train_begin / on_epoch_begin / on_epoch_end /
+    on_train_end. Without this dispatch, the callback parameter is dead code."""
+    monkeypatch.chdir(tmp_path)
+
+    from nnx import Callback
+
+    class _RecordingCallback(Callback):
+        def __init__(self):
+            self.events: list[str] = []
+
+        def on_train_begin(self, ctx):
+            self.events.append("train_begin")
+
+        def on_epoch_begin(self, ctx):
+            self.events.append(f"epoch_begin_{ctx.epoch}")
+
+        def on_epoch_end(self, ctx):
+            self.events.append(f"epoch_end_{ctx.epoch}")
+            # Trainer-mode callbacks should see ctx.optimizers (dict) +
+            # ctx.trainer in addition to the legacy ctx.optimizer (primary).
+            assert hasattr(ctx, "optimizers"), "Trainer should set ctx.optimizers"
+            assert hasattr(ctx, "trainer"), "Trainer should set ctx.trainer"
+
+        def on_train_end(self, ctx):
+            self.events.append("train_end")
+
+    cb = _RecordingCallback()
+    trainer = Trainer(model=_supervised_model())
+    trainer.train(
+        params=NNTrainerParams(
+            n_epochs=2,
+            train_loader=_supervised_loader(),
+            optims={"main": NNOptimParams(
+                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+            )},
+        ),
+        trainer_step_fn=_supervised_step,
+        callbacks=[cb],
+    )
+    # Exact sequence the lifecycle must produce.
+    assert cb.events == [
+        "train_begin",
+        "epoch_begin_0", "epoch_end_0",
+        "epoch_begin_1", "epoch_end_1",
+        "train_end",
+    ]
+
+
+def test_trainer_early_stop_via_callback(tmp_path, monkeypatch):
+    """A callback setting ctx.should_stop = True must terminate the
+    Trainer loop early — same contract as NNModel.train."""
+    monkeypatch.chdir(tmp_path)
+
+    from nnx import Callback
+
+    class _StopAfter(Callback):
+        def __init__(self, after_epoch: int):
+            self.after_epoch = after_epoch
+
+        def on_epoch_end(self, ctx):
+            if ctx.epoch >= self.after_epoch:
+                ctx.should_stop = True
+
+    trainer = Trainer(model=_supervised_model())
+    run = trainer.train(
+        params=NNTrainerParams(
+            n_epochs=10,                # would run 10 if not stopped
+            train_loader=_supervised_loader(),
+            optims={"main": NNOptimParams(
+                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+            )},
+        ),
+        trainer_step_fn=_supervised_step,
+        callbacks=[_StopAfter(after_epoch=1)],
+    )
+    # 4 batches/epoch × 2 epochs (stopped after epoch 1) = 8 idps.
+    assert len(run.idps) == 2 * 4
+
+
+def test_trainer_with_val_loader_evaluates(tmp_path, monkeypatch):
+    """When val_loader is set, Trainer must call model.evaluate() at
+    the end of each epoch and populate val_edp on the last idp."""
+    monkeypatch.chdir(tmp_path)
+
+    trainer = Trainer(model=_supervised_model())
+    val_loader = _supervised_loader(n=16)
+    run = trainer.train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=_supervised_loader(),
+            val_loader=val_loader,
+            optims={"main": NNOptimParams(
+                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+            )},
+        ),
+        trainer_step_fn=_supervised_step,
+    )
+    # Last idp of each epoch carries val_edp; earlier idps don't.
+    assert run.idps[-1].val_edp is not None
+    assert run.idps[-1].val_edp.loss is not None
 
 
 # -------------------------------------------------------------------------
@@ -249,6 +361,11 @@ def test_trainer_multi_optim_gan_e2e(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     model = _make_gan_model()
+    # Snapshot pre-train weights for BOTH sub-nets — the test would otherwise
+    # pass even if _gan_step did nothing (constant EDP, no updates).
+    g_pre = {k: v.clone() for k, v in model.net.G.state_dict().items()}
+    d_pre = {k: v.clone() for k, v in model.net.D.state_dict().items()}
+
     trainer = Trainer(model=model)
 
     g_optim = NNOptimParams(
@@ -271,6 +388,15 @@ def test_trainer_multi_optim_gan_e2e(tmp_path, monkeypatch):
 
     assert run.idps is not None
     assert len(run.idps) == 2 * 4  # 2 epochs * 4 batches
+
+    # Both G and D weights must have actually changed — otherwise the
+    # test only verifies idp accounting, not that optimizers ran.
+    g_post = model.net.G.state_dict()
+    d_post = model.net.D.state_dict()
+    g_moved = any(not torch.equal(g_pre[k], g_post[k]) for k in g_pre)
+    d_moved = any(not torch.equal(d_pre[k], d_post[k]) for k in d_pre)
+    assert g_moved, "G's parameters did not update during multi-optim training"
+    assert d_moved, "D's parameters did not update during multi-optim training"
 
 
 def test_trainer_per_optim_param_groups_partition_params(tmp_path, monkeypatch):

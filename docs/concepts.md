@@ -16,7 +16,16 @@
         ├──> NNRun (md5 of state) ──> runs/<id>/run.yaml + idps.csv
         ├──> NNCheckpoint × 6 tags ─> runs/<id>/checkpoints/*.pt
         │                              + *.opt.pt (optimizer sidecars)
-        └──> Callbacks: EarlyStopping, LRMonitor, TensorBoard, Wandb, ...
+        └──> Callbacks: EarlyStopping, LRMonitor, TensorBoard, Wandb,
+                       ModelCheckpoint (custom-tag at user epochs)
+
+Specializations layered on the train_step_fn hook:
+
+    nnx.finetune    → freeze / unfreeze / load_pretrained / NNParamGroupSpec
+    nnx.trainer     → Trainer / NNTrainerParams (multi-optimizer, GANs)
+    nnx.diffusion   → NoiseSchedulers / DiffusionMLP / diffusion_train_step_factory / sample
+    nnx.paradigms   → kd / simclr / mixup / cutmix _train_step_factory
+    nnx.peft        → LoRALinear / apply_lora_to / save_lora_weights / AdapterLayer
 ```
 
 ## Params as the source of truth
@@ -48,7 +57,7 @@ Adding a new option is a one-place change: extend the enum + the `match` block. 
 
 ## What lands on disk
 
-Every `model.train(params)` creates a run directory under `./runs/<md5_of_state>/`:
+Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the run's `state()` dict):
 
 ```
 runs/<id>/
@@ -189,7 +198,7 @@ run = trainer.train(
 )
 ```
 
-The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from Track A apply, just with unmatched params dropped instead of bucketed.
+The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from `nnx.finetune` apply, just with unmatched params dropped instead of bucketed.
 
 The Trainer writes the same `NNRun` + `NNCheckpoint` artifacts `NNModel.train()` does, with one extra `trainer` block in `run.yaml` capturing the multi-optim config so `NNRun.load(id)` round-trips. There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn.
 
@@ -259,7 +268,7 @@ step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
 student.train(params=train_params, train_step_fn=step_fn)
 ```
 
-The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(s/T), softmax(t/T)) · T² + (1-α) · L_hard`. The hard-label term uses the student's `loss_fn` so KD works for any classification loss (CE, NLL, ...). EDP reports the combined loss and student top-1 error.
+The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard` — the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`. The hard-label term uses the student's `loss_fn` so KD works for any classification loss (CE, NLL, ...). EDP reports the combined loss and student top-1 error.
 
 ### SimCLR contrastive
 
@@ -319,7 +328,7 @@ save_lora_weights(model.net, "lora.pt")    # tiny checkpoint, lora_A/B only
 
 The `apply_lora_to` mutation is **idempotent**: a second call against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk).
 
-`save_lora_weights(module, path)` writes only the LoRA parameters — typically 10×-100× smaller than a full `state_dict` for the same model. `load_lora_weights(module, source)` loads them back into an already-wrapped module via `load_state_dict(strict=False)`, so the frozen base's missing-from-the-checkpoint keys don't raise. Source can be a path or a state-dict dict.
+`save_lora_weights(module, path)` writes only the LoRA parameters — typically a small percentage of a full `state_dict` for the same model (single-digit % for production-scale nets with `r=4-8`; closer to ~40% on the tiny demo net where `r/dim` is large). `load_lora_weights(module, source)` loads them back into an already-wrapped module via `load_state_dict(strict=False)`, so the frozen base's missing-from-the-checkpoint keys don't raise. Source can be a path or a state-dict dict.
 
 After wrapping, parameter names gain a `.base.` segment: `layers.0.weight` becomes `layers.0.base.weight`. Code that did `model.net.layers[0].weight` should switch to `model.net.layers[0].base.weight` or use `model.net.layers[0].base` for the wrapped Linear.
 

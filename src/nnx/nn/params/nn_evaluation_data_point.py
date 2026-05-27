@@ -142,7 +142,7 @@ class NNEvaluationDataPoint:
             , recall    = state['recall']
             , accuracy  = state['accuracy']
             , precision = state['precision']
-            , loss      = state['loss'] if state['loss'] is not None else None
-            , error     = state['error'] if state['error'] is not None else None
+            , loss      = state['loss']
+            , error     = state['error']
             , extra     = dict(state.get('extra') or {})
         )

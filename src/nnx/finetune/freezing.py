@@ -25,9 +25,13 @@ def freeze(module: nn.Module, *patterns: str) -> int:
     """Set ``requires_grad=False`` on every parameter under ``module``
     whose dotted name matches any of ``patterns``.
 
-    Patterns use ``fnmatch`` semantics (``*`` matches one or more
-    name segments, ``?`` matches a single character). Match is against
-    the parameter's full dotted name, e.g., ``encoder.layer.5.weight``.
+    Patterns use ``fnmatch`` shell-glob semantics: ``*`` matches any
+    sequence of characters **including dots** (not just one path segment),
+    ``?`` matches a single character, ``[seq]`` matches one character
+    from the set. Match is against the parameter's full dotted name,
+    e.g., ``encoder.layer.5.weight``. So ``"encoder.*"`` matches every
+    parameter under the encoder subtree, including deeply nested ones
+    like ``encoder.layer.5.weight``.
 
     Args:
         module: any ``nn.Module``.

@@ -10,9 +10,11 @@ notebooks keep working.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
+from .params.nn_checkpoint import NNCheckpoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
 if TYPE_CHECKING:
@@ -110,12 +112,24 @@ class EarlyStopping(Callback):
 
 
 class ModelCheckpoint(Callback):
-    """Manual checkpoint trigger — useful for ad-hoc save points beyond the
-    fixed Q1/Q2/Q3/BEST/LAST cycle in train().
+    """Save a custom-tagged checkpoint at user-specified epochs.
 
-    The standard cycle already saves BEST and LAST every epoch, so this exists
-    for callers who want a named tag at a custom epoch. No-op unless `epochs`
-    matches the current epoch.
+    The standard train() loop already saves FIRST / Q1 / Q2 / Q3 / LAST / BEST
+    via the Checkpoints enum. This callback adds ad-hoc save points outside
+    that cycle — useful for sampling at fixed milestones (e.g., epoch 10,
+    20, 50) for downstream inspection.
+
+    Each match writes ``<cwd>/runs/<run.id>/checkpoints/<tag>_e<epoch>.pt``
+    — cwd-relative, matching what :meth:`NNRun.save` and :class:`NNCheckpoint`
+    use when called from inside :meth:`NNModel.train` (the train() entry
+    point doesn't accept a ``root=`` parameter). The epoch suffix
+    prevents successive matches from overwriting each other when
+    ``epochs`` has multiple entries.
+
+    Args:
+        epochs: list of 0-indexed epoch numbers at which to save. Empty /
+            None means the callback never fires (and never saves anything).
+        tag: prefix in the filename, defaults to ``"custom"``.
     """
 
     def __init__(self, epochs: Optional[list[int]] = None, tag: str = "custom"):
@@ -123,11 +137,24 @@ class ModelCheckpoint(Callback):
         self.tag = tag
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
-        # Intentionally minimal — train()'s _save_checkpoints already handles
-        # the standard tags. Custom-tag saving was not in the prior API; this
-        # callback is a hook for future expansion.
-        if ctx.epoch in self.epochs:
-            pass
+        if ctx.epoch not in self.epochs:
+            return
+        # Build the NNCheckpoint inline — same shape as NNModel._save_checkpoints
+        # but with a custom path so it doesn't collide with the Checkpoints enum
+        # tags. Goes through NNCheckpoint.to_file for the atomic-write guarantee.
+        ckpt = NNCheckpoint(
+            idp=ctx.idp,
+            model_params=ctx.model.params,
+            net_params=ctx.model.net_params,
+            net_state=ctx.model.net.state_dict(),
+        )
+        # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
+        # uses through _checkpoint_path; we hand-build the path here because
+        # the user-supplied tag isn't part of the Checkpoints enum.
+        path = os.path.join(
+            "runs", ctx.run.id, "checkpoints", f"{self.tag}_e{ctx.epoch}.pt",
+        )
+        ckpt.to_file(path)
 
 
 class LRMonitor(Callback):

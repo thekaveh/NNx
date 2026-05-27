@@ -63,6 +63,10 @@ def test_mixup_train_loop_runs(tmp_path, monkeypatch):
     set_seed(0)
 
     model = _supervised_model()
+    # Snapshot weights — the test would otherwise pass even if Mixup did
+    # nothing (e.g., if lam always ended up 1.0 → standard training).
+    pre = {n: p.clone() for n, p in model.net.named_parameters()}
+
     loader = _supervised_loader()
     run = model.train(
         params=NNTrainParams(
@@ -80,6 +84,11 @@ def test_mixup_train_loop_runs(tmp_path, monkeypatch):
     losses = [idp.train_edp.loss for idp in run.idps]
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
+    # Some parameter must have moved — proves Mixup did SOMETHING, not no-op.
+    moved = any(
+        not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters()
+    )
+    assert moved, "Mixup train step ran but model weights did not change"
 
 
 def test_mixup_reports_weighted_accuracy(tmp_path, monkeypatch):
@@ -123,9 +132,10 @@ class _TinyImageNet(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(3, 4, kernel_size=3, padding=1)
         self.head = nn.Linear(4 * 4 * 4, n_classes)
-        # Stash a placeholder ".params" so NNRun's persistence path stays
-        # happy. NNModel.train() reads `self.net_params` (from Track C),
-        # so this is just future-proofing for tests that touch self.net.params.
+        # Stash a placeholder ".params" so callers that inspect
+        # `self.net.params` directly (the FeedFwdNN convention) don't
+        # AttributeError. NNModel.train() itself reads `self.net_params`
+        # on the model, which is set during NNModel.__init__.
         self.params = None
 
     def forward(self, x):

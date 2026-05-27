@@ -14,6 +14,11 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** (opt-in via extras).
 - **ONNX export** with a single method call.
+- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` for glob-pattern layer freezing, external state-dict loading, and per-layer-group learning rates.
+- **Multi-optimizer Trainer** — `nnx.trainer.Trainer` parallels `NNModel.train()` for GAN / actor-critic / EBM workflows with a name-keyed dict of optimizers scoped via `NNParamGroupSpec`.
+- **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}` for noise-prediction training and reverse-diffusion sampling.
+- **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory` for knowledge distillation, contrastive learning, and batch-level augmentation.
+- **Parameter-efficient fine-tuning (PEFT)** — `nnx.peft.{LoRALinear, apply_lora_to, AdapterLayer}` for LoRA-wrapped Linear layers and bottleneck residual adapters.
 
 ## Where to next
 
