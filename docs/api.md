@@ -30,6 +30,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.trainer.trainer.TrainerStepContext
 
+::: nnx.trainer.trainer.TrainerStepFn
+
 ::: nnx.trainer.params.NNTrainerParams
 
 ## 3. Params
@@ -65,6 +67,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 ::: nnx.nn.net.graph_att_nn.GraphAttNN
 
 ## 5. Datasets
+
+::: nnx.nn.dataset.nn_dataset_base.NNDatasetBase
 
 ::: nnx.nn.dataset.nn_dataset.NNDataset
 
