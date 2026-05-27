@@ -126,7 +126,7 @@ def build_param_groups(
     # One bucket per spec, in priority order. Each parameter goes into
     # the FIRST matching spec's bucket (break on hit, below); anything
     # unmatched falls through to default_bucket.
-    buckets: list[tuple[Optional[NNParamGroupSpec], list[nn.Parameter]]] = [
+    buckets: list[tuple[NNParamGroupSpec, list[nn.Parameter]]] = [
         (spec, []) for spec in specs
     ]
     default_bucket: list[nn.Parameter] = []

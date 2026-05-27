@@ -83,9 +83,11 @@ def kd_train_step_factory(
             # student.device == teacher.device.
             teacher_logits = teacher.net(X.to(teacher.device)).to(m.device)
 
-        # KL(student || teacher) with both softened by T. F.kl_div
-        # expects the FIRST argument in log-space and the second in
-        # plain probability space; we obey that convention.
+        # KL(teacher || student) with both softened by T — the standard
+        # Hinton direction. F.kl_div's contract is
+        # ``sum target*(log target - input)``, with `input` in log-space
+        # and `target` in probability space; that evaluates to
+        # KL(target || exp(input)) = KL(teacher_soft || student_soft).
         soft_loss = F.kl_div(
             F.log_softmax(student_logits / temperature, dim=-1),
             F.softmax(teacher_logits / temperature, dim=-1),

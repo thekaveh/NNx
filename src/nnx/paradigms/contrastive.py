@@ -82,7 +82,7 @@ def _unpack_views(batch):
             return batch[0], batch[1]
     raise ValueError(
         "SimCLR step expects a batch of (view1, view2) tensors. Got "
-        f"{type(batch).__name__} with shape "
+        f"{type(batch).__name__} with element types "
         f"{[type(b).__name__ for b in batch] if isinstance(batch, (list, tuple)) else 'scalar'}."
     )
 
