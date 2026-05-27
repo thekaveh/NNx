@@ -7,6 +7,7 @@ and step ``x_{t-1}`` via the DDPM posterior formula.
 The sampler is a single free function; no class state. It runs entirely
 under ``torch.no_grad`` and ``model.net.eval()`` mode.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -75,8 +76,15 @@ def sample(
             # at every step except the final t=0 (the boundary case is a
             # deterministic mean — adding noise would not match the training
             # objective).
-            noise = torch.randn_like(x) if generator is None else torch.randn(
-                x.shape, generator=generator, device=device, dtype=x.dtype,
+            noise = (
+                torch.randn_like(x)
+                if generator is None
+                else torch.randn(
+                    x.shape,
+                    generator=generator,
+                    device=device,
+                    dtype=x.dtype,
+                )
             )
             x = mean + sched.posterior_variance[t_int].sqrt() * noise
         else:

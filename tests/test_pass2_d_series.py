@@ -3,6 +3,7 @@
 - D6: Utils / VisUtils — module-level functions exist; the class API still
   works (back-compat shim); both point at the same callable.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -79,9 +80,14 @@ def test_d6_vis_utils_all_lists_aliases():
     """nnx.vis_utils.__all__ advertises both VisUtils and the module-level
     function aliases so `from nnx.vis_utils import *` works as expected."""
     expected = {
-        "VisUtils", "generate_colors", "multi_line_plot", "scatter_plot",
-        "get_scatter_plot_vm", "two_dim_tsne_checkpoint_logits",
-        "confusion_matrix", "classification_report",
+        "VisUtils",
+        "generate_colors",
+        "multi_line_plot",
+        "scatter_plot",
+        "get_scatter_plot_vm",
+        "two_dim_tsne_checkpoint_logits",
+        "confusion_matrix",
+        "classification_report",
     }
     assert expected.issubset(set(vis_mod.__all__))
 

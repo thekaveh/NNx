@@ -8,6 +8,7 @@
 - V3: metadata.yaml is written alongside run.yaml and contains env info
   but is NOT part of state() / run.id.
 """
+
 from __future__ import annotations
 
 import torch
@@ -42,11 +43,16 @@ def _build_train_params(seed=None, n_epochs=1):
 def _make_model():
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -94,7 +100,7 @@ def test_v1_seed_none_preserves_back_compat_run_id():
         # seed=None (default)
     )
     state = p.state()
-    assert 'seed' not in state, "seed=None must not appear in state() to preserve back-compat"
+    assert "seed" not in state, "seed=None must not appear in state() to preserve back-compat"
 
 
 def test_v1_seed_set_appears_in_state():
@@ -107,12 +113,13 @@ def test_v1_seed_set_appears_in_state():
         seed=123,
     )
     state = p.state()
-    assert state['seed'] == 123
+    assert state["seed"] == 123
 
 
 def test_v1_train_params_round_trip_with_seed():
     p = NNTrainParams(
-        n_epochs=5, seed=7,
+        n_epochs=5,
+        seed=7,
         optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
         scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3),
     )
@@ -123,16 +130,25 @@ def test_v1_train_params_round_trip_with_seed():
 def test_v1_train_params_from_state_legacy_yaml_no_seed_key():
     """A YAML produced before the seed field existed must still load."""
     legacy = {
-        'n_epochs': 10,
-        'optim': {
-            'max_lr': 1e-3, 'momentum': "(0.9, 0.999)",
-            'name': 'adam', 'weight_decay': 0.0,
+        "n_epochs": 10,
+        "optim": {
+            "max_lr": 1e-3,
+            "momentum": "(0.9, 0.999)",
+            "name": "adam",
+            "weight_decay": 0.0,
         },
-        'scheduler': {
-            'min_lr': 1e-7, 'factor': 0.5, 'patience': 2,
-            'cooldown': 1, 'threshold': 1e-3, 'kind': None,
-            'step_size': None, 'T_max': None, 'max_lr': None,
-            'total_steps': None, 'warmup_steps': None,
+        "scheduler": {
+            "min_lr": 1e-7,
+            "factor": 0.5,
+            "patience": 2,
+            "cooldown": 1,
+            "threshold": 1e-3,
+            "kind": None,
+            "step_size": None,
+            "T_max": None,
+            "max_lr": None,
+            "total_steps": None,
+            "warmup_steps": None,
         },
         # NO 'seed' key
     }
@@ -180,8 +196,17 @@ def test_v3_env_snapshot_returns_serializable_dict():
     snap = env_snapshot()
     assert isinstance(snap, dict)
     # Required keys present even when some fail (None is acceptable).
-    for k in ("nnx", "python", "torch", "numpy", "platform",
-              "cuda_available", "cuda_device_count", "git_commit", "git_dirty"):
+    for k in (
+        "nnx",
+        "python",
+        "torch",
+        "numpy",
+        "platform",
+        "cuda_available",
+        "cuda_device_count",
+        "git_commit",
+        "git_dirty",
+    ):
         assert k in snap
     # python / torch / numpy / platform always succeed.
     assert snap["python"] is not None
@@ -204,9 +229,7 @@ def test_v3_env_snapshot_is_cached_across_calls():
     # Sabotage the cache with a sentinel; a second call must observe it.
     seeding._ENV_SNAPSHOT_CACHE = {"sentinel": "from_cache"}
     snap2 = env_snapshot()
-    assert snap2 == {"sentinel": "from_cache"}, (
-        "env_snapshot should reuse the cached result instead of re-computing"
-    )
+    assert snap2 == {"sentinel": "from_cache"}, "env_snapshot should reuse the cached result instead of re-computing"
 
     # force_refresh=True bypasses the cache.
     snap3 = env_snapshot(force_refresh=True)
@@ -233,6 +256,7 @@ def test_v3_metadata_yaml_written_by_run_save(tmp_path, monkeypatch):
     assert (run_dir / "metadata.yaml").exists()
 
     import yaml
+
     with open(run_dir / "metadata.yaml") as f:
         meta = yaml.safe_load(f)
     assert meta["torch"] is not None

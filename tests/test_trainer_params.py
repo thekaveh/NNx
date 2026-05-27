@@ -1,4 +1,5 @@
 """Tests for NNTrainerParams — validation + state()/from_state() round-trip."""
+
 from __future__ import annotations
 
 import pytest
@@ -15,14 +16,20 @@ from nnx import (
 
 def _g_optim() -> NNOptimParams:
     return NNOptimParams(
-        name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=2e-4)],
     )
 
 
 def _d_optim() -> NNOptimParams:
     return NNOptimParams(
-        name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=2e-4)],
     )
 
@@ -107,10 +114,17 @@ def test_trainer_params_state_picks_up_non_plateau_scheduler():
     p = NNTrainerParams(
         n_epochs=2,
         optims={"G": _g_optim()},
-        schedulers={"G": NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
-            kind=Schedulers.COSINE_ANNEALING, T_max=10,
-        )},
+        schedulers={
+            "G": NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=2,
+                cooldown=1,
+                threshold=1e-3,
+                kind=Schedulers.COSINE_ANNEALING,
+                T_max=10,
+            )
+        },
     )
     p2 = NNTrainerParams.from_state(p.state())
     assert p2.schedulers["G"].kind == Schedulers.COSINE_ANNEALING

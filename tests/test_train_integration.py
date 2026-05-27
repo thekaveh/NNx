@@ -7,6 +7,7 @@ the run and reconstruct a model from the BEST checkpoint.
 Uses a small random dataset so it stays fast (<10s on CPU) and avoids
 network downloads. Uses tmp_path + chdir so the runs/ directory lands in
 a pytest temp dir and doesn't pollute the repo."""
+
 from __future__ import annotations
 
 import os
@@ -68,10 +69,17 @@ def _train_params(train_loader, val_loader, n_epochs: int = 2):
         train_loader=train_loader,
         val_loader=val_loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=1e-2,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=2,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
 
@@ -196,14 +204,21 @@ def test_train_rejects_none_or_invalid_params():
     # 2. invalid optim: Adam with a scalar momentum (Adam wants a tuple).
     train_loader, _ = _make_tiny_loaders()
     bad_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=0.9, weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=0.9,
+        weight_decay=0.0,
     )
     bad_params = NNTrainParams(
         n_epochs=1,
         train_loader=train_loader,
         optim=bad_optim,
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=1,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
     with pytest.raises(ValueError, match=r"^train params has an invalid optim config:"):

@@ -1,4 +1,5 @@
 """Tests for nnx.finetune.param_groups + the NNOptimParams integration."""
+
 from __future__ import annotations
 
 import pytest
@@ -34,7 +35,9 @@ def _net() -> nn.Sequential:
 def test_param_group_spec_round_trip():
     """state() / from_state() must reconstruct the spec identically."""
     spec = NNParamGroupSpec(
-        name_pattern="encoder.*", lr=1e-5, weight_decay=0.0,
+        name_pattern="encoder.*",
+        lr=1e-5,
+        weight_decay=0.0,
     )
     rt = NNParamGroupSpec.from_state(spec.state())
     assert rt == spec
@@ -60,21 +63,24 @@ def test_nn_optim_params_state_omits_param_groups_when_none():
     tests in test_params_round_trip.py for mixed_precision and
     NNSchedulerParams.kind."""
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3,
-        momentum=(0.9, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
     )
     state = p.state()
     assert "param_groups" not in state, (
-        "param_groups=None must be omitted from state() to preserve run.id back-compat; "
-        f"got {state!r}"
+        f"param_groups=None must be omitted from state() to preserve run.id back-compat; got {state!r}"
     )
     assert set(state.keys()) == {"max_lr", "momentum", "name", "weight_decay"}
 
 
 def test_nn_optim_params_state_emits_param_groups_when_set():
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3,
-        momentum=(0.9, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="*", lr_multiplier=0.1)],
     )
     state = p.state()
@@ -94,7 +100,8 @@ def test_build_param_groups_drops_frozen_params():
     groups = build_param_groups(
         net,
         [NNParamGroupSpec(name_pattern="*")],
-        default_lr=1e-3, default_weight_decay=0.0,
+        default_lr=1e-3,
+        default_weight_decay=0.0,
     )
     # Should have 3 trainable params (0.bias, 2.weight, 2.bias), not 4.
     n_params = sum(len(g["params"]) for g in groups)
@@ -110,7 +117,8 @@ def test_build_param_groups_first_matching_spec_wins():
             NNParamGroupSpec(name_pattern="0.weight", lr=1e-5),
             NNParamGroupSpec(name_pattern="*", lr=1e-3),
         ],
-        default_lr=1e-2, default_weight_decay=0.0,
+        default_lr=1e-2,
+        default_weight_decay=0.0,
     )
     # First group should contain exactly one param (0.weight @ lr=1e-5).
     # Second group should contain everything else (3 params @ lr=1e-3).
@@ -125,8 +133,9 @@ def test_build_param_groups_unmatched_fall_into_default_group():
     net = _net()
     groups = build_param_groups(
         net,
-        [NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],   # matches 0.weight + 0.bias
-        default_lr=1e-2, default_weight_decay=5e-4,
+        [NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],  # matches 0.weight + 0.bias
+        default_lr=1e-2,
+        default_weight_decay=5e-4,
     )
     # Spec group: 2 params at lr=1e-5; default group: 2 params at lr=1e-2.
     assert len(groups) == 2
@@ -144,8 +153,9 @@ def test_build_param_groups_strict_drops_unmatched():
     net = _net()
     groups = build_param_groups(
         net,
-        [NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],   # matches 0.weight + 0.bias
-        default_lr=1e-2, default_weight_decay=5e-4,
+        [NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],  # matches 0.weight + 0.bias
+        default_lr=1e-2,
+        default_weight_decay=5e-4,
         strict=True,
     )
     # Only the matched spec group exists — no default bucket.
@@ -163,7 +173,8 @@ def test_build_param_groups_strict_raises_when_nothing_matches():
         build_param_groups(
             net,
             [NNParamGroupSpec(name_pattern="nonexistent.*", lr=1e-5)],
-            default_lr=1e-2, default_weight_decay=0.0,
+            default_lr=1e-2,
+            default_weight_decay=0.0,
             strict=True,
         )
 
@@ -173,7 +184,10 @@ def test_optims_strict_param_groups_passes_through():
     through to build_param_groups."""
     net = _net()
     optimizer = Optims.ADAM(
-        net=net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        net=net,
+        lr_start=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="0.*", lr=1e-5)],
         strict_param_groups=True,
     )
@@ -187,7 +201,8 @@ def test_build_param_groups_lr_multiplier_scales_default():
     groups = build_param_groups(
         net,
         [NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.01)],
-        default_lr=1e-3, default_weight_decay=0.0,
+        default_lr=1e-3,
+        default_weight_decay=0.0,
     )
     matched = next(g for g in groups if g["lr"] == 1e-3 * 0.01)
     assert len(matched["params"]) == 2
@@ -198,7 +213,10 @@ def test_optims_adam_param_groups_per_group_lr_in_state():
     whose param_groups[i]['lr'] matches what the spec asked for."""
     net = _net()
     optimizer = Optims.ADAM(
-        net=net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        net=net,
+        lr_start=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
         param_groups=[
             NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.01),
             NNParamGroupSpec(name_pattern="2.*", lr=5e-4),
@@ -212,7 +230,10 @@ def test_optims_sgd_param_groups():
     """Same path through SGD's branch of the Optims.__call__ match."""
     net = _net()
     optimizer = Optims.SGD(
-        net=net, lr_start=1e-2, momentum=0.9, weight_decay=0.0,
+        net=net,
+        lr_start=1e-2,
+        momentum=0.9,
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="*", lr=5e-3)],
     )
     assert all(g["lr"] == 5e-3 for g in optimizer.param_groups)
@@ -230,27 +251,37 @@ def test_train_end_to_end_with_param_groups(tmp_path, monkeypatch):
 
     model = NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
-    run = model.train(params=NNTrainParams(
-        n_epochs=1,
-        train_loader=loader,
-        optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2,
-            momentum=(0.9, 0.999), weight_decay=0.0,
-            param_groups=[
-                NNParamGroupSpec(name_pattern="layers.0.*", lr=1e-4),
-            ],
-        ),
-        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-    ))
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+                param_groups=[
+                    NNParamGroupSpec(name_pattern="layers.0.*", lr=1e-4),
+                ],
+            ),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        )
+    )
     # Reload the run; param_groups should round-trip.
     from nnx import NNRun
+
     reloaded = NNRun.load(id=run.id)
     assert reloaded.train.optim.param_groups is not None
     assert reloaded.train.optim.param_groups[0].name_pattern == "layers.0.*"

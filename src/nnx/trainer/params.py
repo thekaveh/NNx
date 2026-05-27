@@ -12,6 +12,7 @@ optional fields. Keys are sorted at serialization so two
 configurations that differ only in dict insertion order produce the
 same run.id.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -46,23 +47,22 @@ class NNTrainerParams:
     a single user-supplied `trainer_step_fn` is otherwise identical.
     """
 
-    n_epochs        : int
-    optims          : Mapping[str, NNOptimParams]
-    schedulers      : Mapping[str, NNSchedulerParams] = field(default_factory=dict)
+    n_epochs: int
+    optims: Mapping[str, NNOptimParams]
+    schedulers: Mapping[str, NNSchedulerParams] = field(default_factory=dict)
 
-    seed            : Optional[int] = None
-    save_phase_checkpoints: bool    = True
+    seed: Optional[int] = None
+    save_phase_checkpoints: bool = True
 
-    train_loader    : Optional[DataLoader] = field(repr=False, default=None)
-    val_loader      : Optional[DataLoader] = field(repr=False, default=None)
+    train_loader: Optional[DataLoader] = field(repr=False, default=None)
+    val_loader: Optional[DataLoader] = field(repr=False, default=None)
 
-    extra_metrics   : Optional[Mapping[str, Callable]] = field(repr=False, default=None)
+    extra_metrics: Optional[Mapping[str, Callable]] = field(repr=False, default=None)
 
     def __post_init__(self):
         if not self.optims:
             raise ValueError(
-                "NNTrainerParams.optims must have at least one entry — the "
-                "Trainer constructs one Optimizer per name."
+                "NNTrainerParams.optims must have at least one entry — the Trainer constructs one Optimizer per name."
             )
         unknown = set(self.schedulers.keys()) - set(self.optims.keys())
         if unknown:
@@ -78,36 +78,32 @@ class NNTrainerParams:
         return replace(self, val_loader=value)
 
     def __str__(self):
-        return (
-            f"Trainer={{n_epochs={self.n_epochs}, "
-            f"optims={sorted(self.optims.keys())}, "
-            f"seed={self.seed}}}"
-        )
+        return f"Trainer={{n_epochs={self.n_epochs}, optims={sorted(self.optims.keys())}, seed={self.seed}}}"
 
     def state(self):
         # Keys are sorted so dict insertion order doesn't affect run.id.
         d = dict(
-            n_epochs    = self.n_epochs,
-            optims      = {k: self.optims[k].state() for k in sorted(self.optims.keys())},
+            n_epochs=self.n_epochs,
+            optims={k: self.optims[k].state() for k in sorted(self.optims.keys())},
         )
         # Match NNTrainParams: emit `schedulers` / `seed` /
         # `save_phase_checkpoints` only when set to a non-default value, so a
         # trainer run with the defaults hashes stably across versions and
         # follows the project-wide omit-when-default convention.
         if self.schedulers:
-            d['schedulers'] = {k: self.schedulers[k].state() for k in sorted(self.schedulers.keys())}
+            d["schedulers"] = {k: self.schedulers[k].state() for k in sorted(self.schedulers.keys())}
         if self.seed is not None:
-            d['seed'] = self.seed
+            d["seed"] = self.seed
         if self.save_phase_checkpoints is not True:
-            d['save_phase_checkpoints'] = self.save_phase_checkpoints
+            d["save_phase_checkpoints"] = self.save_phase_checkpoints
         return d
 
     @staticmethod
     def from_state(state: dict) -> NNTrainerParams:
         return NNTrainerParams(
-            n_epochs    = state['n_epochs'],
-            optims      = {k: NNOptimParams.from_state(v) for k, v in state['optims'].items()},
-            schedulers  = {k: NNSchedulerParams.from_state(v) for k, v in state.get('schedulers', {}).items()},
-            seed        = state.get('seed'),
-            save_phase_checkpoints = state.get('save_phase_checkpoints', True),
+            n_epochs=state["n_epochs"],
+            optims={k: NNOptimParams.from_state(v) for k, v in state["optims"].items()},
+            schedulers={k: NNSchedulerParams.from_state(v) for k, v in state.get("schedulers", {}).items()},
+            seed=state.get("seed"),
+            save_phase_checkpoints=state.get("save_phase_checkpoints", True),
         )

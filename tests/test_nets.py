@@ -7,6 +7,7 @@ exact API. The instantiation test catches the most common breakage
 classes). `FeedFwdNN` additionally has a round-trip + weights_only
 test below — it's the simplest net to exercise on CPU.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -24,24 +25,30 @@ def test_feed_fwd_nn_is_module():
 
 def test_graph_conv_nn_is_module():
     from nnx.nn.net.graph_conv_nn import GraphConvNN
+
     assert issubclass(GraphConvNN, nn.Module)
 
 
 def test_graph_sage_nn_is_module():
     from nnx.nn.net.graph_sage_nn import GraphSageNN
+
     assert issubclass(GraphSageNN, nn.Module)
 
 
 def test_graph_att_nn_is_module():
     from nnx.nn.net.graph_att_nn import GraphAttNN
+
     assert issubclass(GraphAttNN, nn.Module)
 
 
 def _make_feed_fwd_nn() -> FeedFwdNN:
     return FeedFwdNN(
         params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
     )
 
@@ -58,8 +65,11 @@ def test_feed_fwd_nn_to_file_from_file_round_trip(tmp_path):
     net_b = FeedFwdNN.from_file(
         str(path),
         params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
     )
     sd_a = net_a.state_dict()
@@ -72,20 +82,26 @@ def test_feed_fwd_nn_to_file_from_file_round_trip(tmp_path):
 def test_feed_fwd_nn_from_file_rejects_pickle_payload(tmp_path):
     """from_file uses torch.load(weights_only=True), which restricts the
     pickle ALLOWLIST to tensors + standard scalar/dict types. A bare
-    non-tensor pickle payload should raise rather than execute code.
+    non-tensor pickle payload should raise UnpicklingError rather than
+    execute code.
 
     This is the explicit safety-test for the docstring claim about
     `weights_only=True` — a regression that drops the flag would
     silently re-introduce the pickle-RCE vulnerability."""
+    import pickle
+
     path = tmp_path / "bad.pt"
     # Persist a non-state-dict pickle that weights_only would refuse.
     torch.save({"hello": object()}, str(path))
 
-    with pytest.raises(Exception):  # noqa: BLE001 (load surface varies by torch version)
+    with pytest.raises(pickle.UnpicklingError):
         FeedFwdNN.from_file(
             str(path),
             params=NNParams(
-                input_dim=4, output_dim=2, hidden_dims=[8],
-                dropout_prob=0.0, activation=Activations.RELU,
+                input_dim=4,
+                output_dim=2,
+                hidden_dims=[8],
+                dropout_prob=0.0,
+                activation=Activations.RELU,
             ),
         )

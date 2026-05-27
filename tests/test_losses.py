@@ -4,6 +4,7 @@ Each variant must return the correct torch.nn loss class. Catches the regression
 where MEAN_SQUARED_ERROR and BINARY_CROSS_ENTROPY were swapped in the match
 expression — a silent bug shipped between commits 3962995 and the next release.
 """
+
 from __future__ import annotations
 
 from torch import nn

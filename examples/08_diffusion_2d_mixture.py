@@ -21,6 +21,7 @@ the schedule / train step / sampler are architecture-agnostic.
 Run:
     python examples/08_diffusion_2d_mixture.py
 """
+
 from __future__ import annotations
 
 import torch
@@ -66,11 +67,16 @@ def main():
     # diffusion net's surface dim so the run.yaml stays readable.
     model = NNModel(
         net_params=NNParams(
-            input_dim=2, output_dim=2, hidden_dims=[16],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=2,
+            output_dim=2,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     # The FeedFwdNN built by Nets.FEED_FWD has forward(X) → logits — wrong
@@ -79,7 +85,9 @@ def main():
     # and model.net_params (stored on the model itself, not the net),
     # so this substitution works without further setup.
     model.net = DiffusionMLP(
-        input_dim=2, hidden_dims=[64, 64], time_embed_dim=16,
+        input_dim=2,
+        hidden_dims=[64, 64],
+        time_embed_dim=16,
     ).to(model.device)
 
     # T=200 is enough for this toy problem and keeps sampling fast.
@@ -91,10 +99,17 @@ def main():
             n_epochs=20,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=2e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=2e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=4, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=4,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=step_fn,

@@ -17,6 +17,7 @@ fully derived from ``kind`` + ``T`` + kind-specific knobs, so recovering
 the schedule from an on-disk run is a matter of re-instantiating the
 enum with the same arguments rather than serializing the tensors.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -77,9 +78,7 @@ def _from_betas(kind: NoiseSchedulers, betas: torch.Tensor) -> NoiseSchedule:
     alphas_cumprod = torch.cumprod(alphas, dim=0)
     # ``alphas_cumprod_prev`` is ᾱ_{t-1} with ᾱ_{-1} := 1 (DDPM convention).
     # Used only for the posterior variance.
-    alphas_cumprod_prev = torch.cat(
-        [torch.ones(1, dtype=betas.dtype), alphas_cumprod[:-1]]
-    )
+    alphas_cumprod_prev = torch.cat([torch.ones(1, dtype=betas.dtype), alphas_cumprod[:-1]])
     # posterior_variance = β_t * (1 - ᾱ_{t-1}) / (1 - ᾱ_t). Clamped to
     # avoid the t=0 division by (1 - 1) — DDPM's standard "fix".
     posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
@@ -143,10 +142,7 @@ class NoiseSchedulers(Enum):
         match self:
             case NoiseSchedulers.LINEAR:
                 if not (0 < beta_min < beta_max < 1):
-                    raise ValueError(
-                        f"LINEAR schedule needs 0 < beta_min ({beta_min}) "
-                        f"< beta_max ({beta_max}) < 1"
-                    )
+                    raise ValueError(f"LINEAR schedule needs 0 < beta_min ({beta_min}) < beta_max ({beta_max}) < 1")
                 betas = torch.linspace(beta_min, beta_max, T, dtype=torch.float32)
                 return _from_betas(self, betas)
             case NoiseSchedulers.COSINE:
@@ -159,6 +155,7 @@ class NoiseSchedulers(Enum):
                 f_t = torch.cos((steps + s) / (1 + s) * torch.pi / 2) ** 2
                 alphas_cumprod = (f_t / f_t[0]).to(torch.float32)
                 betas = (1.0 - alphas_cumprod[1:] / alphas_cumprod[:-1]).clamp(
-                    min=1e-8, max=0.999,
+                    min=1e-8,
+                    max=0.999,
                 )
                 return _from_betas(self, betas)

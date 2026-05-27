@@ -15,6 +15,7 @@ Public surface — re-exported from the top-level ``nnx`` package:
 The diffusion paradigm hits NNx through the ``train_step_fn`` hook
 introduced earlier — no Trainer or NNModel changes needed.
 """
+
 from __future__ import annotations
 
 from .nets import DiffusionMLP, sinusoidal_time_embed

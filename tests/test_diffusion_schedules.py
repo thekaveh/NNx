@@ -1,4 +1,5 @@
 """Tests for nnx.diffusion.schedules — linear/cosine noise schedules."""
+
 from __future__ import annotations
 
 import math
@@ -47,7 +48,8 @@ def test_sqrt_consistency():
     s = NoiseSchedulers.LINEAR(T=100)
     assert torch.allclose(s.sqrt_alphas_cumprod, s.alphas_cumprod.sqrt())
     assert torch.allclose(
-        s.sqrt_one_minus_alphas_cumprod, (1.0 - s.alphas_cumprod).sqrt(),
+        s.sqrt_one_minus_alphas_cumprod,
+        (1.0 - s.alphas_cumprod).sqrt(),
     )
 
 

@@ -15,6 +15,7 @@ so the optimizer factory builds the per-group dicts automatically.
 Parameters that don't match any pattern fall into the default group
 with ``lr=NNOptimParams.max_lr``.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -52,10 +53,10 @@ class NNParamGroupSpec:
         )
     """
 
-    name_pattern:  str
-    lr:            Optional[float] = None
+    name_pattern: str
+    lr: Optional[float] = None
     lr_multiplier: Optional[float] = None
-    weight_decay:  Optional[float] = None
+    weight_decay: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.lr is not None and self.lr_multiplier is not None:
@@ -126,9 +127,7 @@ def build_param_groups(
     # One bucket per spec, in priority order. Each parameter goes into
     # the FIRST matching spec's bucket (break on hit, below); anything
     # unmatched falls through to default_bucket.
-    buckets: list[tuple[NNParamGroupSpec, list[nn.Parameter]]] = [
-        (spec, []) for spec in specs
-    ]
+    buckets: list[tuple[NNParamGroupSpec, list[nn.Parameter]]] = [(spec, []) for spec in specs]
     default_bucket: list[nn.Parameter] = []
 
     for name, param in module.named_parameters():
@@ -152,9 +151,7 @@ def build_param_groups(
             group["lr"] = default_lr * spec.lr_multiplier
         else:
             group["lr"] = default_lr
-        group["weight_decay"] = (
-            spec.weight_decay if spec.weight_decay is not None else default_weight_decay
-        )
+        group["weight_decay"] = spec.weight_decay if spec.weight_decay is not None else default_weight_decay
         out.append(group)
 
     # Default bucket: included under fine-tuning semantics (every trainable
@@ -162,11 +159,13 @@ def build_param_groups(
     # caller — typically nnx.trainer.Trainer — wants this optimizer to own
     # only what the specs explicitly select).
     if default_bucket and not strict:
-        out.append({
-            "params": default_bucket,
-            "lr": default_lr,
-            "weight_decay": default_weight_decay,
-        })
+        out.append(
+            {
+                "params": default_bucket,
+                "lr": default_lr,
+                "weight_decay": default_weight_decay,
+            }
+        )
 
     if not out:
         raise ValueError(

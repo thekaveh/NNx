@@ -10,6 +10,7 @@ This module handles those cases. Key remapping (foreign-layer-name →
 local-layer-name) lets you adapt naming conventions without manually
 rewriting state-dicts.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,9 +30,10 @@ class LoadPretrainedResult:
     of keys actually applied (after any remapping) — useful for
     confirming the load did what you intended.
     """
-    loaded_keys:     list[str]      # keys present in source AND module (after remap)
-    missing_keys:    list[str]      # in module's state_dict, not in source
-    unexpected_keys: list[str]      # in source, no match in module
+
+    loaded_keys: list[str]  # keys present in source AND module (after remap)
+    missing_keys: list[str]  # in module's state_dict, not in source
+    unexpected_keys: list[str]  # in source, no match in module
 
 
 def load_pretrained(
@@ -85,21 +87,18 @@ def load_pretrained(
     elif isinstance(source, dict):
         src = dict(source)
     else:
-        raise TypeError(
-            f"load_pretrained: source must be a path, dict, or nn.Module; "
-            f"got {type(source).__name__}"
-        )
+        raise TypeError(f"load_pretrained: source must be a path, dict, or nn.Module; got {type(source).__name__}")
 
     # 2. Apply prefix-stripping (if requested) then key_map remapping.
     remapped: dict = {}
     for key, val in src.items():
         new_key = key
         if prefix is not None and new_key.startswith(prefix):
-            new_key = new_key[len(prefix):]
+            new_key = new_key[len(prefix) :]
         if key_map:
             for foreign, local in key_map.items():
                 if new_key.startswith(foreign):
-                    new_key = local + new_key[len(foreign):]
+                    new_key = local + new_key[len(foreign) :]
                     break
         remapped[new_key] = val
 

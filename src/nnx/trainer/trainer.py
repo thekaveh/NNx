@@ -27,6 +27,7 @@ NNModel.train() does, with an extra `trainer` block in run.yaml
 capturing the multi-optim config. Optimizer states are NOT sidecar'd
 in this initial pass — trainer-mode warm-resume is a follow-up.
 """
+
 from __future__ import annotations
 
 import os
@@ -65,13 +66,13 @@ class TrainerStepContext:
     composite, e.g., a GAN-style wrapper exposing G and D as submodules).
     """
 
-    model:          NNModel
-    batch:          Any
-    optimizers:     Mapping[str, torch.optim.Optimizer]
-    schedulers:     Mapping[str, Any]
-    extra_metrics:  Optional[Mapping[str, Callable]]
-    batch_idx:      int
-    epoch_idx:      int
+    model: NNModel
+    batch: Any
+    optimizers: Mapping[str, torch.optim.Optimizer]
+    schedulers: Mapping[str, Any]
+    extra_metrics: Optional[Mapping[str, Callable]]
+    batch_idx: int
+    epoch_idx: int
 
 
 TrainerStepFn = Callable[[TrainerStepContext], NNEvaluationDataPoint]
@@ -81,7 +82,11 @@ TrainerStepFn = Callable[[TrainerStepContext], NNEvaluationDataPoint]
 # cooldown / factor knobs the existing NNModel.train() loop uses. Reused
 # for any optim that doesn't have a sibling entry in `schedulers`.
 _DEFAULT_SCHEDULER_PARAMS = NNSchedulerParams(
-    patience=8, cooldown=2, factor=95e-2, threshold=1e-3, min_lr=1e-7,
+    patience=8,
+    cooldown=2,
+    factor=95e-2,
+    threshold=1e-3,
+    min_lr=1e-7,
 )
 
 
@@ -122,7 +127,7 @@ def _build_scheduler(opt, sched_params, n_epochs):
     if kind is None:
         return lr_scheduler.ReduceLROnPlateau(
             opt,
-            mode='min',
+            mode="min",
             min_lr=sched_params.min_lr,
             factor=sched_params.factor,
             cooldown=sched_params.cooldown,
@@ -203,24 +208,23 @@ class Trainer:
             )
         for name, opt_params in params.optims.items():
             if not opt_params.is_valid():
-                raise ValueError(
-                    f"optim {name!r} has invalid config: {opt_params}"
-                )
+                raise ValueError(f"optim {name!r} has invalid config: {opt_params}")
 
         if params.seed is not None:
             from ..seeding import set_seed
+
             set_seed(params.seed)
 
         validate = params.val_loader is not None
 
         run = NNRun(
-            train   = _representative_train_params(params),
-            trainer = params,
-            model   = self.model.params,
+            train=_representative_train_params(params),
+            trainer=params,
+            model=self.model.params,
             # Use the model's stored NNParams rather than self.model.net.params
             # so callers who substitute a custom nn.Module post-construction
             # (the GAN composite idiom) still produce a saveable run.
-            net     = self.model.net_params,
+            net=self.model.net_params,
         )
 
         # `strict_param_groups=True` is the multi-optim contract: each
@@ -230,20 +234,20 @@ class Trainer:
         # two optimizers would silently fight over the same gradients.
         optimizers = {
             name: opt_params.name(
-                net                  = self.model.net,
-                lr_start             = opt_params.max_lr,
-                momentum             = opt_params.momentum,
-                weight_decay         = opt_params.weight_decay,
-                param_groups         = opt_params.param_groups,
-                strict_param_groups  = True,
+                net=self.model.net,
+                lr_start=opt_params.max_lr,
+                momentum=opt_params.momentum,
+                weight_decay=opt_params.weight_decay,
+                param_groups=opt_params.param_groups,
+                strict_param_groups=True,
             )
             for name, opt_params in params.optims.items()
         }
         schedulers = {
             name: _build_scheduler(
-                opt          = optimizers[name],
-                sched_params = params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
-                n_epochs     = params.n_epochs,
+                opt=optimizers[name],
+                sched_params=params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
+                n_epochs=params.n_epochs,
             )
             for name in optimizers
         }
@@ -268,7 +272,8 @@ class Trainer:
         except TypeError:
             n_iter = None
         best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(
-            run=run.id, type=Checkpoints.BEST,
+            run=run.id,
+            type=Checkpoints.BEST,
         )
 
         Utils.print_table(
@@ -303,19 +308,26 @@ class Trainer:
                     )
                     train_edp = trainer_step_fn(step_ctx)
 
-                    idps.append(NNIterationDataPoint(
-                        iter_idx  = idx_iter,
-                        epoch_idx = idx_epoch,
-                        batch_idx = idx_batch,
-                        train_edp = train_edp,
-                        lr        = optimizers[primary].param_groups[0]['lr'],
-                    ))
+                    idps.append(
+                        NNIterationDataPoint(
+                            iter_idx=idx_iter,
+                            epoch_idx=idx_epoch,
+                            batch_idx=idx_batch,
+                            train_edp=train_edp,
+                            lr=optimizers[primary].param_groups[0]["lr"],
+                        )
+                    )
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                val_edp = self.model.evaluate(
-                    loader=params.val_loader, extra_metrics=params.extra_metrics,
-                ) if validate else None
+                val_edp = (
+                    self.model.evaluate(
+                        loader=params.val_loader,
+                        extra_metrics=params.extra_metrics,
+                    )
+                    if validate
+                    else None
+                )
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
                 checkpoint = self._save_checkpoint(
@@ -393,7 +405,7 @@ class Trainer:
         return checkpoint
 
     def _update_tqdm_postfix(self, tqdm_bar, opt, val_edp, train_edp) -> None:
-        lr = opt.param_groups[0]['lr']
+        lr = opt.param_groups[0]["lr"]
         err = _resolve_metric(val_edp, train_edp)
         err_str = f"{err:.4f}" if err is not None else "n/a"
         tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")

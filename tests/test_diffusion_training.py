@@ -5,6 +5,7 @@ step fn, drive it through NNModel.train(), and verify the loss is finite
 and decreases as training proceeds. Saves into a tmp runs dir so the
 test doesn't pollute the repo.
 """
+
 from __future__ import annotations
 
 import torch
@@ -35,11 +36,16 @@ def _make_model() -> NNModel:
     the run.yaml stays interpretable."""
     m = NNModel(
         net_params=NNParams(
-            input_dim=2, output_dim=2, hidden_dims=[16],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=2,
+            output_dim=2,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     m.net = DiffusionMLP(input_dim=2, hidden_dims=[32, 32], time_embed_dim=16).to(m.device)
@@ -73,10 +79,17 @@ def test_diffusion_train_step_runs_and_loss_decreases(tmp_path, monkeypatch):
             n_epochs=4,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=2,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=step_fn,
@@ -94,7 +107,7 @@ def test_diffusion_train_step_runs_and_loss_decreases(tmp_path, monkeypatch):
     # samples a fresh random timestep).
     n = len(losses)
     early = sum(losses[: n // 4]) / max(1, n // 4)
-    late = sum(losses[3 * n // 4:]) / max(1, n - 3 * n // 4)
+    late = sum(losses[3 * n // 4 :]) / max(1, n - 3 * n // 4)
     assert late < early, (
         f"diffusion loss did not decrease across training: "
         f"early-quarter mean {early:.4f} vs late-quarter mean {late:.4f}"
@@ -117,10 +130,17 @@ def test_diffusion_train_step_cosine_schedule(tmp_path, monkeypatch):
             n_epochs=4,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=2,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=diffusion_train_step_factory(schedule),
@@ -131,10 +151,8 @@ def test_diffusion_train_step_cosine_schedule(tmp_path, monkeypatch):
         assert lo is not None and torch.isfinite(torch.tensor(lo)).item()
     n = len(losses)
     early = sum(losses[: n // 4]) / max(1, n // 4)
-    late = sum(losses[3 * n // 4:]) / max(1, n - 3 * n // 4)
-    assert late < early, (
-        f"diffusion COSINE loss did not decrease: early {early:.4f} vs late {late:.4f}"
-    )
+    late = sum(losses[3 * n // 4 :]) / max(1, n - 3 * n // 4)
+    assert late < early, f"diffusion COSINE loss did not decrease: early {early:.4f} vs late {late:.4f}"
 
 
 def test_diffusion_step_fallback_unpacks_plain_tensor_batches(tmp_path, monkeypatch):
@@ -151,12 +169,14 @@ def test_diffusion_step_fallback_unpacks_plain_tensor_batches(tmp_path, monkeypa
     class _PlainDiffusionNet(nn.Module):
         """Same shape as DiffusionMLP but without `unpack_batch` — forces
         the fallback path in diffusion_train_step_factory."""
+
         def __init__(self):
             super().__init__()
             self.proj = nn.Linear(2 + 8, 2)
 
         def forward(self, x, t):
             from nnx.diffusion import sinusoidal_time_embed
+
             t_emb = sinusoidal_time_embed(t, 8)
             return self.proj(torch.cat([x, t_emb], dim=-1))
 
@@ -170,10 +190,17 @@ def test_diffusion_step_fallback_unpacks_plain_tensor_batches(tmp_path, monkeypa
             n_epochs=1,
             train_loader=_gaussian_mixture_loader(n=32, batch_size=8),
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=diffusion_train_step_factory(schedule),
@@ -201,6 +228,7 @@ def test_diffusion_step_fallback_bare_tensor_batch(monkeypatch):
 
         def forward(self, x, t):
             from nnx.diffusion import sinusoidal_time_embed
+
             t_emb = sinusoidal_time_embed(t, 8)
             return self.proj(torch.cat([x, t_emb], dim=-1))
 
@@ -211,15 +239,24 @@ def test_diffusion_step_fallback_bare_tensor_batch(monkeypatch):
     schedule = NoiseSchedulers.LINEAR(T=20)
     step_fn = diffusion_train_step_factory(schedule)
     optimizer = Optims.ADAM(
-        net=model.net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        net=model.net,
+        lr_start=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
     )
 
     # Bare tensor — NOT wrapped in (X, Y). Hits the else-branch at line 78.
     bare_batch = torch.randn(8, 2)
     ctx = TrainStepContext(
-        model=model, batch=bare_batch, optimizer=optimizer, scaler=None,
-        grad_clip_norm=None, extra_metrics=None,
-        accumulate_grad_batches=1, batch_idx=0, epoch_idx=0,
+        model=model,
+        batch=bare_batch,
+        optimizer=optimizer,
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
     )
     edp = step_fn(ctx)
     assert edp.loss is not None
@@ -241,16 +278,22 @@ def test_diffusion_step_reports_loss_and_error_equal(tmp_path, monkeypatch):
             n_epochs=1,
             train_loader=_gaussian_mixture_loader(n=32, batch_size=8),
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=2,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=diffusion_train_step_factory(schedule),
     )
     for idp in run.idps:
         assert idp.train_edp.loss == idp.train_edp.error, (
-            f"diffusion step contract violated: loss={idp.train_edp.loss} "
-            f"!= error={idp.train_edp.error}"
+            f"diffusion step contract violated: loss={idp.train_edp.loss} != error={idp.train_edp.error}"
         )

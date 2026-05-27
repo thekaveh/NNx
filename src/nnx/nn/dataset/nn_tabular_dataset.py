@@ -20,6 +20,7 @@ Usage:
 Validation and test slices are random samples from the source DataFrame.
 The remainder becomes train.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -42,17 +43,17 @@ class NNTabularDataset(NNDatasetBase):
     DataLoaders yourself and pass them through NNTrainParams.
     """
 
-    df              : pd.DataFrame
-    feature_cols    : list[str]
-    target_col      : str
+    df: pd.DataFrame
+    feature_cols: list[str]
+    target_col: str
 
     # Per-split batch size. None for any entry means "use the full split as
     # one batch" (resolved in __post_init__ once the split sizes are known).
-    batch_sizes     : tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
-    val_proportion  : float                 = 0.15
-    test_proportion : float                 = 0.15
-    name_override   : Optional[str]         = None
-    feature_dtype   : torch.dtype           = field(default=torch.float32)
+    batch_sizes: tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
+    val_proportion: float = 0.15
+    test_proportion: float = 0.15
+    name_override: Optional[str] = None
+    feature_dtype: torch.dtype = field(default=torch.float32)
 
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
@@ -61,21 +62,16 @@ class NNTabularDataset(NNDatasetBase):
             raise ValueError(f"test_proportion must be in [0, 1), got {self.test_proportion}")
         if self.val_proportion + self.test_proportion >= 1.0:
             raise ValueError(
-                f"val_proportion + test_proportion must be < 1, got "
-                f"{self.val_proportion + self.test_proportion}"
+                f"val_proportion + test_proportion must be < 1, got {self.val_proportion + self.test_proportion}"
             )
 
         # Validate columns up-front so missing-column errors point at user
         # input rather than failing deep inside torch.tensor with a KeyError.
         missing_features = [c for c in self.feature_cols if c not in self.df.columns]
         if missing_features:
-            raise KeyError(
-                f"NNTabularDataset feature_cols not in DataFrame: {missing_features}"
-            )
+            raise KeyError(f"NNTabularDataset feature_cols not in DataFrame: {missing_features}")
         if self.target_col not in self.df.columns:
-            raise KeyError(
-                f"NNTabularDataset target_col {self.target_col!r} not in DataFrame"
-            )
+            raise KeyError(f"NNTabularDataset target_col {self.target_col!r} not in DataFrame")
 
         # Coerce features + target → tensors. Trust `dtype=` on torch.tensor
         # rather than going through an extra np.float32 intermediate copy.
@@ -100,41 +96,48 @@ class NNTabularDataset(NNDatasetBase):
         n_train = n_total - n_val - n_test
         train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test])
 
-        object.__setattr__(self, 'name', self.name_override or 'NNTabularDataset')
+        object.__setattr__(self, "name", self.name_override or "NNTabularDataset")
 
         train_batch_size = self.batch_sizes[0] or n_train
-        val_batch_size   = self.batch_sizes[1] or max(1, n_val)
-        test_batch_size  = self.batch_sizes[2] or max(1, n_test)
+        val_batch_size = self.batch_sizes[1] or max(1, n_val)
+        test_batch_size = self.batch_sizes[2] or max(1, n_test)
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
-        object.__setattr__(self, 'batch_sizes', resolved_batch_sizes)
+        object.__setattr__(self, "batch_sizes", resolved_batch_sizes)
 
         object.__setattr__(
-            self, 'train_loader',
+            self,
+            "train_loader",
             DataLoader(train_ds, batch_size=resolved_batch_sizes[0], shuffle=True),
         )
         # Val/test loaders default to size 0 when the proportion is zero;
         # skip constructing them in that case and use None so callers can
         # check `ds.val_loader is None`.
         object.__setattr__(
-            self, 'val_loader',
+            self,
+            "val_loader",
             DataLoader(val_ds, batch_size=resolved_batch_sizes[1], shuffle=False) if n_val > 0 else None,
         )
         object.__setattr__(
-            self, 'test_loader',
+            self,
+            "test_loader",
             DataLoader(test_ds, batch_size=resolved_batch_sizes[2], shuffle=False) if n_test > 0 else None,
         )
 
-        object.__setattr__(self, 'input_dim', len(self.feature_cols))
+        object.__setattr__(self, "input_dim", len(self.feature_cols))
         # Classification target dim = number of unique classes in the DF.
-        object.__setattr__(self, 'output_dim', int(self.df[self.target_col].nunique()))
+        object.__setattr__(self, "output_dim", int(self.df[self.target_col].nunique()))
 
-        object.__setattr__(self, '_state', dict(
-            name=self.name,
-            input_dim=self.input_dim,
-            output_dim=self.output_dim,
-            n_train=n_train,
-            n_val=n_val,
-            n_test=n_test,
-            feature_cols=list(self.feature_cols),
-            target_col=self.target_col,
-        ))
+        object.__setattr__(
+            self,
+            "_state",
+            dict(
+                name=self.name,
+                input_dim=self.input_dim,
+                output_dim=self.output_dim,
+                n_train=n_train,
+                n_val=n_val,
+                n_test=n_test,
+                feature_cols=list(self.feature_cols),
+                target_col=self.target_col,
+            ),
+        )

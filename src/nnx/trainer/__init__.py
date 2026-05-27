@@ -18,6 +18,7 @@ The Trainer writes the same on-disk artifacts (NNRun + per-tag
 NNCheckpoint) NNModel.train does, with an extra ``trainer`` block on
 NNRun preserving the multi-optim config.
 """
+
 from __future__ import annotations
 
 from .params import NNTrainerParams

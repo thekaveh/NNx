@@ -16,6 +16,7 @@ in `FeedFwdNN` go in different places than adapters in a transformer.
 Compose :class:`AdapterLayer` into a custom :class:`nn.Module` as
 needed.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

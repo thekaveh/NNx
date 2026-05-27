@@ -4,6 +4,7 @@ GraphConvNN, GraphSageNN, GraphAttNN previously had ~95% duplicate code.
 The common forward loop + unpack_batch live here; subclasses override
 _build_layers() to provide the PyG conv constructor.
 """
+
 from __future__ import annotations
 
 import torch

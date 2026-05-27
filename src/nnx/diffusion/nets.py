@@ -12,6 +12,7 @@ visible end-to-end without a full U-Net implementation; the same
 the ``forward(x, t)`` signature, so larger architectures can be slotted
 in by the user as needed.
 """
+
 from __future__ import annotations
 
 import math
@@ -102,10 +103,7 @@ class DiffusionMLP(nn.Module):
         B = x.shape[0]
         x_flat = x.reshape(B, -1)
         if x_flat.shape[1] != self.input_dim:
-            raise ValueError(
-                f"DiffusionMLP expects flattened input dim {self.input_dim}, "
-                f"got {x_flat.shape[1]}"
-            )
+            raise ValueError(f"DiffusionMLP expects flattened input dim {self.input_dim}, got {x_flat.shape[1]}")
 
         # Time conditioning: sinusoidal embed → MLP → concat with x.
         t_emb = sinusoidal_time_embed(t, self.time_embed_dim)

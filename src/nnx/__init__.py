@@ -5,6 +5,7 @@ callbacks) and two top-level helpers (`nnx.utils.Utils`, `nnx.vis_utils.VisUtils
 The curated re-exports below give a flat surface for the most common imports
 without forbidding the deep paths existing notebook code relies on.
 """
+
 from __future__ import annotations
 
 try:
@@ -96,42 +97,84 @@ from .vis_utils import VisUtils
 
 __all__ = [
     # Orchestration
-    "NNModel", "PredictResult",
-    "TrainStepContext", "TrainStepFn", "default_train_step",
+    "NNModel",
+    "PredictResult",
+    "TrainStepContext",
+    "TrainStepFn",
+    "default_train_step",
     # Callbacks
-    "Callback", "EarlyStopping", "LRMonitor", "ModelCheckpoint",
-    "TensorBoardCallback", "WandbCallback",
+    "Callback",
+    "EarlyStopping",
+    "LRMonitor",
+    "ModelCheckpoint",
+    "TensorBoardCallback",
+    "WandbCallback",
     # Params
-    "NNParams", "NNRun", "NNCheckpoint",
-    "NNModelParams", "NNTrainParams", "NNOptimParams", "NNSchedulerParams",
-    "NNIterationDataPoint", "NNEvaluationDataPoint",
+    "NNParams",
+    "NNRun",
+    "NNCheckpoint",
+    "NNModelParams",
+    "NNTrainParams",
+    "NNOptimParams",
+    "NNSchedulerParams",
+    "NNIterationDataPoint",
+    "NNEvaluationDataPoint",
     # Enums
-    "Activations", "Checkpoints", "Devices", "Losses", "Nets",
-    "Optims", "Schedulers",
+    "Activations",
+    "Checkpoints",
+    "Devices",
+    "Losses",
+    "Nets",
+    "Optims",
+    "Schedulers",
     # Networks
-    "FeedFwdNN", "GraphNNBase", "GraphConvNN", "GraphSageNN", "GraphAttNN",
+    "FeedFwdNN",
+    "GraphNNBase",
+    "GraphConvNN",
+    "GraphSageNN",
+    "GraphAttNN",
     # Datasets
-    "NNDataset", "NNGraphDataset", "NNTabularDataset", "NNDatasetBase",
+    "NNDataset",
+    "NNGraphDataset",
+    "NNTabularDataset",
+    "NNDatasetBase",
     # Helpers
-    "Utils", "VisUtils",
+    "Utils",
+    "VisUtils",
     # Fine-tuning
-    "freeze", "unfreeze", "frozen",
-    "load_pretrained", "LoadPretrainedResult",
+    "freeze",
+    "unfreeze",
+    "frozen",
+    "load_pretrained",
+    "LoadPretrainedResult",
     "NNParamGroupSpec",
     # Multi-optimizer Trainer
-    "Trainer", "TrainerStepContext", "TrainerStepFn", "NNTrainerParams",
+    "Trainer",
+    "TrainerStepContext",
+    "TrainerStepFn",
+    "NNTrainerParams",
     # Diffusion
-    "DiffusionMLP", "NoiseSchedule", "NoiseSchedulers",
-    "diffusion_train_step_factory", "sample",
+    "DiffusionMLP",
+    "NoiseSchedule",
+    "NoiseSchedulers",
+    "diffusion_train_step_factory",
+    "sample",
     # Training paradigms
     "kd_train_step_factory",
-    "simclr_train_step_factory", "nt_xent_loss",
-    "mixup_train_step_factory", "cutmix_train_step_factory",
+    "simclr_train_step_factory",
+    "nt_xent_loss",
+    "mixup_train_step_factory",
+    "cutmix_train_step_factory",
     # PEFT (LoRA + adapters)
-    "LoRALinear", "apply_lora_to", "save_lora_weights", "load_lora_weights",
+    "LoRALinear",
+    "apply_lora_to",
+    "save_lora_weights",
+    "load_lora_weights",
     "AdapterLayer",
     # Reproducibility
-    "set_seed", "dataloader_worker_init_fn", "env_snapshot",
+    "set_seed",
+    "dataloader_worker_init_fn",
+    "env_snapshot",
     # Metadata
     "__version__",
 ]

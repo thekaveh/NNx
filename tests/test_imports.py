@@ -16,6 +16,7 @@ catches a regression that empties `__all__` or drops a public export.
 def test_top_level_imports():
     import nnx
     from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils
+
     # One probe per subpackage to verify the public surface stayed intact.
     assert hasattr(nnx, "NNModel")
     assert hasattr(utils, "print_tree")
@@ -30,6 +31,7 @@ def test_top_level_imports():
 
 def test_finetune_submodules_import():
     from nnx.finetune import freezing, loading, param_groups
+
     assert hasattr(freezing, "freeze")
     assert hasattr(loading, "load_pretrained")
     assert hasattr(param_groups, "NNParamGroupSpec")
@@ -37,12 +39,14 @@ def test_finetune_submodules_import():
 
 def test_trainer_submodules_import():
     from nnx.trainer import params, trainer
+
     assert hasattr(params, "NNTrainerParams")
     assert hasattr(trainer, "Trainer")
 
 
 def test_diffusion_submodules_import():
     from nnx.diffusion import nets, sampling, schedules, training
+
     assert hasattr(nets, "DiffusionMLP")
     assert hasattr(sampling, "sample")
     assert hasattr(schedules, "NoiseSchedulers")
@@ -51,6 +55,7 @@ def test_diffusion_submodules_import():
 
 def test_paradigms_submodules_import():
     from nnx.paradigms import augmentation, contrastive, distillation
+
     assert hasattr(augmentation, "mixup_train_step_factory")
     assert hasattr(contrastive, "simclr_train_step_factory")
     assert hasattr(distillation, "kd_train_step_factory")
@@ -58,12 +63,14 @@ def test_paradigms_submodules_import():
 
 def test_peft_submodules_import():
     from nnx.peft import adapters, lora
+
     assert hasattr(adapters, "AdapterLayer")
     assert hasattr(lora, "LoRALinear")
 
 
 def test_nn_subpackage_imports():
     from nnx.nn import callbacks, nn_model
+
     assert hasattr(nn_model, "NNModel")
     assert hasattr(callbacks, "Callback")
 
@@ -76,6 +83,7 @@ def test_net_modules_import():
         graph_nn_base,
         graph_sage_nn,
     )
+
     assert hasattr(feed_fwd_nn, "FeedFwdNN")
     assert hasattr(graph_conv_nn, "GraphConvNN")
     assert hasattr(graph_sage_nn, "GraphSageNN")
@@ -90,6 +98,7 @@ def test_dataset_modules_import():
         nn_graph_dataset,
         nn_tabular_dataset,
     )
+
     assert hasattr(nn_dataset_base, "NNDatasetBase")
     assert hasattr(nn_dataset, "NNDataset")
     assert hasattr(nn_graph_dataset, "NNGraphDataset")
@@ -106,6 +115,7 @@ def test_enum_modules_import():
         optims,
         schedulers,
     )
+
     assert hasattr(activations, "Activations")
     assert hasattr(checkpoints, "Checkpoints")
     assert hasattr(devices, "Devices")
@@ -127,6 +137,7 @@ def test_params_modules_import():
         nn_scheduler_params,
         nn_train_params,
     )
+
     assert hasattr(nn_model_params, "NNModelParams")
     assert hasattr(nn_train_params, "NNTrainParams")
     assert hasattr(nn_optim_params, "NNOptimParams")

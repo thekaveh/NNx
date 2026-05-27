@@ -31,10 +31,10 @@ def _atomic_torch_save(obj, path: str) -> None:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNCheckpoint:
-    net_params  : NNParams
-    net_state   : OrderedDict
+    net_params: NNParams
+    net_state: OrderedDict
     model_params: NNModelParams
-    idp         : NNIterationDataPoint
+    idp: NNIterationDataPoint
 
     def to_file(self, path: str) -> None:
         """Atomically write this NNCheckpoint to `path`.

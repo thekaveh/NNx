@@ -8,6 +8,7 @@ Covers reliability gaps surfaced in the pass-2 audit:
 - R3: NNRun.save() is invoked after each epoch so interrupted training
   leaves a loadable partial run on disk.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -31,11 +32,16 @@ from nnx.nn.params.nn_train_params import NNTrainParams
 def _model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -45,12 +51,18 @@ def _train_params(loader: DataLoader, **kw) -> NNTrainParams:
         n_epochs=kw.pop("n_epochs", 1),
         train_loader=loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=kw.pop("max_lr", 1e-2),
-            momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=kw.pop("max_lr", 1e-2),
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
             grad_clip_norm=kw.pop("grad_clip_norm", None),
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=1,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
 
@@ -205,8 +217,11 @@ def test_r3_incremental_save_leaves_loadable_partial_run(tmp_path, monkeypatch):
 def test_r2_grad_clip_round_trips_through_state():
     """grad_clip_norm survives NNOptimParams.state() / from_state()."""
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999),
-        weight_decay=0.0, grad_clip_norm=1.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
+        grad_clip_norm=1.0,
     )
     rt = NNOptimParams.from_state(p.state())
     assert rt.grad_clip_norm == 1.0
@@ -217,10 +232,10 @@ def test_r2_grad_clip_back_compat_with_old_yaml():
     """A state() dict missing grad_clip_norm (older runs) must still load
     cleanly with grad_clip_norm=None."""
     legacy_state = {
-        'max_lr': 1e-3,
-        'momentum': "(0.9, 0.999)",
-        'name': 'adam',
-        'weight_decay': 0.0,
+        "max_lr": 1e-3,
+        "momentum": "(0.9, 0.999)",
+        "name": "adam",
+        "weight_decay": 0.0,
         # NO grad_clip_norm key — predates the field.
     }
     p = NNOptimParams.from_state(legacy_state)

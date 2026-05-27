@@ -1,4 +1,5 @@
 """Tests for nnx.finetune.freezing — requires_grad management via patterns."""
+
 from __future__ import annotations
 
 import pytest
@@ -109,11 +110,16 @@ def test_nnmodel_freeze_delegates_to_self_net():
     the documented contract that this is a convenience for the common case."""
     model = NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     # FeedFwdNN's parameters are layers.0.* and layers.1.*

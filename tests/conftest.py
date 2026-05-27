@@ -8,6 +8,7 @@ tests, add them here. Don't add fixtures pre-emptively — unused fixtures
 are dead code that mislead future contributors about what's shared in
 practice.
 """
+
 from __future__ import annotations
 
 import os
@@ -41,6 +42,7 @@ def _reset_env_snapshot_cache():
     is set up and torn down once).
     """
     from nnx import seeding
+
     seeding._ENV_SNAPSHOT_CACHE = None
     yield
     seeding._ENV_SNAPSHOT_CACHE = None

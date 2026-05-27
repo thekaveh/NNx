@@ -6,6 +6,7 @@ Requires ``onnx`` to validate the result:
 Run:
     python examples/04_onnx_export.py
 """
+
 from __future__ import annotations
 
 import os
@@ -38,21 +39,28 @@ def main():
 
     model = NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=3, hidden_dims=[32],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[32],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
     # Quick fit so the exported model has non-random weights.
-    model.train(params=NNTrainParams(
-        n_epochs=2,
-        train_loader=loader,
-        optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
-        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-    ))
+    model.train(
+        params=NNTrainParams(
+            n_epochs=2,
+            train_loader=loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        )
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         onnx_path = os.path.join(tmp, "model.onnx")
@@ -68,6 +76,7 @@ def main():
         # Validate via the `onnx` library.
         try:
             import onnx
+
             onnx.checker.check_model(onnx_path)
             print("  onnx.checker: model is well-formed.")
         except ImportError:

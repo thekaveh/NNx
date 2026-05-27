@@ -12,6 +12,7 @@ sequence by hand. Direct callers of NNModel.train(train_step_fn=...)
 in user code can use it too; it's a regular function with no nnx
 coupling beyond the TrainStepContext type.
 """
+
 from __future__ import annotations
 
 import numpy as np

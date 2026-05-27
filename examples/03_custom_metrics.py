@@ -8,6 +8,7 @@ NNRun.save → NNRun.load round-trip.
 Run:
     python examples/03_custom_metrics.py
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -38,11 +39,16 @@ def main():
 
     model = NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=3, hidden_dims=[16],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -61,10 +67,17 @@ def main():
         n_epochs=3,
         train_loader=loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=1e-2,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=1,
+            cooldown=1,
+            threshold=1e-3,
         ),
         extra_metrics={
             "hamming_error": hamming_error,

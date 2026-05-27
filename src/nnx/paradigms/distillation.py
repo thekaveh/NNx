@@ -13,6 +13,7 @@ parameters are frozen on factory call so subsequent training can never
 drift the teacher's weights; restored on tear-down would be tidy but
 unnecessary in practice — once a teacher is a teacher, it stays one.
 """
+
 from __future__ import annotations
 
 import torch
@@ -92,7 +93,7 @@ def kd_train_step_factory(
             F.log_softmax(student_logits / temperature, dim=-1),
             F.softmax(teacher_logits / temperature, dim=-1),
             reduction="batchmean",
-        ) * (temperature ** 2)
+        ) * (temperature**2)
         hard_loss = m.loss_fn(student_logits, Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
@@ -100,7 +101,8 @@ def kd_train_step_factory(
         Y_hat = student_logits.argmax(dim=-1)
         return (
             NNEvaluationDataPoint.of(
-                Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(),
+                Y=Y.cpu().numpy(),
+                Y_hat=Y_hat.cpu().numpy(),
                 extra_metrics=ctx.extra_metrics,
             )
             .with_loss(value=loss_val)

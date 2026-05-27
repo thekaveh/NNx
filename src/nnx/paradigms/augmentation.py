@@ -16,6 +16,7 @@ shape — tabular, image, sequence.
 ``x_b`` into ``x_a``, then re-weights the loss by the area ratio.
 Requires 4D ``(B, C, H, W)`` image tensors; raises on lower-rank input.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -46,10 +47,7 @@ def _weighted_acc(Y_hat: torch.Tensor, Y_a: torch.Tensor, Y_b: torch.Tensor, lam
     """Lam-weighted accuracy — Mixup's standard "fractional correctness"
     metric. Useful as an ``error`` signal even though it's not a
     standard top-1 accuracy."""
-    return float(
-        lam * (Y_hat == Y_a).float().mean().item()
-        + (1.0 - lam) * (Y_hat == Y_b).float().mean().item()
-    )
+    return float(lam * (Y_hat == Y_a).float().mean().item() + (1.0 - lam) * (Y_hat == Y_b).float().mean().item())
 
 
 def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
@@ -93,7 +91,10 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Y_hat = Y_hat_logits.argmax(dim=-1)
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=acc, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=acc,
+            precision=0.0,
             loss=loss_val,
             error=float(1.0 - acc),
         )
@@ -161,7 +162,10 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_hat = Y_hat_logits.argmax(dim=-1)
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=acc, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=acc,
+            precision=0.0,
             loss=loss_val,
             error=float(1.0 - acc),
         )

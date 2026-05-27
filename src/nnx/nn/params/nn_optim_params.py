@@ -37,25 +37,20 @@ class NNOptimParams:
     per-group dicts.
     """
 
-    name            : Optims
-    max_lr          : float
-    weight_decay    : float
-    momentum        : Union[float, tuple[float, float]]
+    name: Optims
+    max_lr: float
+    weight_decay: float
+    momentum: Union[float, tuple[float, float]]
 
-    grad_clip_norm  : Optional[float] = None
-    accumulate_grad_batches: int      = 1
-    param_groups    : Optional[list[NNParamGroupSpec]] = field(default=None)
+    grad_clip_norm: Optional[float] = None
+    accumulate_grad_batches: int = 1
+    param_groups: Optional[list[NNParamGroupSpec]] = field(default=None)
 
     def __str__(self):
         return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"
 
     def state(self):
-        d = dict(
-            max_lr          = self.max_lr
-            , momentum      = str(self.momentum)
-            , name          = str(self.name)
-            , weight_decay  = self.weight_decay
-        )
+        d = dict(max_lr=self.max_lr, momentum=str(self.momentum), name=str(self.name), weight_decay=self.weight_decay)
         # grad_clip_norm / accumulate_grad_batches / param_groups: only emit
         # when set to a non-default value, so a NNOptimParams with none of
         # them set hashes to the same run.id as before these fields existed.
@@ -65,11 +60,11 @@ class NNOptimParams:
         # default pattern is now enforced on every params dataclass; see
         # test_params_round_trip.py for the regression tests.)
         if self.grad_clip_norm is not None:
-            d['grad_clip_norm'] = self.grad_clip_norm
+            d["grad_clip_norm"] = self.grad_clip_norm
         if self.accumulate_grad_batches != 1:
-            d['accumulate_grad_batches'] = self.accumulate_grad_batches
+            d["accumulate_grad_batches"] = self.accumulate_grad_batches
         if self.param_groups is not None:
-            d['param_groups'] = [g.state() for g in self.param_groups]
+            d["param_groups"] = [g.state() for g in self.param_groups]
         return d
 
     @staticmethod
@@ -79,21 +74,18 @@ class NNOptimParams:
         # Importing NNParamGroupSpec at module top would create a cycle.
         from ...finetune.param_groups import NNParamGroupSpec
 
-        raw_pg = state.get('param_groups')
-        param_groups = (
-            [NNParamGroupSpec.from_state(g) for g in raw_pg]
-            if raw_pg is not None else None
-        )
+        raw_pg = state.get("param_groups")
+        param_groups = [NNParamGroupSpec.from_state(g) for g in raw_pg] if raw_pg is not None else None
         return NNOptimParams(
-            max_lr          = state['max_lr']
-            , name          = Optims(state['name'])
-            , weight_decay  = state['weight_decay']
-            , momentum      = ast.literal_eval(state['momentum'])
+            max_lr=state["max_lr"],
+            name=Optims(state["name"]),
+            weight_decay=state["weight_decay"],
+            momentum=ast.literal_eval(state["momentum"]),
             # .get() preserves back-compat with older YAML that predates
             # grad_clip_norm / accumulate_grad_batches / param_groups.
-            , grad_clip_norm= state.get('grad_clip_norm')
-            , accumulate_grad_batches = state.get('accumulate_grad_batches', 1)
-            , param_groups  = param_groups
+            grad_clip_norm=state.get("grad_clip_norm"),
+            accumulate_grad_batches=state.get("accumulate_grad_batches", 1),
+            param_groups=param_groups,
         )
 
     def is_valid(self) -> bool:

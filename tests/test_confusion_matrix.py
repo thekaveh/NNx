@@ -3,6 +3,7 @@
 confusion_matrix now returns a plotly.graph_objects.Figure so callers can
 display, save, or compose it. Headless test environments rely on the
 default RENDERER=None to skip the .show() call."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,7 +27,9 @@ def test_classification_report_with_class_names():
     Y_true = np.array([0, 1, 2])
     Y_pred = np.array([0, 1, 1])
     df = VisUtils.classification_report(
-        Y_true, Y_pred, class_names=["cat", "dog", "fish"],
+        Y_true,
+        Y_pred,
+        class_names=["cat", "dog", "fish"],
     )
     assert "cat" in df.index
     assert "dog" in df.index

@@ -11,6 +11,7 @@ that produces the two views is the caller's responsibility — typically
 via a paired-view :class:`Dataset` whose ``__getitem__`` returns
 ``(view1, view2)`` for the same source sample.
 """
+
 from __future__ import annotations
 
 import torch
@@ -64,10 +65,7 @@ def nt_xent_loss(
     # Positives: row i in [0, B) has positive at column i+B; row j in
     # [B, 2B) has positive at column j-B. Cross-entropy of the
     # softmax over rejected self-positions, targeting those columns.
-    targets = torch.cat(
-        [torch.arange(B, 2 * B, device=sim.device),
-         torch.arange(0, B, device=sim.device)]
-    )
+    targets = torch.cat([torch.arange(B, 2 * B, device=sim.device), torch.arange(0, B, device=sim.device)])
     return F.cross_entropy(sim, targets)
 
 
@@ -130,7 +128,10 @@ def simclr_train_step_factory(*, temperature: float = 0.5) -> TrainStepFn:
         # the loss in both slots so BEST tracking and ReduceLROnPlateau
         # have a single signal to lock onto.
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
             loss=loss_val,
             error=loss_val,
         )

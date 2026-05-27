@@ -54,6 +54,7 @@ def _point_best(best_run_path: str, run_path: str) -> None:
         else:
             # Existing pointer directory from a prior fallback — clear it.
             import shutil
+
             shutil.rmtree(best_run_path)
     try:
         os.symlink(src=run_path, dst=best_run_path)
@@ -94,20 +95,21 @@ def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
         return float("inf")
     return edp.error
 
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
-    net     : NNParams
-    train   : NNTrainParams
-    model   : NNModelParams
+    net: NNParams
+    train: NNTrainParams
+    model: NNModelParams
 
     # Optional trainer-mode marker. Populated by Trainer.train(); None for
     # NNModel.train()-produced runs. state() omits it when None so existing
     # run.id hashes for NNModel runs are preserved exactly.
-    trainer : Optional[NNTrainerParams]           = field(default=None)
+    trainer: Optional[NNTrainerParams] = field(default=None)
 
-    _id     : Optional[str]                         = field(repr=False, default=None)
-    _state  : Optional[dict]                        = field(repr=False, default=None)
-    idps    : Optional[list[NNIterationDataPoint]]  = field(repr=False, default=None)
+    _id: Optional[str] = field(repr=False, default=None)
+    _state: Optional[dict] = field(repr=False, default=None)
+    idps: Optional[list[NNIterationDataPoint]] = field(repr=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -119,18 +121,14 @@ class NNRun:
             f"loss={self.model.loss}"
             f", device={self.model.device}"
             f", net={self.model.net}"
-
             f", dims={self.net.dims}"
             f", dropout={self.net.dropout_prob}"
             f", activation={self.net.activation}"
             f", n_heads={self.net.n_heads}"
-
             f", n_epochs={self.train.n_epochs}"
-
             f", max_lr={self.train.optim.max_lr}"
             f", momentum={self.train.optim.momentum}"
             f", decay={self.train.optim.weight_decay}"
-
             f", scheduler={self.train.scheduler}"
             "}"
         )
@@ -140,22 +138,18 @@ class NNRun:
         return self._id
 
     def __post_init__(self):
-        state = dict(
-            model   = self.model.state()
-            , net   = self.net.state()
-            , train = self.train.state()
-        )
+        state = dict(model=self.model.state(), net=self.net.state(), train=self.train.state())
         # `trainer` is omitted when None so existing NNModel runs hash to
         # the same run.id as before this field existed. Same omit-when-
         # default pattern as NNTrainParams.seed / save_phase_checkpoints
         # and NNOptimParams.param_groups.
         if self.trainer is not None:
-            state['trainer'] = self.trainer.state()
+            state["trainer"] = self.trainer.state()
 
-        id = hashlib.md5(str(state).encode('utf-8')).hexdigest()
+        id = hashlib.md5(str(state).encode("utf-8")).hexdigest()
 
-        object.__setattr__(self, '_id', id)
-        object.__setattr__(self, '_state', {"id": id, **state})
+        object.__setattr__(self, "_id", id)
+        object.__setattr__(self, "_state", {"id": id, **state})
 
     def state(self) -> dict:
         return self._state
@@ -165,11 +159,11 @@ class NNRun:
 
     def checkpoints(self, root: Optional[str] = None) -> list[NNCheckpoint]:
         return [
-            NNCheckpoint.load(run=self.id, type=Checkpoints.FIRST, root=root)
-            , NNCheckpoint.load(run=self.id, type=Checkpoints.Q1, root=root)
-            , NNCheckpoint.load(run=self.id, type=Checkpoints.Q2, root=root)
-            , NNCheckpoint.load(run=self.id, type=Checkpoints.Q3, root=root)
-            , NNCheckpoint.load(run=self.id, type=Checkpoints.LAST, root=root)
+            NNCheckpoint.load(run=self.id, type=Checkpoints.FIRST, root=root),
+            NNCheckpoint.load(run=self.id, type=Checkpoints.Q1, root=root),
+            NNCheckpoint.load(run=self.id, type=Checkpoints.Q2, root=root),
+            NNCheckpoint.load(run=self.id, type=Checkpoints.Q3, root=root),
+            NNCheckpoint.load(run=self.id, type=Checkpoints.LAST, root=root),
         ]
 
     def save(self, root: Optional[str] = None) -> NNRun:
@@ -196,6 +190,7 @@ class NNRun:
         # versions + git commit so a run.yaml from six months ago is
         # debuggable even if the library has moved on.
         from ...seeding import env_snapshot
+
         _atomic_write_text(metadata_path, yaml.safe_dump(env_snapshot()))
 
         _atomic_write_text(
@@ -214,7 +209,8 @@ class NNRun:
             best_run_id = _read_best_pointer(best_run_path)
             best_ckpt = (
                 NNCheckpoint.load(run=best_run_id, type=Checkpoints.BEST, root=root)
-                if best_run_id is not None else None
+                if best_run_id is not None
+                else None
             )
             best_err = _best_err(best_ckpt)
             curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST, root=root))
@@ -233,24 +229,25 @@ class NNRun:
         with open(yaml_path) as f:
             rep = yaml.load(f, Loader=yaml.FullLoader)
 
-        idps = pd.read_csv(csv_path).to_dict(orient='records')
+        idps = pd.read_csv(csv_path).to_dict(orient="records")
 
         # Lazy import for trainer params — keeps `nnx.nn.params` importable
         # without dragging the trainer subpackage in, and avoids a cycle
         # if anything in `nnx.trainer` ever needs to import NNRun.
-        trainer_state = rep.get('trainer')
+        trainer_state = rep.get("trainer")
         if trainer_state is not None:
             from ...trainer.params import NNTrainerParams
+
             trainer = NNTrainerParams.from_state(trainer_state)
         else:
             trainer = None
 
         return NNRun(
-            net     = NNParams.from_state(rep['net'])
-            , train = NNTrainParams.from_state(rep['train'])
-            , model = NNModelParams.from_state(rep['model'])
-            , trainer = trainer
-            , idps  = [NNIterationDataPoint.from_state(idp) for idp in idps]
+            net=NNParams.from_state(rep["net"]),
+            train=NNTrainParams.from_state(rep["train"]),
+            model=NNModelParams.from_state(rep["model"]),
+            trainer=trainer,
+            idps=[NNIterationDataPoint.from_state(idp) for idp in idps],
         )
 
     @staticmethod

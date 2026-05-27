@@ -6,6 +6,7 @@ inspect the resulting NNRun → reload the BEST checkpoint and predict.
 Run:
     python examples/01_synthetic_classification.py
 """
+
 from __future__ import annotations
 
 import torch
@@ -45,11 +46,16 @@ def main():
 
     # 2. Model.
     net_params = NNParams(
-        input_dim=8, output_dim=3, hidden_dims=[32, 16],
-        dropout_prob=0.1, activation=Activations.RELU,
+        input_dim=8,
+        output_dim=3,
+        hidden_dims=[32, 16],
+        dropout_prob=0.1,
+        activation=Activations.RELU,
     )
     model_params = NNModelParams(
-        net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+        net=Nets.FEED_FWD,
+        device=Devices.CPU,
+        loss=Losses.CROSS_ENTROPY,
     )
     model = NNModel(net_params=net_params, params=model_params)
 
@@ -60,11 +66,18 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999),
-            weight_decay=5e-5, grad_clip_norm=1.0,
+            name=Optims.ADAM,
+            max_lr=1e-2,
+            momentum=(0.9, 0.999),
+            weight_decay=5e-5,
+            grad_clip_norm=1.0,
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=3, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=3,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
 

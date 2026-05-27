@@ -22,17 +22,17 @@ class NNEvaluationDataPoint:
     pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
     """
 
-    f1          : float
-    recall      : float
-    accuracy    : float
-    precision   : float
-    loss        : Optional[float]   = None
-    error       : Optional[float]   = None
+    f1: float
+    recall: float
+    accuracy: float
+    precision: float
+    loss: Optional[float] = None
+    error: Optional[float] = None
 
     # Custom metrics injected by the caller. Keys are metric names; values
     # are floats. Default factory keeps the dataclass hashable-by-value via
     # the dict default.
-    extra       : dict              = field(default_factory=dict)
+    extra: dict = field(default_factory=dict)
 
     def with_loss(self, value: float):
         return replace(self, loss=value)
@@ -70,11 +70,11 @@ class NNEvaluationDataPoint:
                 extra[name] = float(fn(Y, Y_hat))
 
         return NNEvaluationDataPoint(
-            accuracy=metrics.accuracy_score(y_true=Y, y_pred=Y_hat)
-            , f1=metrics.f1_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
-            , recall=metrics.recall_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
-            , precision=metrics.precision_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0)
-            , extra=extra
+            accuracy=metrics.accuracy_score(y_true=Y, y_pred=Y_hat),
+            f1=metrics.f1_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0),
+            recall=metrics.recall_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0),
+            precision=metrics.precision_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0),
+            extra=extra,
         )
 
     @staticmethod
@@ -102,10 +102,10 @@ class NNEvaluationDataPoint:
         """
         # Aggregate the standard fields with the existing logic.
         ret = NNEvaluationDataPoint(
-            f1=np.mean([edp.f1 for edp in edps])
-            , recall=np.mean([edp.recall for edp in edps])
-            , accuracy=np.mean([edp.accuracy for edp in edps])
-            , precision=np.mean([edp.precision for edp in edps])
+            f1=np.mean([edp.f1 for edp in edps]),
+            recall=np.mean([edp.recall for edp in edps]),
+            accuracy=np.mean([edp.accuracy for edp in edps]),
+            precision=np.mean([edp.precision for edp in edps]),
         )
 
         if len([edp.loss for edp in edps if edp.loss is not None]) > 0:
@@ -132,28 +132,28 @@ class NNEvaluationDataPoint:
 
     def state(self) -> dict:
         d = dict(
-            f1          = self.f1
-            , recall    = self.recall
-            , accuracy  = self.accuracy
-            , precision = self.precision
-            , loss      = self.loss
-            , error     = self.error
+            f1=self.f1,
+            recall=self.recall,
+            accuracy=self.accuracy,
+            precision=self.precision,
+            loss=self.loss,
+            error=self.error,
         )
         # Omit `extra` when empty so EDPs from before this field existed
         # remain bit-for-bit identical in state() form (preserves run.id
         # back-compat).
         if self.extra:
-            d['extra'] = dict(self.extra)
+            d["extra"] = dict(self.extra)
         return d
 
     @staticmethod
     def from_state(state: dict) -> NNEvaluationDataPoint:
         return NNEvaluationDataPoint(
-            f1          = state['f1']
-            , recall    = state['recall']
-            , accuracy  = state['accuracy']
-            , precision = state['precision']
-            , loss      = state['loss']
-            , error     = state['error']
-            , extra     = dict(state.get('extra') or {})
+            f1=state["f1"],
+            recall=state["recall"],
+            accuracy=state["accuracy"],
+            precision=state["precision"],
+            loss=state["loss"],
+            error=state["error"],
+            extra=dict(state.get("extra") or {}),
         )

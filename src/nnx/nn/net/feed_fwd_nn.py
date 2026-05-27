@@ -13,10 +13,8 @@ class FeedFwdNN(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                nn.Linear(
-                    in_features=in_dim
-                    , out_features=out_dim
-                )   for in_dim, out_dim in zip(self.params.dims, self.params.dims[1:], strict=False)
+                nn.Linear(in_features=in_dim, out_features=out_dim)
+                for in_dim, out_dim in zip(self.params.dims, self.params.dims[1:], strict=False)
             ]
         )
 
@@ -59,7 +57,7 @@ class FeedFwdNN(nn.Module):
         torch.save(self.state_dict(), path)
 
     @staticmethod
-    def from_file(path: str, params: NNParams) -> 'FeedFwdNN':
+    def from_file(path: str, params: NNParams) -> "FeedFwdNN":
         # weights_only=True: a state-dict is plain tensors + standard
         # scalar/dict types — the strict loader works and removes the
         # arbitrary-code-execution risk on user-supplied paths. Matches
@@ -70,7 +68,7 @@ class FeedFwdNN(nn.Module):
         return net
 
     @staticmethod
-    def from_state(state_dict: dict, params: NNParams) -> 'FeedFwdNN':
+    def from_state(state_dict: dict, params: NNParams) -> "FeedFwdNN":
         net = FeedFwdNN(params)
         net.load_state_dict(state_dict)
 

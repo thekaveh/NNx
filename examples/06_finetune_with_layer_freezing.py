@@ -13,6 +13,7 @@ mismatches) plus `freeze(...)` with glob patterns.
 Run:
     python examples/06_finetune_with_layer_freezing.py
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -57,11 +58,16 @@ def _make_model(seed: int):
     set_seed(seed)
     return NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=3, hidden_dims=[16, 8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[16, 8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -90,22 +96,26 @@ def main():
 
     # ── Phase 2: load into a fresh model, freeze backbone, fine-tune ──
     print("\nPhase 2: fine-tune on distribution B (backbone frozen)")
-    fine = _make_model(seed=1)                     # different random init
+    fine = _make_model(seed=1)  # different random init
     result = load_pretrained(fine.net, weights_path)
-    print(f"  loaded {len(result.loaded_keys)} keys, "
-          f"{len(result.missing_keys)} missing, "
-          f"{len(result.unexpected_keys)} unexpected")
+    print(
+        f"  loaded {len(result.loaded_keys)} keys, "
+        f"{len(result.missing_keys)} missing, "
+        f"{len(result.unexpected_keys)} unexpected"
+    )
 
     # Freeze every parameter except the final classifier head
     # (FeedFwdNN names its layers `layers.0`, `layers.1`, `layers.2`).
     n_frozen = fine.freeze("layers.0.*", "layers.1.*")
     total = sum(1 for _ in fine.net.parameters())
     n_frozen_total = len(frozen(fine.net))
-    print(f"  froze {n_frozen} params this call; "
-          f"{n_frozen_total}/{total} now frozen, "
-          f"{total - n_frozen_total}/{total} trainable")
+    print(
+        f"  froze {n_frozen} params this call; "
+        f"{n_frozen_total}/{total} now frozen, "
+        f"{total - n_frozen_total}/{total} trainable"
+    )
 
-    loader_b = _make_loaders(seed=42)              # distribution B
+    loader_b = _make_loaders(seed=42)  # distribution B
     run_b = fine.train(
         params=train_params_template(lr=1e-3).with_train_loader(loader_b),
     )

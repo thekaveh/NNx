@@ -1,4 +1,5 @@
 """Tests for nnx.paradigms.augmentation — Mixup + CutMix."""
+
 from __future__ import annotations
 
 import pytest
@@ -27,14 +28,20 @@ from nnx import (
 # Mixup
 # -------------------------------------------------------------------------
 
+
 def _supervised_model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=3, hidden_dims=[16],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -68,10 +75,17 @@ def test_mixup_train_loop_runs(tmp_path, monkeypatch):
             n_epochs=2,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=mixup_train_step_factory(alpha=0.4),
@@ -80,9 +94,7 @@ def test_mixup_train_loop_runs(tmp_path, monkeypatch):
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
     # Some parameter must have moved — proves Mixup did SOMETHING, not no-op.
-    moved = any(
-        not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters()
-    )
+    moved = any(not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters())
     assert moved, "Mixup train step ran but model weights did not change"
 
 
@@ -99,10 +111,17 @@ def test_mixup_reports_weighted_accuracy(tmp_path, monkeypatch):
             n_epochs=1,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=mixup_train_step_factory(alpha=0.4),
@@ -119,6 +138,7 @@ def test_mixup_reports_weighted_accuracy(tmp_path, monkeypatch):
 # -------------------------------------------------------------------------
 # CutMix
 # -------------------------------------------------------------------------
+
 
 class _TinyImageNet(nn.Module):
     """A minimal conv classifier so CutMix has a 4D batch to work on."""
@@ -146,11 +166,16 @@ def _image_model() -> NNModel:
     placeholder is unused — CutMix only needs forward() + unpack_batch()."""
     m = NNModel(
         net_params=NNParams(
-            input_dim=3 * 4 * 4, output_dim=3, hidden_dims=[],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=3 * 4 * 4,
+            output_dim=3,
+            hidden_dims=[],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     m.net = _TinyImageNet(n_classes=3).to(m.device)
@@ -178,14 +203,24 @@ def test_cutmix_rejects_non_image_input():
     # Drive a single batch through the step manually to surface the
     # validation error (NNModel.train wraps everything in a tqdm loop).
     from nnx.nn.nn_model import TrainStepContext
+
     batch = next(iter(loader))
     optimizer = Optims.ADAM(
-        net=model.net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        net=model.net,
+        lr_start=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
     )
     ctx = TrainStepContext(
-        model=model, batch=batch, optimizer=optimizer, scaler=None,
-        grad_clip_norm=None, extra_metrics=None,
-        accumulate_grad_batches=1, batch_idx=0, epoch_idx=0,
+        model=model,
+        batch=batch,
+        optimizer=optimizer,
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
     )
     with pytest.raises(ValueError, match="4D image input"):
         step_fn(ctx)
@@ -207,10 +242,17 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
             n_epochs=1,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=cutmix_train_step_factory(alpha=1.0),
@@ -218,7 +260,5 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
     losses = [idp.train_edp.loss for idp in run.idps]
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
-    moved = any(
-        not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters()
-    )
+    moved = any(not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters())
     assert moved, "CutMix train step ran but model weights did not change"

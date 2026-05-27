@@ -14,6 +14,7 @@ to :meth:`NNModel.train`. The closure indexes the schedule tensors on
 the model's device — moving the schedule on first use — so callers
 can build the schedule on CPU and let the factory migrate it lazily.
 """
+
 from __future__ import annotations
 
 import torch
@@ -91,7 +92,10 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         loss_val = finalize_step(loss, ctx, paradigm="diffusion")
 
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
             loss=loss_val,
             error=loss_val,
         )

@@ -4,6 +4,7 @@ The enum's __call__ is invoked from NNModel.train() via NNSchedulerParams.kind.
 Each variant takes the optimizer plus the scheduler params dataclass (which
 carries variant-specific config like T_max, step_size, max_lr).
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -17,10 +18,10 @@ if TYPE_CHECKING:
 
 class Schedulers(Enum):
     REDUCE_LR_ON_PLATEAU = "reduce_lr_on_plateau"
-    STEP                  = "step"
-    COSINE_ANNEALING      = "cosine_annealing"
-    ONE_CYCLE             = "one_cycle"
-    LINEAR_WARMUP_DECAY   = "linear_warmup_decay"
+    STEP = "step"
+    COSINE_ANNEALING = "cosine_annealing"
+    ONE_CYCLE = "one_cycle"
+    LINEAR_WARMUP_DECAY = "linear_warmup_decay"
 
     def __str__(self) -> str:
         return self.value
@@ -52,13 +53,17 @@ class Schedulers(Enum):
             case Schedulers.COSINE_ANNEALING:
                 T_max = params.T_max if params.T_max is not None else n_epochs
                 return lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=T_max, eta_min=params.min_lr,
+                    optimizer,
+                    T_max=T_max,
+                    eta_min=params.min_lr,
                 )
             case Schedulers.ONE_CYCLE:
                 max_lr = params.max_lr if params.max_lr is not None else optimizer.param_groups[0]["lr"]
                 total_steps = params.total_steps if params.total_steps is not None else n_epochs
                 return lr_scheduler.OneCycleLR(
-                    optimizer, max_lr=max_lr, total_steps=total_steps,
+                    optimizer,
+                    max_lr=max_lr,
+                    total_steps=total_steps,
                 )
             case Schedulers.LINEAR_WARMUP_DECAY:
                 warmup_steps = params.warmup_steps if params.warmup_steps is not None else max(1, n_epochs // 10)
