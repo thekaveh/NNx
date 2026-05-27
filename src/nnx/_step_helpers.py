@@ -42,6 +42,16 @@ def finalize_step(
     each loss component, cycling zero_grad/step boundaries), which is
     out of scope for the v1 paradigm factories.
 
+    **CPU caveat**: the AMP rejection only fires when ``ctx.scaler`` is
+    non-None, which on CPU it never is — :meth:`NNModel._build_grad_scaler`
+    returns None whenever ``device.type != "cuda"`` regardless of
+    ``NNModelParams.mixed_precision``. A CPU user setting
+    ``mixed_precision=True`` therefore gets the same silent no-op as
+    they would for any other CPU AMP request (the behavior
+    NNModelParams documents as "silently bypassed on CPU/MPS"). The
+    explicit ``ValueError`` is the user-facing safety net for the
+    CUDA path, where the silent drop would actually matter.
+
     Args:
         loss: scalar loss tensor with ``requires_grad`` already wired
             from the forward path. The caller must have invoked

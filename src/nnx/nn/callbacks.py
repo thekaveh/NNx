@@ -119,9 +119,12 @@ class ModelCheckpoint(Callback):
     that cycle — useful for sampling at fixed milestones (e.g., epoch 10,
     20, 50) for downstream inspection.
 
-    Each match writes ``runs/<run.id>/checkpoints/<tag>_e<epoch>.pt`` — the
-    epoch suffix prevents successive matches from overwriting each other
-    when ``epochs`` has multiple entries.
+    Each match writes ``<cwd>/runs/<run.id>/checkpoints/<tag>_e<epoch>.pt``
+    — cwd-relative, matching what :meth:`NNRun.save` and :class:`NNCheckpoint`
+    use when called from inside :meth:`NNModel.train` (the train() entry
+    point doesn't accept a ``root=`` parameter). The epoch suffix
+    prevents successive matches from overwriting each other when
+    ``epochs`` has multiple entries.
 
     Args:
         epochs: list of 0-indexed epoch numbers at which to save. Empty /
