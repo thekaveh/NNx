@@ -8,6 +8,7 @@ existing notebooks keep working.
 from __future__ import annotations
 
 import sys
+from typing import Optional
 
 from prettytable import PrettyTable
 
@@ -33,7 +34,7 @@ def print_tree(tree, level: int = 0, *, file=None) -> None:
             print(' ' * level * 4 + f'[+] {key.ljust(max_key_len)} : {val}', file=out)
 
 
-def print_table(data: dict, header: bool = True, title: str = None, *, file=None) -> None:
+def print_table(data: dict, header: bool = True, title: Optional[str] = None, *, file=None) -> None:
     """Print ``data`` as a 2-column key/value table.
 
     Pass ``file=`` to redirect output. Defaults to ``sys.stdout``.

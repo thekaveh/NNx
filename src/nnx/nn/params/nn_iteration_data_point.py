@@ -57,9 +57,9 @@ class NNIterationDataPoint:
             }
 
         val_edp = None
-        if state.get('val_edp.loss') is not None or any(
+        if any(
             state.get(f'val_edp.{k}') is not None
-            for k in ('error', 'accuracy', 'f1', 'recall', 'precision')
+            for k in ('loss', 'error', 'accuracy', 'f1', 'recall', 'precision')
         ):
             val_edp = NNEvaluationDataPoint.from_state(
                 dict(

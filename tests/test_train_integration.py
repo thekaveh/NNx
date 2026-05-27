@@ -175,3 +175,36 @@ def test_train_skips_val_loop_when_no_val_loader(tmp_path, monkeypatch):
 
     assert all(idp.val_edp is None for idp in run.idps)
     assert (tmp_path / "runs" / run.id / "run.yaml").exists()
+
+
+def test_train_rejects_none_or_invalid_params():
+    """The first guard in NNModel.train() — params=None or an invalid
+    optim config — must raise ValueError loudly rather than letting the
+    loop start and produce a garbage run. Pre-audit, this branch had
+    zero test coverage."""
+    import pytest
+
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+
+    # 1. None params — surfaces a distinct error from the invalid-optim case.
+    with pytest.raises(ValueError, match="^train params must be non-None$"):
+        model.train(params=None)
+
+    # 2. invalid optim: Adam with a scalar momentum (Adam wants a tuple).
+    train_loader, _ = _make_tiny_loaders()
+    bad_optim = NNOptimParams(
+        name=Optims.ADAM, max_lr=1e-3, momentum=0.9, weight_decay=0.0,
+    )
+    bad_params = NNTrainParams(
+        n_epochs=1,
+        train_loader=train_loader,
+        optim=bad_optim,
+        scheduler=NNSchedulerParams(
+            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+        ),
+    )
+    with pytest.raises(ValueError, match=r"^train params has an invalid optim config:"):
+        model.train(params=bad_params)

@@ -1,30 +1,57 @@
 # NNx
 
-Lightweight PyTorch training / eval / visualization toolkit, with first-class support for graph neural networks (GCN / GraphSAGE / GAT). Originally extracted from `thekaveh/ml` to underpin training loops, checkpointing, and result visualization across notebook-based experiments; now standalone.
+Lightweight PyTorch training / eval / visualization toolkit. First-class support for graph neural networks (GCN / GraphSAGE / GAT). Originally extracted from `thekaveh/ml` to underpin training loops, checkpointing, and result visualization across notebook-based experiments; now standalone.
 
-## What's inside
+## 1. Overview
 
-- **`nnx.NNModel`** — orchestrator. Builds the network from params, runs train / eval / predict, manages checkpoints, supports callbacks (incl. early stopping), warm-resume training, mixed precision, gradient clipping, gradient accumulation, and seeded reproducibility.
-- **Networks** — `FeedFwdNN` (vision / tabular), and `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor).
-- **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), and `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
-- **Params** — frozen dataclasses for every config knob: `NNParams` (architecture), `NNModelParams` (orchestration), `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`. Every params object round-trips through `.state() / .from_state()` for persistence.
-- **Enums-as-factories** — `Nets`, `Losses`, `Optims`, `Schedulers`, `Activations`, `Devices`, `Checkpoints`, `NoiseSchedulers`. Each enum value's `__call__` constructs the underlying object, so adding a new option is a single-place change.
-- **Callbacks** — `Callback` base class with `on_{train,epoch}_{begin,end}` hooks. Stock: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback` (opt-in via `nnx[tensorboard]`), `WandbCallback` (opt-in via `nnx[wandb]`). Legacy `Callable[[List[IDP]], None]` is still accepted.
-- **Persistence** — `NNRun.save / load` writes `run.yaml` + `idps.csv` + `metadata.yaml` (env snapshot) per run under `runs/<id>/` (where `id` is the md5 of the run's `state()`); saved incrementally after every epoch so interrupted training stays loadable. `NNCheckpoint` saves at FIRST / Q1 / Q2 / Q3 / LAST / BEST tags with optimizer-state `.opt.pt` sidecars for warm-resume.
+NNx owns the boilerplate around supervised training so you can focus on the model: it builds the network from frozen-dataclass configs, runs the train / eval / predict loop, manages checkpoints under a content-addressed `runs/<id>/` directory, dispatches a documented Callback lifecycle, and exposes pluggable extension points for fine-tuning, multi-optimizer training, diffusion, alternative training paradigms, and parameter-efficient fine-tuning.
+
+### 1.1. Architecture
+
+![NNx architecture](docs/assets/architecture.svg)
+
+The diagram is generated via the `architecture-diagram` skill. A standalone interactive copy lives at [`docs/architecture.html`](docs/architecture.html); the embedded SVG above mirrors its content.
+
+**Reading the diagram top-to-bottom:**
+
+1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
+2. Both expose the **`train_step_fn` / `trainer_step_fn`** hook — the orange bus through which the **Specialization** subpackages (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`, plus the shared `_step_helpers`) plug into the loop.
+3. The **Training Loop** runs `finalize_step` (NaN guard + grad-clip), `_step_scheduler`, and `_save_checkpoints` each batch / epoch.
+4. The **Callback Bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
+5. **`NNRun`** and **`NNCheckpoint`** write to **`runs/<id>/`** atomically after every epoch.
+
+### 1.2. Capabilities at a glance
+
+- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: ReduceLROnPlateau / Step / CosineAnnealing / OneCycle / LinearWarmupDecay), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
+- **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`); incremental writes after every epoch survive `KeyboardInterrupt`. `NNCheckpoint` saves at six tags (FIRST / Q1 / Q2 / Q3 / LAST / BEST) with optimizer-state `.opt.pt` sidecars for warm-resume.
+- **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms without modifying NNx internals.
+- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`.
+- **Multi-optimizer `Trainer`** — `nnx.trainer.Trainer` parallels `NNModel.train()` for scenarios that need disjoint optimizers (GAN G/D, actor-critic). Accepts a name-keyed dict of `NNOptimParams`; each entry's `NNParamGroupSpec` scopes the optimizer under strict-partition semantics.
+- **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into the `train_step_fn` hook, and a reverse-diffusion sampler.
+- **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), SimCLR contrastive (NT-Xent loss exposed), Mixup batch augmentation (any shape), CutMix batch augmentation (4D images). All share an internal `_step_helpers.finalize_step` for grad-clip + NaN guard.
+- **PEFT (LoRA + adapters)** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
+- **Networks** — `FeedFwdNN` (vision / tabular) and `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor).
+- **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
+- **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
+- **Enums-as-factories** — `Nets`, `Losses`, `Optims`, `Schedulers`, `Activations`, `Devices`, `Checkpoints`, `NoiseSchedulers`. Each enum value's `__call__` constructs the underlying object; adding a new option is a single-place change.
+- **Callbacks** — `Callback` base class with `on_{train,epoch}_{begin,end}` hooks. Stock: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom-epoch tags), `TensorBoardCallback` (opt-in via `nnx[tensorboard]`), `WandbCallback` (opt-in via `nnx[wandb]`). Legacy `Callable[[List[IDP]], None]` is still accepted.
 - **Visualization** — `VisUtils` (and module-level aliases) returns Plotly `Figure` objects: `confusion_matrix`, `classification_report` (returns a DataFrame), `multi_line_plot`, `scatter_plot`, `two_dim_tsne_checkpoint_logits`.
 - **Reproducibility** — `nnx.set_seed(seed, strict=False)` pins every RNG + cuDNN; `nnx.dataloader_worker_init_fn` for per-worker seeds; `NNTrainParams.seed` runs `set_seed` at `train()` entry.
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via legacy `torch.onnx.export` (no `onnxscript` dep needed).
-- **Custom training step** — `NNModel.train(..., train_step_fn=...)` swaps out the supervised forward/backward/step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion paradigms without modifying NNx core. See `docs/concepts.md` and `examples/05_custom_train_step_autoencoder.py`.
-- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`. See `docs/concepts.md` and `examples/06_finetune_with_layer_freezing.py`.
-- **Multi-optimizer Trainer** — `nnx.trainer.Trainer` accepts an `NNModel` plus a name-keyed dict of `NNOptimParams` and builds one disjoint optimizer per entry (scoped by `NNParamGroupSpec` globs under strict semantics). The user supplies a `trainer_step_fn` that coordinates the multi-step update — unblocks GAN G/D, actor-critic, EBM, etc. without modifying NNx core. Writes the same `NNRun` + checkpoint artifacts `NNModel.train()` does, with a `trainer` block in `run.yaml`. See `docs/concepts.md` and `examples/09_gan_with_trainer.py`.
-- **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into `NNModel.train(train_step_fn=...)`, and a reverse-diffusion sampler. See `docs/concepts.md` and `examples/08_diffusion_2d_mixture.py`.
-- **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), SimCLR contrastive learning (`nt_xent_loss` exposed), Mixup batch augmentation (any shape), CutMix batch augmentation (4D images). Each is a `train_step_fn` for `NNModel.train()` — no Trainer, no new params dataclass. See `docs/concepts.md` and `examples/10_knowledge_distillation.py`.
-- **PEFT (LoRA + adapters)** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior); `apply_lora_to(module, *patterns)` does the wrap via fnmatch globs against dotted submodule names. `save_lora_weights` persists only the lora_A/B matrices — a small percentage of the full state_dict for production-scale nets (the ratio grows with `r/dim`). `AdapterLayer` is a bottleneck residual block for users who want explicit insertion points. See `docs/concepts.md` and `examples/07_lora_finetuning.py`.
+- **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via the legacy `torch.onnx.export` (no `onnxscript` dep needed).
 
-## Install
+## 2. Install
+
+### 2.1. Runtime
 
 ```bash
 pip install -e .                       # runtime
+```
+
+Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) are runnable on CPU.
+
+### 2.2. Optional extras
+
+```bash
 pip install -e ".[dev]"                # adds pytest, ruff, coverage, tensorboard, onnx
 pip install -e ".[tensorboard]"        # TensorBoardCallback
 pip install -e ".[wandb]"              # WandbCallback
@@ -32,9 +59,7 @@ pip install -e ".[onnx]"               # NNModel.to_onnx validation tooling
 pip install -e ".[docs]"               # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 
-Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) are runnable on CPU.
-
-## Quickstart
+## 3. Quickstart
 
 End-to-end CPU example — a tiny random-tensor classification run:
 
@@ -79,9 +104,11 @@ print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 y_log, y_hat = model.predict(X=X_val.numpy())
 ```
 
-### Other models
+## 4. Advanced patterns
 
-Switch architectures by changing the `Nets` enum value passed to `NNModelParams`. NNModel constructs the underlying network for you:
+### 4.1. Switching networks
+
+Change the `Nets` enum value passed to `NNModelParams`; NNModel constructs the underlying network for you:
 
 ```python
 NNModelParams(net=Nets.GRAPH_CONV,  device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
@@ -91,9 +118,9 @@ NNModelParams(net=Nets.GRAPH_ATT,   device=Devices.CPU, loss=Losses.CROSS_ENTROP
 # Use NNGraphDataset (PyG NeighborLoader-backed) to feed batches.
 ```
 
-See [examples/](examples/) for end-to-end scripts.
+See [examples/](examples/) for runnable end-to-end scripts.
 
-### Reproducibility
+### 4.2. Reproducibility
 
 ```python
 from nnx import set_seed, dataloader_worker_init_fn
@@ -102,7 +129,7 @@ DataLoader(..., worker_init_fn=dataloader_worker_init_fn)
 NNTrainParams(seed=42, ...)                         # pins again at train() entry
 ```
 
-### Warm-resume training
+### 4.3. Warm-resume training
 
 ```python
 run = model.train(params=NNTrainParams(n_epochs=10, ...))
@@ -117,7 +144,7 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ))
 ```
 
-### Custom metrics
+### 4.4. Custom metrics
 
 ```python
 NNTrainParams(
@@ -129,7 +156,7 @@ NNTrainParams(
 # Available on idp.train_edp.extra / idp.val_edp.extra and survives NNRun.load.
 ```
 
-### Visualization
+### 4.5. Visualization
 
 ```python
 from nnx import VisUtils
@@ -138,7 +165,7 @@ fig.show()
 df = VisUtils.classification_report(y_true, y_pred)  # DataFrame
 ```
 
-### Auto device detection
+### 4.6. Auto device detection
 
 ```python
 from nnx import Devices
@@ -146,13 +173,13 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 # Devices.get() picks MPS (Apple) > CUDA > CPU.
 ```
 
-### Mixed precision (CUDA)
+### 4.7. Mixed precision (CUDA)
 
 ```python
 NNModelParams(..., mixed_precision=True)   # silently no-op on CPU/MPS
 ```
 
-### Scheduler choices
+### 4.8. Scheduler choices
 
 By default the scheduler is `ReduceLROnPlateau` driven by the params dataclass. Pass `kind=` to switch:
 
@@ -162,7 +189,7 @@ NNSchedulerParams(..., kind=Schedulers.COSINE_ANNEALING, T_max=100)
 # Or: STEP, ONE_CYCLE, LINEAR_WARMUP_DECAY
 ```
 
-### Loading a run
+### 4.9. Loading a run
 
 ```python
 from nnx import NNRun, NNCheckpoint, Checkpoints
@@ -171,20 +198,30 @@ ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 model = NNModel.from_checkpoint(checkpoint=ckpt)
 ```
 
-## Status
+## 5. Documentation
+
+- [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail.
+- [Quickstart](docs/quickstart.md) — paste-runnable example with variations.
+- [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings.
+- [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram above.
+
+## 6. Project
+
+### 6.1. Status
 
 Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix obvious bugs (see [CHANGELOG](CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
 
-## Contributing
+### 6.2. Contributing
 
 Bug reports and PRs welcome via GitHub issues. Running locally:
 
 ```bash
-pytest                      # full suite (~3s)
+pytest                      # full suite (~5s)
 pytest tests/test_callbacks.py::test_lr_monitor_records_history  # one test
 ruff check src/ tests/      # lint (gates CI)
+mkdocs build --strict       # docs (gates CI)
 ```
 
-## License
+### 6.3. License
 
 MIT. See [LICENSE](LICENSE).
