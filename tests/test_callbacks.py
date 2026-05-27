@@ -92,8 +92,6 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     """ModelCheckpoint must actually save a checkpoint at matched epochs.
     Previously this callback was a no-op stub; the audit caught it and
     we wired it through to NNCheckpoint.to_file."""
-    import os
-
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -113,7 +111,6 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     from nnx.nn.callbacks import ModelCheckpoint
     from nnx.nn.params.nn_checkpoint import NNCheckpoint
 
-    os.environ.setdefault("NNX_TQDM_DISABLE", "1")
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 
@@ -157,8 +154,6 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
 def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):
     """When `epochs` is empty / None, ModelCheckpoint must NEVER write —
     the callback is just inert, not creating empty files."""
-    import os
-
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -177,7 +172,6 @@ def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):
     )
     from nnx.nn.callbacks import ModelCheckpoint
 
-    os.environ.setdefault("NNX_TQDM_DISABLE", "1")
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 

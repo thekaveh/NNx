@@ -6,7 +6,6 @@ of unsupported NNOptimParams knobs (AMP, gradient accumulation).
 from __future__ import annotations
 
 import math
-import os
 
 import pytest
 import torch
@@ -33,8 +32,6 @@ from nnx import (
 )
 from nnx._step_helpers import finalize_step
 from nnx.nn.nn_model import TrainStepContext
-
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
 
 
 def _model_and_optim():

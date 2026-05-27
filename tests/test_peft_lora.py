@@ -1,8 +1,6 @@
 """Tests for nnx.peft.lora — LoRALinear + apply_lora_to + save/load."""
 from __future__ import annotations
 
-import os
-
 import pytest
 import torch
 from torch import nn
@@ -25,9 +23,6 @@ from nnx import (
     save_lora_weights,
     set_seed,
 )
-
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
 
 # -------------------------------------------------------------------------
 # LoRALinear basics

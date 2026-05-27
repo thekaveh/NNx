@@ -7,8 +7,6 @@ test doesn't pollute the repo.
 """
 from __future__ import annotations
 
-import os
-
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -29,8 +27,6 @@ from nnx import (
     diffusion_train_step_factory,
     set_seed,
 )
-
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
 
 
 def _make_model() -> NNModel:

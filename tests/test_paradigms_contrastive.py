@@ -1,8 +1,6 @@
 """Tests for nnx.paradigms.contrastive — SimCLR / NT-Xent."""
 from __future__ import annotations
 
-import os
-
 import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -23,9 +21,6 @@ from nnx import (
     set_seed,
     simclr_train_step_factory,
 )
-
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
 
 # -------------------------------------------------------------------------
 # nt_xent_loss

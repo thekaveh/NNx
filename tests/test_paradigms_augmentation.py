@@ -1,8 +1,6 @@
 """Tests for nnx.paradigms.augmentation — Mixup + CutMix."""
 from __future__ import annotations
 
-import os
-
 import pytest
 import torch
 import torch.nn as nn
@@ -24,9 +22,6 @@ from nnx import (
     mixup_train_step_factory,
     set_seed,
 )
-
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
 
 # -------------------------------------------------------------------------
 # Mixup

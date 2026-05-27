@@ -6,8 +6,6 @@ distribution than random noise.
 """
 from __future__ import annotations
 
-import os
-
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -29,8 +27,6 @@ from nnx import (
     sample,
     set_seed,
 )
-
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
 
 
 def _trained_diffusion(tmp_path, monkeypatch):

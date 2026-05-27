@@ -10,8 +10,6 @@ Covers:
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 import torch
 import torch.nn as nn
@@ -36,9 +34,6 @@ from nnx import (
     TrainerStepContext,
     TrainerStepFn,
 )
-
-# Trainer's tqdm bar pollutes test output without this.
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
 
 
 def _supervised_model() -> NNModel:
