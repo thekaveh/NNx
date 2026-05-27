@@ -241,7 +241,7 @@ class VisUtils:
                                 n_components=2
                             ).fit_transform(
                                 X=pd.DataFrame(
-                                    data=test_Y_hat[0]
+                                    data=test_Y_hat.logits
                                 ).iloc[:n_samples, :]
                             )
                             , columns=["tsne_1", "tsne_2"]

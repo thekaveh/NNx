@@ -37,22 +37,50 @@ def test_adapter_layer_param_count_is_bottleneck_scaled():
     assert n_params < full_linear_params / 4
 
 
-def test_adapter_layer_gradients_flow_through_both_projections():
-    """At step 0 the output equals the input but gradients should
-    still flow — only the OUTPUT magnitude starts at zero, the
-    GRADIENT path through up/down is unblocked from step 1."""
+def test_adapter_layer_gradients_flow_through_up_immediately():
+    """At step 0 the output equals the input (`up.weight` is zero-init),
+    so `up.weight.grad` picks up a non-zero signal on the first
+    backward. `down.weight.grad` is structurally zero at step 0 because
+    its gradient chain passes through `up.weight = 0` — it becomes
+    non-zero only after the first optimizer step moves `up.weight`
+    off zero. This test pins both invariants explicitly so a
+    regression that decouples gradient flow from forward dependency
+    is caught."""
     torch.manual_seed(0)
     a = AdapterLayer(dim=8, bottleneck=2)
-    x = torch.randn(4, 8, requires_grad=False)
+    x = torch.randn(4, 8)
     loss = a(x).pow(2).sum()
     loss.backward()
-    # down.weight / down.bias should have non-zero gradient (the loss
-    # depends on them through the down → act → up path).
-    assert a.down.weight.grad is not None
-    # up.weight gets gradient because the loss depends on it via the
-    # forward path; up.bias same.
+
+    # up.weight / up.bias get non-zero gradients on the first backward —
+    # the loss depends on them through the residual term directly.
     assert a.up.weight.grad is not None
+    assert (a.up.weight.grad != 0).any(), "up.weight.grad must be non-zero at step 0"
     assert a.up.bias.grad is not None
+    assert (a.up.bias.grad != 0).any(), "up.bias.grad must be non-zero at step 0"
+
+    # down.weight gradient is structurally zero at step 0 because the
+    # chain rule routes its gradient through `up.weight`, which is
+    # zero. After one optimizer step (which moves up.weight off zero),
+    # the next backward populates down.weight.grad with non-zeros.
+    assert a.down.weight.grad is not None
+    assert (a.down.weight.grad == 0).all(), (
+        "down.weight.grad must be all-zero at step 0 (gradient chain "
+        "passes through up.weight=0)"
+    )
+
+    # Take one SGD-like step on up.weight to break the zero, then verify
+    # the next backward DOES populate down.weight.grad non-trivially.
+    import torch as _torch
+    with _torch.no_grad():
+        a.up.weight += 0.01
+    a.down.weight.grad = None
+    a.up.weight.grad = None
+    loss2 = a(x).pow(2).sum()
+    loss2.backward()
+    assert (a.down.weight.grad != 0).any(), (
+        "after up.weight is non-zero, down.weight.grad must pick up signal"
+    )
 
 
 def test_adapter_layer_validates_dims():

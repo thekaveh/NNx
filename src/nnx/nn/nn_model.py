@@ -604,10 +604,16 @@ class NNModel:
         accumulate_grad_batches: int = 1,
         batch_idx: int = 0,
     ) -> NNEvaluationDataPoint:
-        """Thin wrapper around `default_train_step` kept for back-compat with
-        any subclass that overrode `_train_step` directly. The `train()`
-        loop itself no longer goes through this method — it builds a
-        TrainStepContext and dispatches to `train_step_fn or default_train_step`.
+        """Thin wrapper around :func:`default_train_step` kept for back-compat
+        with any code that calls ``model._train_step(batch, ...)`` directly
+        (e.g., a notebook that pre-dates the ``train_step_fn`` hook).
+
+        **The :meth:`train` loop does NOT call this method.** It builds a
+        :class:`TrainStepContext` and dispatches to
+        ``train_step_fn or default_train_step`` directly. A subclass that
+        overrides ``_train_step`` will therefore be ignored by ``train()`` —
+        if you want a custom training step for ``train()``, pass it as the
+        ``train_step_fn=`` kwarg instead.
         """
         return default_train_step(TrainStepContext(
             model=self,
