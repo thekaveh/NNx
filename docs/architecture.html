@@ -93,12 +93,12 @@
         <line x1="380" y1="395" x2="380" y2="478" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
         <text x="392" y="442" fill="#fb923c" font-size="9">on_*_begin/end</text>
 
-        <!-- callback bus → listener row (vertical drops from the bus) -->
-        <line x1="120" y1="510" x2="120" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
-        <line x1="290" y1="510" x2="290" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
-        <line x1="460" y1="510" x2="460" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
-        <line x1="630" y1="510" x2="630" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
-        <line x1="800" y1="510" x2="800" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
+        <!-- callback bus → listener row (vertical drops from the bus; column-aligned with the 5 listener boxes) -->
+        <line x1="300" y1="510" x2="300" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
+        <line x1="495" y1="510" x2="495" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
+        <line x1="690" y1="510" x2="690" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
+        <line x1="885" y1="510" x2="885" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
+        <line x1="1080" y1="510" x2="1080" y2="568" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
 
         <!-- _save_checkpoints → NNCheckpoint (down-right; column-aligned) -->
         <line x1="1060" y1="395" x2="1060" y2="678" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
@@ -124,9 +124,9 @@
         <rect x="658" y="70" width="492" height="180" rx="8" fill="rgba(120, 53, 15, 0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
         <text x="668" y="86" fill="#fbbf24" font-size="9" font-weight="600">Specializations (hooked via train_step_fn)</text>
 
-        <!-- Persistence cluster -->
-        <rect x="40" y="660" width="1100" height="180" rx="8" fill="rgba(76, 29, 149, 0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
-        <text x="52" y="678" fill="#a78bfa" font-size="9" font-weight="600">Persistence (runs/&lt;id&gt;/ on disk)</text>
+        <!-- Persistence cluster (kept inside the nnx package boundary) -->
+        <rect x="240" y="660" width="900" height="180" rx="8" fill="rgba(76, 29, 149, 0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="252" y="678" fill="#a78bfa" font-size="9" font-weight="600">Persistence (runs/&lt;id&gt;/ on disk)</text>
 
         <!-- ============================================================
              COMPONENT BOXES (top to bottom, left to right)
@@ -217,36 +217,36 @@
         <text x="1060" y="362" fill="white" font-size="11" font-weight="600" text-anchor="middle">_save_checkpoints</text>
         <text x="1060" y="380" fill="#94a3b8" font-size="9" text-anchor="middle">FIRST/Q1/Q2/Q3/LAST/BEST</text>
 
-        <!-- Layer 6: Callback bus (orange wide horizontal) -->
-        <rect x="60" y="478" width="1080" height="32" rx="6" fill="#0f172a"/>
-        <rect x="60" y="478" width="1080" height="32" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="600" y="498" fill="white" font-size="11" font-weight="600" text-anchor="middle">Callback Bus  •  on_train_begin / on_epoch_begin / on_epoch_end / on_train_end</text>
+        <!-- Layer 6: Callback bus (kept inside the nnx package boundary x=220..1160) -->
+        <rect x="240" y="478" width="900" height="32" rx="6" fill="#0f172a"/>
+        <rect x="240" y="478" width="900" height="32" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="690" y="498" fill="white" font-size="11" font-weight="600" text-anchor="middle">Callback Bus  •  on_train_begin / on_epoch_begin / on_epoch_end / on_train_end</text>
 
-        <!-- Layer 7: Callback listeners (orange) -->
-        <rect x="60" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
-        <rect x="60" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="120" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">EarlyStopping</text>
-        <text x="120" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">patience monitor</text>
+        <!-- Layer 7: Callback listeners (orange) — 5 boxes evenly spaced inside the bus -->
+        <rect x="240" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="240" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="300" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">EarlyStopping</text>
+        <text x="300" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">patience monitor</text>
 
-        <rect x="230" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
-        <rect x="230" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="290" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">LRMonitor</text>
-        <text x="290" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">LR history</text>
+        <rect x="435" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="435" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="495" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">LRMonitor</text>
+        <text x="495" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">LR history</text>
 
-        <rect x="400" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
-        <rect x="400" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="460" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">ModelCheckpoint</text>
-        <text x="460" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">custom epochs</text>
+        <rect x="630" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="630" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="690" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">ModelCheckpoint</text>
+        <text x="690" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">custom epochs</text>
 
-        <rect x="570" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
-        <rect x="570" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="630" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">TensorBoard</text>
-        <text x="630" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">opt-in extra</text>
+        <rect x="825" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="825" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="885" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">TensorBoard</text>
+        <text x="885" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">opt-in extra</text>
 
-        <rect x="740" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
-        <rect x="740" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="800" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">Wandb</text>
-        <text x="800" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">opt-in extra</text>
+        <rect x="1020" y="568" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="1020" y="568" width="120" height="50" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="1080" y="588" fill="white" font-size="11" font-weight="600" text-anchor="middle">Wandb</text>
+        <text x="1080" y="604" fill="#94a3b8" font-size="9" text-anchor="middle">opt-in extra</text>
 
         <!-- Layer 8: Persistence (violet) -->
         <rect x="220" y="700" width="240" height="60" rx="6" fill="#0f172a"/>
