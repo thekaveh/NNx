@@ -60,9 +60,10 @@ class NNOptimParams:
         # when set to a non-default value, so a NNOptimParams with none of
         # them set hashes to the same run.id as before these fields existed.
         # Existing on-disk YAML without these keys is loadable via the .get()
-        # defaults below. (Pass-2 R2 cautionary: this back-compat invariant
-        # was broken once before with grad_clip_norm — every existing run.id
-        # shifted. Don't break it again.)
+        # defaults below. (This invariant was broken once before for
+        # grad_clip_norm — every existing run.id shifted. Same omit-when-
+        # default pattern is now enforced on every params dataclass; see
+        # test_params_round_trip.py for the regression tests.)
         if self.grad_clip_norm is not None:
             d['grad_clip_norm'] = self.grad_clip_norm
         if self.accumulate_grad_batches != 1:

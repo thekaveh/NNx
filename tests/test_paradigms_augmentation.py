@@ -132,9 +132,10 @@ class _TinyImageNet(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(3, 4, kernel_size=3, padding=1)
         self.head = nn.Linear(4 * 4 * 4, n_classes)
-        # Stash a placeholder ".params" so NNRun's persistence path stays
-        # happy. NNModel.train() reads `self.net_params` (from Track C),
-        # so this is just future-proofing for tests that touch self.net.params.
+        # Stash a placeholder ".params" so callers that inspect
+        # `self.net.params` directly (the FeedFwdNN convention) don't
+        # AttributeError. NNModel.train() itself reads `self.net_params`
+        # on the model, which is set during NNModel.__init__.
         self.params = None
 
     def forward(self, x):

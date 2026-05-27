@@ -70,8 +70,9 @@ def kd_train_step_factory(
         m.net.train()
         m.net.zero_grad()
 
+        # unpack_batch returns ((X,), Y); the singleton destructure asserts
+        # a single-input net and binds X to that one tensor.
         (X,), Y = m.net.unpack_batch(ctx.batch)
-        # unpack_batch returns the X-tuple already; just move to device.
         X = X.to(m.device)
         Y = Y.to(m.device)
 

@@ -42,8 +42,9 @@ def _make_loaders(seed: int, n: int = 256, d: int = 8, n_classes: int = 3):
     """Random-feature / random-label dataset. The seed differs between the
     pretrain and fine-tune calls so the two loaders draw distinct samples
     — sufficient for showing that loss decreases on the new distribution
-    after the head is unfrozen. (A class-conditional Gaussian setup would
-    make the demo more informative; kept simple to minimize dependencies.)
+    while the backbone stays frozen and only the head trains. (A
+    class-conditional Gaussian setup would make the demo more
+    informative; kept simple to minimize dependencies.)
     """
     torch.manual_seed(seed)
     X = torch.randn(n, d)

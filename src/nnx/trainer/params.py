@@ -3,7 +3,7 @@
 Parallel to NNTrainParams, with `optim` / `scheduler` (singular) replaced
 by `optims` / `schedulers` (dicts keyed by user-chosen names). Each
 NNOptimParams in `optims` becomes its own torch.optim.Optimizer at
-train() time, with NNOptimParams.param_groups (introduced in Track A)
+train() time, with NNOptimParams.param_groups (the fine-tuning hook)
 used to scope which sub-net's parameters it operates on.
 
 Round-trips through state() / from_state() like every other params
@@ -31,7 +31,7 @@ class NNTrainerParams:
 
     `optims` is a name-keyed mapping of NNOptimParams; each entry
     produces a distinct torch Optimizer. Use `NNOptimParams.param_groups`
-    on each entry (the Track A fine-tuning hook) to scope an optimizer
+    on each entry (the fine-tuning hook from :mod:`nnx.finetune`) to scope an optimizer
     to a subset of the model's parameters — e.g., one optim for the
     generator sub-net (`name_pattern="G.*"`), one for the discriminator
     (`name_pattern="D.*"`) inside a single combined NNModel.

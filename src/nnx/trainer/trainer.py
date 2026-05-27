@@ -11,7 +11,7 @@ is the wrong abstraction:
 The Trainer takes ONE NNModel and a name-keyed dict of NNOptimParams.
 Each entry produces a distinct torch.optim.Optimizer; each optimizer
 can be scoped to a subset of the model's parameters via
-NNOptimParams.param_groups (the Track A fine-tuning hook,
+NNOptimParams.param_groups (the fine-tuning hook,
 `NNParamGroupSpec(name_pattern="G.*", lr=...)`) — that is how a single
 NNModel wrapping a combined G+D nn.Module ends up with two disjoint
 optimizers.

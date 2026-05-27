@@ -198,7 +198,7 @@ run = trainer.train(
 )
 ```
 
-The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from Track A apply, just with unmatched params dropped instead of bucketed.
+The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from `nnx.finetune` apply, just with unmatched params dropped instead of bucketed.
 
 The Trainer writes the same `NNRun` + `NNCheckpoint` artifacts `NNModel.train()` does, with one extra `trainer` block in `run.yaml` capturing the multi-optim config so `NNRun.load(id)` round-trips. There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn.
 

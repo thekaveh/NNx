@@ -5,9 +5,9 @@ Two-phase flow:
 
   1. Pretrain a small classifier on distribution A.
   2. Wrap every :class:`nn.Linear` in the trained net with
-     :class:`LoRALinear` (Track B). The wrap freezes each base
-     layer's full-rank weight; only the new ``lora_A`` and
-     ``lora_B`` matrices (~r/dim of the original size) train.
+     :class:`LoRALinear`. The wrap freezes each base layer's
+     full-rank weight; only the new ``lora_A`` and ``lora_B``
+     matrices (~r/dim of the original size) train.
   3. Fine-tune on distribution B; verify that:
        - every base ``weight`` / ``bias`` is BIT-EXACTLY unchanged
        - LoRA params have moved

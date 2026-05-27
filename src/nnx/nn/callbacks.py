@@ -145,6 +145,9 @@ class ModelCheckpoint(Callback):
             net_params=ctx.model.net_params,
             net_state=ctx.model.net.state_dict(),
         )
+        # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
+        # uses through _checkpoint_path; we hand-build the path here because
+        # the user-supplied tag isn't part of the Checkpoints enum.
         path = os.path.join(
             "runs", ctx.run.id, "checkpoints", f"{self.tag}_e{ctx.epoch}.pt",
         )

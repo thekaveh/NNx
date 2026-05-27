@@ -55,8 +55,10 @@ def test_param_group_spec_state_omits_unset_fields():
 def test_nn_optim_params_state_omits_param_groups_when_none():
     """CRITICAL back-compat invariant: NNOptimParams with param_groups=None
     must emit the same state() it did before this field existed —
-    otherwise every existing run.id shifts. Mirrors the pass-2 R2
-    cautionary tale verbatim."""
+    otherwise every existing run.id shifts. The same invariant is now
+    enforced on every params dataclass; see the matching regression
+    tests in test_params_round_trip.py for mixed_precision and
+    NNSchedulerParams.kind."""
     p = NNOptimParams(
         name=Optims.ADAM, max_lr=1e-3,
         momentum=(0.9, 0.999), weight_decay=0.0,
