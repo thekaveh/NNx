@@ -84,7 +84,7 @@
         <!-- NNModel / Trainer → training loop (downward) -->
         <line x1="330" y1="160" x2="330" y2="338" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
 
-        <!-- training loop → finalize_step / _save_checkpoints / _step_scheduler (right-flow) -->
+        <!-- training loop → NaN+clip / _step_scheduler / _save_checkpoints (right-flow) -->
         <line x1="478" y1="365" x2="538" y2="365" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <line x1="700" y1="365" x2="760" y2="365" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <line x1="920" y1="365" x2="980" y2="365" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
@@ -122,7 +122,7 @@
 
         <!-- Specializations cluster -->
         <rect x="658" y="70" width="492" height="180" rx="8" fill="rgba(120, 53, 15, 0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
-        <text x="668" y="86" fill="#fbbf24" font-size="9" font-weight="600">Specializations (hooked via train_step_fn)</text>
+        <text x="668" y="86" fill="#fbbf24" font-size="9" font-weight="600">Specialization subpackages</text>
 
         <!-- Persistence cluster (kept flush with the nnx package boundary so NNRun's left edge sits inside) -->
         <rect x="220" y="660" width="920" height="180" rx="8" fill="rgba(76, 29, 149, 0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
@@ -204,8 +204,8 @@
 
         <rect x="540" y="338" width="160" height="60" rx="6" fill="#0f172a"/>
         <rect x="540" y="338" width="160" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
-        <text x="620" y="362" fill="white" font-size="11" font-weight="600" text-anchor="middle">finalize_step</text>
-        <text x="620" y="380" fill="#94a3b8" font-size="9" text-anchor="middle">grad-clip + NaN guard</text>
+        <text x="620" y="362" fill="white" font-size="11" font-weight="600" text-anchor="middle">NaN + grad-clip</text>
+        <text x="620" y="380" fill="#94a3b8" font-size="9" text-anchor="middle">inline / _step_helpers</text>
 
         <rect x="760" y="338" width="160" height="60" rx="6" fill="#0f172a"/>
         <rect x="760" y="338" width="160" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
