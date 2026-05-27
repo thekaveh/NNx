@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-import torch_geometric as pyg
 from torch import nn
 
 from ..params.nn_params import NNParams
@@ -36,12 +35,22 @@ class FeedFwdNN(nn.Module):
     def unpack_batch(self, batch):
         if isinstance(batch, (list, tuple)):
             X, Y = batch
-        elif isinstance(batch, pyg.data.data.Data):
-            X, Y = batch.x, batch.y
-        else:
-            raise TypeError("The input 'batch' must be either a tuple or an instance of torch_geometric.data.data.Data.")
+            return (X,), Y
+        # PyG batches go through the GNN subclasses (GraphConvNN /
+        # GraphSageNN / GraphAttNN), but we keep the branch here for
+        # back-compat with the original contract. Lazy import so module
+        # load doesn't pay the torch_geometric import cost for users
+        # who only ever pass standard (X, Y) tuples.
+        from torch_geometric.data.data import Data as _PygData
 
-        return (X,), Y
+        if isinstance(batch, _PygData):
+            X, Y = batch.x, batch.y
+            return (X,), Y
+        raise TypeError(
+            "FeedFwdNN.unpack_batch expects a (list/tuple) batch or a "
+            "torch_geometric.data.Data instance; got "
+            f"{type(batch).__name__}."
+        )
 
     def __str__(self):
         return f"FeedFwdNN={self.params}"

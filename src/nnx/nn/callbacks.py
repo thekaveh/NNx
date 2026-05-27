@@ -47,13 +47,18 @@ class _LegacyCallback(Callback):
 
     def __init__(self, fn: Callable[[list[NNIterationDataPoint]], None]):
         self._fn = fn
+        # Lazy resolution of IPython.display.clear_output, cached on first
+        # use. Keeps `import nnx` from pulling in IPython for users who
+        # never use a legacy lambda-style callback, AND avoids the
+        # per-epoch dict-lookup cost of `from ... import` in the hot path.
+        self._clear_output: Optional[Callable] = None
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
-        # Lazy import — keeps `import nnx` from pulling in IPython for
-        # users who never use a legacy lambda-style callback.
-        from IPython.display import clear_output
+        if self._clear_output is None:
+            from IPython.display import clear_output
+            self._clear_output = clear_output
 
-        clear_output(wait=True)
+        self._clear_output(wait=True)
         self._fn(ctx.idps)
 
 
