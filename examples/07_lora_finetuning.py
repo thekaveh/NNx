@@ -126,7 +126,10 @@ def main():
     for n, post in model.net.named_parameters():
         if "lora_" in n:
             continue
-        pre_key = n.replace(".base.", ".")  # apply_lora_to renamed base.weight → base.base.weight
+        # apply_lora_to inserted a single `.base.` segment into every
+        # wrapped layer's parameter name (e.g. `layers.0.weight` →
+        # `layers.0.base.weight`), so strip it to recover the pre-wrap key.
+        pre_key = n.replace(".base.", ".")
         if not torch.equal(post.detach(), pretrain_snapshot[pre_key]):
             drifted.append(n)
     if drifted:
