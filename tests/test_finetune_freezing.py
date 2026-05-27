@@ -74,6 +74,29 @@ def test_freeze_wildcard_freezes_everything():
     assert len(frozen(net)) == 4
 
 
+def test_freeze_pattern_matching_nothing_returns_zero():
+    """A pattern that matches no parameter must NOT raise — the
+    fnmatch-based API is fundamentally "filter by name", and a no-match
+    result is a legitimate filter output (e.g., a configuration loop
+    iterates known prefixes and some don't exist on the current net)."""
+    net = _two_layer_net()
+    n = freeze(net, "nonexistent.*")
+    assert n == 0
+    assert frozen(net) == []
+    # All parameters still trainable.
+    assert all(p.requires_grad for p in net.parameters())
+
+
+def test_unfreeze_pattern_matching_nothing_returns_zero():
+    """Same no-match contract for the inverse operation."""
+    net = _two_layer_net()
+    freeze(net, "*")
+    n = unfreeze(net, "absolutely.not.here.*")
+    assert n == 0
+    # Everything still frozen.
+    assert not any(p.requires_grad for p in net.parameters())
+
+
 def test_frozen_returns_sorted_for_stable_assertions():
     net = _two_layer_net()
     freeze(net, "2.weight", "0.bias")

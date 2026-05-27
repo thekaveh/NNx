@@ -55,6 +55,25 @@ def _train_params(loader: DataLoader, **kw) -> NNTrainParams:
     )
 
 
+class _ConstantLoss(torch.nn.Module):
+    """A loss that always returns a fixed scalar. Used to inject NaN/Inf
+    into the train loop without relying on optimizer-divergence dynamics
+    (which would couple the test to LR / init / dropout).
+
+    Cleaner than monkey-patching `.forward` / `.__call__` on a bare
+    `nn.Module()` — the latter pattern depends on PyTorch's call-chain
+    internals and silently fails if Module.__call__ ever stops looking
+    up `self.forward` through the instance dict.
+    """
+
+    def __init__(self, value: float):
+        super().__init__()
+        self._value = value
+
+    def forward(self, _log, _y):  # noqa: ARG002
+        return torch.tensor(self._value, requires_grad=True)
+
+
 def test_r1_nan_loss_raises(tmp_path, monkeypatch):
     """Stub the loss to NaN; the train loop should detect the non-finite
     value and raise FloatingPointError rather than continuing to save
@@ -67,12 +86,7 @@ def test_r1_nan_loss_raises(tmp_path, monkeypatch):
     loader = DataLoader(TensorDataset(X, y), batch_size=16)
 
     model = _model()
-    # Replace loss_fn with one that returns NaN — the cleanest way to
-    # provoke the guard without relying on optimizer divergence dynamics.
-    nan_loss = torch.nn.Module()
-    nan_loss.forward = lambda log, y: torch.tensor(float("nan"), requires_grad=True)
-    nan_loss.__call__ = nan_loss.forward
-    model.loss_fn = nan_loss
+    model.loss_fn = _ConstantLoss(float("nan"))
 
     with pytest.raises(FloatingPointError, match="non-finite training loss"):
         model.train(params=_train_params(loader))
@@ -88,10 +102,7 @@ def test_r1_inf_loss_raises(tmp_path, monkeypatch):
     loader = DataLoader(TensorDataset(X, y), batch_size=16)
 
     model = _model()
-    inf_loss = torch.nn.Module()
-    inf_loss.forward = lambda log, y: torch.tensor(float("inf"), requires_grad=True)
-    inf_loss.__call__ = inf_loss.forward
-    model.loss_fn = inf_loss
+    model.loss_fn = _ConstantLoss(float("inf"))
 
     with pytest.raises(FloatingPointError, match="non-finite training loss"):
         model.train(params=_train_params(loader))

@@ -78,6 +78,31 @@ def test_n8_evaluate_raises_on_empty_loader():
         model.evaluate(loader=loader)
 
 
+def test_n8_evaluate_handles_batch_of_one():
+    """Symmetric edge case to the N7 uneven-last-batch fix: a loader
+    whose only batch contains exactly one sample. Several of the
+    aggregation paths (np.concatenate over a single 1-row array,
+    sample-weighted loss division) would silently produce different
+    results with batch_size=1 if a regression added a dimension-squeeze
+    or a guard-against-empty branch."""
+    torch.manual_seed(0)
+    model = _model()
+
+    X = torch.randn(1, 4)
+    y = torch.randint(0, 2, (1,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=1, shuffle=False)
+
+    edp = model.evaluate(loader=loader)
+    # The single sample is either correctly classified (accuracy=1.0,
+    # error=0.0) or not (0.0, 1.0). Either way both metrics must be
+    # finite and 0/1, not NaN, and accuracy + error must sum to 1.
+    assert edp.accuracy in (0.0, 1.0)
+    assert edp.error in (0.0, 1.0)
+    assert abs((edp.accuracy + edp.error) - 1.0) < 1e-9
+    assert edp.loss is not None
+    assert torch.isfinite(torch.tensor(edp.loss)).item()
+
+
 def test_n4_train_works_on_iterable_dataset(tmp_path, monkeypatch):
     """train() must tolerate DataLoaders where len() raises (IterableDataset)."""
     monkeypatch.chdir(tmp_path)
@@ -273,7 +298,22 @@ def test_review_callbacks_module_imports_without_ipython(monkeypatch):
             if k.startswith("nnx.nn.callbacks"):
                 del sys.modules[k]
         import importlib
-        importlib.import_module("nnx.nn.callbacks")
+        reimported = importlib.import_module("nnx.nn.callbacks")
+        # Explicit checks: the module reloaded successfully (Callback +
+        # standard callbacks reachable) AND no IPython submodule was
+        # pulled in as a side effect (the actual invariant this test
+        # protects). After this block we set every `IPython*` entry in
+        # sys.modules to None as a sentinel that blocks `import IPython`;
+        # if the callbacks import had succeeded in loading IPython, that
+        # sentinel would have been overwritten by the real module object.
+        assert hasattr(reimported, "Callback")
+        assert hasattr(reimported, "EarlyStopping")
+        for k in sys.modules:
+            if k.startswith("IPython"):
+                assert sys.modules[k] is None, (
+                    f"importing nnx.nn.callbacks loaded {k!r} (lazy "
+                    "import in _LegacyCallback leaked out of on_epoch_end)"
+                )
     finally:
         # Restore IPython modules so other tests aren't affected.
         for k in list(sys.modules):

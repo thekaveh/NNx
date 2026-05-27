@@ -242,6 +242,32 @@ def test_load_lora_weights_rejects_bad_source_type():
         load_lora_weights(net, 12345)
 
 
+def test_load_lora_weights_with_empty_dict_is_zero_op():
+    """A partial / empty LoRA state-dict must not silently corrupt the
+    target net. Document the contract: `load_lora_weights(net, {})` is a
+    no-op that returns 0 (nothing loaded) rather than wiping out the
+    existing matrices or raising."""
+    torch.manual_seed(0)
+    net = _TinyNet()
+    apply_lora_to(net, "layers.*", r=2)
+    # Mutate the LoRA matrices so we can verify the empty-dict load
+    # does NOT overwrite them.
+    with torch.no_grad():
+        for n, p in net.named_parameters():
+            if "lora_" in n:
+                p.fill_(0.33)
+    pre = {n: p.clone() for n, p in net.named_parameters() if "lora_" in n}
+
+    n_loaded = load_lora_weights(net, {})
+    assert n_loaded == 0
+
+    post = {n: p.clone() for n, p in net.named_parameters() if "lora_" in n}
+    for k in pre:
+        assert torch.equal(pre[k], post[k]), (
+            f"empty-dict load_lora_weights mutated {k!r}"
+        )
+
+
 # -------------------------------------------------------------------------
 # End-to-end: PEFT fine-tuning preserves base weights
 # -------------------------------------------------------------------------
