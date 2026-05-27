@@ -46,8 +46,8 @@
   <line x1="1010" y1="745" x2="848" y2="745" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
 
   <!-- BOUNDARIES -->
-  <rect x="20" y="40" width="1140" height="820" rx="12" fill="rgba(251,191,36,0.04)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
-  <text x="32" y="58" fill="#fbbf24" font-size="10" font-weight="600">nnx package — pip install nnx</text>
+  <rect x="220" y="40" width="940" height="820" rx="12" fill="rgba(251,191,36,0.04)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="232" y="58" fill="#fbbf24" font-size="10" font-weight="600">nnx package — pip install nnx</text>
   <rect x="658" y="70" width="492" height="180" rx="8" fill="rgba(120,53,15,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
   <text x="668" y="86" fill="#fbbf24" font-size="9" font-weight="600">Specializations (hooked via train_step_fn)</text>
   <rect x="40" y="660" width="1100" height="180" rx="8" fill="rgba(76,29,149,0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
