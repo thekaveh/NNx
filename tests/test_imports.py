@@ -10,7 +10,7 @@ affected feature.
 
 def test_top_level_imports():
     import nnx
-    from nnx import diffusion, finetune, paradigms, seeding, trainer, utils, vis_utils
+    from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils
     assert nnx is not None
     assert utils is not None
     assert vis_utils is not None
@@ -19,6 +19,7 @@ def test_top_level_imports():
     assert trainer is not None
     assert diffusion is not None
     assert paradigms is not None
+    assert peft is not None
 
 
 def test_finetune_submodules_import():
@@ -47,6 +48,12 @@ def test_paradigms_submodules_import():
     assert augmentation is not None
     assert contrastive is not None
     assert distillation is not None
+
+
+def test_peft_submodules_import():
+    from nnx.peft import adapters, lora
+    assert adapters is not None
+    assert lora is not None
 
 
 def test_nn_subpackage_imports():

@@ -4,6 +4,17 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — PEFT (Track B)
+
+- **`nnx.peft` package** — two complementary patterns for parameter-efficient fine-tuning of pretrained networks.
+  - **`LoRALinear(base, *, r, alpha, dropout)`** — wraps an `nn.Linear`, freezes the base's parameters (`requires_grad=False`) on construction, and adds two trainable matrices `lora_A` (r × in, Kaiming-uniform init) and `lora_B` (out × r, **zero-initialized**) whose product is added as a residual scaled by `α/r`. The zero-init on B means output at step 0 equals `base(x)` exactly — fine-tuning starts from the pretrained behavior and diverges only as B picks up gradient. Validates `r > 0`, `alpha > 0`, `0 ≤ dropout < 1` at construction.
+  - **`apply_lora_to(module, *patterns, r, alpha, dropout)`** — walks `module.named_modules()` and replaces every `nn.Linear` whose dotted name matches any fnmatch glob with a `LoRALinear` wrapper, in place. Returns the count wrapped. **Idempotent**: re-applying against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk). Same glob conventions as `nnx.finetune.freeze` from Track A.
+  - **`save_lora_weights(module, path)`** — writes ONLY the `lora_A` / `lora_B` parameters via `torch.save` of a filtered state-dict subset. Typically 1-5% of the size of a full `state_dict` snapshot for the same model.
+  - **`load_lora_weights(module, source)`** — loads LoRA params from a path (`weights_only=True` for safety) or directly from a dict, via `load_state_dict(strict=False)` so the frozen base's missing keys don't raise. Returns the number of tensors loaded.
+  - **`AdapterLayer(dim, bottleneck, activation=nn.GELU)`** — bottleneck residual block `y = x + up(act(down(x)))`. `up.weight` and `up.bias` are zero-initialized so the layer is the residual identity at step 0. Composed by the user into a custom `nn.Module` — NNX doesn't ship a "wrap every block" helper because adapter insertion points are architecture-specific.
+- Runnable LoRA demo: `examples/07_lora_finetuning.py` — pretrains a small classifier, wraps every Linear with LoRA, fine-tunes on a different distribution, **explicitly verifies every base parameter is bit-exactly unchanged** across the fine-tuning run, and compares the LoRA-only checkpoint size against a full `state_dict` snapshot.
+- 23 new tests across `tests/test_peft_{lora,adapters}.py`: LoRALinear validation + base-freezing + zero-init invariant (output == base at step 0) + only-LoRA-trainable invariant + in/out features pass-through; `apply_lora_to` empty-pattern rejection + selective wrap + wildcard wrap + idempotency on re-application + forward-preserves-at-init; save/load round-trip + base-keys-excluded-from-checkpoint + dict-source loading + bad-source-type rejection; end-to-end PEFT contract (every base param bit-exactly unchanged + every lora_B param has moved); AdapterLayer shape + identity-at-init + parameter-count scaling + gradient-flow + dim validation + custom activation.
+
 ### Added — training paradigms (Track D)
 
 - **`nnx.paradigms` package** — four `TrainStepFn` factories for non-vanilla supervised paradigms, all consumed via the existing `NNModel.train(train_step_fn=...)` hook. No new params dataclass, no NNModel changes; each is a self-contained closure.

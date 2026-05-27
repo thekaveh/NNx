@@ -142,6 +142,18 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.paradigms.augmentation.cutmix_train_step_factory
 
+## Parameter-efficient fine-tuning (`nnx.peft`)
+
+::: nnx.peft.lora.LoRALinear
+
+::: nnx.peft.lora.apply_lora_to
+
+::: nnx.peft.lora.save_lora_weights
+
+::: nnx.peft.lora.load_lora_weights
+
+::: nnx.peft.adapters.AdapterLayer
+
 ## Visualization
 
 ::: nnx.vis_utils
