@@ -146,7 +146,7 @@ def test_diffusion_step_fallback_unpacks_plain_tensor_batches(tmp_path, monkeypa
     method, the diffusion step falls through to the tuple-batch handling
     at training.py:75-77 (this loader yields ``(X, Y)`` tuples).
     The bare-tensor branch at training.py:78 is exercised by
-    :func:`test_diffusion_step_fallback_bare_tensor_batches` below."""
+    :func:`test_diffusion_step_fallback_bare_tensor_batch` below."""
     import torch.nn as nn
 
     monkeypatch.chdir(tmp_path)
