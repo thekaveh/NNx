@@ -15,7 +15,7 @@ The diagram is generated via the `architecture-diagram` skill. A standalone inte
 **Reading the diagram top-to-bottom:**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. Both expose the **`train_step_fn` / `trainer_step_fn`** hook — the orange bus through which the four **Specialization** subpackages (`finetune`, `peft`, `diffusion`, `paradigms`) plug into the loop.
+2. Both expose the **`train_step_fn` / `trainer_step_fn`** hook — the orange bus through which the **Specialization** subpackages (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`, plus the shared `_step_helpers`) plug into the loop.
 3. The **Training Loop** runs `finalize_step` (NaN guard + grad-clip), `_step_scheduler`, and `_save_checkpoints` each batch / epoch.
 4. The **Callback Bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. **`NNRun`** and **`NNCheckpoint`** write to **`runs/<id>/`** atomically after every epoch.
@@ -216,7 +216,7 @@ Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 m
 Bug reports and PRs welcome via GitHub issues. Running locally:
 
 ```bash
-pytest                      # full suite (~5s, 284 tests)
+pytest                      # full suite (~5s)
 pytest tests/test_callbacks.py::test_lr_monitor_records_history  # one test
 ruff check src/ tests/      # lint (gates CI)
 mkdocs build --strict       # docs (gates CI)
