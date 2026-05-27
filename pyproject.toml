@@ -96,5 +96,15 @@ filterwarnings = [
     # Upstream deprecations we can't act on — silenced so pytest output
     # stays focused on nnx-relevant warnings.
     "ignore:`torch_geometric.distributed` has been deprecated:DeprecationWarning",
+    # `torch.jit.script` is fired transitively by `torch.onnx.export`'s
+    # legacy TorchScript path (and by some torchvision / pyg transforms).
+    # No first-party `torch.jit.script` usage in nnx; this filter exists
+    # purely to keep pytest output focused on nnx-relevant warnings.
     "ignore:`torch.jit.script` is deprecated:DeprecationWarning",
+    # `torch.onnx.export` legacy TorchScript path emits a DeprecationWarning
+    # in torch >= 2.8. Switching to the dynamo-based exporter requires the
+    # `onnxscript` dep — tracked separately; for now we keep the legacy path
+    # and silence the noise so pytest output stays focused.
+    "ignore:You are using the legacy TorchScript-based ONNX export.*:DeprecationWarning",
+    "ignore:The feature will be removed.*:DeprecationWarning:torch.onnx",
 ]
