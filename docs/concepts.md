@@ -236,6 +236,56 @@ samples = sample(model, schedule, shape=(256, 2))
 
 See [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py) for an end-to-end run on a 2D mixture of four Gaussians. After training, samples cluster around all four modes (~25% each).
 
+## Training paradigms (KD, SimCLR, Mixup, CutMix)
+
+All four live in `nnx.paradigms` as :class:`TrainStepFn` factories. Each plugs into `NNModel.train(train_step_fn=...)`:
+
+```python
+from nnx import (
+    kd_train_step_factory,           # Hinton-style knowledge distillation
+    simclr_train_step_factory,       # SimCLR contrastive learning
+    mixup_train_step_factory,        # Mixup batch augmentation
+    cutmix_train_step_factory,       # CutMix batch augmentation (4D images)
+    nt_xent_loss,                    # SimCLR loss exposed for ad-hoc use
+)
+```
+
+### Knowledge distillation
+
+```python
+teacher = NNModel.from_checkpoint(...)            # pretrained, larger net
+student = NNModel(net_params=..., params=...)     # smaller net, same output_dim
+step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
+student.train(params=train_params, train_step_fn=step_fn)
+```
+
+The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(s/T), softmax(t/T)) · T² + (1-α) · L_hard`. The hard-label term uses the student's `loss_fn` so KD works for any classification loss (CE, NLL, ...). EDP reports the combined loss and student top-1 error.
+
+### SimCLR contrastive
+
+The training dataloader must yield `(view1, view2)` pairs — two augmented views of each source sample. `model.net` forwards each view separately so BatchNorm sees one view at a time:
+
+```python
+step_fn = simclr_train_step_factory(temperature=0.5)
+model.train(params=..., train_step_fn=step_fn)
+```
+
+`nt_xent_loss(z1, z2, temperature)` is exposed as a standalone for users wanting to compose the loss into other pipelines. The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
+
+### Mixup / CutMix
+
+Both interpolate within the batch and re-weight the loss. They're train_step factories (not `collate_fn`s) because mixing labels with arbitrary loss functions needs label-aware computation that doesn't fit the standard `(X, Y)` batch contract:
+
+```python
+mixup = mixup_train_step_factory(alpha=0.4)              # any input shape
+cutmix = cutmix_train_step_factory(alpha=1.0)            # 4D (B, C, H, W) only
+model.train(params=..., train_step_fn=mixup)
+```
+
+`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`), useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W.
+
+See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py) for a teacher→student distillation flow on a tabular toy task; the same factory-plus-train_step pattern applies to the other three.
+
 ## Reproducibility
 
 ```python

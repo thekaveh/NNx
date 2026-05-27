@@ -4,6 +4,17 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — training paradigms (Track D)
+
+- **`nnx.paradigms` package** — four `TrainStepFn` factories for non-vanilla supervised paradigms, all consumed via the existing `NNModel.train(train_step_fn=...)` hook. No new params dataclass, no NNModel changes; each is a self-contained closure.
+  - **`kd_train_step_factory(teacher, *, alpha, temperature)`** — Hinton-style knowledge distillation. Mixes a temperature-softened KL divergence against the teacher's logits (`α · KL · T²`) with the standard hard-label loss (`(1-α) · L_hard`). The factory **freezes the teacher's parameters and sets its net to eval mode on call**, so the teacher provably cannot drift across the student's training. The hard term goes through the student's `loss_fn` so KD works with any classification loss.
+  - **`simclr_train_step_factory(*, temperature)`** — SimCLR contrastive training. The training loader must yield `(view1, view2)` paired-view tensors per source sample. `model.net` is forwarded once per view (BatchNorm sees one view at a time). Reports the NT-Xent loss in both `.loss` and `.error`.
+  - **`nt_xent_loss(z1, z2, *, temperature)`** — the SimCLR loss exposed as a standalone for users wanting to compose it into custom training loops.
+  - **`mixup_train_step_factory(*, alpha)`** — Mixup batch augmentation: `x' = λx_a + (1-λ)x_b` with `λ ~ Beta(α, α)`. Works for any input rank (tabular, sequence, image). Reports λ-weighted accuracy as the `accuracy` field; `accuracy + error == 1`.
+  - **`cutmix_train_step_factory(*, alpha)`** — CutMix batch augmentation for 4D `(B, C, H, W)` image batches. Copies a random rectangle from `x_b` into `x_a`, then re-weights the loss by the actual cut area (which can be smaller than the nominal Beta draw when the box clips at an edge). Raises a clear `ValueError` on lower-rank input — CutMix's spatial cut isn't well-defined without H and W.
+- Runnable distillation demo: `examples/10_knowledge_distillation.py` — pretrains a wider teacher then distills into a 1/16-size student. The example explicitly verifies teacher weights are unchanged across the student's training run, demonstrating the factory's freeze guarantee. Honest about scope: doesn't claim to beat a non-distilled baseline on toy tabular data.
+- 19 new tests across `tests/test_paradigms_{distillation,contrastive,augmentation}.py`: factory validation (alpha / temperature ranges), teacher freezing guarantee + teacher-eval-mode assertion, end-to-end loss-decreases (KD α=0.5) + α-boundary cases (α=0.0 collapse to supervised, α=1.0 pure distillation), NT-Xent properties (shape mismatch, finite + scalar output, loss smaller for aligned pairs than random), SimCLR step bad-batch-shape error, Mixup self-consistency (accuracy + error == 1), CutMix non-image input rejection + 4D end-to-end.
+
 ### Added — diffusion (Track C)
 
 - **`nnx.diffusion` package** — DDPM-style diffusion training and sampling, layered entirely on top of the existing `train_step_fn` hook on `NNModel.train()` (no Trainer, no NNModel internals touched).
