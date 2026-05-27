@@ -189,8 +189,8 @@ def test_train_rejects_none_or_invalid_params():
     net_params, model_params = _make_params()
     model = NNModel(net_params=net_params, params=model_params)
 
-    # 1. None params
-    with pytest.raises(ValueError, match="train params must be non-None"):
+    # 1. None params — surfaces a distinct error from the invalid-optim case.
+    with pytest.raises(ValueError, match="^train params must be non-None$"):
         model.train(params=None)
 
     # 2. invalid optim: Adam with a scalar momentum (Adam wants a tuple).
@@ -206,5 +206,5 @@ def test_train_rejects_none_or_invalid_params():
             min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
         ),
     )
-    with pytest.raises(ValueError, match="valid optim config"):
+    with pytest.raises(ValueError, match=r"^train params has an invalid optim config:"):
         model.train(params=bad_params)

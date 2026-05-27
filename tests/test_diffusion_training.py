@@ -143,8 +143,10 @@ def test_diffusion_train_step_cosine_schedule(tmp_path, monkeypatch):
 
 def test_diffusion_step_fallback_unpacks_plain_tensor_batches(tmp_path, monkeypatch):
     """When the user supplies a custom nn.Module with NO `unpack_batch`
-    method, the diffusion step must fall through to the tuple / bare-tensor
-    handling at training.py:75-78. This branch was previously uncovered."""
+    method, the diffusion step falls through to the tuple-batch handling
+    at training.py:75-77 (this loader yields ``(X, Y)`` tuples).
+    The bare-tensor branch at training.py:78 is exercised by
+    :func:`test_diffusion_step_fallback_bare_tensor_batches` below."""
     import torch.nn as nn
 
     monkeypatch.chdir(tmp_path)
@@ -183,6 +185,49 @@ def test_diffusion_step_fallback_unpacks_plain_tensor_batches(tmp_path, monkeypa
     # Loop ran without AttributeError; fallback path is covered.
     assert len(run.idps) > 0
     assert all(idp.train_edp.loss is not None for idp in run.idps)
+
+
+def test_diffusion_step_fallback_bare_tensor_batch(monkeypatch):
+    """Drive the diffusion step against the bare-tensor branch at
+    training.py:78 — the `else: x_0 = ctx.batch` case. We invoke the
+    step function directly with a hand-built TrainStepContext to bypass
+    DataLoader (which would always yield a list/tuple)."""
+    import torch.nn as nn
+
+    from nnx.nn.nn_model import TrainStepContext
+
+    set_seed(0)
+
+    class _PlainDiffusionNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(2 + 8, 2)
+
+        def forward(self, x, t):
+            from nnx.diffusion import sinusoidal_time_embed
+            t_emb = sinusoidal_time_embed(t, 8)
+            return self.proj(torch.cat([x, t_emb], dim=-1))
+
+    model = _make_model()
+    model.net = _PlainDiffusionNet().to(model.device)
+    assert not hasattr(model.net, "unpack_batch")
+
+    schedule = NoiseSchedulers.LINEAR(T=20)
+    step_fn = diffusion_train_step_factory(schedule)
+    optimizer = Optims.ADAM(
+        net=model.net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+    )
+
+    # Bare tensor — NOT wrapped in (X, Y). Hits the else-branch at line 78.
+    bare_batch = torch.randn(8, 2)
+    ctx = TrainStepContext(
+        model=model, batch=bare_batch, optimizer=optimizer, scaler=None,
+        grad_clip_norm=None, extra_metrics=None,
+        accumulate_grad_batches=1, batch_idx=0, epoch_idx=0,
+    )
+    edp = step_fn(ctx)
+    assert edp.loss is not None
+    assert torch.isfinite(torch.tensor(edp.loss)).item()
 
 
 def test_diffusion_step_reports_loss_and_error_equal(tmp_path, monkeypatch):

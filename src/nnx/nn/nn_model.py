@@ -313,8 +313,12 @@ class NNModel:
                 loss becomes non-finite (custom `train_step_fn` hooks are
                 responsible for their own divergence checks).
         """
-        if params is None or params.optim is None or not params.optim.is_valid():
-            raise ValueError("train params must be non-None and have a valid optim config")
+        if params is None:
+            raise ValueError("train params must be non-None")
+        if params.optim is None or not params.optim.is_valid():
+            raise ValueError(
+                f"train params has an invalid optim config: {params.optim!r}"
+            )
 
         # V1: seed every RNG before constructing the run so dataset shuffling,
         # weight init, dropout — anything stochastic — is reproducible. The
