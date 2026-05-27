@@ -67,7 +67,6 @@ def test_v1_seed_makes_runs_reproducible(tmp_path, monkeypatch):
     # Distinct subdirs per run so neither training session can see the
     # other's runs/ tree — previously the second `monkeypatch.chdir`
     # raced if the first run happened to create a runs2/ artifact.
-    monkeypatch.chdir(tmp_path / "a" if False else tmp_path)
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
 
