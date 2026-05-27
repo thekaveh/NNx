@@ -7,9 +7,62 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Gate: run the full test matrix before letting the publish job run.
+  # Without this, a tag push on a red branch would still publish to PyPI
+  # (versions can be yanked but not deleted — a poisoned release is
+  # permanent).
+  test:
+    name: Test before release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,docs]"
+
+      - name: Lint with ruff
+        run: ruff check src/ tests/ examples/
+
+      - name: Check formatting with ruff
+        run: ruff format --check src/ tests/ examples/
+
+      - name: Run pytest
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: pytest
+
+      - name: Build docs with mkdocs --strict
+        run: mkdocs build --strict --site-dir _site
+
   build-and-publish:
     name: Build sdist + wheel and publish to PyPI
+    needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Scopes OIDC credentials to a configured GitHub deployment
+    # environment named `pypi`. Configure required approvals + branch
+    # protection on that environment via repo settings so a misconfigured
+    # workflow on a fork or branch can't publish.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nnx
     permissions:
       # OIDC-based PyPI trusted publishing (no API token in secrets needed).
       # Configure the project on PyPI > Manage > Publishing to opt in.
