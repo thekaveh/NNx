@@ -179,3 +179,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - print_tree
         - print_table
         - flatten_dict
+
+### 13.1. `Utils` back-compat facade
+
+`nnx.Utils` is a thin staticmethod facade over the module-level functions above, kept so existing notebook code that calls `Utils.print_tree(...)` / `Utils.print_table(...)` / `Utils.flatten_dict(...)` continues to work. New code should prefer the module-level functions directly.
