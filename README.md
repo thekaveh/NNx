@@ -200,10 +200,18 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 ## 5. Documentation
 
-- [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail.
-- [Quickstart](docs/quickstart.md) — paste-runnable example with variations.
-- [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings.
-- [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram above.
+### 5.1. Conceptual + reference
+
+- [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
+- [Quickstart](docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
+- [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings. Read this when you want the canonical signature / docstring for a public symbol.
+- [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram in §1.1. Read this when the embedded SVG is hard to follow and you want to hover for labels.
+
+### 5.2. Workflow + history
+
+- [Examples catalog](examples/README.md) — ordered tour of the 10 runnable scripts under `examples/`, grouped foundational → specialized. Start here if you'd rather read a working script than the concepts doc.
+- [Contributing](CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
+- [Changelog](CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
 
 ## 6. Project
 
@@ -213,13 +221,14 @@ Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 m
 
 ### 6.2. Contributing
 
-Bug reports and PRs welcome via GitHub issues. Running locally:
+Bug reports and PRs welcome via GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup + style guide. Running locally:
 
 ```bash
-pytest                      # full suite (~5s)
+pytest                                       # full suite (~5s)
 pytest tests/test_callbacks.py::test_lr_monitor_records_history  # one test
-ruff check src/ tests/      # lint (gates CI)
-mkdocs build --strict       # docs (gates CI)
+ruff check src/ tests/ examples/             # lint (gates CI)
+ruff format --check src/ tests/ examples/    # format (gates CI)
+mkdocs build --strict                        # docs (gates CI)
 ```
 
 ### 6.3. License
