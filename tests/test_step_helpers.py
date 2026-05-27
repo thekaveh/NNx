@@ -83,10 +83,10 @@ def test_finalize_step_raises_on_gradient_accumulation():
 
 
 def test_finalize_step_raises_on_non_finite_loss():
-    """Non-finite loss must raise loudly — silent divergence corrupts checkpoints."""
+    """Non-finite loss must raise loudly — silent divergence corrupts
+    checkpoints. finalize_step's finiteness check runs BEFORE backward(),
+    so the raise happens cleanly without polluting gradients."""
     m, opt = _model_and_optim()
-    # NaN loss tensor (still requires_grad so the backward() call before
-    # the check completes without error).
     X = torch.randn(2, 4, requires_grad=True)
     loss = (m.net(X).sum() * float("nan"))
     with pytest.raises(FloatingPointError, match="non-finite"):
