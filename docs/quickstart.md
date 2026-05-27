@@ -131,3 +131,7 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 ### Training paradigms (KD, SimCLR, Mixup, CutMix)
 
 `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory` return `train_step_fn`s for `NNModel.train()`. Knowledge distillation freezes the teacher and mixes soft/hard losses; SimCLR runs NT-Xent on paired-view batches; Mixup / CutMix interpolate samples within a batch. See [Concepts → Training paradigms](concepts.md#training-paradigms-kd-simclr-mixup-cutmix) and [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py).
+
+### Parameter-efficient fine-tuning (LoRA, adapters)
+
+`nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual; adapters are bottleneck residual blocks the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#parameter-efficient-fine-tuning-lora-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).

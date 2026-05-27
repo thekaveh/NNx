@@ -82,6 +82,13 @@ from .paradigms import (
     nt_xent_loss,
     simclr_train_step_factory,
 )
+from .peft import (
+    AdapterLayer,
+    LoRALinear,
+    apply_lora_to,
+    load_lora_weights,
+    save_lora_weights,
+)
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
 from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .utils import Utils
@@ -120,6 +127,9 @@ __all__ = [
     "kd_train_step_factory",
     "simclr_train_step_factory", "nt_xent_loss",
     "mixup_train_step_factory", "cutmix_train_step_factory",
+    # PEFT (LoRA + adapters)
+    "LoRALinear", "apply_lora_to", "save_lora_weights", "load_lora_weights",
+    "AdapterLayer",
     # Reproducibility
     "set_seed", "dataloader_worker_init_fn", "env_snapshot",
     # Metadata

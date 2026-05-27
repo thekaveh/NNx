@@ -286,6 +286,66 @@ model.train(params=..., train_step_fn=mixup)
 
 See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py) for a teacher→student distillation flow on a tabular toy task; the same factory-plus-train_step pattern applies to the other three.
 
+## Parameter-efficient fine-tuning (LoRA, adapters)
+
+When a pretrained model is too large to fine-tune in full, PEFT keeps the original weights frozen and trains a small set of new parameters instead. Two patterns ship in `nnx.peft`:
+
+### LoRA — low-rank adaptation
+
+`LoRALinear` wraps an `nn.Linear`, freezes the original weight, and adds two trainable matrices `A` (r × in) and `B` (out × r) whose product is added as a residual:
+
+```
+y = W·x  →  y = W·x + (α/r) · B(A(x))
+```
+
+`A` is Kaiming-uniform initialized; `B` is **zero-initialized**, so the layer's output at step 0 is exactly `W·x` — fine-tuning starts from the pretrained behavior and diverges only as `B` picks up gradient. The same initialization story as adapters' zero-init `up` projection.
+
+`apply_lora_to(module, *patterns, r, alpha, dropout)` walks a module and replaces every `nn.Linear` whose dotted name matches any glob with a `LoRALinear` wrapper. Returns the count. The match patterns are the same fnmatch globs as [`freeze`](#fine-tuning-transfer-learning).
+
+```python
+from nnx import NNModel, apply_lora_to, save_lora_weights
+
+model = NNModel(net_params=..., params=...)
+model.train(params=pretrain_params)        # full pretraining first
+
+n_wrapped = apply_lora_to(model.net, "layers.*", r=4, alpha=8.0)
+# Now every wrapped layer's base weight is frozen (requires_grad=False);
+# only the lora_A / lora_B matrices train. Optimizer sees all params, but
+# the frozen ones don't move.
+model.train(params=finetune_params)        # fine-tune — only LoRA params update
+
+save_lora_weights(model.net, "lora.pt")    # tiny checkpoint, lora_A/B only
+```
+
+The `apply_lora_to` mutation is **idempotent**: a second call against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk).
+
+`save_lora_weights(module, path)` writes only the LoRA parameters — typically 10×-100× smaller than a full `state_dict` for the same model. `load_lora_weights(module, source)` loads them back into an already-wrapped module via `load_state_dict(strict=False)`, so the frozen base's missing-from-the-checkpoint keys don't raise. Source can be a path or a state-dict dict.
+
+After wrapping, parameter names gain a `.base.` segment: `layers.0.weight` becomes `layers.0.base.weight`. Code that did `model.net.layers[0].weight` should switch to `model.net.layers[0].base.weight` or use `model.net.layers[0].base` for the wrapped Linear.
+
+### Adapter layers
+
+`AdapterLayer(dim, bottleneck, activation=nn.GELU)` is a bottleneck residual: `y = x + up(act(down(x)))` with `up` zero-initialized so the layer starts as the identity. Unlike LoRA, adapters are full modules the caller composes into the forward pass — there's no `apply_adapters_to(module)` helper because "where to insert" depends on the architecture (after each Linear vs after each block vs only at certain depths).
+
+```python
+from nnx import AdapterLayer
+
+class AdaptedNet(nn.Module):
+    def __init__(self, pretrained_layers):
+        super().__init__()
+        self.layers = pretrained_layers
+        self.adapters = nn.ModuleList([
+            AdapterLayer(dim=64, bottleneck=8) for _ in pretrained_layers
+        ])
+
+    def forward(self, x):
+        for layer, adapter in zip(self.layers, self.adapters):
+            x = adapter(layer(x))
+        return x
+```
+
+See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py) for an end-to-end LoRA flow that explicitly verifies every base parameter is bit-exactly unchanged across the fine-tuning run.
+
 ## Reproducibility
 
 ```python
