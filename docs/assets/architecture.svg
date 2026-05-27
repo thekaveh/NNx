@@ -50,8 +50,8 @@
   <text x="232" y="58" fill="#fbbf24" font-size="10" font-weight="600">nnx package — pip install nnx</text>
   <rect x="658" y="70" width="492" height="180" rx="8" fill="rgba(120,53,15,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
   <text x="668" y="86" fill="#fbbf24" font-size="9" font-weight="600">Specializations (hooked via train_step_fn)</text>
-  <rect x="240" y="660" width="900" height="180" rx="8" fill="rgba(76,29,149,0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
-  <text x="252" y="678" fill="#a78bfa" font-size="9" font-weight="600">Persistence (runs/&lt;id&gt;/ on disk)</text>
+  <rect x="220" y="660" width="920" height="180" rx="8" fill="rgba(76,29,149,0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
+  <text x="232" y="678" fill="#a78bfa" font-size="9" font-weight="600">Persistence (runs/&lt;id&gt;/ on disk)</text>
 
   <!-- LAYER 1: User code (slate) -->
   <rect x="60" y="90" width="120" height="50" rx="6" fill="#0f172a"/>
