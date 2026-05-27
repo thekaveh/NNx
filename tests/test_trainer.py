@@ -69,12 +69,12 @@ def _supervised_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     X = tuple(x.to(m.device) for x in X)
     Y = Y.to(m.device)
 
-    Y_hat_log = m.net(*X)
-    loss = m.loss_fn(Y_hat_log, Y)
+    Y_hat_logits = m.net(*X)
+    loss = m.loss_fn(Y_hat_logits, Y)
     loss.backward()
     opt.step()
 
-    Y_hat = Y_hat_log.argmax(dim=1)
+    Y_hat = Y_hat_logits.argmax(dim=1)
     loss_val = float(loss.detach())
     return NNEvaluationDataPoint(
         f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,

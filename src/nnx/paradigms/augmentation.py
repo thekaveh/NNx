@@ -86,11 +86,11 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Y_a = Y
         Y_b = Y[perm]
 
-        Y_hat_log = m.net(X_mixed)
-        loss = lam * m.loss_fn(Y_hat_log, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_log, Y_b)
+        Y_hat_logits = m.net(X_mixed)
+        loss = lam * m.loss_fn(Y_hat_logits, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_logits, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
-        Y_hat = Y_hat_log.argmax(dim=-1)
+        Y_hat = Y_hat_logits.argmax(dim=-1)
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0, recall=0.0, accuracy=acc, precision=0.0,
@@ -154,11 +154,11 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_a = Y
         Y_b = Y[perm]
 
-        Y_hat_log = m.net(X_cut)
-        loss = lam * m.loss_fn(Y_hat_log, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_log, Y_b)
+        Y_hat_logits = m.net(X_cut)
+        loss = lam * m.loss_fn(Y_hat_logits, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_logits, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
-        Y_hat = Y_hat_log.argmax(dim=-1)
+        Y_hat = Y_hat_logits.argmax(dim=-1)
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0, recall=0.0, accuracy=acc, precision=0.0,
