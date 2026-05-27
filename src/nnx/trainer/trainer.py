@@ -38,6 +38,7 @@ import torch
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
+from .._metrics import _resolve_metric
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext
 from ..nn.params.nn_checkpoint import NNCheckpoint
@@ -133,16 +134,11 @@ def _build_scheduler(opt, sched_params, n_epochs):
 
 def _step_scheduler(sched, val_edp, train_edp) -> None:
     """ReduceLROnPlateau wants a metric; other schedulers step on epoch.
-    Falls through val_edp → train_edp → .error → .loss to find a non-None
-    signal so custom step fns leaving .error unset don't crash the loop."""
+    Uses the shared val→train, error→loss fallback resolver in
+    nnx._metrics so the four call sites (NNModel + Trainer × scheduler
+    + tqdm) can't drift."""
     if isinstance(sched, lr_scheduler.ReduceLROnPlateau):
-        metric = None
-        for edp in (val_edp, train_edp):
-            if edp is None:
-                continue
-            metric = edp.error if edp.error is not None else edp.loss
-            if metric is not None:
-                break
+        metric = _resolve_metric(val_edp, train_edp)
         if metric is None:
             return
         sched.step(metric)
@@ -398,12 +394,6 @@ class Trainer:
 
     def _update_tqdm_postfix(self, tqdm_bar, opt, val_edp, train_edp) -> None:
         lr = opt.param_groups[0]['lr']
-        err = None
-        for edp in (val_edp, train_edp):
-            if edp is None:
-                continue
-            err = edp.error if edp.error is not None else edp.loss
-            if err is not None:
-                break
+        err = _resolve_metric(val_edp, train_edp)
         err_str = f"{err:.4f}" if err is not None else "n/a"
         tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")

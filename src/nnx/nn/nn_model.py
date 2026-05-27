@@ -11,6 +11,7 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from .._metrics import _resolve_metric
 from ..utils import Utils
 from .enum.checkpoints import Checkpoints
 from .params.nn_checkpoint import NNCheckpoint
@@ -106,8 +107,8 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 
     if amp_enabled:
         with torch.amp.autocast(device_type="cuda"):
-            X, Y, Y_hat_log, Y_hat = model._fwd_pass(ctx.batch)
-            train_loss = model.loss_fn(Y_hat_log, Y)
+            X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
+            train_loss = model.loss_fn(Y_hat_logits, Y)
         # Scale loss by 1/N so accumulated grads = mean across batches.
         scaler.scale(train_loss / accumulate_grad_batches).backward()
         if is_cycle_end:
@@ -119,8 +120,8 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             scaler.step(ctx.optimizer)
             scaler.update()
     else:
-        X, Y, Y_hat_log, Y_hat = model._fwd_pass(ctx.batch)
-        train_loss = model.loss_fn(Y_hat_log, Y)
+        X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
+        train_loss = model.loss_fn(Y_hat_logits, Y)
         (train_loss / accumulate_grad_batches).backward()
         if is_cycle_end:
             if ctx.grad_clip_norm is not None:
@@ -509,14 +510,14 @@ class NNModel:
 
         with torch.no_grad():
             for batch in loader:
-                _, Y, Y_hat_log, Y_hat = self._fwd_pass(batch)
+                _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
                 batch_n = int(Y.size(0))
                 # Aggregate predictions / labels across the entire loader so
                 # metrics are computed on the full eval set, not per-batch.
                 all_Y.append(Y.cpu().numpy())
                 all_Y_hat.append(Y_hat.cpu().numpy())
                 # Sum-weight the loss by samples; divide once at the end.
-                loss_sum += float(self.loss_fn(Y_hat_log, Y).detach()) * batch_n
+                loss_sum += float(self.loss_fn(Y_hat_logits, Y).detach()) * batch_n
                 n_samples += batch_n
 
         if n_samples == 0:
@@ -579,9 +580,9 @@ class NNModel:
         X_t = tuple(_to_tensor(x) for x in X)
 
         with torch.no_grad():
-            Y_hat_log = self.net(*X_t).cpu().numpy()
-            Y_hat = Y_hat_log.argmax(axis=1)
-            return PredictResult(logits=Y_hat_log, classes=Y_hat)
+            Y_hat_logits = self.net(*X_t).cpu().numpy()
+            Y_hat = Y_hat_logits.argmax(axis=1)
+            return PredictResult(logits=Y_hat_logits, classes=Y_hat)
 
     def _fwd_pass(self, batch):
         """Standard supervised forward pass: unpack batch, move to device,
@@ -593,10 +594,10 @@ class NNModel:
         X = tuple(x.to(self.device) for x in X)
         Y = Y.to(self.device)
 
-        Y_hat_log = self.net(*X)
-        Y_hat = Y_hat_log.argmax(dim=1)
+        Y_hat_logits = self.net(*X)
+        Y_hat = Y_hat_logits.argmax(dim=1)
 
-        return X, Y, Y_hat_log, Y_hat
+        return X, Y, Y_hat_logits, Y_hat
 
     def _train_step(
         self,
@@ -715,18 +716,11 @@ class NNModel:
     ) -> None:
         # ReduceLROnPlateau wants a metric; other schedulers step on epoch index.
         if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-            # Prefer val_edp over train_edp, and prefer .error over .loss
-            # (both are lower-is-better). Custom train_step_fn hooks may leave
-            # either unset; ReduceLROnPlateau.step(None) crashes inside
-            # float() — fall back through the four candidates rather than
-            # forcing every paradigm to populate the supervised error field.
-            metric = None
-            for edp in (val_edp, train_edp):
-                if edp is None:
-                    continue
-                metric = edp.error if edp.error is not None else edp.loss
-                if metric is not None:
-                    break
+            # Custom train_step_fn hooks may leave .error unset;
+            # ReduceLROnPlateau.step(None) crashes inside float(). Use the
+            # shared val→train, error→loss fallback resolver so the four
+            # call sites (NNModel + Trainer × scheduler + tqdm) can't drift.
+            metric = _resolve_metric(val_edp, train_edp)
             if metric is None:
                 # No signal to feed the scheduler — skip the step. The user
                 # picked a metric-driven scheduler without producing a metric;
@@ -746,14 +740,9 @@ class NNModel:
         lr = optimizer.param_groups[0]['lr']
         # Custom train_step_fn hooks may leave .error unset — fall back to
         # .loss for display so the progress bar doesn't crash mid-train on
-        # an `f"{None:.4f}"` format error.
-        err = None
-        for edp in (val_edp, train_edp):
-            if edp is None:
-                continue
-            err = edp.error if edp.error is not None else edp.loss
-            if err is not None:
-                break
+        # an `f"{None:.4f}"` format error. Same shared fallback resolver
+        # used by _step_scheduler above.
+        err = _resolve_metric(val_edp, train_edp)
         err_str = f"{err:.4f}" if err is not None else "n/a"
         tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")
 
