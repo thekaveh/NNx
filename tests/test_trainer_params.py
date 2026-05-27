@@ -92,6 +92,17 @@ def test_trainer_params_seed_omitted_from_state_when_none():
     assert "save_phase_checkpoints" not in p.state()
 
 
+def test_trainer_params_schedulers_omitted_from_state_when_empty():
+    """Same omit-when-default invariant for the `schedulers` field. Default
+    is an empty mapping; emitting `schedulers: {}` would diverge from the
+    project-wide canonical pattern (every other params dataclass omits
+    optional fields at their default). The omit-when-default contract is
+    what keeps run.id hashes stable when new fields are introduced —
+    broken three times before; pinned with regression tests now."""
+    p = NNTrainerParams(n_epochs=1, optims={"G": _g_optim()})
+    assert "schedulers" not in p.state()
+
+
 def test_trainer_params_state_picks_up_non_plateau_scheduler():
     p = NNTrainerParams(
         n_epochs=2,

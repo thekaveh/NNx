@@ -89,11 +89,13 @@ class NNTrainerParams:
         d = dict(
             n_epochs    = self.n_epochs,
             optims      = {k: self.optims[k].state() for k in sorted(self.optims.keys())},
-            schedulers  = {k: self.schedulers[k].state() for k in sorted(self.schedulers.keys())},
         )
-        # Match NNTrainParams: emit `seed` / `save_phase_checkpoints` only
-        # when set to a non-default value, so a trainer run with the
-        # defaults hashes stably across versions.
+        # Match NNTrainParams: emit `schedulers` / `seed` /
+        # `save_phase_checkpoints` only when set to a non-default value, so a
+        # trainer run with the defaults hashes stably across versions and
+        # follows the project-wide omit-when-default convention.
+        if self.schedulers:
+            d['schedulers'] = {k: self.schedulers[k].state() for k in sorted(self.schedulers.keys())}
         if self.seed is not None:
             d['seed'] = self.seed
         if self.save_phase_checkpoints is not True:
