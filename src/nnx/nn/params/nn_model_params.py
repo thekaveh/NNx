@@ -28,12 +28,18 @@ class NNModelParams:
         )
 
     def state(self) -> dict:
-        return dict(
+        d = dict(
             net               = str(self.net),
             loss              = str(self.loss),
             device            = str(self.device),
-            mixed_precision   = self.mixed_precision,
         )
+        # `mixed_precision` is omitted from state() when False so a
+        # NNModelParams without AMP enabled hashes to the same run.id
+        # as before this field existed. Same omit-when-default invariant
+        # as NNTrainParams.seed / NNOptimParams.param_groups.
+        if self.mixed_precision:
+            d['mixed_precision'] = True
+        return d
 
     @staticmethod
     def from_state(state: dict) -> NNModelParams:

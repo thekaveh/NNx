@@ -162,6 +162,63 @@ def test_nn_trainer_params_round_trip():
     assert rt == obj
 
 
+def test_nn_model_params_state_omits_mixed_precision_when_false():
+    """CRITICAL back-compat invariant: NNModelParams with
+    mixed_precision=False (the default) must emit the same state() it
+    did before this field existed — otherwise every existing run.id
+    shifts. Mirrors the param_groups / trainer omit-when-default pattern."""
+    obj = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    state = obj.state()
+    assert "mixed_precision" not in state, (
+        "mixed_precision=False must be omitted from state() to preserve run.id "
+        f"back-compat; got {state!r}"
+    )
+    assert set(state.keys()) == {"net", "loss", "device"}
+
+
+def test_nn_model_params_state_emits_mixed_precision_when_true():
+    obj = NNModelParams(
+        net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+        mixed_precision=True,
+    )
+    state = obj.state()
+    assert state.get("mixed_precision") is True
+    # Round-trip still works.
+    rt = NNModelParams.from_state(state)
+    assert rt == obj
+
+
+def test_nn_scheduler_params_state_omits_kind_when_none():
+    """CRITICAL back-compat invariant: a plain ReduceLROnPlateau
+    NNSchedulerParams (the only scheduler before the Schedulers enum
+    existed) must emit the same state() it did before — otherwise
+    every existing run.id shifts. Same omit-when-default pattern."""
+    obj = NNSchedulerParams(
+        min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3,
+    )
+    state = obj.state()
+    assert "kind" not in state
+    assert "step_size" not in state
+    assert "T_max" not in state
+    assert "max_lr" not in state
+    assert "total_steps" not in state
+    assert "warmup_steps" not in state
+    assert set(state.keys()) == {"min_lr", "factor", "cooldown", "patience", "threshold"}
+
+
+def test_nn_scheduler_params_state_emits_kind_when_set():
+    """When kind is set, both kind and its variant-specific knob round-trip."""
+    obj = NNSchedulerParams(
+        min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3,
+        kind=Schedulers.COSINE_ANNEALING, T_max=100,
+    )
+    state = obj.state()
+    assert state.get("kind") == "cosine_annealing"
+    assert state.get("T_max") == 100
+    rt = NNSchedulerParams.from_state(state)
+    assert rt == obj
+
+
 def test_nn_run_state_omits_trainer_when_none():
     """CRITICAL back-compat invariant: NNRun built without a trainer
     field (the NNModel.train path) must emit the same state() — and

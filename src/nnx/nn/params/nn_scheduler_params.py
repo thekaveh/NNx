@@ -35,19 +35,32 @@ class NNSchedulerParams:
         return f"[{self.kind}, factor={self.factor:1.0e}, min_lr={self.min_lr:1.0e}]"
 
     def state(self) -> dict:
-        return dict(
+        d = dict(
             min_lr        = self.min_lr,
             factor        = self.factor,
             cooldown      = self.cooldown,
             patience      = self.patience,
             threshold     = self.threshold,
-            kind          = self.kind.value if self.kind is not None else None,
-            step_size     = self.step_size,
-            T_max         = self.T_max,
-            max_lr        = self.max_lr,
-            total_steps   = self.total_steps,
-            warmup_steps  = self.warmup_steps,
         )
+        # `kind` and its variant-specific knobs (step_size, T_max, max_lr,
+        # total_steps, warmup_steps) are omitted from state() when at
+        # their defaults so a plain ReduceLROnPlateau NNSchedulerParams
+        # hashes to the same run.id as before the Schedulers enum
+        # existed. Same omit-when-default invariant as NNTrainParams.seed
+        # / NNModelParams.mixed_precision / NNOptimParams.param_groups.
+        if self.kind is not None:
+            d['kind'] = self.kind.value
+        if self.step_size is not None:
+            d['step_size'] = self.step_size
+        if self.T_max is not None:
+            d['T_max'] = self.T_max
+        if self.max_lr is not None:
+            d['max_lr'] = self.max_lr
+        if self.total_steps is not None:
+            d['total_steps'] = self.total_steps
+        if self.warmup_steps is not None:
+            d['warmup_steps'] = self.warmup_steps
+        return d
 
     @staticmethod
     def from_state(state: dict) -> NNSchedulerParams:

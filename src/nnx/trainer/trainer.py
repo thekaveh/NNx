@@ -43,7 +43,7 @@ from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
-from ..nn.params.nn_run import NNRun
+from ..nn.params.nn_run import NNRun, _best_err
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
 from ..utils import Utils
@@ -148,16 +148,6 @@ def _step_scheduler(sched, val_edp, train_edp) -> None:
         sched.step(metric)
     else:
         sched.step()
-
-
-def _best_err(checkpoint: NNCheckpoint) -> float:
-    """Mirror of nn_run._best_err — pull comparable error metric from a
-    checkpoint, +inf when missing. Duplicated to avoid making nn_run's
-    private helper part of the public surface."""
-    edp = checkpoint.idp.val_edp if checkpoint.idp.val_edp is not None else checkpoint.idp.train_edp
-    if edp is None or edp.error is None:
-        return float("inf")
-    return edp.error
 
 
 class Trainer:

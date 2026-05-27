@@ -18,7 +18,7 @@ from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
 from .params.nn_params import NNParams
-from .params.nn_run import NNRun
+from .params.nn_run import NNRun, _best_err
 from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
@@ -448,10 +448,14 @@ class NNModel:
                     save_phase_checkpoints=params.save_phase_checkpoints,
                     optimizer=optimizer,
                 )
-                if best_checkpoint is None or checkpoint.idp.val_edp is None or (
-                    best_checkpoint.idp.val_edp is None
-                    or checkpoint.idp.val_edp.error < best_checkpoint.idp.val_edp.error
-                ):
+                # In-memory best_checkpoint tracking must use the same
+                # comparison as the on-disk BEST write inside
+                # _save_checkpoints (val_edp → train_edp → +inf fall-through).
+                # Without this, val_loader=None runs would silently overwrite
+                # best_checkpoint every epoch (because checkpoint.idp.val_edp
+                # is None there) while the on-disk BEST tracks training error,
+                # diverging the two views of "best".
+                if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
                     best_checkpoint = checkpoint
 
                 self._step_scheduler(scheduler, val_edp, train_edp)
@@ -683,17 +687,12 @@ class NNModel:
 
         checkpoint.save(run=run_id, type=Checkpoints.LAST, optimizer_state=opt_state)
 
-        # BEST is decided by validation error if available, else training error.
-        # Mirrors `_best_err` in nn_run.py — return +inf when the edp is
-        # missing OR its error field is None (custom train_step_fn hooks
-        # are allowed to leave error unset on the EDP they return).
-        def _err(c: NNCheckpoint) -> float:
-            edp = c.idp.val_edp if c.idp.val_edp is not None else c.idp.train_edp
-            if edp is None or edp.error is None:
-                return float("inf")
-            return edp.error
-
-        if best_checkpoint is None or _err(checkpoint) < _err(best_checkpoint):
+        # BEST tracking goes through the same _best_err helper used by
+        # NNRun.save's cross-run comparison and by Trainer._save_checkpoint
+        # — single source of truth for "what's the comparable error here"
+        # (val_edp → train_edp → +inf fall-through, tolerating None EDP
+        # or None .error from custom train_step_fn paradigms).
+        if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
             checkpoint.save(run=run_id, type=Checkpoints.BEST, optimizer_state=opt_state)
 
         return checkpoint
