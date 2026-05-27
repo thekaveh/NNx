@@ -11,6 +11,7 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from .._metrics import _resolve_metric
 from ..utils import Utils
 from .enum.checkpoints import Checkpoints
 from .params.nn_checkpoint import NNCheckpoint
@@ -40,6 +41,7 @@ class PredictResult(NamedTuple):
     the original 2-tuple. Field access (``result.logits``, ``result.classes``)
     is preferred for new code.
     """
+
     logits: np.ndarray
     classes: np.ndarray
 
@@ -59,15 +61,15 @@ class TrainStepContext:
     them is on the caller.
     """
 
-    model:                    NNModel
-    batch:                    Any
-    optimizer:                torch.optim.Optimizer
-    scaler:                   Optional[torch.amp.GradScaler]
-    grad_clip_norm:           Optional[float]
-    extra_metrics:            Optional[Mapping[str, Callable]]
-    accumulate_grad_batches:  int
-    batch_idx:                int
-    epoch_idx:                int
+    model: NNModel
+    batch: Any
+    optimizer: torch.optim.Optimizer
+    scaler: Optional[torch.amp.GradScaler]
+    grad_clip_norm: Optional[float]
+    extra_metrics: Optional[Mapping[str, Callable]]
+    accumulate_grad_batches: int
+    batch_idx: int
+    epoch_idx: int
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -106,8 +108,8 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 
     if amp_enabled:
         with torch.amp.autocast(device_type="cuda"):
-            X, Y, Y_hat_log, Y_hat = model._fwd_pass(ctx.batch)
-            train_loss = model.loss_fn(Y_hat_log, Y)
+            X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
+            train_loss = model.loss_fn(Y_hat_logits, Y)
         # Scale loss by 1/N so accumulated grads = mean across batches.
         scaler.scale(train_loss / accumulate_grad_batches).backward()
         if is_cycle_end:
@@ -119,8 +121,8 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             scaler.step(ctx.optimizer)
             scaler.update()
     else:
-        X, Y, Y_hat_log, Y_hat = model._fwd_pass(ctx.batch)
-        train_loss = model.loss_fn(Y_hat_log, Y)
+        X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
+        train_loss = model.loss_fn(Y_hat_logits, Y)
         (train_loss / accumulate_grad_batches).backward()
         if is_cycle_end:
             if ctx.grad_clip_norm is not None:
@@ -139,29 +141,26 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 
     return (
         NNEvaluationDataPoint.of(
-            Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(),
+            Y=Y.cpu().numpy(),
+            Y_hat=Y_hat.cpu().numpy(),
             extra_metrics=ctx.extra_metrics,
         )
-            .with_loss(value=loss_value)
-            .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+        .with_loss(value=loss_value)
+        .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
     )
 
 
 class NNModel:
-    def __init__(
-        self
-        , net_params: NNParams
-        , params    : NNModelParams
-    ):
+    def __init__(self, net_params: NNParams, params: NNModelParams):
         if net_params is None:
             raise ValueError("net_params must not be None")
 
         self.net_params = net_params
-        self.params     = params
+        self.params = params
 
-        self.device     = self.params.device()
-        self.loss_fn    = self.params.loss().to(self.device)
-        self.net        = self.params.net(params=net_params).to(self.device)
+        self.device = self.params.device()
+        self.loss_fn = self.params.loss().to(self.device)
+        self.net = self.params.net(params=net_params).to(self.device)
 
     def to_onnx(
         self,
@@ -191,8 +190,7 @@ class NNModel:
             example_input = (example_input.to(self.device),)
         else:
             example_input = tuple(
-                (e.to(self.device) if isinstance(e, torch.Tensor)
-                 else torch.from_numpy(np.asarray(e)).to(self.device))
+                (e.to(self.device) if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e)).to(self.device))
                 for e in example_input
             )
 
@@ -234,10 +232,7 @@ class NNModel:
 
     @staticmethod
     def from_checkpoint(checkpoint: NNCheckpoint) -> NNModel:
-        model = NNModel(
-            params=checkpoint.model_params
-            , net_params=checkpoint.net_params
-        )
+        model = NNModel(params=checkpoint.model_params, net_params=checkpoint.net_params)
 
         model.net.load_state_dict(checkpoint.net_state)
 
@@ -253,12 +248,14 @@ class NNModel:
         ``self.net`` (e.g., a custom decoder hanging off this model).
         """
         from ..finetune.freezing import freeze as _freeze
+
         return _freeze(self.net, *patterns)
 
     def unfreeze(self, *patterns: str) -> int:
         """Mirror of :meth:`freeze` — set ``requires_grad=True`` on
         matching parameters."""
         from ..finetune.freezing import unfreeze as _unfreeze
+
         return _unfreeze(self.net, *patterns)
 
     def export_state_dict(self, path: str) -> str:
@@ -316,9 +313,7 @@ class NNModel:
         if params is None:
             raise ValueError("train params must be non-None")
         if params.optim is None or not params.optim.is_valid():
-            raise ValueError(
-                f"train params has an invalid optim config: {params.optim!r}"
-            )
+            raise ValueError(f"train params has an invalid optim config: {params.optim!r}")
 
         # V1: seed every RNG before constructing the run so dataset shuffling,
         # weight init, dropout — anything stochastic — is reproducible. The
@@ -326,9 +321,10 @@ class NNModel:
         # so back-compat for no-seed callers is preserved.
         if params.seed is not None:
             from ..seeding import set_seed
+
             set_seed(params.seed)
 
-        validate    : bool  = params.val_loader is not None
+        validate: bool = params.val_loader is not None
         # Use self.net_params (always set in __init__) rather than
         # self.net.params: the latter is FeedFwdNN-specific and fails when
         # the caller substitutes a custom nn.Module post-construction
@@ -336,18 +332,14 @@ class NNModel:
         # demos use for DiffusionMLP). They're identical for the
         # standard supervised path; the rename is a back-compat-safe
         # robustness fix.
-        run         : NNRun = NNRun(
-            train   = params
-            , model = self.params
-            , net   = self.net_params
-        )
+        run: NNRun = NNRun(train=params, model=self.params, net=self.net_params)
 
         optimizer = params.optim.name(
-            net=self.net
-            , lr_start=params.optim.max_lr
-            , momentum=params.optim.momentum
-            , weight_decay=params.optim.weight_decay
-            , param_groups=params.optim.param_groups
+            net=self.net,
+            lr_start=params.optim.max_lr,
+            momentum=params.optim.momentum,
+            weight_decay=params.optim.weight_decay,
+            param_groups=params.optim.param_groups,
         )
 
         # Warm resume: load weights + optimizer state from a prior run's
@@ -358,13 +350,11 @@ class NNModel:
             ckpt_type = Checkpoints(params.resume_from_checkpoint)
             resume_ckpt = NNCheckpoint.load(run=params.resume_from_run_id, type=ckpt_type)
             if resume_ckpt is None:
-                raise ValueError(
-                    f"resume_from_run_id={params.resume_from_run_id!r}/"
-                    f"{ckpt_type} not found on disk"
-                )
+                raise ValueError(f"resume_from_run_id={params.resume_from_run_id!r}/{ckpt_type} not found on disk")
             self.net.load_state_dict(resume_ckpt.net_state)
             opt_state = NNCheckpoint.load_optimizer_state(
-                run=params.resume_from_run_id, type=ckpt_type,
+                run=params.resume_from_run_id,
+                type=ckpt_type,
             )
             if opt_state is not None:
                 optimizer.load_state_dict(opt_state)
@@ -374,20 +364,16 @@ class NNModel:
 
         normalized_callbacks = self._normalize_callbacks(callbacks)
 
-        idps        : list[NNIterationDataPoint] = []
+        idps: list[NNIterationDataPoint] = []
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
             n_iter: Optional[int] = int(params.n_epochs * len(params.train_loader))
         except TypeError:
             n_iter = None
-        best_checkpoint : Optional[NNCheckpoint]   = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+        best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 
-        Utils.print_table(
-            header=False
-            , title="Run Details..."
-            , data=Utils.flatten_dict(data=run.state())
-        )
+        Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
         ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
         for cb in normalized_callbacks:
@@ -407,8 +393,8 @@ class NNModel:
         # well in subprocess contexts where the user can't pass a flag.
         tqdm_disabled = os.environ.get("NNX_TQDM_DISABLE", "").lower() in {"1", "true", "yes"}
         with (
-            torch.set_grad_enabled(True)
-            , tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar
+            torch.set_grad_enabled(True),
+            tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
         ):
             for idx_epoch in range(params.n_epochs):
                 ctx.epoch = idx_epoch
@@ -429,18 +415,22 @@ class NNModel:
                     )
                     train_edp = step_fn(step_ctx)
 
-                    idps.append(NNIterationDataPoint(
-                        iter_idx    = idx_iter
-                        , epoch_idx = idx_epoch
-                        , batch_idx = idx_batch
-                        , train_edp = train_edp
-                        , lr        = optimizer.param_groups[0]['lr']
-                    ))
+                    idps.append(
+                        NNIterationDataPoint(
+                            iter_idx=idx_iter,
+                            epoch_idx=idx_epoch,
+                            batch_idx=idx_batch,
+                            train_edp=train_edp,
+                            lr=optimizer.param_groups[0]["lr"],
+                        )
+                    )
 
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                val_edp = self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics) if validate else None
+                val_edp = (
+                    self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics) if validate else None
+                )
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
                 checkpoint = self._save_checkpoints(
@@ -509,14 +499,14 @@ class NNModel:
 
         with torch.no_grad():
             for batch in loader:
-                _, Y, Y_hat_log, Y_hat = self._fwd_pass(batch)
+                _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
                 batch_n = int(Y.size(0))
                 # Aggregate predictions / labels across the entire loader so
                 # metrics are computed on the full eval set, not per-batch.
                 all_Y.append(Y.cpu().numpy())
                 all_Y_hat.append(Y_hat.cpu().numpy())
                 # Sum-weight the loss by samples; divide once at the end.
-                loss_sum += float(self.loss_fn(Y_hat_log, Y).detach()) * batch_n
+                loss_sum += float(self.loss_fn(Y_hat_logits, Y).detach()) * batch_n
                 n_samples += batch_n
 
         if n_samples == 0:
@@ -527,8 +517,8 @@ class NNModel:
 
         return (
             NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat, extra_metrics=extra_metrics)
-                .with_loss(value=loss_sum / n_samples)
-                .with_error(value=float(1 - (Y_concat == Y_hat_concat).sum() / n_samples))
+            .with_loss(value=loss_sum / n_samples)
+            .with_error(value=float(1 - (Y_concat == Y_hat_concat).sum() / n_samples))
         )
 
     def predict(self, X) -> PredictResult:
@@ -579,9 +569,9 @@ class NNModel:
         X_t = tuple(_to_tensor(x) for x in X)
 
         with torch.no_grad():
-            Y_hat_log = self.net(*X_t).cpu().numpy()
-            Y_hat = Y_hat_log.argmax(axis=1)
-            return PredictResult(logits=Y_hat_log, classes=Y_hat)
+            Y_hat_logits = self.net(*X_t).cpu().numpy()
+            Y_hat = Y_hat_logits.argmax(axis=1)
+            return PredictResult(logits=Y_hat_logits, classes=Y_hat)
 
     def _fwd_pass(self, batch):
         """Standard supervised forward pass: unpack batch, move to device,
@@ -593,10 +583,10 @@ class NNModel:
         X = tuple(x.to(self.device) for x in X)
         Y = Y.to(self.device)
 
-        Y_hat_log = self.net(*X)
-        Y_hat = Y_hat_log.argmax(dim=1)
+        Y_hat_logits = self.net(*X)
+        Y_hat = Y_hat_logits.argmax(dim=1)
 
-        return X, Y, Y_hat_log, Y_hat
+        return X, Y, Y_hat_logits, Y_hat
 
     def _train_step(
         self,
@@ -619,17 +609,19 @@ class NNModel:
         if you want a custom training step for ``train()``, pass it as the
         ``train_step_fn=`` kwarg instead.
         """
-        return default_train_step(TrainStepContext(
-            model=self,
-            batch=batch,
-            optimizer=optimizer,
-            scaler=scaler,
-            grad_clip_norm=grad_clip_norm,
-            extra_metrics=extra_metrics,
-            accumulate_grad_batches=accumulate_grad_batches,
-            batch_idx=batch_idx,
-            epoch_idx=0,
-        ))
+        return default_train_step(
+            TrainStepContext(
+                model=self,
+                batch=batch,
+                optimizer=optimizer,
+                scaler=scaler,
+                grad_clip_norm=grad_clip_norm,
+                extra_metrics=extra_metrics,
+                accumulate_grad_batches=accumulate_grad_batches,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+            )
+        )
 
     def _build_scheduler(
         self,
@@ -645,7 +637,7 @@ class NNModel:
         if kind is None:
             return lr_scheduler.ReduceLROnPlateau(
                 optimizer,
-                mode='min',
+                mode="min",
                 min_lr=sched_params.min_lr,
                 factor=sched_params.factor,
                 cooldown=sched_params.cooldown,
@@ -673,10 +665,7 @@ class NNModel:
         optimizer: Optional[torch.optim.Optimizer] = None,
     ) -> NNCheckpoint:
         checkpoint = NNCheckpoint(
-            idp           = idp
-            , model_params= self.params
-            , net_params  = self.net_params
-            , net_state   = self.net.state_dict()
+            idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
         )
         # The optimizer state-dict goes only into LAST and BEST sidecars
         # (resume points). Phase markers (FIRST/Q*) don't carry one.
@@ -715,18 +704,11 @@ class NNModel:
     ) -> None:
         # ReduceLROnPlateau wants a metric; other schedulers step on epoch index.
         if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-            # Prefer val_edp over train_edp, and prefer .error over .loss
-            # (both are lower-is-better). Custom train_step_fn hooks may leave
-            # either unset; ReduceLROnPlateau.step(None) crashes inside
-            # float() — fall back through the four candidates rather than
-            # forcing every paradigm to populate the supervised error field.
-            metric = None
-            for edp in (val_edp, train_edp):
-                if edp is None:
-                    continue
-                metric = edp.error if edp.error is not None else edp.loss
-                if metric is not None:
-                    break
+            # Custom train_step_fn hooks may leave .error unset;
+            # ReduceLROnPlateau.step(None) crashes inside float(). Use the
+            # shared val→train, error→loss fallback resolver so the four
+            # call sites (NNModel + Trainer × scheduler + tqdm) can't drift.
+            metric = _resolve_metric(val_edp, train_edp)
             if metric is None:
                 # No signal to feed the scheduler — skip the step. The user
                 # picked a metric-driven scheduler without producing a metric;
@@ -743,17 +725,12 @@ class NNModel:
         val_edp: Optional[NNEvaluationDataPoint],
         train_edp: NNEvaluationDataPoint,
     ) -> None:
-        lr = optimizer.param_groups[0]['lr']
+        lr = optimizer.param_groups[0]["lr"]
         # Custom train_step_fn hooks may leave .error unset — fall back to
         # .loss for display so the progress bar doesn't crash mid-train on
-        # an `f"{None:.4f}"` format error.
-        err = None
-        for edp in (val_edp, train_edp):
-            if edp is None:
-                continue
-            err = edp.error if edp.error is not None else edp.loss
-            if err is not None:
-                break
+        # an `f"{None:.4f}"` format error. Same shared fallback resolver
+        # used by _step_scheduler above.
+        err = _resolve_metric(val_edp, train_edp)
         err_str = f"{err:.4f}" if err is not None else "n/a"
         tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")
 

@@ -1,4 +1,5 @@
 """Tests for nnx.diffusion.nets — DiffusionMLP + sinusoidal_time_embed."""
+
 from __future__ import annotations
 
 import pytest

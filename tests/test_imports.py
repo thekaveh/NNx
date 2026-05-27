@@ -5,61 +5,74 @@ The full list below is intentionally exhaustive: when a new module lands
 under src/nnx/, add it here so the next refactor surfaces broken imports
 loudly rather than letting them linger until someone tries to use the
 affected feature.
+
+Each test asserts one named symbol per module rather than `module is
+not None` (Python guarantees the latter on successful import — the
+assertion was tautological). The named-symbol check additionally
+catches a regression that empties `__all__` or drops a public export.
 """
 
 
 def test_top_level_imports():
     import nnx
     from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils
-    assert nnx is not None
-    assert utils is not None
-    assert vis_utils is not None
-    assert seeding is not None
-    assert finetune is not None
-    assert trainer is not None
-    assert diffusion is not None
-    assert paradigms is not None
-    assert peft is not None
+
+    # One probe per subpackage to verify the public surface stayed intact.
+    assert hasattr(nnx, "NNModel")
+    assert hasattr(utils, "print_tree")
+    assert hasattr(vis_utils, "VisUtils")
+    assert hasattr(seeding, "set_seed")
+    assert hasattr(finetune, "freeze")
+    assert hasattr(trainer, "Trainer")
+    assert hasattr(diffusion, "DiffusionMLP")
+    assert hasattr(paradigms, "kd_train_step_factory")
+    assert hasattr(peft, "LoRALinear")
 
 
 def test_finetune_submodules_import():
     from nnx.finetune import freezing, loading, param_groups
-    assert freezing is not None
-    assert loading is not None
-    assert param_groups is not None
+
+    assert hasattr(freezing, "freeze")
+    assert hasattr(loading, "load_pretrained")
+    assert hasattr(param_groups, "NNParamGroupSpec")
 
 
 def test_trainer_submodules_import():
     from nnx.trainer import params, trainer
-    assert params is not None
-    assert trainer is not None
+
+    assert hasattr(params, "NNTrainerParams")
+    assert hasattr(trainer, "Trainer")
 
 
 def test_diffusion_submodules_import():
     from nnx.diffusion import nets, sampling, schedules, training
-    assert nets is not None
-    assert sampling is not None
-    assert schedules is not None
-    assert training is not None
+
+    assert hasattr(nets, "DiffusionMLP")
+    assert hasattr(sampling, "sample")
+    assert hasattr(schedules, "NoiseSchedulers")
+    assert hasattr(training, "diffusion_train_step_factory")
 
 
 def test_paradigms_submodules_import():
     from nnx.paradigms import augmentation, contrastive, distillation
-    assert augmentation is not None
-    assert contrastive is not None
-    assert distillation is not None
+
+    assert hasattr(augmentation, "mixup_train_step_factory")
+    assert hasattr(contrastive, "simclr_train_step_factory")
+    assert hasattr(distillation, "kd_train_step_factory")
 
 
 def test_peft_submodules_import():
     from nnx.peft import adapters, lora
-    assert adapters is not None
-    assert lora is not None
+
+    assert hasattr(adapters, "AdapterLayer")
+    assert hasattr(lora, "LoRALinear")
 
 
 def test_nn_subpackage_imports():
     from nnx.nn import callbacks, nn_model
-    assert nn_model is not None
-    assert callbacks is not None
+
+    assert hasattr(nn_model, "NNModel")
+    assert hasattr(callbacks, "Callback")
 
 
 def test_net_modules_import():
@@ -70,11 +83,12 @@ def test_net_modules_import():
         graph_nn_base,
         graph_sage_nn,
     )
-    assert feed_fwd_nn is not None
-    assert graph_conv_nn is not None
-    assert graph_sage_nn is not None
-    assert graph_att_nn is not None
-    assert graph_nn_base is not None
+
+    assert hasattr(feed_fwd_nn, "FeedFwdNN")
+    assert hasattr(graph_conv_nn, "GraphConvNN")
+    assert hasattr(graph_sage_nn, "GraphSageNN")
+    assert hasattr(graph_att_nn, "GraphAttNN")
+    assert hasattr(graph_nn_base, "GraphNNBase")
 
 
 def test_dataset_modules_import():
@@ -84,10 +98,11 @@ def test_dataset_modules_import():
         nn_graph_dataset,
         nn_tabular_dataset,
     )
-    assert nn_dataset_base is not None
-    assert nn_dataset is not None
-    assert nn_graph_dataset is not None
-    assert nn_tabular_dataset is not None
+
+    assert hasattr(nn_dataset_base, "NNDatasetBase")
+    assert hasattr(nn_dataset, "NNDataset")
+    assert hasattr(nn_graph_dataset, "NNGraphDataset")
+    assert hasattr(nn_tabular_dataset, "NNTabularDataset")
 
 
 def test_enum_modules_import():
@@ -100,13 +115,14 @@ def test_enum_modules_import():
         optims,
         schedulers,
     )
-    assert activations is not None
-    assert checkpoints is not None
-    assert devices is not None
-    assert losses is not None
-    assert nets is not None
-    assert optims is not None
-    assert schedulers is not None
+
+    assert hasattr(activations, "Activations")
+    assert hasattr(checkpoints, "Checkpoints")
+    assert hasattr(devices, "Devices")
+    assert hasattr(losses, "Losses")
+    assert hasattr(nets, "Nets")
+    assert hasattr(optims, "Optims")
+    assert hasattr(schedulers, "Schedulers")
 
 
 def test_params_modules_import():
@@ -121,12 +137,13 @@ def test_params_modules_import():
         nn_scheduler_params,
         nn_train_params,
     )
-    assert nn_model_params is not None
-    assert nn_train_params is not None
-    assert nn_optim_params is not None
-    assert nn_checkpoint is not None
-    assert nn_run is not None
-    assert nn_evaluation_data_point is not None
-    assert nn_iteration_data_point is not None
-    assert nn_scheduler_params is not None
-    assert nn_params is not None
+
+    assert hasattr(nn_model_params, "NNModelParams")
+    assert hasattr(nn_train_params, "NNTrainParams")
+    assert hasattr(nn_optim_params, "NNOptimParams")
+    assert hasattr(nn_checkpoint, "NNCheckpoint")
+    assert hasattr(nn_run, "NNRun")
+    assert hasattr(nn_evaluation_data_point, "NNEvaluationDataPoint")
+    assert hasattr(nn_iteration_data_point, "NNIterationDataPoint")
+    assert hasattr(nn_scheduler_params, "NNSchedulerParams")
+    assert hasattr(nn_params, "NNParams")

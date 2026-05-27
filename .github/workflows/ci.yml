@@ -7,9 +7,23 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Cancel in-flight matrix runs when a new commit lands on the same PR
+# (push to main always finishes). Saves runner minutes without
+# delaying main-branch CI signal.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Principle of least privilege: CI only needs to read the repo. Override
+# at job/step level if a future addition needs more.
+permissions:
+  contents: read
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    # Caps a hung pytest run; default is 6 hours on GitHub-hosted runners.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -28,24 +42,38 @@ jobs:
       - name: Install package (editable + dev extras)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,docs]"
 
       - name: Lint with ruff
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ examples/
+
+      - name: Check formatting with ruff
+        # Matches the `ruff-format` hook in .pre-commit-config.yaml so
+        # contributors running pre-commit don't see CI accepting code
+        # that pre-commit would reformat.
+        run: ruff format --check src/ tests/ examples/
 
       - name: Type-check with pyright
         # Basic mode only on src/; warnings don't fail the build today.
         # Tighten to `--strict` over time as the codebase gets fully typed.
-        run: |
-          pip install pyright
-          pyright --warnings || true
+        # pyright is now in [dev] extras so locals can reproduce CI.
+        run: pyright --warnings
         continue-on-error: true
 
-      - name: Run pytest with coverage
+      - name: Run pytest
         env:
           NNX_TQDM_DISABLE: "1"
         run: |
-          pytest --cov=nnx --cov-report=term-missing --cov-report=xml
+          if [[ "${{ matrix.python-version }}" == "3.11" ]]; then
+            pytest --cov=nnx --cov-report=term-missing --cov-report=xml
+          else
+            pytest
+          fi
+
+      - name: Build docs with mkdocs --strict
+        # Surfaces broken cross-doc links and missing nav entries that
+        # would otherwise ship to the published site.
+        run: mkdocs build --strict --site-dir _site
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'

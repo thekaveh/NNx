@@ -32,6 +32,7 @@ modules are designed to compose: ``apply_lora_to`` for the structural
 swap, ``freeze`` for any additional non-LoRA layers the user wants to
 hold fixed.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -244,9 +245,7 @@ def load_lora_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     elif isinstance(source, dict):
         sd = source
     else:
-        raise TypeError(
-            f"load_lora_weights source must be a path or dict, got {type(source).__name__}"
-        )
+        raise TypeError(f"load_lora_weights source must be a path or dict, got {type(source).__name__}")
 
     sd = _lora_keys_only(sd)
     module.load_state_dict(sd, strict=False)

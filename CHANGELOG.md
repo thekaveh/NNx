@@ -4,6 +4,13 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Migration notes
+
+These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.
+
+- **Default-AMP runs now hash to a different `run.id`** than they did between pass-2 and this audit. The `mixed_precision=False` default is now correctly omitted from `state()` (back-compat invariant from before pass-2).
+- **Plateau-scheduler runs now hash to a different `run.id`** than they did between the Schedulers-enum addition and this audit. The `kind=None` default + its variant-specific knobs (step_size / T_max / max_lr / total_steps / warmup_steps) are now correctly omitted from `state()` when at their defaults (same back-compat invariant).
+
 ### Fixed — post-tracks audit
 
 - **`NNModelParams.state()` omits `mixed_precision` when False.** The field was added in pass-2 but always emitted into `state()`, breaking the omit-when-default back-compat invariant. Every default-AMP run had a shifted `run.id` versus pre-pass-2 runs with otherwise identical config. **One-time hash shift:** any existing default-AMP `runs/<id>/` directory will recompute to a different id after this fix — load by the on-disk directory name still works; recomputed ids will land in a fresh directory.
@@ -15,18 +22,18 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 - **`FeedFwdNN.from_file` uses `torch.load(weights_only=True)`** for consistency with `NNCheckpoint.load_optimizer_state` and `load_pretrained`. State-dicts are tensor-only; the strict loader works AND removes the arbitrary-code-execution risk on user-supplied paths.
 - Documentation and comment cleanups: `docs/index.md` listed only pass-2 features (added the five new tracks); `docs/concepts.md` architecture diagram missed the five new subpackages (extended with a Specializations branch); `examples/06`'s `_make_loaders` docstring claimed class-conditional Gaussians that the code didn't implement (rewrote); `freezing.py` docstring incorrectly claimed `fnmatch *` matches segment-boundaries (it matches across dots); `loading.py` `key_map` docstring said "substring replacement" but the code does prefix replacement; KD's loss formula in `paradigms/distillation.py` module docstring + inline comment AND `docs/concepts.md` all reversed the KL direction — the math is `KL(teacher || student)` (standard Hinton), but the doc strings read `KL(student || teacher)`; `peft/adapters.py` activation docstring said `nn.GELU()` (instance) but the default is `nn.GELU` (class factory); README's enums-as-factories bullet was missing `NoiseSchedulers`. Internal phase labels (Track A / Track B / Track C / pass-2 R2 / R3 / R4) that had leaked into published code/docs/tests have been replaced with descriptions of WHAT the referenced thing is.
 
-### Added — PEFT (Track B)
+### Added — PEFT (LoRA + adapters)
 
 - **`nnx.peft` package** — two complementary patterns for parameter-efficient fine-tuning of pretrained networks.
   - **`LoRALinear(base, *, r, alpha, dropout)`** — wraps an `nn.Linear`, freezes the base's parameters (`requires_grad=False`) on construction, and adds two trainable matrices `lora_A` (r × in, Kaiming-uniform init) and `lora_B` (out × r, **zero-initialized**) whose product is added as a residual scaled by `α/r`. The zero-init on B means output at step 0 equals `base(x)` exactly — fine-tuning starts from the pretrained behavior and diverges only as B picks up gradient. Validates `r > 0`, `alpha > 0`, `0 ≤ dropout < 1` at construction.
-  - **`apply_lora_to(module, *patterns, r, alpha, dropout)`** — walks `module.named_modules()` and replaces every `nn.Linear` whose dotted name matches any fnmatch glob with a `LoRALinear` wrapper, in place. Returns the count wrapped. **Idempotent**: re-applying against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk). Same glob conventions as `nnx.finetune.freeze` from Track A.
-  - **`save_lora_weights(module, path)`** — writes ONLY the `lora_A` / `lora_B` parameters via `torch.save` of a filtered state-dict subset. Typically 1-5% of the size of a full `state_dict` snapshot for the same model.
+  - **`apply_lora_to(module, *patterns, r, alpha, dropout)`** — walks `module.named_modules()` and replaces every `nn.Linear` whose dotted name matches any fnmatch glob with a `LoRALinear` wrapper, in place. Returns the count wrapped. **Idempotent**: re-applying against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk). Same glob conventions as `nnx.finetune.freeze`.
+  - **`save_lora_weights(module, path)`** — writes ONLY the `lora_A` / `lora_B` parameters via `torch.save` of a filtered state-dict subset. A small percentage of the full `state_dict` size (single-digit % at production scale; closer to ~40% on tiny demo nets where r/dim is large — see `docs/concepts.md` §11 for the math).
   - **`load_lora_weights(module, source)`** — loads LoRA params from a path (`weights_only=True` for safety) or directly from a dict, via `load_state_dict(strict=False)` so the frozen base's missing keys don't raise. Returns the number of tensors loaded.
-  - **`AdapterLayer(dim, bottleneck, activation=nn.GELU)`** — bottleneck residual block `y = x + up(act(down(x)))`. `up.weight` and `up.bias` are zero-initialized so the layer is the residual identity at step 0. Composed by the user into a custom `nn.Module` — NNX doesn't ship a "wrap every block" helper because adapter insertion points are architecture-specific.
+  - **`AdapterLayer(dim, bottleneck, activation=nn.GELU)`** — bottleneck residual block `y = x + up(act(down(x)))`. `up.weight` and `up.bias` are zero-initialized so the layer is the residual identity at step 0. Composed by the user into a custom `nn.Module` — NNx doesn't ship a "wrap every block" helper because adapter insertion points are architecture-specific.
 - Runnable LoRA demo: `examples/07_lora_finetuning.py` — pretrains a small classifier, wraps every Linear with LoRA, fine-tunes on a different distribution, **explicitly verifies every base parameter is bit-exactly unchanged** across the fine-tuning run, and compares the LoRA-only checkpoint size against a full `state_dict` snapshot.
 - 23 new tests across `tests/test_peft_{lora,adapters}.py`: LoRALinear validation + base-freezing + zero-init invariant (output == base at step 0) + only-LoRA-trainable invariant + in/out features pass-through; `apply_lora_to` empty-pattern rejection + selective wrap + wildcard wrap + idempotency on re-application + forward-preserves-at-init; save/load round-trip + base-keys-excluded-from-checkpoint + dict-source loading + bad-source-type rejection; end-to-end PEFT contract (every base param bit-exactly unchanged + every lora_B param has moved); AdapterLayer shape + identity-at-init + parameter-count scaling + gradient-flow + dim validation + custom activation.
 
-### Added — training paradigms (Track D)
+### Added — training paradigms (KD / SimCLR / Mixup / CutMix)
 
 - **`nnx.paradigms` package** — four `TrainStepFn` factories for non-vanilla supervised paradigms, all consumed via the existing `NNModel.train(train_step_fn=...)` hook. No new params dataclass, no NNModel changes; each is a self-contained closure.
   - **`kd_train_step_factory(teacher, *, alpha, temperature)`** — Hinton-style knowledge distillation. Mixes a temperature-softened KL divergence against the teacher's logits (`α · KL · T²`) with the standard hard-label loss (`(1-α) · L_hard`). The factory **freezes the teacher's parameters and sets its net to eval mode on call**, so the teacher provably cannot drift across the student's training. The hard term goes through the student's `loss_fn` so KD works with any classification loss.
@@ -37,7 +44,7 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 - Runnable distillation demo: `examples/10_knowledge_distillation.py` — pretrains a wider teacher (hidden_dims=[64, 64]) then distills into a much smaller student (hidden_dims=[16], roughly 4% of the teacher's parameters). The example explicitly verifies teacher weights are unchanged across the student's training run, demonstrating the factory's freeze guarantee. Honest about scope: doesn't claim to beat a non-distilled baseline on toy tabular data.
 - 19 new tests across `tests/test_paradigms_{distillation,contrastive,augmentation}.py`: factory validation (alpha / temperature ranges), teacher freezing guarantee + teacher-eval-mode assertion, end-to-end loss-decreases (KD α=0.5) + α-boundary cases (α=0.0 collapse to supervised, α=1.0 pure distillation), NT-Xent properties (shape mismatch, finite + scalar output, loss smaller for aligned pairs than random), SimCLR step bad-batch-shape error, Mixup self-consistency (accuracy + error == 1), CutMix non-image input rejection + 4D end-to-end.
 
-### Added — diffusion (Track C)
+### Added — diffusion (DDPM)
 
 - **`nnx.diffusion` package** — DDPM-style diffusion training and sampling, layered entirely on top of the existing `train_step_fn` hook on `NNModel.train()` (no Trainer, no NNModel internals touched).
   - **`NoiseSchedulers`** — enum-as-factory with two variants: `LINEAR(T, beta_min, beta_max)` (original DDPM linear betas) and `COSINE(T, s)` (Improved-DDPM cosine schedule). Each enum value's `__call__` returns a precomputed `NoiseSchedule`.
@@ -46,23 +53,23 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
   - **`diffusion_train_step_factory(schedule) -> TrainStepFn`** — closes over the schedule and returns a `TrainStepFn` suitable for `NNModel.train(train_step_fn=...)`. Per batch: samples `t ~ Uniform[0, T)`, samples `ε ~ N(0, I)`, computes `x_t`, predicts noise, backprops MSE. Reports loss as both `.loss` and `.error` on the EDP so BEST tracking + ReduceLROnPlateau work.
   - **`sample(model, schedule, shape, device=, generator=)`** — reverse-diffusion sampler. Runs T backward steps under `torch.no_grad()` and `model.net.eval()`. The optional `generator=` enables reproducible sampling for notebooks.
   - **`sinusoidal_time_embed(t, dim)`** — standalone helper for the standard sinusoidal positional embedding, exposed for users building their own t-conditioned nets.
-- **`NNModel.train()` net-params fallback** — the run-construction line now reads `self.net_params` (always set in `__init__`) instead of `self.net.params` (FeedFwdNN-specific attribute). Back-compat-safe: the values are identical for the existing supervised path. Lets callers swap `model.net` for a custom `nn.Module` post-construction (the same idiom Track G's GAN demo uses) without breaking `NNModel.train()`.
+- **`NNModel.train()` net-params fallback** — the run-construction line now reads `self.net_params` (always set in `__init__`) instead of `self.net.params` (FeedFwdNN-specific attribute). Back-compat-safe: the values are identical for the existing supervised path. Lets callers swap `model.net` for a custom `nn.Module` post-construction (the same idiom the multi-optimizer Trainer's GAN demo uses) without breaking `NNModel.train()`.
 - Runnable diffusion demo: `examples/08_diffusion_2d_mixture.py` — DDPM on a 2D mixture of 4 Gaussians at (±2, ±2). Verified end-to-end (loss 1.0078 → 0.6048; samples land in all four modes at roughly equal counts).
 - 27 new tests across `tests/test_diffusion_{schedules,nets,training,sampling}.py` covering schedule shape/monotonicity/clamping, net forward shape, full training + loss-decreases, sampling shape / finiteness / reproducibility / mode coverage.
 
-### Added — multi-optimizer Trainer (Track G)
+### Added — multi-optimizer Trainer (GAN / actor-critic)
 
 - **`nnx.trainer` package** — `Trainer` class that parallels `NNModel.train()` for scenarios where the per-batch update isn't a single supervised forward/backward/step. Built around the GAN G/D pattern, but applicable to actor-critic, EBM, contrastive multi-head, or any other multi-optimizer paradigm.
   - **`Trainer(model: NNModel).train(params, trainer_step_fn, callbacks=)`** — builds one `torch.optim.Optimizer` per entry in `NNTrainerParams.optims`, dispatches to a user-supplied `trainer_step_fn(ctx) -> NNEvaluationDataPoint` per batch, writes the same `NNRun` + per-tag `NNCheckpoint` artifacts as `NNModel.train()`. No `default_trainer_step` — multi-optim updates are scenario-specific and silently running the wrong update is worse than requiring an explicit fn.
   - **`NNTrainerParams`** — frozen dataclass with `optims: Mapping[str, NNOptimParams]` (name-keyed multi-optim config), `schedulers: Mapping[str, NNSchedulerParams]` (one per optim, defaults to ReduceLROnPlateau when missing), plus the standard `n_epochs` / `train_loader` / `val_loader` / `seed` / `save_phase_checkpoints` / `extra_metrics`. Validates non-empty `optims` and that every scheduler key matches an optim key. `state()` keys sorted for deterministic `run.id`.
   - **`TrainerStepContext`** — frozen bundle passed into a `trainer_step_fn`: `model`, `batch`, `optimizers` (dict), `schedulers` (dict), `extra_metrics`, `batch_idx`, `epoch_idx`. The companion `TrainerStepFn` type alias is exported.
-- **Strict `param_groups` semantics** for multi-optim — `build_param_groups(..., strict=True)` (new keyword) drops parameters that match no spec instead of bucketing them into a default group. Threaded through `Optims.__call__(..., strict_param_groups=True)`. The Trainer passes True so disjoint optimizers don't co-own parameters via implicit default buckets. Default `strict=False` preserves Track A fine-tuning semantics exactly.
+- **Strict `param_groups` semantics** for multi-optim — `build_param_groups(..., strict=True)` (new keyword) drops parameters that match no spec instead of bucketing them into a default group. Threaded through `Optims.__call__(..., strict_param_groups=True)`. The Trainer passes True so disjoint optimizers don't co-own parameters via implicit default buckets. Default `strict=False` preserves the fine-tuning semantics introduced by `nnx.finetune.param_groups` exactly.
 - **`NNRun.trainer: Optional[NNTrainerParams]`** — populated by the Trainer; None for `NNModel.train()` runs. **Strict back-compat:** OMITTED from `state()` when None so existing `NNModel` run.id hashes are unchanged. `NNRun.load(id)` round-trips trainer-mode runs by lazy-importing `NNTrainerParams.from_state` when the YAML carries a `trainer` block.
 - Runnable GAN demo: `examples/09_gan_with_trainer.py` — generator + discriminator packed into one nn.Module, two disjoint optimizers scoped via `NNParamGroupSpec(name_pattern="G.*" | "D.*")`, alternating updates on a 1D mixture-of-Gaussians. Verified end-to-end on CPU.
 
 **Deferred from this PR:** trainer-mode warm-resume. The Trainer writes only the model net's `state_dict` to its `NNCheckpoint`s — there is no per-optimizer `.opt.<name>.pt` sidecar yet. `NNTrainerParams` does not carry `resume_from_run_id` / `resume_from_checkpoint`. Resuming a GAN's Adam state for both G and D will land as its own follow-up PR once the use case is exercised.
 
-### Added — fine-tuning infrastructure (Track A)
+### Added — fine-tuning infrastructure (freeze / unfreeze / param_groups)
 
 - **`nnx.finetune` package** with three submodules:
   - **`freezing`** — `freeze(module, *patterns)` / `unfreeze(module, *patterns)` / `frozen(module)`. Glob-pattern (`fnmatch`) toggling of `requires_grad` on submodule parameters; the standard transfer-learning idiom. `NNModel.freeze` / `NNModel.unfreeze` are convenience methods delegating to the free functions.
@@ -95,7 +102,7 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, building on pass-1. Strict back-compat preserved throughout — every new field on a params dataclass defaults to its old value and omits itself from `state()` when the default holds, so existing `run.id` hashes are unchanged.
 
-### Added — features (F-series)
+### Added — features (warm-resume, gradient accumulation, custom epoch checkpointing, etc.)
 
 - **Warm-resume training.** `NNTrainParams.resume_from_run_id` and `resume_from_checkpoint` load weights AND optimizer state from a prior run's checkpoint at the start of `train()`. Optimizer state is written as a `.opt.pt` sidecar so the existing pickled `NNCheckpoint` format is untouched.
 - **Gradient accumulation** via `NNOptimParams.accumulate_grad_batches` (default 1). Loss is scaled by 1/N; `zero_grad`/`optimizer.step` fire on cycle boundaries; AMP unscale + grad-clip both honor the cycle.
@@ -104,14 +111,14 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - **`NNTabularDataset`** — wraps a pandas DataFrame into train/val/test loaders matching the `NNDatasetBase` contract.
 - **Custom metrics** via `NNTrainParams.extra_metrics={name: fn}`. Each `fn(Y, Y_hat) -> float` populates the new `NNEvaluationDataPoint.extra` dict; survives the `NNRun.save`/`NNRun.load` round-trip via `extra.<name>` CSV columns.
 
-### Added — reproducibility (V-series)
+### Added — reproducibility (seeded RNGs + env snapshot in metadata.yaml)
 
 - `nnx.set_seed(seed, strict=False)` pins Python `random`, NumPy, torch CPU+CUDA, and cuDNN. `strict=True` also calls `torch.use_deterministic_algorithms(True)`.
 - `nnx.dataloader_worker_init_fn` — pass to `DataLoader(worker_init_fn=...)` for per-worker deterministic seeds.
 - `NNTrainParams.seed` runs `set_seed` at `train()` entry; included in `state()` only when set.
 - `nnx.env_snapshot()` captures library / torch / numpy / python / platform / CUDA / git-commit info. Written by `NNRun.save()` to `runs/<id>/metadata.yaml` — separate from `run.yaml` so it does NOT contribute to `run.id`.
 
-### Added — API ergonomics (O+U-series)
+### Added — API ergonomics (predict tuple unpack, file= kwargs, NNCheckpoint helpers)
 
 - `NNModel.predict(X)` accepts `numpy.ndarray`, `torch.Tensor`, tuples thereof, or a `DataLoader` (labels in batches are discarded). Returns a `PredictResult` NamedTuple that unpacks positionally as `(logits, classes)` for back-compat.
 - `NNTrainParams.save_phase_checkpoints: bool = True`. Set False to skip the FIRST + Q1/Q2/Q3 cycle (LAST + BEST still always saved) — useful for tiny experiments or huge models.
@@ -120,7 +127,7 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - `nnx.__version__` resolves from `importlib.metadata`; falls back to `"0.1.0+local"` when editable-installed.
 - `pyproject` keywords expanded (training, checkpointing, callbacks, experiments, reproducibility, neural-networks, research).
 
-### Added — reliability (R-series)
+### Added — reliability (NaN-loss guard, gradient clipping, atomic NNRun.save)
 
 - **NaN/Inf guard** in `NNModel._train_step` — raises `FloatingPointError` rather than letting divergence corrupt checkpoints silently.
 - **Gradient clipping** via `NNOptimParams.grad_clip_norm: Optional[float]`. AMP-aware (unscales before clipping).
@@ -128,7 +135,7 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - **SECURITY note** on `NNCheckpoint.from_file` calling out the arbitrary-code-execution risk of `weights_only=False` on untrusted files.
 - Re-pin `loss_fn` to `self.device` on every `evaluate()` call (guards against late device reassignment).
 
-### Fixed — correctness (N-series)
+### Fixed — correctness (evaluate aggregation, NNOptimParams.is_valid, callback isolation)
 
 - `NNOptimParams.is_valid()` now returns `False` (not implicit `None`) for unknown enum variants — invalid configs no longer slip past the `not params.optim.is_valid()` pre-flight check.
 - `NNModel.train()` tolerates `DataLoader`s without `__len__` (`IterableDataset`-backed). Falls back to a tqdm bar with no total.
@@ -136,7 +143,7 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - `NNModel.evaluate()` aggregates Y / Y_hat across batches and computes metrics once on the aggregate, fixing unequal-final-batch weighting. Raises `ValueError` on an empty loader instead of returning NaN.
 - `NNIterationDataPoint` gets a docstring spelling out that `val_edp` is populated only on the LAST idp of each epoch — readers shouldn't expect it on every row.
 
-### Changed — tooling (S+T-series)
+### Changed — tooling (pyproject extras, conftest hygiene, type-checker config)
 
 - CI runs pytest under coverage (`pytest-cov`), uploads `coverage.xml` artifact on Python 3.11.
 - CI runs pyright in basic mode (`continue-on-error: true` today; will tighten to `--strict` over time).
@@ -148,11 +155,11 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` + `pull_request_template.md`.
 - `.github/workflows/release.yml` — tag-triggered build + PyPI publish via OIDC trusted publishing.
 
-### Added — docs (U3)
+### Added — docs (concepts.md / quickstart.md / api.md)
 
 - `examples/` folder with four runnable scripts: `01_synthetic_classification.py`, `02_resume_training.py`, `03_custom_metrics.py`, `04_onnx_export.py`. All verified end-to-end on CPU.
 
-### Internal (D6)
+### Internal (Utils back-compat shim, vis_utils module aliases)
 
 - `Utils.print_tree` / `print_table` / `flatten_dict` are now module-level functions in `nnx.utils`. The `Utils` class is a thin shim binding the same functions as staticmethods, so existing `Utils.method(...)` callers continue to work with no semantic change.
 - `VisUtils` plotting helpers get module-level aliases (`from nnx.vis_utils import confusion_matrix` works).
@@ -174,7 +181,7 @@ Second improvement pass on branch `chore/comprehensive-improvements-pass-2`, bui
 - README "Other models" was a non-functional snippet (imported classes without showing how to wire them through `NNModel`). Replaced with concrete `NNModelParams(net=Nets.GRAPH_*)` examples + a pointer at the `examples/` folder. Added README subsections for Reproducibility, Warm-resume, and Custom metrics so the pass-2 features are visible from the top-level doc.
 - `test_imports.py` was missing smoke imports for `nnx.seeding`, `nnx.nn.callbacks`, `nnx.nn.net.graph_nn_base`, `nnx.nn.dataset.nn_tabular_dataset`, and `nnx.nn.enum.schedulers`. The test predated pass-1 and never grew with the codebase. Closed the gap so the cheapest-possible refactor signal is exhaustive again.
 - `release.yml` skipped `twine check` between `python -m build` and the PyPI upload step. A malformed README or invalid classifier would only surface when PyPI rejected the upload — by then the tag is burned. Added a `twine check dist/*` verification step; also added `cache: pip` to the setup-python step for parity with the other workflows.
-- **R18-R19** — Final sweeps: ran the literal README quickstart end-to-end, manually exercised the four `predict()` input forms (ndarray, tensor, tuple-of-each), verified all internal markdown links resolve, and confirmed `mkdocs build --strict` is silent. No additional actionable findings.
+- **Final sweeps**: ran the literal README quickstart end-to-end, manually exercised the four `predict()` input forms (ndarray, tensor, tuple-of-each), verified all internal markdown links resolve, and confirmed `mkdocs build --strict` is silent. No additional actionable findings.
 
 ### Deferred (with rationale)
 

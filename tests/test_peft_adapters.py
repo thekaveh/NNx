@@ -1,4 +1,5 @@
 """Tests for nnx.peft.adapters — AdapterLayer."""
+
 from __future__ import annotations
 
 import pytest
@@ -65,22 +66,20 @@ def test_adapter_layer_gradients_flow_through_up_immediately():
     # the next backward populates down.weight.grad with non-zeros.
     assert a.down.weight.grad is not None
     assert (a.down.weight.grad == 0).all(), (
-        "down.weight.grad must be all-zero at step 0 (gradient chain "
-        "passes through up.weight=0)"
+        "down.weight.grad must be all-zero at step 0 (gradient chain passes through up.weight=0)"
     )
 
     # Take one SGD-like step on up.weight to break the zero, then verify
     # the next backward DOES populate down.weight.grad non-trivially.
     import torch as _torch
+
     with _torch.no_grad():
         a.up.weight += 0.01
     a.down.weight.grad = None
     a.up.weight.grad = None
     loss2 = a(x).pow(2).sum()
     loss2.backward()
-    assert (a.down.weight.grad != 0).any(), (
-        "after up.weight is non-zero, down.weight.grad must pick up signal"
-    )
+    assert (a.down.weight.grad != 0).any(), "after up.weight is non-zero, down.weight.grad must pick up signal"
 
 
 def test_adapter_layer_validates_dims():

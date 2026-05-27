@@ -14,6 +14,7 @@ No new architecture or optimizer plumbing needed.
 Run:
     python examples/05_custom_train_step_autoencoder.py
 """
+
 from __future__ import annotations
 
 import torch
@@ -53,12 +54,17 @@ def main():
     # NNModel.train naturally sees all parameters.
     model = NNModel(
         net_params=NNParams(
-            input_dim=d, output_dim=d, hidden_dims=[4],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=d,
+            output_dim=d,
+            hidden_dims=[4],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         # loss=CROSS_ENTROPY is unused — our hook computes its own loss.
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -80,7 +86,10 @@ def main():
 
         loss_val = float(loss.detach())
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
             loss=loss_val,
             error=loss_val,  # use loss as the "error" so BEST tracking is meaningful
         )
@@ -89,10 +98,17 @@ def main():
         n_epochs=5,
         train_loader=loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=1e-2,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=2,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
 

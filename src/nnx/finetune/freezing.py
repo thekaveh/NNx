@@ -14,6 +14,7 @@ functions directly is useful when you're freezing parameters of a
 module that isn't an `NNModel` (e.g., a HuggingFace transformer you
 loaded externally).
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -44,9 +45,7 @@ def freeze(module: nn.Module, *patterns: str) -> int:
         ``requires_grad=True``). Useful for assertion / logging.
     """
     if not patterns:
-        raise ValueError(
-            "freeze() requires at least one pattern; pass '*' to freeze every parameter"
-        )
+        raise ValueError("freeze() requires at least one pattern; pass '*' to freeze every parameter")
     n = 0
     for name, param in module.named_parameters():
         if any(fnmatch.fnmatch(name, p) for p in patterns):
@@ -60,9 +59,7 @@ def unfreeze(module: nn.Module, *patterns: str) -> int:
     """Mirror of :func:`freeze` — set ``requires_grad=True`` on matching
     parameters. Returns the count newly unfrozen."""
     if not patterns:
-        raise ValueError(
-            "unfreeze() requires at least one pattern; pass '*' to unfreeze every parameter"
-        )
+        raise ValueError("unfreeze() requires at least one pattern; pass '*' to unfreeze every parameter")
     n = 0
     for name, param in module.named_parameters():
         if any(fnmatch.fnmatch(name, p) for p in patterns):
@@ -79,6 +76,4 @@ def frozen(module: nn.Module) -> list[str]:
     for logging at ``train()`` entry so users can see exactly which
     parameters are excluded from training.
     """
-    return sorted(
-        name for name, param in module.named_parameters() if not param.requires_grad
-    )
+    return sorted(name for name, param in module.named_parameters() if not param.requires_grad)

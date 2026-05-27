@@ -13,6 +13,7 @@ Determinism caveats:
 - cuDNN deterministic + benchmark=False trades throughput for repeatable
   convolutions.
 """
+
 from __future__ import annotations
 
 import os
@@ -90,19 +91,29 @@ def env_snapshot(force_refresh: bool = False) -> dict:
 
     def _git_commit() -> Optional[str]:
         try:
-            return subprocess.check_output(
-                ["git", "rev-parse", "HEAD"],
-                stderr=subprocess.DEVNULL, timeout=2,
-            ).decode().strip()
+            return (
+                subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+                .decode()
+                .strip()
+            )
         except Exception:
             return None
 
     def _git_dirty() -> Optional[bool]:
         try:
-            out = subprocess.check_output(
-                ["git", "status", "--porcelain"],
-                stderr=subprocess.DEVNULL, timeout=2,
-            ).decode().strip()
+            out = (
+                subprocess.check_output(
+                    ["git", "status", "--porcelain"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+                .decode()
+                .strip()
+            )
             return bool(out)
         except Exception:
             return None
@@ -110,6 +121,7 @@ def env_snapshot(force_refresh: bool = False) -> dict:
     def _nnx_version() -> Optional[str]:
         try:
             from importlib.metadata import version
+
             return version("nnx")
         except Exception:
             return None

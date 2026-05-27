@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-import torch_geometric as pyg
 from torch import nn
 
 from ..params.nn_params import NNParams
@@ -14,10 +13,8 @@ class FeedFwdNN(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                nn.Linear(
-                    in_features=in_dim
-                    , out_features=out_dim
-                )   for in_dim, out_dim in zip(self.params.dims, self.params.dims[1:], strict=False)
+                nn.Linear(in_features=in_dim, out_features=out_dim)
+                for in_dim, out_dim in zip(self.params.dims, self.params.dims[1:], strict=False)
             ]
         )
 
@@ -34,14 +31,24 @@ class FeedFwdNN(nn.Module):
         return X
 
     def unpack_batch(self, batch):
-        if isinstance(batch, list) or isinstance(batch, tuple):
+        if isinstance(batch, (list, tuple)):
             X, Y = batch
-        elif isinstance(batch, pyg.data.data.Data):
-            X, Y = batch.x, batch.y
-        else:
-            raise TypeError("The input 'batch' must be either a tuple or an instance of torch_geometric.data.data.Data.")
+            return (X,), Y
+        # PyG batches go through the GNN subclasses (GraphConvNN /
+        # GraphSageNN / GraphAttNN), but we keep the branch here for
+        # back-compat with the original contract. Lazy import so module
+        # load doesn't pay the torch_geometric import cost for users
+        # who only ever pass standard (X, Y) tuples.
+        from torch_geometric.data.data import Data as _PygData
 
-        return (X,), Y
+        if isinstance(batch, _PygData):
+            X, Y = batch.x, batch.y
+            return (X,), Y
+        raise TypeError(
+            "FeedFwdNN.unpack_batch expects a (list/tuple) batch or a "
+            "torch_geometric.data.Data instance; got "
+            f"{type(batch).__name__}."
+        )
 
     def __str__(self):
         return f"FeedFwdNN={self.params}"
@@ -50,7 +57,7 @@ class FeedFwdNN(nn.Module):
         torch.save(self.state_dict(), path)
 
     @staticmethod
-    def from_file(path: str, params: NNParams) -> 'FeedFwdNN':
+    def from_file(path: str, params: NNParams) -> "FeedFwdNN":
         # weights_only=True: a state-dict is plain tensors + standard
         # scalar/dict types — the strict loader works and removes the
         # arbitrary-code-execution risk on user-supplied paths. Matches
@@ -61,7 +68,7 @@ class FeedFwdNN(nn.Module):
         return net
 
     @staticmethod
-    def from_state(state_dict: dict, params: NNParams) -> 'FeedFwdNN':
+    def from_state(state_dict: dict, params: NNParams) -> "FeedFwdNN":
         net = FeedFwdNN(params)
         net.load_state_dict(state_dict)
 

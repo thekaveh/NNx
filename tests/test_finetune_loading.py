@@ -1,4 +1,5 @@
 """Tests for nnx.finetune.loading — external pretrained-weight loading."""
+
 from __future__ import annotations
 
 import pytest
@@ -11,11 +12,16 @@ from nnx.finetune import LoadPretrainedResult, load_pretrained
 def _model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -66,9 +72,9 @@ def test_load_pretrained_key_map_remaps_prefix():
     model = _model()
     src = {
         "foreign.layers.0.weight": torch.ones(8, 4),
-        "foreign.layers.0.bias":   torch.ones(8),
+        "foreign.layers.0.bias": torch.ones(8),
         "foreign.layers.1.weight": torch.ones(2, 8),
-        "foreign.layers.1.bias":   torch.ones(2),
+        "foreign.layers.1.bias": torch.ones(2),
     }
     result = load_pretrained(model.net, src, key_map={"foreign.": ""})
 
@@ -84,9 +90,9 @@ def test_load_pretrained_prefix_strip():
     model = _model()
     src = {
         "model.layers.0.weight": torch.full((8, 4), 7.0),
-        "model.layers.0.bias":   torch.zeros(8),
+        "model.layers.0.bias": torch.zeros(8),
         "model.layers.1.weight": torch.zeros(2, 8),
-        "model.layers.1.bias":   torch.zeros(2),
+        "model.layers.1.bias": torch.zeros(2),
     }
     result = load_pretrained(model.net, src, prefix="model.")
     assert len(result.loaded_keys) == 4

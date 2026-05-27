@@ -1,4 +1,5 @@
 """Tests that the graph-NN refactor preserves the public interface."""
+
 from __future__ import annotations
 
 import torch
@@ -48,6 +49,7 @@ def test_graph_sage_builds_and_forwards():
 
 def test_graph_att_requires_n_heads():
     import pytest
+
     with pytest.raises(ValueError, match="n_heads"):
         GraphAttNN(params=_params(n_heads=None))
 
@@ -64,6 +66,7 @@ def test_graph_att_builds_with_n_heads():
 def test_unpack_batch_returns_tuple_tuple_tensor():
     """All graph nets expose the same (X, E), Y unpacking shape."""
     from types import SimpleNamespace
+
     batch = SimpleNamespace(
         x=torch.zeros(3, 4),
         edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
@@ -79,5 +82,6 @@ def test_unpack_batch_returns_tuple_tuple_tensor():
 
 def test_base_class_requires_build_layers():
     import pytest
+
     with pytest.raises(NotImplementedError):
         GraphNNBase(params=_params())

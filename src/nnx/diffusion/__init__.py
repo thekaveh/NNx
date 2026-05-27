@@ -12,9 +12,10 @@ Public surface — re-exported from the top-level ``nnx`` package:
     :class:`nnx.TrainStepFn` for use with :meth:`NNModel.train`.
   - :func:`sample` — reverse-diffusion sampler.
 
-The diffusion paradigm hits NNX through the ``train_step_fn`` hook
+The diffusion paradigm hits NNx through the ``train_step_fn`` hook
 introduced earlier — no Trainer or NNModel changes needed.
 """
+
 from __future__ import annotations
 
 from .nets import DiffusionMLP, sinusoidal_time_embed

@@ -5,6 +5,7 @@ and the legacy ``Utils`` class API are exported. New code should prefer the
 module functions; ``Utils.method(...)`` is kept as a thin back-compat shim so
 existing notebooks keep working.
 """
+
 from __future__ import annotations
 
 import sys
@@ -28,10 +29,10 @@ def print_tree(tree, level: int = 0, *, file=None) -> None:
 
     for key, val in tree.items():
         if isinstance(val, dict):
-            print(' ' * level * 4 + f'[-] {key}: ', file=out)
+            print(" " * level * 4 + f"[-] {key}: ", file=out)
             print_tree(val, level + 1, file=out)
         else:
-            print(' ' * level * 4 + f'[+] {key.ljust(max_key_len)} : {val}', file=out)
+            print(" " * level * 4 + f"[+] {key.ljust(max_key_len)} : {val}", file=out)
 
 
 def print_table(data: dict, header: bool = True, title: Optional[str] = None, *, file=None) -> None:
@@ -40,7 +41,7 @@ def print_table(data: dict, header: bool = True, title: Optional[str] = None, *,
     Pass ``file=`` to redirect output. Defaults to ``sys.stdout``.
     """
     out = file if file is not None else sys.stdout
-    table = PrettyTable(['Key', 'Value'])
+    table = PrettyTable(["Key", "Value"])
     table.header = header
     if title is not None:
         table.title = title
@@ -51,7 +52,7 @@ def print_table(data: dict, header: bool = True, title: Optional[str] = None, *,
     print(table, file=out)
 
 
-def flatten_dict(data: dict, parent_key: str = '', sep: str = '.') -> dict:
+def flatten_dict(data: dict, parent_key: str = "", sep: str = ".") -> dict:
     """Flatten a nested dict so nested keys become ``parent.child`` style.
 
     >>> flatten_dict({"a": 1, "b": {"c": 2}})

@@ -18,7 +18,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 1.2. Specializations
 
 - **Fine-tuning (transfer learning)** — glob-pattern layer freezing, external state-dict loading, per-layer-group learning rates.
-- **Multi-optimizer `Trainer`** — parallel to `NNModel.train()` for GAN / actor-critic / EBM workflows with a name-keyed dict of optimizers scoped via `NNParamGroupSpec`.
+- **Multi-optimizer `Trainer`** — parallel to `NNModel.train()` for GAN / actor-critic workflows with a name-keyed dict of optimizers scoped via `NNParamGroupSpec`.
 - **Diffusion (DDPM)** — noise-prediction training and reverse-diffusion sampling.
 - **Training paradigms** — knowledge distillation, contrastive learning, and batch-level augmentation (Mixup / CutMix).
 - **Parameter-efficient fine-tuning (PEFT)** — LoRA-wrapped Linear layers and bottleneck residual adapters.

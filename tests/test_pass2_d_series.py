@@ -3,9 +3,8 @@
 - D6: Utils / VisUtils — module-level functions exist; the class API still
   works (back-compat shim); both point at the same callable.
 """
-from __future__ import annotations
 
-import io
+from __future__ import annotations
 
 import numpy as np
 
@@ -37,19 +36,19 @@ def test_d6_utils_class_shim_still_works():
 
 def test_d6_utils_class_shim_delegates_to_same_callable():
     """Utils.flatten_dict and the module-level flatten_dict reference the
-    same underlying function (no duplicated implementation)."""
+    same underlying function (no duplicated implementation).
+
+    Combined with `test_o10_print_tree_respects_file_param` (which
+    exercises Utils.print_tree with a 2-level dict), this proves the
+    module alias works end-to-end without needing a separate
+    module-level print_tree test (which would be strictly redundant
+    given the identity assertion below)."""
     # __func__ on a staticmethod returns the underlying function; in
     # Python 3.10+ class-level staticmethods are descriptors that resolve
     # to the bare function when accessed via the class.
     assert Utils.flatten_dict is flatten_dict
     assert Utils.print_tree is print_tree
     assert Utils.print_table is print_table
-
-
-def test_d6_utils_module_print_tree_uses_file_kwarg():
-    buf = io.StringIO()
-    print_tree({"k": "v"}, file=buf)
-    assert "[+] k" in buf.getvalue()
 
 
 def test_d6_visutils_module_aliases_present():
@@ -81,9 +80,14 @@ def test_d6_vis_utils_all_lists_aliases():
     """nnx.vis_utils.__all__ advertises both VisUtils and the module-level
     function aliases so `from nnx.vis_utils import *` works as expected."""
     expected = {
-        "VisUtils", "generate_colors", "multi_line_plot", "scatter_plot",
-        "get_scatter_plot_vm", "two_dim_tsne_checkpoint_logits",
-        "confusion_matrix", "classification_report",
+        "VisUtils",
+        "generate_colors",
+        "multi_line_plot",
+        "scatter_plot",
+        "get_scatter_plot_vm",
+        "two_dim_tsne_checkpoint_logits",
+        "confusion_matrix",
+        "classification_report",
     }
     assert expected.issubset(set(vis_mod.__all__))
 

@@ -20,6 +20,7 @@ nets, and longer schedules are all things you'd add for a real run.
 Run:
     python examples/09_gan_with_trainer.py
 """
+
 from __future__ import annotations
 
 import torch
@@ -57,13 +58,17 @@ class MiniGAN(nn.Module):
     def __init__(self, hidden: int = 32):
         super().__init__()
         self.G = nn.Sequential(
-            nn.Linear(LATENT_DIM, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(LATENT_DIM, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
             nn.Linear(hidden, 1),
         )
         self.D = nn.Sequential(
-            nn.Linear(1, hidden), nn.LeakyReLU(0.2),
-            nn.Linear(hidden, hidden), nn.LeakyReLU(0.2),
+            nn.Linear(1, hidden),
+            nn.LeakyReLU(0.2),
+            nn.Linear(hidden, hidden),
+            nn.LeakyReLU(0.2),
             nn.Linear(hidden, 1),
         )
 
@@ -90,7 +95,8 @@ def main():
     # include them only so the DataLoader's (X, Y) tuple contract holds.
     loader = DataLoader(
         TensorDataset(real, torch.zeros(real.size(0), dtype=torch.long)),
-        batch_size=64, shuffle=True,
+        batch_size=64,
+        shuffle=True,
     )
 
     # NNModel is happy with a placeholder NNParams here; the real net is
@@ -98,11 +104,16 @@ def main():
     # echo G's surface shape so the run.yaml stays interpretable.
     model = NNModel(
         net_params=NNParams(
-            input_dim=LATENT_DIM, output_dim=1, hidden_dims=[],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=LATENT_DIM,
+            output_dim=1,
+            hidden_dims=[],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     # Swap the FeedFwdNN built by Nets.FEED_FWD for the GAN composite.
@@ -133,10 +144,9 @@ def main():
         X_fake = net.G(z).detach()
         d_real_logits = net.D(X_real)
         d_fake_logits = net.D(X_fake)
-        d_loss = (
-            F.binary_cross_entropy_with_logits(d_real_logits, torch.ones_like(d_real_logits))
-            + F.binary_cross_entropy_with_logits(d_fake_logits, torch.zeros_like(d_fake_logits))
-        )
+        d_loss = F.binary_cross_entropy_with_logits(
+            d_real_logits, torch.ones_like(d_real_logits)
+        ) + F.binary_cross_entropy_with_logits(d_fake_logits, torch.zeros_like(d_fake_logits))
         d_loss.backward()
         opt_D.step()
 
@@ -147,15 +157,16 @@ def main():
         opt_G.zero_grad()
         z = torch.randn(n, LATENT_DIM, device=device)
         g_fake_logits = net.D(net.G(z))
-        g_loss = F.binary_cross_entropy_with_logits(
-            g_fake_logits, torch.ones_like(g_fake_logits)
-        )
+        g_loss = F.binary_cross_entropy_with_logits(g_fake_logits, torch.ones_like(g_fake_logits))
         g_loss.backward()
         opt_G.step()
 
         avg = float((d_loss + g_loss).detach()) / 2
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
             loss=avg,
             # Use g_loss as the "error" so BEST tracking favors checkpoints
             # where G is fooling D well.
@@ -168,11 +179,17 @@ def main():
     # also carry D's params in a default bucket and the two optimizers
     # would silently update the same weights.
     g_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=2e-4)],
     )
     d_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=2e-4)],
     )
 

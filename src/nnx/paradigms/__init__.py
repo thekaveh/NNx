@@ -13,6 +13,7 @@ Public surface — re-exported from the top-level ``nnx`` package:
   - :func:`mixup_train_step_factory` — Mixup augmentation.
   - :func:`cutmix_train_step_factory` — CutMix augmentation (image data).
 """
+
 from __future__ import annotations
 
 from .augmentation import cutmix_train_step_factory, mixup_train_step_factory

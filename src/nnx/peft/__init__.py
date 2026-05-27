@@ -12,6 +12,7 @@ LoRA is the dominant choice in modern PEFT pipelines; adapters
 predate LoRA and are still useful when the user controls the network
 architecture and wants explicit residual insertion points.
 """
+
 from __future__ import annotations
 
 from .adapters import AdapterLayer

@@ -22,6 +22,7 @@ parameters per layer instead of tens of thousands.
 Run:
     python examples/07_lora_finetuning.py
 """
+
 from __future__ import annotations
 
 import os
@@ -51,11 +52,16 @@ from nnx import (
 def _classifier() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=4, hidden_dims=[32, 32],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=4,
+            hidden_dims=[32, 32],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -73,10 +79,17 @@ def _train_params(n_epochs: int, train_loader, lr: float = 1e-2):
         n_epochs=n_epochs,
         train_loader=train_loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=lr, momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=lr,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=2,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
 
@@ -108,8 +121,7 @@ def main():
     # Count trainable parameters now. The base layers are frozen, so
     # only the LoRA A/B matrices remain trainable.
     trainable = sum(p.numel() for p in model.net.parameters() if p.requires_grad)
-    print(f"trainable params: {trainable} / {pre_total} "
-          f"({trainable * 100 / pre_total:.1f}%)")
+    print(f"trainable params: {trainable} / {pre_total} ({trainable * 100 / pre_total:.1f}%)")
 
     # ---- Phase 3: fine-tune on distribution B.
     print("\n" + "=" * 60)

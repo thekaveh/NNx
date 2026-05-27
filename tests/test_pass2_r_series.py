@@ -8,6 +8,7 @@ Covers reliability gaps surfaced in the pass-2 audit:
 - R3: NNRun.save() is invoked after each epoch so interrupted training
   leaves a loadable partial run on disk.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -31,11 +32,16 @@ from nnx.nn.params.nn_train_params import NNTrainParams
 def _model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -45,14 +51,39 @@ def _train_params(loader: DataLoader, **kw) -> NNTrainParams:
         n_epochs=kw.pop("n_epochs", 1),
         train_loader=loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=kw.pop("max_lr", 1e-2),
-            momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=kw.pop("max_lr", 1e-2),
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
             grad_clip_norm=kw.pop("grad_clip_norm", None),
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=1,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
+
+
+class _ConstantLoss(torch.nn.Module):
+    """A loss that always returns a fixed scalar. Used to inject NaN/Inf
+    into the train loop without relying on optimizer-divergence dynamics
+    (which would couple the test to LR / init / dropout).
+
+    Cleaner than monkey-patching `.forward` / `.__call__` on a bare
+    `nn.Module()` — the latter pattern depends on PyTorch's call-chain
+    internals and silently fails if Module.__call__ ever stops looking
+    up `self.forward` through the instance dict.
+    """
+
+    def __init__(self, value: float):
+        super().__init__()
+        self._value = value
+
+    def forward(self, _log, _y):  # noqa: ARG002
+        return torch.tensor(self._value, requires_grad=True)
 
 
 def test_r1_nan_loss_raises(tmp_path, monkeypatch):
@@ -67,12 +98,7 @@ def test_r1_nan_loss_raises(tmp_path, monkeypatch):
     loader = DataLoader(TensorDataset(X, y), batch_size=16)
 
     model = _model()
-    # Replace loss_fn with one that returns NaN — the cleanest way to
-    # provoke the guard without relying on optimizer divergence dynamics.
-    nan_loss = torch.nn.Module()
-    nan_loss.forward = lambda log, y: torch.tensor(float("nan"), requires_grad=True)
-    nan_loss.__call__ = nan_loss.forward
-    model.loss_fn = nan_loss
+    model.loss_fn = _ConstantLoss(float("nan"))
 
     with pytest.raises(FloatingPointError, match="non-finite training loss"):
         model.train(params=_train_params(loader))
@@ -88,10 +114,7 @@ def test_r1_inf_loss_raises(tmp_path, monkeypatch):
     loader = DataLoader(TensorDataset(X, y), batch_size=16)
 
     model = _model()
-    inf_loss = torch.nn.Module()
-    inf_loss.forward = lambda log, y: torch.tensor(float("inf"), requires_grad=True)
-    inf_loss.__call__ = inf_loss.forward
-    model.loss_fn = inf_loss
+    model.loss_fn = _ConstantLoss(float("inf"))
 
     with pytest.raises(FloatingPointError, match="non-finite training loss"):
         model.train(params=_train_params(loader))
@@ -194,8 +217,11 @@ def test_r3_incremental_save_leaves_loadable_partial_run(tmp_path, monkeypatch):
 def test_r2_grad_clip_round_trips_through_state():
     """grad_clip_norm survives NNOptimParams.state() / from_state()."""
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999),
-        weight_decay=0.0, grad_clip_norm=1.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
+        grad_clip_norm=1.0,
     )
     rt = NNOptimParams.from_state(p.state())
     assert rt.grad_clip_norm == 1.0
@@ -206,10 +232,10 @@ def test_r2_grad_clip_back_compat_with_old_yaml():
     """A state() dict missing grad_clip_norm (older runs) must still load
     cleanly with grad_clip_norm=None."""
     legacy_state = {
-        'max_lr': 1e-3,
-        'momentum': "(0.9, 0.999)",
-        'name': 'adam',
-        'weight_decay': 0.0,
+        "max_lr": 1e-3,
+        "momentum": "(0.9, 0.999)",
+        "name": "adam",
+        "weight_decay": 0.0,
         # NO grad_clip_norm key — predates the field.
     }
     p = NNOptimParams.from_state(legacy_state)

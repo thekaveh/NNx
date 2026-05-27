@@ -1,4 +1,5 @@
 """Tests for the Callback protocol and standard callbacks."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -18,8 +19,13 @@ def _make_ctx(epoch=0, val_error=None, train_error=0.5, lr=1e-3):
     idp = SimpleNamespace(epoch_idx=epoch, val_edp=val_edp, train_edp=train_edp, lr=lr)
     optimizer = SimpleNamespace(param_groups=[{"lr": lr}])
     return SimpleNamespace(
-        model=None, run=None, optimizer=optimizer,
-        epoch=epoch, idp=idp, idps=[idp], should_stop=False,
+        model=None,
+        run=None,
+        optimizer=optimizer,
+        epoch=epoch,
+        idp=idp,
+        idps=[idp],
+        should_stop=False,
     )
 
 
@@ -67,6 +73,7 @@ def test_early_stopping_max_mode():
 
 def test_early_stopping_invalid_mode():
     import pytest
+
     with pytest.raises(ValueError):
         EarlyStopping(mode="middle")
 
@@ -92,8 +99,6 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     """ModelCheckpoint must actually save a checkpoint at matched epochs.
     Previously this callback was a no-op stub; the audit caught it and
     we wired it through to NNCheckpoint.to_file."""
-    import os
-
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -113,7 +118,6 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     from nnx.nn.callbacks import ModelCheckpoint
     from nnx.nn.params.nn_checkpoint import NNCheckpoint
 
-    os.environ.setdefault("NNX_TQDM_DISABLE", "1")
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 
@@ -122,11 +126,16 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     loader = DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
     model = NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     cb = ModelCheckpoint(epochs=[0, 2], tag="snap")
@@ -135,10 +144,17 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
             n_epochs=3,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         callbacks=[cb],
@@ -157,8 +173,6 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
 def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):
     """When `epochs` is empty / None, ModelCheckpoint must NEVER write —
     the callback is just inert, not creating empty files."""
-    import os
-
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -177,33 +191,45 @@ def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):
     )
     from nnx.nn.callbacks import ModelCheckpoint
 
-    os.environ.setdefault("NNX_TQDM_DISABLE", "1")
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
 
     loader = DataLoader(
         TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,))),
-        batch_size=4, shuffle=False,
+        batch_size=4,
+        shuffle=False,
     )
     model = NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
-    cb = ModelCheckpoint()   # no epochs argument
+    cb = ModelCheckpoint()  # no epochs argument
     run = model.train(
         params=NNTrainParams(
             n_epochs=2,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         callbacks=[cb],

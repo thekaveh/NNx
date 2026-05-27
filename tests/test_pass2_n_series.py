@@ -6,6 +6,7 @@ Covers correctness gaps surfaced in the pass-2 audit:
   uneven final batch doesn't over-weight metrics.
 - N8: evaluate() raises rather than silently returning NaN on empty loaders.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -26,11 +27,16 @@ from nnx.nn.params.nn_params import NNParams
 def _model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -78,6 +84,31 @@ def test_n8_evaluate_raises_on_empty_loader():
         model.evaluate(loader=loader)
 
 
+def test_n8_evaluate_handles_batch_of_one():
+    """Symmetric edge case to the N7 uneven-last-batch fix: a loader
+    whose only batch contains exactly one sample. Several of the
+    aggregation paths (np.concatenate over a single 1-row array,
+    sample-weighted loss division) would silently produce different
+    results with batch_size=1 if a regression added a dimension-squeeze
+    or a guard-against-empty branch."""
+    torch.manual_seed(0)
+    model = _model()
+
+    X = torch.randn(1, 4)
+    y = torch.randint(0, 2, (1,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=1, shuffle=False)
+
+    edp = model.evaluate(loader=loader)
+    # The single sample is either correctly classified (accuracy=1.0,
+    # error=0.0) or not (0.0, 1.0). Either way both metrics must be
+    # finite and 0/1, not NaN, and accuracy + error must sum to 1.
+    assert edp.accuracy in (0.0, 1.0)
+    assert edp.error in (0.0, 1.0)
+    assert abs((edp.accuracy + edp.error) - 1.0) < 1e-9
+    assert edp.loss is not None
+    assert torch.isfinite(torch.tensor(edp.loss)).item()
+
+
 def test_n4_train_works_on_iterable_dataset(tmp_path, monkeypatch):
     """train() must tolerate DataLoaders where len() raises (IterableDataset)."""
     monkeypatch.chdir(tmp_path)
@@ -103,12 +134,14 @@ def test_n4_train_works_on_iterable_dataset(tmp_path, monkeypatch):
     from nnx.nn.params.nn_train_params import NNTrainParams
 
     model = _model()
-    run = model.train(params=NNTrainParams(
-        n_epochs=1,
-        train_loader=loader,
-        optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
-        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-    ))
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        )
+    )
     # Successfully completed at least the iterable's worth of batches.
     assert len(run.idps) >= 1
 
@@ -157,6 +190,7 @@ def test_review_pointer_file_compared_correctly_under_symlink_fallback(tmp_path,
 
     def _raise(*a, **kw):
         raise OSError("symlink not supported (simulated Windows)")
+
     monkeypatch.setattr(nn_run_mod.os, "symlink", _raise)
 
     # Drive two distinct runs (different LRs → different run.id) through
@@ -172,15 +206,17 @@ def test_review_pointer_file_compared_correctly_under_symlink_fallback(tmp_path,
     def _drive(lr):
         torch.manual_seed(0)
         m = _model()
-        return m.train(params=NNTrainParams(
-            n_epochs=1,
-            train_loader=DataLoader(
-                TensorDataset(torch.randn(16, 4), torch.randint(0, 2, (16,))),
-                batch_size=8,
-            ),
-            optim=NNOptimParams(name=Optims.ADAM, max_lr=lr, momentum=(0.9, 0.999), weight_decay=0.0),
-            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-        ))
+        return m.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=DataLoader(
+                    TensorDataset(torch.randn(16, 4), torch.randint(0, 2, (16,))),
+                    batch_size=8,
+                ),
+                optim=NNOptimParams(name=Optims.ADAM, max_lr=lr, momentum=(0.9, 0.999), weight_decay=0.0),
+                scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+            )
+        )
 
     run_a = _drive(1e-2)
     run_b = _drive(1e-3)  # different config → different run.id
@@ -192,8 +228,7 @@ def test_review_pointer_file_compared_correctly_under_symlink_fallback(tmp_path,
     err_b = run_b.idps[-1].train_edp.error
     expected_id = run_b.id if err_b < err_a else run_a.id
     assert expected_id in pointer, (
-        f"pointer at {pointer!r} should reference {expected_id} "
-        f"(err_a={err_a:.4f}, err_b={err_b:.4f})"
+        f"pointer at {pointer!r} should reference {expected_id} (err_a={err_a:.4f}, err_b={err_b:.4f})"
     )
 
 
@@ -210,8 +245,7 @@ def test_review_optim_params_state_omits_default_grad_clip_norm():
     p = NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)
     state = p.state()
     assert "grad_clip_norm" not in state, (
-        "grad_clip_norm=None must be omitted from state() to preserve run.id back-compat; "
-        f"got state={state!r}"
+        f"grad_clip_norm=None must be omitted from state() to preserve run.id back-compat; got state={state!r}"
     )
     assert "accumulate_grad_batches" not in state
     assert set(state.keys()) == {"max_lr", "momentum", "name", "weight_decay"}
@@ -219,8 +253,11 @@ def test_review_optim_params_state_omits_default_grad_clip_norm():
 
 def test_review_optim_params_state_emits_grad_clip_norm_when_set():
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999),
-        weight_decay=0.0, grad_clip_norm=1.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
+        grad_clip_norm=1.0,
     )
     state = p.state()
     assert state["grad_clip_norm"] == 1.0
@@ -231,6 +268,7 @@ def test_review_nnrun_all_handles_missing_runs_dir(tmp_path, monkeypatch):
     raise FileNotFoundError."""
     monkeypatch.chdir(tmp_path)
     from nnx.nn.params.nn_run import NNRun
+
     assert NNRun.all() == []
 
 
@@ -244,6 +282,7 @@ def test_review_nnrun_all_skips_non_run_entries(tmp_path, monkeypatch):
     (runs_root / "incomplete_run").mkdir()  # no run.yaml inside
 
     from nnx.nn.params.nn_run import NNRun
+
     assert NNRun.all() == []
 
 
@@ -273,7 +312,23 @@ def test_review_callbacks_module_imports_without_ipython(monkeypatch):
             if k.startswith("nnx.nn.callbacks"):
                 del sys.modules[k]
         import importlib
-        importlib.import_module("nnx.nn.callbacks")
+
+        reimported = importlib.import_module("nnx.nn.callbacks")
+        # Explicit checks: the module reloaded successfully (Callback +
+        # standard callbacks reachable) AND no IPython submodule was
+        # pulled in as a side effect (the actual invariant this test
+        # protects). After this block we set every `IPython*` entry in
+        # sys.modules to None as a sentinel that blocks `import IPython`;
+        # if the callbacks import had succeeded in loading IPython, that
+        # sentinel would have been overwritten by the real module object.
+        assert hasattr(reimported, "Callback")
+        assert hasattr(reimported, "EarlyStopping")
+        for k in sys.modules:
+            if k.startswith("IPython"):
+                assert sys.modules[k] is None, (
+                    f"importing nnx.nn.callbacks loaded {k!r} (lazy "
+                    "import in _LegacyCallback leaked out of on_epoch_end)"
+                )
     finally:
         # Restore IPython modules so other tests aren't affected.
         for k in list(sys.modules):
@@ -297,6 +352,7 @@ def test_n6_best_symlink_falls_back_to_pointer_file_when_symlink_fails(tmp_path,
 
     def _raise(*a, **kw):
         raise OSError("symlink not supported (simulated Windows)")
+
     monkeypatch.setattr(nn_run_mod.os, "symlink", _raise)
 
     # Drive a tiny run end-to-end so NNRun.save() is exercised through
@@ -312,12 +368,14 @@ def test_n6_best_symlink_falls_back_to_pointer_file_when_symlink_fails(tmp_path,
     loader = DataLoader(TensorDataset(X, y), batch_size=8)
 
     model = _model()
-    run = model.train(params=NNTrainParams(
-        n_epochs=1,
-        train_loader=loader,
-        optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
-        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-    ))
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        )
+    )
 
     pointer = tmp_path / "runs" / "best" / "POINTER.txt"
     assert pointer.exists()

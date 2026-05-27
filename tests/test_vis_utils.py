@@ -4,11 +4,13 @@ Cover the module import, the public callable surface, AND a real
 invocation of `multi_line_plot` so a regression that turns the
 function into a no-op or returns `None` is caught.
 """
+
 from __future__ import annotations
 
 
 def test_vis_utils_importable():
     import nnx.vis_utils as vis_utils
+
     assert vis_utils is not None
 
 
@@ -18,10 +20,7 @@ def test_vis_utils_module_has_callables():
 
     import nnx.vis_utils as vis_utils
 
-    callables = [
-        name for name, obj in inspect.getmembers(vis_utils)
-        if callable(obj) and not name.startswith("_")
-    ]
+    callables = [name for name, obj in inspect.getmembers(vis_utils) if callable(obj) and not name.startswith("_")]
     assert len(callables) > 0, "vis_utils exposes no public callables"
 
 
@@ -36,8 +35,8 @@ def test_multi_line_plot_returns_figure_with_traces():
 
     x = list(range(10))
     yss = [
-        [[1.0 * i for i in range(10)], [2.0 * i for i in range(10)]],   # group 1: 2 lines
-        [[0.5 * i for i in range(10)]],                                  # group 2: 1 line
+        [[1.0 * i for i in range(10)], [2.0 * i for i in range(10)]],  # group 1: 2 lines
+        [[0.5 * i for i in range(10)]],  # group 2: 1 line
     ]
     fig = VisUtils.multi_line_plot(
         x=x,
@@ -46,16 +45,14 @@ def test_multi_line_plot_returns_figure_with_traces():
         yss_legend=(["group A", "group B"], ["line 1", "line 2"]),
         x_axis_label="x",
         y_axis_label="y",
-        renderer=None,    # headless
+        renderer=None,  # headless
     )
     assert isinstance(fig, go.Figure)
     # Expect at least one trace per actual data line — the function may
     # also add no-trace markers for the legend rows; the floor is the
     # data-line count.
     actual_lines = sum(len(group) for group in yss)
-    assert len(fig.data) >= actual_lines, (
-        f"expected ≥ {actual_lines} traces for the data lines, got {len(fig.data)}"
-    )
+    assert len(fig.data) >= actual_lines, f"expected ≥ {actual_lines} traces for the data lines, got {len(fig.data)}"
 
 
 def test_multi_line_plot_raises_on_empty_yss():

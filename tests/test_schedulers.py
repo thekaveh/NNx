@@ -1,4 +1,5 @@
 """Tests for the Schedulers enum factory."""
+
 from __future__ import annotations
 
 import torch
@@ -15,7 +16,11 @@ def _make_optimizer():
 
 def _base_params(**overrides):
     return NNSchedulerParams(
-        min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3,
+        min_lr=1e-7,
+        factor=0.5,
+        patience=5,
+        cooldown=2,
+        threshold=1e-3,
         **overrides,
     )
 
@@ -49,7 +54,9 @@ def test_one_cycle():
 def test_linear_warmup_decay():
     opt = _make_optimizer()
     sched = Schedulers.LINEAR_WARMUP_DECAY(
-        opt, _base_params(warmup_steps=5, total_steps=20), n_epochs=20,
+        opt,
+        _base_params(warmup_steps=5, total_steps=20),
+        n_epochs=20,
     )
     assert isinstance(sched, lr_scheduler.LambdaLR)
     # PyTorch (since 1.1) wants optimizer.step before lr_scheduler.step.
@@ -71,8 +78,13 @@ def test_linear_warmup_decay():
 def test_scheduler_params_state_round_trip():
     """state() → from_state() preserves kind and kind-specific fields."""
     original = NNSchedulerParams(
-        min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3,
-        kind=Schedulers.COSINE_ANNEALING, T_max=100,
+        min_lr=1e-7,
+        factor=0.5,
+        patience=5,
+        cooldown=2,
+        threshold=1e-3,
+        kind=Schedulers.COSINE_ANNEALING,
+        T_max=100,
     )
     reconstructed = NNSchedulerParams.from_state(original.state())
     assert reconstructed.kind == Schedulers.COSINE_ANNEALING
@@ -87,9 +99,7 @@ def test_scheduler_params_backwards_compat_no_kind():
     None form (pre-audit on-disk runs) — both deserialize to kind=None."""
     p = NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=5, cooldown=2, threshold=1e-3)
     state = p.state()
-    assert "kind" not in state, (
-        "kind=None must be omitted from state() to preserve run.id back-compat"
-    )
+    assert "kind" not in state, "kind=None must be omitted from state() to preserve run.id back-compat"
     # Round-trip from the omit-form.
     reconstructed = NNSchedulerParams.from_state(state)
     assert reconstructed.kind is None

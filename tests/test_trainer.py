@@ -8,9 +8,8 @@ Covers:
 - validation errors (None step_fn, None params, invalid optim)
 - NNRun.trainer block is populated + round-trips through save/load
 """
-from __future__ import annotations
 
-import os
+from __future__ import annotations
 
 import pytest
 import torch
@@ -37,18 +36,20 @@ from nnx import (
     TrainerStepFn,
 )
 
-# Trainer's tqdm bar pollutes test output without this.
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
 
 def _supervised_model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -74,15 +75,18 @@ def _supervised_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     X = tuple(x.to(m.device) for x in X)
     Y = Y.to(m.device)
 
-    Y_hat_log = m.net(*X)
-    loss = m.loss_fn(Y_hat_log, Y)
+    Y_hat_logits = m.net(*X)
+    loss = m.loss_fn(Y_hat_logits, Y)
     loss.backward()
     opt.step()
 
-    Y_hat = Y_hat_log.argmax(dim=1)
+    Y_hat = Y_hat_logits.argmax(dim=1)
     loss_val = float(loss.detach())
     return NNEvaluationDataPoint(
-        f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+        f1=0.0,
+        recall=0.0,
+        accuracy=0.0,
+        precision=0.0,
         loss=loss_val,
         error=float(1 - (Y_hat == Y).sum().item() / Y.size(0)),
     )
@@ -91,6 +95,7 @@ def _supervised_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
 # -------------------------------------------------------------------------
 # Construction + validation
 # -------------------------------------------------------------------------
+
 
 def test_trainer_constructor_rejects_none_model():
     with pytest.raises(ValueError, match="non-None model"):
@@ -108,9 +113,14 @@ def test_trainer_train_rejects_none_step_fn():
     params = NNTrainerParams(
         n_epochs=1,
         train_loader=_supervised_loader(),
-        optims={"main": NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
-        )},
+        optims={
+            "main": NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            )
+        },
     )
     with pytest.raises(ValueError, match="trainer_step_fn is required"):
         trainer.train(params=params, trainer_step_fn=None)
@@ -120,7 +130,10 @@ def test_trainer_train_rejects_invalid_optim():
     trainer = Trainer(model=_supervised_model())
     # Adam with a scalar momentum is invalid (Adam wants (beta1, beta2)).
     bad = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=0.9, weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=0.9,
+        weight_decay=0.0,
     )
     params = NNTrainerParams(
         n_epochs=1,
@@ -135,15 +148,21 @@ def test_trainer_train_rejects_invalid_optim():
 # End-to-end: supervised single-optim
 # -------------------------------------------------------------------------
 
+
 def test_trainer_train_runs_end_to_end_single_optim(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     trainer = Trainer(model=_supervised_model())
     params = NNTrainerParams(
         n_epochs=2,
         train_loader=_supervised_loader(),
-        optims={"main": NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
-        )},
+        optims={
+            "main": NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            )
+        },
     )
     run = trainer.train(params=params, trainer_step_fn=_supervised_step)
 
@@ -165,9 +184,14 @@ def test_trainer_run_yaml_carries_trainer_block(tmp_path, monkeypatch):
     params = NNTrainerParams(
         n_epochs=1,
         train_loader=_supervised_loader(),
-        optims={"main": NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
-        )},
+        optims={
+            "main": NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            )
+        },
         seed=7,
     )
     run = trainer.train(params=params, trainer_step_fn=_supervised_step)
@@ -220,9 +244,14 @@ def test_trainer_invokes_callbacks(tmp_path, monkeypatch):
         params=NNTrainerParams(
             n_epochs=2,
             train_loader=_supervised_loader(),
-            optims={"main": NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
-            )},
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
         ),
         trainer_step_fn=_supervised_step,
         callbacks=[cb],
@@ -230,8 +259,10 @@ def test_trainer_invokes_callbacks(tmp_path, monkeypatch):
     # Exact sequence the lifecycle must produce.
     assert cb.events == [
         "train_begin",
-        "epoch_begin_0", "epoch_end_0",
-        "epoch_begin_1", "epoch_end_1",
+        "epoch_begin_0",
+        "epoch_end_0",
+        "epoch_begin_1",
+        "epoch_end_1",
         "train_end",
     ]
 
@@ -254,11 +285,16 @@ def test_trainer_early_stop_via_callback(tmp_path, monkeypatch):
     trainer = Trainer(model=_supervised_model())
     run = trainer.train(
         params=NNTrainerParams(
-            n_epochs=10,                # would run 10 if not stopped
+            n_epochs=10,  # would run 10 if not stopped
             train_loader=_supervised_loader(),
-            optims={"main": NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
-            )},
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
         ),
         trainer_step_fn=_supervised_step,
         callbacks=[_StopAfter(after_epoch=1)],
@@ -279,9 +315,14 @@ def test_trainer_with_val_loader_evaluates(tmp_path, monkeypatch):
             n_epochs=1,
             train_loader=_supervised_loader(),
             val_loader=val_loader,
-            optims={"main": NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
-            )},
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
         ),
         trainer_step_fn=_supervised_step,
     )
@@ -293,6 +334,7 @@ def test_trainer_with_val_loader_evaluates(tmp_path, monkeypatch):
 # -------------------------------------------------------------------------
 # Multi-optim — the GAN-style use case
 # -------------------------------------------------------------------------
+
 
 class _MiniGAN(nn.Module):
     """G + D inside one nn.Module so a single NNModel can hold both.
@@ -329,9 +371,8 @@ def _gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     X_fake = net.G(z).detach()
     d_real = net.D(X_real)
     d_fake = net.D(X_fake)
-    d_loss = (
-        F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real))
-        + F.binary_cross_entropy_with_logits(d_fake, torch.zeros_like(d_fake))
+    d_loss = F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real)) + F.binary_cross_entropy_with_logits(
+        d_fake, torch.zeros_like(d_fake)
     )
     d_loss.backward()
     opt_D.step()
@@ -345,7 +386,10 @@ def _gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     opt_G.step()
 
     return NNEvaluationDataPoint(
-        f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+        f1=0.0,
+        recall=0.0,
+        accuracy=0.0,
+        precision=0.0,
         loss=float((d_loss + g_loss).detach()) / 2,
         error=float(g_loss.detach()),
     )
@@ -373,11 +417,17 @@ def test_trainer_multi_optim_gan_e2e(tmp_path, monkeypatch):
     trainer = Trainer(model=model)
 
     g_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=2e-4)],
     )
     d_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=2e-4, momentum=(0.5, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=2e-4)],
     )
 
@@ -416,11 +466,17 @@ def test_trainer_per_optim_param_groups_partition_params(tmp_path, monkeypatch):
     model = _make_gan_model()
 
     g_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=1e-3)],
     )
     d_optim = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
         param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=1e-3)],
     )
 
@@ -431,8 +487,12 @@ def test_trainer_per_optim_param_groups_partition_params(tmp_path, monkeypatch):
         # so the loop terminates without divergence.
         captured.setdefault("optimizers", ctx.optimizers)
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
-            loss=0.0, error=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
+            loss=0.0,
+            error=0.0,
         )
 
     trainer = Trainer(model=model)
@@ -447,12 +507,10 @@ def test_trainer_per_optim_param_groups_partition_params(tmp_path, monkeypatch):
 
     g_opt = captured["optimizers"]["G"]
     d_opt = captured["optimizers"]["D"]
-    g_param_ids = {id(p) for grp in g_opt.param_groups for p in grp['params']}
-    d_param_ids = {id(p) for grp in d_opt.param_groups for p in grp['params']}
+    g_param_ids = {id(p) for grp in g_opt.param_groups for p in grp["params"]}
+    d_param_ids = {id(p) for grp in d_opt.param_groups for p in grp["params"]}
 
-    assert g_param_ids.isdisjoint(d_param_ids), (
-        "G and D optimizers must own disjoint params"
-    )
+    assert g_param_ids.isdisjoint(d_param_ids), "G and D optimizers must own disjoint params"
     assert len(g_param_ids) > 0
     assert len(d_param_ids) > 0
     # Every param in G's optimizer should correspond to a named G.* param

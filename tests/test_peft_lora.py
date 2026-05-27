@@ -1,7 +1,6 @@
 """Tests for nnx.peft.lora — LoRALinear + apply_lora_to + save/load."""
-from __future__ import annotations
 
-import os
+from __future__ import annotations
 
 import pytest
 import torch
@@ -26,12 +25,10 @@ from nnx import (
     set_seed,
 )
 
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
-
 # -------------------------------------------------------------------------
 # LoRALinear basics
 # -------------------------------------------------------------------------
+
 
 def test_lora_linear_rejects_non_linear_base():
     with pytest.raises(TypeError, match="nn.Linear"):
@@ -98,16 +95,19 @@ def test_lora_linear_in_out_features_passthrough():
 # apply_lora_to
 # -------------------------------------------------------------------------
 
+
 class _TinyNet(nn.Module):
     """3-layer MLP — the canonical apply_lora_to target."""
 
     def __init__(self):
         super().__init__()
-        self.layers = nn.ModuleList([
-            nn.Linear(8, 16),
-            nn.Linear(16, 8),
-            nn.Linear(8, 3),
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.Linear(8, 16),
+                nn.Linear(16, 8),
+                nn.Linear(8, 3),
+            ]
+        )
 
     def forward(self, x):
         for layer in self.layers:
@@ -171,6 +171,7 @@ def test_apply_lora_to_preserves_forward_at_init():
 # save / load lora weights
 # -------------------------------------------------------------------------
 
+
 def test_save_load_lora_weights_round_trip(tmp_path):
     """Apply LoRA, mutate the A/B matrices, save, load into a fresh
     wrapped net — the LoRA matrices must come back identical."""
@@ -215,9 +216,7 @@ def test_save_lora_weights_excludes_base_params(tmp_path):
     sd = torch.load(path, weights_only=True)
     assert len(sd) > 0
     for k in sd:
-        assert "lora_A" in k or "lora_B" in k, (
-            f"unexpected non-LoRA key in saved checkpoint: {k!r}"
-        )
+        assert "lora_A" in k or "lora_B" in k, f"unexpected non-LoRA key in saved checkpoint: {k!r}"
 
 
 def test_load_lora_weights_from_dict():
@@ -247,9 +246,34 @@ def test_load_lora_weights_rejects_bad_source_type():
         load_lora_weights(net, 12345)
 
 
+def test_load_lora_weights_with_empty_dict_is_zero_op():
+    """A partial / empty LoRA state-dict must not silently corrupt the
+    target net. Document the contract: `load_lora_weights(net, {})` is a
+    no-op that returns 0 (nothing loaded) rather than wiping out the
+    existing matrices or raising."""
+    torch.manual_seed(0)
+    net = _TinyNet()
+    apply_lora_to(net, "layers.*", r=2)
+    # Mutate the LoRA matrices so we can verify the empty-dict load
+    # does NOT overwrite them.
+    with torch.no_grad():
+        for n, p in net.named_parameters():
+            if "lora_" in n:
+                p.fill_(0.33)
+    pre = {n: p.clone() for n, p in net.named_parameters() if "lora_" in n}
+
+    n_loaded = load_lora_weights(net, {})
+    assert n_loaded == 0
+
+    post = {n: p.clone() for n, p in net.named_parameters() if "lora_" in n}
+    for k in pre:
+        assert torch.equal(pre[k], post[k]), f"empty-dict load_lora_weights mutated {k!r}"
+
+
 # -------------------------------------------------------------------------
 # End-to-end: PEFT fine-tuning preserves base weights
 # -------------------------------------------------------------------------
+
 
 def _classification_loaders(seed: int = 0):
     g = torch.Generator().manual_seed(seed)
@@ -257,7 +281,9 @@ def _classification_loaders(seed: int = 0):
     cls = torch.randint(0, 3, (256,), generator=g)
     X = means[cls] + 0.5 * torch.randn(256, 8, generator=g)
     return torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(X, cls), batch_size=32, shuffle=True,
+        torch.utils.data.TensorDataset(X, cls),
+        batch_size=32,
+        shuffle=True,
     )
 
 
@@ -270,24 +296,38 @@ def test_lora_finetune_leaves_base_weights_frozen(tmp_path, monkeypatch):
 
     model = NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=3, hidden_dims=[16, 16],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[16, 16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
     # Phase 1: pretrain
-    model.train(params=NNTrainParams(
-        n_epochs=2,
-        train_loader=_classification_loaders(seed=0),
-        optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
-        ),
-        scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
-        ),
-    ))
+    model.train(
+        params=NNTrainParams(
+            n_epochs=2,
+            train_loader=_classification_loaders(seed=0),
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        )
+    )
 
     # Snapshot every parameter pre-LoRA so we can compare term-by-term
     # after fine-tuning.
@@ -301,16 +341,25 @@ def test_lora_finetune_leaves_base_weights_frozen(tmp_path, monkeypatch):
     lora_init = {n: p.clone() for n, p in model.net.named_parameters() if "lora_" in n}
 
     # Phase 3: fine-tune on a DIFFERENT distribution (different seed)
-    model.train(params=NNTrainParams(
-        n_epochs=3,
-        train_loader=_classification_loaders(seed=42),
-        optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
-        ),
-        scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
-        ),
-    ))
+    model.train(
+        params=NNTrainParams(
+            n_epochs=3,
+            train_loader=_classification_loaders(seed=42),
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        )
+    )
 
     # Invariant 1: every base parameter is bit-exactly unchanged.
     for n, post in model.net.named_parameters():

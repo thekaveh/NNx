@@ -19,6 +19,7 @@ class confusion, noisy labels, or extreme student capacity gaps.
 Run:
     python examples/10_knowledge_distillation.py
 """
+
 from __future__ import annotations
 
 import torch
@@ -44,11 +45,16 @@ from nnx import (
 def _make_classifier(hidden_dims: list[int]) -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=4, hidden_dims=hidden_dims,
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=4,
+            hidden_dims=hidden_dims,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -84,10 +90,17 @@ def _train_params(n_epochs: int, train_loader, val_loader, lr: float = 1e-2):
         train_loader=train_loader,
         val_loader=val_loader,
         optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=lr, momentum=(0.9, 0.999), weight_decay=0.0,
+            name=Optims.ADAM,
+            max_lr=lr,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
         ),
         scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=3, cooldown=1, threshold=1e-3,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=3,
+            cooldown=1,
+            threshold=1e-3,
         ),
     )
 
@@ -117,8 +130,7 @@ def main():
     set_seed(1)
     student = _make_classifier(hidden_dims=[16])
     student_params = sum(p.numel() for p in student.net.parameters())
-    print(f"student: {student_params} params "
-          f"({student_params * 100 / teacher_params:.1f}% of teacher)")
+    print(f"student: {student_params} params ({student_params * 100 / teacher_params:.1f}% of teacher)")
 
     step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
     student_run = student.train(

@@ -11,6 +11,7 @@ Covers:
   end-to-end and the mean loss in the last epoch is below the mean loss
   in the first (real, measurable training).
 """
+
 from __future__ import annotations
 
 import torch
@@ -38,11 +39,16 @@ from nnx import (
 def _make_model() -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -149,6 +155,7 @@ def test_custom_step_without_error_field_doesnt_crash_best_compare(tmp_path, mon
         edp = default_train_step(ctx)
         # Explicitly drop the error field; loss is still set.
         from dataclasses import replace
+
         return replace(edp, error=None)
 
     model = _make_model()
@@ -201,9 +208,12 @@ def test_back_compat_train_step_wrapper_still_callable(tmp_path, monkeypatch):
     model = _make_model()
     # Need an optimizer on hand; build the same way train() does.
     from nnx.nn.enum.optims import Optims
+
     optimizer = Optims.ADAM(
-        net=model.net, lr_start=1e-2,
-        momentum=(0.9, 0.999), weight_decay=0.0,
+        net=model.net,
+        lr_start=1e-2,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
     )
 
     loader = _make_loader(n=8)
@@ -235,11 +245,16 @@ def test_autoencoder_style_step_trains_end_to_end(tmp_path, monkeypatch):
 
     model = NNModel(
         net_params=NNParams(
-            input_dim=d, output_dim=d, hidden_dims=[3],  # bottleneck at 3 < d
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=d,
+            output_dim=d,
+            hidden_dims=[3],  # bottleneck at 3 < d
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -257,7 +272,10 @@ def test_autoencoder_style_step_trains_end_to_end(tmp_path, monkeypatch):
 
         loss_val = float(loss.detach())
         return NNEvaluationDataPoint(
-            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0,
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
             loss=loss_val,
             error=loss_val,  # loss serves as the proxy error for BEST tracking
         )
@@ -277,8 +295,7 @@ def test_autoencoder_style_step_trains_end_to_end(tmp_path, monkeypatch):
     first_epoch_mean = sum(idp.train_edp.loss for idp in run.idps if idp.epoch_idx == 0) / 8
     last_epoch_mean = sum(idp.train_edp.loss for idp in run.idps if idp.epoch_idx == 4) / 8
     assert last_epoch_mean < first_epoch_mean, (
-        f"autoencoder loss should decrease across epochs; "
-        f"got first={first_epoch_mean:.4f}, last={last_epoch_mean:.4f}"
+        f"autoencoder loss should decrease across epochs; got first={first_epoch_mean:.4f}, last={last_epoch_mean:.4f}"
     )
 
     # On-disk artifacts exist.

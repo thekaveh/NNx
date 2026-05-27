@@ -12,24 +12,26 @@ NNx owns the boilerplate around supervised training so you can focus on the mode
 
 The diagram is generated via the `architecture-diagram` skill. A standalone interactive copy lives at [`docs/architecture.html`](docs/architecture.html); the embedded SVG above mirrors its content.
 
-**Reading the diagram top-to-bottom:**
+**Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. Both expose the **`train_step_fn` / `trainer_step_fn`** hook — the orange bus through which the **Specialization** subpackages (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`, plus the shared `_step_helpers`) plug into the loop.
-3. The **Training Loop** runs `finalize_step` (NaN guard + grad-clip), `_step_scheduler`, and `_save_checkpoints` each batch / epoch.
-4. The **Callback Bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
+2. Both expose the **`train_step_fn` / `trainer_step_fn`** hook — the orange bus through which the **Specialization subpackages** (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`, plus the shared `_step_helpers`) plug into the loop.
+3. The **Training-loop internals** run `_step_scheduler` and `_save_checkpoints` each batch / epoch; paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
+4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. **`NNRun`** and **`NNCheckpoint`** write to **`runs/<id>/`** atomically after every epoch.
+
+See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer breakdown.
 
 ### 1.2. Capabilities at a glance
 
-- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: ReduceLROnPlateau / Step / CosineAnnealing / OneCycle / LinearWarmupDecay), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
+- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
 - **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`); incremental writes after every epoch survive `KeyboardInterrupt`. `NNCheckpoint` saves at six tags (FIRST / Q1 / Q2 / Q3 / LAST / BEST) with optimizer-state `.opt.pt` sidecars for warm-resume.
 - **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms without modifying NNx internals.
-- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`.
+- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec, build_param_groups}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`.
 - **Multi-optimizer `Trainer`** — `nnx.trainer.Trainer` parallels `NNModel.train()` for scenarios that need disjoint optimizers (GAN G/D, actor-critic). Accepts a name-keyed dict of `NNOptimParams`; each entry's `NNParamGroupSpec` scopes the optimizer under strict-partition semantics.
 - **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into the `train_step_fn` hook, and a reverse-diffusion sampler.
 - **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), SimCLR contrastive (NT-Xent loss exposed), Mixup batch augmentation (any shape), CutMix batch augmentation (4D images). All share an internal `_step_helpers.finalize_step` for grad-clip + NaN guard.
-- **PEFT (LoRA + adapters)** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
+- **Parameter-efficient fine-tuning (PEFT) — LoRA + adapters** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
 - **Networks** — `FeedFwdNN` (vision / tabular) and `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
@@ -101,7 +103,7 @@ run = model.train(params=train_params, callbacks=[EarlyStopping(patience=5)])
 
 # 4. Use it
 print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
-y_log, y_hat = model.predict(X=X_val.numpy())
+logits, classes = model.predict(X=X_val.numpy())  # returns PredictResult(logits=..., classes=...)
 ```
 
 ## 4. Advanced patterns
@@ -139,10 +141,12 @@ run = model.train(params=NNTrainParams(n_epochs=10, ...))
 NNModel(net_params=..., params=...).train(params=NNTrainParams(
     n_epochs=10,
     resume_from_run_id=run.id,
-    resume_from_checkpoint="last",   # or "best"
+    resume_from_checkpoint="last",   # or "best" / "first" / "q1" / "q2" / "q3"
     ...
 ))
 ```
+
+> **Scope:** Warm-resume is supported for the supervised `NNModel.train()` path. `nnx.trainer.Trainer` (multi-optimizer) does not yet ship `.opt.<name>.pt` per-optimizer sidecars; that's a planned follow-up.
 
 ### 4.4. Custom metrics
 
@@ -200,10 +204,18 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 ## 5. Documentation
 
-- [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail.
-- [Quickstart](docs/quickstart.md) — paste-runnable example with variations.
-- [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings.
-- [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram above.
+### 5.1. Conceptual + reference
+
+- [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
+- [Quickstart](docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
+- [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings. Read this when you want the canonical signature / docstring for a public symbol.
+- [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram in §1.1. Read this when the embedded SVG is hard to follow and you want to hover for labels.
+
+### 5.2. Workflow + history
+
+- [Examples catalog](examples/README.md) — ordered tour of the 10 runnable scripts under `examples/`, grouped foundational → specialized. Start here if you'd rather read a working script than the concepts doc.
+- [Contributing](CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
+- [Changelog](CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
 
 ## 6. Project
 
@@ -213,13 +225,14 @@ Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 m
 
 ### 6.2. Contributing
 
-Bug reports and PRs welcome via GitHub issues. Running locally:
+Bug reports and PRs welcome via GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup + style guide. Running locally:
 
 ```bash
-pytest                      # full suite (~5s)
+pytest                                       # full suite (~5s)
 pytest tests/test_callbacks.py::test_lr_monitor_records_history  # one test
-ruff check src/ tests/      # lint (gates CI)
-mkdocs build --strict       # docs (gates CI)
+ruff check src/ tests/ examples/             # lint (gates CI)
+ruff format --check src/ tests/ examples/    # format (gates CI)
+mkdocs build --strict                        # docs (gates CI)
 ```
 
 ### 6.3. License

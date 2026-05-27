@@ -1,7 +1,6 @@
 """Tests for nnx.paradigms.contrastive — SimCLR / NT-Xent."""
-from __future__ import annotations
 
-import os
+from __future__ import annotations
 
 import pytest
 import torch
@@ -24,12 +23,10 @@ from nnx import (
     simclr_train_step_factory,
 )
 
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
-
 # -------------------------------------------------------------------------
 # nt_xent_loss
 # -------------------------------------------------------------------------
+
 
 def test_nt_xent_validates_shape_match():
     with pytest.raises(ValueError, match="shape mismatch"):
@@ -70,6 +67,7 @@ def test_nt_xent_minimized_when_pairs_aligned():
 # simclr_train_step_factory
 # -------------------------------------------------------------------------
 
+
 class _PairedViewDataset(Dataset):
     """Yields (view1, view2) where view2 is view1 plus a small jitter —
     enough to verify the step's plumbing without modeling a real
@@ -94,11 +92,16 @@ def _embedding_model(input_dim: int = 8, output_dim: int = 16) -> NNModel:
     is unused by the contrastive step — only the forward path matters."""
     return NNModel(
         net_params=NNParams(
-            input_dim=input_dim, output_dim=output_dim, hidden_dims=[32],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            hidden_dims=[32],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -115,10 +118,17 @@ def test_simclr_factory_rejects_bad_batch_shape():
 
     # Bad: a single tensor (no second view).
     from nnx.nn.nn_model import TrainStepContext
+
     ctx = TrainStepContext(
-        model=model, batch=torch.randn(4, 8), optimizer=None, scaler=None,
-        grad_clip_norm=None, extra_metrics=None,
-        accumulate_grad_batches=1, batch_idx=0, epoch_idx=0,
+        model=model,
+        batch=torch.randn(4, 8),
+        optimizer=None,
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
     )
     with pytest.raises(ValueError, match="view1, view2"):
         step_fn(ctx)
@@ -143,10 +153,17 @@ def test_simclr_train_loop_runs(tmp_path, monkeypatch):
             n_epochs=2,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=simclr_train_step_factory(temperature=0.5),
@@ -154,7 +171,5 @@ def test_simclr_train_loop_runs(tmp_path, monkeypatch):
     losses = [idp.train_edp.loss for idp in run.idps]
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
-    moved = any(
-        not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters()
-    )
+    moved = any(not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters())
     assert moved, "SimCLR step ran but embedding net weights did not change"

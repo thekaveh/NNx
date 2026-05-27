@@ -7,10 +7,10 @@ from torch import nn, optim
 
 
 class Optims(Enum):
-    SGD             = "sgd"
-    ADAM            = "adam"
-    ADAM_AMSGRAD    = "adam_amsgrad"
-    SGD_NESTEROV    = "sgd_nesterov"
+    SGD = "sgd"
+    ADAM = "adam"
+    ADAM_AMSGRAD = "adam_amsgrad"
+    SGD_NESTEROV = "sgd_nesterov"
 
     def __str__(self) -> str:
         return self.value
@@ -19,13 +19,13 @@ class Optims(Enum):
         return str(self)
 
     def __call__(
-        self
-        , net                 : nn.Module
-        , lr_start            : float
-        , weight_decay        : float
-        , momentum            : Union[float, tuple[float, float]]
-        , param_groups        : Optional[list] = None
-        , strict_param_groups : bool = False
+        self,
+        net: nn.Module,
+        lr_start: float,
+        weight_decay: float,
+        momentum: Union[float, tuple[float, float]],
+        param_groups: Optional[list] = None,
+        strict_param_groups: bool = False,
     ) -> optim.Optimizer:
         """Build the underlying torch optimizer.
 
@@ -54,8 +54,10 @@ class Optims(Enum):
             # Lazy import to avoid a cycle: build_param_groups lives in
             # nnx.finetune, which depends on this module via NNOptimParams.
             from ...finetune.param_groups import build_param_groups
+
             params_or_groups = build_param_groups(
-                net, param_groups,
+                net,
+                param_groups,
                 default_lr=lr_start,
                 default_weight_decay=weight_decay,
                 strict=strict_param_groups,

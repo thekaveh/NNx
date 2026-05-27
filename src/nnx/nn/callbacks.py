@@ -8,6 +8,7 @@ The legacy callable signature `Callable[[List[NNIterationDataPoint]], None]`
 is preserved via _LegacyCallback (which adapts to on_epoch_end) so existing
 notebooks keep working.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,13 +48,19 @@ class _LegacyCallback(Callback):
 
     def __init__(self, fn: Callable[[list[NNIterationDataPoint]], None]):
         self._fn = fn
+        # Lazy resolution of IPython.display.clear_output, cached on first
+        # use. Keeps `import nnx` from pulling in IPython for users who
+        # never use a legacy lambda-style callback, AND avoids the
+        # per-epoch dict-lookup cost of `from ... import` in the hot path.
+        self._clear_output: Optional[Callable] = None
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
-        # Lazy import — keeps `import nnx` from pulling in IPython for
-        # users who never use a legacy lambda-style callback.
-        from IPython.display import clear_output
+        if self._clear_output is None:
+            from IPython.display import clear_output
 
-        clear_output(wait=True)
+            self._clear_output = clear_output
+
+        self._clear_output(wait=True)
         self._fn(ctx.idps)
 
 
@@ -152,7 +159,10 @@ class ModelCheckpoint(Callback):
         # uses through _checkpoint_path; we hand-build the path here because
         # the user-supplied tag isn't part of the Checkpoints enum.
         path = os.path.join(
-            "runs", ctx.run.id, "checkpoints", f"{self.tag}_e{ctx.epoch}.pt",
+            "runs",
+            ctx.run.id,
+            "checkpoints",
+            f"{self.tag}_e{ctx.epoch}.pt",
         )
         ckpt.to_file(path)
 
@@ -242,8 +252,7 @@ class WandbCallback(Callback):
                 import wandb
             except ImportError as e:
                 raise ImportError(
-                    "WandbCallback requires `wandb`. "
-                    "Install with `pip install wandb` or `pip install nnx[wandb]`."
+                    "WandbCallback requires `wandb`. Install with `pip install wandb` or `pip install nnx[wandb]`."
                 ) from e
             self._run = wandb.init(project=project, **init_kwargs)
             self._owns_run = True

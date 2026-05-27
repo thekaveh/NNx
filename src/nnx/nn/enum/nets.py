@@ -12,10 +12,10 @@ from ..params.nn_params import NNParams
 
 
 class Nets(Enum):
-    FEED_FWD    = "feed_fwd"
-    GRAPH_ATT   = "graph_att"
-    GRAPH_CONV  = "graph_conv"
-    GRAPH_SAGE  = "graph_sage"
+    FEED_FWD = "feed_fwd"
+    GRAPH_ATT = "graph_att"
+    GRAPH_CONV = "graph_conv"
+    GRAPH_SAGE = "graph_sage"
 
     def __str__(self) -> str:
         return self.value

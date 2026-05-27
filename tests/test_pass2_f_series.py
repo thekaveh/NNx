@@ -10,6 +10,7 @@
 - F7: NNModel.to_onnx exports a loadable .onnx file.
 - F8: NNTabularDataset wraps a DataFrame into loaders + state.
 """
+
 from __future__ import annotations
 
 import os
@@ -39,16 +40,22 @@ from nnx.nn.params.nn_train_params import NNTrainParams
 def _model():
     return NNModel(
         net_params=NNParams(
-            input_dim=4, output_dim=2, hidden_dims=[8],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
 
 # --- F1: warm-resume training ----------------------------------------------
+
 
 def test_f1_resume_loads_weights_and_optimizer_state(tmp_path, monkeypatch):
     """Run A for 1 epoch, save checkpoints + opt sidecar; Run B resumes
@@ -81,10 +88,7 @@ def test_f1_resume_loads_weights_and_optimizer_state(tmp_path, monkeypatch):
     model_b = _model()
     weights_before_b = {k: v.clone() for k, v in model_b.net.state_dict().items()}
     # Sanity: starting weights differ from A's ending weights pre-resume.
-    assert any(
-        not torch.equal(weights_before_b[k], weights_after_a[k])
-        for k in weights_after_a
-    )
+    assert any(not torch.equal(weights_before_b[k], weights_after_a[k]) for k in weights_after_a)
 
     # Train for 0 epochs to isolate the resume — n_epochs=1 trains a bit then
     # save; we want to confirm the resume *replaced* the weights, so check
@@ -114,9 +118,7 @@ def test_f1_resume_loads_weights_and_optimizer_state(tmp_path, monkeypatch):
 
     # At epoch_begin (before any batch step), weights should equal A's last.
     for k in weights_after_a:
-        assert torch.equal(captured["weights"][k], weights_after_a[k]), (
-            f"resume weights diverge from source on {k}"
-        )
+        assert torch.equal(captured["weights"][k], weights_after_a[k]), f"resume weights diverge from source on {k}"
 
 
 def test_f1_resume_from_missing_run_id_raises(tmp_path, monkeypatch):
@@ -127,17 +129,20 @@ def test_f1_resume_from_missing_run_id_raises(tmp_path, monkeypatch):
     loader = DataLoader(TensorDataset(X, y), batch_size=4)
 
     with pytest.raises(ValueError, match="not found on disk"):
-        model.train(params=NNTrainParams(
-            n_epochs=1,
-            train_loader=loader,
-            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
-            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-            resume_from_run_id="DOES_NOT_EXIST",
-            resume_from_checkpoint="last",
-        ))
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=loader,
+                optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+                scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+                resume_from_run_id="DOES_NOT_EXIST",
+                resume_from_checkpoint="last",
+            )
+        )
 
 
 # --- F2: gradient accumulation --------------------------------------------
+
 
 def test_f2_accumulate_grad_batches_only_steps_at_cycle_end(tmp_path, monkeypatch):
     """With accumulate_grad_batches=4, optimizer.step is called once per
@@ -162,28 +167,33 @@ def test_f2_accumulate_grad_batches_only_steps_at_cycle_end(tmp_path, monkeypatc
     # without accumulation the same loop runs 8 steps. So total weight
     # change magnitude is smaller for the accumulated case under same LR.
     initial_w = {k: v.clone() for k, v in model.net.state_dict().items()}
-    model.train(params=NNTrainParams(
-        n_epochs=1,
-        train_loader=loader,
-        optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999),
-            weight_decay=0.0, accumulate_grad_batches=4,
-        ),
-        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
-    ))
+    model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+                accumulate_grad_batches=4,
+            ),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        )
+    )
 
     # Sanity: at least *some* weights moved during the 2 optimizer steps.
-    moved = any(
-        not torch.equal(initial_w[k], model.net.state_dict()[k])
-        for k in initial_w
-    )
+    moved = any(not torch.equal(initial_w[k], model.net.state_dict()[k]) for k in initial_w)
     assert moved
 
 
 def test_f2_accumulate_grad_batches_state_round_trip():
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999),
-        weight_decay=0.0, accumulate_grad_batches=4,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
+        accumulate_grad_batches=4,
     )
     rt = NNOptimParams.from_state(p.state())
     assert rt.accumulate_grad_batches == 4
@@ -192,18 +202,24 @@ def test_f2_accumulate_grad_batches_state_round_trip():
 def test_f2_accumulate_grad_batches_default_back_compat():
     """Default value (1) must NOT be in state() — preserves pre-feature run.id."""
     p = NNOptimParams(
-        name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0,
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
     )
     assert "accumulate_grad_batches" not in p.state()
     # And from_state of a YAML missing this key still works.
     legacy = {
-        'max_lr': 1e-3, 'momentum': "(0.9, 0.999)",
-        'name': 'adam', 'weight_decay': 0.0,
+        "max_lr": 1e-3,
+        "momentum": "(0.9, 0.999)",
+        "name": "adam",
+        "weight_decay": 0.0,
     }
     assert NNOptimParams.from_state(legacy).accumulate_grad_batches == 1
 
 
 # --- F5: TensorBoardCallback ----------------------------------------------
+
 
 def test_f5_tensorboard_callback_writes_events(tmp_path, monkeypatch):
     pytest.importorskip("torch.utils.tensorboard")
@@ -232,6 +248,7 @@ def test_f5_tensorboard_callback_writes_events(tmp_path, monkeypatch):
 
 # --- F6: WandbCallback construction ---------------------------------------
 
+
 def test_f6_wandb_callback_raises_helpful_error_without_wandb(monkeypatch):
     """When wandb isn't installed, attempting to construct the callback
     raises ImportError with a one-line install hint."""
@@ -245,6 +262,7 @@ def test_f6_wandb_callback_raises_helpful_error_without_wandb(monkeypatch):
 
 # --- F7: ONNX export ------------------------------------------------------
 
+
 def test_f7_to_onnx_writes_file(tmp_path):
     pytest.importorskip("onnx")
     model = _model()
@@ -255,20 +273,28 @@ def test_f7_to_onnx_writes_file(tmp_path):
     assert os.path.getsize(out) > 0
     # Validate via the onnx library.
     import onnx
+
     onnx.checker.check_model(str(onnx_path))
 
 
 # --- F8: NNTabularDataset -------------------------------------------------
 
+
 def test_f8_tabular_dataset_basic():
-    df = pd.DataFrame({
-        "f1": np.random.RandomState(0).randn(100),
-        "f2": np.random.RandomState(1).randn(100),
-        "label": np.random.RandomState(2).randint(0, 3, 100),
-    })
+    df = pd.DataFrame(
+        {
+            "f1": np.random.RandomState(0).randn(100),
+            "f2": np.random.RandomState(1).randn(100),
+            "label": np.random.RandomState(2).randint(0, 3, 100),
+        }
+    )
     ds = NNTabularDataset(
-        df=df, feature_cols=["f1", "f2"], target_col="label",
-        batch_sizes=(16, 16, 16), val_proportion=0.2, test_proportion=0.2,
+        df=df,
+        feature_cols=["f1", "f2"],
+        target_col="label",
+        batch_sizes=(16, 16, 16),
+        val_proportion=0.2,
+        test_proportion=0.2,
     )
     assert ds.input_dim == 2
     assert ds.output_dim == 3
@@ -284,13 +310,18 @@ def test_f8_tabular_dataset_basic():
 
 
 def test_f8_tabular_dataset_no_val_no_test():
-    df = pd.DataFrame({
-        "f1": np.random.RandomState(0).randn(20),
-        "label": np.zeros(20, dtype=int),
-    })
+    df = pd.DataFrame(
+        {
+            "f1": np.random.RandomState(0).randn(20),
+            "label": np.zeros(20, dtype=int),
+        }
+    )
     ds = NNTabularDataset(
-        df=df, feature_cols=["f1"], target_col="label",
-        val_proportion=0.0, test_proportion=0.0,
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        val_proportion=0.0,
+        test_proportion=0.0,
     )
     # With 0 proportions, the loaders for val/test are None.
     assert ds.val_loader is None
@@ -301,8 +332,11 @@ def test_f8_tabular_dataset_rejects_bad_proportions():
     df = pd.DataFrame({"f1": [1.0, 2.0], "label": [0, 1]})
     with pytest.raises(ValueError):
         NNTabularDataset(
-            df=df, feature_cols=["f1"], target_col="label",
-            val_proportion=0.6, test_proportion=0.6,
+            df=df,
+            feature_cols=["f1"],
+            target_col="label",
+            val_proportion=0.6,
+            test_proportion=0.6,
         )
 
 
@@ -310,5 +344,7 @@ def test_f8_tabular_dataset_rejects_empty_df():
     df = pd.DataFrame({"f1": [], "label": []})
     with pytest.raises(ValueError, match="non-empty"):
         NNTabularDataset(
-            df=df, feature_cols=["f1"], target_col="label",
+            df=df,
+            feature_cols=["f1"],
+            target_col="label",
         )

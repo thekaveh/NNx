@@ -1,7 +1,6 @@
 """Tests for nnx.paradigms.distillation — Hinton-style KD step factory."""
-from __future__ import annotations
 
-import os
+from __future__ import annotations
 
 import pytest
 import torch
@@ -23,17 +22,20 @@ from nnx import (
     set_seed,
 )
 
-os.environ.setdefault("NNX_TQDM_DISABLE", "1")
-
 
 def _make_classifier(hidden: int) -> NNModel:
     return NNModel(
         net_params=NNParams(
-            input_dim=8, output_dim=3, hidden_dims=[hidden],
-            dropout_prob=0.0, activation=Activations.RELU,
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[hidden],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY,
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
         ),
     )
 
@@ -85,16 +87,25 @@ def test_kd_end_to_end_loss_decreases(tmp_path, monkeypatch):
     loader = _classification_loader(n=128, batch_size=16)
 
     teacher = _make_classifier(hidden=64)
-    teacher.train(params=NNTrainParams(
-        n_epochs=3,
-        train_loader=loader,
-        optim=NNOptimParams(
-            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
-        ),
-        scheduler=NNSchedulerParams(
-            min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
-        ),
-    ))
+    teacher.train(
+        params=NNTrainParams(
+            n_epochs=3,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=2,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        )
+    )
 
     # Snapshot teacher weights so we can assert they DON'T move during
     # distillation — the factory should have frozen them.
@@ -107,10 +118,17 @@ def test_kd_end_to_end_loss_decreases(tmp_path, monkeypatch):
             n_epochs=3,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=2,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=step_fn,
@@ -120,16 +138,13 @@ def test_kd_end_to_end_loss_decreases(tmp_path, monkeypatch):
     assert all(lo is not None and lo == lo and abs(lo) < 1e9 for lo in losses)
     n = len(losses)
     early = sum(losses[: n // 3]) / max(1, n // 3)
-    late = sum(losses[2 * n // 3:]) / max(1, n - 2 * n // 3)
-    assert late < early, (
-        f"distillation loss did not decrease: early {early:.4f} vs late {late:.4f}"
-    )
+    late = sum(losses[2 * n // 3 :]) / max(1, n - 2 * n // 3)
+    assert late < early, f"distillation loss did not decrease: early {early:.4f} vs late {late:.4f}"
 
     # Teacher weights unchanged across the student's training.
     for k, v in teacher.net.state_dict().items():
         assert torch.equal(v, teacher_snapshot[k]), (
-            f"teacher param {k!r} drifted during student training — "
-            "kd_train_step_factory must keep the teacher frozen"
+            f"teacher param {k!r} drifted during student training — kd_train_step_factory must keep the teacher frozen"
         )
 
 
@@ -150,10 +165,17 @@ def test_kd_alpha_zero_collapses_to_supervised(tmp_path, monkeypatch):
             n_epochs=2,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=step_fn,
@@ -181,10 +203,17 @@ def test_kd_alpha_one_is_pure_distillation(tmp_path, monkeypatch):
             n_epochs=2,
             train_loader=loader,
             optim=NNOptimParams(
-                name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0,
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
             ),
             scheduler=NNSchedulerParams(
-                min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
             ),
         ),
         train_step_fn=step_fn,

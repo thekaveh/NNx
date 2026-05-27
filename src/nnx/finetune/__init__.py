@@ -24,6 +24,7 @@ For more granular control (per-group LRs), set ``NNOptimParams.param_groups``
 to a list of :class:`NNParamGroupSpec` and let the optimizer factory
 build the right per-group dicts.
 """
+
 from __future__ import annotations
 
 from .freezing import freeze, frozen, unfreeze

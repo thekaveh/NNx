@@ -1,4 +1,5 @@
 """Tests for nnx.diffusion.schedules — linear/cosine noise schedules."""
+
 from __future__ import annotations
 
 import math
@@ -47,7 +48,8 @@ def test_sqrt_consistency():
     s = NoiseSchedulers.LINEAR(T=100)
     assert torch.allclose(s.sqrt_alphas_cumprod, s.alphas_cumprod.sqrt())
     assert torch.allclose(
-        s.sqrt_one_minus_alphas_cumprod, (1.0 - s.alphas_cumprod).sqrt(),
+        s.sqrt_one_minus_alphas_cumprod,
+        (1.0 - s.alphas_cumprod).sqrt(),
     )
 
 
@@ -103,3 +105,23 @@ def test_linear_invalid_beta_bounds_raises():
 def test_cosine_invalid_s_raises():
     with pytest.raises(ValueError, match="s > 0"):
         NoiseSchedulers.COSINE(T=10, s=-0.1)
+
+
+def test_linear_schedule_T_one_is_valid():
+    """The smallest valid schedule (T=1) must build without raising; many
+    array-indexing bugs (e.g., `betas[1:] - betas[:-1]` on a length-1
+    tensor) surface only at the boundary."""
+    s = NoiseSchedulers.LINEAR(T=1)
+    assert s.betas.shape == (1,)
+    assert torch.isfinite(s.betas).all()
+    assert torch.isfinite(s.alphas_cumprod).all()
+    assert torch.isfinite(s.sqrt_alphas_cumprod).all()
+    assert torch.isfinite(s.sqrt_one_minus_alphas_cumprod).all()
+
+
+def test_cosine_schedule_T_one_is_valid():
+    """Same boundary test for the cosine schedule."""
+    s = NoiseSchedulers.COSINE(T=1)
+    assert s.betas.shape == (1,)
+    assert torch.isfinite(s.betas).all()
+    assert torch.isfinite(s.alphas_cumprod).all()

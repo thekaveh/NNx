@@ -6,9 +6,9 @@ import torch
 
 
 class Devices(Enum):
-    CPU     = "cpu"
-    MPS     = "mps"
-    CUDA    = "cuda"
+    CPU = "cpu"
+    MPS = "mps"
+    CUDA = "cuda"
 
     def __str__(self) -> str:
         return self.value

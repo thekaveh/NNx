@@ -3,8 +3,11 @@
 # Run on all files:
 #   pre-commit run --all-files
 repos:
+  # ruff rev should track the pin in pyproject.toml's [dev] extras —
+  # otherwise pre-commit lints under a different rule set than CI / local
+  # `ruff` and 96-file format drift accumulates silently.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.5.7
+    rev: v0.9.6
     hooks:
       - id: ruff
         args: [--fix]
