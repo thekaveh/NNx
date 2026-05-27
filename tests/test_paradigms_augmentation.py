@@ -200,6 +200,12 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     set_seed(0)
     model = _image_model()
+    # Snapshot pre-train weights so we can verify the step actually moved
+    # something — without this, a regression that turns CutMix into a no-op
+    # (or a single forward without backward) would still satisfy a pure
+    # loss-finiteness check. Mirrors the Mixup / SimCLR pattern.
+    pre = {n: p.clone() for n, p in model.net.named_parameters()}
+
     loader = _image_loader()
     run = model.train(
         params=NNTrainParams(
@@ -217,3 +223,7 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
     losses = [idp.train_edp.loss for idp in run.idps]
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
+    moved = any(
+        not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters()
+    )
+    assert moved, "CutMix train step ran but model weights did not change"

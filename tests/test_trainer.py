@@ -34,6 +34,7 @@ from nnx import (
     Optims,
     Trainer,
     TrainerStepContext,
+    TrainerStepFn,
 )
 
 # Trainer's tqdm bar pollutes test output without this.
@@ -57,6 +58,9 @@ def _supervised_loader(n: int = 32) -> DataLoader:
     X = torch.randn(n, 4)
     y = torch.randint(0, 2, (n,))
     return DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
+
+
+_supervised_step: TrainerStepFn  # name-binding annotation — exercises the public type alias
 
 
 def _supervised_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
