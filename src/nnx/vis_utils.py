@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.manifold import TSNE
 
-from nnx.nn.dataset.nn_dataset import NNDataset
-from nnx.nn.nn_model import NNModel
-from nnx.nn.params.nn_checkpoint import NNCheckpoint
+from .nn.dataset.nn_dataset import NNDataset
+from .nn.nn_model import NNModel
+from .nn.params.nn_checkpoint import NNCheckpoint
 
 
 class VisUtils:
@@ -220,9 +220,9 @@ class VisUtils:
 
         test_batch = next(iter(ds.test_loader))
         test_X, test_Y = model.net.unpack_batch(test_batch)
-        test_X, test_Y = tuple(x.numpy() for x in test_X), test_Y.numpy()
-
-        df_test_Y = pd.DataFrame(data=test_Y, columns=["target"])
+        # model.predict accepts tensors directly; convert only test_Y, which
+        # we need as a numpy column for the pandas DataFrame below.
+        df_test_Y = pd.DataFrame(data=test_Y.numpy(), columns=["target"])
 
         test_Y_hat = model.predict(X=test_X)
 

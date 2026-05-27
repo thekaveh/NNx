@@ -120,7 +120,7 @@ class DiffusionMLP(nn.Module):
 
     def unpack_batch(self, batch):
         """Standard ``(X-tuple, Y)`` adapter so this net plays nicely with
-        the NNX dataloader contract. ``Y`` is unused by diffusion — every
+        the NNx dataloader contract. ``Y`` is unused by diffusion — every
         consumer that calls ``unpack_batch`` discards it."""
         if isinstance(batch, (list, tuple)):
             x, y = batch[0], batch[1] if len(batch) > 1 else None

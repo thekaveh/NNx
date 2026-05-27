@@ -46,7 +46,9 @@ class NNTabularDataset(NNDatasetBase):
     feature_cols    : list[str]
     target_col      : str
 
-    batch_sizes     : tuple[int, int, int]  = (None, None, None)
+    # Per-split batch size. None for any entry means "use the full split as
+    # one batch" (resolved in __post_init__ once the split sizes are known).
+    batch_sizes     : tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
     val_proportion  : float                 = 0.15
     test_proportion : float                 = 0.15
     name_override   : Optional[str]         = None

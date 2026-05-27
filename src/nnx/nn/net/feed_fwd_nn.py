@@ -34,7 +34,7 @@ class FeedFwdNN(nn.Module):
         return X
 
     def unpack_batch(self, batch):
-        if isinstance(batch, list) or isinstance(batch, tuple):
+        if isinstance(batch, (list, tuple)):
             X, Y = batch
         elif isinstance(batch, pyg.data.data.Data):
             X, Y = batch.x, batch.y

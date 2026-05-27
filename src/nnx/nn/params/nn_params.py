@@ -44,12 +44,12 @@ class NNParams:
         return ret
 
     @staticmethod
-    def from_state(value: dict) -> NNParams:
+    def from_state(state: dict) -> NNParams:
         return NNParams(
-            input_dim       = value['input_dim']
-            , output_dim    = value['output_dim']
-            , dropout_prob  = value['dropout_prob']
-            , activation    = Activations(value['activation'])
-            , hidden_dims   = ast.literal_eval(value['hidden_dims'])
-            , n_heads       = value['n_heads'] if 'n_heads' in value else None
+            input_dim       = state['input_dim']
+            , output_dim    = state['output_dim']
+            , dropout_prob  = state['dropout_prob']
+            , activation    = Activations(state['activation'])
+            , hidden_dims   = ast.literal_eval(state['hidden_dims'])
+            , n_heads       = state['n_heads'] if 'n_heads' in state else None
         )

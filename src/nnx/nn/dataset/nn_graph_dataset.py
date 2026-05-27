@@ -15,7 +15,9 @@ class NNGraphDataset(NNDatasetBase):
     root_dir        : str                   = "./data"
     transform       : Optional[Callable]    = None
     n_workers       : int                   = 4
-    batch_sizes     : tuple[int, int, int]  = (None, None, None)
+    # Per-split batch size. None for any entry means "use every node in the
+    # split mask" (resolved in __post_init__ from the train/val/test masks).
+    batch_sizes     : tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
 
     def __post_init__(self):
         dataset = self.ds_class(root=self.root_dir, transform=self.transform)

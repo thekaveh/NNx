@@ -97,5 +97,7 @@ def _is_nan(v) -> bool:
     missing numeric cells; this catches them without depending on numpy."""
     try:
         return v != v  # NaN is the only value where this holds
-    except Exception:
+    except TypeError:
+        # Non-comparable types (e.g., uncomparable custom objects) — treat
+        # as not-NaN. Narrow except so genuine programming errors surface.
         return False

@@ -67,7 +67,7 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         m.net.train()
         m.net.zero_grad()
 
-        # Standard NNX dataloader contract: batch is (X, Y) or a single
+        # Standard NNx dataloader contract: batch is (X, Y) or a single
         # tensor; Y is unused by diffusion. Use unpack_batch when the net
         # supplies one, fall back to direct unpacking otherwise.
         if hasattr(m.net, "unpack_batch"):

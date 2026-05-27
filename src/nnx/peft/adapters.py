@@ -10,7 +10,7 @@ pretrained behavior and diverges only as the adapter picks up gradient.
 
 Unlike LoRA (which transparently wraps an existing linear), adapters
 are full modules that the caller inserts into the forward pass
-themselves. NNX doesn't ship a "wrap every block" helper because
+themselves. NNx doesn't ship a "wrap every block" helper because
 "after each pretrained layer" depends on the architecture; adapters
 in `FeedFwdNN` go in different places than adapters in a transformer.
 Compose :class:`AdapterLayer` into a custom :class:`nn.Module` as

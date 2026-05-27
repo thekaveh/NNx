@@ -73,26 +73,26 @@ class NNOptimParams:
         return d
 
     @staticmethod
-    def from_state(rep: dict) -> NNOptimParams:
+    def from_state(state: dict) -> NNOptimParams:
         # Lazy import: nn_optim_params is a low-level dataclass that
         # nn.finetune.param_groups depends on (transitively, via NNOptimParams).
         # Importing NNParamGroupSpec at module top would create a cycle.
         from ...finetune.param_groups import NNParamGroupSpec
 
-        raw_pg = rep.get('param_groups')
+        raw_pg = state.get('param_groups')
         param_groups = (
             [NNParamGroupSpec.from_state(g) for g in raw_pg]
             if raw_pg is not None else None
         )
         return NNOptimParams(
-            max_lr          = rep['max_lr']
-            , name          = Optims(rep['name'])
-            , weight_decay  = rep['weight_decay']
-            , momentum      = ast.literal_eval(rep['momentum'])
+            max_lr          = state['max_lr']
+            , name          = Optims(state['name'])
+            , weight_decay  = state['weight_decay']
+            , momentum      = ast.literal_eval(state['momentum'])
             # .get() preserves back-compat with older YAML that predates
             # grad_clip_norm / accumulate_grad_batches / param_groups.
-            , grad_clip_norm= rep.get('grad_clip_norm')
-            , accumulate_grad_batches = rep.get('accumulate_grad_batches', 1)
+            , grad_clip_norm= state.get('grad_clip_norm')
+            , accumulate_grad_batches = state.get('accumulate_grad_batches', 1)
             , param_groups  = param_groups
         )
 

@@ -22,14 +22,14 @@ The diagram is generated via the `architecture-diagram` skill. A standalone inte
 
 ### 1.2. Capabilities at a glance
 
-- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: ReduceLROnPlateau / Step / CosineAnnealing / OneCycle / LinearWarmupDecay), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
+- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
 - **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`); incremental writes after every epoch survive `KeyboardInterrupt`. `NNCheckpoint` saves at six tags (FIRST / Q1 / Q2 / Q3 / LAST / BEST) with optimizer-state `.opt.pt` sidecars for warm-resume.
 - **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms without modifying NNx internals.
 - **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`.
 - **Multi-optimizer `Trainer`** — `nnx.trainer.Trainer` parallels `NNModel.train()` for scenarios that need disjoint optimizers (GAN G/D, actor-critic). Accepts a name-keyed dict of `NNOptimParams`; each entry's `NNParamGroupSpec` scopes the optimizer under strict-partition semantics.
 - **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into the `train_step_fn` hook, and a reverse-diffusion sampler.
 - **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), SimCLR contrastive (NT-Xent loss exposed), Mixup batch augmentation (any shape), CutMix batch augmentation (4D images). All share an internal `_step_helpers.finalize_step` for grad-clip + NaN guard.
-- **PEFT (LoRA + adapters)** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
+- **Parameter-efficient fine-tuning (PEFT) — LoRA + adapters** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
 - **Networks** — `FeedFwdNN` (vision / tabular) and `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
@@ -101,7 +101,7 @@ run = model.train(params=train_params, callbacks=[EarlyStopping(patience=5)])
 
 # 4. Use it
 print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
-y_log, y_hat = model.predict(X=X_val.numpy())
+logits, classes = model.predict(X=X_val.numpy())  # returns PredictResult(logits=..., classes=...)
 ```
 
 ## 4. Advanced patterns
