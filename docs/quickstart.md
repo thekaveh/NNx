@@ -103,7 +103,17 @@ NNTrainParams(
 # Every NNEvaluationDataPoint gets `.extra["roc_auc"]` populated.
 ```
 
-### 2.6. TensorBoard
+### 2.6. Silencing the progress bar (CI / non-TTY)
+
+The training loop draws a tqdm progress bar by default. Set `NNX_TQDM_DISABLE=1` in the environment to silence it — useful in CI, in non-TTY contexts, and in test suites:
+
+```bash
+NNX_TQDM_DISABLE=1 python your_train_script.py
+```
+
+`NNX_TQDM_DISABLE` is read by both `NNModel.train()` and `Trainer.train()`. Any value of `1` / `true` / `yes` (case-insensitive) disables the bar; anything else leaves it enabled.
+
+### 2.7. TensorBoard
 
 ```bash
 pip install nnx[tensorboard]
