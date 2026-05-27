@@ -2,6 +2,8 @@
 
 An end-to-end CPU example you can paste into a Python REPL. Trains a tiny feed-forward classifier on random data so you can verify the install in under five seconds.
 
+## 1. Minimal example
+
 ```python
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -46,9 +48,9 @@ result = model.predict(X=X_val)
 print(f"predicted {len(result.classes)} samples")
 ```
 
-## Variations
+## 2. Common variations
 
-### GPU / Apple Silicon
+### 2.1. GPU / Apple Silicon
 
 ```python
 from nnx import Devices
@@ -56,38 +58,13 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 # Devices.get() picks MPS > CUDA > CPU.
 ```
 
-### Mixed precision (CUDA)
+### 2.2. Mixed precision (CUDA)
 
 ```python
 NNModelParams(..., mixed_precision=True)   # silently no-op on CPU/MPS
 ```
 
-### Custom metrics
-
-```python
-from sklearn.metrics import roc_auc_score
-
-NNTrainParams(
-    ...,
-    extra_metrics={
-        "roc_auc": lambda y, y_hat: float(roc_auc_score(y, y_hat, multi_class="ovr")),
-    },
-)
-# Every NNEvaluationDataPoint gets `.extra["roc_auc"]` populated.
-```
-
-### TensorBoard
-
-```bash
-pip install nnx[tensorboard]
-```
-
-```python
-from nnx import TensorBoardCallback
-model.train(params=..., callbacks=[TensorBoardCallback(log_dir="tb_logs")])
-```
-
-### Warm-resume training
+### 2.3. Warm-resume training
 
 ```python
 # Train round 1
@@ -102,7 +79,7 @@ model.train(params=NNTrainParams(
 ))
 ```
 
-### Loading a finished run
+### 2.4. Loading a finished run
 
 ```python
 from nnx import NNRun, NNCheckpoint, Checkpoints, NNModel
@@ -112,26 +89,54 @@ ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 model = NNModel.from_checkpoint(checkpoint=ckpt)
 ```
 
-### Non-supervised paradigms (autoencoder, VAE, etc.)
+### 2.5. Custom metrics
 
-For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#custom-training-paradigms).
+```python
+from sklearn.metrics import roc_auc_score
 
-### Fine-tuning (transfer learning)
+NNTrainParams(
+    ...,
+    extra_metrics={
+        "roc_auc": lambda y, y_hat: float(roc_auc_score(y, y_hat, multi_class="ovr")),
+    },
+)
+# Every NNEvaluationDataPoint gets `.extra["roc_auc"]` populated.
+```
 
-Load external pretrained weights, freeze layers by glob pattern, and (optionally) train them at different learning rates. See [Concepts → Fine-tuning](concepts.md#fine-tuning-transfer-learning) and [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py).
+### 2.6. TensorBoard
 
-### Multi-optimizer training (GANs, actor-critic)
+```bash
+pip install nnx[tensorboard]
+```
 
-When per-batch updates need multiple optimizers (G + D for GANs, policy + value for actor-critic), use `nnx.trainer.Trainer` — accepts one `NNModel` and a dict of `NNOptimParams`, scoped via `NNParamGroupSpec` globs. See [Concepts → Multi-optimizer training](concepts.md#multi-optimizer-training-gans-actor-critic) and [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py).
+```python
+from nnx import TensorBoardCallback
+model.train(params=..., callbacks=[TensorBoardCallback(log_dir="tb_logs")])
+```
 
-### Diffusion (DDPM)
+## 3. Beyond supervised classification
 
-For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. See [Concepts → Diffusion](concepts.md#diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
+For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
 
-### Training paradigms (KD, SimCLR, Mixup, CutMix)
+The same hook underpins the four specialization-paradigm pointers below.
 
-`nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory` return `train_step_fn`s for `NNModel.train()`. Knowledge distillation freezes the teacher and mixes soft/hard losses; SimCLR runs NT-Xent on paired-view batches; Mixup / CutMix interpolate samples within a batch. See [Concepts → Training paradigms](concepts.md#training-paradigms-kd-simclr-mixup-cutmix) and [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py).
+### 3.1. Fine-tuning (transfer learning)
 
-### Parameter-efficient fine-tuning (LoRA, adapters)
+Load external pretrained weights, freeze layers by glob pattern, and (optionally) train them at different learning rates. See [Concepts → Fine-tuning](concepts.md#7-fine-tuning-transfer-learning) and [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py).
 
-`nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual; adapters are bottleneck residual blocks the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#parameter-efficient-fine-tuning-lora-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).
+### 3.2. Multi-optimizer training (GANs, actor-critic)
+
+When per-batch updates need multiple optimizers (G + D for GANs, policy + value for actor-critic), use `nnx.trainer.Trainer` — accepts one `NNModel` and a dict of `NNOptimParams`, scoped via `NNParamGroupSpec` globs. See [Concepts → Multi-optimizer training](concepts.md#8-multi-optimizer-training-gans-actor-critic) and [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py).
+
+
+### 3.3. Diffusion (DDPM)
+
+For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
+
+### 3.4. Training paradigms (KD, SimCLR, Mixup, CutMix)
+
+`nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory` return `train_step_fn`s for `NNModel.train()`. Knowledge distillation freezes the teacher and mixes soft/hard losses; SimCLR runs NT-Xent on paired-view batches; Mixup / CutMix interpolate samples within a batch. See [Concepts → Training paradigms](concepts.md#10-training-paradigms-kd-simclr-mixup-cutmix) and [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py).
+
+### 3.5. Parameter-efficient fine-tuning (LoRA, adapters)
+
+`nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual; adapters are bottleneck residual blocks the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#11-parameter-efficient-fine-tuning-lora-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).

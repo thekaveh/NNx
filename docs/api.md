@@ -1,8 +1,8 @@
 # API Reference
 
-Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io/).
+Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io/). Sections are ordered from most foundational to most specialized; within each section, classes precede free functions and type aliases.
 
-## Top-level package
+## 1. Top-level package
 
 ::: nnx
     options:
@@ -12,7 +12,9 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - dataloader_worker_init_fn
         - env_snapshot
 
-## NNModel — the orchestrator
+## 2. Orchestrators
+
+### 2.1. NNModel — supervised orchestrator
 
 ::: nnx.nn.nn_model.NNModel
 
@@ -22,7 +24,15 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.nn_model.default_train_step
 
-## Params
+### 2.2. Trainer — multi-optimizer orchestrator
+
+::: nnx.trainer.trainer.Trainer
+
+::: nnx.trainer.trainer.TrainerStepContext
+
+::: nnx.trainer.params.NNTrainerParams
+
+## 3. Params
 
 ::: nnx.nn.params.nn_params.NNParams
 
@@ -42,21 +52,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
 
-## Callbacks
-
-::: nnx.nn.callbacks.Callback
-
-::: nnx.nn.callbacks.EarlyStopping
-
-::: nnx.nn.callbacks.LRMonitor
-
-::: nnx.nn.callbacks.ModelCheckpoint
-
-::: nnx.nn.callbacks.TensorBoardCallback
-
-::: nnx.nn.callbacks.WandbCallback
-
-## Networks
+## 4. Networks
 
 ::: nnx.nn.net.feed_fwd_nn.FeedFwdNN
 
@@ -68,7 +64,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.net.graph_att_nn.GraphAttNN
 
-## Datasets
+## 5. Datasets
 
 ::: nnx.nn.dataset.nn_dataset.NNDataset
 
@@ -76,7 +72,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset
 
-## Enums
+## 6. Enums
 
 ::: nnx.nn.enum.activations.Activations
 
@@ -92,7 +88,21 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.enum.schedulers.Schedulers
 
-## Fine-tuning (`nnx.finetune`)
+## 7. Callbacks
+
+::: nnx.nn.callbacks.Callback
+
+::: nnx.nn.callbacks.EarlyStopping
+
+::: nnx.nn.callbacks.LRMonitor
+
+::: nnx.nn.callbacks.ModelCheckpoint
+
+::: nnx.nn.callbacks.TensorBoardCallback
+
+::: nnx.nn.callbacks.WandbCallback
+
+## 8. Fine-tuning (`nnx.finetune`)
 
 ::: nnx.finetune.freezing.freeze
 
@@ -108,15 +118,19 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.finetune.param_groups.build_param_groups
 
-## Multi-optimizer Trainer (`nnx.trainer`)
+## 9. Parameter-efficient fine-tuning (`nnx.peft`)
 
-::: nnx.trainer.trainer.Trainer
+::: nnx.peft.lora.LoRALinear
 
-::: nnx.trainer.trainer.TrainerStepContext
+::: nnx.peft.lora.apply_lora_to
 
-::: nnx.trainer.params.NNTrainerParams
+::: nnx.peft.lora.save_lora_weights
 
-## Diffusion (`nnx.diffusion`)
+::: nnx.peft.lora.load_lora_weights
+
+::: nnx.peft.adapters.AdapterLayer
+
+## 10. Diffusion (`nnx.diffusion`)
 
 ::: nnx.diffusion.schedules.NoiseSchedulers
 
@@ -130,7 +144,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.diffusion.sampling.sample
 
-## Training paradigms (`nnx.paradigms`)
+## 11. Training paradigms (`nnx.paradigms`)
 
 ::: nnx.paradigms.distillation.kd_train_step_factory
 
@@ -142,19 +156,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.paradigms.augmentation.cutmix_train_step_factory
 
-## Parameter-efficient fine-tuning (`nnx.peft`)
-
-::: nnx.peft.lora.LoRALinear
-
-::: nnx.peft.lora.apply_lora_to
-
-::: nnx.peft.lora.save_lora_weights
-
-::: nnx.peft.lora.load_lora_weights
-
-::: nnx.peft.adapters.AdapterLayer
-
-## Visualization
+## 12. Visualization
 
 ::: nnx.vis_utils
     options:
@@ -165,7 +167,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - scatter_plot
         - two_dim_tsne_checkpoint_logits
 
-## Utilities
+## 13. Utilities
 
 ::: nnx.utils
     options:
