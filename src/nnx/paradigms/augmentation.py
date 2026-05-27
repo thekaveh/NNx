@@ -21,6 +21,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from .._step_helpers import finalize_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
@@ -28,16 +29,16 @@ from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 def _unpack_supervised(ctx: TrainStepContext) -> tuple[torch.Tensor, torch.Tensor]:
     """Pull ``(X, Y)`` from a supervised batch via the net's
     ``unpack_batch`` adapter and move both to the model's device.
-    Both augmentation factories share this preamble."""
+    Both augmentation factories share this preamble.
+
+    The ``(X,), Y = unpack_batch(...)`` destructuring asserts a
+    single-tensor input — multi-input nets (e.g., PyG graph data
+    with multiple feature tensors) would unpack to more elements
+    and trip the implicit tuple-arity check here. Use a custom
+    train_step_fn for those.
+    """
     m = ctx.model
     (X,), Y = m.net.unpack_batch(ctx.batch)
-    if isinstance(X, tuple):
-        if len(X) != 1:
-            raise ValueError(
-                "Mixup/CutMix step expects a single input tensor per sample, "
-                f"got {len(X)}. Use a custom train_step_fn for multi-input nets."
-            )
-        X = X[0]
     return X.to(m.device), Y.to(m.device)
 
 
@@ -87,11 +88,9 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
 
         Y_hat_log = m.net(X_mixed)
         loss = lam * m.loss_fn(Y_hat_log, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_log, Y_b)
-        loss.backward()
-        ctx.optimizer.step()
+        loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
         Y_hat = Y_hat_log.argmax(dim=-1)
-        loss_val = float(loss.detach())
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0, recall=0.0, accuracy=acc, precision=0.0,
@@ -157,11 +156,9 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
 
         Y_hat_log = m.net(X_cut)
         loss = lam * m.loss_fn(Y_hat_log, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_log, Y_b)
-        loss.backward()
-        ctx.optimizer.step()
+        loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
         Y_hat = Y_hat_log.argmax(dim=-1)
-        loss_val = float(loss.detach())
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0, recall=0.0, accuracy=acc, precision=0.0,

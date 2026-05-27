@@ -126,7 +126,8 @@ def test_simclr_factory_rejects_bad_batch_shape():
 
 def test_simclr_train_loop_runs(tmp_path, monkeypatch):
     """End-to-end smoke: build a paired-view loader, run a few epochs,
-    verify the loss is finite throughout."""
+    verify the loss is finite throughout AND that embeddings actually
+    moved (a constant-output net would fool a finite-only check)."""
     monkeypatch.chdir(tmp_path)
     set_seed(0)
 
@@ -134,6 +135,9 @@ def test_simclr_train_loop_runs(tmp_path, monkeypatch):
     loader = DataLoader(dataset, batch_size=8, shuffle=False)
 
     model = _embedding_model()
+    # Pre-train weights so we can detect that the optimizer actually ran.
+    pre = {n: p.clone() for n, p in model.net.named_parameters()}
+
     run = model.train(
         params=NNTrainParams(
             n_epochs=2,
@@ -150,3 +154,7 @@ def test_simclr_train_loop_runs(tmp_path, monkeypatch):
     losses = [idp.train_edp.loss for idp in run.idps]
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
+    moved = any(
+        not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters()
+    )
+    assert moved, "SimCLR step ran but embedding net weights did not change"

@@ -53,10 +53,15 @@ def load_pretrained(
     Args:
         module: target module to load into. Mutated in place.
         source: see above.
-        key_map: optional remapping from source keys to target keys.
-            Applied before matching. E.g., ``{"backbone.": "net."}``
-            rewrites every key that starts with ``backbone.``.
-            Substring replacement, not regex — for clarity.
+        key_map: optional remapping from source keys to target keys,
+            applied AFTER ``prefix`` stripping and BEFORE matching.
+            Each entry is a **prefix** substitution: for the first
+            key in ``key_map`` whose prefix matches the source key,
+            that prefix is replaced with the mapped value. E.g.,
+            ``{"backbone.": "net."}`` rewrites ``backbone.conv1.weight``
+            to ``net.conv1.weight``; later occurrences of ``backbone.``
+            mid-string are NOT touched. First-match-wins; subsequent
+            entries don't fire once a key has been remapped.
         strict: when True, raise if any source key has no target match
             OR any target key has no source. Default False (fine-tuning
             commonly partial-loads).

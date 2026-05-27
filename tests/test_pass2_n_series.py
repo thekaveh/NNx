@@ -252,6 +252,14 @@ def test_review_callbacks_module_imports_without_ipython(monkeypatch):
     Otherwise every `import nnx` consumer pulls IPython transitively."""
     import sys
 
+    # Save the ORIGINAL nnx.nn.callbacks module reference so we can
+    # restore the exact same Callback / EarlyStopping / etc. class
+    # objects after the test. Without this, downstream tests that do
+    # `isinstance(cb, Callback)` against the original class will fail —
+    # subclassing the re-imported Callback produces a DIFFERENT class
+    # tree that's NOT a subclass of the originally-imported one.
+    original_callbacks_module = sys.modules.get("nnx.nn.callbacks")
+
     # Save then sabotage any IPython modules already cached so we'd see
     # the import fail if callbacks pulled it in.
     saved = {k: v for k, v in sys.modules.items() if k.startswith("IPython")}
@@ -273,6 +281,11 @@ def test_review_callbacks_module_imports_without_ipython(monkeypatch):
                 del sys.modules[k]
         for k, v in saved.items():
             sys.modules[k] = v
+        # Restore the original nnx.nn.callbacks module so other modules'
+        # cached references to its classes (Callback, EarlyStopping, ...)
+        # remain authoritative.
+        if original_callbacks_module is not None:
+            sys.modules["nnx.nn.callbacks"] = original_callbacks_module
 
 
 def test_n6_best_symlink_falls_back_to_pointer_file_when_symlink_fails(tmp_path, monkeypatch):

@@ -16,6 +16,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from .._step_helpers import finalize_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
@@ -123,10 +124,8 @@ def simclr_train_step_factory(*, temperature: float = 0.5) -> TrainStepFn:
         z2 = m.net(x2)
 
         loss = nt_xent_loss(z1, z2, temperature=temperature)
-        loss.backward()
-        ctx.optimizer.step()
+        loss_val = finalize_step(loss, ctx, paradigm="simclr")
 
-        loss_val = float(loss.detach())
         # No classification metric for a contrastive paradigm — report
         # the loss in both slots so BEST tracking and ReduceLROnPlateau
         # have a single signal to lock onto.

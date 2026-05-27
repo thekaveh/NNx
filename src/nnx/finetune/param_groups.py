@@ -123,10 +123,9 @@ def build_param_groups(
         A list of dicts suitable for ``torch.optim.Optimizer(
         params, ...)`` — each entry has ``"params"`` plus any overrides.
     """
-    # We accumulate one bucket per spec plus one for the default group.
-    # `id(param)` is used so we can compare-by-identity (two parameters
-    # with identical names+shapes from different modules would otherwise
-    # collide; this also dedupes against weight-sharing).
+    # One bucket per spec, in priority order. Each parameter goes into
+    # the FIRST matching spec's bucket (break on hit, below); anything
+    # unmatched falls through to default_bucket.
     buckets: list[tuple[Optional[NNParamGroupSpec], list[nn.Parameter]]] = [
         (spec, []) for spec in specs
     ]

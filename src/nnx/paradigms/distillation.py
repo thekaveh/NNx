@@ -15,10 +15,10 @@ unnecessary in practice — once a teacher is a teacher, it stays one.
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .._step_helpers import finalize_step
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
@@ -71,16 +71,16 @@ def kd_train_step_factory(
         m.net.zero_grad()
 
         (X,), Y = m.net.unpack_batch(ctx.batch)
-        X = tuple(x.to(m.device) for x in X) if isinstance(X, tuple) else (X.to(m.device),)
+        # unpack_batch returns the X-tuple already; just move to device.
+        X = X.to(m.device)
         Y = Y.to(m.device)
 
-        student_logits = m.net(*X)
+        student_logits = m.net(X)
         with torch.no_grad():
             # Teacher might live on a different device; migrate the
-            # inputs into its frame for the forward pass. Cheap when
+            # input into its frame for the forward pass. Cheap when
             # student.device == teacher.device.
-            t_inputs = tuple(x.to(teacher.device) for x in X)
-            teacher_logits = teacher.net(*t_inputs).to(m.device)
+            teacher_logits = teacher.net(X.to(teacher.device)).to(m.device)
 
         # KL(student || teacher) with both softened by T. F.kl_div
         # expects the FIRST argument in log-space and the second in
@@ -92,16 +92,7 @@ def kd_train_step_factory(
         ) * (temperature ** 2)
         hard_loss = m.loss_fn(student_logits, Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
-
-        loss.backward()
-        ctx.optimizer.step()
-
-        loss_val = float(loss.detach())
-        if not np.isfinite(loss_val):
-            raise FloatingPointError(
-                f"non-finite distillation loss ({loss_val!r}) — training diverged. "
-                "Check learning rate, alpha, temperature, or input normalization."
-            )
+        loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
         Y_hat = student_logits.argmax(dim=-1)
         return (
