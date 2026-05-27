@@ -46,7 +46,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 ### 2.1. Runtime
 
 ```bash
-pip install -e .                       # runtime
+pip install nnx                        # latest release from PyPI
 ```
 
 Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) are runnable on CPU.
@@ -54,12 +54,13 @@ Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) a
 ### 2.2. Optional extras
 
 ```bash
-pip install -e ".[dev]"                # adds pytest, ruff, coverage, tensorboard, onnx
-pip install -e ".[tensorboard]"        # TensorBoardCallback
-pip install -e ".[wandb]"              # WandbCallback
-pip install -e ".[onnx]"               # NNModel.to_onnx validation tooling
-pip install -e ".[docs]"               # mkdocs build (mkdocs-material + mkdocstrings)
+pip install "nnx[tensorboard]"         # TensorBoardCallback
+pip install "nnx[wandb]"               # WandbCallback
+pip install "nnx[onnx]"                # NNModel.to_onnx validation tooling
+pip install "nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
+
+For local development (editable install from a git checkout, including the test/lint toolchain), see [CONTRIBUTING.md §1](CONTRIBUTING.md#1-getting-set-up).
 
 ## 3. Quickstart
 
