@@ -1,18 +1,18 @@
 """LoRA fine-tuning — parameter-efficient adaptation of a pretrained
 classifier.
 
-Two-phase flow:
+Flow:
 
   1. Pretrain a small classifier on distribution A.
   2. Wrap every :class:`nn.Linear` in the trained net with
      :class:`LoRALinear`. The wrap freezes each base layer's
      full-rank weight; only the new ``lora_A`` and ``lora_B``
      matrices (~r/dim of the original size) train.
-  3. Fine-tune on distribution B; verify that:
-       - every base ``weight`` / ``bias`` is BIT-EXACTLY unchanged
-       - LoRA params have moved
-       - a saved LoRA-only checkpoint is much smaller than a full
-         state-dict snapshot
+  3. Fine-tune on distribution B.
+  4. Verify every base ``weight`` / ``bias`` is BIT-EXACTLY unchanged
+     and LoRA params have moved.
+  5. Save a LoRA-only checkpoint and compare its size to a full
+     state-dict snapshot.
 
 The point isn't accuracy comparison — for a toy task, full fine-tuning
 and LoRA fine-tuning land near the same val error. The point is

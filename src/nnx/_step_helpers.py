@@ -74,6 +74,19 @@ def finalize_step(
             "Set accumulate_grad_batches=1, or write a custom train_step_fn."
         )
 
+    # Check finiteness BEFORE backward so a diverged loss doesn't
+    # propagate NaN/Inf into gradients and (via step()) into the
+    # model's weights. `default_train_step` checks AFTER for legacy
+    # reasons (its tests pin the existing post-step ordering); the
+    # paradigm hooks have no such constraint and we choose the cleaner
+    # contract here.
+    loss_val = float(loss.detach())
+    if not np.isfinite(loss_val):
+        raise FloatingPointError(
+            f"non-finite {paradigm} loss ({loss_val!r}) — training diverged. "
+            "Check learning rate, loss-specific hyperparameters, or input normalization."
+        )
+
     loss.backward()
 
     if ctx.grad_clip_norm is not None:
@@ -81,10 +94,4 @@ def finalize_step(
 
     ctx.optimizer.step()
 
-    loss_val = float(loss.detach())
-    if not np.isfinite(loss_val):
-        raise FloatingPointError(
-            f"non-finite {paradigm} loss ({loss_val!r}) — training diverged. "
-            "Check learning rate, loss-specific hyperparameters, or input normalization."
-        )
     return loss_val

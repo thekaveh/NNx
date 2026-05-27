@@ -5,7 +5,7 @@ Classic Hinton/Vinyals/Dean formulation: the student's loss is a
 weighted mix of the standard hard-label loss and a temperature-softened
 KL divergence between student and teacher logits.
 
-    L = α · KL(softmax(s/T) || softmax(t/T)) · T² + (1 − α) · L_hard
+    L = α · KL(softmax(t/T) || softmax(s/T)) · T² + (1 − α) · L_hard
 
 The factory returns a :class:`nnx.TrainStepFn` that plugs straight into
 :meth:`NNModel.train` via the ``train_step_fn=`` hook. The teacher's

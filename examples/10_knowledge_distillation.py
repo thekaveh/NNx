@@ -3,9 +3,11 @@
 Two-phase flow:
 
   1. Train a "large" teacher classifier on a tabular toy task.
-  2. Build a smaller student (≈1/16 the params) and distill via
-     :func:`kd_train_step_factory`, mixing the teacher's softened
-     logits (KL term) with the standard hard-label loss (CE term).
+  2. Build a smaller student (a fraction of the teacher's params —
+     hidden_dims=[16] vs [64, 64], so the student is roughly a 4-5%
+     parameter count) and distill via :func:`kd_train_step_factory`,
+     mixing the teacher's softened logits (KL term) with the standard
+     hard-label loss (CE term). The exact ratio is printed at runtime.
 
 The example demonstrates the *mechanism*: factory call, teacher
 freezing, the train_step_fn hook. It does NOT claim distillation

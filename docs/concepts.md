@@ -268,7 +268,7 @@ step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
 student.train(params=train_params, train_step_fn=step_fn)
 ```
 
-The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(s/T), softmax(t/T)) · T² + (1-α) · L_hard`. The hard-label term uses the student's `loss_fn` so KD works for any classification loss (CE, NLL, ...). EDP reports the combined loss and student top-1 error.
+The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard` — the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`. The hard-label term uses the student's `loss_fn` so KD works for any classification loss (CE, NLL, ...). EDP reports the combined loss and student top-1 error.
 
 ### SimCLR contrastive
 
