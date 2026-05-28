@@ -120,13 +120,19 @@ from .peft import (
     DoRALinear,
     IA3Linear,
     LoRALinear,
+    PrefixTuner,
+    PromptTuner,
     apply_dora_to,
     apply_ia3_to,
     apply_lora_to,
     load_ia3_weights,
     load_lora_weights,
+    load_prefix_weights,
+    load_prompt_weights,
     save_ia3_weights,
     save_lora_weights,
+    save_prefix_weights,
+    save_prompt_weights,
 )
 from .quantize import quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
@@ -245,6 +251,13 @@ __all__ = [
     "apply_ia3_to",
     "save_ia3_weights",
     "load_ia3_weights",
+    # PEFT — prefix + prompt tuning (TransformerNN-specific)
+    "PrefixTuner",
+    "save_prefix_weights",
+    "load_prefix_weights",
+    "PromptTuner",
+    "save_prompt_weights",
+    "load_prompt_weights",
     # Pruning (magnitude unstructured + 2:4 semi-structured)
     "prune",
     # Surgery (Net2Net + drop + low-rank + embedding)
