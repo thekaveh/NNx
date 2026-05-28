@@ -66,6 +66,13 @@ dev = [
 tensorboard = ["tensorboard>=2.15"]
 wandb = ["wandb>=0.16"]
 onnx = ["onnx>=1.15"]
+# Decoder-only LM path: HF Rust BPE tokenizer + the example dataset
+# loader. Kept opt-in so users on the FeedFwd / GNN path don't pull
+# a multi-MB Rust binary they'll never call.
+lm = [
+    "tokenizers>=0.20",
+    "datasets>=2.20",
+]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
