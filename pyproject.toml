@@ -66,6 +66,7 @@ dev = [
 tensorboard = ["tensorboard>=2.15"]
 wandb = ["wandb>=0.16"]
 onnx = ["onnx>=1.15"]
+viz = ["torchinfo>=1.8.0"]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
