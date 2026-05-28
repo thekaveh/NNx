@@ -4,6 +4,13 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — PEFT++ (DoRA)
+
+- **`DoRALinear(base, *, r, alpha, dropout)`** — Weight-Decomposed Low-Rank Adaptation (Liu et al., NVIDIA, ICML 2024 Oral). Subclass of `LoRALinear` that adds a trainable per-output-row `magnitude` parameter and recomposes the layer's weight as `W = magnitude * V / ||V||_c` where `V = W_0 + (α/r) · BA` is the LoRA-augmented direction. `magnitude` is initialized from `||W_0||_c` so the forward output at step 0 equals `base(x)` exactly (combined with LoRA's zero-init B). Often outperforms LoRA at the same rank with only `out_features` extra parameters — negligible vs LoRA's `r · (in + out)` baseline.
+- **`apply_dora_to(module, *patterns, r, alpha, dropout)`** — fnmatch-glob in-place wrap mirroring `apply_lora_to`. Same idempotency contract (existing LoRA/DoRA wrappers are skipped via the parent-is-LoRALinear check, which covers DoRALinear by inheritance).
+- DoRA reuses `save_lora_weights` / `load_lora_weights` for the `lora_A` / `lora_B` matrices unchanged (the inheritance hierarchy ensures the LoRA filter still matches). The `magnitude` vector is captured by the standard `state_dict()` round-trip — single vector of length `out_features` per wrapped layer.
+- 16 new tests in `tests/test_peft_dora.py`: validation (non-Linear base, r/alpha/dropout ranges), base-freezing, zero-init invariant (output == base at step 0, with and without bias), forward shape, trainable parameter set is exactly `{lora_A, lora_B, magnitude}`, magnitude init matches `||W_0||_c`, in/out features pass-through, LoRALinear subclass relationship; `apply_dora_to` empty-pattern rejection + selective wrap + wildcard wrap + idempotency on re-application + forward-preserves-at-init; `save_lora_weights` round-trip via DoRA wrappers.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.

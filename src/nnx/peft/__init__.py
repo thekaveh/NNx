@@ -16,6 +16,7 @@ architecture and wants explicit residual insertion points.
 from __future__ import annotations
 
 from .adapters import AdapterLayer
+from .dora import DoRALinear, apply_dora_to
 from .lora import LoRALinear, apply_lora_to, load_lora_weights, save_lora_weights
 
 __all__ = [
@@ -24,4 +25,6 @@ __all__ = [
     "save_lora_weights",
     "load_lora_weights",
     "AdapterLayer",
+    "DoRALinear",
+    "apply_dora_to",
 ]

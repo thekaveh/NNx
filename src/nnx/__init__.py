@@ -85,7 +85,9 @@ from .paradigms import (
 )
 from .peft import (
     AdapterLayer,
+    DoRALinear,
     LoRALinear,
+    apply_dora_to,
     apply_lora_to,
     load_lora_weights,
     save_lora_weights,
@@ -165,12 +167,14 @@ __all__ = [
     "nt_xent_loss",
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
-    # PEFT (LoRA + adapters)
+    # PEFT (LoRA + DoRA + adapters)
     "LoRALinear",
     "apply_lora_to",
     "save_lora_weights",
     "load_lora_weights",
     "AdapterLayer",
+    "DoRALinear",
+    "apply_dora_to",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",
