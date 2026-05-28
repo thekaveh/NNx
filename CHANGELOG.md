@@ -2,7 +2,11 @@
 
 All notable changes to NNx are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is roughly [SemVer](https://semver.org/) — pre-1.0, we allow behavior changes (typically bug fixes) without renaming public APIs.
 
-## [Unreleased]
+## [Unreleased] — Expansion megamerge (PR #29)
+
+This release integrates **20 sub-projects** consolidated on 2026-05-28: HuggingFace Hub interop (safetensors + `PyTorchModelHubMixin`), PEFT additions (DoRA + IA3 + Prefix + Prompt tuning on top of LoRA + Adapters), quantization (PTQ INT8 weight-only + QAT 8da4w via `torchao`), pruning (magnitude + 2:4 semi-structured), model surgery (Net2Net `widen` / `deepen` + `drop_layer` + `low_rank_factorize` + `expand_embedding`), embeddings (contrastive trainer + FAISS export), decoder-only LM (`TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with KV-cache), GGUF write + Ollama Modelfile bundle, model-internals visualization (`torchinfo` summary + weight histogram + activation map + Captum attribution + Netron export), I-JEPA self-supervised pretraining (+ small `ViTNN` encoder), Mixture-of-Experts (`MoELinear` + `moe_train_step_factory` with Switch-style aux loss), Born-Again Networks (iterated self-distillation), Feature-KD (FitNets-style), DPO (preference fine-tuning for LMs), `LogitsProcessor` chain (temperature / top-k / top-p / repetition-penalty), ONNX dynamo export opt-in, and assorted ergonomic improvements.
+
+Every change preserves back-compatibility with existing `run.id` hashes and on-disk checkpoint formats — new params fields all follow the omit-when-default state() invariant. Test suite: 642 tests; 640 pass, 2 skip on torch/onnxscript version-skew (opt-in dynamo path), 1 skip on absence of CUDA (2:4 semi-structured).
 
 ### Added
 

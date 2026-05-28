@@ -44,14 +44,32 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | `10_knowledge_distillation.py` | Hinton-style KD: pretrain a wider teacher, then distill into a much smaller student (~4% of the teacher's parameters) via `kd_train_step_factory`. Verifies the teacher's weights are frozen across the student's training. |
 | `14_moe_classifier.py` | Sparse top-k Mixture-of-Experts: a feed-forward classifier whose hidden layer is an `MoELinear(num_experts=4, top_k=2)` instead of `nn.Linear`. Trained via `moe_train_step_factory` (supervised loss + Switch-style load-balancing aux). Reports the param-count breakdown and verifies the aux loss decreases as routing balances out. |
 
-### 2.5. Embeddings + FAISS export
+### 2.5. Quantization
+
+| Example | What it demonstrates |
+|---|---|
+| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "nnx[quantize]"`. |
+| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Reports the pre-/post-convert accuracy delta. Requires `pip install "nnx[quantize]"`. |
+
+### 2.6. Embeddings + FAISS export
 
 | Example | What it demonstrates |
 |---|---|
 | `13_train_domain_embedder.py` | Train a tiny text embedder from scratch on synthetic `(sentence, paraphrase)` pairs via NT-Xent contrastive loss, embed a corpus, export to a FAISS index, query the index for self-similarity. End-to-end demo of `nnx.embeddings.train_contrastive` + `export_to_faiss`. Requires `pip install "nnx[embeddings]"`. |
-| `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()`. CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). |
 
-### 2.6. GGUF + Ollama export
+### 2.7. Language modeling
+
+| Example | What it demonstrates |
+|---|---|
+| `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()` (KV-cache enabled by default). CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). Requires `pip install "nnx[lm]"`. |
+
+### 2.8. Self-supervised pretraining
+
+| Example | What it demonstrates |
+|---|---|
+| `16_ijepa_cifar10.py` | I-JEPA on CIFAR-10: a small `ViTNN` context encoder predicts the latent of masked patches against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `update_ema` + `random_block_mask`. No pixel reconstruction, no strong augmentations. |
+
+### 2.9. GGUF + Ollama export
 
 | Example | What it demonstrates |
 |---|---|
