@@ -56,6 +56,7 @@ from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.enum.optims import Optims
 from .nn.enum.schedulers import Schedulers
+from .nn.moe import MoELinear
 from .nn.net.feed_fwd_nn import FeedFwdNN
 from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN
@@ -83,6 +84,7 @@ from .paradigms import (
     feature_kd_train_step_factory,
     kd_train_step_factory,
     mixup_train_step_factory,
+    moe_train_step_factory,
     nt_xent_loss,
     simclr_train_step_factory,
 )
@@ -179,6 +181,10 @@ __all__ = [
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
     # PEFT (LoRA + DoRA + IA3 + adapters)
+    # Mixture-of-Experts
+    "MoELinear",
+    "moe_train_step_factory",
+    # PEFT (LoRA + adapters)
     "LoRALinear",
     "apply_lora_to",
     "save_lora_weights",
