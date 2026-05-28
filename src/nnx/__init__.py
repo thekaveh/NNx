@@ -86,10 +86,14 @@ from .paradigms import (
 from .peft import (
     AdapterLayer,
     DoRALinear,
+    IA3Linear,
     LoRALinear,
     apply_dora_to,
+    apply_ia3_to,
     apply_lora_to,
+    load_ia3_weights,
     load_lora_weights,
+    save_ia3_weights,
     save_lora_weights,
 )
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
@@ -167,7 +171,7 @@ __all__ = [
     "nt_xent_loss",
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
-    # PEFT (LoRA + DoRA + adapters)
+    # PEFT (LoRA + DoRA + IA3 + adapters)
     "LoRALinear",
     "apply_lora_to",
     "save_lora_weights",
@@ -175,6 +179,10 @@ __all__ = [
     "AdapterLayer",
     "DoRALinear",
     "apply_dora_to",
+    "IA3Linear",
+    "apply_ia3_to",
+    "save_ia3_weights",
+    "load_ia3_weights",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",

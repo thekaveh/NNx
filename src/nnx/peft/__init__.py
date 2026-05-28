@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from .adapters import AdapterLayer
 from .dora import DoRALinear, apply_dora_to
+from .ia3 import IA3Linear, apply_ia3_to, load_ia3_weights, save_ia3_weights
 from .lora import LoRALinear, apply_lora_to, load_lora_weights, save_lora_weights
 
 __all__ = [
@@ -27,4 +28,8 @@ __all__ = [
     "AdapterLayer",
     "DoRALinear",
     "apply_dora_to",
+    "IA3Linear",
+    "apply_ia3_to",
+    "save_ia3_weights",
+    "load_ia3_weights",
 ]

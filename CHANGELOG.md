@@ -4,6 +4,13 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — PEFT++ (IA3)
+
+- **`IA3Linear(base)`** — Infused Adapter by Inhibiting and Amplifying Inner Activations (Liu et al., NeurIPS 2022). The smallest adapter in the PEFT family: a single learned per-output-dim `scaling` vector applied multiplicatively to a frozen `nn.Linear`'s output. Trainable parameter count per wrapped layer is exactly `out_features` — roughly two orders of magnitude smaller than LoRA at the same effective adaptation budget. `scaling` is initialized to all-ones so the forward output at step 0 equals `base(x)` exactly.
+- **`apply_ia3_to(module, *patterns)`** — fnmatch-glob in-place wrap mirroring `apply_lora_to`. Same two-phase traversal and idempotency contract (existing IA3 wrappers are not re-wrapped).
+- **`save_ia3_weights(module, path)`** / **`load_ia3_weights(module, source)`** — persist ONLY the `scaling` parameters, symmetric to LoRA's save/load idiom. The resulting checkpoint is tiny (a single vector per wrapped layer). Same `weights_only=True` safety guarantee; same empty-dict-is-zero-op contract; same dict-source convenience overload.
+- 19 new tests in `tests/test_peft_ia3.py`: validation (non-Linear base rejection), base-freezing, zero-init invariant (output == base at step 0, with and without bias), forward shape, trainable parameter set is exactly `{scaling}`, scaling init is all-ones, in/out features pass-through, scaling actually scales the output by a known non-unit value; `apply_ia3_to` empty-pattern rejection + selective wrap + wildcard wrap + idempotency + forward-preserves-at-init; save/load round-trip + base-keys-excluded-from-checkpoint + dict-source loading + bad-source-type rejection + empty-dict no-op contract.
+
 ### Added — PEFT++ (DoRA)
 
 - **`DoRALinear(base, *, r, alpha, dropout)`** — Weight-Decomposed Low-Rank Adaptation (Liu et al., NVIDIA, ICML 2024 Oral). Subclass of `LoRALinear` that adds a trainable per-output-row `magnitude` parameter and recomposes the layer's weight as `W = magnitude * V / ||V||_c` where `V = W_0 + (α/r) · BA` is the LoRA-augmented direction. `magnitude` is initialized from `||W_0||_c` so the forward output at step 0 equals `base(x)` exactly (combined with LoRA's zero-init B). Often outperforms LoRA at the same rank with only `out_features` extra parameters — negligible vs LoRA's `r · (in + out)` baseline.
