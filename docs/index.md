@@ -22,6 +22,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Diffusion (DDPM)** — noise-prediction training and reverse-diffusion sampling.
 - **Training paradigms** — knowledge distillation, contrastive learning, and batch-level augmentation (Mixup / CutMix).
 - **Parameter-efficient fine-tuning (PEFT)** — LoRA-wrapped Linear layers and bottleneck residual adapters.
+- **Pruning** — magnitude unstructured (checkpoint-safe) and 2:4 semi-structured via torchao.
 
 ## 2. Where to next
 

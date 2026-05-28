@@ -4,6 +4,12 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — pruning (`nnx.prune`)
+
+- **`nnx.prune` package** — two complementary network-pruning strategies layered on top of plain `nn.Linear` submodules, mirroring the `nnx.peft` package shape (public functions, fnmatch glob patterns, in-place mutation).
+  - **`magnitude_prune(net, sparsity, *, layer_pattern="*", bake=True)`** — wraps `torch.nn.utils.prune.l1_unstructured`. For each `nn.Linear` whose dotted name matches `layer_pattern`, zeros the `round(sparsity · numel)` smallest-magnitude entries of its weight matrix. **Checkpoint-compat invariant:** `bake=True` (default) calls `prune.remove` immediately after each layer is pruned, so the `state_dict` keys stay identical to the pre-prune network — pruned checkpoints load into unpruned-network code under `strict=True`. `bake=False` keeps the reparameterization in place (state_dict carries `weight_orig` + `weight_mask` instead of `weight`); use this for iterative pruning schedules where successive `magnitude_prune` calls need to compose with the existing mask. Validates `sparsity ∈ [0, 1)`. Returns the number of layers pruned (0 if `layer_pattern` matches nothing).
+  - **`semi_structured_24(net, *, layer_pattern="*")`** — 2:4 semi-structured sparsity via `torchao.sparsity.sparsify_` with `semi_sparse_weight()`. Swaps each matched `nn.Linear`'s weight with a 2:4 structured-sparse tensor subclass. **Real wall-clock speedup on Ampere+ GPUs** (~1.1× inference, ~1.3× training per torchao's ViT/SAM benchmarks); CPU and pre-Ampere hardware are unsupported by the underlying sparse kernel.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.

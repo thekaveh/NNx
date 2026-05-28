@@ -13,7 +13,7 @@ The diagram has eight layers, top-to-bottom:
 1. **User code + PyTorch** (slate) — the consumer surface.
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `trainer_step_fn`** (orange bus) — the optional hook every specialization plugs into.
-4. **Specialization subpackages** (amber) — `nnx.finetune`, `nnx.peft`, `nnx.diffusion`, `nnx.paradigms`, `nnx.trainer`, plus the shared `nnx._step_helpers`.
+4. **Specialization subpackages** (amber) — `nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.diffusion`, `nnx.paradigms`, `nnx.trainer`, plus the shared `nnx._step_helpers`.
 5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
