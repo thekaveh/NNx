@@ -176,6 +176,69 @@ def test_transformer_nn_rejects_sequence_longer_than_max_seq_len():
         net(tokens)
 
 
+def test_transformer_nn_forward_with_cache_matches_full_forward():
+    """Equivalence: a prompt fed through ``forward_with_cache`` in one
+    shot must produce the same logits as the same prompt through plain
+    ``forward``. This is the unit-level guarantee that the cache seam
+    is wired correctly — token-level equivalence in ``generate`` falls
+    out of this property at every step."""
+    torch.manual_seed(0)
+    net = TransformerNN(params=_params(vocab_size=20, d_model=16, n_heads=2, n_layers=3, max_seq_len=16))
+    net.eval()
+    tokens = torch.randint(0, 20, (1, 5))
+    with torch.no_grad():
+        logits_full = net(tokens)
+        logits_cached, kvs = net.forward_with_cache(tokens, past_kvs=None)
+    assert logits_cached.shape == logits_full.shape
+    assert torch.allclose(logits_cached, logits_full, atol=1e-5)
+    # One KV entry per layer; each is (k, v) with seq dimension == 5.
+    assert len(kvs) == 3
+    for kv in kvs:
+        assert kv is not None
+        k, v = kv
+        assert k.size(-2) == 5
+        assert v.size(-2) == 5
+
+
+def test_transformer_nn_forward_with_cache_incremental_matches_full():
+    """Incremental-decode equivalence: feeding tokens one at a time
+    through the cache must produce the same last-position logits as
+    feeding the whole sequence through plain ``forward`` in one shot.
+    This is the test that catches off-by-one errors in the RoPE offset
+    or mask slicing."""
+    torch.manual_seed(0)
+    net = TransformerNN(params=_params(vocab_size=20, d_model=16, n_heads=2, n_layers=2, max_seq_len=16))
+    net.eval()
+    tokens = torch.randint(0, 20, (1, 6))
+
+    with torch.no_grad():
+        logits_full = net(tokens)  # (1, 6, vocab)
+
+        # Now feed the same tokens one at a time and accumulate the cache.
+        past = None
+        per_step_logits = []
+        for t in range(tokens.size(1)):
+            tok = tokens[:, t : t + 1]
+            step_logits, past = net.forward_with_cache(tok, past_kvs=past)
+            per_step_logits.append(step_logits[:, -1, :])
+        cached_seq = torch.stack(per_step_logits, dim=1)  # (1, 6, vocab)
+
+    assert torch.allclose(cached_seq, logits_full, atol=1e-5)
+
+
+def test_transformer_nn_forward_with_cache_rejects_overflow():
+    """Adding new tokens beyond ``max_seq_len`` raises (caller is
+    responsible for sliding the cache before the next call)."""
+    net = TransformerNN(params=_params(vocab_size=20, max_seq_len=4, d_model=16, n_heads=2, n_layers=1))
+    net.eval()
+    tokens = torch.randint(0, 20, (1, 4))
+    with torch.no_grad():
+        _, past = net.forward_with_cache(tokens, past_kvs=None)
+        # past is full to max_seq_len; one more token overflows.
+        with pytest.raises(ValueError, match="max_seq_len"):
+            net.forward_with_cache(torch.randint(0, 20, (1, 1)), past_kvs=past)
+
+
 def test_transformer_nn_unpack_batch_handles_xy_tuple():
     """TransformerNN must be compatible with the rest of the NNModel
     train loop, which calls .unpack_batch(batch) → ((X,), Y). For LM

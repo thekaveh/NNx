@@ -224,6 +224,131 @@ def test_generate_respects_max_seq_len(tmp_path):
     assert isinstance(out, str)
 
 
+# ---------------- KV-cache (SP-10c) ----------------
+
+
+def test_kv_cache_produces_same_output_as_full_forward(tmp_path):
+    """Equivalence: KV-cached greedy decode must produce identical
+    token sequences to the SP-4 full-recompute path. This is the load-
+    bearing correctness test for SP-10c — if these diverge, the cache
+    implementation has a bug (wrong RoPE offset, off-by-one on mask
+    slicing, etc.)."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(7)
+    model = _make_model(tokenizer)
+
+    out_cached = model.generate(prompt="the", max_new_tokens=16, temperature=0.0, use_cache=True)
+    out_full = model.generate(prompt="the", max_new_tokens=16, temperature=0.0, use_cache=False)
+    assert out_cached == out_full
+
+
+def test_kv_cache_matches_full_forward_under_sampling_with_seed(tmp_path):
+    """Sampling-path equivalence — same seed, same prompt, both code
+    paths should produce the same tokens. The sampler consumes the
+    seeded RNG in the same order in both paths."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+
+    out_cached = model.generate(prompt="the", max_new_tokens=10, temperature=1.0, top_k=10, seed=123, use_cache=True)
+    out_full = model.generate(prompt="the", max_new_tokens=10, temperature=1.0, top_k=10, seed=123, use_cache=False)
+    assert out_cached == out_full
+
+
+def test_generate_use_cache_false_is_back_compat(tmp_path):
+    """``use_cache=False`` preserves the exact SP-4 behaviour — the
+    output for the default-greedy case is the same one the existing
+    `test_generate_deterministic_greedy_is_reproducible` covers."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+    a = model.generate(prompt="the", max_new_tokens=8, temperature=0.0, use_cache=False)
+    b = model.generate(prompt="the", max_new_tokens=8, temperature=0.0, use_cache=False)
+    assert a == b
+
+
+def test_kv_cache_handles_sliding_window_overflow(tmp_path):
+    """When prompt + new tokens exceed max_seq_len, the cache path
+    must still produce the same tokens as the no-cache sliding window.
+    This guards against an off-by-one in the cache-trim path."""
+    tokenizer = _make_tokenizer(tmp_path)
+    # Small window so we definitely overflow.
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=8,
+    )
+    model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    torch.manual_seed(11)
+    model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+
+    out_cached = model.generate(prompt="the cat sat on the mat", max_new_tokens=12, temperature=0.0, use_cache=True)
+    out_full = model.generate(prompt="the cat sat on the mat", max_new_tokens=12, temperature=0.0, use_cache=False)
+    assert out_cached == out_full
+
+
+def test_kv_cache_speedup_at_long_context(tmp_path):
+    """Performance regression test: the cache path should be measurably
+    faster than the full-recompute path on a non-trivial generation.
+
+    We use a small Transformer (4 layers, 64 d_model) generating 128
+    new tokens so the O(T^2) vs O(T) cost gap is clearly visible. The
+    threshold is set conservatively (≥1.5x) — CPU timing on shared CI
+    is noisy, and the real-world win is much larger on GPU at longer
+    contexts. The point is to prove the cache is actually doing
+    useful work, not to land a tight benchmark target.
+    """
+    import time
+
+    tokenizer = _make_tokenizer(tmp_path)
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=4,
+        n_heads=4,
+        d_model=64,
+        ffn_mult=4,
+        max_seq_len=256,
+    )
+    model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    torch.manual_seed(3)
+    model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+
+    # Warm both paths once so torch's JIT/lazy-init costs are excluded
+    # from the timed regions.
+    model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=True)
+    model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=False)
+
+    n_new = 128
+
+    # Run each path a few times and take the min — fewer noise spikes
+    # than a single-shot measurement.
+    def _time_path(use_cache: bool, repeats: int = 3) -> float:
+        times = []
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            model.generate(prompt="the", max_new_tokens=n_new, temperature=0.0, use_cache=use_cache)
+            times.append(time.perf_counter() - t0)
+        return min(times)
+
+    t_full = _time_path(use_cache=False)
+    t_cached = _time_path(use_cache=True)
+
+    speedup = t_full / t_cached if t_cached > 0 else float("inf")
+    # Print so `pytest -s` shows the actual numbers — useful for
+    # tracking the speedup over time.
+    print(f"\n[kv-cache] full={t_full:.3f}s  cached={t_cached:.3f}s  speedup={speedup:.2f}x")
+    assert speedup >= 1.5, f"Expected ≥1.5x speedup, got {speedup:.2f}x (full={t_full:.3f}s, cached={t_cached:.3f}s)"
+
+
 def test_generate_requires_tokenizer(tmp_path):
     """Constructing a GenerativeNNModel without a tokenizer raises a
     clear error when generate() is called — the model needs the

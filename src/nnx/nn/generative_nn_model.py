@@ -59,6 +59,7 @@ class GenerativeNNModel(NNModel):
         repetition_penalty: float = 1.0,
         stop: Optional[list[str]] = None,
         seed: Optional[int] = None,
+        use_cache: bool = True,
     ) -> str:
         """Autoregressive decode from ``prompt``.
 
@@ -78,6 +79,13 @@ class GenerativeNNModel(NNModel):
                 them appears in the decoded prefix.
             seed: when set, sampling is reproducible — two calls with
                 the same seed + prompt + model produce identical output.
+            use_cache: when True (default), uses an incremental KV
+                cache — each new token only re-runs attention on the
+                last position, not the whole prefix. When False, falls
+                back to the SP-4 full-recompute path (kept for
+                regression testing). Both paths produce the same
+                tokens for greedy decoding (sampling paths agree given
+                the same seed).
 
         Returns:
             The full decoded string (prompt + generated continuation).
@@ -123,26 +131,122 @@ class GenerativeNNModel(NNModel):
             gen = torch.Generator(device=self.device)
             gen.manual_seed(int(seed))
 
+        # The KV-cache path needs ``forward_with_cache`` on the net.
+        # Plain LSTM/MLP nets (or older Transformer forks) don't have
+        # it — fall back transparently rather than crashing.
+        if use_cache and not hasattr(self.net, "forward_with_cache"):
+            use_cache = False
+
         generated: list[int] = list(prompt_ids)
         with torch.no_grad():
-            for _ in range(max_new_tokens):
-                # Truncate context to max_seq_len from the right so the
-                # most recent tokens stay in the window. Sliding window
-                # — the simple production-ready approach for SP-4 scope.
-                context_ids = generated[-max_seq_len:]
-                ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
-                logits = self.net(ctx)  # (1, T, vocab)
-                next_logits = logits[:, -1, :]  # (1, vocab) — last token's logits
-                adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
-                next_id = sample_next_token(adjusted, generator=gen)
-                generated.append(next_id)
-
-                # Optional stop-string check. We only decode once per
-                # iteration when stops are configured — keeps the hot
-                # loop cheap when they aren't.
-                if stop:
-                    text_so_far = self.tokenizer.decode(generated)
-                    if any(s in text_so_far for s in stop):
-                        break
+            if use_cache:
+                self._generate_with_cache(
+                    generated=generated,
+                    max_new_tokens=max_new_tokens,
+                    max_seq_len=max_seq_len,
+                    processors=processors,
+                    gen=gen,
+                    stop=stop,
+                )
+            else:
+                self._generate_no_cache(
+                    generated=generated,
+                    max_new_tokens=max_new_tokens,
+                    max_seq_len=max_seq_len,
+                    processors=processors,
+                    gen=gen,
+                    stop=stop,
+                )
 
         return self.tokenizer.decode(generated)
+
+    # ---------- generate helpers ----------
+
+    def _generate_no_cache(
+        self,
+        *,
+        generated: list[int],
+        max_new_tokens: int,
+        max_seq_len: int,
+        processors: list[LogitsProcessor],
+        gen: Optional[torch.Generator],
+        stop: Optional[list[str]],
+    ) -> None:
+        """SP-4 full-recompute path: every step re-runs the model on the
+        last ``max_seq_len`` tokens. O(T^2) attention cost; kept for
+        regression-testing parity against the cached path."""
+        for _ in range(max_new_tokens):
+            # Truncate context to max_seq_len from the right so the
+            # most recent tokens stay in the window. Sliding window
+            # — the simple production-ready approach for SP-4 scope.
+            context_ids = generated[-max_seq_len:]
+            ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
+            logits = self.net(ctx)  # (1, T, vocab)
+            next_logits = logits[:, -1, :]  # (1, vocab) — last token's logits
+            adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
+            next_id = sample_next_token(adjusted, generator=gen)
+            generated.append(next_id)
+
+            # Optional stop-string check. We only decode once per
+            # iteration when stops are configured — keeps the hot
+            # loop cheap when they aren't.
+            if stop:
+                text_so_far = self.tokenizer.decode(generated)
+                if any(s in text_so_far for s in stop):
+                    break
+
+    def _generate_with_cache(
+        self,
+        *,
+        generated: list[int],
+        max_new_tokens: int,
+        max_seq_len: int,
+        processors: list[LogitsProcessor],
+        gen: Optional[torch.Generator],
+        stop: Optional[list[str]],
+    ) -> None:
+        """KV-cache path (SP-10c). Runs one prefill pass on the
+        truncated prompt, then per new token re-runs only the last
+        position's attention against the cached prefix. O(T) per
+        step instead of O(T^2).
+
+        Sliding-window safety: when the prompt + max_new_tokens would
+        overflow ``max_seq_len``, we drop the oldest entry from each
+        layer's cached k/v before appending the next step. This keeps
+        long-context generation correct without rebuilding the cache
+        from scratch every overflow.
+        """
+        # ----- Prefill pass on the prompt (sliding window). -----
+        context_ids = generated[-max_seq_len:]
+        ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
+        logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=None)
+        next_logits = logits[:, -1, :]
+        adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
+        next_id = sample_next_token(adjusted, generator=gen)
+        generated.append(next_id)
+        if stop:
+            text_so_far = self.tokenizer.decode(generated)
+            if any(s in text_so_far for s in stop):
+                return
+
+        # ----- Incremental decode loop. -----
+        for _ in range(max_new_tokens - 1):
+            # If appending another token would overflow max_seq_len,
+            # drop the oldest cached k/v position on every layer
+            # (sliding window — matches the no-cache path's behaviour).
+            cached_len = past_kvs[0][0].size(-2) if past_kvs and past_kvs[0] is not None else 0
+            if cached_len + 1 > max_seq_len:
+                past_kvs = [(k[..., 1:, :], v[..., 1:, :]) for (k, v) in past_kvs]
+
+            last_id = generated[-1]
+            ctx = torch.tensor([[last_id]], dtype=torch.long, device=self.device)
+            logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=past_kvs)
+            next_logits = logits[:, -1, :]
+            adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
+            next_id = sample_next_token(adjusted, generator=gen)
+            generated.append(next_id)
+
+            if stop:
+                text_so_far = self.tokenizer.decode(generated)
+                if any(s in text_so_far for s in stop):
+                    break

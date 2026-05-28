@@ -11,11 +11,18 @@ sampling lives in ``GenerativeNNModel.generate()`` (PR 4).
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 from torch import nn
 
 from ..params.nn_transformer_params import NNTransformerParams
 from .transformer_layers import RMSNorm, TransformerBlock
+
+# Type alias: per-layer KV cache entry; None means "no cache yet for
+# this layer". The full cache is a list with one entry per transformer
+# block, threaded through ``forward_with_cache`` between decode steps.
+LayerKV = Optional[tuple[torch.Tensor, torch.Tensor]]
 
 
 class TransformerNN(nn.Module):
@@ -67,6 +74,66 @@ class TransformerNN(nn.Module):
         x = self.norm_out(x)
         logits = self.lm_head(x)  # (B, T, vocab)
         return logits
+
+    def forward_with_cache(
+        self,
+        tokens: torch.Tensor,
+        past_kvs: Optional[list[LayerKV]] = None,
+    ) -> tuple[torch.Tensor, list[LayerKV]]:
+        """Cache-threading forward used by ``GenerativeNNModel.generate``.
+
+        Behaves like ``forward`` but additionally accepts a per-layer
+        list of (k, v) caches (or ``None`` entries on the first call)
+        and returns the updated per-layer caches alongside the logits.
+
+        The total attended-to length per layer is
+        ``past_kv_len + tokens.shape[1]`` — the caller is responsible
+        for ensuring that this stays within ``max_seq_len`` (the
+        generate loop slides a window when it would otherwise overflow).
+
+        Args:
+            tokens: (batch, seq) long tensor of token ids. During
+                incremental decode, ``seq == 1``; on the prefill step
+                the prompt's full length is fed in one shot.
+            past_kvs: list of length ``n_layers`` with each entry a
+                ``(k, v)`` tuple or ``None``. ``None`` means "no
+                history for this layer" (i.e., first call).
+
+        Returns:
+            (logits, new_kvs):
+              * logits: (batch, seq, vocab) — the *new* tokens' logits
+                (note: with ``past_kvs != None`` and ``seq=1``, the
+                returned ``logits[:, -1, :]`` is the next-token
+                distribution conditioned on the full cached prefix).
+              * new_kvs: list of length ``n_layers`` of updated
+                ``(k, v)`` tuples — pass this back in for the next
+                step.
+        """
+        b, t = tokens.shape
+        # Length already cached, taken from layer 0 (all layers share length).
+        cached_len = 0
+        if past_kvs is not None and past_kvs[0] is not None:
+            cached_len = past_kvs[0][0].size(-2)
+        total_len = cached_len + t
+        if total_len > self.params.max_seq_len:
+            raise ValueError(
+                f"cached_len ({cached_len}) + new tokens ({t}) = {total_len} "
+                f"exceeds max_seq_len={self.params.max_seq_len}"
+            )
+
+        if past_kvs is None:
+            past_kvs = [None] * len(self.blocks)
+        if len(past_kvs) != len(self.blocks):
+            raise ValueError(f"past_kvs has {len(past_kvs)} entries but model has {len(self.blocks)} layers")
+
+        x = self.tok_embed(tokens)  # (B, T, d_model)
+        new_kvs: list[LayerKV] = []
+        for block, layer_past in zip(self.blocks, past_kvs, strict=True):
+            x, new_kv = block(x, past_kv=layer_past, use_cache=True)
+            new_kvs.append(new_kv)
+        x = self.norm_out(x)
+        logits = self.lm_head(x)  # (B, T, vocab)
+        return logits, new_kvs
 
     def unpack_batch(self, batch):
         """Make TransformerNN compatible with the standard supervised
