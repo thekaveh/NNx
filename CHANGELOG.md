@@ -7,7 +7,9 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 ### Added — HuggingFace interop (safetensors + Hub mixin)
 
 - **safetensors as opt-in checkpoint format.** `NNCheckpoint.to_file(path, format="safetensors")` writes a safe, mmap-friendly file readable by ComfyUI / vLLM / AutoGPTQ / HuggingFace tools. `NNParams`, `NNModelParams`, and `NNIterationDataPoint` are JSON-serialized into the safetensors metadata dict (the spec only allows `str -> str` metadata, so a JSON wrapper is the cleanest fit). Pickle remains the default format for back-compat; `NNCheckpoint.from_file(path)` auto-detects via magic-byte sniff (modern torch.save starts with the ZIP container `PK\x03\x04`, legacy / bare pickle starts with `\x80`, safetensors starts with neither). Requires `pip install nnx[hub]`.
+- **`NNModel` is now HuggingFace-Hub-publishable** via `PyTorchModelHubMixin`. Free `model.save_pretrained("./dir")`, `model.push_to_hub("user/repo")`, and `NNModel.from_pretrained("user/repo" | "./dir")`. The on-disk layout is the canonical Hub flat layout: `model.safetensors` (weights), `config.json` (`{"net_params": <state>, "params": <state>}` using the public `state()` form NNRun hashes), and an auto-generated `README.md` model card. Without the `hub` extra installed, all three methods raise a clear `ImportError` pointing back at `pip install nnx[hub]`.
 - **`nnx[hub]` extra** — pulls in `safetensors>=0.7.0` and `huggingface_hub>=1.4.0`. Both deps are runtime-import-guarded, so `pip install nnx` keeps working without them.
+- **`docs/hub.md`** — when-to-use guide for both tracks (safetensors checkpoints + Hub mixin), a local save/load walkthrough, the Hub publish/download path, and the explicit non-goals.
 
 ### Migration notes
 
