@@ -93,6 +93,46 @@ def test_nn_transformer_params_state_omits_ffn_mult_when_default():
     assert "ffn_mult" not in state
 
 
+def test_nn_transformer_params_state_omits_attn_dropout_when_default():
+    """Omit-when-default invariant: attn_dropout=0.0 is the default (modern
+    LLM training favors data scale over dropout regularization). Keeping it
+    out of state() means existing TRANSFORMER run.ids don't shift when a
+    later subproject adds a different optional field. Same broken-three-times
+    invariant as rope_base / tie_embeddings / ffn_mult."""
+    obj = _params()
+    state = obj.state()
+    assert "attn_dropout" not in state, state
+
+
+def test_nn_transformer_params_state_emits_attn_dropout_when_overridden():
+    obj = _params(attn_dropout=0.1)
+    state = obj.state()
+    assert state.get("attn_dropout") == 0.1
+
+
+def test_nn_transformer_params_state_omits_resid_dropout_when_default():
+    """Omit-when-default invariant for resid_dropout — same rationale as
+    attn_dropout above."""
+    obj = _params()
+    state = obj.state()
+    assert "resid_dropout" not in state, state
+
+
+def test_nn_transformer_params_state_emits_resid_dropout_when_overridden():
+    obj = _params(resid_dropout=0.05)
+    state = obj.state()
+    assert state.get("resid_dropout") == 0.05
+
+
+def test_nn_transformer_params_round_trip_with_dropouts():
+    """Round-trip with both new dropout knobs bumped off their defaults —
+    every from_state path must restore them. Pairs with the omit-when-default
+    tests above to lock in the full invariant for the two SP-10c additions."""
+    obj = _params(attn_dropout=0.1, resid_dropout=0.05)
+    rt = NNTransformerParams.from_state(obj.state())
+    assert rt == obj
+
+
 def test_nn_transformer_params_state_emits_required_arch_keys():
     obj = _params()
     state = obj.state()
