@@ -18,6 +18,10 @@ Public surface — re-exported from the top-level ``nnx`` package:
   - :func:`cutmix_train_step_factory` — CutMix augmentation (image data).
   - :func:`moe_train_step_factory` — Mixture-of-Experts supervised step
     with Switch-style load-balancing aux loss.
+  - :func:`jepa_train_step_factory` + :func:`build_target_encoder`
+    + :func:`update_ema` + :func:`random_block_mask` +
+    :class:`JEPAPredictor` — I-JEPA self-supervised learning in
+    latent space.
 """
 
 from __future__ import annotations
@@ -26,6 +30,13 @@ from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
 from .born_again import born_again_train
 from .contrastive import nt_xent_loss, simclr_train_step_factory
 from .distillation import feature_kd_train_step_factory, kd_train_step_factory
+from .jepa import (
+    JEPAPredictor,
+    build_target_encoder,
+    jepa_train_step_factory,
+    random_block_mask,
+    update_ema,
+)
 from .moe import moe_train_step_factory
 
 __all__ = [
@@ -37,4 +48,9 @@ __all__ = [
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
     "moe_train_step_factory",
+    "jepa_train_step_factory",
+    "build_target_encoder",
+    "update_ema",
+    "random_block_mask",
+    "JEPAPredictor",
 ]

@@ -64,6 +64,7 @@ from .nn.net.graph_conv_nn import GraphConvNN
 from .nn.net.graph_nn_base import GraphNNBase
 from .nn.net.graph_sage_nn import GraphSageNN
 from .nn.net.transformer_nn import TransformerNN
+from .nn.net.vit_nn import ViTBlock, ViTNN
 from .nn.nn_model import (
     NNModel,
     PredictResult,
@@ -106,14 +107,19 @@ from .generation import (
     sample_next_token,
 )
 from .paradigms import (
+    JEPAPredictor,
     born_again_train,
+    build_target_encoder,
     cutmix_train_step_factory,
     feature_kd_train_step_factory,
+    jepa_train_step_factory,
     kd_train_step_factory,
     mixup_train_step_factory,
     moe_train_step_factory,
     nt_xent_loss,
+    random_block_mask,
     simclr_train_step_factory,
+    update_ema,
 )
 from .peft import (
     AdapterLayer,
@@ -227,6 +233,14 @@ __all__ = [
     "nt_xent_loss",
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
+    # I-JEPA (joint embedding predictive architecture)
+    "jepa_train_step_factory",
+    "build_target_encoder",
+    "update_ema",
+    "random_block_mask",
+    "JEPAPredictor",
+    "ViTNN",
+    "ViTBlock",
     # PEFT (LoRA + DoRA + IA3 + adapters)
     # Mixture-of-Experts
     "MoELinear",
