@@ -21,6 +21,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
+from . import viz
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -141,6 +142,7 @@ __all__ = [
     # Helpers
     "Utils",
     "VisUtils",
+    "viz",
     # Fine-tuning
     "freeze",
     "unfreeze",

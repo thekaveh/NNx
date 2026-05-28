@@ -71,6 +71,7 @@ onnx = ["onnx>=1.15"]
 # `torch.export`-based ONNX exporter. The legacy TorchScript path
 # (the default) needs only `nnx[onnx]`.
 onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
+viz = ["torchinfo>=1.8.0"]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
