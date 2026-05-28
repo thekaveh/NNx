@@ -11,8 +11,13 @@ optimizer is involved).
 ``diffusion_train_step_factory(schedule) -> TrainStepFn`` captures the
 schedule in a closure and returns a step fn the user passes straight
 to :meth:`NNModel.train`. The closure indexes the schedule tensors on
-the model's device — moving the schedule on first use — so callers
-can build the schedule on CPU and let the factory migrate it lazily.
+the model's device per-call (via the ``_extract`` helper, which does a
+``values.to(t.device)`` on each step) so callers can build the schedule
+on CPU and the factory will pull the right per-timestep coefficients
+across devices. The schedule itself is a 1-D length-T tensor so the
+per-step transfer cost is negligible relative to the forward / backward
+pass; for repeated sampling, see :func:`nnx.diffusion.sample`, which
+migrates the schedule once up-front.
 """
 
 from __future__ import annotations

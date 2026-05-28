@@ -29,7 +29,7 @@ Useful env vars:
 
 1. **Open an issue first** for non-trivial changes — saves churn if the design is off. Tiny fixes can go straight to PR.
 2. **Branch from `main`.** Name branches descriptively (`fix/...`, `feat/...`, `docs/...`, `refactor/...`).
-3. **Write tests.** Every PR that changes behavior should land with a focused test that fails on `main` and passes on the branch. The existing `tests/test_pass*_*_series.py` files are good models.
+3. **Write tests.** Every PR that changes behavior should land with a focused test that fails on `main` and passes on the branch. The existing `tests/test_*_series.py` files (organized by audit pass) are good models.
 4. **Keep PRs small.** One coherent change per PR is much easier to review than a sweeping mix.
 
 ## 3. What we care about

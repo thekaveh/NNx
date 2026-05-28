@@ -38,7 +38,7 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 ### 2.2. The omit-when-default invariant
 
-New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests in `tests/test_params_round_trip.py` pin it for `param_groups`, `mixed_precision`, `kind`, `seed`, `save_phase_checkpoints`, `trainer`.
+New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
 
 ## 3. Enums-as-factories
 
