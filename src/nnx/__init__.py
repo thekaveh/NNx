@@ -81,6 +81,7 @@ from .paradigms import (
     cutmix_train_step_factory,
     kd_train_step_factory,
     mixup_train_step_factory,
+    moe_train_step_factory,
     nt_xent_loss,
     simclr_train_step_factory,
 )
@@ -168,6 +169,7 @@ __all__ = [
     "cutmix_train_step_factory",
     # Mixture-of-Experts
     "MoELinear",
+    "moe_train_step_factory",
     # PEFT (LoRA + adapters)
     "LoRALinear",
     "apply_lora_to",

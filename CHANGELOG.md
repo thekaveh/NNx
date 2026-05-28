@@ -4,6 +4,14 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — Mixture-of-Experts (tutorial-grade)
+
+- **`nnx.MoELinear(in_features, out_features, *, num_experts, top_k=2)`** — sparse top-k MoE drop-in for `nn.Linear`. Router (bias-less `nn.Linear`) emits per-expert logits; the `top_k` experts per token are selected, their outputs are weighted by softmax-renormalized gating values, and the per-token result is the weighted sum. Exposes `.last_aux_loss` after each forward — the Switch-Transformer load-balancing penalty `N · Σ_i f_i · P_i` where `f_i` is the dispatch fraction and `P_i` is the mean router probability for expert `i`. The penalty is minimized at value 1 (NOT 0) when routing is perfectly uniform across experts. Validates `num_experts ≥ 2`, `top_k ∈ [1, num_experts]` at construction.
+- **`nnx.paradigms.moe_train_step_factory(*, aux_loss_weight=0.01)`** — supervised training step that adds `aux_loss_weight · Σ_layer layer.last_aux_loss` to the main loss, summed across every `MoELinear` in the net. Routes through the shared `_step_helpers.finalize_step` for the standard NaN-guard + grad-clip tail (same shape as the KD / SimCLR / Mixup / CutMix factories). Works on nets with zero MoE layers too — the aux sum just collapses to 0 and the step is exactly supervised.
+- Runnable demo: `examples/14_moe_classifier.py` — a feed-forward classifier whose hidden layer is an `MoELinear` (4 experts, top-k=2). Prints router / expert / classifier param breakdown, trains with `moe_train_step_factory`, and verifies the aux loss decreases across the run (routing balances out).
+- 22 new tests across `tests/test_nn_moe.py` (12) and `tests/test_paradigms_moe.py` (10): MoELinear input validation + forward shape + router / experts module shape + top-k routing invariant + `last_aux_loss` populated-after-forward + non-negativity + uniform-routing-equals-1 (minimum-value math) + above-minimum-when-skewed + load-balancing converges under SGD on the aux loss; paradigm factory validation + end-to-end aux-loss-decreases + finalize-step routing (NaN guard fires) + no-MoE-layers no-op + zero-weight collapse to supervised + multi-MoE-layer summation + AMP rejection + grad-clip honored + EDP return shape.
+- Scope explicitly limited to tutorial-grade. Production-scale MoE (MegaBlocks block-sparse kernels, expert parallelism across GPUs, token-dropping with capacity factor) is OUT — would be hollow wrapping over specialized libraries.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.
