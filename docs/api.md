@@ -138,6 +138,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.prune.magnitude.magnitude_prune
 
+::: nnx.prune.semi_structured.semi_structured_24
+
 ## 11. Diffusion (`nnx.diffusion`)
 
 ::: nnx.diffusion.schedules.NoiseSchedulers
