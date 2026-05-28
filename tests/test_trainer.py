@@ -331,6 +331,70 @@ def test_trainer_with_val_loader_evaluates(tmp_path, monkeypatch):
     assert run.idps[-1].val_edp.loss is not None
 
 
+def test_trainer_dispatches_non_plateau_scheduler(tmp_path, monkeypatch):
+    """Trainer._build_scheduler must honor `NNSchedulerParams.kind` and
+    dispatch through the Schedulers enum factory — not silently fall back
+    to ReduceLROnPlateau. NNModel's identical path is tested in
+    test_schedulers.py; this is the symmetric Trainer-side cover.
+
+    The two `_build_scheduler` implementations are intentionally duplicated
+    (see the inline comment in trainer.py). Without an explicit non-plateau
+    test on the Trainer side, a future change to the NNModel path alone
+    would silently miss the Trainer's non-plateau dispatch.
+
+    The scheduler instance is reachable via `TrainerStepContext.schedulers`
+    inside the step fn — that's where Trainer exposes the per-name dict."""
+    from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+
+    from nnx import NNSchedulerParams, Schedulers
+
+    monkeypatch.chdir(tmp_path)
+
+    captured: dict = {}
+
+    def _capture_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        # First call grabs the scheduler dict; subsequent calls are no-op
+        # captures so we exit cleanly with the same EDP shape Trainer expects.
+        if not captured:
+            captured.update(ctx.schedulers)
+        return _supervised_step(ctx)
+
+    trainer = Trainer(model=_supervised_model())
+    trainer.train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=_supervised_loader(),
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
+            schedulers={
+                "main": NNSchedulerParams(
+                    min_lr=1e-7,
+                    factor=0.5,
+                    patience=1,
+                    cooldown=1,
+                    threshold=1e-3,
+                    kind=Schedulers.COSINE_ANNEALING,
+                    T_max=10,
+                )
+            },
+        ),
+        trainer_step_fn=_capture_step,
+    )
+    sched = captured["main"]
+    assert isinstance(sched, CosineAnnealingLR), (
+        f"Trainer should dispatch through Schedulers.COSINE_ANNEALING; "
+        f"got {type(sched).__name__} instead. Likely a regression in "
+        f"trainer.py:_build_scheduler's `kind` dispatch."
+    )
+    assert not isinstance(sched, ReduceLROnPlateau)
+
+
 # -------------------------------------------------------------------------
 # Multi-optim — the GAN-style use case
 # -------------------------------------------------------------------------
