@@ -4,6 +4,10 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added
+
+- **`NNModel.to_onnx(..., dynamo=True)` opt-in.** New `dynamo: bool = False` kwarg on `NNModel.to_onnx`. When True, dispatches through PyTorch's new `torch.export`-based ONNX exporter (default in torch>=2.9; supports >2 GB models via external data; generally faster). The default (False) preserves the existing legacy TorchScript path — no behavior change for existing callers. The dynamo path lazy-imports `onnxscript` and raises a clear `ImportError` pointing at the new `nnx[onnx-dynamo]` extra (`pip install nnx[onnx-dynamo]`) if missing, rather than letting torch surface a less actionable failure.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.

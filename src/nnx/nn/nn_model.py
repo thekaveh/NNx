@@ -170,6 +170,7 @@ class NNModel:
         output_names: Optional[list[str]] = None,
         dynamic_batch: bool = True,
         opset_version: int = 17,
+        dynamo: bool = False,
     ) -> str:
         """Export the underlying network to ONNX format.
 
@@ -183,9 +184,30 @@ class NNModel:
                 the exported model accepts any batch size at inference.
             opset_version: ONNX opset to target. 17 is broadly supported
                 by current runtimes.
+            dynamo: when False (default), uses the legacy TorchScript-based
+                `torch.onnx.export` path — plain `pip install onnx` is
+                enough. When True, dispatches to PyTorch's new
+                `torch.export`-based exporter (default in torch>=2.9,
+                supports >2 GB models via external data, faster). The
+                dynamo path requires `onnxscript`; install via
+                `pip install nnx[onnx-dynamo]`.
 
         Returns the path written. Network is put in eval mode for tracing.
         """
+        if dynamo:
+            # Lazy-import: keep `onnxscript` out of NNx's required deps so
+            # plain `pip install nnx[onnx]` (legacy path) still works. If
+            # the user opted in to `dynamo=True` without the extra, give
+            # an error that names the install command instead of letting
+            # torch surface a less actionable failure.
+            try:
+                import onnxscript  # noqa: F401
+            except ImportError as e:
+                raise ImportError(
+                    "to_onnx(dynamo=True) requires the `onnxscript` package. "
+                    "Install via `pip install nnx[onnx-dynamo]` (or `pip install onnxscript`)."
+                ) from e
+
         if isinstance(example_input, torch.Tensor):
             example_input = (example_input.to(self.device),)
         else:
@@ -203,8 +225,9 @@ class NNModel:
 
         self.net.eval()
         # torch>=2.5 defaults torch.onnx.export to the dynamo-based exporter,
-        # which requires `onnxscript`. We use the legacy tracing exporter
-        # (dynamo=False) so plain `pip install onnx` is enough.
+        # which requires `onnxscript`. We pass `dynamo` through explicitly so
+        # the default (False) keeps the legacy tracing path regardless of
+        # the installed torch version — plain `pip install onnx` is enough.
         try:
             torch.onnx.export(
                 self.net,
@@ -214,11 +237,19 @@ class NNModel:
                 output_names=out_names,
                 dynamic_axes=dynamic_axes,
                 opset_version=opset_version,
-                dynamo=False,
+                dynamo=dynamo,
             )
         except TypeError:
             # Older torch versions don't accept the `dynamo` kwarg — they
-            # already use the legacy path by default.
+            # already use the legacy path by default. If the caller asked
+            # for `dynamo=True` on such a torch, fail loudly rather than
+            # silently falling back to legacy.
+            if dynamo:
+                raise RuntimeError(
+                    "to_onnx(dynamo=True) requires torch>=2.5 (the dynamo-based "
+                    "ONNX exporter wasn't available before then). Upgrade torch or "
+                    "call with dynamo=False."
+                ) from None
             torch.onnx.export(
                 self.net,
                 example_input,
