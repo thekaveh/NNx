@@ -134,7 +134,19 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.peft.adapters.AdapterLayer
 
-## 10. Diffusion (`nnx.diffusion`)
+## 10. Model surgery (`nnx.surgery`)
+
+::: nnx.surgery.widen.widen
+
+::: nnx.surgery.deepen.deepen
+
+::: nnx.surgery.drop_layer.drop_layer
+
+::: nnx.surgery.low_rank.low_rank_factorize
+
+::: nnx.surgery.embedding.expand_embedding
+
+## 11. Diffusion (`nnx.diffusion`)
 
 ::: nnx.diffusion.schedules.NoiseSchedulers
 
@@ -148,7 +160,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.diffusion.sampling.sample
 
-## 11. Training paradigms (`nnx.paradigms`)
+## 12. Training paradigms (`nnx.paradigms`)
 
 ::: nnx.paradigms.distillation.kd_train_step_factory
 
@@ -160,7 +172,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.paradigms.augmentation.cutmix_train_step_factory
 
-## 12. Visualization
+## 13. Visualization
 
 ::: nnx.vis_utils
     options:
@@ -171,7 +183,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - scatter_plot
         - two_dim_tsne_checkpoint_logits
 
-## 13. Utilities
+## 14. Utilities
 
 ::: nnx.utils
     options:
@@ -180,6 +192,6 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - print_table
         - flatten_dict
 
-### 13.1. `Utils` back-compat facade
+### 14.1. `Utils` back-compat facade
 
 `nnx.Utils` is a thin staticmethod facade over the module-level functions above, kept so existing notebook code that calls `Utils.print_tree(...)` / `Utils.print_table(...)` / `Utils.flatten_dict(...)` continues to work. New code should prefer the module-level functions directly.
