@@ -71,7 +71,7 @@ onnx = ["onnx>=1.15"]
 # `torch.export`-based ONNX exporter. The legacy TorchScript path
 # (the default) needs only `nnx[onnx]`.
 onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
-viz = ["torchinfo>=1.8.0"]
+viz = ["torchinfo>=1.8.0", "captum>=0.7.0"]
 quantize = ["torchao>=0.17"]
 # `hub` enables interop with the HuggingFace ecosystem:
 #   - safetensors as an opt-in checkpoint format (NNCheckpoint.to_file(format="safetensors"))

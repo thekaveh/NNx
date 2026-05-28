@@ -10,7 +10,8 @@ Both subpackages return Plotly `Figure` objects (or, in the case of
 compose them into dashboards or notebook layouts.
 """
 
+from .attribute import attribute
 from .summary import summary
 from .weight_histogram import weight_histogram
 
-__all__ = ["summary", "weight_histogram"]
+__all__ = ["attribute", "summary", "weight_histogram"]

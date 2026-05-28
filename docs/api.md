@@ -215,6 +215,8 @@ End-to-end walkthrough at [Embeddings](embeddings.md). The reference below is th
 
 ::: nnx.viz.weight_histogram.weight_histogram
 
+::: nnx.viz.attribute.attribute
+
 ## 13. Utilities
 ## 14. Utilities
 
