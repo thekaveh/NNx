@@ -128,7 +128,7 @@ from .peft import (
     save_ia3_weights,
     save_lora_weights,
 )
-from .quantize import quantize_int8
+from .quantize import QATLifecycleCallback, qat_train_step_factory, quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
 from .surgery import (
     deepen,
@@ -237,8 +237,10 @@ __all__ = [
     "save_lora_weights",
     "load_lora_weights",
     "AdapterLayer",
-    # Quantization (PTQ INT8 weight-only via torchao)
+    # Quantization (PTQ INT8 weight-only + QAT 8da4w via torchao)
     "quantize_int8",
+    "qat_train_step_factory",
+    "QATLifecycleCallback",
     "DoRALinear",
     "apply_dora_to",
     "IA3Linear",
