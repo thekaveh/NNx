@@ -55,6 +55,7 @@ from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.enum.optims import Optims
 from .nn.enum.schedulers import Schedulers
+from .nn.moe import MoELinear
 from .nn.net.feed_fwd_nn import FeedFwdNN
 from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN
@@ -165,6 +166,8 @@ __all__ = [
     "nt_xent_loss",
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
+    # Mixture-of-Experts
+    "MoELinear",
     # PEFT (LoRA + adapters)
     "LoRALinear",
     "apply_lora_to",
