@@ -90,6 +90,7 @@ from .peft import (
     load_lora_weights,
     save_lora_weights,
 )
+from .quantize import quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
 from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .utils import Utils
@@ -171,6 +172,8 @@ __all__ = [
     "save_lora_weights",
     "load_lora_weights",
     "AdapterLayer",
+    # Quantization (PTQ INT8 weight-only via torchao)
+    "quantize_int8",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",

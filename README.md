@@ -32,6 +32,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into the `train_step_fn` hook, and a reverse-diffusion sampler.
 - **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), SimCLR contrastive (NT-Xent loss exposed), Mixup batch augmentation (any shape), CutMix batch augmentation (4D images). All share an internal `_step_helpers.finalize_step` for grad-clip + NaN guard.
 - **Parameter-efficient fine-tuning (PEFT) — LoRA + adapters** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
+- **Quantization** — torchao-based PTQ INT8 weight-only via `nnx.quantize.quantize_int8(model)`. One call, no calibration data, no retraining: returns a new `NNModel` whose `net.Linear` weights are stored in int8 per-channel (activations stay FP32). Vision + GNN compatible; the quantized model still ONNX-exports. Original `NNModel` left untouched. Opt-in extra: `pip install nnx[quantize]`.
 - **Networks** — `FeedFwdNN` (vision / tabular) and `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
@@ -57,6 +58,7 @@ Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) a
 pip install "nnx[tensorboard]"         # TensorBoardCallback
 pip install "nnx[wandb]"               # WandbCallback
 pip install "nnx[onnx]"                # NNModel.to_onnx validation tooling
+pip install "nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ INT8)
 pip install "nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 

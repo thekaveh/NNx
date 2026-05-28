@@ -66,6 +66,7 @@ dev = [
 tensorboard = ["tensorboard>=2.15"]
 wandb = ["wandb>=0.16"]
 onnx = ["onnx>=1.15"]
+quantize = ["torchao>=0.17"]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
