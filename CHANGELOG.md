@@ -8,7 +8,7 @@ This release integrates **20 sub-projects** consolidated on 2026-05-28: HuggingF
 
 Every change preserves back-compatibility with existing `run.id` hashes and on-disk checkpoint formats — new params fields all follow the omit-when-default state() invariant. Test suite: 642 tests; 640 pass, 2 skip on torch/onnxscript version-skew (opt-in dynamo path), 1 skip on absence of CUDA (2:4 semi-structured).
 
-### Added
+### Added — model-internals viz attribution + ONNX dynamo opt-in
 
 - **`nnx.viz.attribute(model, x, *, method, target, **method_kwargs)`** — Captum-backed input-attribution wrapper. Single string-keyed dispatch over the six most common methods (`integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`) returning `(attribution_tensor, plotly.Figure)`. The figure renders the attribution as a Plotly `Heatmap` (3-/4-D image-shaped inputs are mean-pooled over channels first). Captum is lazy-imported at the call site so the rest of `nnx.viz` keeps working without it; the missing-dep path raises a clear `ImportError("nnx.viz.attribute requires captum: pip install captum")`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Optional dep promoted into the existing `viz` extra: `pip install nnx[viz]` now pulls `captum>=0.7.0` alongside `torchinfo>=1.8.0`. 10 new tests in `tests/test_viz_attribute.py` (unknown-method ValueError, IG return-shape + figure-type, saliency works, missing-captum ImportError via `sys.modules` stub, every supported-method key end-to-end via `@pytest.mark.parametrize`).
 - **`NNModel.to_onnx(..., dynamo=True)` opt-in.** New `dynamo: bool = False` kwarg on `NNModel.to_onnx`. When True, dispatches through PyTorch's new `torch.export`-based ONNX exporter (default in torch>=2.9; supports >2 GB models via external data; generally faster). The default (False) preserves the existing legacy TorchScript path — no behavior change for existing callers. The dynamo path lazy-imports `onnxscript` and raises a clear `ImportError` pointing at the new `nnx[onnx-dynamo]` extra (`pip install nnx[onnx-dynamo]`) if missing, rather than letting torch surface a less actionable failure.
@@ -167,7 +167,7 @@ These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on
 - **`NNOptimParams.param_groups: Optional[list[NNParamGroupSpec]]`** field. When set, the optimizer factory builds per-group dicts with the spec's lr / lr_multiplier / weight_decay overrides; frozen parameters are dropped. **Strict back-compat:** `param_groups=None` (default) is OMITTED from `state()`, so existing `run.id` hashes are unchanged.
 - **`NNModel.export_state_dict(path)`** — saves `self.net.state_dict()` to disk as a plain torch file (no NNCheckpoint wrapper). Companion to `load_pretrained` for the round-trip.
 
-### Added
+### Added — `train_step_fn` hook on `NNModel.train()` (foundational)
 
 - **`train_step_fn` hook on `NNModel.train()`.** One optional kwarg that swaps out the supervised forward/backward/step for any user-supplied function. Unblocks non-supervised training paradigms (autoencoder, VAE, link prediction, recommendation, diffusion) without modifying NNx core. Default-None path is byte-identical to the prior loop. New public surface: `TrainStepContext` (frozen dataclass carrying model/batch/optimizer/scaler/grad_clip_norm/extra_metrics/accumulate_grad_batches/batch_idx/epoch_idx), `default_train_step(ctx)` (the standard supervised step, exported for users who want to layer behavior on top), `TrainStepFn` (type alias). Seven tests in `tests/test_train_step_hook.py`; runnable autoencoder example at `examples/05_custom_train_step_autoencoder.py`.
 - Public alias for `nnx.PredictResult` (was reachable only via `nnx.nn.nn_model`).
@@ -304,7 +304,7 @@ The pass-1 series landed on branch `chore/comprehensive-improvements-pass-1`. St
 - `NNGraphDataset` reads the underlying `Data` via `dataset[0]` instead of `dataset._data`. The private accessor was renamed/removed across PyG versions.
 - Removed the top-level `from IPython.display import clear_output` import in `nn_model.py`. The actual use is in `callbacks._LegacyCallback`; leaving the top-level import made every consumer of `nnx.nn.nn_model` pull in IPython.
 
-### Added
+### Added — initial release scaffolding (top-level re-exports, persistence root, viz figures)
 
 - `nnx/__init__.py` re-exports the curated public surface (`NNModel`, params, callbacks, enums, nets, datasets, utils) with an explicit `__all__`. Deep imports (`from nnx.nn.net.feed_fwd_nn import FeedFwdNN`) still work for existing code.
 - `NNRun.save / load / all / checkpoints` and `NNCheckpoint.save / load` accept an optional `root: Optional[str] = None` kwarg. Default is unchanged (cwd-relative); callers wanting to redirect persistence can now pass one.
