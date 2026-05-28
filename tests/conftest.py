@@ -13,6 +13,23 @@ from __future__ import annotations
 
 import os
 
+# macOS + torch + faiss-cpu both bundle libomp.dylib statically. When both
+# end up in the same process, faiss aborts on its first kernel call with
+# "OMP Error #15: Initializing libomp.dylib, but found libomp.dylib
+# already initialized." or segfaults outright. Setting this env var
+# BEFORE either library imports tells libomp to tolerate the collision.
+# Set early — conftest is imported before any test module — so the FAISS
+# export tests don't have to scramble. Harmless on Linux CI where the
+# duplicate doesn't occur. ``setdefault`` preserves any caller override.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+# Even with KMP_DUPLICATE_LIB_OK, faiss-cpu on macOS segfaults inside
+# its parallel search kernel when torch's libomp got loaded first.
+# Pinning OMP to a single thread sidesteps the buggy parallel path
+# entirely. Tests don't need multi-threaded BLAS / FAISS to be fast;
+# the suite already runs in ~7s single-threaded. Linux CI doesn't hit
+# either problem but is also unaffected by the pin (still fast).
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import pytest
 
 

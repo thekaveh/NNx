@@ -32,6 +32,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into the `train_step_fn` hook, and a reverse-diffusion sampler.
 - **Training paradigms** — `nnx.paradigms.{kd, simclr, mixup, cutmix}_train_step_factory`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), SimCLR contrastive (NT-Xent loss exposed), Mixup batch augmentation (any shape), CutMix batch augmentation (4D images). All share an internal `_step_helpers.finalize_step` for grad-clip + NaN guard.
 - **Parameter-efficient fine-tuning (PEFT) — LoRA + adapters** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}`. LoRA wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). `save_lora_weights` persists only the lora_A/B matrices.
+- **Embeddings — contrastive trainer + FAISS export** — `nnx.embeddings.{ContrastiveTextDataset, train_contrastive, embed_texts, text_contrastive_train_step_factory, export_to_faiss, export_to_safetensors}`. Train a domain-specific text embedder from `(anchor, positive)` pairs via the existing NT-Xent machinery, then export to a FAISS index file that any RAG framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. NNx's job ends at the FAISS index — chunking / reranking / prompt orchestration live downstream. Optional dep: `pip install "nnx[embeddings]"` for `faiss-cpu` + `sentence-transformers`.
 - **Networks** — `FeedFwdNN` (vision / tabular) and `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
@@ -57,6 +58,7 @@ Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) a
 pip install "nnx[tensorboard]"         # TensorBoardCallback
 pip install "nnx[wandb]"               # WandbCallback
 pip install "nnx[onnx]"                # NNModel.to_onnx validation tooling
+pip install "nnx[embeddings]"          # nnx.embeddings: FAISS export + sentence-transformers
 pip install "nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 
@@ -209,6 +211,7 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 - [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
 - [Quickstart](docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
+- [Embeddings + FAISS export](docs/embeddings.md) — walkthrough for training a domain-specific text embedder via contrastive learning and exporting it to a FAISS index for any RAG stack to consume.
 - [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings. Read this when you want the canonical signature / docstring for a public symbol.
 - [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram in §1.1. Read this when the embedded SVG is hard to follow and you want to hover for labels.
 

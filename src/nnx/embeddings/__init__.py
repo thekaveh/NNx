@@ -1,13 +1,13 @@
-"""Domain-specific text embedder training (contrastive).
+"""Domain-specific text embedder training + FAISS index export.
 
-The training-time half of NNx's RAG-adjacent surface. Users train a
-domain-specific text embedder via the existing SimCLR / NT-Xent
-machinery exposed by ``nnx.paradigms.contrastive``. The companion
-FAISS-export surface lands separately in this same module.
+The only RAG-adjacent piece NNx ships. Users train a domain-specific
+text embedder via the existing SimCLR / NT-Xent machinery, then export
+to FAISS for ANY retrieval-augmented-generation stack (LangChain,
+LlamaIndex, Haystack, raw FAISS) to consume.
 
 NNx does NOT host the RAG stack itself — chunkers, rerankers, prompt
 orchestration, vector-DB clients are inference-time concerns and live
-downstream.
+downstream. The job ends at the FAISS index on disk.
 
 Public surface — re-exported from the top-level ``nnx`` package as
 ``nnx.embeddings``:
@@ -21,19 +21,24 @@ Public surface — re-exported from the top-level ``nnx`` package as
     :class:`nnx.TrainStepFn` factory, for users who want to drive
     contrastive text training through :meth:`NNModel.train` directly
     instead of the high-level helper.
+  - :func:`export_to_faiss` — embed a corpus and write a FAISS index
+    file. Reloadable by any FAISS-aware retriever.
+  - :func:`export_to_safetensors` — persist the backbone's state for
+    HuggingFace Hub / sentence-transformers interop. Falls back to
+    plain :func:`torch.save` when ``safetensors`` isn't installed.
   - :func:`embed_texts` — encode a list of strings into a normalized
-    ``(N, D)`` tensor using the supplied backbone. Inference helper
-    shared with the (forthcoming) FAISS-export surface.
+    ``(N, D)`` tensor using the supplied backbone. Shared between the
+    trainer's similarity probes and :func:`export_to_faiss`.
 
 Optional dependencies — install via the ``embeddings`` extra:
 
     pip install "nnx[embeddings]"
 
-The extra pulls ``sentence-transformers`` (the canonical backbone
-source) and ``faiss-cpu`` (used by the FAISS-export surface in the
-same module). Both are optional at import time; this module imports
-cleanly without them and raises a clear :class:`ImportError` only at
-the call site that actually needs them.
+The extra pulls ``faiss-cpu`` (for the FAISS index export) and
+``sentence-transformers`` (the canonical backbone source). Both are
+optional at import time; this module imports cleanly without them and
+raises a clear :class:`ImportError` only at the call site that actually
+needs them.
 """
 
 from __future__ import annotations
@@ -44,10 +49,13 @@ from .contrastive_trainer import (
     text_contrastive_train_step_factory,
     train_contrastive,
 )
+from .faiss_export import export_to_faiss, export_to_safetensors
 
 __all__ = [
     "ContrastiveTextDataset",
     "embed_texts",
+    "export_to_faiss",
+    "export_to_safetensors",
     "text_contrastive_train_step_factory",
     "train_contrastive",
 ]

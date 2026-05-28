@@ -160,7 +160,23 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.paradigms.augmentation.cutmix_train_step_factory
 
-## 12. Visualization
+## 12. Embeddings (`nnx.embeddings`)
+
+End-to-end walkthrough at [Embeddings](embeddings.md). The reference below is the auto-generated API surface.
+
+::: nnx.embeddings.contrastive_trainer.ContrastiveTextDataset
+
+::: nnx.embeddings.contrastive_trainer.train_contrastive
+
+::: nnx.embeddings.contrastive_trainer.embed_texts
+
+::: nnx.embeddings.contrastive_trainer.text_contrastive_train_step_factory
+
+::: nnx.embeddings.faiss_export.export_to_faiss
+
+::: nnx.embeddings.faiss_export.export_to_safetensors
+
+## 13. Visualization
 
 ::: nnx.vis_utils
     options:
@@ -171,7 +187,7 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - scatter_plot
         - two_dim_tsne_checkpoint_logits
 
-## 13. Utilities
+## 14. Utilities
 
 ::: nnx.utils
     options:
@@ -180,6 +196,6 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - print_table
         - flatten_dict
 
-### 13.1. `Utils` back-compat facade
+### 14.1. `Utils` back-compat facade
 
 `nnx.Utils` is a thin staticmethod facade over the module-level functions above, kept so existing notebook code that calls `Utils.print_tree(...)` / `Utils.print_table(...)` / `Utils.flatten_dict(...)` continues to work. New code should prefer the module-level functions directly.
