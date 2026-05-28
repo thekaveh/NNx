@@ -57,6 +57,7 @@ Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) a
 pip install "nnx[tensorboard]"         # TensorBoardCallback
 pip install "nnx[wandb]"               # WandbCallback
 pip install "nnx[onnx]"                # NNModel.to_onnx validation tooling
+pip install "nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
 pip install "nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 
