@@ -382,7 +382,29 @@ class AdaptedNet(nn.Module):
 
 See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py) for an end-to-end LoRA flow that explicitly verifies every base parameter is bit-exactly unchanged across the fine-tuning run.
 
-## 12. Reproducibility
+## 12. Model-internals visualization
+
+`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Two primitives ship today; activation maps / Netron export / Captum attribution land in a later PR.
+
+`nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install nnx[viz]` pulls in `torchinfo`).
+
+`nnx.viz.weight_histogram(model)` walks `model.named_parameters()` and emits one Plotly `Histogram` trace per tensor in a grid subplot. Useful for spotting dead layers, NaN / Inf weights, or saturation patterns at a glance.
+
+```python
+from nnx import NNModel, NNParams, NNModelParams, Activations, Devices, Losses, Nets
+from nnx.viz import summary, weight_histogram
+
+model = NNModel(
+    net_params=NNParams(input_dim=8, output_dim=3, hidden_dims=[32, 16],
+                        dropout_prob=0.1, activation=Activations.RELU),
+    params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU,
+                         loss=Losses.CROSS_ENTROPY),
+)
+print(summary(model, input_size=(1, 8)))   # Keras-style parameter table
+weight_histogram(model).show()              # Plotly grid of per-tensor weight distributions
+```
+
+## 13. Reproducibility
 
 ```python
 from nnx import set_seed, dataloader_worker_init_fn
@@ -394,7 +416,7 @@ NNTrainParams(seed=42, ...)                  # pins again inside train()
 
 `strict=True` opts into `torch.use_deterministic_algorithms(True)` — slower and may raise on ops without a deterministic CUDA kernel, but produces bit-for-bit identical training across runs on the same hardware.
 
-## 13. Resuming training
+## 14. Resuming training
 
 ```python
 # First run

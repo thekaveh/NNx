@@ -15,7 +15,7 @@ catches a regression that empties `__all__` or drops a public export.
 
 def test_top_level_imports():
     import nnx
-    from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils
+    from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils, viz
 
     # One probe per subpackage to verify the public surface stayed intact.
     assert hasattr(nnx, "NNModel")
@@ -27,6 +27,8 @@ def test_top_level_imports():
     assert hasattr(diffusion, "DiffusionMLP")
     assert hasattr(paradigms, "kd_train_step_factory")
     assert hasattr(peft, "LoRALinear")
+    assert hasattr(viz, "summary")
+    assert hasattr(viz, "weight_histogram")
 
 
 def test_finetune_submodules_import():
@@ -66,6 +68,18 @@ def test_peft_submodules_import():
 
     assert hasattr(adapters, "AdapterLayer")
     assert hasattr(lora, "LoRALinear")
+
+
+def test_viz_submodules_import():
+    # The `summary` / `weight_histogram` re-exports in `nnx.viz.__init__`
+    # shadow the same-named submodules under `from nnx.viz import ...`,
+    # so probe the dotted-path import directly.
+    import importlib
+
+    summary_mod = importlib.import_module("nnx.viz.summary")
+    weight_histogram_mod = importlib.import_module("nnx.viz.weight_histogram")
+    assert callable(summary_mod.summary)
+    assert callable(weight_histogram_mod.weight_histogram)
 
 
 def test_nn_subpackage_imports():

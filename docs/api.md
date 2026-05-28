@@ -162,6 +162,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ## 12. Visualization
 
+### 12.1. Run-output viz (`nnx.vis_utils`)
+
 ::: nnx.vis_utils
     options:
       members:
@@ -170,6 +172,12 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - multi_line_plot
         - scatter_plot
         - two_dim_tsne_checkpoint_logits
+
+### 12.2. Model-internals viz (`nnx.viz`)
+
+::: nnx.viz.summary.summary
+
+::: nnx.viz.weight_histogram.weight_histogram
 
 ## 13. Utilities
 
