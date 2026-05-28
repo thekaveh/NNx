@@ -100,14 +100,13 @@ class TransformerNN(nn.Module):
                 history for this layer" (i.e., first call).
 
         Returns:
-            (logits, new_kvs):
-              * logits: (batch, seq, vocab) — the *new* tokens' logits
-                (note: with ``past_kvs != None`` and ``seq=1``, the
-                returned ``logits[:, -1, :]`` is the next-token
-                distribution conditioned on the full cached prefix).
-              * new_kvs: list of length ``n_layers`` of updated
-                ``(k, v)`` tuples — pass this back in for the next
-                step.
+            A tuple ``(logits, new_kvs)`` where ``logits`` is
+                ``(batch, seq, vocab)`` — the *new* tokens' logits (with
+                ``past_kvs != None`` and ``seq=1`` the returned
+                ``logits[:, -1, :]`` is the next-token distribution
+                conditioned on the full cached prefix) — and ``new_kvs``
+                is a list of length ``n_layers`` of updated ``(k, v)``
+                tuples; pass this back in for the next step.
         """
         b, t = tokens.shape
         # Length already cached, taken from layer 0 (all layers share length).

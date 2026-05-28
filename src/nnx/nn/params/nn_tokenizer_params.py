@@ -108,7 +108,7 @@ def train_bpe(
     texts: Optional[list[str]] = None,
     special_tokens: Optional[list[str]] = None,
     min_frequency: int = 2,
-):  # -> tokenizers.Tokenizer when the optional dep is installed
+) -> Tokenizer:  # bound to `None` when the optional `lm` extra isn't installed; annotation only evaluated lazily under `from __future__ import annotations`
     """Train a BPE tokenizer on either a list of files or a list of texts.
 
     Mirrors the HF "quick BPE" recipe — Whitespace pre-tokenizer + BPE
@@ -129,7 +129,7 @@ def train_bpe(
             give smaller, more conservative vocabs.
 
     Returns:
-        A trained ``tokenizers.Tokenizer``.
+        Tokenizer: a trained ``tokenizers.Tokenizer`` ready for encode/decode + save.
     """
     _require_tokenizers()
     if files is None and texts is None:
