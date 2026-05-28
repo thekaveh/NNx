@@ -84,6 +84,7 @@
   <text x="540" y="226" fill="#fb923c" font-size="9" text-anchor="middle">hook (required)</text>
 
   <!-- LAYER 4: Specializations (amber) -->
+  <!-- Tier 1 (foundational): finetune, peft, diffusion, paradigms, trainer + shared _step_helpers -->
   <rect x="660" y="100" width="150" height="50" rx="6" fill="#0f172a"/>
   <rect x="660" y="100" width="150" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
   <text x="735" y="120" fill="white" font-size="11" font-weight="600" text-anchor="middle">nnx.finetune</text>
@@ -91,7 +92,7 @@
   <rect x="830" y="100" width="150" height="50" rx="6" fill="#0f172a"/>
   <rect x="830" y="100" width="150" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
   <text x="905" y="120" fill="white" font-size="11" font-weight="600" text-anchor="middle">nnx.peft</text>
-  <text x="905" y="136" fill="#94a3b8" font-size="9" text-anchor="middle">LoRA, AdapterLayer</text>
+  <text x="905" y="136" fill="#94a3b8" font-size="9" text-anchor="middle">LoRA / DoRA / IA3 / Prefix / Prompt</text>
   <rect x="1000" y="100" width="140" height="50" rx="6" fill="#0f172a"/>
   <rect x="1000" y="100" width="140" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
   <text x="1070" y="120" fill="white" font-size="11" font-weight="600" text-anchor="middle">nnx.diffusion</text>
@@ -99,7 +100,7 @@
   <rect x="660" y="190" width="150" height="50" rx="6" fill="#0f172a"/>
   <rect x="660" y="190" width="150" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
   <text x="735" y="210" fill="white" font-size="11" font-weight="600" text-anchor="middle">nnx.paradigms</text>
-  <text x="735" y="226" fill="#94a3b8" font-size="9" text-anchor="middle">KD / SimCLR / Mixup</text>
+  <text x="735" y="226" fill="#94a3b8" font-size="9" text-anchor="middle">KD / SimCLR / MoE / JEPA / DPO</text>
   <rect x="830" y="190" width="150" height="50" rx="6" fill="#0f172a"/>
   <rect x="830" y="190" width="150" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
   <text x="905" y="210" fill="white" font-size="11" font-weight="600" text-anchor="middle">nnx.trainer</text>
@@ -108,6 +109,13 @@
   <rect x="1000" y="190" width="140" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
   <text x="1070" y="210" fill="white" font-size="11" font-weight="600" text-anchor="middle">_step_helpers</text>
   <text x="1070" y="226" fill="#94a3b8" font-size="9" text-anchor="middle">finalize_step()</text>
+
+  <!-- Tier 2 (post-megamerge): model ops + interop + downstream — listed as a single
+       annotation row to avoid forcing a viewBox reflow. The api.md / concepts.md §15
+       index documents each individually. -->
+  <text x="668" y="262" fill="#fbbf24" font-size="9" font-weight="600">Plus:</text>
+  <text x="700" y="262" fill="#fde68a" font-size="9">nnx.quantize (PTQ / QAT)  •  nnx.prune (magnitude / 2:4)  •  nnx.surgery (Net2Net / drop / low-rank)  •</text>
+  <text x="700" y="276" fill="#fde68a" font-size="9">nnx.embeddings (contrastive + FAISS)  •  nnx.interop (GGUF / Ollama / safetensors)  •  nnx.generation (LogitsProcessor)  •  nnx.viz (model-internals)</text>
 
   <!-- LAYER 5: Training loop internals (emerald) -->
   <rect x="260" y="338" width="220" height="60" rx="6" fill="#0f172a"/>
