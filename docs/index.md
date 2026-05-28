@@ -18,11 +18,18 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 1.2. Specializations
 
 - **Fine-tuning (transfer learning)** — glob-pattern layer freezing, external state-dict loading, per-layer-group learning rates.
+- **Parameter-efficient fine-tuning (PEFT)** — **LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters**. Per-method `save_*_weights` / `load_*_weights` persist only the trainable delta.
 - **Multi-optimizer `Trainer`** — parallel to `NNModel.train()` for GAN / actor-critic workflows with a name-keyed dict of optimizers scoped via `NNParamGroupSpec`.
-- **Diffusion (DDPM)** — noise-prediction training and reverse-diffusion sampling.
-- **Training paradigms** — knowledge distillation, contrastive learning, and batch-level augmentation (Mixup / CutMix).
-- **Parameter-efficient fine-tuning (PEFT)** — LoRA-wrapped Linear layers and bottleneck residual adapters.
+- **Quantization** — PTQ INT8 weight-only (`quantize_int8`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`) via `torchao`.
 - **Pruning** — magnitude unstructured (checkpoint-safe) and 2:4 semi-structured via torchao.
+- **Model surgery** — `widen` / `deepen` (function-preserving Net2Net), `drop_layer`, `low_rank_factorize` (SVD), `expand_embedding`.
+- **Diffusion (DDPM)** — noise-prediction training and reverse-diffusion sampling.
+- **Training paradigms** — knowledge distillation (Hinton + FitNets-style feature-KD), contrastive (SimCLR / NT-Xent), Mixup, CutMix, sparse top-k Mixture-of-Experts (`MoELinear` + Switch-style aux loss), I-JEPA self-supervised pretraining, DPO preference fine-tuning, Born-Again iterated self-distillation.
+- **Language modeling** — `TransformerNN` (decoder-only: RMSNorm + RoPE + SwiGLU + KV-cache) + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with greedy / top-k / top-p / repetition-penalty sampling.
+- **Embeddings + FAISS** — contrastive text-embedder training + FAISS index export for downstream RAG.
+- **GGUF + Ollama export** — write a `.gguf` for the llama.cpp / Ollama / LM Studio ecosystem, including the Ollama Modelfile bundle.
+- **HuggingFace Hub** — `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel` via the `PyTorchModelHubMixin`, plus safetensors checkpoint format.
+- **Model-internals visualization** — `nnx.viz.summary` (torchinfo) + `weight_histogram` + `activation_map` + `attribute` (Captum) + `netron_export`.
 
 ## 2. Where to next
 
@@ -32,11 +39,21 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 ### 2.2. Understand the design
 
-- [Concepts](concepts.md) — what an `NNRun` is, where things land on disk, how the enum-as-factory pattern works, how the five specialization subpackages compose.
+- [Concepts](concepts.md) — what an `NNRun` is, where things land on disk, how the enum-as-factory pattern works, how all 14 specialization subpackages compose.
 
-### 2.3. Look things up
+### 2.3. Deep-dive guides
 
-- [API Reference](api.md) — auto-generated from docstrings.
+- [Language modeling](lm.md) — train a tiny `TransformerNN` end-to-end (CPU-friendly).
+- [Direct Preference Optimization](dpo.md) — fine-tune an LM on `(prompt, chosen, rejected)` preference pairs.
+- [I-JEPA](jepa.md) — masked-patch latent-prediction self-supervised pretraining.
+- [Model surgery](surgery.md) — function-preserving Net2Net + low-rank + drop primitives.
+- [Embeddings + FAISS](embeddings.md) — contrastive training + RAG-ready export.
+- [HuggingFace Hub](hub.md) — safetensors + Hub publish/load.
+- [GGUF & Ollama](gguf.md) — export to llama.cpp ecosystem.
+
+### 2.4. Look things up
+
+- [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
 
 ## 3. Status
 
