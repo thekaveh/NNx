@@ -548,9 +548,9 @@ class NNModel:
                     # returning the X-tuple. The label is discarded for predict.
                     X_in, _ = self.net.unpack_batch(batch)
                     X_in = tuple(x.to(self.device) for x in X_in)
-                    log = self.net(*X_in).cpu().numpy()
-                    logits_chunks.append(log)
-                    classes_chunks.append(log.argmax(axis=1))
+                    logits = self.net(*X_in).cpu().numpy()
+                    logits_chunks.append(logits)
+                    classes_chunks.append(logits.argmax(axis=1))
             return PredictResult(
                 logits=np.concatenate(logits_chunks),
                 classes=np.concatenate(classes_chunks),
