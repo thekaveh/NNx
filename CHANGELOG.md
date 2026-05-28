@@ -4,6 +4,11 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — HuggingFace interop (safetensors + Hub mixin)
+
+- **safetensors as opt-in checkpoint format.** `NNCheckpoint.to_file(path, format="safetensors")` writes a safe, mmap-friendly file readable by ComfyUI / vLLM / AutoGPTQ / HuggingFace tools. `NNParams`, `NNModelParams`, and `NNIterationDataPoint` are JSON-serialized into the safetensors metadata dict (the spec only allows `str -> str` metadata, so a JSON wrapper is the cleanest fit). Pickle remains the default format for back-compat; `NNCheckpoint.from_file(path)` auto-detects via magic-byte sniff (modern torch.save starts with the ZIP container `PK\x03\x04`, legacy / bare pickle starts with `\x80`, safetensors starts with neither). Requires `pip install nnx[hub]`.
+- **`nnx[hub]` extra** — pulls in `safetensors>=0.7.0` and `huggingface_hub>=1.4.0`. Both deps are runtime-import-guarded, so `pip install nnx` keeps working without them.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.
