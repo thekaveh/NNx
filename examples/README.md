@@ -50,3 +50,10 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 |---|---|
 | `13_train_domain_embedder.py` | Train a tiny text embedder from scratch on synthetic `(sentence, paraphrase)` pairs via NT-Xent contrastive loss, embed a corpus, export to a FAISS index, query the index for self-similarity. End-to-end demo of `nnx.embeddings.train_contrastive` + `export_to_faiss`. Requires `pip install "nnx[embeddings]"`. |
 | `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()`. CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). |
+
+### 2.6. GGUF + Ollama export
+
+| Example | What it demonstrates |
+|---|---|
+| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "nnx[gguf-write]"`. |
+| `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "nnx[gguf-write]"`. |

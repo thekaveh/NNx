@@ -111,6 +111,21 @@ def test_net_modules_import():
     assert hasattr(transformer_nn, "TransformerNN")
 
 
+def test_interop_subpackage_imports():
+    """``nnx.interop`` is the GGUF / Ollama export surface. The top-level
+    package import must succeed even when the optional ``gguf`` dep is
+    missing (the writer imports it lazily inside the function body)."""
+    from nnx import interop
+    from nnx.interop import ollama
+    from nnx.interop.gguf import tensor_name_map, writer
+
+    assert hasattr(interop, "write_gguf")
+    assert hasattr(interop, "export_ollama_modelfile")
+    assert hasattr(ollama, "export_ollama_modelfile")
+    assert hasattr(writer, "write_gguf")
+    assert hasattr(tensor_name_map, "map_tensors")
+
+
 def test_generation_subpackage_imports():
     """LogitsProcessor chain — pure-torch, no optional deps. Should
     import without `tokenizers` available."""
