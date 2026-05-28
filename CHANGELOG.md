@@ -11,7 +11,7 @@ These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on
 - **Default-AMP runs now hash to a different `run.id`** than they did between pass-2 and this audit. The `mixed_precision=False` default is now correctly omitted from `state()` (back-compat invariant from before pass-2).
 - **Plateau-scheduler runs now hash to a different `run.id`** than they did between the Schedulers-enum addition and this audit. The `kind=None` default + its variant-specific knobs (step_size / T_max / max_lr / total_steps / warmup_steps) are now correctly omitted from `state()` when at their defaults (same back-compat invariant).
 
-### Fixed — post-tracks audit
+### Fixed — back-compat invariant audit
 
 - **`NNModelParams.state()` omits `mixed_precision` when False.** The field was added in pass-2 but always emitted into `state()`, breaking the omit-when-default back-compat invariant. Every default-AMP run had a shifted `run.id` versus pre-pass-2 runs with otherwise identical config. **One-time hash shift:** any existing default-AMP `runs/<id>/` directory will recompute to a different id after this fix — load by the on-disk directory name still works; recomputed ids will land in a fresh directory.
 - **`NNSchedulerParams.state()` omits `kind` and the variant-specific knobs** (`step_size` / `T_max` / `max_lr` / `total_steps` / `warmup_steps`) when None. Same omit-when-default invariant: a plain ReduceLROnPlateau `NNSchedulerParams` now hashes to the same `run.id` as it did before the `Schedulers` enum was added. Existing on-disk runs with explicit-None entries still load (the legacy form is tolerated in `from_state`).
