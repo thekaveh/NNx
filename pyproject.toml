@@ -87,6 +87,12 @@ embeddings = [
     # ``nn.Module`` encoder if they don't want the dep.
     "faiss-cpu>=1.7",
     "sentence-transformers>=2.7",
+# Decoder-only LM path: HF Rust BPE tokenizer + the example dataset
+# loader. Kept opt-in so users on the FeedFwd / GNN path don't pull
+# a multi-MB Rust binary they'll never call.
+lm = [
+    "tokenizers>=0.20",
+    "datasets>=2.20",
 ]
 docs = [
     "mkdocs>=1.5",

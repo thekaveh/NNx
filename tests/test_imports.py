@@ -98,6 +98,8 @@ def test_net_modules_import():
         graph_conv_nn,
         graph_nn_base,
         graph_sage_nn,
+        transformer_layers,
+        transformer_nn,
     )
 
     assert hasattr(feed_fwd_nn, "FeedFwdNN")
@@ -105,6 +107,36 @@ def test_net_modules_import():
     assert hasattr(graph_sage_nn, "GraphSageNN")
     assert hasattr(graph_att_nn, "GraphAttNN")
     assert hasattr(graph_nn_base, "GraphNNBase")
+    assert hasattr(transformer_layers, "TransformerBlock")
+    assert hasattr(transformer_nn, "TransformerNN")
+
+
+def test_generation_subpackage_imports():
+    """LogitsProcessor chain — pure-torch, no optional deps. Should
+    import without `tokenizers` available."""
+    from nnx import generation
+    from nnx.generation import logits_processors, sampling
+
+    assert hasattr(generation, "TemperatureScaling")
+    assert hasattr(logits_processors, "apply_chain")
+    assert hasattr(sampling, "sample_next_token")
+
+
+def test_transformer_public_surface():
+    """Top-level re-exports for the SP-4 surface."""
+    import nnx
+
+    assert hasattr(nnx, "TransformerNN")
+    assert hasattr(nnx, "NNTransformerParams")
+    assert hasattr(nnx, "GenerativeNNModel")
+    assert hasattr(nnx, "TemperatureScaling")
+    assert hasattr(nnx, "TopKFilter")
+    assert hasattr(nnx, "TopPFilter")
+    assert hasattr(nnx, "RepetitionPenalty")
+    assert hasattr(nnx, "apply_chain")
+    assert hasattr(nnx, "sample_next_token")
+    # The Nets enum gained the new variant.
+    assert nnx.Nets.TRANSFORMER.value == "transformer"
 
 
 def test_dataset_modules_import():
@@ -152,6 +184,7 @@ def test_params_modules_import():
         nn_run,
         nn_scheduler_params,
         nn_train_params,
+        nn_transformer_params,
     )
 
     assert hasattr(nn_model_params, "NNModelParams")
@@ -163,3 +196,4 @@ def test_params_modules_import():
     assert hasattr(nn_iteration_data_point, "NNIterationDataPoint")
     assert hasattr(nn_scheduler_params, "NNSchedulerParams")
     assert hasattr(nn_params, "NNParams")
+    assert hasattr(nn_transformer_params, "NNTransformerParams")
