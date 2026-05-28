@@ -175,7 +175,8 @@ Out of scope:
 - KV cache turned on by default (the seam exists; SP-10c flips it).
 - GGUF / Ollama export (SP-10a).
 - Prefix tuning / prompt tuning (SP-10b).
-- DPO / RLHF (SP-10d).
+- Production-scale RLHF / PPO (SP-10d ships **DPO** for small-LM
+  experimentation; see [docs/dpo.md](dpo.md) for honest scope).
 
 For each of those, see the corresponding sub-project plan under
 `docs/specs/` (local-only).

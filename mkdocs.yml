@@ -36,6 +36,7 @@ nav:
   - Language modeling: lm.md
   - I-JEPA: jepa.md
   - GGUF & Ollama: gguf.md
+  - DPO: dpo.md
   - API Reference: api.md
 
 # Working design docs aren't user-facing — exclude them from the

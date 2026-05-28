@@ -22,6 +22,9 @@ Public surface — re-exported from the top-level ``nnx`` package:
     + :func:`update_ema` + :func:`random_block_mask` +
     :class:`JEPAPredictor` — I-JEPA self-supervised learning in
     latent space.
+  - :func:`dpo_train_step_factory` — Direct Preference Optimization
+    (Rafailov et al., 2023): chosen-vs-rejected log-ratio objective
+    against a frozen reference policy.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from .jepa import (
     random_block_mask,
     update_ema,
 )
+from .dpo import dpo_train_step_factory
 from .moe import moe_train_step_factory
 
 __all__ = [
@@ -53,4 +57,5 @@ __all__ = [
     "update_ema",
     "random_block_mask",
     "JEPAPredictor",
+    "dpo_train_step_factory",
 ]

@@ -48,6 +48,7 @@ from .nn.callbacks import (
 from .nn.dataset.nn_dataset import NNDataset
 from .nn.dataset.nn_dataset_base import NNDatasetBase
 from .nn.dataset.nn_graph_dataset import NNGraphDataset
+from .nn.dataset.nn_preference_dataset import NNPreferenceDataset
 from .nn.dataset.nn_tabular_dataset import NNTabularDataset
 from .nn.enum.activations import Activations
 from .nn.enum.checkpoints import Checkpoints
@@ -111,6 +112,7 @@ from .paradigms import (
     born_again_train,
     build_target_encoder,
     cutmix_train_step_factory,
+    dpo_train_step_factory,
     feature_kd_train_step_factory,
     jepa_train_step_factory,
     kd_train_step_factory,
@@ -209,6 +211,7 @@ __all__ = [
     "NNGraphDataset",
     "NNTabularDataset",
     "NNDatasetBase",
+    "NNPreferenceDataset",
     # Helpers
     "Utils",
     "VisUtils",
@@ -247,6 +250,7 @@ __all__ = [
     "JEPAPredictor",
     "ViTNN",
     "ViTBlock",
+    "dpo_train_step_factory",
     # PEFT (LoRA + DoRA + IA3 + adapters)
     # Mixture-of-Experts
     "MoELinear",
