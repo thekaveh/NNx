@@ -4,6 +4,10 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — born-again self-distillation
+
+- **`nnx.paradigms.born_again_train(model, *, generations, train_params, **kd_kwargs) -> list[NNRun]`** — iterated self-distillation wrapper. Generation 0 trains plain (no teacher); each subsequent generation uses a deep-copied, frozen, eval-mode snapshot of the model after the prior generation as the teacher in a Hinton-style KD step (composed via `kd_train_step_factory`). Returns the per-generation `NNRun` list so callers can inspect the convergence trajectory. Born-again networks (Furlanello et al., ICML 2018) often match or slightly outperform the original — the soft targets act as an implicit regularizer. 9 new tests covering generations-count validation, KD-factory not invoked on generation 0, KD-factory invoked on generations 1+, teacher snapshot is a deepcopy (not the live model), teacher requires_grad=False + eval-mode at handoff, kwargs forwarding, teacher isolation from subsequent training, top-level re-export, and end-to-end model mutation across generations.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.

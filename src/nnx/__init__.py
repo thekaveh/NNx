@@ -77,6 +77,7 @@ from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams
 from .paradigms import (
+    born_again_train,
     cutmix_train_step_factory,
     kd_train_step_factory,
     mixup_train_step_factory,
@@ -161,6 +162,7 @@ __all__ = [
     "sample",
     # Training paradigms
     "kd_train_step_factory",
+    "born_again_train",
     "simclr_train_step_factory",
     "nt_xent_loss",
     "mixup_train_step_factory",

@@ -8,6 +8,8 @@ the per-batch update is swapped.
 Public surface — re-exported from the top-level ``nnx`` package:
 
   - :func:`kd_train_step_factory` — Hinton-style knowledge distillation.
+  - :func:`born_again_train` — iterated self-distillation across G
+    generations, layered on top of :func:`kd_train_step_factory`.
   - :func:`simclr_train_step_factory` + :func:`nt_xent_loss` — SimCLR
     contrastive learning.
   - :func:`mixup_train_step_factory` — Mixup augmentation.
@@ -17,11 +19,13 @@ Public surface — re-exported from the top-level ``nnx`` package:
 from __future__ import annotations
 
 from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
+from .born_again import born_again_train
 from .contrastive import nt_xent_loss, simclr_train_step_factory
 from .distillation import kd_train_step_factory
 
 __all__ = [
     "kd_train_step_factory",
+    "born_again_train",
     "simclr_train_step_factory",
     "nt_xent_loss",
     "mixup_train_step_factory",
