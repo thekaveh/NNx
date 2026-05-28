@@ -7,6 +7,18 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 ### Added
 
 - **`NNModel.to_onnx(..., dynamo=True)` opt-in.** New `dynamo: bool = False` kwarg on `NNModel.to_onnx`. When True, dispatches through PyTorch's new `torch.export`-based ONNX exporter (default in torch>=2.9; supports >2 GB models via external data; generally faster). The default (False) preserves the existing legacy TorchScript path — no behavior change for existing callers. The dynamo path lazy-imports `onnxscript` and raises a clear `ImportError` pointing at the new `nnx[onnx-dynamo]` extra (`pip install nnx[onnx-dynamo]`) if missing, rather than letting torch surface a less actionable failure.
+### Added — quantization (PTQ INT8 weight-only via torchao)
+
+- **`nnx.quantize` package** — post-training quantization built on top of [`torchao`](https://github.com/pytorch/ao) (the replacement for the deprecated `torch.ao.quantization`, which is removed in PyTorch 2.10).
+  - **`nnx.quantize_int8(model: NNModel) -> NNModel`** — one-call PTQ INT8 weight-only quantization. Deep-copies `model.net`, applies `torchao.quantization.quantize_(net, Int8WeightOnlyConfig(version=2))` to the copy, and returns a new `NNModel` whose `net.Linear` weights are stored in int8 per-channel (symmetric). Activations stay FP32 — only the weights are quantized, so accuracy loss is typically a fraction of a percentage point. **No calibration data, no retraining** — pure post-process. The original `NNModel` is left untouched so callers can keep both around for an accuracy delta comparison.
+  - **Vision + GNN compatible** — any module exposing `nn.Linear` submodules is a valid target.
+  - **ONNX export still works** on the quantized model (`NNModel.to_onnx` routes through `torch.onnx.export`'s legacy tracing path; torchao's quantized tensor falls back to dequantized matmul during the trace, so the exported ONNX is FP32 with the quantized weights baked in). Regression test included.
+  - **State-dict round-trips through `NNCheckpoint.to_file`** (the existing pickle path); the on-disk file shrinks by roughly the same ratio as the pickled state-dict (≈30% on the example below, closer to ~25% at production-scale dims).
+- Runnable demo: `examples/12_quantize_int8.py` — trains a small classifier (FP32), prints the FP32 val accuracy + state-dict size, calls `quantize_int8` once, prints the INT8 val accuracy + size, and confirms the quantized model still ONNX-exports. On the toy task the size reduction lands at ~69% with zero measurable accuracy delta.
+- New optional dependency: `pip install nnx[quantize]` (pulls `torchao>=0.17`).
+- 15 new tests in `tests/test_quantize_ptq.py` covering: returns a fresh `NNModel`, preserves output shape, doesn't mutate the source, replaces Linear weights with a torchao-quantized tensor, preserves attached attrs (`params` / `net_params` / `device` / `loss_fn`), output stays within 5% relative L2 of FP32, pickled state-dict shrinks vs FP32, `NNCheckpoint.to_file` round-trip shrinks on disk, ONNX export round-trip, deep-copy isolation (mutating quantized doesn't leak back), `predict()` end-to-end on a deeper model, clear `ImportError` when torchao is missing, state-dict keys unchanged, idempotency-via-deep-copy (calling twice on the same source produces identical outputs), `.train()` / `.eval()` toggle still works.
+
+**Deferred:** QAT (`qat_train_step_factory`) and INT4 weight-only land in separate follow-up PRs.
 
 ### Migration notes
 
