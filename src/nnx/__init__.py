@@ -91,6 +91,13 @@ from .peft import (
     save_lora_weights,
 )
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
+from .surgery import (
+    deepen,
+    drop_layer,
+    expand_embedding,
+    low_rank_factorize,
+    widen,
+)
 from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .utils import Utils
 from .vis_utils import VisUtils
@@ -171,6 +178,12 @@ __all__ = [
     "save_lora_weights",
     "load_lora_weights",
     "AdapterLayer",
+    # Surgery (Net2Net + drop + low-rank + embedding)
+    "widen",
+    "deepen",
+    "drop_layer",
+    "low_rank_factorize",
+    "expand_embedding",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",
