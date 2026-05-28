@@ -15,7 +15,7 @@ catches a regression that empties `__all__` or drops a public export.
 
 def test_top_level_imports():
     import nnx
-    from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils
+    from nnx import diffusion, finetune, paradigms, peft, seeding, trainer, utils, vis_utils, viz
 
     # One probe per subpackage to verify the public surface stayed intact.
     assert hasattr(nnx, "NNModel")
@@ -26,7 +26,10 @@ def test_top_level_imports():
     assert hasattr(trainer, "Trainer")
     assert hasattr(diffusion, "DiffusionMLP")
     assert hasattr(paradigms, "kd_train_step_factory")
+    assert hasattr(paradigms, "feature_kd_train_step_factory")
     assert hasattr(peft, "LoRALinear")
+    assert hasattr(viz, "summary")
+    assert hasattr(viz, "weight_histogram")
 
 
 def test_finetune_submodules_import():
@@ -59,6 +62,7 @@ def test_paradigms_submodules_import():
     assert hasattr(augmentation, "mixup_train_step_factory")
     assert hasattr(contrastive, "simclr_train_step_factory")
     assert hasattr(distillation, "kd_train_step_factory")
+    assert hasattr(distillation, "feature_kd_train_step_factory")
 
 
 def test_peft_submodules_import():
@@ -66,6 +70,18 @@ def test_peft_submodules_import():
 
     assert hasattr(adapters, "AdapterLayer")
     assert hasattr(lora, "LoRALinear")
+
+
+def test_viz_submodules_import():
+    # The `summary` / `weight_histogram` re-exports in `nnx.viz.__init__`
+    # shadow the same-named submodules under `from nnx.viz import ...`,
+    # so probe the dotted-path import directly.
+    import importlib
+
+    summary_mod = importlib.import_module("nnx.viz.summary")
+    weight_histogram_mod = importlib.import_module("nnx.viz.weight_histogram")
+    assert callable(summary_mod.summary)
+    assert callable(weight_histogram_mod.weight_histogram)
 
 
 def test_nn_subpackage_imports():
@@ -82,6 +98,8 @@ def test_net_modules_import():
         graph_conv_nn,
         graph_nn_base,
         graph_sage_nn,
+        transformer_layers,
+        transformer_nn,
     )
 
     assert hasattr(feed_fwd_nn, "FeedFwdNN")
@@ -89,6 +107,51 @@ def test_net_modules_import():
     assert hasattr(graph_sage_nn, "GraphSageNN")
     assert hasattr(graph_att_nn, "GraphAttNN")
     assert hasattr(graph_nn_base, "GraphNNBase")
+    assert hasattr(transformer_layers, "TransformerBlock")
+    assert hasattr(transformer_nn, "TransformerNN")
+
+
+def test_interop_subpackage_imports():
+    """``nnx.interop`` is the GGUF / Ollama export surface. The top-level
+    package import must succeed even when the optional ``gguf`` dep is
+    missing (the writer imports it lazily inside the function body)."""
+    from nnx import interop
+    from nnx.interop import ollama
+    from nnx.interop.gguf import tensor_name_map, writer
+
+    assert hasattr(interop, "write_gguf")
+    assert hasattr(interop, "export_ollama_modelfile")
+    assert hasattr(ollama, "export_ollama_modelfile")
+    assert hasattr(writer, "write_gguf")
+    assert hasattr(tensor_name_map, "map_tensors")
+
+
+def test_generation_subpackage_imports():
+    """LogitsProcessor chain — pure-torch, no optional deps. Should
+    import without `tokenizers` available."""
+    from nnx import generation
+    from nnx.generation import logits_processors, sampling
+
+    assert hasattr(generation, "TemperatureScaling")
+    assert hasattr(logits_processors, "apply_chain")
+    assert hasattr(sampling, "sample_next_token")
+
+
+def test_transformer_public_surface():
+    """Top-level re-exports for the SP-4 surface."""
+    import nnx
+
+    assert hasattr(nnx, "TransformerNN")
+    assert hasattr(nnx, "NNTransformerParams")
+    assert hasattr(nnx, "GenerativeNNModel")
+    assert hasattr(nnx, "TemperatureScaling")
+    assert hasattr(nnx, "TopKFilter")
+    assert hasattr(nnx, "TopPFilter")
+    assert hasattr(nnx, "RepetitionPenalty")
+    assert hasattr(nnx, "apply_chain")
+    assert hasattr(nnx, "sample_next_token")
+    # The Nets enum gained the new variant.
+    assert nnx.Nets.TRANSFORMER.value == "transformer"
 
 
 def test_dataset_modules_import():
@@ -136,6 +199,7 @@ def test_params_modules_import():
         nn_run,
         nn_scheduler_params,
         nn_train_params,
+        nn_transformer_params,
     )
 
     assert hasattr(nn_model_params, "NNModelParams")
@@ -147,3 +211,4 @@ def test_params_modules_import():
     assert hasattr(nn_iteration_data_point, "NNIterationDataPoint")
     assert hasattr(nn_scheduler_params, "NNSchedulerParams")
     assert hasattr(nn_params, "NNParams")
+    assert hasattr(nn_transformer_params, "NNTransformerParams")

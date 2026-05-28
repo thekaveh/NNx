@@ -8,22 +8,54 @@ the per-batch update is swapped.
 Public surface — re-exported from the top-level ``nnx`` package:
 
   - :func:`kd_train_step_factory` — Hinton-style knowledge distillation.
+  - :func:`feature_kd_train_step_factory` — FitNets-style feature
+    distillation (logit-KD + named intermediate-layer MSE).
+  - :func:`born_again_train` — iterated self-distillation across G
+    generations, layered on top of :func:`kd_train_step_factory`.
   - :func:`simclr_train_step_factory` + :func:`nt_xent_loss` — SimCLR
     contrastive learning.
   - :func:`mixup_train_step_factory` — Mixup augmentation.
   - :func:`cutmix_train_step_factory` — CutMix augmentation (image data).
+  - :func:`moe_train_step_factory` — Mixture-of-Experts supervised step
+    with Switch-style load-balancing aux loss.
+  - :func:`jepa_train_step_factory` + :func:`build_target_encoder`
+    + :func:`update_ema` + :func:`random_block_mask` +
+    :class:`JEPAPredictor` — I-JEPA self-supervised learning in
+    latent space.
+  - :func:`dpo_train_step_factory` — Direct Preference Optimization
+    (Rafailov et al., 2023): chosen-vs-rejected log-ratio objective
+    against a frozen reference policy.
 """
 
 from __future__ import annotations
 
 from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
+from .born_again import born_again_train
 from .contrastive import nt_xent_loss, simclr_train_step_factory
-from .distillation import kd_train_step_factory
+from .distillation import feature_kd_train_step_factory, kd_train_step_factory
+from .dpo import dpo_train_step_factory
+from .jepa import (
+    JEPAPredictor,
+    build_target_encoder,
+    jepa_train_step_factory,
+    random_block_mask,
+    update_ema,
+)
+from .moe import moe_train_step_factory
 
 __all__ = [
     "kd_train_step_factory",
+    "feature_kd_train_step_factory",
+    "born_again_train",
     "simclr_train_step_factory",
     "nt_xent_loss",
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
+    "moe_train_step_factory",
+    "jepa_train_step_factory",
+    "build_target_encoder",
+    "update_ema",
+    "random_block_mask",
+    "JEPAPredictor",
+    "dpo_train_step_factory",
 ]

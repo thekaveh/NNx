@@ -66,6 +66,52 @@ dev = [
 tensorboard = ["tensorboard>=2.15"]
 wandb = ["wandb>=0.16"]
 onnx = ["onnx>=1.15"]
+# `onnx-dynamo` pulls `onnxscript`, required only when calling
+# `NNModel.to_onnx(..., dynamo=True)` to dispatch through PyTorch's new
+# `torch.export`-based ONNX exporter. The legacy TorchScript path
+# (the default) needs only `nnx[onnx]`.
+onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
+# `viz` covers the core model-internals viz primitives (summary +
+# weight_histogram + activation_map + Captum attribution). `viz-interactive`
+# adds the Netron browser viewer used by `nnx.viz.netron_export(..., launch=True)`.
+# The ONNX file itself comes from `torch.onnx.export` (legacy path) and needs
+# only `nnx[onnx]`; `netron` ships a Flask viewer that runs as a separate
+# process, kept opt-in so notebook users who just want the `.onnx` artifact
+# don't install it.
+viz = ["torchinfo>=1.8.0", "captum>=0.7.0"]
+viz-interactive = ["netron>=7.0"]
+quantize = ["torchao>=0.17"]
+# `hub` enables interop with the HuggingFace ecosystem:
+#   - safetensors as an opt-in checkpoint format (NNCheckpoint.to_file(format="safetensors"))
+#   - PyTorchModelHubMixin on NNModel (save_pretrained / push_to_hub / from_pretrained)
+# Both deps are runtime-import-guarded — `pip install nnx` works without them.
+hub = [
+    "safetensors>=0.7.0",
+    "huggingface_hub>=1.4.0",
+]
+embeddings = [
+    # The FAISS index is the handoff format to every downstream RAG
+    # stack (LangChain / LlamaIndex / Haystack / raw). `sentence-transformers`
+    # is the dominant backbone source; users can swap in their own
+    # ``nn.Module`` encoder if they don't want the dep.
+    "faiss-cpu>=1.7",
+    "sentence-transformers>=2.7",
+]
+# Decoder-only LM path: HF Rust BPE tokenizer + the example dataset
+# loader. Kept opt-in so users on the FeedFwd / GNN path don't pull
+# a multi-MB Rust binary they'll never call.
+lm = [
+    "tokenizers>=0.20",
+    "datasets>=2.20",
+]
+# GGUF write path: ``nnx.interop.gguf.write_gguf`` + the Ollama
+# Modelfile bundle exporter. The ``gguf`` package is the upstream
+# llama-cpp-maintained Python writer — pulling it in only when the
+# user actually exports, since most NNx users never leave the
+# PyTorch / safetensors world.
+gguf-write = [
+    "gguf>=0.19.0",
+]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",

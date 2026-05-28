@@ -1,0 +1,33 @@
+# Files where parallel sub-project PRs add new lines to a shared additive
+# section (capability bullets, optional-dependency entries, re-exports,
+# CHANGELOG bullets). Using merge=union tells git to concatenate both
+# sides of every textual conflict rather than emit conflict markers —
+# safe because every change in these files is purely additive across
+# the parallel PR set. After the megamerge lands the union-merged
+# sections may need a quick manual reorder cleanup; that's far cheaper
+# than resolving N×M conflicts manually.
+#
+# TEMPORARY — these merge=union entries were added to support the PR #29
+# megamerge of 20 parallel sub-projects. Once PR #29 merges to main, the
+# entries below can be removed (or kept narrowly for files that genuinely
+# stay additive across normal PR flow, e.g. CHANGELOG.md). Leaving them
+# in place means any future PR that touches these files will see lines
+# concatenated rather than conflict-marked — that quietly defeats review
+# for non-additive edits. Audit at merge time.
+CHANGELOG.md merge=union
+README.md merge=union
+pyproject.toml merge=union
+src/nnx/__init__.py merge=union
+src/nnx/paradigms/__init__.py merge=union
+src/nnx/peft/__init__.py merge=union
+src/nnx/viz/__init__.py merge=union
+src/nnx/quantize/__init__.py merge=union
+src/nnx/interop/__init__.py merge=union
+src/nnx/nn/enum/nets.py merge=union
+docs/api.md merge=union
+docs/index.md merge=union
+docs/concepts.md merge=union
+mkdocs.yml merge=union
+tests/test_imports.py merge=union
+tests/conftest.py merge=union
+examples/README.md merge=union

@@ -1,6 +1,6 @@
 # Concepts
 
-This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the five specialization subpackages.
+This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the specialization subpackages (now ~14 of them after PR #29 — Tier-1 fine-tuning/PEFT/diffusion/paradigms/trainer, Tier-2 quantization/pruning/surgery/embeddings/interop/viz/generation, plus the decoder-only LM path on top).
 
 Sections are ordered from most fundamental to most specialized. Read top-to-bottom on a first pass; jump by anchor for reference.
 
@@ -13,7 +13,7 @@ The diagram has eight layers, top-to-bottom:
 1. **User code + PyTorch** (slate) — the consumer surface.
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `trainer_step_fn`** (orange bus) — the optional hook every specialization plugs into.
-4. **Specialization subpackages** (amber) — `nnx.finetune`, `nnx.peft`, `nnx.diffusion`, `nnx.paradigms`, `nnx.trainer`, plus the shared `nnx._step_helpers`.
+4. **Specialization subpackages** (amber) — model-side: `nnx.finetune`, `nnx.peft` (LoRA / DoRA / IA3 / Prefix / Prompt / Adapters), `nnx.prune`, `nnx.surgery`, `nnx.quantize`; data + paradigm side: `nnx.diffusion`, `nnx.paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), `nnx.trainer`; interop + downstream: `nnx.embeddings` (contrastive + FAISS), `nnx.interop` (GGUF + Ollama + safetensors), `nnx.generation` (LogitsProcessor chain), `nnx.viz` (model-internals viz). All plug into the orange `train_step_fn` / `trainer_step_fn` hook from Layer 3 — plus the shared `nnx._step_helpers`.
 5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
@@ -382,7 +382,36 @@ class AdaptedNet(nn.Module):
 
 See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py) for an end-to-end LoRA flow that explicitly verifies every base parameter is bit-exactly unchanged across the fine-tuning run.
 
-## 12. Reproducibility
+## 12. Model-internals visualization
+
+`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Four primitives ship today: `summary`, `weight_histogram`, `activation_map`, and `netron_export`.
+
+`nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install nnx[viz]` pulls in `torchinfo`).
+
+`nnx.viz.weight_histogram(model)` walks `model.named_parameters()` and emits one Plotly `Histogram` trace per tensor in a grid subplot. Useful for spotting dead layers, NaN / Inf weights, or saturation patterns at a glance.
+
+`nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule, runs `model(x)` under `torch.no_grad()`, and returns a Plotly heatmap: a grid of per-channel heatmaps for 4D conv activations `(N, C, H, W)`, or a single `(N, F)` heatmap for 2D dense activations. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
+
+`nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/). Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install nnx[viz-interactive]`).
+
+```python
+import torch
+from nnx import NNModel, NNParams, NNModelParams, Activations, Devices, Losses, Nets
+from nnx.viz import activation_map, netron_export, summary, weight_histogram
+
+model = NNModel(
+    net_params=NNParams(input_dim=8, output_dim=3, hidden_dims=[32, 16],
+                        dropout_prob=0.1, activation=Activations.RELU),
+    params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU,
+                         loss=Losses.CROSS_ENTROPY),
+)
+print(summary(model, input_size=(1, 8)))   # Keras-style parameter table
+weight_histogram(model).show()              # Plotly grid of per-tensor weight distributions
+activation_map(model, torch.randn(4, 8), "layers.0").show()  # batch x features heatmap
+netron_export(model, "model.onnx", torch.randn(1, 8))         # write graph for Netron
+```
+
+## 13. Reproducibility
 
 ```python
 from nnx import set_seed, dataloader_worker_init_fn
@@ -394,7 +423,7 @@ NNTrainParams(seed=42, ...)                  # pins again inside train()
 
 `strict=True` opts into `torch.use_deterministic_algorithms(True)` — slower and may raise on ops without a deterministic CUDA kernel, but produces bit-for-bit identical training across runs on the same hardware.
 
-## 13. Resuming training
+## 14. Resuming training
 
 ```python
 # First run
@@ -410,3 +439,50 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ```
 
 Checkpoints written before resume support (i.e., from runs that predate this feature) don't carry an `.opt.pt` sidecar — weights still load, but the optimizer starts fresh.
+
+## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
+
+The decoder-only LM path is the largest architectural addition since the
+foundational training loop. It introduces three new abstractions that sit
+alongside `NNModel` rather than replacing it:
+
+- **`TransformerNN`** — a small decoder-only transformer (`RMSNorm` pre-norm,
+  rotary positional embeddings, SwiGLU FFN, tied input/output embeddings,
+  fused QKV projection). Sits at the same level as `FeedFwdNN` / `GraphConvNN`
+  / `GraphSageNN` / `GraphAttNN` and is selected via `Nets.TRANSFORMER`.
+- **`NNTransformerParams`** + **`NNTokenizerParams`** — params subclasses that
+  add the LM-specific shape knobs (`vocab_size`, `n_layers`, `d_model`,
+  `max_seq_len`, `ffn_mult`, `rope_base`, `tie_embeddings`, `attn_dropout`,
+  `resid_dropout`). Every optional field omits itself from `state()` at
+  default — the same broken-three-times invariant covered in §2.2.
+- **`GenerativeNNModel`** — a thin subclass of `NNModel` adding
+  `generate(prompt, *, max_new_tokens, logits_processors=...)`. The
+  generation loop runs the prompt through `TransformerNN.forward_with_kv`
+  for a single prefill step, then incrementally decodes token-by-token using
+  the returned KV-cache (measured ≈1.9× speedup at 128 tokens on CPU; the
+  gap widens on longer contexts and GPU). Sampling defaults to greedy; pass a
+  list of `nnx.generation.LogitsProcessor` (temperature, top-k, top-p,
+  repetition-penalty) to switch.
+
+The LM path stays optional behind the `lm` extra (`pip install "nnx[lm]"` —
+pulls `tokenizers` + `datasets`); the rest of NNx works without it. See
+[`docs/lm.md`](lm.md) for the end-to-end walkthrough and
+[`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py)
+for a CPU-friendly TinyStories training run.
+
+Downstream of the LM path, four follow-ons compose on top of it:
+
+- **PEFT for transformers** — `PrefixTuner` / `PromptTuner` (see §11)
+  attach learned key/value or input-embedding prefixes to a frozen
+  `TransformerNN` for parameter-efficient adaptation.
+- **DPO** — `dpo_train_step_factory` (see [`docs/dpo.md`](dpo.md))
+  fine-tunes a `TransformerNN` against `(prompt, chosen, rejected)`
+  preference triples via the Rafailov et al. 2023 chosen-vs-rejected
+  log-ratio objective, no reward modeling or RL.
+- **GGUF + Ollama export** — `nnx.interop.write_gguf` writes a
+  llama.cpp-compatible `.gguf` (fused-QKV split, SwiGLU `w1`/`w3`/`w2` →
+  `ffn_gate`/`ffn_up`/`ffn_down`, RoPE/RMSNorm metadata). See
+  [`docs/gguf.md`](gguf.md).
+- **HuggingFace Hub publish** — via the `PyTorchModelHubMixin` integration
+  on `NNModel` itself (any subclass inherits it). See
+  [`docs/hub.md`](hub.md).

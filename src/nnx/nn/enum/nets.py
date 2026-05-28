@@ -8,6 +8,7 @@ from ..net.feed_fwd_nn import FeedFwdNN
 from ..net.graph_att_nn import GraphAttNN
 from ..net.graph_conv_nn import GraphConvNN
 from ..net.graph_sage_nn import GraphSageNN
+from ..net.transformer_nn import TransformerNN
 from ..params.nn_params import NNParams
 
 
@@ -16,6 +17,10 @@ class Nets(Enum):
     GRAPH_ATT = "graph_att"
     GRAPH_CONV = "graph_conv"
     GRAPH_SAGE = "graph_sage"
+    # Decoder-only Transformer; consumed by NNTransformerParams. Adding
+    # this enum variant is back-compat-safe: existing run.yaml files
+    # that don't reference it deserialize unchanged through Nets(<str>).
+    TRANSFORMER = "transformer"
 
     def __str__(self) -> str:
         return self.value
@@ -36,3 +41,5 @@ class Nets(Enum):
                 return GraphConvNN(params=params)
             case Nets.GRAPH_SAGE:
                 return GraphSageNN(params=params)
+            case Nets.TRANSFORMER:
+                return TransformerNN(params=params)
