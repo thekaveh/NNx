@@ -39,7 +39,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **Callbacks** — `Callback` base class with `on_{train,epoch}_{begin,end}` hooks. Stock: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom-epoch tags), `TensorBoardCallback` (opt-in via `nnx[tensorboard]`), `WandbCallback` (opt-in via `nnx[wandb]`). Legacy `Callable[[List[IDP]], None]` is still accepted.
 - **Visualization** — `VisUtils` (and module-level aliases) returns Plotly `Figure` objects: `confusion_matrix`, `classification_report` (returns a DataFrame), `multi_line_plot`, `scatter_plot`, `two_dim_tsne_checkpoint_logits`.
 - **Reproducibility** — `nnx.set_seed(seed, strict=False)` pins every RNG + cuDNN; `nnx.dataloader_worker_init_fn` for per-worker seeds; `NNTrainParams.seed` runs `set_seed` at `train()` entry.
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via the legacy `torch.onnx.export` (no `onnxscript` dep needed).
+- **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via the legacy `torch.onnx.export` (no `onnxscript` dep needed). Pass `dynamo=True` (opt-in via `nnx[onnx-dynamo]`) to dispatch through PyTorch's newer `torch.export`-based exporter (default in torch>=2.9; supports >2 GB models via external data; generally faster).
 
 ## 2. Install
 
@@ -57,6 +57,7 @@ Python 3.10+. Tested on 3.10 / 3.11 / 3.12. Examples in [examples/](examples/) a
 pip install "nnx[tensorboard]"         # TensorBoardCallback
 pip install "nnx[wandb]"               # WandbCallback
 pip install "nnx[onnx]"                # NNModel.to_onnx validation tooling
+pip install "nnx[onnx-dynamo]"         # NNModel.to_onnx(dynamo=True) — torch.export-based exporter
 pip install "nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 

@@ -66,6 +66,11 @@ dev = [
 tensorboard = ["tensorboard>=2.15"]
 wandb = ["wandb>=0.16"]
 onnx = ["onnx>=1.15"]
+# `onnx-dynamo` pulls `onnxscript`, required only when calling
+# `NNModel.to_onnx(..., dynamo=True)` to dispatch through PyTorch's new
+# `torch.export`-based ONNX exporter. The legacy TorchScript path
+# (the default) needs only `nnx[onnx]`.
+onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
