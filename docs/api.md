@@ -76,6 +76,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset
 
+::: nnx.nn.dataset.nn_preference_dataset.NNPreferenceDataset
+
 ## 6. Enums
 
 ::: nnx.nn.enum.activations.Activations
@@ -178,6 +180,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 ::: nnx.paradigms.augmentation.mixup_train_step_factory
 
 ::: nnx.paradigms.augmentation.cutmix_train_step_factory
+
+::: nnx.paradigms.dpo.dpo_train_step_factory
 
 ## 13. Visualization
 

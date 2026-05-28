@@ -18,6 +18,9 @@ Public surface — re-exported from the top-level ``nnx`` package:
   - :func:`cutmix_train_step_factory` — CutMix augmentation (image data).
   - :func:`moe_train_step_factory` — Mixture-of-Experts supervised step
     with Switch-style load-balancing aux loss.
+  - :func:`dpo_train_step_factory` — Direct Preference Optimization
+    (Rafailov et al., 2023): chosen-vs-rejected log-ratio objective
+    against a frozen reference policy.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
 from .born_again import born_again_train
 from .contrastive import nt_xent_loss, simclr_train_step_factory
 from .distillation import feature_kd_train_step_factory, kd_train_step_factory
+from .dpo import dpo_train_step_factory
 from .moe import moe_train_step_factory
 
 __all__ = [
@@ -37,4 +41,5 @@ __all__ = [
     "mixup_train_step_factory",
     "cutmix_train_step_factory",
     "moe_train_step_factory",
+    "dpo_train_step_factory",
 ]
