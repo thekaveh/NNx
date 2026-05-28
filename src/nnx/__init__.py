@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover — Python <3.8.
 
 from . import viz
 from . import prune
+from . import embeddings
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -214,6 +215,8 @@ __all__ = [
     "drop_layer",
     "low_rank_factorize",
     "expand_embedding",
+    # Embeddings (contrastive trainer + FAISS export)
+    "embeddings",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",

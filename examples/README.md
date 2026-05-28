@@ -43,3 +43,9 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | `09_gan_with_trainer.py` | Multi-optimizer training via `nnx.trainer.Trainer` — a tiny GAN on a 1D mixture of Gaussians, with disjoint optimizers for `G` and `D` scoped via `NNParamGroupSpec`. |
 | `10_knowledge_distillation.py` | Hinton-style KD: pretrain a wider teacher, then distill into a much smaller student (~4% of the teacher's parameters) via `kd_train_step_factory`. Verifies the teacher's weights are frozen across the student's training. |
 | `14_moe_classifier.py` | Sparse top-k Mixture-of-Experts: a feed-forward classifier whose hidden layer is an `MoELinear(num_experts=4, top_k=2)` instead of `nn.Linear`. Trained via `moe_train_step_factory` (supervised loss + Switch-style load-balancing aux). Reports the param-count breakdown and verifies the aux loss decreases as routing balances out. |
+
+### 2.5. Embeddings + FAISS export
+
+| Example | What it demonstrates |
+|---|---|
+| `13_train_domain_embedder.py` | Train a tiny text embedder from scratch on synthetic `(sentence, paraphrase)` pairs via NT-Xent contrastive loss, embed a corpus, export to a FAISS index, query the index for self-similarity. End-to-end demo of `nnx.embeddings.train_contrastive` + `export_to_faiss`. Requires `pip install "nnx[embeddings]"`. |

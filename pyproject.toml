@@ -80,6 +80,13 @@ quantize = ["torchao>=0.17"]
 hub = [
     "safetensors>=0.7.0",
     "huggingface_hub>=1.4.0",
+embeddings = [
+    # The FAISS index is the handoff format to every downstream RAG
+    # stack (LangChain / LlamaIndex / Haystack / raw). `sentence-transformers`
+    # is the dominant backbone source; users can swap in their own
+    # ``nn.Module`` encoder if they don't want the dep.
+    "faiss-cpu>=1.7",
+    "sentence-transformers>=2.7",
 ]
 docs = [
     "mkdocs>=1.5",

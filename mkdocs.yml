@@ -32,6 +32,7 @@ nav:
   - Concepts: concepts.md
   - Model surgery: surgery.md
   - HuggingFace Hub: hub.md
+  - Embeddings: embeddings.md
   - API Reference: api.md
 
 # Working design docs aren't user-facing — exclude them from the

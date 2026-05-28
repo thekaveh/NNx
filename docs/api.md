@@ -182,6 +182,23 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 ## 13. Visualization
 
 ### 12.1. Run-output viz (`nnx.vis_utils`)
+## 12. Embeddings (`nnx.embeddings`)
+
+End-to-end walkthrough at [Embeddings](embeddings.md). The reference below is the auto-generated API surface.
+
+::: nnx.embeddings.contrastive_trainer.ContrastiveTextDataset
+
+::: nnx.embeddings.contrastive_trainer.train_contrastive
+
+::: nnx.embeddings.contrastive_trainer.embed_texts
+
+::: nnx.embeddings.contrastive_trainer.text_contrastive_train_step_factory
+
+::: nnx.embeddings.faiss_export.export_to_faiss
+
+::: nnx.embeddings.faiss_export.export_to_safetensors
+
+## 13. Visualization
 
 ::: nnx.vis_utils
     options:
