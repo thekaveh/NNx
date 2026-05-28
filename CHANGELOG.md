@@ -4,6 +4,17 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added — Transformer fork (SP-4): TransformerNN + tokenizer + generate
+
+- **`Nets.TRANSFORMER` enum variant** — decoder-only LM dispatched through the standard `NNModelParams(net=Nets.TRANSFORMER, ...)` factory path. Back-compat-safe: existing pre-TRANSFORMER `run.yaml` files load unchanged.
+- **`TransformerNN`** — decoder-only stack matching LLaMA / Mistral conventions: token embeddings + N `TransformerBlock`s (pre-norm with RMSNorm + RoPE + SwiGLU FFN + multi-head causal attention) + final RMSNorm + tied LM head. KV-cache seam wired but switched off (`use_cache=False`); SP-10c will flip it on without changing call sites.
+- **`NNTransformerParams(NNParams)`** — frozen dataclass holding `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Lifts the GraphAttNN `n_heads`-on-NNParams pattern by subclassing. Every optional field omits itself from `state()` when at default — the broken-three-times omit-when-default invariant; covered by regression tests.
+- **`NNTokenizerParams`** — wraps `tokenizers.Tokenizer` (HF Rust BPE). `state()` returns `{"path": "<tokenizer.json>"}`; the tokenizer payload lives on disk, only the pointer goes into `run.yaml`. Companion `train_bpe(...)` helper trains a tiny BPE from either file paths or an in-memory text iterator. Available when the `nnx[lm]` extra is installed.
+- **`GenerativeNNModel(NNModel).generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed)`** — autoregressive decode via a `LogitsProcessor` chain (`TemperatureScaling` / `TopKFilter` / `TopPFilter` / `RepetitionPenalty`). `temperature=0` short-circuits to deterministic greedy; same-seed sampling reproducibility is part of the contract.
+- **New example `examples/11_tinystories_lm.py`** — end-to-end TinyStories-class training run: train a BPE on the corpus, build a small Transformer, train next-token prediction via a custom `train_step_fn`, then sample. Ships with an inline fallback corpus so it runs offline; `--use-hf` downloads TinyStories.
+- **New docs page `docs/lm.md`** — when/how to use the LM path. Linked from README §1.2 + §5.
+- **`pyproject.toml` `lm` extra** — `tokenizers>=0.20`, `datasets>=2.20`. Opt-in so the Rust tokenizer binary isn't pulled for non-LM users.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.

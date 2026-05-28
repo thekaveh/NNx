@@ -55,11 +55,13 @@ from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.enum.optims import Optims
 from .nn.enum.schedulers import Schedulers
+from .nn.generative_nn_model import GenerativeNNModel
 from .nn.net.feed_fwd_nn import FeedFwdNN
 from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN
 from .nn.net.graph_nn_base import GraphNNBase
 from .nn.net.graph_sage_nn import GraphSageNN
+from .nn.net.transformer_nn import TransformerNN
 from .nn.nn_model import (
     NNModel,
     PredictResult,
@@ -76,6 +78,31 @@ from .nn.params.nn_params import NNParams
 from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams
+from .nn.params.nn_transformer_params import NNTransformerParams
+
+# NNTokenizerParams + train_bpe depend on the optional `tokenizers`
+# extra (the `lm` extra in pyproject.toml). Re-exported only when the
+# dep is available so non-LM users importing `nnx` don't hit an
+# ImportError at top-level.
+try:
+    from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
+
+    _HAS_LM_EXTRA = True
+except ImportError:  # pragma: no cover — exercised in CI without the lm extra
+    NNTokenizerParams = None  # type: ignore[assignment,misc]
+    train_bpe = None  # type: ignore[assignment]
+    _HAS_LM_EXTRA = False
+
+# LogitsProcessor chain — pure-torch, no optional deps; always available.
+from .generation import (
+    LogitsProcessor,
+    RepetitionPenalty,
+    TemperatureScaling,
+    TopKFilter,
+    TopPFilter,
+    apply_chain,
+    sample_next_token,
+)
 from .paradigms import (
     cutmix_train_step_factory,
     kd_train_step_factory,
@@ -133,6 +160,19 @@ __all__ = [
     "GraphConvNN",
     "GraphSageNN",
     "GraphAttNN",
+    # Decoder-only transformer / LM path (SP-4)
+    "TransformerNN",
+    "NNTransformerParams",
+    "NNTokenizerParams",
+    "GenerativeNNModel",
+    "train_bpe",
+    "LogitsProcessor",
+    "TemperatureScaling",
+    "TopKFilter",
+    "TopPFilter",
+    "RepetitionPenalty",
+    "apply_chain",
+    "sample_next_token",
     # Datasets
     "NNDataset",
     "NNGraphDataset",
