@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
 from . import viz
+from . import prune
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -198,6 +199,8 @@ __all__ = [
     "apply_ia3_to",
     "save_ia3_weights",
     "load_ia3_weights",
+    # Pruning (magnitude unstructured + 2:4 semi-structured)
+    "prune",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",
