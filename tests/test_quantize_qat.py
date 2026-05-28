@@ -260,7 +260,7 @@ def test_qat_end_to_end_training(monkeypatch):
 # -------------------------------------------------------------------------
 
 
-def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch):
+def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch, skip_on_dynamo_dispatch_error):
     """The converted model must round-trip through ``NNModel.to_onnx`` —
     same contract as PTQ. torchao's converted int4-weight linear is
     not a TorchScript-traceable module (legacy ``torch.onnx.export``
@@ -268,7 +268,10 @@ def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch):
     path, which goes through ``torch.export`` and handles the packed
     quantized weights correctly.
 
-    Requires ``onnxscript`` — install via ``nnx[onnx-dynamo]``."""
+    Requires ``onnxscript`` — install via ``nnx[onnx-dynamo]``. Skipped
+    when the installed torch / onnxscript combo can't dispatch one of the
+    ops the quantized model emits (see ``_skip_if_dynamo_dispatch_error``
+    in ``conftest.py``)."""
     pytest.importorskip("onnxscript")
 
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
@@ -290,5 +293,9 @@ def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch):
     assert cb.is_converted
 
     onnx_path = tmp_path / "qat.onnx"
-    model.to_onnx(str(onnx_path), example_input=torch.randn(1, 32), dynamo=True)
+    try:
+        model.to_onnx(str(onnx_path), example_input=torch.randn(1, 32), dynamo=True)
+    except Exception as e:
+        skip_on_dynamo_dispatch_error(e)
+        raise  # unreachable — helper either skips or re-raises
     assert onnx_path.exists() and onnx_path.stat().st_size > 0

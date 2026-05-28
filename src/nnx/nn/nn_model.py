@@ -274,9 +274,23 @@ class NNModel(_HubMixinBase):
         in_names = input_names or [f"input_{i}" for i in range(len(example_input))]
         out_names = output_names or ["output"]
 
+        # Dynamic-shape spec is exporter-specific: the legacy TorchScript path
+        # takes `dynamic_axes` (string-keyed dict of dim -> name); the dynamo
+        # path takes `dynamic_shapes` (a pytree mirroring `example_input` whose
+        # leaves are `{dim: torch.export.Dim(...)}`). Passing dynamic_axes with
+        # dynamo=True triggers a UserWarning and on newer torch/onnxscript can
+        # surface a hard `ConversionError` because dynamo emits `aten.sym_size`
+        # ops that onnxscript can't always dispatch.
         dynamic_axes = None
+        dynamic_shapes: Optional[tuple[dict[int, Any], ...]] = None
         if dynamic_batch:
-            dynamic_axes = {n: {0: "batch"} for n in in_names + out_names}
+            if dynamo:
+                from torch.export import Dim
+
+                batch = Dim("batch", min=1)
+                dynamic_shapes = tuple({0: batch} for _ in example_input)
+            else:
+                dynamic_axes = {n: {0: "batch"} for n in in_names + out_names}
 
         self.net.eval()
         # torch>=2.5 defaults torch.onnx.export to the dynamo-based exporter,
@@ -284,16 +298,28 @@ class NNModel(_HubMixinBase):
         # the default (False) keeps the legacy tracing path regardless of
         # the installed torch version — plain `pip install onnx` is enough.
         try:
-            torch.onnx.export(
-                self.net,
-                example_input,
-                path,
-                input_names=in_names,
-                output_names=out_names,
-                dynamic_axes=dynamic_axes,
-                opset_version=opset_version,
-                dynamo=dynamo,
-            )
+            if dynamo:
+                torch.onnx.export(
+                    self.net,
+                    example_input,
+                    path,
+                    input_names=in_names,
+                    output_names=out_names,
+                    dynamic_shapes=dynamic_shapes,
+                    opset_version=opset_version,
+                    dynamo=True,
+                )
+            else:
+                torch.onnx.export(
+                    self.net,
+                    example_input,
+                    path,
+                    input_names=in_names,
+                    output_names=out_names,
+                    dynamic_axes=dynamic_axes,
+                    opset_version=opset_version,
+                    dynamo=False,
+                )
         except TypeError:
             # Older torch versions don't accept the `dynamo` kwarg — they
             # already use the legacy path by default. If the caller asked

@@ -63,3 +63,39 @@ def _reset_env_snapshot_cache():
     seeding._ENV_SNAPSHOT_CACHE = None
     yield
     seeding._ENV_SNAPSHOT_CACHE = None
+
+
+def _skip_if_dynamo_dispatch_error(exc: BaseException) -> None:
+    """If ``exc`` is a torch dynamo-ONNX dispatch error (no ONNX function
+    registered for one of the prims/aten ops the current torch emits),
+    convert it into ``pytest.skip`` with an explanatory reason. Otherwise
+    re-raise.
+
+    The dynamo ONNX exporter (``torch.onnx.export(..., dynamo=True)``) is
+    opt-in (NNx defaults to the legacy TorchScript path) and its op
+    coverage depends on which ONNX functions the installed ``onnxscript``
+    registers for the ATen / prims ops the current torch version's
+    decomposition table emits. Newer torch releases occasionally emit
+    prims/aten ops (e.g. ``prims.view_of``, ``aten.sym_size.int``) that
+    the installed onnxscript hasn't dispatched yet — and vice versa. The
+    failure surfaces as
+    ``torch.onnx._internal.exporter._errors.ConversionError`` wrapping a
+    ``DispatchError``.
+
+    Tests that exercise the dynamo path use this helper so a torch /
+    onnxscript drift mismatch in CI or a contributor's environment doesn't
+    fail the suite over a known upstream incompatibility. The legacy path
+    (the NNx default) is unaffected and has its own tests.
+    """
+    msg = str(exc)
+    if "DispatchError" in msg or "No ONNX function found" in msg:
+        pytest.skip(f"installed torch/onnxscript can't dispatch dynamo ONNX path (upstream skew): {msg[:200]}")
+    raise exc
+
+
+@pytest.fixture(scope="session")
+def skip_on_dynamo_dispatch_error():
+    """Yield ``_skip_if_dynamo_dispatch_error`` so tests can call it from
+    an ``except`` block around their ``torch.onnx.export(..., dynamo=True)``
+    invocation. See the helper's docstring for the upstream-skew rationale."""
+    return _skip_if_dynamo_dispatch_error

@@ -52,10 +52,13 @@ def _model() -> NNModel:
     )
 
 
-def test_to_onnx_dynamo_true_writes_file(tmp_path):
+def test_to_onnx_dynamo_true_writes_file(tmp_path, skip_on_dynamo_dispatch_error):
     """`dynamo=True` runs the torch.export-based exporter and writes a
     non-empty ONNX file. Skipped when `onnxscript` isn't installed (the
-    dep is intentionally opt-in via `nnx[onnx-dynamo]`)."""
+    dep is intentionally opt-in via `nnx[onnx-dynamo]`), or when the
+    installed torch / onnxscript combo can't dispatch one of the prims/aten
+    ops this model emits — see ``_skip_if_dynamo_dispatch_error`` in
+    ``conftest.py`` for the upstream-version-skew rationale."""
     pytest.importorskip("onnx")
     pytest.importorskip("onnxscript")
 
@@ -63,7 +66,11 @@ def test_to_onnx_dynamo_true_writes_file(tmp_path):
     onnx_path = tmp_path / "model_dynamo.onnx"
     example = torch.randn(2, 4)
 
-    out = model.to_onnx(str(onnx_path), example_input=example, dynamo=True)
+    try:
+        out = model.to_onnx(str(onnx_path), example_input=example, dynamo=True)
+    except Exception as e:
+        skip_on_dynamo_dispatch_error(e)
+        raise  # unreachable — helper either skips or re-raises
 
     assert Path(out).exists()
     assert os.path.getsize(out) > 0
