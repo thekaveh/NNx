@@ -139,6 +139,17 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 ::: nnx.prune.magnitude.magnitude_prune
 
 ::: nnx.prune.semi_structured.semi_structured_24
+## 10. Model surgery (`nnx.surgery`)
+
+::: nnx.surgery.widen.widen
+
+::: nnx.surgery.deepen.deepen
+
+::: nnx.surgery.drop_layer.drop_layer
+
+::: nnx.surgery.low_rank.low_rank_factorize
+
+::: nnx.surgery.embedding.expand_embedding
 
 ## 11. Diffusion (`nnx.diffusion`)
 

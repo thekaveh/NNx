@@ -104,6 +104,13 @@ from .peft import (
 )
 from .quantize import quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
+from .surgery import (
+    deepen,
+    drop_layer,
+    expand_embedding,
+    low_rank_factorize,
+    widen,
+)
 from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .utils import Utils
 from .vis_utils import VisUtils
@@ -201,6 +208,12 @@ __all__ = [
     "load_ia3_weights",
     # Pruning (magnitude unstructured + 2:4 semi-structured)
     "prune",
+    # Surgery (Net2Net + drop + low-rank + embedding)
+    "widen",
+    "deepen",
+    "drop_layer",
+    "low_rank_factorize",
+    "expand_embedding",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",
