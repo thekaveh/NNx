@@ -72,6 +72,13 @@ onnx = ["onnx>=1.15"]
 # (the default) needs only `nnx[onnx]`.
 onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
 viz = ["torchinfo>=1.8.0"]
+# `viz-interactive` adds the Netron browser viewer used by
+# `nnx.viz.netron_export(..., launch=True)`. The ONNX file itself comes
+# from `torch.onnx.export` (legacy path) and needs only `nnx[onnx]`;
+# `netron` ships a Flask viewer that runs as a separate process, kept
+# opt-in so notebook users who just want the `.onnx` artifact don't
+# install it.
+viz-interactive = ["netron>=7.0"]
 quantize = ["torchao>=0.17"]
 # `hub` enables interop with the HuggingFace ecosystem:
 #   - safetensors as an opt-in checkpoint format (NNCheckpoint.to_file(format="safetensors"))

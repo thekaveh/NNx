@@ -384,15 +384,20 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 
 ## 12. Model-internals visualization
 
-`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Two primitives ship today; activation maps / Netron export / Captum attribution land in a later PR.
+`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Four primitives ship today: `summary`, `weight_histogram`, `activation_map`, and `netron_export`.
 
 `nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install nnx[viz]` pulls in `torchinfo`).
 
 `nnx.viz.weight_histogram(model)` walks `model.named_parameters()` and emits one Plotly `Histogram` trace per tensor in a grid subplot. Useful for spotting dead layers, NaN / Inf weights, or saturation patterns at a glance.
 
+`nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule, runs `model(x)` under `torch.no_grad()`, and returns a Plotly heatmap: a grid of per-channel heatmaps for 4D conv activations `(N, C, H, W)`, or a single `(N, F)` heatmap for 2D dense activations. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
+
+`nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/). Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install nnx[viz-interactive]`).
+
 ```python
+import torch
 from nnx import NNModel, NNParams, NNModelParams, Activations, Devices, Losses, Nets
-from nnx.viz import summary, weight_histogram
+from nnx.viz import activation_map, netron_export, summary, weight_histogram
 
 model = NNModel(
     net_params=NNParams(input_dim=8, output_dim=3, hidden_dims=[32, 16],
@@ -402,6 +407,8 @@ model = NNModel(
 )
 print(summary(model, input_size=(1, 8)))   # Keras-style parameter table
 weight_histogram(model).show()              # Plotly grid of per-tensor weight distributions
+activation_map(model, torch.randn(4, 8), "layers.0").show()  # batch x features heatmap
+netron_export(model, "model.onnx", torch.randn(1, 8))         # write graph for Netron
 ```
 
 ## 13. Reproducibility
