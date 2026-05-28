@@ -21,6 +21,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
+from . import embeddings
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -171,6 +172,8 @@ __all__ = [
     "save_lora_weights",
     "load_lora_weights",
     "AdapterLayer",
+    # Embeddings (contrastive trainer + FAISS export)
+    "embeddings",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",
