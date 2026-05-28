@@ -218,6 +218,7 @@ End-to-end walkthrough at [Embeddings](embeddings.md). The reference below is th
 ::: nnx.viz.activation.activation_map
 
 ::: nnx.viz.netron.netron_export
+::: nnx.viz.attribute.attribute
 
 ## 13. Utilities
 ## 14. Utilities

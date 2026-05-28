@@ -79,6 +79,7 @@ viz = ["torchinfo>=1.8.0"]
 # opt-in so notebook users who just want the `.onnx` artifact don't
 # install it.
 viz-interactive = ["netron>=7.0"]
+viz = ["torchinfo>=1.8.0", "captum>=0.7.0"]
 quantize = ["torchao>=0.17"]
 # `hub` enables interop with the HuggingFace ecosystem:
 #   - safetensors as an opt-in checkpoint format (NNCheckpoint.to_file(format="safetensors"))
