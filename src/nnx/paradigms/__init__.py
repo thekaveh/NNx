@@ -33,6 +33,7 @@ from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
 from .born_again import born_again_train
 from .contrastive import nt_xent_loss, simclr_train_step_factory
 from .distillation import feature_kd_train_step_factory, kd_train_step_factory
+from .dpo import dpo_train_step_factory
 from .jepa import (
     JEPAPredictor,
     build_target_encoder,
@@ -40,7 +41,6 @@ from .jepa import (
     random_block_mask,
     update_ema,
 )
-from .dpo import dpo_train_step_factory
 from .moe import moe_train_step_factory
 
 __all__ = [

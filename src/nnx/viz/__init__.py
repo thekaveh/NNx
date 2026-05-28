@@ -22,7 +22,5 @@ __all__ = [
     "weight_histogram",
 ]
 from .attribute import attribute
-from .summary import summary
-from .weight_histogram import weight_histogram
 
 __all__ = ["attribute", "summary", "weight_histogram"]
