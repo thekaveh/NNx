@@ -73,6 +73,14 @@ onnx = ["onnx>=1.15"]
 onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
 viz = ["torchinfo>=1.8.0"]
 quantize = ["torchao>=0.17"]
+# `hub` enables interop with the HuggingFace ecosystem:
+#   - safetensors as an opt-in checkpoint format (NNCheckpoint.to_file(format="safetensors"))
+#   - PyTorchModelHubMixin on NNModel (save_pretrained / push_to_hub / from_pretrained)
+# Both deps are runtime-import-guarded — `pip install nnx` works without them.
+hub = [
+    "safetensors>=0.7.0",
+    "huggingface_hub>=1.4.0",
+]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",

@@ -66,6 +66,7 @@ pip install "nnx[wandb]"               # WandbCallback
 pip install "nnx[onnx]"                # NNModel.to_onnx validation tooling
 pip install "nnx[onnx-dynamo]"         # NNModel.to_onnx(dynamo=True) — torch.export-based exporter
 pip install "nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ INT8)
+pip install "nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
 pip install "nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 
@@ -218,6 +219,7 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 - [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
 - [Quickstart](docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
+- [HuggingFace Hub](docs/hub.md) — safetensors checkpoints + `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`. Read this when you want to publish a trained model to the Hub, load from it, or write checkpoints in a format outside-of-Python tools (ComfyUI, vLLM, AutoGPTQ) can read.
 - [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings. Read this when you want the canonical signature / docstring for a public symbol.
 - [Model surgery](docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
 - [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram in §1.1. Read this when the embedded SVG is hard to follow and you want to hover for labels.

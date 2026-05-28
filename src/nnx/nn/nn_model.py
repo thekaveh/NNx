@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -24,6 +25,46 @@ from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
     from .callbacks import Callback
+
+
+# HuggingFace Hub integration — the mixin is OPTIONAL. We only import it
+# at module load when the `nnx[hub]` extra is installed; otherwise we use
+# a thin stub that defers errors to call time. This keeps `pip install nnx`
+# working without huggingface_hub.
+try:
+    from huggingface_hub import PyTorchModelHubMixin as _HubMixinBase
+
+    _HUB_AVAILABLE = True
+except ImportError:  # pragma: no cover — gated by optional dep
+
+    class _HubMixinBase:
+        """No-op stub installed when ``huggingface_hub`` is not available.
+
+        Any attempt to call save_pretrained / from_pretrained / push_to_hub
+        raises a clear ImportError pointing at the ``nnx[hub]`` extra.
+        """
+
+        def _hub_unavailable(self) -> NNModel:
+            raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install nnx[hub]`.")
+
+        def save_pretrained(self, *args, **kwargs):
+            self._hub_unavailable()
+
+        def push_to_hub(self, *args, **kwargs):
+            self._hub_unavailable()
+
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install nnx[hub]`.")
+
+    _HUB_AVAILABLE = False
+
+
+# Name of the safetensors file inside a save_pretrained directory. Matches
+# the constant huggingface_hub publishes (SAFETENSORS_SINGLE_FILE) — kept
+# duplicated here so the no-hub stub doesn't reach into hf_hub internals.
+_HUB_MODEL_FILENAME = "model.safetensors"
+_HUB_CONFIG_FILENAME = "config.json"
 
 
 # Legacy callback signature retained for backwards compatibility with notebooks
@@ -150,8 +191,22 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     )
 
 
-class NNModel:
+class NNModel(_HubMixinBase):
+    """Top-level training/eval/predict wrapper around an ``nn.Module``.
+
+    Inherits from :class:`huggingface_hub.PyTorchModelHubMixin` (when the
+    ``nnx[hub]`` extra is installed) to gain ``save_pretrained`` /
+    ``push_to_hub`` / ``from_pretrained``. Without the extra installed,
+    those three methods raise a clear ImportError pointing at the extra;
+    no other NNModel functionality is affected.
+    """
+
     def __init__(self, net_params: NNParams, params: NNModelParams):
+        # NOTE: we deliberately do NOT call super().__init__() — the
+        # PyTorchModelHubMixin base has no __init__ of its own (it's a
+        # mixin that only contributes class-level methods), and even if
+        # it grew one in a future hub release, the only side effect we'd
+        # want is config-attribute initialization which we handle below.
         if net_params is None:
             raise ValueError("net_params must not be None")
 
@@ -267,6 +322,137 @@ class NNModel:
 
         model.net.load_state_dict(checkpoint.net_state)
 
+        return model
+
+    # ------------------------------------------------------------------
+    # HuggingFace Hub integration (inherited save_pretrained / push_to_hub /
+    # from_pretrained from PyTorchModelHubMixin dispatch into these two
+    # overrides).
+    #
+    # We override both because NNModel is NOT itself an nn.Module — its
+    # weights live on `self.net`, and the default PyTorchModelHubMixin
+    # implementation would call `self.state_dict()` and miss them. We
+    # also need full control over config.json since the default mixin
+    # auto-encoder hits the is_dataclass branch and emits asdict(NNParams)
+    # which leaks the internal `_dims` cache and emits raw enums that
+    # break JSON. Using the public NNParams.state() / NNModelParams.state()
+    # round-trip keeps the on-Hub config compatible with NNRun's
+    # hash-grouping form.
+    # ------------------------------------------------------------------
+
+    def _save_pretrained(self, save_directory) -> None:
+        """Write the network weights + params config under ``save_directory``.
+
+        Dispatched-to by :meth:`PyTorchModelHubMixin.save_pretrained`. The
+        on-disk layout is the canonical Hub layout:
+
+          - ``model.safetensors`` — ``self.net.state_dict()`` as safetensors.
+          - ``config.json`` — ``{"net_params": <state>, "params": <state>}``,
+            using the same ``.state()`` form NNRun uses for hashing.
+
+        :meth:`PyTorchModelHubMixin.save_pretrained` additionally writes a
+        ``README.md`` model card via ``generate_model_card()``; that's
+        emitted on top of these two files by the base implementation.
+        """
+        from pathlib import Path
+
+        try:
+            from safetensors.torch import save_file
+        except ImportError as e:  # pragma: no cover — gated by optional dep
+            raise ImportError("save_pretrained requires the `hub` extra: `pip install nnx[hub]`.") from e
+
+        save_dir = Path(save_directory)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Detach + contiguous matches the same hygiene NNCheckpoint applies
+        # on its safetensors path: drop autograd hooks, ensure C-contiguous
+        # storage so safetensors' zero-copy reader works.
+        tensors = {k: v.detach().contiguous() for k, v in self.net.state_dict().items()}
+        save_file(tensors, str(save_dir / _HUB_MODEL_FILENAME))
+
+        config = {
+            "net_params": self.net_params.state(),
+            "params": self.params.state(),
+        }
+        with open(save_dir / _HUB_CONFIG_FILENAME, "w") as f:
+            json.dump(config, f, sort_keys=True, indent=2)
+
+    @classmethod
+    def _from_pretrained(
+        cls,
+        *,
+        model_id: str,
+        revision=None,
+        cache_dir=None,
+        force_download: bool = False,
+        local_files_only: bool = False,
+        token=None,
+        map_location: str = "cpu",
+        strict: bool = False,
+        **model_kwargs,
+    ) -> NNModel:
+        """Rebuild an NNModel from a save_pretrained directory or Hub repo.
+
+        Dispatched-to by :meth:`PyTorchModelHubMixin.from_pretrained`,
+        which handles the remote-download path before calling this. Local
+        paths skip the download. Either way, we read ``config.json`` to
+        reconstruct ``NNParams`` and ``NNModelParams`` via their public
+        ``from_state`` constructors, then load ``model.safetensors`` into
+        the freshly-built ``self.net``.
+
+        ``map_location`` and ``strict`` are accepted for parity with the
+        mixin's PyTorch contract but ignored on the safetensors path —
+        the weights are deserialized into CPU tensors then moved by
+        ``NNModel.__init__`` to ``self.device`` via the ``self.net.to(device)``
+        call. ``strict`` doesn't apply because we instantiate the net from
+        the config first, so the keys must match by construction.
+        """
+        try:
+            from safetensors.torch import load_file
+        except ImportError as e:  # pragma: no cover — gated by optional dep
+            raise ImportError("from_pretrained requires the `hub` extra: `pip install nnx[hub]`.") from e
+
+        if os.path.isdir(model_id):
+            config_path = os.path.join(model_id, _HUB_CONFIG_FILENAME)
+            weights_path = os.path.join(model_id, _HUB_MODEL_FILENAME)
+        else:
+            from huggingface_hub import hf_hub_download
+
+            config_path = hf_hub_download(
+                repo_id=model_id,
+                filename=_HUB_CONFIG_FILENAME,
+                revision=revision,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                token=token,
+                local_files_only=local_files_only,
+            )
+            weights_path = hf_hub_download(
+                repo_id=model_id,
+                filename=_HUB_MODEL_FILENAME,
+                revision=revision,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                token=token,
+                local_files_only=local_files_only,
+            )
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        # We accept either form for back-compat with any future config
+        # writer: nested under {"net_params": ..., "params": ...} (what
+        # _save_pretrained writes today) or flat at the top level. The
+        # nested form takes precedence.
+        net_params_state = config.get("net_params", config)
+        model_params_state = config.get("params", config)
+
+        net_params = NNParams.from_state(net_params_state)
+        params = NNModelParams.from_state(model_params_state)
+
+        model = cls(net_params=net_params, params=params)
+        state_dict = load_file(weights_path, device=map_location)
+        model.net.load_state_dict(state_dict, strict=strict if strict else True)
         return model
 
     def freeze(self, *patterns: str) -> int:
