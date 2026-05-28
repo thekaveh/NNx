@@ -198,6 +198,17 @@ End-to-end walkthrough at [Embeddings](embeddings.md). The reference below is th
 
 ::: nnx.embeddings.faiss_export.export_to_safetensors
 
+## 12.5. Interop — GGUF & Ollama (`nnx.interop`)
+
+End-to-end walkthrough at [GGUF & Ollama](gguf.md). The writer is opt-in
+via the `gguf-write` extra (`pip install "nnx[gguf-write]"`).
+
+::: nnx.interop.gguf.writer.write_gguf
+
+::: nnx.interop.gguf.tensor_name_map.map_tensors
+
+::: nnx.interop.ollama.export_ollama_modelfile
+
 ## 13. Visualization
 
 ::: nnx.vis_utils

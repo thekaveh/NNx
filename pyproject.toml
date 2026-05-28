@@ -96,6 +96,14 @@ lm = [
     "tokenizers>=0.20",
     "datasets>=2.20",
 ]
+# GGUF write path: ``nnx.interop.gguf.write_gguf`` + the Ollama
+# Modelfile bundle exporter. The ``gguf`` package is the upstream
+# llama-cpp-maintained Python writer — pulling it in only when the
+# user actually exports, since most NNx users never leave the
+# PyTorch / safetensors world.
+gguf-write = [
+    "gguf>=0.19.0",
+]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
