@@ -21,9 +21,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
-from . import viz
-from . import prune
-from . import embeddings
+from . import embeddings, prune, viz
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -58,8 +56,8 @@ from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.enum.optims import Optims
 from .nn.enum.schedulers import Schedulers
-from .nn.moe import MoELinear
 from .nn.generative_nn_model import GenerativeNNModel
+from .nn.moe import MoELinear
 from .nn.net.feed_fwd_nn import FeedFwdNN
 from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN

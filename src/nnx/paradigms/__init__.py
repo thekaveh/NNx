@@ -26,7 +26,6 @@ from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
 from .born_again import born_again_train
 from .contrastive import nt_xent_loss, simclr_train_step_factory
 from .distillation import feature_kd_train_step_factory, kd_train_step_factory
-from .distillation import kd_train_step_factory
 from .moe import moe_train_step_factory
 
 __all__ = [
