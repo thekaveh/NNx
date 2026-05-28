@@ -152,6 +152,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.paradigms.distillation.kd_train_step_factory
 
+::: nnx.paradigms.distillation.feature_kd_train_step_factory
+
 ::: nnx.paradigms.contrastive.simclr_train_step_factory
 
 ::: nnx.paradigms.contrastive.nt_xent_loss

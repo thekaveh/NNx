@@ -26,6 +26,7 @@ def test_top_level_imports():
     assert hasattr(trainer, "Trainer")
     assert hasattr(diffusion, "DiffusionMLP")
     assert hasattr(paradigms, "kd_train_step_factory")
+    assert hasattr(paradigms, "feature_kd_train_step_factory")
     assert hasattr(peft, "LoRALinear")
     assert hasattr(viz, "summary")
     assert hasattr(viz, "weight_histogram")
@@ -61,6 +62,7 @@ def test_paradigms_submodules_import():
     assert hasattr(augmentation, "mixup_train_step_factory")
     assert hasattr(contrastive, "simclr_train_step_factory")
     assert hasattr(distillation, "kd_train_step_factory")
+    assert hasattr(distillation, "feature_kd_train_step_factory")
 
 
 def test_peft_submodules_import():

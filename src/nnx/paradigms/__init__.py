@@ -8,6 +8,8 @@ the per-batch update is swapped.
 Public surface — re-exported from the top-level ``nnx`` package:
 
   - :func:`kd_train_step_factory` — Hinton-style knowledge distillation.
+  - :func:`feature_kd_train_step_factory` — FitNets-style feature
+    distillation (logit-KD + named intermediate-layer MSE).
   - :func:`simclr_train_step_factory` + :func:`nt_xent_loss` — SimCLR
     contrastive learning.
   - :func:`mixup_train_step_factory` — Mixup augmentation.
@@ -18,10 +20,11 @@ from __future__ import annotations
 
 from .augmentation import cutmix_train_step_factory, mixup_train_step_factory
 from .contrastive import nt_xent_loss, simclr_train_step_factory
-from .distillation import kd_train_step_factory
+from .distillation import feature_kd_train_step_factory, kd_train_step_factory
 
 __all__ = [
     "kd_train_step_factory",
+    "feature_kd_train_step_factory",
     "simclr_train_step_factory",
     "nt_xent_loss",
     "mixup_train_step_factory",
