@@ -4,6 +4,10 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added
+
+- **`nnx.paradigms.feature_kd_train_step_factory(teacher, *, auxiliary_layers, alpha, beta, temperature)`** — FitNets-style intermediate-layer feature distillation. Extends the existing `kd_train_step_factory` with an additional MSE term between named teacher / student intermediate-layer activations: `L = α · KL_soft · T² + β · MSE(student_act, teacher_act) + (1 − α) · L_hard`. Forward hooks register on the `auxiliary_layers` pairs (teacher_layer_name → student_layer_name, resolved via `nn.Module.get_submodule`); activations are collected per forward and the MSE term is averaged across pairs so `beta`'s scale is invariant to the pair count. The teacher freeze + eval-mode guarantee carries over from `kd_train_step_factory`. The v1 factory **requires shape-matched paired layers** — the `FeatureRegressor` projector for mismatched widths is deferred. Routes through `finalize_step` for the standard NaN guard + grad-clip path. Re-exported from `nnx.paradigms.*` and `nnx.*`.
+
 ### Migration notes
 
 These two fixes shift `run.id` hashes on disk. Older `runs/<id>/` directories on disk continue to load by their existing directory name; recomputed ids land in a fresh directory.
