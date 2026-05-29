@@ -23,8 +23,10 @@ at production scale (dim >= 64 — see ``examples/12_quantize_int8.py``).
 Activations are computed in FP32 then cast to int8 only inside the
 weight matmul, so accuracy loss is small for most networks.
 
-Activation quantization, INT4 weight-only, and QAT are tracked
-separately — this module is PTQ INT8 weight-only only.
+This module is PTQ INT8 weight-only only. QAT (the standard 8da4w
+recipe — int8 dynamic per-token activations, int4 grouped per-channel
+weights) lives in the sibling :mod:`nnx.quantize.qat`. PTQ INT4
+weight-only and per-tensor activation quantization are not yet shipped.
 """
 
 from __future__ import annotations
