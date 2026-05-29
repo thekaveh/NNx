@@ -190,7 +190,7 @@ __all__ = [
     "GraphConvNN",
     "GraphSageNN",
     "GraphAttNN",
-    # Decoder-only transformer / LM path (SP-4)
+    # Decoder-only transformer / LM path
     "TransformerNN",
     "NNTransformerParams",
     "NNTokenizerParams",

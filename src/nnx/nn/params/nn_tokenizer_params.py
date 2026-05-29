@@ -13,7 +13,7 @@ Including the tokenizer bytes inline in the yaml would balloon the
 run.yaml and break the "one MD5 hash for the config" invariant — the
 file-on-disk pointer is the right trade-off for a TinyStories-scale
 demo. Production paths can hash the tokenizer file content alongside
-the path; out of scope for SP-4.
+the path; out of scope for the TinyStories-scale LM path.
 """
 
 from __future__ import annotations

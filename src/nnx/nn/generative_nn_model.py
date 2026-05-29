@@ -82,10 +82,9 @@ class GenerativeNNModel(NNModel):
             use_cache: when True (default), uses an incremental KV
                 cache — each new token only re-runs attention on the
                 last position, not the whole prefix. When False, falls
-                back to the SP-4 full-recompute path (kept for
-                regression testing). Both paths produce the same
-                tokens for greedy decoding (sampling paths agree given
-                the same seed).
+                back to the full-recompute path (kept for regression
+                testing). Both paths produce the same tokens for greedy
+                decoding (sampling paths agree given the same seed).
 
         Returns:
             The full decoded string (prompt + generated continuation).
@@ -172,13 +171,13 @@ class GenerativeNNModel(NNModel):
         gen: Optional[torch.Generator],
         stop: Optional[list[str]],
     ) -> None:
-        """SP-4 full-recompute path: every step re-runs the model on the
+        """Full-recompute path: every step re-runs the model on the
         last ``max_seq_len`` tokens. O(T^2) attention cost; kept for
         regression-testing parity against the cached path."""
         for _ in range(max_new_tokens):
             # Truncate context to max_seq_len from the right so the
-            # most recent tokens stay in the window. Sliding window
-            # — the simple production-ready approach for SP-4 scope.
+            # most recent tokens stay in the window. Sliding window —
+            # the simple production-ready approach.
             context_ids = generated[-max_seq_len:]
             ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
             logits = self.net(ctx)  # (1, T, vocab)
@@ -205,7 +204,7 @@ class GenerativeNNModel(NNModel):
         gen: Optional[torch.Generator],
         stop: Optional[list[str]],
     ) -> None:
-        """KV-cache path (SP-10c). Runs one prefill pass on the
+        """KV-cache path. Runs one prefill pass on the
         truncated prompt, then per new token re-runs only the last
         position's attention against the cached prefix. O(T) per
         step instead of O(T^2).
