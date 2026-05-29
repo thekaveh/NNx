@@ -39,7 +39,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 ### 2.2. Understand the design
 
-- [Concepts](concepts.md) — what an `NNRun` is, where things land on disk, how the enum-as-factory pattern works, how all 14 specialization subpackages compose.
+- [Concepts](concepts.md) — what an `NNRun` is, where things land on disk, how the enum-as-factory pattern works, how the twelve specialization subpackages compose.
 
 ### 2.3. Deep-dive guides
 

@@ -38,6 +38,7 @@ nav:
   - GGUF & Ollama: gguf.md
   - DPO: dpo.md
   - API Reference: api.md
+  - Architecture diagram: architecture.html
 
 # Working design docs aren't user-facing — exclude them from the
 # published site. Local-only spec files under docs/specs/ shouldn't break

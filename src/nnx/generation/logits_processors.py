@@ -19,8 +19,8 @@ class LogitsProcessor(Protocol):
 
     ``token_history`` is a flat list of int token ids generated so far
     (across batch dim 0 — we assume a single-sequence batch in
-    generate(), which is the SP-4 scope). Processors that don't care
-    about history (temperature, top-k, top-p) simply ignore the arg.
+    ``GenerativeNNModel.generate``). Processors that don't care about
+    history (temperature, top-k, top-p) simply ignore the arg.
     """
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor: ...
@@ -118,8 +118,8 @@ class RepetitionPenalty:
         if not token_history or self.penalty == 1.0:
             return logits
         out = logits.clone()
-        # We assume batch size 1 throughout SP-4's generate(); for
-        # multi-batch generation a per-row history would be needed.
+        # We assume batch size 1 throughout GenerativeNNModel.generate;
+        # multi-batch generation would need a per-row history.
         idx = torch.tensor(sorted(set(token_history)), dtype=torch.long, device=logits.device)
         # Apply penalty per-token: divide positive, multiply negative.
         selected = out[..., idx]

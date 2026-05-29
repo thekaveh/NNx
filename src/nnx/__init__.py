@@ -90,12 +90,9 @@ from .nn.params.nn_transformer_params import NNTransformerParams
 # ImportError at top-level.
 try:
     from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
-
-    _HAS_LM_EXTRA = True
 except ImportError:  # pragma: no cover — exercised in CI without the lm extra
     NNTokenizerParams = None  # type: ignore[assignment,misc]
     train_bpe = None  # type: ignore[assignment]
-    _HAS_LM_EXTRA = False
 
 # LogitsProcessor chain — pure-torch, no optional deps; always available.
 from .generation import (
@@ -193,7 +190,7 @@ __all__ = [
     "GraphConvNN",
     "GraphSageNN",
     "GraphAttNN",
-    # Decoder-only transformer / LM path (SP-4)
+    # Decoder-only transformer / LM path
     "TransformerNN",
     "NNTransformerParams",
     "NNTokenizerParams",
@@ -251,33 +248,31 @@ __all__ = [
     "ViTNN",
     "ViTBlock",
     "dpo_train_step_factory",
-    # PEFT (LoRA + DoRA + IA3 + adapters)
     # Mixture-of-Experts
     "MoELinear",
     "moe_train_step_factory",
-    # PEFT (LoRA + adapters)
+    # PEFT (LoRA + DoRA + IA3 + Prefix + Prompt + adapters)
     "LoRALinear",
     "apply_lora_to",
     "save_lora_weights",
     "load_lora_weights",
-    "AdapterLayer",
-    # Quantization (PTQ INT8 weight-only + QAT 8da4w via torchao)
-    "quantize_int8",
-    "qat_train_step_factory",
-    "QATLifecycleCallback",
     "DoRALinear",
     "apply_dora_to",
     "IA3Linear",
     "apply_ia3_to",
     "save_ia3_weights",
     "load_ia3_weights",
-    # PEFT — prefix + prompt tuning (TransformerNN-specific)
     "PrefixTuner",
     "save_prefix_weights",
     "load_prefix_weights",
     "PromptTuner",
     "save_prompt_weights",
     "load_prompt_weights",
+    "AdapterLayer",
+    # Quantization (PTQ INT8 weight-only + QAT 8da4w via torchao)
+    "quantize_int8",
+    "qat_train_step_factory",
+    "QATLifecycleCallback",
     # Pruning (magnitude unstructured + 2:4 semi-structured)
     "prune",
     # Surgery (Net2Net + drop + low-rank + embedding)

@@ -1,4 +1,4 @@
-"""ViT-S — a tiny Vision Transformer encoder built on SP-4's
+"""ViT-S — a tiny Vision Transformer encoder built on the LM path's
 ``transformer_layers`` primitives (``RMSNorm``, ``SwiGLU``).
 
 Scope: small enough to demonstrate I-JEPA on 32x32 images on CPU, not
@@ -13,9 +13,9 @@ to chase SOTA on ImageNet. Three architectural choices worth flagging:
     the patch grid is fixed at construction, so learned absolute
     positions are simpler and cheaper.
   * **Non-causal (bidirectional) self-attention**. The
-    ``MultiHeadCausalAttention`` from SP-4 hard-codes a causal mask,
-    so we implement a small ``MultiHeadSelfAttention`` here. The
-    SwiGLU MLP, RMSNorm, and pre-norm block shape are reused
+    ``MultiHeadCausalAttention`` in ``transformer_layers`` hard-codes
+    a causal mask, so we implement a small ``MultiHeadSelfAttention``
+    here. The SwiGLU MLP, RMSNorm, and pre-norm block shape are reused
     unchanged.
 
 The encoder accepts an optional ``mask: BoolTensor[B, n_patches]`` so
@@ -40,11 +40,11 @@ class _MultiHeadSelfAttention(nn.Module):
     """Bidirectional multi-head self-attention (no causal mask, no RoPE).
 
     Lives in the ViT file rather than ``transformer_layers`` because
-    SP-4's ``MultiHeadCausalAttention`` couples RoPE and the causal
-    mask into a single unit — pulling them apart for vision tokens
-    would invasively refactor a path that the LM tests pin. Keeping
-    the two attention variants separate is simpler and matches what
-    every published ViT does.
+    that file's ``MultiHeadCausalAttention`` couples RoPE and the
+    causal mask into a single unit — pulling them apart for vision
+    tokens would invasively refactor a path that the LM tests pin.
+    Keeping the two attention variants separate is simpler and matches
+    what every published ViT does.
     """
 
     def __init__(self, d_model: int, n_heads: int, attn_dropout: float = 0.0):

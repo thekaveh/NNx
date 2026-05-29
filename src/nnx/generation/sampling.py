@@ -22,7 +22,8 @@ def sample_next_token(
     """Draw one token id from ``softmax(logits)``.
 
     Args:
-        logits: shape (1, vocab) — single-sequence sample (SP-4 scope).
+        logits: shape (1, vocab) — single-sequence sample (the LM
+            path's batch-1 generate scope).
         generator: optional torch.Generator for reproducible seeded
             sampling. When None, sampling uses the default RNG (still
             affected by torch.manual_seed at the call site).

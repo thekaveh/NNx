@@ -2,11 +2,15 @@
 
 All notable changes to NNx are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is roughly [SemVer](https://semver.org/) — pre-1.0, we allow behavior changes (typically bug fixes) without renaming public APIs.
 
-## [Unreleased] — Expansion megamerge (PR #29)
+## [Unreleased] — Expansion megamerge (PR #29) + ONNX input-coercion fix (PR #30)
 
 This release integrates **20 sub-projects** consolidated on 2026-05-28: HuggingFace Hub interop (safetensors + `PyTorchModelHubMixin`), PEFT additions (DoRA + IA3 + Prefix + Prompt tuning on top of LoRA + Adapters), quantization (PTQ INT8 weight-only + QAT 8da4w via `torchao`), pruning (magnitude + 2:4 semi-structured), model surgery (Net2Net `widen` / `deepen` + `drop_layer` + `low_rank_factorize` + `expand_embedding`), embeddings (contrastive trainer + FAISS export), decoder-only LM (`TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with KV-cache), GGUF write + Ollama Modelfile bundle, model-internals visualization (`torchinfo` summary + weight histogram + activation map + Captum attribution + Netron export), I-JEPA self-supervised pretraining (+ small `ViTNN` encoder), Mixture-of-Experts (`MoELinear` + `moe_train_step_factory` with Switch-style aux loss), Born-Again Networks (iterated self-distillation), Feature-KD (FitNets-style), DPO (preference fine-tuning for LMs), `LogitsProcessor` chain (temperature / top-k / top-p / repetition-penalty), ONNX dynamo export opt-in, and assorted ergonomic improvements.
 
-Every change preserves back-compatibility with existing `run.id` hashes and on-disk checkpoint formats — new params fields all follow the omit-when-default state() invariant. Test suite: 642 tests; 640 pass, 2 skip on torch/onnxscript version-skew (opt-in dynamo path), 1 skip on absence of CUDA (2:4 semi-structured).
+Every change preserves back-compatibility with existing `run.id` hashes and on-disk checkpoint formats — new params fields all follow the omit-when-default state() invariant. Test suite: 652 tests; 649 pass, 3 skip (opt-in `onnxscript` dynamo path on version-skewed torch, plus the 2:4 semi-structured CUDA-gated path on CPU-only runners).
+
+### Fixed — ONNX input coercion (PR #30)
+
+- **`NNModel.to_onnx(example_input=np.ndarray)`** — a single 2-D `np.ndarray` was being unpacked row-by-row into `N` rank-1 inputs because `np.ndarray` is iterable; only `torch.Tensor` was special-cased in the singleton-wrap branch. `torch.onnx.export` then raised `TypeError: forward() takes 2 positional arguments but N+1 were given`. Fix extends the singleton check to `(torch.Tensor, np.ndarray)`; the subsequent per-element coercion handles both consistently. New `tests/test_to_onnx_inputs.py` regresses the four shapes the docstring promises (Tensor singleton, ndarray singleton, tuple, mixed tuple).
 
 ### Added — model-internals viz attribution + ONNX dynamo opt-in
 

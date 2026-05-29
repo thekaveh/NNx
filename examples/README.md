@@ -5,9 +5,21 @@ Runnable scripts demonstrating common NNx patterns. Each is self-contained — n
 ## 1. Run
 
 ```bash
-pip install -e ".[dev]"        # if you haven't already
+pip install nnx                # core (covers examples 01–06)
 python examples/01_synthetic_classification.py
 ```
+
+A handful of examples depend on optional extras — install them as needed:
+
+```bash
+pip install "nnx[onnx]"             # 04_onnx_export.py
+pip install "nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
+pip install "nnx[embeddings]"       # 13_train_domain_embedder.py
+pip install "nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py
+pip install "nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
+```
+
+Working from a git checkout instead of PyPI? See [CONTRIBUTING.md §1](../CONTRIBUTING.md#1-getting-set-up) for the editable + dev install.
 
 ## 2. Catalog
 

@@ -1,6 +1,6 @@
 # Concepts
 
-This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the specialization subpackages (now ~14 of them after PR #29 — Tier-1 fine-tuning/PEFT/diffusion/paradigms/trainer, Tier-2 quantization/pruning/surgery/embeddings/interop/viz/generation, plus the decoder-only LM path on top).
+This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the twelve specialization subpackages — Tier-1 (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`) and Tier-2 (`quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`) — plus the decoder-only LM path on top.
 
 Sections are ordered from most fundamental to most specialized. Read top-to-bottom on a first pass; jump by anchor for reference.
 
@@ -272,19 +272,32 @@ samples = sample(model, schedule, shape=(256, 2))
 
 See [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py) for an end-to-end run on a 2D mixture of four Gaussians. After training, samples cluster around all four modes (~25% each).
 
-## 10. Training paradigms (KD, SimCLR, Mixup, CutMix)
+## 10. Training paradigms
 
-All four live in `nnx.paradigms` as `TrainStepFn` factories. Each plugs into `NNModel.train(train_step_fn=...)`:
+All paradigms live in `nnx.paradigms` as `TrainStepFn` factories — Hinton-style knowledge distillation, FitNets-style feature distillation, SimCLR contrastive, Mixup and CutMix batch augmentation, sparse top-k Mixture-of-Experts, I-JEPA self-supervised pretraining, DPO preference fine-tuning, and Born-Again iterated self-distillation. Each plugs into `NNModel.train(train_step_fn=...)`:
 
 ```python
 from nnx import (
     kd_train_step_factory,           # Hinton-style knowledge distillation
+    feature_kd_train_step_factory,   # FitNets-style intermediate-feature KD
     simclr_train_step_factory,       # SimCLR contrastive learning
     mixup_train_step_factory,        # Mixup batch augmentation
     cutmix_train_step_factory,       # CutMix batch augmentation (4D images)
+    moe_train_step_factory,          # MoE supervised step + Switch aux loss
+    jepa_train_step_factory,         # I-JEPA self-supervised pretraining
+    dpo_train_step_factory,          # DPO preference fine-tuning (LM)
+    born_again_train,                # Iterated self-distillation wrapper
     nt_xent_loss,                    # SimCLR loss exposed for ad-hoc use
 )
 ```
+
+§§10.1–10.3 below cover the four foundational paradigms (KD, SimCLR, Mixup, CutMix). The newer additions are documented in dedicated pages or under §15 (DPO ties into the LM path):
+
+- **Feature-KD** — extends `kd_train_step_factory` with an MSE term between named teacher/student intermediate activations; full signature in [API §10](api.md).
+- **MoE** — `MoELinear` drop-in for `nn.Linear` + `moe_train_step_factory` (sums per-layer `last_aux_loss` into the main loss as a Switch-style load-balancing penalty); demo in `examples/14_moe_classifier.py`.
+- **I-JEPA** — masked-patch → latent-prediction against an EMA target encoder; full walkthrough in [`docs/jepa.md`](jepa.md).
+- **DPO** — preference-pair fine-tuning against a frozen reference policy; see §15 and [`docs/dpo.md`](dpo.md).
+- **Born-Again** — `born_again_train(...)` iterates self-distillation across G generations; see [API §10](api.md).
 
 ### 10.1. Knowledge distillation
 
@@ -322,9 +335,14 @@ model.train(params=..., train_step_fn=mixup)
 
 See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py) for a teacher→student distillation flow on a tabular toy task; the same factory-plus-train_step pattern applies to the other three.
 
-## 11. Parameter-efficient fine-tuning (LoRA, adapters)
+## 11. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 
-When a pretrained model is too large to fine-tune in full, PEFT keeps the original weights frozen and trains a small set of new parameters instead. Two patterns ship in `nnx.peft`:
+When a pretrained model is too large to fine-tune in full, PEFT keeps the original weights frozen and trains a small set of new parameters instead. `nnx.peft` ships six adapters covering the full spectrum from rank-decomposed residuals (LoRA) down to a single per-output scaling vector (IA3). §§11.1–11.2 walk through LoRA and `AdapterLayer` in detail; the others share the same wrap-and-freeze idiom — see [API §9](api.md) for full signatures.
+
+- **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector and recomposing the layer's weight as `W = magnitude · V / ||V||_c`. Often outperforms LoRA at the same rank with only `out_features` extra params. Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices; the `magnitude` parameter rides along via the full `state_dict()` round-trip.
+- **IA3** (`IA3Linear` / `apply_ia3_to`) — the smallest adapter in the family: a single learned per-output-dim scaling vector applied to a frozen `nn.Linear`'s output. Dedicated `save_ia3_weights` / `load_ia3_weights` persist only the scaling tensor.
+- **PrefixTuner** (`PrefixTuner` / `save_prefix_weights` / `load_prefix_weights`) — prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`. The model itself is unchanged; the tuner stores the prefix tensors and routes them through the attention forward via a hook.
+- **PromptTuner** (`PromptTuner` / `save_prompt_weights` / `load_prompt_weights`) — prepends learned soft-prompt embeddings ahead of the input tokens of a frozen `TransformerNN`. Cheapest of the LM-targeted PEFT methods; useful when even the rank-decomposed LoRA budget is too large.
 
 ### 11.1. LoRA — low-rank adaptation
 
@@ -384,13 +402,15 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 
 ## 12. Model-internals visualization
 
-`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Four primitives ship today: `summary`, `weight_histogram`, `activation_map`, and `netron_export`.
+`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Five primitives ship today: `summary`, `weight_histogram`, `activation_map`, `attribute`, and `netron_export`.
 
 `nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install nnx[viz]` pulls in `torchinfo`).
 
 `nnx.viz.weight_histogram(model)` walks `model.named_parameters()` and emits one Plotly `Histogram` trace per tensor in a grid subplot. Useful for spotting dead layers, NaN / Inf weights, or saturation patterns at a glance.
 
 `nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule, runs `model(x)` under `torch.no_grad()`, and returns a Plotly heatmap: a grid of per-channel heatmaps for 4D conv activations `(N, C, H, W)`, or a single `(N, F)` heatmap for 2D dense activations. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
+
+`nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)` — the figure renders the attribution as a Plotly heatmap (3-/4-D image-shaped inputs are mean-pooled over channels first). Captum is lazy-imported at the call site, so the rest of `nnx.viz` keeps working without it; the missing-dep path raises a clear `ImportError`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Requires the `viz` extra (`pip install nnx[viz]` pulls in `captum` alongside `torchinfo`).
 
 `nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/). Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install nnx[viz-interactive]`).
 
@@ -486,3 +506,14 @@ Downstream of the LM path, four follow-ons compose on top of it:
 - **HuggingFace Hub publish** — via the `PyTorchModelHubMixin` integration
   on `NNModel` itself (any subclass inherits it). See
   [`docs/hub.md`](hub.md).
+
+## 16. Tier-2 subpackage deep-dives
+
+Four Tier-2 subpackages are large enough to warrant a dedicated section but small enough that the canonical write-up lives elsewhere. This catalog is the pointer index — open the linked page for the full walkthrough.
+
+- **`nnx.quantize`** — PTQ INT8 weight-only (`quantize_int8(model)`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`), both built on `torchao`. The PTQ path is one call, no calibration data, no retraining; the QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit. Opt-in via `pip install nnx[quantize]`. See [API §11](api.md) for the full surface; `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
+- **`nnx.prune`** — `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net so pruned checkpoints load into stock code under `strict=True`. See [API §12](api.md); `examples/` does not yet ship a pruning demo (see deferred items in [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md)).
+- **`nnx.surgery`** — `widen` / `deepen` (function-preserving Net2Net edits — Chen/Goodfellow/Shlens, ICLR 2016), `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
+- **`nnx.embeddings`** — the one RAG-adjacent surface NNx ships. `train_contrastive` reuses the existing NT-Xent machinery for domain-specific text embedders; `export_to_faiss` writes the trained model's outputs to a FAISS index (Flat / HNSW) that any retrieval framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. The chunker, reranker, and vector-DB client are deliberately out of scope. See [`docs/embeddings.md`](embeddings.md) for the full when-to-use guide; `examples/13_train_domain_embedder.py` is the runnable demo.
+
+`nnx.generation` (LogitsProcessor chain) is documented inline in §15 since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` (safetensors + GGUF + Ollama) is documented under §15 and on [`docs/gguf.md`](gguf.md) / [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.

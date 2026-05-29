@@ -4,7 +4,7 @@
 Optimization objective from Rafailov et al. (2023) — a simpler
 alternative to PPO-based RLHF that fits in a single supervised-style
 training loop. Combined with `nnx.NNPreferenceDataset` and an
-`nnx.GenerativeNNModel` (the SP-4 decoder-only LM), DPO becomes a
+`nnx.GenerativeNNModel` (the decoder-only LM path; see [`docs/lm.md`](lm.md)), DPO becomes a
 drop-in `train_step_fn=` for the standard `NNModel.train(...)` call.
 
 ## What DPO does
@@ -163,7 +163,7 @@ or one isomorphic to it.
 ## Honest scope
 
 NNx's DPO is built for **small-LM experimentation** — the same
-TinyStories-class sub-30-minute-on-a-laptop scope as SP-4's
+TinyStories-class sub-30-minute-on-a-laptop scope as the LM path's
 `GenerativeNNModel`. It is **not** a production RLHF replacement.
 Specifically:
 

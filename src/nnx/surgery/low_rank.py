@@ -18,8 +18,8 @@ function-preservation contract the first test verifies. For
 approximation error is bounded by the energy of the discarded singular
 values.
 
-Naive truncation in v1; activation-SVD / Fisher-weighted variants are
-listed in the SP-6 follow-up plan.
+Naive truncation; activation-SVD / Fisher-weighted variants are
+unshipped follow-ups.
 """
 
 from __future__ import annotations

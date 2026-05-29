@@ -5,13 +5,14 @@ These match the LLaMA/Mistral family of architectural choices:
   * Pre-norm with RMSNorm (no LayerNorm bias term).
   * Rotary positional embedding (RoPE) applied to Q and K only.
   * SwiGLU feed-forward block (gated SiLU; bias=False everywhere).
-  * Multi-head causal attention with a KV-cache seam — PR-1 ships
-    `use_cache=False`; the seam is wired so SP-10c can flip the cache
-    on without changing call sites.
+  * Multi-head causal attention with a KV-cache seam — the low-level
+    attention call defaults to ``use_cache=False`` (used by the
+    training-forward path); ``GenerativeNNModel.generate`` flips it on
+    via ``TransformerNN.forward_with_cache`` for incremental decoding.
 
 Scope explicit: TinyStories-class single-GPU LM, not a production
-inference path. FlashAttention / tensor parallelism are out of scope
-for this PR.
+inference path. FlashAttention v3 / tensor parallelism / multi-node
+training are out of scope.
 """
 
 from __future__ import annotations
@@ -167,9 +168,10 @@ def multi_head_causal_attention(
 class MultiHeadCausalAttention(nn.Module):
     """Multi-head causal self-attention with a KV-cache seam.
 
-    The seam exists so SP-10c (KV-cache) can flip ``use_cache=True``
-    without touching call sites. PR-1 ships ``use_cache=False`` and
-    returns ``None`` for the kv tuple — the seam is structural only.
+    The low-level default is ``use_cache=False`` (training-forward
+    path) — the seam is exercised by ``TransformerNN.forward_with_cache``
+    which threads cached ``(k, v)`` tuples through every block on
+    behalf of ``GenerativeNNModel.generate``.
     """
 
     def __init__(
@@ -204,10 +206,11 @@ class MultiHeadCausalAttention(nn.Module):
 
         Args:
             x: (B, T, d_model) input.
-            past_kv: ignored when ``use_cache=False`` (PR-1).
+            past_kv: ignored when ``use_cache=False`` (training path).
             use_cache: when True, returns the updated (k, v) tuple for
-                the caller to thread into the next call. PR-1 ships
-                this path off; flipping it on is SP-10c's job.
+                the caller to thread into the next call —
+                ``GenerativeNNModel.generate`` does this via
+                ``TransformerNN.forward_with_cache``.
         Returns:
             (output, new_kv) where ``new_kv`` is None when
             ``use_cache=False``.
@@ -221,8 +224,8 @@ class MultiHeadCausalAttention(nn.Module):
         v = v.view(b, t, self.n_heads, self.head_dim).transpose(1, 2)
 
         # Apply RoPE to Q and K. The position offset is 0 in the
-        # train/full-forward path; SP-10c will pass a non-zero offset
-        # equal to the cached prefix length.
+        # train/full-forward path; the KV-cache path passes a non-zero
+        # offset equal to the cached prefix length.
         offset = 0
         if use_cache and past_kv is not None:
             offset = past_kv[0].size(-2)

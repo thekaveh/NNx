@@ -99,13 +99,13 @@ run = model.train(
 ```
 
 The full example with an optional CIFAR-10 download lives in
-[`examples/16_ijepa_cifar10.py`](https://github.com/Kavehjr/NNx/blob/main/examples/16_ijepa_cifar10.py).
+[`examples/16_ijepa_cifar10.py`](https://github.com/thekaveh/NNx/blob/main/examples/16_ijepa_cifar10.py).
 
 ## Design notes
 
 ### Why a separate `ViTNN` instead of reusing `TransformerNN`
 
-`TransformerNN` (SP-4) is a decoder-only LM stack. Its
+`TransformerNN` (the LM path; see [`docs/lm.md`](lm.md)) is a decoder-only LM stack. Its
 `MultiHeadCausalAttention` hard-codes a causal mask + RoPE on Q/K;
 both are wrong for vision tokens (bidirectional attention, learned
 absolute positions). Rather than carve a parameter into the causal

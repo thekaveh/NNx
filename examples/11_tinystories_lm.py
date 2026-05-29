@@ -1,5 +1,5 @@
 """Train a tiny decoder-only LM on TinyStories — end-to-end demo of
-the SP-4 TransformerNN path.
+the TransformerNN path.
 
 Pipeline:
 
@@ -14,7 +14,7 @@ Pipeline:
 Scope explicit: TinyStories-class CPU-friendly demo. A full TinyStories
 epoch on a laptop is hours; this example trains on a 1% subset for a
 sub-30-min CPU run. Production-scale training (multi-GPU, FlashAttention)
-is out of scope for SP-4.
+is intentionally out of scope.
 
 Run:
     python examples/11_tinystories_lm.py

@@ -11,16 +11,15 @@ compose them into dashboards or notebook layouts.
 """
 
 from .activation import activation_map
+from .attribute import attribute
 from .netron import netron_export
 from .summary import summary
 from .weight_histogram import weight_histogram
 
 __all__ = [
     "activation_map",
+    "attribute",
     "netron_export",
     "summary",
     "weight_histogram",
 ]
-from .attribute import attribute
-
-__all__ = ["attribute", "summary", "weight_histogram"]
