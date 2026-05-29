@@ -154,17 +154,29 @@ device — same seed + same prompt + same model = same output.
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
   `train_loss` for an LM is the standard signal; perplexity = `exp(loss)`.
 - **KV cache** — `TransformerBlock` exposes a `use_cache` kwarg whose
-  off-path returns `None` for the new kv tuple. Flipping it on lives in
-  a separate sub-project (SP-10c).
+  off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
+  defaults `use_cache=True` and runs a single prefill pass through
+  `forward_with_cache` followed by incremental token-by-token decoding,
+  for ≈1.9× speedup at 128 tokens on CPU (gap widens on longer contexts
+  and on GPU).
 
 ## Scope explicit
 
-This sub-project (SP-4) covers:
+The decoder-only LM path covers:
 
-- Decoder-only architecture (LLaMA / Mistral conventions).
+- Decoder-only architecture (LLaMA / Mistral conventions: RMSNorm, RoPE,
+  SwiGLU, tied embeddings).
 - HF tokenizer integration via the `tokenizers` Rust library.
-- Autoregressive `generate()` with greedy + sampling.
+- Autoregressive `generate()` with greedy + sampling (`LogitsProcessor`
+  chain: temperature / top-k / top-p / repetition-penalty).
+- KV-cache acceleration on by default (≈1.9× speedup at 128 tokens on
+  CPU; wider on longer contexts and GPU).
 - CPU-friendly TinyStories-class training (sub-30-min runs).
+- Onward integrations shipped post-LM: `Prefix-Tuner` / `Prompt-Tuner`
+  PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)),
+  `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)),
+  and GGUF / Ollama export for the llama.cpp ecosystem (see
+  [`docs/gguf.md`](gguf.md)).
 
 Out of scope:
 
@@ -172,11 +184,5 @@ Out of scope:
 - FlashAttention v3 (uses `torch.nn.functional.scaled_dot_product_attention`,
   which picks the best backend kernel automatically).
 - Tensor parallelism / FSDP / ZeRO sharding.
-- KV cache turned on by default (the seam exists; SP-10c flips it).
-- GGUF / Ollama export (SP-10a).
-- Prefix tuning / prompt tuning (SP-10b).
-- Production-scale RLHF / PPO (SP-10d ships **DPO** for small-LM
-  experimentation; see [docs/dpo.md](dpo.md) for honest scope).
-
-For each of those, see the corresponding sub-project plan under
-`docs/specs/` (local-only).
+- Production-scale RLHF / PPO (DPO is the lightweight preference path
+  NNx ships; full PPO is intentionally out of scope).
