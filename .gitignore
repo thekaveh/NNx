@@ -31,7 +31,11 @@ tb_logs/
 
 # Coverage / docs build output
 coverage.xml
+# `site/` is mkdocs' default --site-dir; CI uses `--site-dir _site`
+# (.github/workflows/{ci,release}.yml). Ignore both so neither
+# materializes in `git status` after a local --strict build.
 site/
+_site/
 
 # Local-only working specs / design docs (per repo convention,
 # planning artifacts are not committed — only the implementation is).
