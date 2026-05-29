@@ -263,13 +263,18 @@ class NNModel(_HubMixinBase):
                     "Install via `pip install nnx[onnx-dynamo]` (or `pip install onnxscript`)."
                 ) from e
 
-        if isinstance(example_input, torch.Tensor):
-            example_input = (example_input.to(self.device),)
-        else:
-            example_input = tuple(
-                (e.to(self.device) if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e)).to(self.device))
-                for e in example_input
-            )
+        # Normalize a single Tensor / np.ndarray to a length-1 tuple, then
+        # coerce each element. Without the np.ndarray case in the singleton
+        # check, a 2-D array like ``np.zeros((2, 4))`` falls into the
+        # iterable branch and is unpacked row-by-row — torch.onnx.export
+        # then sees a model with `N = first-dim` separate inputs instead of
+        # the one input the caller meant.
+        if isinstance(example_input, (torch.Tensor, np.ndarray)):
+            example_input = (example_input,)
+        example_input = tuple(
+            (e.to(self.device) if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e)).to(self.device))
+            for e in example_input
+        )
 
         in_names = input_names or [f"input_{i}" for i in range(len(example_input))]
         out_names = output_names or ["output"]
