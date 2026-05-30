@@ -15,10 +15,9 @@ A handful of examples depend on optional extras — install them as needed:
 pip install "nnx[onnx]"             # 04_onnx_export.py
 pip install "nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
 pip install "nnx[embeddings]"       # 13_train_domain_embedder.py
-pip install "nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py
+pip install "nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 22_dpo_tinystories.py
 pip install "nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
 pip install "nnx[viz]"              # 21_viz_attribute_xai.py
-pip install "nnx[lm]"               # 22_dpo_tinystories.py (already listed above for lm)
 ```
 
 Working from a git checkout instead of PyPI? See [CONTRIBUTING.md §1](../CONTRIBUTING.md#1-getting-set-up) for the editable + dev install.
