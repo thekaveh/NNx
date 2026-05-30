@@ -32,6 +32,37 @@ def test_top_level_imports():
     assert hasattr(viz, "weight_histogram")
 
 
+def test_subpackages_attribute_accessible_after_plain_import():
+    """README §1.2 advertises dotted-submodule access (e.g.
+    ``nnx.interop.write_gguf(...)``) after a plain ``import nnx``.
+    For that to work, every advertised subpackage must be bound as
+    an attribute of the top-level package — i.e. ``__init__.py``
+    must perform either ``from .X import ...`` (which side-effects
+    the attribute) or an explicit ``from . import X``.
+
+    Regression: ``nnx.interop`` was previously omitted from the
+    explicit ``from . import ...`` line, so ``hasattr(nnx, 'interop')``
+    returned False after a plain ``import nnx`` despite the README
+    advertising ``nnx.interop.write_gguf``."""
+    import nnx
+
+    for name in (
+        "diffusion",
+        "embeddings",
+        "finetune",
+        "generation",
+        "interop",
+        "paradigms",
+        "peft",
+        "prune",
+        "quantize",
+        "surgery",
+        "trainer",
+        "viz",
+    ):
+        assert hasattr(nnx, name), f"nnx.{name} must be attribute-accessible after plain `import nnx`"
+
+
 def test_finetune_submodules_import():
     from nnx.finetune import freezing, loading, param_groups
 
