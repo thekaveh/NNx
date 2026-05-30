@@ -358,15 +358,17 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 Opt-in via `pip install "nnx[viz]"` (pulls `torchinfo` + `captum`) and `pip install "nnx[viz-interactive]"` (adds the `netron` browser viewer for `nnx.viz.netron_export(..., launch=True)`).
 
-::: nnx.viz.summary.summary
-
-::: nnx.viz.weight_histogram.weight_histogram
-
 ::: nnx.viz.activation.activation_map
+
+::: nnx.viz.attribute.attribute
+
+::: nnx.viz.gradient_flow.gradient_flow
 
 ::: nnx.viz.netron.netron_export
 
-::: nnx.viz.attribute.attribute
+::: nnx.viz.summary.summary
+
+::: nnx.viz.weight_histogram.weight_histogram
 
 ## 20. Utilities
 
