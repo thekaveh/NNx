@@ -4,7 +4,7 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased] — Expansion megamerge + Month-1 cluster
 
-Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#40 + the post-PR-#40 overnight-maintenance follow-up (the post-#39 maintenance pass landed as PR #40 on 2026-05-30; this section also captures fixes shipped on the overnight-maintenance branch immediately after). Test suite is **696 tests; 695 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
+Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#40 + the post-PR-#40 overnight-maintenance follow-up (the post-#39 maintenance pass landed as PR #40 on 2026-05-30; this section also captures fixes shipped on the overnight-maintenance branch immediately after). Test suite is **698 tests; 697 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
 
 ### Added — Month-1 cluster (PRs #32–#37)
 

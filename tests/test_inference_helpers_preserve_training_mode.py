@@ -145,9 +145,11 @@ def test_predict_restores_training_mode_after_exception():
     )
 
 
-def test_diffusion_sample_restores_training_mode_after_call():
-    """``nnx.diffusion.sample`` must leave model.net.training as found."""
-    from nnx.diffusion import DiffusionMLP, NoiseSchedulers, sample
+def _make_diffusion_model_with_schedule():
+    """Shared fixture-factory for the two diffusion.sample mode-restore
+    tests. Returns (model, schedule) primed for a 4-step reverse-diffusion
+    sample call."""
+    from nnx.diffusion import DiffusionMLP, NoiseSchedulers
 
     torch.manual_seed(0)
     net = DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8)
@@ -163,26 +165,58 @@ def test_diffusion_sample_restores_training_mode_after_call():
     )
     # Swap in the diffusion net (the sampler operates on model.net).
     model.net = net
+    schedule = NoiseSchedulers.LINEAR(T=4)
+    return model, schedule
+
+
+def test_diffusion_sample_restores_training_mode_after_call():
+    """``nnx.diffusion.sample`` from a ``train()`` caller leaves the net
+    in ``train()``."""
+    from nnx.diffusion import sample
+
+    model, schedule = _make_diffusion_model_with_schedule()
     model.net.train()
     assert model.net.training is True
 
-    schedule = NoiseSchedulers.LINEAR(T=4)
     _ = sample(model, schedule, shape=(2, 2))
 
     assert model.net.training is True, "diffusion.sample did not restore training-mode"
 
 
+def test_diffusion_sample_preserves_eval_mode_caller():
+    """Symmetric: a caller in ``eval()`` must stay in ``eval()`` after
+    ``nnx.diffusion.sample`` — the non-destructive contract preserves
+    whichever mode the caller chose, not just ``train``."""
+    from nnx.diffusion import sample
+
+    model, schedule = _make_diffusion_model_with_schedule()
+    model.net.eval()
+    assert model.net.training is False
+
+    _ = sample(model, schedule, shape=(2, 2))
+
+    assert model.net.training is False, "diffusion.sample flipped eval() caller into train()"
+
+
+class _FakeBackbone(nn.Module):
+    """Tiny stand-in for a sentence-transformers / nn.Module backbone.
+
+    Sized just enough for ``nnx.embeddings.embed_texts`` to invoke
+    ``forward(list[str]) -> Tensor[B, D]`` and exit cleanly.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = nn.Linear(4, 4)
+
+    def forward(self, texts: list[str]) -> torch.Tensor:
+        return self.proj(torch.zeros(len(texts), 4))
+
+
 def test_embed_texts_restores_training_mode_after_call():
-    """``nnx.embeddings.embed_texts`` must leave backbone.training as found."""
+    """``nnx.embeddings.embed_texts`` from a ``train()`` caller leaves
+    the backbone in ``train()``."""
     from nnx.embeddings import embed_texts
-
-    class _FakeBackbone(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.proj = nn.Linear(4, 4)
-
-        def forward(self, texts: list[str]) -> torch.Tensor:
-            return self.proj(torch.zeros(len(texts), 4))
 
     backbone = _FakeBackbone()
     backbone.train()
@@ -191,3 +225,18 @@ def test_embed_texts_restores_training_mode_after_call():
     _ = embed_texts(backbone, texts=["a", "b"], normalize=False)
 
     assert backbone.training is True, "embed_texts did not restore training-mode"
+
+
+def test_embed_texts_preserves_eval_mode_caller():
+    """Symmetric: a caller in ``eval()`` must stay in ``eval()`` after
+    ``nnx.embeddings.embed_texts`` — the non-destructive contract
+    preserves whichever mode the caller chose, not just ``train``."""
+    from nnx.embeddings import embed_texts
+
+    backbone = _FakeBackbone()
+    backbone.eval()
+    assert backbone.training is False
+
+    _ = embed_texts(backbone, texts=["a", "b"], normalize=False)
+
+    assert backbone.training is False, "embed_texts flipped eval() caller into train()"
