@@ -4,7 +4,7 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased] — Expansion megamerge + Month-1 cluster
 
-Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#37 (six follow-on items shipped 2026-05-29). Test suite is **671 tests; 670 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
+Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#39 (eight follow-on items shipped 2026-05-29 / 2026-05-30). Test suite is **677 tests; 676 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
 
 ### Added — Month-1 cluster (PRs #32–#37)
 
@@ -17,8 +17,9 @@ Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#37 (six follow-on item
 
 ### Fixed — Month-1 cluster follow-ups
 
-- **`pyproject.toml` Pygments pin** — Pygments 2.20.0 broke `pymdownx.highlight` (a `filename=None` propagates into `HtmlFormatter.__init__` and crashes with `AttributeError: 'NoneType' object has no attribute 'replace'`), making `mkdocs build --strict` fail on every docs page containing a fenced Python code block or a mkdocstrings class `source` block. Pinned `Pygments<2.20` in the `[docs]` extra; CI install line picks it up automatically.
-- **Examples 20 + 24 seed-state bug** — `torch.manual_seed(0)` inside `_make_data()` silently overrode the caller's `set_seed(42)` from `main()`. PR #37's review caught the same bug in examples 19 / 21 / 23 and fixed those; the fix was missed for 20 / 24. Now removed; examples still complete end-to-end on CPU.
+- **`nnx.lr_finder` correctness pass (PR #39).** Three correctness issues deferred from PR #38's audit, all fixed: (1) **smoothed-min divergence guard** — early-exit now compares an EMA-smoothed loss against an EMA-smoothed running minimum (matches fastai's `lr_find`), so an anomalously low first-batch loss no longer ends the sweep before the descent region is reached; (2) **short-sweep fallback** — when fewer than 5 points are recorded, suggested LR is the LR at the minimum observed loss, not `start_lr` (which would have been the worst possible `max_lr`); (3) **monotonically-rising-loss fallback** — when no descent region exists at all, the slope-based heuristic falls back to the min-observed-loss LR rather than returning the steepest-positive-slope index. Also fixes a degenerate empty-trace `add_vline` crash on extremely short sweeps. `NNRun._repr_html_` no longer accepts a stale `idps` arg. Six new regression tests in `tests/test_lr_finder.py`.
+- **`pyproject.toml` Pygments pin (PR #38)** — Pygments 2.20.0 broke `pymdownx.highlight` (a `filename=None` propagates into `HtmlFormatter.__init__` and crashes with `AttributeError: 'NoneType' object has no attribute 'replace'`), making `mkdocs build --strict` fail on every docs page containing a fenced Python code block or a mkdocstrings class `source` block. Pinned `Pygments<2.20` in the `[docs]` extra; CI install line picks it up automatically.
+- **Examples 20 + 24 seed-state bug (PR #38)** — `torch.manual_seed(0)` inside `_make_data()` silently overrode the caller's `set_seed(42)` from `main()`. PR #37's review caught the same bug in examples 19 / 21 / 23 and fixed those; the fix was missed for 20 / 24. Now removed; examples still complete end-to-end on CPU.
 
 ### Fixed — ONNX input coercion (PR #30)
 
@@ -51,7 +52,9 @@ Every change preserves back-compatibility with existing `run.id` hashes and on-d
 - New optional dependency: `pip install nnx[quantize]` (pulls `torchao>=0.17`).
 - 15 new tests in `tests/test_quantize_ptq.py` covering: returns a fresh `NNModel`, preserves output shape, doesn't mutate the source, replaces Linear weights with a torchao-quantized tensor, preserves attached attrs (`params` / `net_params` / `device` / `loss_fn`), output stays within 5% relative L2 of FP32, pickled state-dict shrinks vs FP32, `NNCheckpoint.to_file` round-trip shrinks on disk, ONNX export round-trip, deep-copy isolation (mutating quantized doesn't leak back), `predict()` end-to-end on a deeper model, clear `ImportError` when torchao is missing, state-dict keys unchanged, idempotency-via-deep-copy (calling twice on the same source produces identical outputs), `.train()` / `.eval()` toggle still works.
 
-**Deferred:** QAT (`qat_train_step_factory`) and INT4 weight-only land in separate follow-up PRs.
+**Also shipped in this sub-section:** **`nnx.quantize.qat_train_step_factory`** + **`nnx.quantize.QATLifecycleCallback`** — Int8DynActInt4WeightQATQuantizer fake-quant during training, real-quant on convert via the `QATLifecycleCallback` (prepare → train → convert lifecycle pinned to epoch boundaries). Re-exported from `nnx.*`. Tests in `tests/test_quantize_qat.py` cover prepare/convert idempotency, end-to-end training, and ONNX export of the converted model.
+
+**Deferred from this sub-section:** INT4 weight-only PTQ lands in a separate follow-up PR.
 ### Added — PEFT++ (IA3)
 
 - **`IA3Linear(base)`** — Infused Adapter by Inhibiting and Amplifying Inner Activations (Liu et al., NeurIPS 2022). The smallest adapter in the PEFT family: a single learned per-output-dim `scaling` vector applied multiplicatively to a frozen `nn.Linear`'s output. Trainable parameter count per wrapped layer is exactly `out_features` — roughly two orders of magnitude smaller than LoRA at the same effective adaptation budget. `scaling` is initialized to all-ones so the forward output at step 0 equals `base(x)` exactly.
