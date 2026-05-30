@@ -47,9 +47,17 @@ def sample_next_token(
         return int(logits.argmax(dim=-1).item())
 
     probs = torch.softmax(logits, dim=-1)
-    # multinomial requires probs > 0 somewhere. If softmax produced all
-    # zeros (NaN-from-NaN), fall back to argmax on the original.
-    if probs.sum().item() == 0.0:
+    # multinomial requires a finite, positive-sum probability vector.
+    # Three degenerate cases collapse to argmax on the original logits:
+    #   * NaN-in-logits → softmax produces NaN → sum is NaN (not 0.0,
+    #     so the original `== 0.0` check missed this — multinomial then
+    #     crashed with "probability tensor contains either inf, nan").
+    #   * sum is 0.0 (e.g., the entire row underflowed to zero in
+    #     reduced-precision contexts).
+    #   * sum is +/-inf (shouldn't happen given the +inf guard above,
+    #     but cheap belt-and-braces).
+    total = probs.sum()
+    if not torch.isfinite(total) or total.item() <= 0.0:
         return int(logits.argmax(dim=-1).item())
     next_id = torch.multinomial(probs, num_samples=1, generator=generator)
     return int(next_id.item())
