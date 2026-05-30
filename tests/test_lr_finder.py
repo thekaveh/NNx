@@ -154,3 +154,79 @@ def test_lr_finder_figure_has_log_x_axis():
         num_iter=30,
     )
     assert result.figure.layout.xaxis.type == "log"
+
+
+def test_lr_finder_restores_training_mode():
+    """Caller's `model.training` is snapshotted and restored on exit.
+
+    The docstring guarantees both weights AND the training-mode flag
+    come back exactly as the caller passed them. A previous review
+    caught the gap where the function unconditionally `model.train()`'d
+    without restoring an `eval()` caller's state.
+    """
+    model, loader = _tiny_model_and_loader()
+
+    # Caller starts in eval() mode.
+    model.eval()
+    assert model.training is False
+
+    lr_finder(
+        model,
+        loader,
+        loss_fn=nn.functional.cross_entropy,
+        start_lr=1e-6,
+        end_lr=1.0,
+        num_iter=30,
+    )
+
+    assert model.training is False, "lr_finder left model in train() after eval() caller"
+
+    # And the symmetric case: caller in train() should stay in train().
+    model.train()
+    assert model.training is True
+
+    lr_finder(
+        model,
+        loader,
+        loss_fn=nn.functional.cross_entropy,
+        start_lr=1e-6,
+        end_lr=1.0,
+        num_iter=30,
+    )
+
+    assert model.training is True
+
+
+def test_lr_finder_early_exits_on_divergence():
+    """When `loss_fn` diverges (returns escalating values), the sweep
+    stops before exhausting `num_iter`. Verifies the
+    `loss_val > diverge_threshold * min(losses)` guard at the top of
+    the loop actually fires.
+    """
+    model, loader = _tiny_model_and_loader()
+
+    # A divergent loss: scales with iteration count by storing state on
+    # a closure-local counter that grows each call.
+    counter = {"n": 0}
+
+    def diverging_loss(y_hat: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        counter["n"] += 1
+        # First call returns a small loss (sets the min); subsequent calls
+        # explode geometrically, blowing past `diverge_threshold * min`
+        # within a couple of iterations.
+        scale = 1.0 if counter["n"] == 1 else 100.0 ** counter["n"]
+        return (y_hat * 0 + scale).sum()
+
+    result = lr_finder(
+        model,
+        loader,
+        loss_fn=diverging_loss,
+        start_lr=1e-6,
+        end_lr=1.0,
+        num_iter=100,
+        diverge_threshold=4.0,
+    )
+
+    # Sweep should have early-exited well before num_iter=100.
+    assert len(result.lrs) < 100
+    assert len(result.lrs) >= 1

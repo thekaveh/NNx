@@ -122,3 +122,44 @@ def test_repr_html_handles_run_without_idps(tmp_path):
     html = run._repr_html_()
     assert isinstance(html, str)
     assert "<table" in html
+
+
+def test_repr_html_handles_run_with_empty_idps():
+    """`idps=[]` (empty list, distinct from None) hits the same gated
+    no-chart branch as `idps=None` and returns valid HTML with the
+    config table only.
+
+    Documents the truthy-check fallback in `_repr_html_` — empty lists
+    are falsy and so collapse to the same path.
+    """
+    from nnx.nn.params.nn_optim_params import NNOptimParams as _NNOptimParams
+    from nnx.nn.params.nn_run import NNRun
+    from nnx.nn.params.nn_scheduler_params import NNSchedulerParams as _NNSchedulerParams
+
+    run = NNRun(
+        net=NNParams(
+            input_dim=4,
+            output_dim=3,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+        ),
+        model=NNModelParams(
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
+        ),
+        train=NNTrainParams(
+            n_epochs=1,
+            train_loader=DataLoader(TensorDataset(torch.randn(8, 4), torch.randint(0, 3, (8,)))),
+            optim=_NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=_NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        ),
+    )
+    # Explicit empty list — same falsy behavior as None.
+    run = run.with_idps([])
+    html = run._repr_html_()
+    assert isinstance(html, str)
+    assert "<table" in html
+    # Chart absent because idps is empty.
+    assert "plotly" not in html.lower()
