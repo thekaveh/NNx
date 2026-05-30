@@ -29,7 +29,9 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Embeddings + FAISS** — contrastive text-embedder training + FAISS index export for downstream RAG.
 - **GGUF + Ollama export** — write a `.gguf` for the llama.cpp / Ollama / LM Studio ecosystem, including the Ollama Modelfile bundle.
 - **HuggingFace Hub** — `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel` via the `PyTorchModelHubMixin`, plus safetensors checkpoint format.
-- **Model-internals visualization** — `nnx.viz.summary` (torchinfo) + `weight_histogram` + `activation_map` + `attribute` (Captum) + `netron_export`.
+- **Model-internals visualization** — `nnx.viz.summary` (torchinfo) + `weight_histogram` + `activation_map` + `attribute` (Captum) + `gradient_flow` (per-layer gradient-norm diagnostic) + `netron_export`.
+- **Training-loop diagnostics** — `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure; non-destructive (model state + training-mode restored on exit).
+- **Type-checked downstream** — PEP 561 `py.typed` marker so consumers' `pyright` / `mypy` honor the public-surface annotations.
 
 ## 2. Where to next
 
@@ -50,6 +52,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - [Embeddings + FAISS](embeddings.md) — contrastive training + RAG-ready export.
 - [HuggingFace Hub](hub.md) — safetensors + Hub publish/load.
 - [GGUF & Ollama](gguf.md) — export to llama.cpp ecosystem.
+- [Comparison vs Lightning / HF / fastai / Composer](comparison.md) — scope-explicit decision matrix for picking the right PyTorch training toolkit.
 
 ### 2.4. Look things up
 
