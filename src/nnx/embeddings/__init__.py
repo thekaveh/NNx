@@ -14,6 +14,11 @@ Public surface — re-exported from the top-level ``nnx`` package as
 
   - :class:`ContrastiveTextDataset` — wraps a list of
     ``(anchor, positive)`` string pairs into a :class:`torch.utils.data.Dataset`.
+  - :func:`pair_collate` — :class:`torch.utils.data.DataLoader`
+    ``collate_fn`` that splits a batch of ``(anchor, positive)`` tuples
+    into ``(anchors: list[str], positives: list[str])``. Pair with
+    :class:`ContrastiveTextDataset` when you build your own loader
+    instead of going through :func:`train_contrastive`.
   - :func:`train_contrastive` — high-level training loop. Takes a
     text-encoder backbone, runs NT-Xent contrastive fine-tuning, returns
     the trained backbone.
@@ -46,6 +51,7 @@ from __future__ import annotations
 from .contrastive_trainer import (
     ContrastiveTextDataset,
     embed_texts,
+    pair_collate,
     text_contrastive_train_step_factory,
     train_contrastive,
 )
@@ -56,6 +62,7 @@ __all__ = [
     "embed_texts",
     "export_to_faiss",
     "export_to_safetensors",
+    "pair_collate",
     "text_contrastive_train_step_factory",
     "train_contrastive",
 ]
