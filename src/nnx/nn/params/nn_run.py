@@ -167,7 +167,12 @@ class NNRun:
         omitted and only the config table appears.
         """
         config_html = self._render_config_table_html()
-        chart_html = self._render_metric_chart_html() if self.idps else ""
+        # Empty list and None both collapse to "no chart" — only render
+        # when self.idps actually has at least one idp to chart from.
+        # The explicit `is not None and len()` form (vs truthy `if self.idps`)
+        # narrows the type for static checkers and makes the empty-list
+        # case visible to readers.
+        chart_html = self._render_metric_chart_html() if self.idps is not None and len(self.idps) > 0 else ""
         return f'<div style="font-family: sans-serif;">{config_html}{chart_html}</div>'
 
     def _render_config_table_html(self) -> str:
