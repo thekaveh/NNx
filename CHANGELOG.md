@@ -2,11 +2,35 @@
 
 All notable changes to NNx are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is roughly [SemVer](https://semver.org/) — pre-1.0, we allow behavior changes (typically bug fixes) without renaming public APIs.
 
-## [Unreleased] — Expansion megamerge (PR #29) + ONNX input-coercion fix (PR #30)
+## [Unreleased] — Expansion megamerge + Month-1 cluster
+
+Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#37 (six follow-on items shipped 2026-05-29). Test suite is **671 tests; 670 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
+
+### Added — Month-1 cluster (PRs #32–#37)
+
+- **PEP 561 `py.typed` marker (PR #32).** Adds an empty `src/nnx/py.typed` and a `[tool.setuptools.package-data]` entry so the wheel ships it. Declares NNx as type-checked for downstream `pyright` / `mypy` consumers — they now see the existing public-surface annotations (`NNModel`, `NNParams`, callbacks, enums) instead of treating every symbol as `Any`. No NNx-side typing change; the gain is entirely downstream.
+- **`docs/comparison.md` page (PR #33).** "NNx vs Lightning / HF / fastai / Composer" honest, scope-explicit comparison: quick decision matrix, landscape map, capability-axis tables (training loop / distributed / PEFT / generation / diffusion / GNN / surgery / observability / Hub), when-to-use-what rule-of-thumb, and a "what NNx doesn't ship" call-out. Wired into `mkdocs.yml` nav and linked from README §5.1.
+- **`nnx.viz.gradient_flow(model)` (PR #34).** Per-layer L2 gradient-norm bar chart for training-loop diagnostics. Call after `loss.backward()` and before `optimizer.zero_grad()`; returns a Plotly `Figure`. Frozen params and params with `grad is None` are skipped. Raises `ValueError` with a helpful message when no parameter has a populated gradient. Six new tests; doc paragraphs in concepts.md §12 (now "Six primitives") and api.md.
+- **`nnx.lr_finder(model, train_loader, *, loss_fn, ...) -> LRFinderResult` (PR #35).** fastai-style exponential LR sweep (1e-7 → 10.0 over 100 iters by default) returning the suggested one-cycle `max_lr` via the Smith (2017) steepest-descent heuristic on EMA-smoothed loss, plus a Plotly figure of loss vs log(LR). **Non-destructive**: model state and training-mode are snapshotted before the sweep and restored on exit. Early-exits on divergence (loss > 4× min observed). Nine new tests covering return type, field shape, suggested_lr in range, weight restoration, three invalid-argument paths, and log-axis figure. Docs: concepts.md §13.1 + api.md.
+- **`NNRun._repr_html_()` (PR #36).** Jupyter rich-display: when an `NNRun` is the last expression in a cell, it renders a config table (run.id, net, device, loss, dims, dropout, activation, n_epochs, optim + max_lr) plus a Plotly per-epoch metric chart (train_loss / val_loss / train_err / val_err — val traces appear only when validation data was present). Plotly is lazy-imported inside the chart helper so non-Jupyter cost is zero. Falls back to config-table-only when `self.idps` is None / empty. Epoch boundaries detected by `idp.epoch_idx` so train-only runs render correctly. Four new tests.
+- **Six missing megamerge example scripts (PR #37).** Closes PR #31's largest deferred item. New files: `19_prune_mnist.py` (magnitude pruning at 50% sparsity + brief fine-tune), `20_surgery_resnet.py` (low-rank factorize a Linear at rank=8 + refinement), `21_viz_attribute_xai.py` (Captum attribution across 4 methods), `22_dpo_tinystories.py` (DPO with a deepcopied frozen reference policy on synthetic preference triples; before/after log-prob comparison shows `Δ(chosen − rejected) > 0`), `23_born_again_distillation.py` (iterated self-distillation across G=3 generations), `24_feature_kd.py` (FitNets-style feature distillation with one paired teacher → student layer). Each is CPU-runnable in under 2 minutes. `examples/README.md` catalog updated with four new sub-sections.
+
+### Fixed — Month-1 cluster follow-ups
+
+- **`pyproject.toml` Pygments pin** — Pygments 2.20.0 broke `pymdownx.highlight` (a `filename=None` propagates into `HtmlFormatter.__init__` and crashes with `AttributeError: 'NoneType' object has no attribute 'replace'`), making `mkdocs build --strict` fail on every docs page containing a fenced Python code block or a mkdocstrings class `source` block. Pinned `Pygments<2.20` in the `[docs]` extra; CI install line picks it up automatically.
+- **Examples 20 + 24 seed-state bug** — `torch.manual_seed(0)` inside `_make_data()` silently overrode the caller's `set_seed(42)` from `main()`. PR #37's review caught the same bug in examples 19 / 21 / 23 and fixed those; the fix was missed for 20 / 24. Now removed; examples still complete end-to-end on CPU.
+
+### Fixed — ONNX input coercion (PR #30)
+
+- **`NNModel.to_onnx(example_input=np.ndarray)`** — a single 2-D `np.ndarray` was being unpacked row-by-row into `N` rank-1 inputs because `np.ndarray` is iterable; only `torch.Tensor` was special-cased in the singleton-wrap branch. `torch.onnx.export` then raised `TypeError: forward() takes 2 positional arguments but N+1 were given`. Fix extends the singleton check to `(torch.Tensor, np.ndarray)`; the subsequent per-element coercion handles both consistently. New `tests/test_to_onnx_inputs.py` regresses the four shapes the docstring promises (Tensor singleton, ndarray singleton, tuple, mixed tuple).
+
+---
+
+## Expansion megamerge details (PR #29)
 
 This release integrates **20 sub-projects** consolidated on 2026-05-28: HuggingFace Hub interop (safetensors + `PyTorchModelHubMixin`), PEFT additions (DoRA + IA3 + Prefix + Prompt tuning on top of LoRA + Adapters), quantization (PTQ INT8 weight-only + QAT 8da4w via `torchao`), pruning (magnitude + 2:4 semi-structured), model surgery (Net2Net `widen` / `deepen` + `drop_layer` + `low_rank_factorize` + `expand_embedding`), embeddings (contrastive trainer + FAISS export), decoder-only LM (`TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with KV-cache), GGUF write + Ollama Modelfile bundle, model-internals visualization (`torchinfo` summary + weight histogram + activation map + Captum attribution + Netron export), I-JEPA self-supervised pretraining (+ small `ViTNN` encoder), Mixture-of-Experts (`MoELinear` + `moe_train_step_factory` with Switch-style aux loss), Born-Again Networks (iterated self-distillation), Feature-KD (FitNets-style), DPO (preference fine-tuning for LMs), `LogitsProcessor` chain (temperature / top-k / top-p / repetition-penalty), ONNX dynamo export opt-in, and assorted ergonomic improvements.
 
-Every change preserves back-compatibility with existing `run.id` hashes and on-disk checkpoint formats — new params fields all follow the omit-when-default state() invariant. Test suite: 652 tests; 649 pass, 3 skip (opt-in `onnxscript` dynamo path on version-skewed torch, plus the 2:4 semi-structured CUDA-gated path on CPU-only runners).
+Every change preserves back-compatibility with existing `run.id` hashes and on-disk checkpoint formats — new params fields all follow the omit-when-default state() invariant.
 
 ### Fixed — ONNX input coercion (PR #30)
 
