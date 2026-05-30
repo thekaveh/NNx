@@ -280,7 +280,14 @@ class NNRun:
         # new file, never a half-written one. This is what makes the
         # per-epoch incremental save actually safe — without atomicity,
         # a partial write here corrupts the run.
-        _atomic_write_text(yaml_path, yaml.dump(self.state()))
+        # safe_dump — never plain `yaml.dump`. NNRun.state() is a plain
+        # dict of primitive types (the round-trip contract — see the
+        # corresponding safe_load call in NNRun.load); using safe_dump
+        # here makes that contract enforced at write-time too, so a
+        # future state() change that smuggles in a non-primitive (e.g.
+        # a torch.dtype or a numpy scalar) fails loudly here rather
+        # than producing a run.yaml that fails to safe_load.
+        _atomic_write_text(yaml_path, yaml.safe_dump(self.state()))
 
         # Env snapshot: written separately so it does NOT contribute to
         # run.id (which is md5(state())). Captures library/torch/python
@@ -324,7 +331,17 @@ class NNRun:
         csv_path = os.path.join(run_path, "idps.csv")
 
         with open(yaml_path) as f:
-            rep = yaml.load(f, Loader=yaml.FullLoader)
+            # safe_load — never FullLoader. NNRun.state() is a plain dict
+            # of primitive types (strings / ints / floats / lists / nested
+            # dicts), so safe_load round-trips it losslessly. Using
+            # FullLoader would let a tampered or attacker-supplied
+            # run.yaml instantiate arbitrary Python objects via the
+            # `!!python/object/...` tag — defense-in-depth even though
+            # the file is normally application-written. Matches the
+            # safe_dump/safe_load pair the sibling metadata.yaml has
+            # always used (see seeding.py's "yaml.safe_load-compatible"
+            # comment for the metadata round-trip).
+            rep = yaml.safe_load(f)
 
         idps = pd.read_csv(csv_path).to_dict(orient="records")
 
