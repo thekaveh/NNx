@@ -230,6 +230,7 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 - [Embeddings + FAISS export](docs/embeddings.md) — walkthrough for training a domain-specific text embedder via contrastive learning and exporting it to a FAISS index for any RAG stack to consume.
 - [Model surgery](docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
 - [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings. Read this when you want the canonical signature / docstring for a public symbol.
+- [Comparison vs Lightning / HF / fastai / Composer](docs/comparison.md) — honest scope-explicit comparison: when to use NNx vs Lightning vs HF Transformers vs fastai vs MosaicML Composer, axis by axis. Read this when you're picking a PyTorch training toolkit and want a real decision matrix instead of a marketing page.
 - [Architecture diagram](docs/architecture.html) — standalone interactive HTML version of the diagram in §1.1. Read this when the embedded SVG is hard to follow and you want to hover for labels.
 
 ### 5.2. Workflow + history
