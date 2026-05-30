@@ -1,3 +1,25 @@
+"""Run-output visualization helpers.
+
+`VisUtils` collects the Plotly-based visualizations for *run outputs* —
+the artifacts produced after `NNModel.train()` has completed: training
+curves, confusion matrices, classification reports, t-SNE projections
+of held-out logits, etc. It is the sibling of `nnx.viz` (model-internals
+visualization — weight histograms, activation maps, gradient flow,
+Netron export); the two subpackages are deliberately independent and
+do not share code.
+
+Every method is a `@staticmethod` returning either a `plotly.graph_objects.Figure`
+(for plots) or a `pandas.DataFrame` (for tables). The class itself
+carries layout constants (`TITLE_SIZE`, `LABEL_SIZE`, `FIG_SIZE`,
+`MARGIN_SIZE`) shared across methods, plus an opt-in `RENDERER`
+override for environments where Plotly's default renderer doesn't
+work (e.g., when serving from a headless container).
+
+Convenience module-level aliases re-export the most common methods at
+the bottom of this file so callers can write `nnx.vis_utils.confusion_matrix(...)`
+instead of `nnx.vis_utils.VisUtils.confusion_matrix(...)`.
+"""
+
 import colorsys
 
 import numpy as np
@@ -12,6 +34,26 @@ from .nn.params.nn_checkpoint import NNCheckpoint
 
 
 class VisUtils:
+    """Plotly-based visualizations for NNx run outputs.
+
+    The static-method facade for run-output visualization. Companion to
+    `nnx.viz` (model internals — weight / activation / gradient inspection)
+    and `nnx.vis_utils`'s module-level aliases (which re-export the most
+    common methods of this class for ergonomic top-level access).
+
+    Class attributes are styling defaults shared by every plotting method:
+
+    - `TITLE_SIZE` / `LABEL_SIZE`: Plotly title and axis-label font sizes.
+    - `FIG_SIZE`: default `(width, height)` in pixels.
+    - `MARGIN_SIZE`: default margin spec (passed to `Figure.update_layout`).
+    - `RENDERER`: Plotly renderer override. `None` lets Plotly auto-detect
+      (notebook / browser / etc.); set to a string like ``"png"`` or
+      ``"browser"`` to pin behavior in non-default environments.
+
+    See the README §1.2 "Visualization" bullet and `docs/concepts.md`
+    for usage examples.
+    """
+
     TITLE_SIZE = 14
     LABEL_SIZE = 12
     RENDERER = None
