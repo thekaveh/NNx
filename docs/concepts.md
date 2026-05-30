@@ -402,7 +402,7 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 
 ## 12. Model-internals visualization
 
-`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Five primitives ship today: `summary`, `weight_histogram`, `activation_map`, `attribute`, and `netron_export`.
+`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Six primitives ship today: `summary`, `weight_histogram`, `activation_map`, `attribute`, `gradient_flow`, and `netron_export`.
 
 `nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install nnx[viz]` pulls in `torchinfo`).
 
@@ -411,6 +411,8 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 `nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule, runs `model(x)` under `torch.no_grad()`, and returns a Plotly heatmap: a grid of per-channel heatmaps for 4D conv activations `(N, C, H, W)`, or a single `(N, F)` heatmap for 2D dense activations. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
 
 `nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)` — the figure renders the attribution as a Plotly heatmap (3-/4-D image-shaped inputs are mean-pooled over channels first). Captum is lazy-imported at the call site, so the rest of `nnx.viz` keeps working without it; the missing-dep path raises a clear `ImportError`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Requires the `viz` extra (`pip install nnx[viz]` pulls in `captum` alongside `torchinfo`).
+
+`nnx.viz.gradient_flow(model)` is the diagnostic for vanishing / exploding gradients during training. Call after `loss.backward()` and before `optimizer.zero_grad()`; returns a Plotly bar chart of per-trainable-parameter L2 gradient norms. Frozen parameters (`requires_grad=False`) and parameters that weren't reached by the forward pass (gradient is `None`) are skipped. Raises `ValueError` with a helpful message if no parameter has a gradient — the usual cause is forgetting `loss.backward()`.
 
 `nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/). Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install nnx[viz-interactive]`).
 
