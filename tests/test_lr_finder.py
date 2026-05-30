@@ -197,6 +197,57 @@ def test_lr_finder_restores_training_mode():
     assert model.training is True
 
 
+def test_lr_finder_restores_state_after_exception_in_loss_fn():
+    """Non-destructive restore must hold on EVERY exit path, including
+    when a user-supplied component raises mid-sweep. The original
+    implementation only restored after the loop completed, so a
+    `loss_fn` that crashed on iteration 3 of 30 would leave the
+    caller's model weights silently mutated (the optimizer steps from
+    iters 0-2 stayed live) and `model.training` left True even if the
+    caller passed in an `eval()` model.
+
+    The fix is a try/finally around the loop with restore in the
+    `finally` clause. This regression test reproduces the failure mode
+    by passing a `loss_fn` that raises on the 4th invocation and
+    asserts the snapshot is still restored cleanly afterward.
+    """
+    model, loader = _tiny_model_and_loader()
+    initial = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+    model.eval()
+    assert model.training is False
+
+    call_count = {"n": 0}
+
+    def flaky_loss_fn(y_hat, y):
+        call_count["n"] += 1
+        if call_count["n"] == 4:
+            raise RuntimeError("simulated loss_fn failure on iteration 4")
+        return nn.functional.cross_entropy(y_hat, y)
+
+    with pytest.raises(RuntimeError, match="simulated loss_fn failure"):
+        lr_finder(
+            model,
+            loader,
+            loss_fn=flaky_loss_fn,
+            start_lr=1e-6,
+            end_lr=1.0,
+            num_iter=30,
+        )
+
+    # Weights must be restored despite the mid-sweep crash.
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, initial[k]), (
+            f"weight {k} was not restored after lr_finder raised mid-sweep — "
+            "the non-destructive contract was broken on the exception path"
+        )
+
+    # Training-mode flag must also be restored to the caller's value.
+    assert model.training is False, (
+        "lr_finder left model in train() after exception — training-mode restore was skipped because the loop raised"
+    )
+
+
 def test_suggest_lr_short_sweep_returns_lr_at_min_loss():
     """When the sweep is too short for a slope estimate (<5 points),
     `_suggest_lr` falls back to the LR at the minimum observed loss

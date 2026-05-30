@@ -128,45 +128,55 @@ def lr_finder(
     smoothed_loss: Optional[float] = None
     smoothed_min: Optional[float] = None
 
-    model.train()
-    iter_loader = iter(train_loader)
-    for _ in range(num_iter):
-        try:
-            batch = next(iter_loader)
-        except StopIteration:
-            iter_loader = iter(train_loader)
-            batch = next(iter_loader)
+    # try/finally guarantees the snapshot is restored even if a user-
+    # supplied loss_fn raises, model(X) crashes, backward fails on a
+    # NaN, etc. Without it the docstring's "non-destructive" contract
+    # held only on the happy path — the caller's model would silently
+    # remain modified on any mid-sweep exception.
+    try:
+        model.train()
+        iter_loader = iter(train_loader)
+        for _ in range(num_iter):
+            try:
+                batch = next(iter_loader)
+            except StopIteration:
+                iter_loader = iter(train_loader)
+                batch = next(iter_loader)
 
-        X, Y = batch[0].to(device), batch[1].to(device)
-        for g in optimizer.param_groups:
-            g["lr"] = current_lr
+            X, Y = batch[0].to(device), batch[1].to(device)
+            for g in optimizer.param_groups:
+                g["lr"] = current_lr
 
-        optimizer.zero_grad()
-        y_hat = model(X)
-        loss = loss_fn(y_hat, Y)
-        loss_val = float(loss.item())
+            optimizer.zero_grad()
+            y_hat = model(X)
+            loss = loss_fn(y_hat, Y)
+            loss_val = float(loss.item())
 
-        smoothed_loss = loss_val if smoothed_loss is None else ema_alpha * loss_val + (1 - ema_alpha) * smoothed_loss
-        smoothed_min = smoothed_loss if smoothed_min is None else min(smoothed_min, smoothed_loss)
+            smoothed_loss = (
+                loss_val if smoothed_loss is None else ema_alpha * loss_val + (1 - ema_alpha) * smoothed_loss
+            )
+            smoothed_min = smoothed_loss if smoothed_min is None else min(smoothed_min, smoothed_loss)
 
-        # Early-exit on divergence (smoothed loss balloons past
-        # diverge_threshold × smoothed minimum). Doing the check BEFORE
-        # the backward+step keeps the diverging gradients out of the
-        # parameter trajectory (which we restore anyway, but cheaper to
-        # skip when we can).
-        if smoothed_min is not None and smoothed_loss > diverge_threshold * smoothed_min:
-            break
+            # Early-exit on divergence (smoothed loss balloons past
+            # diverge_threshold × smoothed minimum). Doing the check BEFORE
+            # the backward+step keeps the diverging gradients out of the
+            # parameter trajectory (which we restore anyway, but cheaper to
+            # skip when we can).
+            if smoothed_min is not None and smoothed_loss > diverge_threshold * smoothed_min:
+                break
 
-        loss.backward()
-        optimizer.step()
+            loss.backward()
+            optimizer.step()
 
-        lrs.append(current_lr)
-        losses.append(loss_val)
-        current_lr *= lr_mult
-
-    # Restore weights + training mode — sweep is fully non-destructive.
-    model.load_state_dict(initial_state)
-    model.train(was_training)
+            lrs.append(current_lr)
+            losses.append(loss_val)
+            current_lr *= lr_mult
+    finally:
+        # Restore weights + training mode — sweep is fully non-destructive
+        # regardless of whether the loop completed, early-exited on
+        # divergence, or raised mid-iter.
+        model.load_state_dict(initial_state)
+        model.train(was_training)
 
     suggested_lr = _suggest_lr(lrs, losses, ema_alpha) if lrs else start_lr
 
