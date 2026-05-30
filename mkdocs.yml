@@ -38,6 +38,7 @@ nav:
   - GGUF & Ollama: gguf.md
   - DPO: dpo.md
   - API Reference: api.md
+  - vs Lightning / HF / fastai: comparison.md
   - Architecture diagram: architecture.html
 
 # Working design docs aren't user-facing — exclude them from the
