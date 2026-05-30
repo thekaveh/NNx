@@ -127,7 +127,8 @@ def test_nn_transformer_params_state_emits_resid_dropout_when_overridden():
 def test_nn_transformer_params_round_trip_with_dropouts():
     """Round-trip with both new dropout knobs bumped off their defaults —
     every from_state path must restore them. Pairs with the omit-when-default
-    tests above to lock in the full invariant for the two SP-10c additions."""
+    tests above to lock in the full invariant for the two transformer-
+    dropout fields (attn_dropout, resid_dropout)."""
     obj = _params(attn_dropout=0.1, resid_dropout=0.05)
     rt = NNTransformerParams.from_state(obj.state())
     assert rt == obj
