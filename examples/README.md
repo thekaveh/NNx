@@ -17,6 +17,8 @@ pip install "nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
 pip install "nnx[embeddings]"       # 13_train_domain_embedder.py
 pip install "nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py
 pip install "nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
+pip install "nnx[viz]"              # 21_viz_attribute_xai.py
+pip install "nnx[lm]"               # 22_dpo_tinystories.py (already listed above for lm)
 ```
 
 Working from a git checkout instead of PyPI? See [CONTRIBUTING.md §1](../CONTRIBUTING.md#1-getting-set-up) for the editable + dev install.
@@ -87,3 +89,29 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 |---|---|
 | `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "nnx[gguf-write]"`. |
 | `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "nnx[gguf-write]"`. |
+
+### 2.10. Pruning, surgery, quantization
+
+| Example | What it demonstrates |
+|---|---|
+| `19_prune_mnist.py` | Magnitude prune a small classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then briefly fine-tune to recover. Demonstrates `nnx.prune.magnitude_prune`. |
+| `20_surgery_resnet.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. |
+
+### 2.11. Explainability
+
+| Example | What it demonstrates |
+|---|---|
+| `21_viz_attribute_xai.py` | Captum-backed input attribution via `nnx.viz.attribute(method=...)` — runs `integrated_gradients`, `saliency`, `input_x_gradient`, and `deep_lift` on a trained classifier. Requires `pip install "nnx[viz]"`. |
+
+### 2.12. LM follow-ons
+
+| Example | What it demonstrates |
+|---|---|
+| `22_dpo_tinystories.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. Requires `pip install "nnx[lm]"`. |
+
+### 2.13. Distillation variants
+
+| Example | What it demonstrates |
+|---|---|
+| `23_born_again_distillation.py` | Iterated self-distillation across G=3 generations via `born_again_train`; each generation distills from the previous via Hinton-style KD. Demonstrates the Furlanello et al. ICML 2018 result that successive generations often match or outperform the original. |
+| `24_feature_kd.py` | FitNets-style feature distillation via `feature_kd_train_step_factory` with one paired teacher→student auxiliary layer (shape-matched: teacher `layers.1` output 32 → student `layers.0` output 32). |
