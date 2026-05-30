@@ -46,7 +46,10 @@ from nnx.surgery import low_rank_factorize
 
 
 def _make_data():
-    torch.manual_seed(0)
+    # No torch.manual_seed here — the caller does set_seed(42) before
+    # calling us. Re-seeding torch inside this helper would silently
+    # override the caller's seed (the same bug that PR #31's review
+    # caught in examples 19 / 21 / 23).
     X = torch.randn(1024, 16)
     proj = torch.randn(16, 3)
     y = (X @ proj).argmax(dim=1)

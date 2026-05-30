@@ -116,6 +116,13 @@ docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.24",
+    # Pygments 2.20.0 broke `pymdownx.highlight`: a `filename=None`
+    # propagates into `HtmlFormatter.__init__` and crashes with
+    # `AttributeError: 'NoneType' object has no attribute 'replace'`
+    # whenever any markdown page contains a fenced code block or
+    # mkdocstrings renders source. Pin below 2.20 until upstream
+    # releases a fix.
+    "Pygments<2.20",
 ]
 
 [project.urls]

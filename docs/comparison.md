@@ -128,6 +128,17 @@ No mainstream alternative — NNx's `nnx.surgery` is unique.
 
 NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 
+### 3.10. Training-loop diagnostics
+
+| Aspect | NNx | fastai | Lightning |
+|---|---|---|---|
+| LR finder | Yes (`nnx.lr_finder`, Smith 2017) | Yes (`Learner.lr_find`) | Not shipped (`tuner.lr_find` removed in 2.0) |
+| Per-layer gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart) | Hook-based recipes | `track_grad_norm` callback |
+| `_repr_html_` for runs in Jupyter | Yes (`NNRun._repr_html_`) | Notebook-native | Not shipped |
+| PEP 561 `py.typed` marker | Yes (PR #32) | Not shipped | Yes |
+
+NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's notebook ergonomics.
+
 ## 4. When to use what
 
 **Use NNx when** any combination of these matters:
@@ -149,4 +160,4 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 
 This page documents NNx's *current* coverage as of `main`. The roadmap explicitly defers distributed training, `torch.compile` integration, Lightning-style strategy abstraction, and a Lightning-CLI equivalent. If you need any of those, NNx today is the wrong tool.
 
-NNx's planned near-term additions (QLoRA, beam search, more GNN nets, SWA / EMA / SAM, `merge_lora`, an LR finder) close the most visible gaps in §3.3 / §3.4 / §3.6 but do not address distributed.
+NNx's planned near-term additions (QLoRA, beam search, more GNN nets, SWA / EMA / SAM, `merge_lora`) close the most visible gaps in §3.3 / §3.4 / §3.6 but do not address distributed. `nnx.lr_finder` and `nnx.viz.gradient_flow` already shipped — see §3.10.

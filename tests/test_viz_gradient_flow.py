@@ -92,3 +92,30 @@ def test_gradient_flow_skips_frozen_parameters():
     labels = list(fig.data[0].x)
     # Only the second Linear's weight + bias remain.
     assert labels == ["2.weight", "2.bias"]
+
+
+def test_gradient_flow_skips_unreached_parameters():
+    """Parameters whose `.grad` is None (never reached by the forward
+    pass) are silently skipped. Documents the second guard in
+    `gradient_flow` (alongside the `requires_grad=False` skip).
+    """
+    # Build a model with a deliberately-unreached `unused` parameter.
+    # Putting the parameter in a separate ParameterDict means the
+    # forward pass doesn't touch it; `param.grad` stays None after
+    # `loss.backward()`.
+    model = nn.Module()
+    model.linear = nn.Linear(4, 3)
+    model.unused = nn.Parameter(torch.randn(5))
+
+    x = torch.randn(2, 4)
+    y = torch.tensor([0, 1])
+    # Forward only goes through `linear`, not `unused`.
+    nn.functional.cross_entropy(model.linear(x), y).backward()
+
+    fig = gradient_flow(model)
+    labels = list(fig.data[0].x)
+    # `unused` has requires_grad=True but no .grad — must be skipped.
+    assert "unused" not in labels
+    # `linear.weight` + `linear.bias` should be present.
+    assert "linear.weight" in labels
+    assert "linear.bias" in labels
