@@ -124,6 +124,28 @@ from nnx import TensorBoardCallback
 model.train(params=..., callbacks=[TensorBoardCallback(log_dir="tb_logs")])
 ```
 
+### 2.8. LR finder pre-flight
+
+Before a long training run, sweep learning rates exponentially and let the Smith-2017 steepest-descent heuristic pick a defensible `max_lr` for the real run. The sweep is non-destructive — model weights and the training-mode flag are snapshotted and restored on exit.
+
+```python
+import torch.nn.functional as F
+from nnx import lr_finder
+
+result = lr_finder(
+    model.net, train_loader,
+    loss_fn=F.cross_entropy,
+    start_lr=1e-7, end_lr=10.0, num_iter=100,
+)
+print(f"Suggested max_lr: {result.suggested_lr:.2e}")
+result.figure.show()  # Plotly: loss vs log(LR) with the suggestion marked
+
+# Plug into the real training run:
+NNTrainParams(..., optim=NNOptimParams(name=Optims.ADAM, max_lr=result.suggested_lr, ...))
+```
+
+See [Concepts → LR finder](concepts.md#131-lr-finder) for the algorithm details and divergence early-exit behavior.
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
