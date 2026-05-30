@@ -30,7 +30,12 @@ def _atomic_write_text(path: str, content: str) -> None:
     KeyboardInterrupt during the rename either leaves the prior file
     intact OR the new file fully written; never a half-written file."""
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    # Explicit utf-8 — the default text encoding varies by platform
+    # locale (cp1252 on Windows pre-3.15 / PEP 686). yaml.safe_dump
+    # output is ASCII-safe today, but pinning utf-8 here makes the
+    # contract platform-independent if a future state() ever emits
+    # non-ASCII (e.g., a user-supplied tokenizer path with unicode).
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
         f.flush()
         try:
@@ -78,7 +83,7 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
         return os.path.basename(target.rstrip(os.sep)) or None
     pointer_file = os.path.join(best_run_path, "POINTER.txt")
     if os.path.isfile(pointer_file):
-        with open(pointer_file) as f:
+        with open(pointer_file, encoding="utf-8") as f:
             target = f.read().strip()
         return os.path.basename(target.rstrip(os.sep)) or None
     return None
@@ -330,7 +335,7 @@ class NNRun:
         yaml_path = os.path.join(run_path, "run.yaml")
         csv_path = os.path.join(run_path, "idps.csv")
 
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             # safe_load — never FullLoader. NNRun.state() is a plain dict
             # of primitive types (strings / ints / floats / lists / nested
             # dicts), so safe_load round-trips it losslessly. Using
