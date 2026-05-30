@@ -11,6 +11,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
         - set_seed
         - dataloader_worker_init_fn
         - env_snapshot
+        - LRFinderResult
+        - lr_finder
 
 ## 2. Orchestrators
 

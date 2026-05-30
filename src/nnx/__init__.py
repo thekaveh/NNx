@@ -104,6 +104,7 @@ from .generation import (
     apply_chain,
     sample_next_token,
 )
+from .lr_finder import LRFinderResult, lr_finder
 from .paradigms import (
     JEPAPredictor,
     born_again_train,
@@ -287,6 +288,8 @@ __all__ = [
     "set_seed",
     "dataloader_worker_init_fn",
     "env_snapshot",
+    "lr_finder",
+    "LRFinderResult",
     # Metadata
     "__version__",
 ]
