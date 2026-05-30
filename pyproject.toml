@@ -128,6 +128,13 @@ Issues = "https://github.com/thekaveh/NNx/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# PEP 561: the `py.typed` marker must be packaged inside the `nnx`
+# wheel so downstream consumers' type-checkers (pyright / mypy) see
+# this distribution as type-checked. setuptools includes non-Python
+# files only when listed here.
+nnx = ["py.typed"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
