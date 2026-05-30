@@ -33,20 +33,21 @@ from torch.utils.data import DataLoader, Dataset
 
 from nnx import (
     Devices,
+    GenerativeNNModel,
     Losses,
     Nets,
+    NNEvaluationDataPoint,
     NNModelParams,
     NNOptimParams,
     NNSchedulerParams,
+    NNTokenizerParams,
     NNTrainParams,
+    NNTransformerParams,
     Optims,
     TrainStepContext,
     set_seed,
+    train_bpe,
 )
-from nnx.nn.generative_nn_model import GenerativeNNModel
-from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
-from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
-from nnx.nn.params.nn_transformer_params import NNTransformerParams
 
 # A small inline corpus — used when the user doesn't have datasets/HF
 # access. Story-like sentences so the BPE tokenizer learns something

@@ -25,10 +25,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nnx.interop.gguf import write_gguf
-from nnx.nn.net.transformer_nn import TransformerNN
-from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
-from nnx.nn.params.nn_transformer_params import NNTransformerParams
+from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe
+from nnx.interop import write_gguf
 
 
 def main() -> None:
