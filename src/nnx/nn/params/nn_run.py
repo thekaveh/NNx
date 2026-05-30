@@ -154,6 +154,98 @@ class NNRun:
     def state(self) -> dict:
         return self._state
 
+    def _repr_html_(self) -> str:
+        """Jupyter rich-display: config table + per-epoch metric chart.
+
+        Returns the HTML Jupyter will render when this :class:`NNRun`
+        is the last expression in a cell. Outside Jupyter the same
+        method can be called directly to grab the HTML string.
+
+        The config table reflects the same state the run.id is hashed
+        from. The metric chart plots train/val loss + error across
+        epochs when ``self.idps`` is populated; otherwise the chart is
+        omitted and only the config table appears.
+        """
+        config_html = self._render_config_table_html()
+        chart_html = self._render_metric_chart_html() if self.idps else ""
+        return f'<div style="font-family: sans-serif;">{config_html}{chart_html}</div>'
+
+    def _render_config_table_html(self) -> str:
+        """HTML table of the canonical run config (subset of state())."""
+        rows = [
+            ("run.id", self.id),
+            ("net", str(self.model.net)),
+            ("device", str(self.model.device)),
+            ("loss", str(self.model.loss)),
+            ("input_dim → output_dim", f"{self.net.input_dim} → {self.net.output_dim}"),
+            ("hidden_dims", str(self.net.hidden_dims)),
+            ("dropout", str(self.net.dropout_prob)),
+            ("activation", str(self.net.activation)),
+            ("n_epochs", str(self.train.n_epochs)),
+            ("optim", f"{self.train.optim.name} (max_lr={self.train.optim.max_lr})"),
+        ]
+        rows_html = "".join(
+            f'<tr><td style="padding:2px 8px;font-weight:600;">{k}</td>'
+            f'<td style="padding:2px 8px;font-family:monospace;">{v}</td></tr>'
+            for k, v in rows
+        )
+        return f'<table style="border-collapse:collapse;border:1px solid #ddd;margin-bottom:8px;">{rows_html}</table>'
+
+    def _render_metric_chart_html(self) -> str:
+        """Plotly per-epoch metric chart embedded as HTML."""
+        # Lazy-import plotly so test collection stays fast and
+        # non-Jupyter callers who never trigger _repr_html_ don't pay
+        # the import cost.
+        # Group idps by epoch_idx. Each idp carries its epoch index
+        # directly; the last idp per epoch may also carry val_edp.
+        from collections import defaultdict
+
+        import plotly.graph_objects as go
+
+        epoch_buckets: dict[int, list] = defaultdict(list)
+        for idp in self.idps:
+            epoch_buckets[idp.epoch_idx].append(idp)
+
+        epochs: list[int] = sorted(epoch_buckets.keys())
+        if not epochs:
+            return ""  # No data at all.
+
+        train_losses: list[float] = []
+        train_errs: list[float] = []
+        val_losses: list[float] = []
+        val_errs: list[float] = []
+
+        for epoch_idx in epochs:
+            idp_list = epoch_buckets[epoch_idx]
+            losses = [idp.train_edp.loss for idp in idp_list if idp.train_edp.loss is not None]
+            errs = [idp.train_edp.error for idp in idp_list if idp.train_edp.error is not None]
+            train_losses.append(sum(losses) / len(losses) if losses else float("nan"))
+            train_errs.append(sum(errs) / len(errs) if errs else float("nan"))
+            # val_edp is set only on the last idp of each epoch (when a
+            # val_loader was supplied). Use the last non-None val_edp found.
+            val_idp = next((idp for idp in reversed(idp_list) if idp.val_edp is not None), None)
+            val_losses.append(val_idp.val_edp.loss if val_idp and val_idp.val_edp.loss is not None else float("nan"))
+            val_errs.append(val_idp.val_edp.error if val_idp and val_idp.val_edp.error is not None else float("nan"))
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=epochs, y=train_losses, name="train_loss", mode="lines+markers"))
+        # Only add val traces when at least one epoch had a val_edp.
+        if any(v == v for v in val_losses):  # any non-NaN
+            fig.add_trace(go.Scatter(x=epochs, y=val_losses, name="val_loss", mode="lines+markers"))
+        if any(v == v for v in train_errs):
+            fig.add_trace(go.Scatter(x=epochs, y=train_errs, name="train_err", mode="lines+markers", yaxis="y2"))
+        if any(v == v for v in val_errs):
+            fig.add_trace(go.Scatter(x=epochs, y=val_errs, name="val_err", mode="lines+markers", yaxis="y2"))
+        fig.update_layout(
+            title=f"NNRun {self.id[:8]}… — {len(epochs)} epoch{'s' if len(epochs) != 1 else ''}",
+            xaxis_title="Epoch",
+            yaxis=dict(title="Loss"),
+            yaxis2=dict(title="Error", overlaying="y", side="right"),
+            height=350,
+            margin=dict(t=40, b=40, l=40, r=40),
+        )
+        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
