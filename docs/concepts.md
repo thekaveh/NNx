@@ -464,6 +464,19 @@ result.figure.show()
 
 `suggested_lr` is the LR at the steepest descent point of the EMA-smoothed loss curve — the Smith (2017) heuristic. Plug it into `NNOptimParams.max_lr` for the real training run.
 
+### 13.2. Non-destructive contract for inference and inspection helpers
+
+`lr_finder` isn't the only helper that snapshots and restores caller state. Eight NNx call sites share the same non-destructive contract — they put the underlying `nn.Module` into `eval()` mode (needed for correct BatchNorm / Dropout semantics) for the duration of the call, then restore `model.training` to whatever it was on entry. The restore runs inside a `try/finally`, so the contract holds even when the body raises mid-call:
+
+- `nnx.lr_finder`
+- `NNModel.predict`, `NNModel.evaluate`
+- `GenerativeNNModel.generate`
+- `nnx.diffusion.sample`
+- `nnx.embeddings.embed_texts`
+- `nnx.viz.activation_map`, `nnx.viz.netron_export`, `nnx.viz.attribute`
+
+This means a common train → evaluate → train-more (or train → predict → train-more) loop no longer strands the model in `.eval()` mode after the helper returns — Dropout and BatchNorm pick up exactly where they left off on the next training step. Before the post-PR-#40 maintenance pass, `predict` / `evaluate` / `generate` / `sample` / `embed_texts` leaked `.eval()` state, silently disabling Dropout masking and BatchNorm running-stats updates on the next training step unless the caller remembered to call `model.net.train()` themselves.
+
 ## 14. Resuming training
 
 ```python
