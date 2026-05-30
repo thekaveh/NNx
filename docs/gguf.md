@@ -35,10 +35,8 @@ the artifact is byte-compatible with every GGUF reader in the ecosystem.
 ## Quickstart — GGUF
 
 ```python
+from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe  # noqa: F401
 from nnx.interop import write_gguf
-from nnx.nn.net.transformer_nn import TransformerNN
-from nnx.nn.params.nn_transformer_params import NNTransformerParams
-from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
 
 # Assume `net` is a trained TransformerNN and `tokenizer` is the matching
 # NNTokenizerParams. write_gguf packs both into a single .gguf.
