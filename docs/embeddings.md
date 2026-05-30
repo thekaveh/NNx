@@ -89,11 +89,31 @@ NNx's job ends here. Pick the retrieval framework that fits your stack — they 
 ContrastiveTextDataset(pairs: list[tuple[str, str]])
 ```
 
-Wraps `(anchor, positive)` string pairs as a `torch.utils.data.Dataset`. Each `__getitem__` returns a 2-tuple of strings; pair with `pair_collate` if you build your own `DataLoader` instead of going through `train_contrastive`.
+Wraps `(anchor, positive)` string pairs as a `torch.utils.data.Dataset`. Each `__getitem__` returns a 2-tuple of strings; pair with `pair_collate` (see §4.2) if you build your own `DataLoader` instead of going through `train_contrastive`.
 
 Raises `ValueError` on empty input or non-string entries — NT-Xent needs at least one pair to form a batch.
 
-### 4.2. `train_contrastive`
+### 4.2. `pair_collate`
+
+```python
+pair_collate(batch: Iterable[tuple[str, str]]) -> tuple[list[str], list[str]]
+```
+
+`DataLoader` `collate_fn` for `ContrastiveTextDataset`. Splits a batch of `(anchor, positive)` 2-tuples into two parallel lists: `(anchors: list[str], positives: list[str])`. `train_contrastive` (§4.3) uses it as the default `collate_fn`; pass it explicitly when you wire your own `DataLoader`:
+
+```python
+from nnx.embeddings import ContrastiveTextDataset, pair_collate
+from torch.utils.data import DataLoader
+
+loader = DataLoader(
+    ContrastiveTextDataset(pairs),
+    batch_size=16,
+    shuffle=True,
+    collate_fn=pair_collate,
+)
+```
+
+### 4.3. `train_contrastive`
 
 ```python
 train_contrastive(
@@ -115,9 +135,9 @@ train_contrastive(
 
 Runs `n_epochs` of NT-Xent contrastive updates over the dataset and returns the (in-place-mutated) backbone. Parameters with `requires_grad=False` are excluded from the optimizer, so freezing layers via `nnx.freeze(backbone, ...)` composes cleanly.
 
-For the full callback / checkpoint / `runs/<id>/` machinery, drop down to `text_contrastive_train_step_factory` (see §4.4).
+For the full callback / checkpoint / `runs/<id>/` machinery, drop down to `text_contrastive_train_step_factory` (see §4.5).
 
-### 4.3. `embed_texts`
+### 4.4. `embed_texts`
 
 ```python
 embed_texts(
@@ -132,7 +152,7 @@ embed_texts(
 
 Inference helper. Runs in `torch.no_grad()` + `eval()` mode. The same call that `export_to_faiss` uses internally — useful for ad-hoc similarity probes or building your own non-FAISS retrieval.
 
-### 4.4. `text_contrastive_train_step_factory`
+### 4.5. `text_contrastive_train_step_factory`
 
 ```python
 text_contrastive_train_step_factory(*, temperature=0.5) -> TrainStepFn
@@ -140,7 +160,7 @@ text_contrastive_train_step_factory(*, temperature=0.5) -> TrainStepFn
 
 Lower-level: returns an `nnx.TrainStepFn` suitable for `NNModel.train(train_step_fn=...)`. The training loader must yield `(anchors: list[str], positives: list[str])` batches — pair `ContrastiveTextDataset` with `pair_collate` when building the `DataLoader`. Use this when you want NNx's standard run-tracking, callbacks, `runs/<id>/` persistence, etc., wrapped around the contrastive step.
 
-### 4.5. `export_to_faiss`
+### 4.6. `export_to_faiss`
 
 ```python
 export_to_faiss(
@@ -161,7 +181,7 @@ Default `IndexFlatIP` + auto-normalize = cosine similarity. FAISS doesn't ship a
 
 For approximate search at scale, switch `index_type="IndexHNSWFlat"`. The wrapper builds with FAISS's standard `M=32` recall/memory trade-off; for finer-grained tuning, build the index manually with `faiss.IndexHNSWFlat(dim, M)` and `index.hnsw.efConstruction = ...`.
 
-### 4.6. `export_to_safetensors`
+### 4.7. `export_to_safetensors`
 
 ```python
 export_to_safetensors(backbone, out_path) -> str
