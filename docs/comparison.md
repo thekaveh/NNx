@@ -70,7 +70,7 @@ If you need any of these, NNx is the wrong tool today.
 | Aspect | NNx | HF `generate` |
 |---|---|---|
 | Greedy / top-k / top-p / temperature / repetition penalty | Yes | Yes |
-| KV cache | Yes (default-on; ≈1.9× CPU @ 128 tokens) | Yes |
+| KV cache | Yes (default-on; typically ≥1.2× CPU @ 128 tokens, up to ≈1.9× on unloaded CPU) | Yes |
 | Beam search | Not shipped | Yes |
 | Contrastive search | Not shipped | Yes |
 | Constrained generation (vocab / regex / grammar) | Not shipped | Yes |
