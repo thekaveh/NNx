@@ -1,14 +1,27 @@
 """Regression tests for the train → inference → train pattern.
 
-NNx's inference-shaped helpers (``NNModel.predict``, ``NNModel.evaluate``,
-``GenerativeNNModel.generate``, ``nnx.diffusion.sample``,
-``nnx.embeddings.embed_texts``) all switch the underlying ``nn.Module``
+NNx's inference-shaped helpers all switch the underlying ``nn.Module``
 to ``eval()`` mode before running, since BatchNorm / Dropout layers
 behave differently in train vs eval. Without an explicit restore, the
 common train → inference → train pattern silently strands the caller's
 model in ``.eval()`` mode after the helper returns. ``BatchNorm``'s
 running-stats update and ``Dropout``'s masking are then disabled on
 the next training step.
+
+This file covers FOUR of the five inference helpers:
+
+  * ``NNModel.predict``
+  * ``NNModel.evaluate``
+  * ``nnx.diffusion.sample``
+  * ``nnx.embeddings.embed_texts``
+
+The fifth — ``GenerativeNNModel.generate`` — also implements the same
+non-destructive contract, but its round-trip test lives in
+``tests/test_generative_nn_model.py::test_generate_restores_training_mode_after_call``
+because that file already carries the ``pytest.importorskip("tokenizers")``
+guard ``generate()`` needs (the ``lm`` optional extra). Keeping the
+generate test there means this file stays runnable on every CI matrix
+row regardless of the ``lm`` extra install.
 
 The codebase carries two prior precedents for the non-destructive
 restore pattern:
@@ -18,9 +31,6 @@ restore pattern:
     ``finally``.
   * ``nnx.lr_finder`` (src/nnx/lr_finder.py) — same pattern, with the
     explicit docstring promise "non-destructive".
-
-This file asserts the same pattern across the five inference helpers
-that previously leaked ``.eval()`` state.
 """
 
 from __future__ import annotations

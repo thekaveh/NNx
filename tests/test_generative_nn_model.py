@@ -144,6 +144,37 @@ def test_apply_chain_runs_processors_in_order():
 # ---------------- generate() integration ----------------
 
 
+def test_generate_restores_training_mode_after_call(tmp_path):
+    """``GenerativeNNModel.generate`` must leave ``self.net.training``
+    exactly as it found it. The 5 sibling inference helpers
+    (NNModel.predict / evaluate, diffusion.sample, embed_texts) and the
+    test_inference_helpers_preserve_training_mode.py file cover the
+    same invariant for everything that doesn't need the ``tokenizers``
+    extra; generate() needs it, so the round-trip lives here.
+
+    Without the try/finally restore in generate(), a caller doing the
+    common train → generate → train-more pattern would silently leave
+    the model in ``.eval()`` mode after the helper returns, disabling
+    Dropout masking and BatchNorm running-stats updates on the next
+    training step.
+    """
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+
+    # Caller in train() → must stay in train() after generate.
+    model.net.train()
+    assert model.net.training is True
+    _ = model.generate(prompt="the", max_new_tokens=4, temperature=0.0)
+    assert model.net.training is True, "generate() did not restore train() mode"
+
+    # Caller in eval() → must stay in eval() after generate.
+    model.net.eval()
+    assert model.net.training is False
+    _ = model.generate(prompt="the", max_new_tokens=4, temperature=0.0)
+    assert model.net.training is False, "generate() flipped eval() caller into train()"
+
+
 def test_generate_deterministic_greedy_is_reproducible(tmp_path):
     """Greedy generate() (temperature=0) is fully deterministic — same
     prompt, same model, same call → same output. This is the regression

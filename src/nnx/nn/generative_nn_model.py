@@ -88,6 +88,13 @@ class GenerativeNNModel(NNModel):
 
         Returns:
             The full decoded string (prompt + generated continuation).
+
+        Non-destructive: ``self.net.training`` is snapshotted before
+        switching to ``eval()`` and restored on exit (including the
+        exception path via ``try/finally``). Matches the convention
+        used by ``NNModel.predict`` / ``NNModel.evaluate``,
+        ``nnx.diffusion.sample``, ``nnx.embeddings.embed_texts``,
+        ``nnx.viz.activation_map``, and ``nnx.lr_finder``.
         """
         if self.tokenizer is None:
             raise ValueError(
