@@ -197,6 +197,34 @@ def test_lr_finder_restores_training_mode():
     assert model.training is True
 
 
+def test_suggest_lr_short_sweep_returns_lr_at_min_loss():
+    """When the sweep is too short for a slope estimate (<5 points),
+    `_suggest_lr` falls back to the LR at the minimum observed loss
+    rather than `lrs[0]` (the lowest swept LR, which is the worst
+    possible suggestion). Direct unit test of the fallback path.
+    """
+    from nnx.lr_finder import _suggest_lr
+
+    # Four-point sweep — below the 5-point threshold.
+    lrs = [1e-5, 1e-4, 1e-3, 1e-2]
+    losses = [2.0, 1.5, 0.8, 1.2]  # minimum at index 2 (lr=1e-3)
+    assert _suggest_lr(lrs, losses, ema_alpha=0.5) == 1e-3
+
+
+def test_suggest_lr_monotonically_increasing_loss():
+    """When the loss only ever rises across the sweep (no descent
+    region at all), the slope-based heuristic would return the
+    "least bad" point. The fallback instead returns the LR at the
+    minimum observed loss — the first iteration when nothing improves.
+    """
+    from nnx.lr_finder import _suggest_lr
+
+    lrs = [1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2]
+    # Monotonically increasing — no descent anywhere.
+    losses = [0.5, 0.6, 0.7, 0.9, 1.3, 2.0]
+    assert _suggest_lr(lrs, losses, ema_alpha=0.5) == 1e-7
+
+
 def test_lr_finder_early_exits_on_divergence():
     """When `loss_fn` diverges (returns escalating values), the sweep
     stops before exhausting `num_iter`. Verifies the
