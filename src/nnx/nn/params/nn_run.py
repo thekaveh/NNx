@@ -30,7 +30,12 @@ def _atomic_write_text(path: str, content: str) -> None:
     KeyboardInterrupt during the rename either leaves the prior file
     intact OR the new file fully written; never a half-written file."""
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    # Explicit utf-8 — the default text encoding varies by platform
+    # locale (cp1252 on Windows pre-3.15 / PEP 686). yaml.safe_dump
+    # output is ASCII-safe today, but pinning utf-8 here makes the
+    # contract platform-independent if a future state() ever emits
+    # non-ASCII (e.g., a user-supplied tokenizer path with unicode).
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
         f.flush()
         try:
@@ -78,7 +83,7 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
         return os.path.basename(target.rstrip(os.sep)) or None
     pointer_file = os.path.join(best_run_path, "POINTER.txt")
     if os.path.isfile(pointer_file):
-        with open(pointer_file) as f:
+        with open(pointer_file, encoding="utf-8") as f:
             target = f.read().strip()
         return os.path.basename(target.rstrip(os.sep)) or None
     return None
@@ -280,7 +285,14 @@ class NNRun:
         # new file, never a half-written one. This is what makes the
         # per-epoch incremental save actually safe — without atomicity,
         # a partial write here corrupts the run.
-        _atomic_write_text(yaml_path, yaml.dump(self.state()))
+        # safe_dump — never plain `yaml.dump`. NNRun.state() is a plain
+        # dict of primitive types (the round-trip contract — see the
+        # corresponding safe_load call in NNRun.load); using safe_dump
+        # here makes that contract enforced at write-time too, so a
+        # future state() change that smuggles in a non-primitive (e.g.
+        # a torch.dtype or a numpy scalar) fails loudly here rather
+        # than producing a run.yaml that fails to safe_load.
+        _atomic_write_text(yaml_path, yaml.safe_dump(self.state()))
 
         # Env snapshot: written separately so it does NOT contribute to
         # run.id (which is md5(state())). Captures library/torch/python
@@ -323,8 +335,18 @@ class NNRun:
         yaml_path = os.path.join(run_path, "run.yaml")
         csv_path = os.path.join(run_path, "idps.csv")
 
-        with open(yaml_path) as f:
-            rep = yaml.load(f, Loader=yaml.FullLoader)
+        with open(yaml_path, encoding="utf-8") as f:
+            # safe_load — never FullLoader. NNRun.state() is a plain dict
+            # of primitive types (strings / ints / floats / lists / nested
+            # dicts), so safe_load round-trips it losslessly. Using
+            # FullLoader would let a tampered or attacker-supplied
+            # run.yaml instantiate arbitrary Python objects via the
+            # `!!python/object/...` tag — defense-in-depth even though
+            # the file is normally application-written. Matches the
+            # safe_dump/safe_load pair the sibling metadata.yaml has
+            # always used (see seeding.py's "yaml.safe_load-compatible"
+            # comment for the metadata round-trip).
+            rep = yaml.safe_load(f)
 
         idps = pd.read_csv(csv_path).to_dict(orient="records")
 

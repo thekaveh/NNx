@@ -26,10 +26,16 @@ from nnx import set_seed
 from nnx.embeddings import (
     ContrastiveTextDataset,
     embed_texts,
+    pair_collate,
     text_contrastive_train_step_factory,
     train_contrastive,
 )
-from nnx.embeddings.contrastive_trainer import _is_sentence_transformer, pair_collate
+
+# `_is_sentence_transformer` is a private helper intentionally tested
+# directly (it's the routing decision for embed_texts' backbone dispatch);
+# pulling it from the submodule path is the explicit "I know this is
+# internal" affordance.
+from nnx.embeddings.contrastive_trainer import _is_sentence_transformer
 
 # -------------------------------------------------------------------------
 # ContrastiveTextDataset

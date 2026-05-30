@@ -240,3 +240,30 @@ def test_r2_grad_clip_back_compat_with_old_yaml():
     }
     p = NNOptimParams.from_state(legacy_state)
     assert p.grad_clip_norm is None
+
+
+def test_r3_nnrun_load_rejects_python_object_tags(tmp_path, monkeypatch):
+    """Defense-in-depth: NNRun.load uses yaml.safe_load, so a tampered
+    run.yaml containing a `!!python/object/...` tag must fail to load
+    rather than instantiate the embedded Python object.
+
+    The original implementation used yaml.FullLoader, which would have
+    happily executed the tag. Switching to safe_load aligns with the
+    sibling metadata.yaml's long-standing safe_load contract (see the
+    seeding.py comment) and ensures filesystem-level tampering can't
+    escalate into arbitrary code execution at load time."""
+    import yaml
+
+    monkeypatch.chdir(tmp_path)
+    run_id = "deadbeef" * 4  # md5-shaped fake id; we never check its hash.
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+
+    # Write a run.yaml that, under FullLoader, would import a stdlib
+    # function via the `!!python/name` tag. safe_load must refuse it.
+    poisoned = "trigger: !!python/name:os.system ''\n"
+    (run_dir / "run.yaml").write_text(poisoned)
+    (run_dir / "idps.csv").write_text("epoch_idx,iter_idx\n")  # placeholder
+
+    with pytest.raises(yaml.YAMLError):
+        NNRun.load(id=run_id)

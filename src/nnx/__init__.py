@@ -21,7 +21,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.1.0+local"
 
-from . import embeddings, prune, viz
+from . import embeddings, interop, prune, viz
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -284,6 +284,9 @@ __all__ = [
     "expand_embedding",
     # Embeddings (contrastive trainer + FAISS export)
     "embeddings",
+    # Interop (GGUF / Ollama exporters; bound so README's
+    # `nnx.interop.write_gguf(...)` works after a plain `import nnx`)
+    "interop",
     # Reproducibility
     "set_seed",
     "dataloader_worker_init_fn",

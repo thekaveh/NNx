@@ -59,7 +59,11 @@ from nnx import (
 def _make_synthetic_loader(n: int = 256, batch_size: int = 32) -> DataLoader:
     """Synthetic 32x32 RGB noise. Same shape as CIFAR-10 so the demo's
     plumbing is identical."""
-    torch.manual_seed(0)
+    # No torch.manual_seed here — the caller does set_seed(0) in main()
+    # before calling this helper, and a redundant seed call here would
+    # silently override the caller's chosen seed if main() ever picks
+    # a different value (the seed-helper override anti-pattern that bit
+    # examples 19 / 20 / 21 / 22 / 23 / 24 in PRs #37 + #38).
     x = torch.randn(n, 3, 32, 32)
     y = torch.zeros(n, dtype=torch.long)  # ignored by JEPA
     return DataLoader(TensorDataset(x, y), batch_size=batch_size, shuffle=True)

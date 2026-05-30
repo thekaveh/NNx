@@ -16,6 +16,12 @@ keywords = [
     "pytorch", "deep-learning", "graph-neural-networks", "training",
     "checkpointing", "callbacks", "experiments", "reproducibility",
     "neural-networks", "research",
+    # Megamerge subsystems (PRs #29–#37) — surfaced here for PyPI
+    # discoverability now that the package ships these as first-class
+    # entry points rather than thekaveh/ml internals.
+    "quantization", "language-model", "transformer", "lora", "peft",
+    "diffusion", "knowledge-distillation", "embeddings", "rag",
+    "pruning", "model-surgery", "onnx", "gguf",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

@@ -405,7 +405,12 @@ class NNModel(_HubMixinBase):
             "net_params": self.net_params.state(),
             "params": self.params.state(),
         }
-        with open(save_dir / _HUB_CONFIG_FILENAME, "w") as f:
+        # Explicit utf-8 — Hub config files round-trip through HuggingFace's
+        # repo download path and can be read on any platform; relying on
+        # the host locale's default encoding could mis-encode unicode
+        # paths or non-ASCII tokenizer names round-tripped via
+        # `params.state()`.
+        with open(save_dir / _HUB_CONFIG_FILENAME, "w", encoding="utf-8") as f:
             json.dump(config, f, sort_keys=True, indent=2)
 
     @classmethod
@@ -468,7 +473,7 @@ class NNModel(_HubMixinBase):
                 local_files_only=local_files_only,
             )
 
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
         # We accept either form for back-compat with any future config
