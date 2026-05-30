@@ -78,8 +78,13 @@ def lr_finder(
         start_lr: low end of the sweep range. Must be > 0.
         end_lr: high end of the sweep range. Must be > start_lr.
         num_iter: number of training iterations to run. Must be >= 2.
-        diverge_threshold: stop the sweep early if loss exceeds
-            ``diverge_threshold * min(observed losses)``. Default 4.
+        diverge_threshold: stop the sweep early when the EMA-smoothed
+            loss exceeds ``diverge_threshold * smoothed_min`` (the
+            minimum EMA-smoothed loss observed so far). Default 4. The
+            smoothed check matches fastai's lr_find heuristic — using
+            the raw ``min(losses)`` would let a single anomalous low
+            first-batch loss pull the threshold too tight and abort
+            the sweep prematurely.
         device: device to move batches to. If None, inferred from
             the first model parameter.
         ema_alpha: smoothing coefficient for the loss curve before
@@ -114,6 +119,15 @@ def lr_finder(
     lr_mult = (end_lr / start_lr) ** (1.0 / num_iter)
     current_lr = start_lr
 
+    # Running EMA-smoothed loss and its minimum. The divergence check
+    # compares the current smoothed loss against the smoothed minimum
+    # rather than the raw min(losses) — an anomalously low or noisy
+    # first-batch loss would otherwise pull the divergence threshold
+    # too tight and abort the sweep prematurely. fastai's lr_find uses
+    # the same smoothed-min heuristic.
+    smoothed_loss: Optional[float] = None
+    smoothed_min: Optional[float] = None
+
     model.train()
     iter_loader = iter(train_loader)
     for _ in range(num_iter):
@@ -132,12 +146,15 @@ def lr_finder(
         loss = loss_fn(y_hat, Y)
         loss_val = float(loss.item())
 
-        # Early-exit on divergence (loss balloons past diverge_threshold
-        # × the best loss we've seen). Doing the check BEFORE the
-        # backward+step keeps the diverging gradients out of the
-        # parameter trajectory (which we restore anyway, but cheaper
-        # to skip when we can).
-        if losses and loss_val > diverge_threshold * min(losses):
+        smoothed_loss = loss_val if smoothed_loss is None else ema_alpha * loss_val + (1 - ema_alpha) * smoothed_loss
+        smoothed_min = smoothed_loss if smoothed_min is None else min(smoothed_min, smoothed_loss)
+
+        # Early-exit on divergence (smoothed loss balloons past
+        # diverge_threshold × smoothed minimum). Doing the check BEFORE
+        # the backward+step keeps the diverging gradients out of the
+        # parameter trajectory (which we restore anyway, but cheaper to
+        # skip when we can).
+        if smoothed_min is not None and smoothed_loss > diverge_threshold * smoothed_min:
             break
 
         loss.backward()
@@ -166,10 +183,22 @@ def lr_finder(
 def _suggest_lr(lrs: list[float], losses: list[float], ema_alpha: float) -> float:
     """Pick the LR at the steepest descent point of EMA-smoothed loss.
 
-    Returns ``lrs[0]`` if the sweep was too short to identify a slope.
+    Fallbacks (in order):
+
+    1. Short sweep (``len(losses) < 5``): no slope estimate is
+       reliable; return the LR at the minimum observed loss. This is
+       a defensible "best LR we actually saw" answer, much safer than
+       returning ``lrs[0]`` (= ``start_lr`` = the lowest swept LR =
+       guaranteed to underfit).
+    2. Steepest slope is non-negative (loss only went up): there's no
+       descent region. Same fallback — LR at minimum observed loss.
+    3. Otherwise: the Smith (2017) heuristic — LR at the steepest
+       negative slope of the EMA-smoothed loss curve on a log-LR
+       axis. A value just before the loss bottoms out is typically a
+       safe one-cycle ``max_lr``.
     """
     if len(losses) < 5:
-        return lrs[0]
+        return _lr_at_min_loss(lrs, losses)
 
     # EMA smoothing reduces the noise impact on the slope estimate.
     smoothed: list[float] = []
@@ -180,26 +209,41 @@ def _suggest_lr(lrs: list[float], losses: list[float], ema_alpha: float) -> floa
 
     log_lrs = [math.log10(lr) for lr in lrs]
     slopes = [(smoothed[i + 1] - smoothed[i]) / (log_lrs[i + 1] - log_lrs[i]) for i in range(len(smoothed) - 1)]
-    # Steepest negative slope = most descent per log-LR step. This is
-    # the Smith (2017) heuristic — a value just before the loss
-    # bottoms out is typically a safe one-cycle max_lr.
+    # Steepest negative slope = most descent per log-LR step.
     idx = min(range(len(slopes)), key=lambda i: slopes[i])
+    if slopes[idx] >= 0:
+        # No descent anywhere — loss only rose. Fall back to LR at the
+        # minimum observed (smoothed) loss as the safest suggestion.
+        return _lr_at_min_loss(lrs, losses)
+    return lrs[idx]
+
+
+def _lr_at_min_loss(lrs: list[float], losses: list[float]) -> float:
+    """LR at the minimum observed loss. Used as the fallback when the
+    slope-based heuristic can't return a confident answer."""
+    idx = min(range(len(losses)), key=lambda i: losses[i])
     return lrs[idx]
 
 
 def _build_figure(lrs: list[float], losses: list[float], suggested_lr: float) -> go.Figure:
-    """Plotly loss-vs-log(LR) figure with the suggested LR marked."""
+    """Plotly loss-vs-log(LR) figure with the suggested LR marked.
+
+    Omits the suggested-LR vline if the sweep collected no data
+    points (every iteration diverged immediately) — adding a vline
+    against an empty trace produces a degenerate figure.
+    """
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=lrs, y=losses, mode="lines+markers", name="loss"))
     fig.update_layout(
         title="LR finder — loss vs learning rate",
-        xaxis_title="Learning rate (log)",
+        xaxis_title="Learning rate",
         yaxis_title="Loss",
         xaxis_type="log",
     )
-    fig.add_vline(
-        x=suggested_lr,
-        line_dash="dash",
-        annotation_text=f"suggested ≈ {suggested_lr:.2e}",
-    )
+    if lrs:
+        fig.add_vline(
+            x=suggested_lr,
+            line_dash="dash",
+            annotation_text=f"suggested ≈ {suggested_lr:.2e}",
+        )
     return fig

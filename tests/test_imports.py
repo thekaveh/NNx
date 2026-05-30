@@ -138,7 +138,7 @@ def test_generation_subpackage_imports():
 
 
 def test_transformer_public_surface():
-    """Top-level re-exports for the SP-4 surface."""
+    """Top-level re-exports for the LM-path surface."""
     import nnx
 
     assert hasattr(nnx, "TransformerNN")

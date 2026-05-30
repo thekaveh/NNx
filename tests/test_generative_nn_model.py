@@ -147,7 +147,7 @@ def test_apply_chain_runs_processors_in_order():
 def test_generate_deterministic_greedy_is_reproducible(tmp_path):
     """Greedy generate() (temperature=0) is fully deterministic — same
     prompt, same model, same call → same output. This is the regression
-    test the SP-4 plan calls out specifically."""
+    test the LM-path contract calls out specifically."""
     tokenizer = _make_tokenizer(tmp_path)
     torch.manual_seed(42)
     model = _make_model(tokenizer)
@@ -160,9 +160,9 @@ def test_generate_deterministic_greedy_is_reproducible(tmp_path):
 
 
 def test_generate_sampling_is_reproducible_with_same_seed(tmp_path):
-    """Same-seed sampling reproducibility — the other SP-4 spec
-    requirement. Two calls with the same seed must produce identical
-    outputs even with temperature > 0."""
+    """Same-seed sampling reproducibility — the other LM-path
+    reproducibility requirement. Two calls with the same seed must
+    produce identical outputs even with temperature > 0."""
     tokenizer = _make_tokenizer(tmp_path)
     torch.manual_seed(0)
     model = _make_model(tokenizer)
@@ -224,15 +224,15 @@ def test_generate_respects_max_seq_len(tmp_path):
     assert isinstance(out, str)
 
 
-# ---------------- KV-cache (SP-10c) ----------------
+# ---------------- KV-cache ----------------
 
 
 def test_kv_cache_produces_same_output_as_full_forward(tmp_path):
     """Equivalence: KV-cached greedy decode must produce identical
-    token sequences to the SP-4 full-recompute path. This is the load-
-    bearing correctness test for SP-10c — if these diverge, the cache
-    implementation has a bug (wrong RoPE offset, off-by-one on mask
-    slicing, etc.)."""
+    token sequences to the full-recompute path. This is the load-
+    bearing correctness test for the cache path — if these diverge,
+    the cache implementation has a bug (wrong RoPE offset, off-by-one
+    on mask slicing, etc.)."""
     tokenizer = _make_tokenizer(tmp_path)
     torch.manual_seed(7)
     model = _make_model(tokenizer)
@@ -256,9 +256,9 @@ def test_kv_cache_matches_full_forward_under_sampling_with_seed(tmp_path):
 
 
 def test_generate_use_cache_false_is_back_compat(tmp_path):
-    """``use_cache=False`` preserves the exact SP-4 behaviour — the
-    output for the default-greedy case is the same one the existing
-    `test_generate_deterministic_greedy_is_reproducible` covers."""
+    """``use_cache=False`` preserves the exact full-recompute behaviour
+    — the output for the default-greedy case is the same one the
+    existing `test_generate_deterministic_greedy_is_reproducible` covers."""
     tokenizer = _make_tokenizer(tmp_path)
     torch.manual_seed(42)
     model = _make_model(tokenizer)

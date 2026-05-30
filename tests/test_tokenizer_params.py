@@ -4,7 +4,7 @@ Covers:
   * train_bpe helper produces a Tokenizer with the expected vocab size.
   * NNTokenizerParams serializes via tokenizer.save / from_file and
     round-trips a known encoding.
-  * state() shape (single `path` key) per the SP-4 spec.
+  * state() shape (single `path` key) per the LM-path tokenizer contract.
 """
 
 from __future__ import annotations

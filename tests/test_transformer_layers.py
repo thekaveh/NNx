@@ -208,8 +208,10 @@ def test_transformer_block_residual_when_zero_init():
 
 
 def test_transformer_block_kv_cache_seam_returns_none_when_disabled():
-    """PR-1 ships use_cache=False; the returned kv must be None so callers
-    aren't tempted to use the cache prematurely. SP-10c will flip it on."""
+    """The low-level default is `use_cache=False`; the returned kv must
+    be None so callers aren't tempted to use the cache prematurely.
+    `GenerativeNNModel.generate` flips it on via `forward_with_cache`
+    for the high-level decode path."""
     block = TransformerBlock(d_model=8, n_heads=2, ffn_mult=2, max_seq_len=16)
     x = torch.randn(1, 4, 8)
     y, kv = block(x, use_cache=False)
