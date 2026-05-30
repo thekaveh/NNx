@@ -16,6 +16,11 @@ epoch on a laptop is hours; this example trains on a 1% subset for a
 sub-30-min CPU run. Production-scale training (multi-GPU, FlashAttention)
 is intentionally out of scope.
 
+Requires the ``lm`` optional extra (for the HuggingFace ``tokenizers``
+Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
+
+    pip install 'nnx[lm]'
+
 Run:
     python examples/11_tinystories_lm.py
     # or pass --use-hf to download TinyStories from HuggingFace:

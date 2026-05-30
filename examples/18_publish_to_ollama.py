@@ -16,6 +16,13 @@ the ``llama-quantize`` shell-out recipe from
 ``examples/17_export_transformer_to_gguf.py``, then point the Modelfile's
 ``FROM`` line at the quantized file.
 
+Requires the ``gguf-write`` optional extra (for
+``nnx.interop.export_ollama_modelfile``, which wraps
+``nnx.interop.write_gguf``) AND the ``lm`` extra (for
+``NNTokenizerParams`` / ``train_bpe`` via HuggingFace ``tokenizers``):
+
+    pip install 'nnx[gguf-write,lm]'
+
 Run:
     python examples/18_publish_to_ollama.py
 """
