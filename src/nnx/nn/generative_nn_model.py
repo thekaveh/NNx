@@ -94,6 +94,10 @@ class GenerativeNNModel(NNModel):
                 "GenerativeNNModel.generate requires a tokenizer. "
                 "Construct with `GenerativeNNModel(..., tokenizer=NNTokenizerParams.of(tk, path))`."
             )
+        # Snapshot training-mode for non-destructive restore on exit
+        # (matches NNModel.predict / evaluate / nnx.viz.activation_map /
+        # nnx.lr_finder). The body is wrapped in try/finally below.
+        was_training = self.net.training
         self.net.eval()
 
         prompt_ids = self.tokenizer.encode(prompt)
@@ -137,25 +141,29 @@ class GenerativeNNModel(NNModel):
             use_cache = False
 
         generated: list[int] = list(prompt_ids)
-        with torch.no_grad():
-            if use_cache:
-                self._generate_with_cache(
-                    generated=generated,
-                    max_new_tokens=max_new_tokens,
-                    max_seq_len=max_seq_len,
-                    processors=processors,
-                    gen=gen,
-                    stop=stop,
-                )
-            else:
-                self._generate_no_cache(
-                    generated=generated,
-                    max_new_tokens=max_new_tokens,
-                    max_seq_len=max_seq_len,
-                    processors=processors,
-                    gen=gen,
-                    stop=stop,
-                )
+        try:
+            with torch.no_grad():
+                if use_cache:
+                    self._generate_with_cache(
+                        generated=generated,
+                        max_new_tokens=max_new_tokens,
+                        max_seq_len=max_seq_len,
+                        processors=processors,
+                        gen=gen,
+                        stop=stop,
+                    )
+                else:
+                    self._generate_no_cache(
+                        generated=generated,
+                        max_new_tokens=max_new_tokens,
+                        max_seq_len=max_seq_len,
+                        processors=processors,
+                        gen=gen,
+                        stop=stop,
+                    )
+        finally:
+            if was_training:
+                self.net.train()
 
         return self.tokenizer.decode(generated)
 
