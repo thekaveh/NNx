@@ -445,6 +445,25 @@ NNTrainParams(seed=42, ...)                  # pins again inside train()
 
 `strict=True` opts into `torch.use_deterministic_algorithms(True)` — slower and may raise on ops without a deterministic CUDA kernel, but produces bit-for-bit identical training across runs on the same hardware.
 
+### 13.1. LR finder
+
+Before a long training run, run `nnx.lr_finder` to pick a defensible `max_lr` for a one-cycle scheduler. The sweep is non-destructive — model weights are snapshotted and restored on exit — so you can call it as a pre-flight check inside the same script that trains for real.
+
+```python
+from nnx import lr_finder
+import torch.nn.functional as F
+
+result = lr_finder(
+    model.net, train_loader,
+    loss_fn=F.cross_entropy,
+    start_lr=1e-7, end_lr=10.0, num_iter=100,
+)
+print(f"Suggested max_lr: {result.suggested_lr:.2e}")
+result.figure.show()
+```
+
+`suggested_lr` is the LR at the steepest descent point of the EMA-smoothed loss curve — the Smith (2017) heuristic. Plug it into `NNOptimParams.max_lr` for the real training run.
+
 ## 14. Resuming training
 
 ```python
