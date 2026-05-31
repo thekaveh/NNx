@@ -291,6 +291,7 @@ def test_r3_nnrun_load_rejects_path_traversal_run_ids(tmp_path, monkeypatch):
         "runs/../etc",
         "with/slash",
         "with\\backslash",
+        "embedded\x00null",  # null-byte path-confusion
         "",
     ]
     for bad_id in traversal_ids:
