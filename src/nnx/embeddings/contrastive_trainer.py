@@ -224,15 +224,24 @@ def embed_texts(
         # so callers don't get a confusing 1D shape.
         return torch.empty((0, 0), device=device)
 
+    # Snapshot training-mode for non-destructive restore (matches the
+    # convention used by NNModel.predict / evaluate,
+    # GenerativeNNModel.generate, diffusion.sample,
+    # nnx.viz.activation_map, and nnx.lr_finder).
+    was_training = backbone.training
     backbone.eval()
     chunks: list[torch.Tensor] = []
-    with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            chunk = texts[i : i + batch_size]
-            emb = _encode(backbone, chunk, device)
-            if normalize:
-                emb = F.normalize(emb, dim=-1)
-            chunks.append(emb.detach())
+    try:
+        with torch.no_grad():
+            for i in range(0, len(texts), batch_size):
+                chunk = texts[i : i + batch_size]
+                emb = _encode(backbone, chunk, device)
+                if normalize:
+                    emb = F.normalize(emb, dim=-1)
+                chunks.append(emb.detach())
+    finally:
+        if was_training:
+            backbone.train()
     return torch.cat(chunks, dim=0)
 
 

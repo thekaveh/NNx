@@ -743,6 +743,14 @@ class NNModel(_HubMixinBase):
         # Ensure loss_fn lives on the same device as the model — guards
         # against callers reassigning self.device after construction.
         self.loss_fn = self.loss_fn.to(self.device)
+        # Snapshot training-mode for non-destructive restore (matches the
+        # convention already used by `nnx.viz.activation_map` and
+        # `nnx.lr_finder`). Without this, a caller doing the common
+        # train → evaluate → train-more pattern silently leaves the net
+        # in `.eval()` mode after evaluate(); BatchNorm / Dropout layers
+        # would behave incorrectly on the next batch unless the caller
+        # remembered to call `self.net.train()` themselves.
+        was_training = self.net.training
         self.net.eval()
 
         all_Y: list[np.ndarray] = []
@@ -750,17 +758,21 @@ class NNModel(_HubMixinBase):
         loss_sum = 0.0
         n_samples = 0
 
-        with torch.no_grad():
-            for batch in loader:
-                _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
-                batch_n = int(Y.size(0))
-                # Aggregate predictions / labels across the entire loader so
-                # metrics are computed on the full eval set, not per-batch.
-                all_Y.append(Y.cpu().numpy())
-                all_Y_hat.append(Y_hat.cpu().numpy())
-                # Sum-weight the loss by samples; divide once at the end.
-                loss_sum += float(self.loss_fn(Y_hat_logits, Y).detach()) * batch_n
-                n_samples += batch_n
+        try:
+            with torch.no_grad():
+                for batch in loader:
+                    _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
+                    batch_n = int(Y.size(0))
+                    # Aggregate predictions / labels across the entire loader so
+                    # metrics are computed on the full eval set, not per-batch.
+                    all_Y.append(Y.cpu().numpy())
+                    all_Y_hat.append(Y_hat.cpu().numpy())
+                    # Sum-weight the loss by samples; divide once at the end.
+                    loss_sum += float(self.loss_fn(Y_hat_logits, Y).detach()) * batch_n
+                    n_samples += batch_n
+        finally:
+            if was_training:
+                self.net.train()
 
         if n_samples == 0:
             raise ValueError("evaluate() loader produced zero samples")
@@ -789,42 +801,54 @@ class NNModel(_HubMixinBase):
 
         Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
         that unpacks like the original 2-tuple.
+
+        Non-destructive: ``self.net.training`` is snapshotted before
+        switching to ``eval()`` and restored on exit (matches
+        ``NNModel.evaluate``, ``nnx.viz.activation_map``, and
+        ``nnx.lr_finder``). Without this, a caller doing the common
+        train → predict → train-more pattern silently leaves the net
+        in ``.eval()`` mode.
         """
+        was_training = self.net.training
         self.net.eval()
 
-        if isinstance(X, DataLoader):
-            logits_chunks: list[np.ndarray] = []
-            classes_chunks: list[np.ndarray] = []
+        try:
+            if isinstance(X, DataLoader):
+                logits_chunks: list[np.ndarray] = []
+                classes_chunks: list[np.ndarray] = []
+                with torch.no_grad():
+                    for batch in X:
+                        # net.unpack_batch handles both (X, Y) tuples and PyG Data,
+                        # returning the X-tuple. The label is discarded for predict.
+                        X_in, _ = self.net.unpack_batch(batch)
+                        X_in = tuple(x.to(self.device) for x in X_in)
+                        logits = self.net(*X_in).cpu().numpy()
+                        logits_chunks.append(logits)
+                        classes_chunks.append(logits.argmax(axis=1))
+                return PredictResult(
+                    logits=np.concatenate(logits_chunks),
+                    classes=np.concatenate(classes_chunks),
+                )
+
+            # Single input (any of: ndarray, Tensor, or a tuple thereof).
+            if not isinstance(X, tuple):
+                X = (X,)
+
+            def _to_tensor(x):
+                if isinstance(x, torch.Tensor):
+                    return x.to(self.device)
+                # Fall through to numpy → tensor for arrays and array-likes.
+                return torch.from_numpy(np.asarray(x)).to(self.device)
+
+            X_t = tuple(_to_tensor(x) for x in X)
+
             with torch.no_grad():
-                for batch in X:
-                    # net.unpack_batch handles both (X, Y) tuples and PyG Data,
-                    # returning the X-tuple. The label is discarded for predict.
-                    X_in, _ = self.net.unpack_batch(batch)
-                    X_in = tuple(x.to(self.device) for x in X_in)
-                    logits = self.net(*X_in).cpu().numpy()
-                    logits_chunks.append(logits)
-                    classes_chunks.append(logits.argmax(axis=1))
-            return PredictResult(
-                logits=np.concatenate(logits_chunks),
-                classes=np.concatenate(classes_chunks),
-            )
-
-        # Single input (any of: ndarray, Tensor, or a tuple thereof).
-        if not isinstance(X, tuple):
-            X = (X,)
-
-        def _to_tensor(x):
-            if isinstance(x, torch.Tensor):
-                return x.to(self.device)
-            # Fall through to numpy → tensor for arrays and array-likes.
-            return torch.from_numpy(np.asarray(x)).to(self.device)
-
-        X_t = tuple(_to_tensor(x) for x in X)
-
-        with torch.no_grad():
-            Y_hat_logits = self.net(*X_t).cpu().numpy()
-            Y_hat = Y_hat_logits.argmax(axis=1)
-            return PredictResult(logits=Y_hat_logits, classes=Y_hat)
+                Y_hat_logits = self.net(*X_t).cpu().numpy()
+                Y_hat = Y_hat_logits.argmax(axis=1)
+                return PredictResult(logits=Y_hat_logits, classes=Y_hat)
+        finally:
+            if was_training:
+                self.net.train()
 
     def _fwd_pass(self, batch):
         """Standard supervised forward pass: unpack batch, move to device,

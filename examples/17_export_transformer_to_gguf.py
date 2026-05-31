@@ -17,6 +17,13 @@ binary that ships with ``pip install llama-cpp-python``:
     llama-quantize artifacts/lm_export/model.gguf \\
         artifacts/lm_export/model.Q4_K_M.gguf Q4_K_M
 
+Requires the ``gguf-write`` optional extra (for the ``gguf`` PyPI
+package that backs ``nnx.interop.write_gguf``) AND the ``lm`` extra
+(for ``NNTokenizerParams`` / ``train_bpe`` via HuggingFace
+``tokenizers``):
+
+    pip install 'nnx[gguf-write,lm]'
+
 Run:
     python examples/17_export_transformer_to_gguf.py
 """
@@ -25,10 +32,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nnx.interop.gguf import write_gguf
-from nnx.nn.net.transformer_nn import TransformerNN
-from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
-from nnx.nn.params.nn_transformer_params import NNTransformerParams
+from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe
+from nnx.interop import write_gguf
 
 
 def main() -> None:

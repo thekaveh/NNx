@@ -88,12 +88,23 @@ class GenerativeNNModel(NNModel):
 
         Returns:
             The full decoded string (prompt + generated continuation).
+
+        Non-destructive: ``self.net.training`` is snapshotted before
+        switching to ``eval()`` and restored on exit (including the
+        exception path via ``try/finally``). Matches the convention
+        used by ``NNModel.predict`` / ``NNModel.evaluate``,
+        ``nnx.diffusion.sample``, ``nnx.embeddings.embed_texts``,
+        ``nnx.viz.activation_map``, and ``nnx.lr_finder``.
         """
         if self.tokenizer is None:
             raise ValueError(
                 "GenerativeNNModel.generate requires a tokenizer. "
                 "Construct with `GenerativeNNModel(..., tokenizer=NNTokenizerParams.of(tk, path))`."
             )
+        # Snapshot training-mode for non-destructive restore on exit
+        # (matches NNModel.predict / evaluate / nnx.viz.activation_map /
+        # nnx.lr_finder). The body is wrapped in try/finally below.
+        was_training = self.net.training
         self.net.eval()
 
         prompt_ids = self.tokenizer.encode(prompt)
@@ -137,25 +148,29 @@ class GenerativeNNModel(NNModel):
             use_cache = False
 
         generated: list[int] = list(prompt_ids)
-        with torch.no_grad():
-            if use_cache:
-                self._generate_with_cache(
-                    generated=generated,
-                    max_new_tokens=max_new_tokens,
-                    max_seq_len=max_seq_len,
-                    processors=processors,
-                    gen=gen,
-                    stop=stop,
-                )
-            else:
-                self._generate_no_cache(
-                    generated=generated,
-                    max_new_tokens=max_new_tokens,
-                    max_seq_len=max_seq_len,
-                    processors=processors,
-                    gen=gen,
-                    stop=stop,
-                )
+        try:
+            with torch.no_grad():
+                if use_cache:
+                    self._generate_with_cache(
+                        generated=generated,
+                        max_new_tokens=max_new_tokens,
+                        max_seq_len=max_seq_len,
+                        processors=processors,
+                        gen=gen,
+                        stop=stop,
+                    )
+                else:
+                    self._generate_no_cache(
+                        generated=generated,
+                        max_new_tokens=max_new_tokens,
+                        max_seq_len=max_seq_len,
+                        processors=processors,
+                        gen=gen,
+                        stop=stop,
+                    )
+        finally:
+            if was_training:
+                self.net.train()
 
         return self.tokenizer.decode(generated)
 

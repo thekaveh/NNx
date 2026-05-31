@@ -16,6 +16,11 @@ epoch on a laptop is hours; this example trains on a 1% subset for a
 sub-30-min CPU run. Production-scale training (multi-GPU, FlashAttention)
 is intentionally out of scope.
 
+Requires the ``lm`` optional extra (for the HuggingFace ``tokenizers``
+Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
+
+    pip install 'nnx[lm]'
+
 Run:
     python examples/11_tinystories_lm.py
     # or pass --use-hf to download TinyStories from HuggingFace:
@@ -33,20 +38,21 @@ from torch.utils.data import DataLoader, Dataset
 
 from nnx import (
     Devices,
+    GenerativeNNModel,
     Losses,
     Nets,
+    NNEvaluationDataPoint,
     NNModelParams,
     NNOptimParams,
     NNSchedulerParams,
+    NNTokenizerParams,
     NNTrainParams,
+    NNTransformerParams,
     Optims,
     TrainStepContext,
     set_seed,
+    train_bpe,
 )
-from nnx.nn.generative_nn_model import GenerativeNNModel
-from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
-from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
-from nnx.nn.params.nn_transformer_params import NNTransformerParams
 
 # A small inline corpus — used when the user doesn't have datasets/HF
 # access. Story-like sentences so the BPE tokenizer learns something

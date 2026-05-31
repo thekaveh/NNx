@@ -51,43 +51,51 @@ def sample(
     # Migrate the schedule's indexed tensors once so the per-step loop
     # doesn't re-transfer them.
     sched = schedule.to(device)
+    # Snapshot training-mode for non-destructive restore (matches
+    # NNModel.predict / evaluate, GenerativeNNModel.generate,
+    # nnx.viz.activation_map, and nnx.lr_finder).
+    was_training = model.net.training
     model.net.eval()
 
-    x = torch.randn(*shape, device=device, generator=generator)
+    try:
+        x = torch.randn(*shape, device=device, generator=generator)
 
-    for t_int in reversed(range(sched.T)):
-        # Batch-broadcast the timestep so the network's t-conditioning
-        # works whether called with B==1 or B==shape[0].
-        t = torch.full((shape[0],), t_int, dtype=torch.long, device=device)
+        for t_int in reversed(range(sched.T)):
+            # Batch-broadcast the timestep so the network's t-conditioning
+            # works whether called with B==1 or B==shape[0].
+            t = torch.full((shape[0],), t_int, dtype=torch.long, device=device)
 
-        eps_pred = model.net(x, t)
+            eps_pred = model.net(x, t)
 
-        beta_t = sched.betas[t_int]
-        alpha_t = sched.alphas[t_int]
-        alpha_bar_t = sched.alphas_cumprod[t_int]
+            beta_t = sched.betas[t_int]
+            alpha_t = sched.alphas[t_int]
+            alpha_bar_t = sched.alphas_cumprod[t_int]
 
-        # Posterior mean (DDPM eq. 11): predict x_0 implicitly through eps,
-        # then the posterior of q(x_{t-1} | x_t, x_0).
-        coef = beta_t / (1.0 - alpha_bar_t).sqrt()
-        mean = (1.0 / alpha_t.sqrt()) * (x - coef * eps_pred)
+            # Posterior mean (DDPM eq. 11): predict x_0 implicitly through eps,
+            # then the posterior of q(x_{t-1} | x_t, x_0).
+            coef = beta_t / (1.0 - alpha_bar_t).sqrt()
+            mean = (1.0 / alpha_t.sqrt()) * (x - coef * eps_pred)
 
-        if t_int > 0:
-            # Standard DDPM: re-inject noise scaled by the posterior std
-            # at every step except the final t=0 (the boundary case is a
-            # deterministic mean — adding noise would not match the training
-            # objective).
-            noise = (
-                torch.randn_like(x)
-                if generator is None
-                else torch.randn(
-                    x.shape,
-                    generator=generator,
-                    device=device,
-                    dtype=x.dtype,
+            if t_int > 0:
+                # Standard DDPM: re-inject noise scaled by the posterior std
+                # at every step except the final t=0 (the boundary case is a
+                # deterministic mean — adding noise would not match the training
+                # objective).
+                noise = (
+                    torch.randn_like(x)
+                    if generator is None
+                    else torch.randn(
+                        x.shape,
+                        generator=generator,
+                        device=device,
+                        dtype=x.dtype,
+                    )
                 )
-            )
-            x = mean + sched.posterior_variance[t_int].sqrt() * noise
-        else:
-            x = mean
+                x = mean + sched.posterior_variance[t_int].sqrt() * noise
+            else:
+                x = mean
 
-    return x
+        return x
+    finally:
+        if was_training:
+            model.net.train()

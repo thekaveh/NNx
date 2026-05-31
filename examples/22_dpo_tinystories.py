@@ -34,21 +34,21 @@ import torch
 
 from nnx import (
     Devices,
+    GenerativeNNModel,
     Losses,
+    Nets,
     NNModelParams,
     NNOptimParams,
+    NNPreferenceDataset,
     NNSchedulerParams,
+    NNTokenizerParams,
     NNTrainParams,
+    NNTransformerParams,
     Optims,
     dpo_train_step_factory,
     set_seed,
     train_bpe,
 )
-from nnx.nn.dataset.nn_preference_dataset import NNPreferenceDataset
-from nnx.nn.enum.nets import Nets
-from nnx.nn.generative_nn_model import GenerativeNNModel
-from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams
-from nnx.nn.params.nn_transformer_params import NNTransformerParams
 
 
 def _avg_seq_logprob(net: torch.nn.Module, tokens: torch.Tensor) -> float:

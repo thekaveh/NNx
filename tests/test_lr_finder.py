@@ -197,6 +197,87 @@ def test_lr_finder_restores_training_mode():
     assert model.training is True
 
 
+def _run_lr_finder_exception_path_restore_check(initial_mode: str) -> None:
+    """Drive the lr_finder exception-path test for either initial mode.
+
+    Shared body of the two `test_lr_finder_restores_state_after_exception_*`
+    cases; parameterised by the caller's starting training-mode so we
+    cover both `train() → exception → restore-to-train()` and
+    `eval()  → exception → restore-to-eval()` round-trips with the same
+    flaky-loss-fn scaffolding.
+    """
+    model, loader = _tiny_model_and_loader()
+    initial = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+    if initial_mode == "eval":
+        model.eval()
+        assert model.training is False
+    elif initial_mode == "train":
+        model.train()
+        assert model.training is True
+    else:  # pragma: no cover — caller-side typo guard.
+        raise AssertionError(f"bad initial_mode {initial_mode!r}")
+
+    call_count = {"n": 0}
+
+    def flaky_loss_fn(y_hat, y):
+        call_count["n"] += 1
+        if call_count["n"] == 4:
+            raise RuntimeError("simulated loss_fn failure on iteration 4")
+        return nn.functional.cross_entropy(y_hat, y)
+
+    with pytest.raises(RuntimeError, match="simulated loss_fn failure"):
+        lr_finder(
+            model,
+            loader,
+            loss_fn=flaky_loss_fn,
+            start_lr=1e-6,
+            end_lr=1.0,
+            num_iter=30,
+        )
+
+    # Weights must be restored despite the mid-sweep crash.
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, initial[k]), (
+            f"weight {k} was not restored after lr_finder raised mid-sweep — "
+            "the non-destructive contract was broken on the exception path"
+        )
+
+    # Training-mode flag must round-trip to the caller's value.
+    expected = initial_mode == "train"
+    assert model.training is expected, (
+        f"lr_finder left model.training={model.training} after exception with "
+        f"initial_mode={initial_mode!r} — training-mode restore was skipped on the raise path"
+    )
+
+
+def test_lr_finder_restores_state_after_exception_in_loss_fn_from_eval():
+    """Non-destructive restore on the exception path, eval()-mode caller.
+
+    The original implementation only restored after the loop completed,
+    so a `loss_fn` that crashed on iteration 3 of 30 would leave the
+    caller's model weights silently mutated (the optimizer steps from
+    iters 0-2 stayed live) and `model.training` left True even if the
+    caller passed in an `eval()` model.
+
+    The fix is a `try/finally` around the loop with restore in the
+    `finally` clause. This test pins the eval()-mode round-trip; the
+    sibling `_from_train` test covers the symmetric path.
+    """
+    _run_lr_finder_exception_path_restore_check(initial_mode="eval")
+
+
+def test_lr_finder_restores_state_after_exception_in_loss_fn_from_train():
+    """Non-destructive restore on the exception path, train()-mode caller.
+
+    Symmetric to the `_from_eval` case: a caller in `model.train()` must
+    end the call still in `model.train()` after a mid-sweep exception —
+    the `try/finally` restore preserves whatever the caller's pre-call
+    mode was, not just `eval`.
+    """
+    _run_lr_finder_exception_path_restore_check(initial_mode="train")
+
+
 def test_suggest_lr_short_sweep_returns_lr_at_min_loss():
     """When the sweep is too short for a slope estimate (<5 points),
     `_suggest_lr` falls back to the LR at the minimum observed loss

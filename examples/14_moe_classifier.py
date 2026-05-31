@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from nnx import (
     Activations,
     Devices,
+    FeedFwdNN,
     Losses,
     MoELinear,
     Nets,
@@ -47,7 +48,6 @@ from nnx import (
     moe_train_step_factory,
     set_seed,
 )
-from nnx.nn.net.feed_fwd_nn import FeedFwdNN
 
 
 class MoEClassifier(FeedFwdNN):
