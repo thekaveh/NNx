@@ -1,12 +1,26 @@
 """Pass-2 catalog: R-series regression tests.
 
-Covers reliability gaps surfaced in the pass-2 audit:
+Covers reliability + load-time-safety gaps surfaced in the pass-2 audit
+and the subsequent overnight-maintenance passes (PRs #40 + post-#41):
+
 - R1: training raises FloatingPointError on NaN/Inf loss instead of
   silently producing garbage checkpoints.
 - R2: NNOptimParams.grad_clip_norm actually clips gradients to the
-  configured norm.
+  configured norm; the field round-trips through state() with the
+  back-compat default omitted when None (PR #29 invariant).
 - R3: NNRun.save() is invoked after each epoch so interrupted training
-  leaves a loadable partial run on disk.
+  leaves a loadable partial run on disk. Also covers the load-time
+  safety contract that grew alongside R3 over later maintenance
+  rounds:
+
+    * Atomic tmp+rename writes (incremental save survives
+      KeyboardInterrupt mid-write).
+    * NNRun.load uses yaml.safe_load — a poisoned run.yaml carrying
+      a ``!!python/name`` tag cannot escalate into arbitrary-object
+      instantiation (PR #40).
+    * NNRun.load / NNCheckpoint.load reject path-traversal run ids
+      (``../etc``, ``..``, embedded-null, …) so a public ``id``
+      argument cannot escape the runs root (post-#41 pass).
 """
 
 from __future__ import annotations
