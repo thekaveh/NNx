@@ -25,6 +25,36 @@ def _runs_root(root: Optional[str] = None) -> str:
     return os.path.join(root if root is not None else os.getcwd(), "runs")
 
 
+def _validate_run_id(run_id: str) -> str:
+    """Reject `run_id` values that would escape the `runs/` directory.
+
+    `NNRun.load(id=...)` and `NNCheckpoint.load(run=...)` join the caller-
+    supplied identifier directly into a path under `runs/`. Internal
+    callers always pass the md5 hex of `NNRun.state()` (32 hex chars), so
+    the happy-path identifier is harmless. But the API surface is public,
+    and a value like `"../../etc/passwd"` would resolve `runs/<id>/run.yaml`
+    to a filesystem location outside the runs root — a classic path-
+    traversal escalation if NNx is running anywhere a sensitive file
+    sits next to `runs/`. Defense-in-depth: validate at the boundary.
+
+    Accepts: any non-empty string that is its own basename (no path
+    separators, no `..`, no embedded null).
+
+    Raises `ValueError` on any traversal-shaped input.
+    """
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError(f"run id must be a non-empty string; got {run_id!r}")
+    # `os.path.basename` strips trailing separators and the prefix path; if
+    # the result differs from the input, the input contained a separator.
+    # The explicit ``..`` and null-byte checks catch the residual cases that
+    # basename happens to leave alone (e.g., `..` itself is its own basename).
+    if "/" in run_id or "\\" in run_id or "\x00" in run_id or run_id in (".", ".."):
+        raise ValueError(f"run id must not contain path separators or `..`; got {run_id!r}")
+    if os.path.basename(run_id) != run_id:
+        raise ValueError(f"run id must be a single path component; got {run_id!r}")
+    return run_id
+
+
 def _atomic_write_text(path: str, content: str) -> None:
     """Write `content` to `path` atomically — fsync, rename. A
     KeyboardInterrupt during the rename either leaves the prior file
@@ -331,6 +361,11 @@ class NNRun:
 
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
+        # Reject path-traversal identifiers before joining; see
+        # `_validate_run_id` for the threat model. Internal callers pass
+        # md5 hex (always safe), so this is a defense-in-depth guard on
+        # the public API surface.
+        id = _validate_run_id(id)
         run_path = os.path.join(_runs_root(root), id)
         yaml_path = os.path.join(run_path, "run.yaml")
         csv_path = os.path.join(run_path, "idps.csv")

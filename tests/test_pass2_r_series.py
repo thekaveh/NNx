@@ -267,3 +267,44 @@ def test_r3_nnrun_load_rejects_python_object_tags(tmp_path, monkeypatch):
 
     with pytest.raises(yaml.YAMLError):
         NNRun.load(id=run_id)
+
+
+def test_r3_nnrun_load_rejects_path_traversal_run_ids(tmp_path, monkeypatch):
+    """Defense-in-depth: NNRun.load / NNCheckpoint.load accept a public
+    ``id`` / ``run`` parameter and join it directly into a path under
+    ``runs/``. A traversal-shaped identifier like ``"../../etc"`` would
+    escape the runs root and try to read sensitive files sitting next to
+    the working directory.
+
+    Internal callers always pass the md5 hex of NNRun.state() (always
+    safe), but `_validate_run_id` is the boundary guard for the public
+    API surface. Mirrors the spirit of the sibling test above that fixes
+    the yaml.FullLoader path-traversal-via-tag escalation.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    traversal_ids = [
+        "../etc",
+        "../../etc/passwd",
+        "..",
+        ".",
+        "runs/../etc",
+        "with/slash",
+        "with\\backslash",
+        "",
+    ]
+    for bad_id in traversal_ids:
+        with pytest.raises(ValueError, match=r"run id|non-empty"):
+            NNRun.load(id=bad_id)
+
+
+def test_r3_nnrun_load_accepts_normal_md5_id(tmp_path, monkeypatch):
+    """The traversal guard must not reject normal md5-hex run ids
+    (32 lowercase-hex chars, no separators) that legitimate callers
+    produce via ``NNRun.id``. Smoke test against the validator's
+    happy path."""
+    from nnx.nn.params.nn_run import _validate_run_id
+
+    md5_shaped = "deadbeef" * 4  # 32 hex chars, valid run-id shape.
+    # The validator should pass through without raising.
+    assert _validate_run_id(md5_shaped) == md5_shaped
