@@ -22,7 +22,22 @@ _SAFETENSORS_FORMAT_VERSION = "1"
 
 def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) -> str:
     """Resolve the on-disk path for a checkpoint. Defaults to cwd-relative
-    so existing notebook code stays untouched."""
+    so existing notebook code stays untouched.
+
+    Validates ``run`` to reject path-traversal identifiers — see
+    :func:`nnx.nn.params.nn_run._validate_run_id` for the threat model.
+    Internal callers pass the md5 hex of ``NNRun.state()`` (always safe),
+    but ``NNCheckpoint.load`` / ``load_optimizer_state`` accept ``run``
+    from the public API surface, so we validate here at the single
+    path-construction site that every caller funnels through.
+    """
+    # Local import — _validate_run_id lives in the sibling module and
+    # this module can't import it at module load time (nn_run imports
+    # nn_checkpoint, so the reverse direction is a cycle). The function
+    # call is one-shot per checkpoint save / load — overhead is negligible.
+    from .nn_run import _validate_run_id
+
+    _validate_run_id(run)
     base = root if root is not None else "."
     return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
 
