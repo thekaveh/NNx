@@ -1,0 +1,117 @@
+"""Builder for NNTrainerParams — the composite multi-optim configuration.
+
+Composes Plan 1's NNSchedulerParams.builder() + Plan 2's
+NNOptimParams.builder() output via name-keyed dicts. `.optimizer(name,
+params)` and `.scheduler(name, params)` accept pre-built params
+instances — the simplest composition path. (The spec's lambda-Builder
+variant is deferred — composability via the lambda is elegant but
+makes the call-site harder to read; we ship the direct form first.)
+
+`.build()` enforces `schedulers.keys() ⊆ optims.keys()` BEFORE
+constructing the dataclass, so the user sees the constraint failure
+at the Builder boundary rather than from inside the dataclass's
+__post_init__.
+
+See `docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
+§3.4 for the rubric scoring and design rationale.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from typing import Any
+
+from torch.utils.data import DataLoader
+
+from ..nn.params.nn_optim_params import NNOptimParams
+from ..nn.params.nn_scheduler_params import NNSchedulerParams
+from .params import NNTrainerParams
+
+
+class NNTrainerParamsBuilder:
+    """Composite builder for `NNTrainerParams`.
+
+    Reach via `NNTrainerParams.builder()`. The required setter is
+    `.n_epochs(N)`; at least one `.optimizer(name, params)` call is
+    also required (`NNTrainerParams.__post_init__` rejects empty
+    optims). Schedulers, seed, loaders, etc. are all chained optionals.
+    """
+
+    def __init__(self) -> None:
+        self._fields: dict[str, Any] = {}
+        self._optims: dict[str, NNOptimParams] = {}
+        self._schedulers: dict[str, NNSchedulerParams] = {}
+
+    def n_epochs(self, n: int) -> NNTrainerParamsBuilder:
+        """Number of training epochs. Required."""
+        self._fields["n_epochs"] = n
+        return self
+
+    def optimizer(self, name: str, params: NNOptimParams) -> NNTrainerParamsBuilder:
+        """Register one optimizer under `name`. Each name gets its
+        own torch.optim.Optimizer at Trainer.train() time. Use
+        `NNOptimParams.builder()` (Plan 2) to construct `params`."""
+        self._optims[name] = params
+        return self
+
+    def scheduler(self, name: str, params: NNSchedulerParams) -> NNTrainerParamsBuilder:
+        """Register one scheduler under `name`. The name must match a
+        previously-registered `.optimizer(name, ...)` call — `.build()`
+        enforces the subset invariant."""
+        self._schedulers[name] = params
+        return self
+
+    def seed(self, value: int) -> NNTrainerParamsBuilder:
+        """Seed for reproducibility. None at default (no seeding via
+        params; the caller's `set_seed()` is the only path)."""
+        self._fields["seed"] = value
+        return self
+
+    def save_phase_checkpoints(self, value: bool) -> NNTrainerParamsBuilder:
+        """Whether to write phase checkpoints (FIRST / Q1 / Q2 / Q3 /
+        LAST / BEST). Default True; only call to override."""
+        if value is not True:
+            self._fields["save_phase_checkpoints"] = value
+        return self
+
+    def train_loader(self, loader: DataLoader) -> NNTrainerParamsBuilder:
+        """Training DataLoader. Optional at Builder time (can be wired
+        later via NNTrainerParams.with_train_loader)."""
+        self._fields["train_loader"] = loader
+        return self
+
+    def val_loader(self, loader: DataLoader) -> NNTrainerParamsBuilder:
+        """Validation DataLoader. Optional at Builder time (can be wired
+        later via NNTrainerParams.with_val_loader)."""
+        self._fields["val_loader"] = loader
+        return self
+
+    def extra_metrics(self, metrics: Mapping[str, Callable]) -> NNTrainerParamsBuilder:
+        """Extra metrics callables, name-keyed. Each is called with
+        (y_pred, y_true) at every validation step."""
+        self._fields["extra_metrics"] = metrics
+        return self
+
+    def build(self) -> NNTrainerParams:
+        """Validate the key-subset invariant, then construct the dataclass.
+
+        `schedulers.keys() ⊆ optims.keys()` is the contract
+        `NNTrainerParams.__post_init__` enforces. We check here so the
+        user sees the violation at the Builder boundary — e.g., they
+        called `.scheduler("d", ...)` without first calling
+        `.optimizer("d", ...)` — rather than at the dataclass ctor.
+        """
+        unknown = set(self._schedulers.keys()) - set(self._optims.keys())
+        if unknown:
+            raise ValueError(
+                "NNTrainerParamsBuilder.scheduler() called with names not present in optims: "
+                f"{sorted(unknown)}. Call .optimizer({sorted(unknown)[0]!r}, ...) before scheduling. "
+                f"Known optim names so far: {sorted(self._optims.keys())}"
+            )
+        # Always include optims (required by NNTrainerParams.__post_init__).
+        # Only include schedulers if non-empty (preserves omit-when-default in state()).
+        fields = dict(self._fields)
+        fields["optims"] = self._optims
+        if self._schedulers:
+            fields["schedulers"] = self._schedulers
+        return NNTrainerParams(**fields)

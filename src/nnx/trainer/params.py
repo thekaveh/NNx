@@ -17,12 +17,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from torch.utils.data import DataLoader
 
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
+
+if TYPE_CHECKING:
+    from .params_builder import NNTrainerParamsBuilder
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -107,3 +110,12 @@ class NNTrainerParams:
             seed=state.get("seed"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
         )
+
+    @classmethod
+    def builder(cls) -> NNTrainerParamsBuilder:
+        """Return a composite multi-optim builder. See
+        `NNTrainerParamsBuilder`. Composes
+        `NNOptimParams.builder()` + `NNSchedulerParams.builder()`.
+        """
+        from .params_builder import NNTrainerParamsBuilder
+        return NNTrainerParamsBuilder()
