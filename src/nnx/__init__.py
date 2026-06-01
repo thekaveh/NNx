@@ -78,6 +78,7 @@ from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .nn.params.nn_iteration_data_point import NNIterationDataPoint
 from .nn.params.nn_model_params import NNModelParams
 from .nn.params.nn_optim_params import NNOptimParams
+from .nn.params.nn_optim_params_builder import NNOptimParamsBuilder
 from .nn.params.nn_params import NNParams
 from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
@@ -175,6 +176,7 @@ __all__ = [
     "NNModelParams",
     "NNTrainParams",
     "NNOptimParams",
+    "NNOptimParamsBuilder",
     "NNSchedulerParams",
     "NNSchedulerParamsBuilder",
     "NNIterationDataPoint",

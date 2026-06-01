@@ -50,6 +50,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.params.nn_optim_params.NNOptimParams
 
+::: nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder
+
 ::: nnx.nn.params.nn_scheduler_params.NNSchedulerParams
 
 ::: nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder

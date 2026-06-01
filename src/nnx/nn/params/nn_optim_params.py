@@ -8,6 +8,7 @@ from ..enum.optims import Optims
 
 if TYPE_CHECKING:
     from ...finetune.param_groups import NNParamGroupSpec
+    from .nn_optim_params_builder import NNOptimParamsBuilder
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -100,3 +101,10 @@ class NNOptimParams:
         # Unknown enum variant — refuse rather than implicitly returning None
         # (which would short-circuit `not params.optim.is_valid()` in train()).
         return False
+
+    @classmethod
+    def builder(cls) -> NNOptimParamsBuilder:
+        """Return a variant-aware builder. See `NNOptimParamsBuilder`."""
+        from .nn_optim_params_builder import NNOptimParamsBuilder
+
+        return NNOptimParamsBuilder()
