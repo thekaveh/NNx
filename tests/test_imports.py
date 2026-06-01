@@ -243,3 +243,16 @@ def test_params_modules_import():
     assert hasattr(nn_scheduler_params, "NNSchedulerParams")
     assert hasattr(nn_params, "NNParams")
     assert hasattr(nn_transformer_params, "NNTransformerParams")
+
+
+def test_top_level_scheduler_builder_importable():
+    """`nnx.NNSchedulerParamsBuilder` is the canonical top-level handle
+    for the new Builder. Reachable via `nnx.NNSchedulerParams.builder()`
+    too, but the explicit name lets users `from nnx import
+    NNSchedulerParamsBuilder` if they want to type-annotate against it.
+    """
+    import nnx
+
+    assert hasattr(nnx, "NNSchedulerParamsBuilder")
+    builder = nnx.NNSchedulerParams.builder()
+    assert isinstance(builder, nnx.NNSchedulerParamsBuilder)
