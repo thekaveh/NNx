@@ -54,3 +54,27 @@ def test_builder_adam_preserves_omit_when_default_invariant():
     assert "grad_clip_norm" not in built.state()
     assert "accumulate_grad_batches" not in built.state()
     assert "param_groups" not in built.state()
+
+
+def test_builder_sgd_uses_float_momentum():
+    """SGD keeps the float `momentum` kwarg — `betas` is an Adam term.
+    The dataclass `momentum` field stores the float directly."""
+    op = NNOptimParams.builder().sgd(max_lr=1e-2, momentum=0.9, weight_decay=5e-5).build()
+    assert op.name == Optims.SGD
+    assert op.max_lr == 1e-2
+    assert op.momentum == 0.9
+    assert op.is_valid()
+
+
+def test_builder_sgd_nesterov():
+    op = NNOptimParams.builder().sgd_nesterov(max_lr=1e-2, momentum=0.9, weight_decay=0.0).build()
+    assert op.name == Optims.SGD_NESTEROV
+    assert op.momentum == 0.9
+    assert op.is_valid()
+
+
+def test_builder_adam_amsgrad():
+    op = NNOptimParams.builder().adam_amsgrad(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).build()
+    assert op.name == Optims.ADAM_AMSGRAD
+    assert op.momentum == (0.9, 0.999)
+    assert op.is_valid()
