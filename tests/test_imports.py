@@ -256,3 +256,13 @@ def test_top_level_scheduler_builder_importable():
     assert hasattr(nnx, "NNSchedulerParamsBuilder")
     builder = nnx.NNSchedulerParams.builder()
     assert isinstance(builder, nnx.NNSchedulerParamsBuilder)
+
+
+def test_top_level_optim_builder_importable():
+    """`nnx.NNOptimParamsBuilder` is the canonical top-level handle
+    for the new Builder."""
+    import nnx
+
+    assert hasattr(nnx, "NNOptimParamsBuilder")
+    builder = nnx.NNOptimParams.builder()
+    assert isinstance(builder, nnx.NNOptimParamsBuilder)
