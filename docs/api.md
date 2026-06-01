@@ -40,6 +40,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.trainer.params.NNTrainerParams
 
+::: nnx.trainer.params_builder.NNTrainerParamsBuilder
+
 ## 3. Params
 
 ::: nnx.nn.params.nn_params.NNParams

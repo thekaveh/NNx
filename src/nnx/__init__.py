@@ -153,6 +153,7 @@ from .surgery import (
     widen,
 )
 from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
+from .trainer.params_builder import NNTrainerParamsBuilder
 from .utils import Utils
 from .vis_utils import VisUtils
 
@@ -232,6 +233,7 @@ __all__ = [
     "TrainerStepContext",
     "TrainerStepFn",
     "NNTrainerParams",
+    "NNTrainerParamsBuilder",
     # Diffusion
     "DiffusionMLP",
     "NoiseSchedule",
