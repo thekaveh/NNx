@@ -61,3 +61,62 @@ def test_builder_enforces_heads_divides_d_model_in_layers_call():
     is the Builder's safety value-add."""
     with pytest.raises(ValueError, match="must be divisible"):
         NNTransformerParams.builder().layers(n=4, heads=5, d_model=128)
+
+
+def test_builder_ffn_override():
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .ffn(mult=8)
+        .build()
+    )
+    assert params.ffn_mult == 8
+    # ffn_mult != default → it MUST appear in state().
+    assert params.state().get("ffn_mult") == 8
+
+
+def test_builder_context_with_rope_base_override():
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=2048, rope_base=500000.0)  # long-context recipe
+        .build()
+    )
+    assert params.max_seq_len == 2048
+    assert params.rope_base == 500000.0
+    assert params.state().get("rope_base") == 500000.0
+
+
+def test_builder_dropout_non_default():
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .dropout(attn=0.1, resid=0.05)
+        .build()
+    )
+    assert params.attn_dropout == 0.1
+    assert params.resid_dropout == 0.05
+    state = params.state()
+    assert state.get("attn_dropout") == 0.1
+    assert state.get("resid_dropout") == 0.05
+
+
+def test_builder_tied_embeddings_false_round_trips():
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .tied_embeddings(False)
+        .build()
+    )
+    assert params.tie_embeddings is False
+    state = params.state()
+    assert state.get("tie_embeddings") is False
+    # Round-trip
+    assert NNTransformerParams.from_state(state) == params
