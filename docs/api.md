@@ -58,6 +58,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.params.nn_transformer_params.NNTransformerParams
 
+::: nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder
+
 ::: nnx.nn.params.nn_tokenizer_params.NNTokenizerParams
 
 ::: nnx.nn.params.nn_tokenizer_params.train_bpe

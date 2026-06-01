@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..enum.activations import Activations
 from .nn_params import NNParams
+
+if TYPE_CHECKING:
+    from .nn_transformer_params_builder import NNTransformerParamsBuilder
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -137,3 +141,10 @@ class NNTransformerParams(NNParams):
             f"[transformer, vocab={self.vocab_size}, layers={self.n_layers}, "
             f"d_model={self.d_model}, heads={self.n_heads}, seq={self.max_seq_len}]"
         )
+
+    @classmethod
+    def builder(cls) -> NNTransformerParamsBuilder:
+        """Return a fluent LM-path builder. See `NNTransformerParamsBuilder`."""
+        from .nn_transformer_params_builder import NNTransformerParamsBuilder
+
+        return NNTransformerParamsBuilder()

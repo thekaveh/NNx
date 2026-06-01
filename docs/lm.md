@@ -84,6 +84,26 @@ out = model.generate(
 print(out)
 ```
 
+**Alternative: variant-aware Builder**
+
+Same config via `NNTransformerParams.builder()` — the dead parent
+fields (`hidden_dims`, `activation`, `dropout_prob`) are hidden, and
+`d_model % heads == 0` is enforced at `.layers(...)` call-time
+rather than waiting for `__post_init__`:
+
+```python
+net_params = (
+    NNTransformerParams.builder()
+    .vocab(tokenizer.vocab_size)
+    .layers(n=4, heads=4, d_model=128)
+    .context(max_seq_len=128)
+    .build()
+)
+```
+
+Both paths produce identical `NNTransformerParams` instances and
+round-trip through `state()` / `from_state()` interchangeably.
+
 ## When to use what
 
 ### Greedy decoding (deterministic)

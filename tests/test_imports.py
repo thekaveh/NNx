@@ -266,3 +266,11 @@ def test_top_level_optim_builder_importable():
     assert hasattr(nnx, "NNOptimParamsBuilder")
     builder = nnx.NNOptimParams.builder()
     assert isinstance(builder, nnx.NNOptimParamsBuilder)
+
+
+def test_top_level_transformer_params_builder_importable():
+    import nnx
+
+    assert hasattr(nnx, "NNTransformerParamsBuilder")
+    builder = nnx.NNTransformerParams.builder()
+    assert isinstance(builder, nnx.NNTransformerParamsBuilder)
