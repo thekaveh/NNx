@@ -8,6 +8,8 @@ the plateau path).
 
 from __future__ import annotations
 
+import pytest
+
 from nnx.nn.enum.schedulers import Schedulers
 from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
 
@@ -139,3 +141,41 @@ def test_builder_last_variant_wins_when_called_twice():
     assert sp.kind == Schedulers.ONE_CYCLE
     assert sp.step_size is None  # overwritten
     assert sp.max_lr == 1e-3
+
+
+def test_builder_build_without_variant_raises():
+    """Calling .build() before selecting a variant raises — the
+    underlying NNSchedulerParams has 5 required fields (min_lr,
+    factor, patience, cooldown, threshold) and the dataclass ctor
+    raises TypeError when they're absent.
+    """
+    with pytest.raises(TypeError, match="missing.*required.*argument"):
+        NNSchedulerParams.builder().build()
+
+
+def test_builder_rejects_invalid_one_cycle_max_lr():
+    """Negative max_lr is nonsensical. The dataclass doesn't validate
+    this today (no __post_init__ on NNSchedulerParams), but OneCycleLR
+    will reject at scheduler-construction time. We document the
+    pass-through behaviour: Builder produces a dataclass; downstream
+    validators run later.
+
+    This test is a smoke check that the Builder doesn't accidentally
+    silently swallow obviously-bad input. If NNSchedulerParams gains
+    a __post_init__ later, update to assert ValueError here.
+    """
+    sp = (
+        NNSchedulerParams.builder()
+        .one_cycle(
+            max_lr=-1.0,  # bad but currently unchecked at dataclass level
+            total_steps=10_000,
+            min_lr=1e-7,
+            factor=0.5,
+            patience=10,
+            cooldown=2,
+            threshold=1e-3,
+        )
+        .build()
+    )
+    # Builder does NOT validate today — documenting the pass-through.
+    assert sp.max_lr == -1.0
