@@ -1,0 +1,56 @@
+"""Tests for NNOptimParams.builder() — variant-gated optimizer config.
+
+Asserts the Builder produces dataclasses that:
+  * Use the PyTorch-native `betas=` kwarg on the Adam variants (the
+    Builder maps it onto NNOptimParams.momentum, which is the
+    backwards-compatible underlying field).
+  * Use the float `momentum=` kwarg on the SGD variants.
+  * Preserve the omit-when-default state() invariant — Builders that
+    don't touch optional fields (`grad_clip_norm`,
+    `accumulate_grad_batches`, `param_groups`) must leave them at the
+    dataclass defaults so state() omits them.
+  * Pass NNOptimParams.is_valid() — the contract that momentum's
+    shape matches the optimizer kind.
+"""
+
+from __future__ import annotations
+
+from nnx.nn.enum.optims import Optims
+from nnx.nn.params.nn_optim_params import NNOptimParams
+
+
+def test_builder_adam_uses_betas_kwarg_and_maps_to_momentum_field():
+    """The Adam variant takes `betas` (PyTorch convention) and stores
+    it on the dataclass's `momentum` field. The rename is
+    Builder-side only — `from_state` / direct-kwarg ctor still take
+    `momentum`."""
+    op = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=5e-5).build()
+    assert op.name == Optims.ADAM
+    assert op.max_lr == 1e-3
+    assert op.weight_decay == 5e-5
+    # The Builder's `betas` kwarg is stored on the dataclass `momentum`
+    # field — that's the back-compat shape.
+    assert op.momentum == (0.9, 0.999)
+    assert op.is_valid()
+
+
+def test_builder_adam_preserves_omit_when_default_invariant():
+    """CRITICAL: an Adam config built via `.builder().adam(...).build()`
+    must produce the same state() as a direct-ctor Adam config. The
+    optional fields (`grad_clip_norm`, `accumulate_grad_batches`,
+    `param_groups`) must stay at their defaults and NOT appear in state().
+
+    PR #10 + earlier broke this three times for related fields; new
+    Builders preserving the invariant is non-negotiable.
+    """
+    built = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).build()
+    direct = NNOptimParams(
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
+    )
+    assert built.state() == direct.state()
+    assert "grad_clip_norm" not in built.state()
+    assert "accumulate_grad_batches" not in built.state()
+    assert "param_groups" not in built.state()
