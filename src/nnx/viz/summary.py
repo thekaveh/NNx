@@ -50,13 +50,13 @@ def summary(
         for programmatic regression assertions.
 
     Raises:
-        ImportError: If `torchinfo` isn't installed. Install with `pip install nnx[viz]`.
+        ImportError: If `torchinfo` isn't installed. Install with `pip install nnx-pytorch[viz]`.
     """
     try:
         from torchinfo import summary as _ti_summary
     except ImportError as e:
         raise ImportError(
-            "nnx.viz.summary requires torchinfo — install via `pip install nnx[viz]` or `pip install torchinfo>=1.8.0`."
+            "nnx.viz.summary requires torchinfo — install via `pip install nnx-pytorch[viz]` or `pip install torchinfo>=1.8.0`."
         ) from e
     # Accept NNModel directly — unwrap to .net so callers don't have to.
     # Local import to avoid a circular import at package init time.

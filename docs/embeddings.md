@@ -17,7 +17,7 @@ If you don't have pairs, or your off-the-shelf embedding is already good enough,
 ## 2. Install
 
 ```bash
-pip install "nnx[embeddings]"
+pip install "nnx-pytorch[embeddings]"
 ```
 
 Pulls in `faiss-cpu` and `sentence-transformers`. Both are optional at import time: `import nnx.embeddings` works even without them — the `ImportError` is deferred to the call site that actually needs each one.

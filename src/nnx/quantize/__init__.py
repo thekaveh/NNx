@@ -17,7 +17,7 @@ as future PRs.
 
 Install the ``torchao`` runtime dependency with::
 
-    pip install nnx[quantize]
+    pip install nnx-pytorch[quantize]
 """
 
 from __future__ import annotations

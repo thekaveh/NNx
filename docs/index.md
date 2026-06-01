@@ -13,7 +13,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Warm-resume training** — load weights AND optimizer state from any saved checkpoint.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** — opt-in via extras.
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `nnx[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter.
+- **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `nnx-pytorch[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter.
 
 ### 1.2. Specializations
 

@@ -6,9 +6,9 @@ graph viewer for ONNX / TorchScript / SavedModel artifacts. With
 ``launch=True`` we additionally call `netron.start(path)` to pop the
 viewer open in the user's browser.
 
-The ONNX file itself is plain `pip install nnx[onnx]` territory
+The ONNX file itself is plain `pip install nnx-pytorch[onnx]` territory
 (`onnx` ships in the `onnx` extra). The optional Netron *viewer*
-process lives in a separate extra (`nnx[viz-interactive]`) so
+process lives in a separate extra (`nnx-pytorch[viz-interactive]`) so
 notebook users who only want the file format don't pull a Flask
 server they'll never run.
 
@@ -46,7 +46,7 @@ def netron_export(
         example_input: A tensor (or tuple of tensors) with realistic
             shape / dtype used to trace the network.
         launch: When True, call `netron.start(path)` to open the model
-            in Netron's browser viewer. Requires `pip install nnx[viz-interactive]`
+            in Netron's browser viewer. Requires `pip install nnx-pytorch[viz-interactive]`
             (or `pip install netron`). Defaults to False so CI / tests
             can exercise export without spawning a long-lived process.
         opset_version: ONNX opset to target. 17 is broadly supported
@@ -132,7 +132,7 @@ def netron_export(
         except ImportError as e:
             raise ImportError(
                 "netron_export(launch=True) requires the `netron` package. "
-                "Install via `pip install nnx[viz-interactive]` (or `pip install netron`)."
+                "Install via `pip install nnx-pytorch[viz-interactive]` (or `pip install netron`)."
             ) from e
         netron.start(path)
 

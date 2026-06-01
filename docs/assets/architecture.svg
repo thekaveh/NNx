@@ -47,7 +47,7 @@
 
   <!-- BOUNDARIES -->
   <rect x="220" y="40" width="940" height="820" rx="12" fill="rgba(251,191,36,0.04)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
-  <text x="232" y="58" fill="#fbbf24" font-size="10" font-weight="600">nnx package — pip install nnx</text>
+  <text x="232" y="58" fill="#fbbf24" font-size="10" font-weight="600">nnx package — pip install nnx-pytorch</text>
   <rect x="658" y="70" width="492" height="180" rx="8" fill="rgba(120,53,15,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
   <text x="668" y="86" fill="#fbbf24" font-size="9" font-weight="600">Specialization subpackages</text>
   <rect x="220" y="660" width="920" height="180" rx="8" fill="rgba(76,29,149,0.05)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>

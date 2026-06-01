@@ -101,7 +101,7 @@ class NNCheckpoint:
                   per the safetensors spec). Safe to mmap, readable by
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
                   arbitrary-code-execution on load. Requires the
-                  ``nnx[hub]`` extra.
+                  ``nnx-pytorch[hub]`` extra.
 
         Both formats write to ``<path>.tmp`` first and rename into place
         so a KeyboardInterrupt during the underlying save can never leave
@@ -121,11 +121,13 @@ class NNCheckpoint:
         raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
 
     def _to_safetensors_file(self, path: str) -> None:
-        """Atomic safetensors write. Requires the ``nnx[hub]`` extra."""
+        """Atomic safetensors write. Requires the ``nnx-pytorch[hub]`` extra."""
         try:
             from safetensors.torch import save_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
-            raise ImportError("safetensors checkpoint format requires the `hub` extra: `pip install nnx[hub]`.") from e
+            raise ImportError(
+                "safetensors checkpoint format requires the `hub` extra: `pip install nnx-pytorch[hub]`."
+            ) from e
 
         # safetensors metadata is str→str only — every value must be a
         # string. We JSON-encode each subsection so the reader can parse
@@ -247,12 +249,12 @@ class NNCheckpoint:
 
     @staticmethod
     def _from_safetensors_file(path: str) -> NNCheckpoint:
-        """Load a safetensors-format NNCheckpoint. Requires `nnx[hub]`."""
+        """Load a safetensors-format NNCheckpoint. Requires `nnx-pytorch[hub]`."""
         try:
             from safetensors import safe_open
         except ImportError as e:  # pragma: no cover — gated by optional dep
             raise ImportError(
-                "loading a safetensors checkpoint requires the `hub` extra: `pip install nnx[hub]`."
+                "loading a safetensors checkpoint requires the `hub` extra: `pip install nnx-pytorch[hub]`."
             ) from e
 
         net_state: OrderedDict[str, torch.Tensor] = OrderedDict()
