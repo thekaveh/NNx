@@ -81,6 +81,7 @@ from .nn.params.nn_optim_params import NNOptimParams
 from .nn.params.nn_params import NNParams
 from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
+from .nn.params.nn_scheduler_params_builder import NNSchedulerParamsBuilder
 from .nn.params.nn_train_params import NNTrainParams
 from .nn.params.nn_transformer_params import NNTransformerParams
 
@@ -175,6 +176,7 @@ __all__ = [
     "NNTrainParams",
     "NNOptimParams",
     "NNSchedulerParams",
+    "NNSchedulerParamsBuilder",
     "NNIterationDataPoint",
     "NNEvaluationDataPoint",
     # Enums

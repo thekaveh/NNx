@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..enum.schedulers import Schedulers
+
+if TYPE_CHECKING:
+    from .nn_scheduler_params_builder import NNSchedulerParamsBuilder
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -78,3 +81,10 @@ class NNSchedulerParams:
             total_steps=state.get("total_steps"),
             warmup_steps=state.get("warmup_steps"),
         )
+
+    @classmethod
+    def builder(cls) -> NNSchedulerParamsBuilder:
+        """Return a variant-aware builder. See `NNSchedulerParamsBuilder`."""
+        from .nn_scheduler_params_builder import NNSchedulerParamsBuilder
+
+        return NNSchedulerParamsBuilder()

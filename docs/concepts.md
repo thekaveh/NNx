@@ -40,6 +40,26 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
 
+### 2.3. Variant-gated construction via `.builder()`
+
+Params dataclasses with **tagged-union shape** (a `kind` field whose value gates which other fields are meaningful) expose a `.builder()` classmethod as an alternative to the direct kwarg constructor. The Builder methods are named after the variants; each writes exactly the fields its variant uses, so the user can't construct an invalid combination by accident.
+
+`NNSchedulerParams` is the first such Builder. The five variant methods —
+`reduce_on_plateau`, `step`, `cosine_annealing`, `one_cycle`,
+`linear_warmup_decay` — set `kind` plus the right variant-specific
+knobs and leave the rest at the dataclass defaults. State() and
+from_state() round-trip unchanged; the existing direct-kwarg ctor is
+untouched.
+
+```python
+from nnx import NNSchedulerParams
+
+scheduler = NNSchedulerParams.builder().one_cycle(
+    max_lr=1e-3, total_steps=10_000,
+    min_lr=1e-7, factor=0.5, patience=10, cooldown=2, threshold=1e-3,
+).build()
+```
+
 ## 3. Enums-as-factories
 
 Every enum's `__call__` constructs the underlying object:
