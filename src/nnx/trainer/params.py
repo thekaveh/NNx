@@ -118,4 +118,5 @@ class NNTrainerParams:
         `NNOptimParams.builder()` + `NNSchedulerParams.builder()`.
         """
         from .params_builder import NNTrainerParamsBuilder
+
         return NNTrainerParamsBuilder()

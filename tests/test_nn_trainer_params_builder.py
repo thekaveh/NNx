@@ -30,12 +30,7 @@ def _make_plateau() -> NNSchedulerParams:
 def test_builder_minimal_single_optim():
     """Build a trainer config with one optimizer and no schedulers.
     The default-empty schedulers dict is the back-compat shape."""
-    tp = (
-        NNTrainerParams.builder()
-        .n_epochs(10)
-        .optimizer("main", _make_adam())
-        .build()
-    )
+    tp = NNTrainerParams.builder().n_epochs(10).optimizer("main", _make_adam()).build()
     assert tp.n_epochs == 10
     assert set(tp.optims.keys()) == {"main"}
     assert tp.optims["main"].name == Optims.ADAM
@@ -62,12 +57,7 @@ def test_builder_preserves_omit_when_default_invariant():
     """A trainer params with the defaults must round-trip identically
     to a direct-ctor one. `schedulers={}`, `seed=None`,
     `save_phase_checkpoints=True` all omit from state() at default."""
-    built = (
-        NNTrainerParams.builder()
-        .n_epochs(10)
-        .optimizer("main", _make_adam())
-        .build()
-    )
+    built = NNTrainerParams.builder().n_epochs(10).optimizer("main", _make_adam()).build()
     direct = NNTrainerParams(
         n_epochs=10,
         optims={"main": _make_adam()},
@@ -125,14 +115,7 @@ def test_builder_chains_train_loader_and_seed():
 
     loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.zeros(8, dtype=torch.long)), batch_size=2)
 
-    tp = (
-        NNTrainerParams.builder()
-        .n_epochs(10)
-        .optimizer("main", _make_adam())
-        .seed(42)
-        .train_loader(loader)
-        .build()
-    )
+    tp = NNTrainerParams.builder().n_epochs(10).optimizer("main", _make_adam()).seed(42).train_loader(loader).build()
     assert tp.seed == 42
     assert tp.train_loader is loader
 
