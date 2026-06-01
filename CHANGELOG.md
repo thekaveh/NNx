@@ -4,7 +4,11 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased] — Expansion megamerge + Month-1 cluster + overnight-maintenance
 
-Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#41 + the second overnight-maintenance pass (PRs #40 + #41 landed the first two cleanup rounds on 2026-05-30; this section also captures fixes shipped on the post-#41 overnight-maintenance branch immediately after). Test suite is **700 tests; 699 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
+Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#41 + the second overnight-maintenance pass (PRs #40 + #41 landed the first two cleanup rounds on 2026-05-30; this section also captures fixes shipped on the post-#41 overnight-maintenance branch immediately after). Test suite is **710 tests; 709 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
+
+### Added — Builder pattern rollout
+
+- **`NNSchedulerParams.builder()` — variant-gated construction (PR #N).** Classic-GoF Builder reachable via `NNSchedulerParams.builder()` returning `NNSchedulerParamsBuilder` (re-exported at top level as `nnx.NNSchedulerParamsBuilder`). Five variant methods — `reduce_on_plateau`, `step`, `cosine_annealing`, `one_cycle`, `linear_warmup_decay` — each set `kind` plus the variant-specific fields and leave everything else at the dataclass defaults, so the omit-when-default `state()` invariant is preserved automatically (Builder only forwards user-touched fields). Existing direct-kwarg `NNSchedulerParams(...)` ctor is untouched; the Builder is purely additive. 10 new tests cover happy-path per variant, state() round-trip, the "last variant wins" overwrite contract, build-without-variant rejection, the omit-when-default invariant, and a top-level re-export smoke check (9 in `tests/test_nn_scheduler_params_builder.py` + 1 in `tests/test_imports.py`).
 
 ### Added — Month-1 cluster (PRs #32–#37)
 
