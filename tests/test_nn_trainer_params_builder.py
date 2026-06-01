@@ -116,3 +116,50 @@ def test_builder_error_message_names_missing_optim():
     msg = str(exc_info.value)
     assert "typo" in msg
     assert "'g'" in msg and "'d'" in msg
+
+
+def test_builder_chains_train_loader_and_seed():
+    """Builder composes the optional chainable methods cleanly."""
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.zeros(8, dtype=torch.long)), batch_size=2)
+
+    tp = (
+        NNTrainerParams.builder()
+        .n_epochs(10)
+        .optimizer("main", _make_adam())
+        .seed(42)
+        .train_loader(loader)
+        .build()
+    )
+    assert tp.seed == 42
+    assert tp.train_loader is loader
+
+
+def test_builder_extra_metrics_chains():
+    tp = (
+        NNTrainerParams.builder()
+        .n_epochs(5)
+        .optimizer("main", _make_adam())
+        .extra_metrics({"my_metric": lambda y, y_hat: float((y == y_hat).mean())})
+        .build()
+    )
+    assert tp.extra_metrics is not None
+    assert "my_metric" in tp.extra_metrics
+
+
+def test_builder_round_trips_through_state():
+    """Composition with the inner Plan-1/2 Builders must round-trip
+    through state() / from_state() identically to direct-ctor."""
+    built = (
+        NNTrainerParams.builder()
+        .n_epochs(10)
+        .optimizer("g", _make_adam(max_lr=2e-4))
+        .optimizer("d", _make_adam(max_lr=2e-4))
+        .scheduler("g", _make_plateau())
+        .scheduler("d", _make_plateau())
+        .seed(42)
+        .build()
+    )
+    assert NNTrainerParams.from_state(built.state()) == built
