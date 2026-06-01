@@ -60,6 +60,30 @@ scheduler = NNSchedulerParams.builder().one_cycle(
 ).build()
 ```
 
+`NNOptimParams.builder()` extends the pattern with **four optimizer-variant methods** —
+`adam`, `adam_amsgrad`, `sgd`, `sgd_nesterov` — plus three optional chained
+modifiers — `grad_clip(norm)`, `accumulate_grad(batches)`, `param_groups(specs)`.
+The Adam variants take the PyTorch-native `betas: tuple[float, float]` kwarg,
+which the Builder maps onto the underlying `NNOptimParams.momentum` field
+(the field name stays `momentum` for on-disk back-compat). SGD variants keep
+the float `momentum=` kwarg.
+
+```python
+from nnx import NNOptimParams
+
+# Adam with PyTorch-native spelling
+opt = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).build()
+
+# SGD with grad-clip and gradient accumulation
+opt = (
+    NNOptimParams.builder()
+    .sgd(max_lr=1e-2, momentum=0.9, weight_decay=5e-5)
+    .grad_clip(1.0)
+    .accumulate_grad(4)
+    .build()
+)
+```
+
 ## 3. Enums-as-factories
 
 Every enum's `__call__` constructs the underlying object:
