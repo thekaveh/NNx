@@ -85,6 +85,7 @@ from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_scheduler_params_builder import NNSchedulerParamsBuilder
 from .nn.params.nn_train_params import NNTrainParams
 from .nn.params.nn_transformer_params import NNTransformerParams
+from .nn.params.nn_transformer_params_builder import NNTransformerParamsBuilder
 
 # NNTokenizerParams + train_bpe depend on the optional `tokenizers`
 # extra (the `lm` extra in pyproject.toml). Re-exported only when the
@@ -198,6 +199,7 @@ __all__ = [
     # Decoder-only transformer / LM path
     "TransformerNN",
     "NNTransformerParams",
+    "NNTransformerParamsBuilder",
     "NNTokenizerParams",
     "GenerativeNNModel",
     "train_bpe",
