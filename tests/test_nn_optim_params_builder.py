@@ -78,3 +78,40 @@ def test_builder_adam_amsgrad():
     assert op.name == Optims.ADAM_AMSGRAD
     assert op.momentum == (0.9, 0.999)
     assert op.is_valid()
+
+
+def test_builder_chains_grad_clip_after_variant():
+    """The optional modifier methods chain after the variant method.
+    `grad_clip` writes the `grad_clip_norm` field; without it, state()
+    omits the key (omit-when-default invariant)."""
+    op = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).grad_clip(1.0).build()
+    assert op.grad_clip_norm == 1.0
+    # Round-trips through state() / from_state().
+    assert NNOptimParams.from_state(op.state()) == op
+    # And the user-set value DOES appear in state() (it's no longer at default).
+    assert op.state().get("grad_clip_norm") == 1.0
+
+
+def test_builder_chains_accumulate_grad_after_variant():
+    op = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).accumulate_grad(4).build()
+    assert op.accumulate_grad_batches == 4
+    assert NNOptimParams.from_state(op.state()) == op
+    assert op.state().get("accumulate_grad_batches") == 4
+
+
+def test_builder_chains_param_groups_after_variant():
+    """param_groups composes with the GAN-recipe pattern of two
+    optims with different sub-net scopes (the §3.4 plan's main
+    user). Each NNOptimParams takes a list of NNParamGroupSpec; the
+    Builder just stores the list, no transformation.
+
+    `NNParamGroupSpec` takes `name_pattern` (single fnmatch glob) +
+    one of `lr` / `lr_multiplier` + optional `weight_decay`. See
+    `src/nnx/finetune/param_groups.py`.
+    """
+    from nnx import NNParamGroupSpec
+
+    g = NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01, weight_decay=0.0)
+    op = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).param_groups([g]).build()
+    assert op.param_groups == [g]
+    assert NNOptimParams.from_state(op.state()) == op
