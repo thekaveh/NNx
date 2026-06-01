@@ -255,6 +255,32 @@ run = trainer.train(
 )
 ```
 
+**Builder shape (composes Plans 1 + 2):**
+
+The same GAN recipe via the composite Builder. The `.scheduler("d", ...)`
+without a prior `.optimizer("d", ...)` would fail at `.build()` time
+with an actionable error naming the typo:
+
+```python
+from nnx import NNTrainerParams, NNOptimParams, NNSchedulerParams
+
+g_optim = NNOptimParams.builder().adam(max_lr=2e-4, betas=(0.5, 0.999), weight_decay=0.0).build()
+d_optim = NNOptimParams.builder().adam(max_lr=2e-4, betas=(0.5, 0.999), weight_decay=0.0).build()
+plateau = NNSchedulerParams.builder().reduce_on_plateau(
+    min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3
+).build()
+
+trainer_params = (
+    NNTrainerParams.builder()
+    .n_epochs(50)
+    .optimizer("g", g_optim)
+    .optimizer("d", d_optim)
+    .scheduler("g", plateau)
+    .scheduler("d", plateau)
+    .build()
+)
+```
+
 ### 8.1. Strict param-groups semantics
 
 The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from `nnx.finetune` apply, just with unmatched params dropped instead of bucketed.
