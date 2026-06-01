@@ -52,6 +52,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.params.nn_scheduler_params.NNSchedulerParams
 
+::: nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder
+
 ::: nnx.nn.params.nn_transformer_params.NNTransformerParams
 
 ::: nnx.nn.params.nn_tokenizer_params.NNTokenizerParams
