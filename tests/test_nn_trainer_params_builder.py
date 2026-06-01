@@ -9,6 +9,8 @@ __post_init__, which is where the dataclass enforces it today).
 
 from __future__ import annotations
 
+import pytest
+
 from nnx import NNOptimParams, NNSchedulerParams, NNTrainerParams
 from nnx.nn.enum.optims import Optims
 
@@ -74,3 +76,43 @@ def test_builder_preserves_omit_when_default_invariant():
     assert "schedulers" not in built.state()
     assert "seed" not in built.state()
     assert "save_phase_checkpoints" not in built.state()
+
+
+def test_builder_rejects_scheduler_for_unknown_optim():
+    """Spec §3.4 key win: the Builder catches `.scheduler("d", ...)`
+    without a prior `.optimizer("d", ...)` at the Builder boundary,
+    NOT at __post_init__. Error message names the missing optim
+    name + lists known optims to help the user."""
+    with pytest.raises(ValueError, match=r"scheduler\(\) called with names not present"):
+        (
+            NNTrainerParams.builder()
+            .n_epochs(10)
+            .optimizer("g", _make_adam())
+            .scheduler("d", _make_plateau())  # "d" not yet registered as optim
+            .build()
+        )
+
+
+def test_builder_rejects_build_without_any_optim():
+    """The dataclass's __post_init__ raises if optims is empty. The
+    Builder surfaces the same error — we don't pre-empt the dataclass
+    check, but we do hit it cleanly."""
+    with pytest.raises(ValueError, match=r"optims must have at least one entry"):
+        NNTrainerParams.builder().n_epochs(10).build()
+
+
+def test_builder_error_message_names_missing_optim():
+    """The error message should be actionable — it names the
+    unknown scheduler key AND lists the known optim names."""
+    with pytest.raises(ValueError) as exc_info:
+        (
+            NNTrainerParams.builder()
+            .n_epochs(10)
+            .optimizer("g", _make_adam())
+            .optimizer("d", _make_adam())
+            .scheduler("typo", _make_plateau())
+            .build()
+        )
+    msg = str(exc_info.value)
+    assert "typo" in msg
+    assert "'g'" in msg and "'d'" in msg
