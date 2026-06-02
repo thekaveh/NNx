@@ -19,7 +19,7 @@ Note: `low_rank_factorize` takes a `nn.Linear` directly and returns a
 the layer back into the network's ModuleList.
 
 Run:
-    pip install nnx
+    pip install nnx-pytorch
     python examples/20_surgery_resnet.py
 """
 

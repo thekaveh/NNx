@@ -1,6 +1,6 @@
 """Tests for ``nnx.quantize.quantize_int8`` — torchao PTQ INT8 weight-only.
 
-torchao is an opt-in extra (``pip install nnx[quantize]``); the entire
+torchao is an opt-in extra (``pip install nnx-pytorch[quantize]``); the entire
 module is skipped when it isn't importable so contributors who don't
 install the extra still get a clean ``pytest -q``.
 """
@@ -282,7 +282,7 @@ def test_quantize_int8_clear_error_when_torchao_missing(monkeypatch, tiny_model)
 
     monkeypatch.setattr(builtins, "__import__", _no_torchao)
 
-    with pytest.raises(ImportError, match=r"nnx\[quantize\]"):
+    with pytest.raises(ImportError, match=r"nnx-pytorch\[quantize\]"):
         quantize_int8(tiny_model)
 
 

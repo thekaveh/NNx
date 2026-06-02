@@ -13,7 +13,7 @@ saliency, input_x_gradient, occlusion) behind a single string-keyed
 dispatch with sensible per-method defaults.
 
 Run:
-    pip install nnx[viz]
+    pip install nnx-pytorch[viz]
     python examples/21_viz_attribute_xai.py
 """
 

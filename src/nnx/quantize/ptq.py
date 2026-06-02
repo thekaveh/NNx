@@ -63,13 +63,13 @@ def quantize_int8(model: NNModel) -> NNModel:
 
     Raises:
         ImportError: if ``torchao`` is not installed. Install with
-            ``pip install nnx[quantize]``.
+            ``pip install nnx-pytorch[quantize]``.
     """
     try:
         from torchao.quantization import Int8WeightOnlyConfig, quantize_
     except ImportError as e:  # pragma: no cover — opt-in extra
         raise ImportError(
-            "quantize_int8 requires torchao. Install with `pip install nnx[quantize]` "
+            "quantize_int8 requires torchao. Install with `pip install nnx-pytorch[quantize]` "
             "(or `pip install 'torchao>=0.17'` directly)."
         ) from e
 

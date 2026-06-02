@@ -13,7 +13,7 @@ often match or slightly outperform Generation 0 — the soft targets
 act as an implicit regularizer.
 
 Run:
-    pip install nnx
+    pip install nnx-pytorch
     python examples/23_born_again_distillation.py
 """
 

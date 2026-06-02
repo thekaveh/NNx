@@ -1,7 +1,7 @@
 """Export a trained NNModel to ONNX.
 
 Requires ``onnx`` to validate the result:
-    pip install nnx[onnx]
+    pip install nnx-pytorch[onnx]
 
 Run:
     python examples/04_onnx_export.py

@@ -33,7 +33,7 @@ Other configs will land here as future PRs.
 
 Install the ``torchao`` runtime dependency with::
 
-    pip install nnx[quantize]
+    pip install nnx-pytorch[quantize]
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _build_quantizer(qat_config: str, *, groupsize: int = 32):
         from torchao.quantization.qat import Int8DynActInt4WeightQATQuantizer
     except ImportError as e:  # pragma: no cover — opt-in extra
         raise ImportError(
-            "QAT requires torchao. Install with `pip install nnx[quantize]` "
+            "QAT requires torchao. Install with `pip install nnx-pytorch[quantize]` "
             "(or `pip install 'torchao>=0.17'` directly)."
         ) from e
 

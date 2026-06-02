@@ -13,7 +13,7 @@ What's covered here:
 - `dynamo=True` produces a non-empty file via the new exporter (gated by
   an `onnxscript` importorskip — the dep is opt-in).
 - When `onnxscript` isn't importable, `dynamo=True` raises a clear
-  `ImportError` pointing at the `nnx[onnx-dynamo]` extra rather than
+  `ImportError` pointing at the `nnx-pytorch[onnx-dynamo]` extra rather than
   whatever cryptic error torch would otherwise surface.
 """
 
@@ -55,7 +55,7 @@ def _model() -> NNModel:
 def test_to_onnx_dynamo_true_writes_file(tmp_path, skip_on_dynamo_dispatch_error):
     """`dynamo=True` runs the torch.export-based exporter and writes a
     non-empty ONNX file. Skipped when `onnxscript` isn't installed (the
-    dep is intentionally opt-in via `nnx[onnx-dynamo]`), or when the
+    dep is intentionally opt-in via `nnx-pytorch[onnx-dynamo]`), or when the
     installed torch / onnxscript combo can't dispatch one of the prims/aten
     ops this model emits — see ``_skip_if_dynamo_dispatch_error`` in
     ``conftest.py`` for the upstream-version-skew rationale."""
@@ -98,7 +98,7 @@ def test_to_onnx_default_is_legacy_path(tmp_path):
 
 def test_to_onnx_dynamo_true_without_onnxscript_raises_clear_error(tmp_path, monkeypatch):
     """When `onnxscript` is missing, `dynamo=True` must raise an
-    `ImportError` that names the `nnx[onnx-dynamo]` extra. Without this
+    `ImportError` that names the `nnx-pytorch[onnx-dynamo]` extra. Without this
     lazy guard, torch would surface a less actionable error (or even
     appear to succeed in some versions) — both bad UX."""
     # Simulate `onnxscript` being uninstalled even if it happens to be
