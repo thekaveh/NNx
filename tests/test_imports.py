@@ -282,3 +282,14 @@ def test_top_level_trainer_params_builder_importable():
     assert hasattr(nnx, "NNTrainerParamsBuilder")
     builder = nnx.NNTrainerParams.builder()
     assert isinstance(builder, nnx.NNTrainerParamsBuilder)
+
+
+def test_top_level_logits_chain_importable():
+    import nnx
+
+    assert hasattr(nnx, "LogitsChain")
+    assert hasattr(nnx, "LogitsChainBuilder")
+    chain = nnx.LogitsChain.builder().build()
+    assert isinstance(chain, nnx.LogitsChain)
+    builder = nnx.LogitsChain.builder()
+    assert isinstance(builder, nnx.LogitsChainBuilder)

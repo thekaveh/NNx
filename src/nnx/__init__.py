@@ -99,6 +99,8 @@ except ImportError:  # pragma: no cover — exercised in CI without the lm extra
 
 # LogitsProcessor chain — pure-torch, no optional deps; always available.
 from .generation import (
+    LogitsChain,
+    LogitsChainBuilder,
     LogitsProcessor,
     RepetitionPenalty,
     TemperatureScaling,
@@ -204,6 +206,8 @@ __all__ = [
     "NNTokenizerParams",
     "GenerativeNNModel",
     "train_bpe",
+    "LogitsChain",
+    "LogitsChainBuilder",
     "LogitsProcessor",
     "TemperatureScaling",
     "TopKFilter",

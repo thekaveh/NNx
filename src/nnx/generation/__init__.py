@@ -18,6 +18,7 @@ chain, sample, append, repeat."
 
 from __future__ import annotations
 
+from .logits_chain import LogitsChain, LogitsChainBuilder
 from .logits_processors import (
     LogitsProcessor,
     RepetitionPenalty,
@@ -29,6 +30,8 @@ from .logits_processors import (
 from .sampling import sample_next_token
 
 __all__ = [
+    "LogitsChain",
+    "LogitsChainBuilder",
     "LogitsProcessor",
     "TemperatureScaling",
     "TopKFilter",
