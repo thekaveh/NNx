@@ -8,7 +8,7 @@ Returns both the raw attribution tensor (for downstream metrics /
 sanity-checking) and a Plotly `Figure` for at-a-glance inspection.
 
 Sibling of `nnx.viz.summary` / `nnx.viz.weight_histogram`. Opt-in via
-`pip install nnx-pytorch[viz]` (which now pulls `captum>=0.7.0` alongside
+`pip install thekaveh-nnx[viz]` (which now pulls `captum>=0.7.0` alongside
 `torchinfo`).
 """
 

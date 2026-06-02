@@ -116,7 +116,7 @@ NNX_TQDM_DISABLE=1 python your_train_script.py
 ### 2.7. TensorBoard
 
 ```bash
-pip install nnx-pytorch[tensorboard]
+pip install thekaveh-nnx[tensorboard]
 ```
 
 ```python

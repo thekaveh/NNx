@@ -26,7 +26,7 @@ Key API notes:
     (B, 32) — the pair {"layers.1": "layers.0"} shape-matches.
 
 Run:
-    pip install nnx-pytorch
+    pip install thekaveh-nnx
     python examples/24_feature_kd.py
 """
 

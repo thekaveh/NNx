@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 
 
 # HuggingFace Hub integration — the mixin is OPTIONAL. We only import it
-# at module load when the `nnx-pytorch[hub]` extra is installed; otherwise we use
-# a thin stub that defers errors to call time. This keeps `pip install nnx-pytorch`
+# at module load when the `thekaveh-nnx[hub]` extra is installed; otherwise we use
+# a thin stub that defers errors to call time. This keeps `pip install thekaveh-nnx`
 # working without huggingface_hub.
 try:
     from huggingface_hub import PyTorchModelHubMixin as _HubMixinBase
@@ -41,11 +41,11 @@ except ImportError:  # pragma: no cover — gated by optional dep
         """No-op stub installed when ``huggingface_hub`` is not available.
 
         Any attempt to call save_pretrained / from_pretrained / push_to_hub
-        raises a clear ImportError pointing at the ``nnx-pytorch[hub]`` extra.
+        raises a clear ImportError pointing at the ``thekaveh-nnx[hub]`` extra.
         """
 
         def _hub_unavailable(self) -> NNModel:
-            raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install nnx-pytorch[hub]`.")
+            raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install thekaveh-nnx[hub]`.")
 
         def save_pretrained(self, *args, **kwargs):
             self._hub_unavailable()
@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover — gated by optional dep
 
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
-            raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install nnx-pytorch[hub]`.")
+            raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install thekaveh-nnx[hub]`.")
 
     _HUB_AVAILABLE = False
 
@@ -195,7 +195,7 @@ class NNModel(_HubMixinBase):
     """Top-level training/eval/predict wrapper around an ``nn.Module``.
 
     Inherits from :class:`huggingface_hub.PyTorchModelHubMixin` (when the
-    ``nnx-pytorch[hub]`` extra is installed) to gain ``save_pretrained`` /
+    ``thekaveh-nnx[hub]`` extra is installed) to gain ``save_pretrained`` /
     ``push_to_hub`` / ``from_pretrained``. Without the extra installed,
     those three methods raise a clear ImportError pointing at the extra;
     no other NNModel functionality is affected.
@@ -245,13 +245,13 @@ class NNModel(_HubMixinBase):
                 `torch.export`-based exporter (default in torch>=2.9,
                 supports >2 GB models via external data, faster). The
                 dynamo path requires `onnxscript`; install via
-                `pip install nnx-pytorch[onnx-dynamo]`.
+                `pip install thekaveh-nnx[onnx-dynamo]`.
 
         Returns the path written. Network is put in eval mode for tracing.
         """
         if dynamo:
             # Lazy-import: keep `onnxscript` out of NNx's required deps so
-            # plain `pip install nnx-pytorch[onnx]` (legacy path) still works. If
+            # plain `pip install thekaveh-nnx[onnx]` (legacy path) still works. If
             # the user opted in to `dynamo=True` without the extra, give
             # an error that names the install command instead of letting
             # torch surface a less actionable failure.
@@ -260,7 +260,7 @@ class NNModel(_HubMixinBase):
             except ImportError as e:
                 raise ImportError(
                     "to_onnx(dynamo=True) requires the `onnxscript` package. "
-                    "Install via `pip install nnx-pytorch[onnx-dynamo]` (or `pip install onnxscript`)."
+                    "Install via `pip install thekaveh-nnx[onnx-dynamo]` (or `pip install onnxscript`)."
                 ) from e
 
         # Normalize a single Tensor / np.ndarray to a length-1 tuple, then
@@ -390,7 +390,7 @@ class NNModel(_HubMixinBase):
         try:
             from safetensors.torch import save_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
-            raise ImportError("save_pretrained requires the `hub` extra: `pip install nnx-pytorch[hub]`.") from e
+            raise ImportError("save_pretrained requires the `hub` extra: `pip install thekaveh-nnx[hub]`.") from e
 
         save_dir = Path(save_directory)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -446,7 +446,7 @@ class NNModel(_HubMixinBase):
         try:
             from safetensors.torch import load_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
-            raise ImportError("from_pretrained requires the `hub` extra: `pip install nnx-pytorch[hub]`.") from e
+            raise ImportError("from_pretrained requires the `hub` extra: `pip install thekaveh-nnx[hub]`.") from e
 
         if os.path.isdir(model_id):
             config_path = os.path.join(model_id, _HUB_CONFIG_FILENAME)

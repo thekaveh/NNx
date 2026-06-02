@@ -37,7 +37,7 @@ Public surface — re-exported from the top-level ``nnx`` package as
 
 Optional dependencies — install via the ``embeddings`` extra:
 
-    pip install "nnx-pytorch[embeddings]"
+    pip install "thekaveh-nnx[embeddings]"
 
 The extra pulls ``faiss-cpu`` (for the FAISS index export) and
 ``sentence-transformers`` (the canonical backbone source). Both are

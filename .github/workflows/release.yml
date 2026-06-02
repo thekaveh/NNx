@@ -67,7 +67,7 @@ jobs:
     # workflow on a fork or branch can't publish.
     environment:
       name: pypi
-      url: https://pypi.org/p/nnx-pytorch
+      url: https://pypi.org/p/thekaveh-nnx
     permissions:
       # OIDC-based PyPI trusted publishing (no API token in secrets needed).
       # Configure the project on PyPI > Manage > Publishing to opt in.

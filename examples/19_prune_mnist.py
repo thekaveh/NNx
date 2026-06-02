@@ -20,7 +20,7 @@ based on their L1 norm. At 50% sparsity on a small classifier this is
 typically nondestructive; the fine-tune compensates for any drop.
 
 Run:
-    pip install nnx-pytorch
+    pip install thekaveh-nnx
     python examples/19_prune_mnist.py
 """
 

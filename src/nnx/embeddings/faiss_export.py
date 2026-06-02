@@ -42,7 +42,7 @@ def _import_faiss():
         raise ImportError(
             "export_to_faiss requires the optional `faiss-cpu` (or `faiss-gpu`) "
             "package. Install via:\n"
-            '    pip install "nnx-pytorch[embeddings]"\n'
+            '    pip install "thekaveh-nnx[embeddings]"\n'
             "or directly:\n"
             "    pip install faiss-cpu"
         ) from e
@@ -167,7 +167,7 @@ def export_to_safetensors(backbone: Any, out_path: Union[str, Path]) -> str:
     artifacts and sentence-transformers ≥3) when the
     :mod:`safetensors` package is importable. Falls back to plain
     :func:`torch.save` when it isn't, so the function still works on
-    a vanilla ``pip install nnx-pytorch`` without the embeddings extra. In
+    a vanilla ``pip install thekaveh-nnx`` without the embeddings extra. In
     the fallback case ``out_path`` is written as a pickle blob; the
     caller's reloader needs to use :func:`torch.load`.
 

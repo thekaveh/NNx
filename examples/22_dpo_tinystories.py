@@ -20,7 +20,7 @@ Key API notes:
     passing in-memory strings.
 
 Run:
-    pip install nnx-pytorch[lm]
+    pip install thekaveh-nnx[lm]
     python examples/22_dpo_tinystories.py
 """
 

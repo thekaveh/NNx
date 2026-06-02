@@ -1,6 +1,6 @@
 """Tests for ``nnx.quantize.qat`` — torchao QAT 8da4w.
 
-torchao is an opt-in extra (``pip install nnx-pytorch[quantize]``); the entire
+torchao is an opt-in extra (``pip install thekaveh-nnx[quantize]``); the entire
 module is skipped when it isn't importable so contributors who don't
 install the extra still get a clean ``pytest -q``.
 """
@@ -268,7 +268,7 @@ def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch, skip_on_dynamo_
     path, which goes through ``torch.export`` and handles the packed
     quantized weights correctly.
 
-    Requires ``onnxscript`` — install via ``nnx-pytorch[onnx-dynamo]``. Skipped
+    Requires ``onnxscript`` — install via ``thekaveh-nnx[onnx-dynamo]``. Skipped
     when the installed torch / onnxscript combo can't dispatch one of the
     ops the quantized model emits (see ``_skip_if_dynamo_dispatch_error``
     in ``conftest.py``)."""

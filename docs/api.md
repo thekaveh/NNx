@@ -224,7 +224,7 @@ Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh `nn.
 
 ## 12. Quantization (`nnx.quantize`)
 
-PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) (the replacement for the removed `torch.ao.quantization`). Opt-in via `pip install "nnx-pytorch[quantize]"`.
+PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) (the replacement for the removed `torch.ao.quantization`). Opt-in via `pip install "thekaveh-nnx[quantize]"`.
 
 ::: nnx.quantize.ptq.quantize_int8
 
@@ -298,7 +298,7 @@ Walkthrough at [DPO](dpo.md).
 
 ## 15. Embeddings (`nnx.embeddings`)
 
-End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "nnx-pytorch[embeddings]"`.
+End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "thekaveh-nnx[embeddings]"`.
 
 ::: nnx.embeddings.contrastive_trainer.ContrastiveTextDataset
 
@@ -316,7 +316,7 @@ End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "
 
 ### 16.1. GGUF + Ollama
 
-End-to-end walkthrough at [GGUF & Ollama](gguf.md). Opt-in via `pip install "nnx-pytorch[gguf-write]"`.
+End-to-end walkthrough at [GGUF & Ollama](gguf.md). Opt-in via `pip install "thekaveh-nnx[gguf-write]"`.
 
 ::: nnx.interop.gguf.writer.write_gguf
 
@@ -326,7 +326,7 @@ End-to-end walkthrough at [GGUF & Ollama](gguf.md). Opt-in via `pip install "nnx
 
 ## 17. HuggingFace Hub + safetensors
 
-Opt-in via `pip install "nnx-pytorch[hub]"`. Two integration surfaces:
+Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 
 - **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` and `NNCheckpoint.from_file(..., format="safetensors")` (see §3 `NNCheckpoint`) read and write checkpoints in the safetensors format alongside the default pickle path. Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
 - **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself — see §2.1.
@@ -370,7 +370,7 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 ### 19.2. Model-internals viz (`nnx.viz`)
 
-Opt-in via `pip install "nnx-pytorch[viz]"` (pulls `torchinfo` + `captum`) and `pip install "nnx-pytorch[viz-interactive]"` (adds the `netron` browser viewer for `nnx.viz.netron_export(..., launch=True)`).
+Opt-in via `pip install "thekaveh-nnx[viz]"` (pulls `torchinfo` + `captum`) and `pip install "thekaveh-nnx[viz-interactive]"` (adds the `netron` browser viewer for `nnx.viz.netron_export(..., launch=True)`).
 
 ::: nnx.viz.activation.activation_map
 
