@@ -12,6 +12,7 @@ from typing import Optional
 
 import torch
 
+from ..generation.logits_chain import LogitsChain
 from ..generation.logits_processors import (
     LogitsProcessor,
     RepetitionPenalty,
@@ -60,6 +61,7 @@ class GenerativeNNModel(NNModel):
         stop: Optional[list[str]] = None,
         seed: Optional[int] = None,
         use_cache: bool = True,
+        logits_chain: Optional[LogitsChain] = None,
     ) -> str:
         """Autoregressive decode from ``prompt``.
 
@@ -85,6 +87,14 @@ class GenerativeNNModel(NNModel):
                 back to the full-recompute path (kept for regression
                 testing). Both paths produce the same tokens for greedy
                 decoding (sampling paths agree given the same seed).
+            logits_chain: optional pre-built ``LogitsChain`` (see
+                ``nnx.LogitsChain.builder()``). When provided, the
+                inline chain construction from ``temperature`` /
+                ``top_k`` / ``top_p`` / ``repetition_penalty`` kwargs
+                is skipped — the supplied chain is used as-is.
+                Power-user path for custom logit processors (e.g.,
+                logit-bias for forbidden tokens). When ``None`` (the
+                default), behavior is unchanged.
 
         Returns:
             The full decoded string (prompt + generated continuation).
@@ -117,21 +127,28 @@ class GenerativeNNModel(NNModel):
         if max_seq_len is None:
             raise ValueError("net_params must expose `max_seq_len` (got a non-Transformer net?)")
 
-        # Build the processor chain from the kwargs. Order matters:
-        # repetition penalty first (operates on raw logits), then
-        # top-k / top-p (filtering), then temperature (scaling). This
-        # is the conventional HF transformers ordering.
-        processors: list[LogitsProcessor] = []
-        if repetition_penalty != 1.0:
-            processors.append(RepetitionPenalty(penalty=repetition_penalty))
-        if top_k is not None:
-            processors.append(TopKFilter(top_k=top_k))
-        if top_p is not None:
-            processors.append(TopPFilter(top_p=top_p))
-        # Temperature is always applied — temperature=0 is the greedy
-        # short-circuit. We still inject the processor so the sampler
-        # path can be uniform.
-        processors.append(TemperatureScaling(temperature=temperature))
+        # Build the processor chain. Two paths:
+        # (a) If the caller supplied a pre-built ``logits_chain``, use
+        #     its processors as-is — they've already been ordered.
+        # (b) Otherwise build the standard chain from kwargs in the
+        #     conventional HF order: repetition penalty first
+        #     (raw logits), then top-k / top-p (filtering), then
+        #     temperature (scaling). Temperature is always applied;
+        #     temperature=0 is the greedy short-circuit (still routed
+        #     through TemperatureScaling so the sampler path is
+        #     uniform).
+        processors: list[LogitsProcessor]
+        if logits_chain is not None:
+            processors = list(logits_chain.processors)
+        else:
+            processors = []
+            if repetition_penalty != 1.0:
+                processors.append(RepetitionPenalty(penalty=repetition_penalty))
+            if top_k is not None:
+                processors.append(TopKFilter(top_k=top_k))
+            if top_p is not None:
+                processors.append(TopPFilter(top_p=top_p))
+            processors.append(TemperatureScaling(temperature=temperature))
 
         # Optional seeded torch.Generator for reproducible sampling.
         # We pin it to the model's device so multinomial doesn't fall

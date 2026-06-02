@@ -255,6 +255,30 @@ def test_generate_respects_max_seq_len(tmp_path):
     assert isinstance(out, str)
 
 
+def test_generate_accepts_logits_chain_kwarg(tmp_path):
+    """When `logits_chain=` is provided, generate() uses it directly
+    instead of constructing the inline chain from kwargs. The output
+    should be deterministic given the same seed + chain + prompt."""
+    from nnx import LogitsChain
+
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+
+    # Build a chain with the same shape generate() would build for
+    # the default-ish kwargs.
+    chain = LogitsChain.builder().top_k(10).temperature(1.0).build()
+
+    out_a = model.generate(prompt="the", max_new_tokens=4, logits_chain=chain, seed=123)
+    out_b = model.generate(prompt="the", max_new_tokens=4, logits_chain=chain, seed=123)
+
+    # Same chain + seed + prompt → identical output.
+    assert out_a == out_b
+    # Output is a non-empty string at least as long as the prompt.
+    assert isinstance(out_a, str)
+    assert len(out_a) >= len("the")
+
+
 # ---------------- KV-cache ----------------
 
 
