@@ -155,6 +155,38 @@ assert out1 == out2
 The `seed` kwarg constructs a `torch.Generator` pinned to the model's
 device — same seed + same prompt + same model = same output.
 
+## Power-user decoding: `LogitsChain`
+
+For decoding setups that need custom logit processors — e.g., a
+logit-bias for forbidden tokens, a forced-decoder pattern, or a
+domain-specific transformation — build a `LogitsChain` and pass it
+via `generate(logits_chain=...)`. The chain bypasses the inline
+construction `generate()` does from the `temperature` / `top_k` /
+`top_p` / `repetition_penalty` kwargs.
+
+```python
+from nnx import LogitsChain
+
+chain = (
+    LogitsChain.builder()
+    .repetition_penalty(1.1)
+    .top_k(50)
+    .top_p(0.9)
+    .temperature(0.8)
+    .build()
+)
+text = model.generate(prompt="Once upon", max_new_tokens=64, logits_chain=chain)
+```
+
+The Builder enforces the canonical HF order (`RepetitionPenalty →
+TopKFilter → TopPFilter → TemperatureScaling`) regardless of call
+order; custom processors added via `.custom(proc)` append after the
+canonical group in the order they were added.
+
+When `logits_chain=None` (the default), `generate()` constructs the
+chain from the kwargs exactly as it did before — the new path is
+purely opt-in.
+
 ## How it composes with the rest of NNx
 
 - **Custom `train_step_fn`** — `GenerativeNNModel` doesn't ship a
