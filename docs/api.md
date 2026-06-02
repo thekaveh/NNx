@@ -339,6 +339,10 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 ::: nnx.generation.LogitsProcessor
 
+::: nnx.generation.LogitsChain
+
+::: nnx.generation.LogitsChainBuilder
+
 ::: nnx.generation.TemperatureScaling
 
 ::: nnx.generation.TopKFilter
