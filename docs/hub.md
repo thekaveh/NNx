@@ -12,7 +12,7 @@ NNx ships first-class interop with the HuggingFace ecosystem:
 Both paths require the `hub` extra:
 
 ```bash
-pip install "nnx-pytorch[hub]"
+pip install "thekaveh-nnx[hub]"
 ```
 
 Without it, the rest of NNx keeps working — the integration is gated

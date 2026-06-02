@@ -19,7 +19,7 @@ classification tasks. The example demonstrates the *mechanism*; the
 real-world tradeoff is task-dependent.
 
 Run:
-    pip install nnx-pytorch[quantize]   # or: pip install 'torchao>=0.17'
+    pip install thekaveh-nnx[quantize]   # or: pip install 'torchao>=0.17'
     python examples/12_quantize_int8.py
 """
 

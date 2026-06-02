@@ -13,7 +13,7 @@ try:
     from importlib.metadata import version as _version
 
     try:
-        __version__ = _version("nnx")
+        __version__ = _version("thekaveh-nnx")
     except PackageNotFoundError:
         # Editable install before metadata exists, or run from the source
         # tree without installation.

@@ -18,7 +18,7 @@ The writer is opt-in — pull in the upstream `gguf` package via the
 `gguf-write` extra:
 
 ```bash
-pip install "nnx-pytorch[gguf-write]"   # adds gguf>=0.19.0
+pip install "thekaveh-nnx[gguf-write]"   # adds gguf>=0.19.0
 ```
 
 `gguf` is the same Python writer every other GGUF producer uses, so

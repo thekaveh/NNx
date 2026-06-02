@@ -25,7 +25,7 @@ Compared to PTQ (``examples/12_quantize_int8.py``):
     int8 activations.
 
 Run:
-    pip install nnx-pytorch[quantize,onnx-dynamo]
+    pip install thekaveh-nnx[quantize,onnx-dynamo]
     python examples/15_qat_classifier.py
 """
 
@@ -181,7 +181,7 @@ def main():
         import onnxscript  # noqa: F401
     except ImportError:
         print("onnxscript not installed — skipping ONNX export.")
-        print("Install with `pip install nnx-pytorch[onnx-dynamo]` to enable.")
+        print("Install with `pip install thekaveh-nnx[onnx-dynamo]` to enable.")
         return
 
     with tempfile.TemporaryDirectory() as tmp:

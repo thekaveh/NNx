@@ -67,7 +67,7 @@ jobs:
     # workflow on a fork or branch can't publish.
     environment:
       name: pypi
-      url: https://pypi.org/p/nnx-pytorch
+      url: https://pypi.org/p/thekaveh-nnx
     permissions:
       # OIDC-based PyPI trusted publishing (no API token in secrets needed).
       # Configure the project on PyPI > Manage > Publishing to opt in.
@@ -110,3 +110,64 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  verify-published:
+    name: Verify the new version is reachable on PyPI
+    needs: build-and-publish
+    # Only runs on actual tag-push publishes, not workflow_dispatch dry runs
+    # (since the dry-run path skips the pypi-publish step).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Extract version from tag
+        id: ver
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Verifying that thekaveh-nnx==$version is reachable on PyPI..."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Wait for PyPI CDN propagation + install in a fresh venv
+        # PyPI's CDN can lag by tens of seconds after a successful upload.
+        # Retry up to 5 times with 30s backoff (~2.5min total budget).
+        run: |
+          set -e
+          version="${{ steps.ver.outputs.version }}"
+          for attempt in 1 2 3 4 5; do
+            python -m venv .verify-venv
+            if .verify-venv/bin/python -m pip install --no-cache-dir "thekaveh-nnx==$version"; then
+              echo "✓ pip install succeeded on attempt $attempt"
+              exit_code=0
+              break
+            fi
+            exit_code=1
+            if [ "$attempt" -eq 5 ]; then
+              echo "✗ pip install failed after 5 attempts; PyPI propagation timeout"
+              exit 1
+            fi
+            echo "Attempt $attempt failed (PyPI CDN propagation lag?); waiting 30s..."
+            rm -rf .verify-venv
+            sleep 30
+          done
+          exit $exit_code
+
+      - name: Import + version check
+        run: |
+          .verify-venv/bin/python - <<'PY'
+          import os
+          import nnx
+          expected = os.environ["EXPECTED_VERSION"]
+          actual = nnx.__version__
+          assert actual == expected, (
+              f"version mismatch: nnx.__version__={actual!r} "
+              f"but tag was {expected!r}"
+          )
+          print(f"✓ thekaveh-nnx {actual} live on PyPI and importable as nnx")
+          PY
+        env:
+          EXPECTED_VERSION: ${{ steps.ver.outputs.version }}

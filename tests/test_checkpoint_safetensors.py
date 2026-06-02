@@ -2,7 +2,7 @@
 
 These tests exercise the opt-in `format="safetensors"` path on
 :meth:`NNCheckpoint.to_file` and the magic-byte sniff inside
-:meth:`NNCheckpoint.from_file`. They require the `nnx-pytorch[hub]` extra
+:meth:`NNCheckpoint.from_file`. They require the `thekaveh-nnx[hub]` extra
 (safetensors + huggingface_hub).
 """
 

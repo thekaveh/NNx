@@ -5,19 +5,19 @@ Runnable scripts demonstrating common NNx patterns. Each is self-contained — n
 ## 1. Run
 
 ```bash
-pip install nnx-pytorch                # core (covers examples 01–06)
+pip install thekaveh-nnx                # core (covers examples 01–06)
 python examples/01_synthetic_classification.py
 ```
 
 A handful of examples depend on optional extras — install them as needed:
 
 ```bash
-pip install "nnx-pytorch[onnx]"             # 04_onnx_export.py
-pip install "nnx-pytorch[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
-pip install "nnx-pytorch[embeddings]"       # 13_train_domain_embedder.py
-pip install "nnx-pytorch[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 22_dpo_tinystories.py
-pip install "nnx-pytorch[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
-pip install "nnx-pytorch[viz]"              # 21_viz_attribute_xai.py
+pip install "thekaveh-nnx[onnx]"             # 04_onnx_export.py
+pip install "thekaveh-nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
+pip install "thekaveh-nnx[embeddings]"       # 13_train_domain_embedder.py
+pip install "thekaveh-nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 22_dpo_tinystories.py
+pip install "thekaveh-nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
+pip install "thekaveh-nnx[viz]"              # 21_viz_attribute_xai.py
 ```
 
 Working from a git checkout instead of PyPI? See [CONTRIBUTING.md §1](../CONTRIBUTING.md#1-getting-set-up) for the editable + dev install.
@@ -61,20 +61,20 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "nnx-pytorch[quantize]"`. |
-| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Reports the pre-/post-convert accuracy delta. Requires `pip install "nnx-pytorch[quantize]"`. |
+| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize]"`. |
+| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Reports the pre-/post-convert accuracy delta. Requires `pip install "thekaveh-nnx[quantize]"`. |
 
 ### 2.6. Embeddings + FAISS export
 
 | Example | What it demonstrates |
 |---|---|
-| `13_train_domain_embedder.py` | Train a tiny text embedder from scratch on synthetic `(sentence, paraphrase)` pairs via NT-Xent contrastive loss, embed a corpus, export to a FAISS index, query the index for self-similarity. End-to-end demo of `nnx.embeddings.train_contrastive` + `export_to_faiss`. Requires `pip install "nnx-pytorch[embeddings]"`. |
+| `13_train_domain_embedder.py` | Train a tiny text embedder from scratch on synthetic `(sentence, paraphrase)` pairs via NT-Xent contrastive loss, embed a corpus, export to a FAISS index, query the index for self-similarity. End-to-end demo of `nnx.embeddings.train_contrastive` + `export_to_faiss`. Requires `pip install "thekaveh-nnx[embeddings]"`. |
 
 ### 2.7. Language modeling
 
 | Example | What it demonstrates |
 |---|---|
-| `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()` (KV-cache enabled by default). CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). Requires `pip install "nnx-pytorch[lm]"`. |
+| `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()` (KV-cache enabled by default). CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). Requires `pip install "thekaveh-nnx[lm]"`. |
 
 ### 2.8. Self-supervised pretraining
 
@@ -86,8 +86,8 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "nnx-pytorch[gguf-write]"`. |
-| `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "nnx-pytorch[gguf-write]"`. |
+| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "thekaveh-nnx[gguf-write]"`. |
+| `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "thekaveh-nnx[gguf-write]"`. |
 
 ### 2.10. Pruning, surgery, quantization
 
@@ -100,13 +100,13 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `21_viz_attribute_xai.py` | Captum-backed input attribution via `nnx.viz.attribute(method=...)` — runs `integrated_gradients`, `saliency`, `input_x_gradient`, and `deep_lift` on a trained classifier. Requires `pip install "nnx-pytorch[viz]"`. |
+| `21_viz_attribute_xai.py` | Captum-backed input attribution via `nnx.viz.attribute(method=...)` — runs `integrated_gradients`, `saliency`, `input_x_gradient`, and `deep_lift` on a trained classifier. Requires `pip install "thekaveh-nnx[viz]"`. |
 
 ### 2.12. LM follow-ons
 
 | Example | What it demonstrates |
 |---|---|
-| `22_dpo_tinystories.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. Requires `pip install "nnx-pytorch[lm]"`. |
+| `22_dpo_tinystories.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. Requires `pip install "thekaveh-nnx[lm]"`. |
 
 ### 2.13. Distillation variants
 
