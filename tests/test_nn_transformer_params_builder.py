@@ -120,9 +120,7 @@ def test_builder_state_equals_direct_ctor_with_parent_defaults():
     """
     from nnx.nn.enum.activations import Activations
 
-    built = (
-        NNTransformerParams.builder().vocab(1024).layers(n=4, heads=4, d_model=128).context(max_seq_len=128).build()
-    )
+    built = NNTransformerParams.builder().vocab(1024).layers(n=4, heads=4, d_model=128).context(max_seq_len=128).build()
     direct = NNTransformerParams(
         vocab_size=1024,
         input_dim=1024,
