@@ -3,7 +3,7 @@
 Currently houses:
 
 * ``nnx.interop.gguf`` — GGUF (llama.cpp / Ollama) writer for
-  ``TransformerNN``. Optional dep: ``pip install 'nnx[gguf-write]'``.
+  ``TransformerNN``. Optional dep: ``pip install 'thekaveh-nnx[gguf-write]'``.
 * ``nnx.interop.ollama`` — Modelfile + GGUF bundle emitter for
   ``ollama create``.
 

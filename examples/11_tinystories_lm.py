@@ -19,7 +19,7 @@ is intentionally out of scope.
 Requires the ``lm`` optional extra (for the HuggingFace ``tokenizers``
 Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
 
-    pip install 'nnx[lm]'
+    pip install 'thekaveh-nnx[lm]'
 
 Run:
     python examples/11_tinystories_lm.py

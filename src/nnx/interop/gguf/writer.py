@@ -83,7 +83,7 @@ def _require_gguf() -> Any:
     except ImportError as e:
         raise ImportError(
             "The `gguf` package is required for nnx.interop.gguf.write_gguf. "
-            "Install with `pip install 'nnx[gguf-write]'` or "
+            "Install with `pip install 'thekaveh-nnx[gguf-write]'` or "
             "`pip install 'gguf>=0.19.0'` directly."
         ) from e
     return gguf

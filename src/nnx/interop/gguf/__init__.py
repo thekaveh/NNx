@@ -12,7 +12,7 @@ Public surface:
   requires the ``llama-quantize`` C++ binary; we raise a clear error
   pointing at the install path rather than silently producing F16.
 
-Optional dependency: install with ``pip install 'nnx[gguf-write]'``
+Optional dependency: install with ``pip install 'thekaveh-nnx[gguf-write]'``
 (adds ``gguf>=0.19.0``). The ``gguf`` package is the upstream
 ``llama-cpp``-maintained Python writer — same library every other
 GGUF producer uses, so the artifact is byte-compatible with every
