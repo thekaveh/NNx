@@ -115,3 +115,61 @@ def test_builder_chains_param_groups_after_variant():
     op = NNOptimParams.builder().adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).param_groups([g]).build()
     assert op.param_groups == [g]
     assert NNOptimParams.from_state(op.state()) == op
+
+
+def test_builder_modifier_before_variant_is_preserved():
+    """Regression test: the documented chain order is variant-first
+    then modifiers, but the fluent API should be order-independent.
+    A modifier called *before* any variant must survive the variant
+    call. Pre-refactor, the variant body did `self._fields = {...}`,
+    silently wiping a prior `.grad_clip(...)` (and any
+    `.accumulate_grad(...)` / `.param_groups(...)`). The variant body
+    now uses `_set_variant(...)` which drops only the variant-specific
+    keys and preserves modifier-set keys.
+    """
+    op = NNOptimParams.builder().grad_clip(1.0).adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).build()
+    assert op.name == Optims.ADAM
+    assert op.max_lr == 1e-3
+    assert op.momentum == (0.9, 0.999)
+    assert op.grad_clip_norm == 1.0
+    assert op.state().get("grad_clip_norm") == 1.0
+
+
+def test_builder_modifier_before_variant_survives_all_three_modifiers():
+    """Same regression with all three modifiers preceding the variant
+    — every modifier-set key must survive the variant call.
+    """
+    from nnx import NNParamGroupSpec
+
+    g = NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01, weight_decay=0.0)
+    op = (
+        NNOptimParams.builder()
+        .grad_clip(1.0)
+        .accumulate_grad(4)
+        .param_groups([g])
+        .adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0)
+        .build()
+    )
+    assert op.name == Optims.ADAM
+    assert op.grad_clip_norm == 1.0
+    assert op.accumulate_grad_batches == 4
+    assert op.param_groups == [g]
+
+
+def test_builder_last_variant_wins_when_called_twice():
+    """Documented contract: last variant wins. The earlier variant's
+    fields are completely replaced. Modifier keys set in between
+    still survive (the `.grad_clip(1.0)` between the two variants
+    here is preserved).
+    """
+    op = (
+        NNOptimParams.builder()
+        .adam(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0)
+        .grad_clip(1.0)
+        .sgd(max_lr=1e-2, momentum=0.9, weight_decay=0.0)
+        .build()
+    )
+    assert op.name == Optims.SGD
+    assert op.max_lr == 1e-2
+    assert op.momentum == 0.9  # SGD's float, not Adam's (0.9, 0.999) tuple
+    assert op.grad_clip_norm == 1.0

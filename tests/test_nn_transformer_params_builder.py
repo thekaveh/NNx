@@ -17,8 +17,8 @@ from nnx.nn.params.nn_transformer_params import NNTransformerParams
 def test_builder_minimal_happy_path():
     """Build a tiny LM config the way examples/11 does, but via the
     Builder. The Builder fills in the dead parent-NNParams fields
-    (hidden_dims=None, activation=Activations.RELU, dropout_prob=0.0)
-    so the user never sees them."""
+    (hidden_dims=None, activation=Activations.LEAKY_RELU — the
+    NNParams default, dropout_prob=0.0) so the user never sees them."""
     params = (
         NNTransformerParams.builder().vocab(1024).layers(n=4, heads=4, d_model=128).context(max_seq_len=128).build()
     )
@@ -104,6 +104,39 @@ def test_builder_dropout_non_default():
     state = params.state()
     assert state.get("attn_dropout") == 0.1
     assert state.get("resid_dropout") == 0.05
+
+
+def test_builder_state_equals_direct_ctor_with_parent_defaults():
+    """Regression test: the Builder's `.build()` hardcodes the dead
+    parent-NNParams fields (`hidden_dims=None`, `dropout_prob=0.0`,
+    `activation=...`). The activation MUST match the parent NNParams
+    default (`Activations.LEAKY_RELU`), otherwise the Builder and the
+    direct-kwarg ctor produce different `state()` dicts and different
+    `run.id` hashes for what users would call "the same config".
+
+    Pre-fix the Builder used `Activations.RELU` which differed from
+    the parent `LEAKY_RELU` default — this test would have failed
+    against the buggy version.
+    """
+    from nnx.nn.enum.activations import Activations
+
+    built = (
+        NNTransformerParams.builder().vocab(1024).layers(n=4, heads=4, d_model=128).context(max_seq_len=128).build()
+    )
+    direct = NNTransformerParams(
+        vocab_size=1024,
+        input_dim=1024,
+        output_dim=1024,
+        n_layers=4,
+        n_heads=4,
+        d_model=128,
+        max_seq_len=128,
+        hidden_dims=None,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+    )
+    assert built == direct
+    assert built.state() == direct.state()
 
 
 def test_builder_tied_embeddings_false_round_trips():
