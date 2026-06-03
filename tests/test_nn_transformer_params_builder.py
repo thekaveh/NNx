@@ -106,6 +106,63 @@ def test_builder_dropout_non_default():
     assert state.get("resid_dropout") == 0.05
 
 
+def test_builder_build_without_vocab_raises():
+    """The dataclass requires `vocab_size`, `n_layers`, `n_heads`,
+    `d_model`, `max_seq_len` (no defaults on these fields, plus the
+    parent NNParams requires `input_dim` and `output_dim`). The
+    Builder forwards only the keys the user touched, so building
+    without calling `.vocab()` and `.layers()` and `.context()`
+    surfaces the dataclass's TypeError unchanged."""
+    with pytest.raises(TypeError, match=r"missing.*required.*argument"):
+        NNTransformerParams.builder().build()
+
+
+def test_builder_vocab_mirrors_into_both_input_and_output_dim():
+    """Property test: for every vocab size, `.vocab(N)` writes the
+    same N into all three of vocab_size, input_dim, output_dim. A
+    regression where one of the three writes drifted (e.g. someone
+    refactored .vocab() to skip input_dim) would be caught here."""
+    for size in (512, 1024, 2048, 50257):
+        params = (
+            NNTransformerParams.builder().vocab(size).layers(n=2, heads=2, d_model=32).context(max_seq_len=32).build()
+        )
+        assert params.vocab_size == size
+        assert params.input_dim == size
+        assert params.output_dim == size
+
+
+def test_builder_vocab_called_twice_last_wins():
+    """`.vocab(512).vocab(1024)` keeps 1024 (the last call). The
+    standard fluent contract. A regression that switched to "first
+    wins" or "raises on second call" would be caught here."""
+    params = (
+        NNTransformerParams.builder()
+        .vocab(512)
+        .vocab(1024)
+        .layers(n=2, heads=2, d_model=32)
+        .context(max_seq_len=32)
+        .build()
+    )
+    assert params.vocab_size == 1024
+    assert params.input_dim == 1024
+    assert params.output_dim == 1024
+
+
+def test_builder_layers_called_twice_last_wins():
+    """`.layers(...)` last-call-wins."""
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=2, heads=2, d_model=32)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .build()
+    )
+    assert params.n_layers == 4
+    assert params.n_heads == 4
+    assert params.d_model == 128
+
+
 def test_builder_state_equals_direct_ctor_with_parent_defaults():
     """Regression test: the Builder's `.build()` hardcodes the dead
     parent-NNParams fields (`hidden_dims=None`, `dropout_prob=0.0`,

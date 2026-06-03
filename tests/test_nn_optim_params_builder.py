@@ -173,3 +173,30 @@ def test_builder_last_variant_wins_when_called_twice():
     assert op.max_lr == 1e-2
     assert op.momentum == 0.9  # SGD's float, not Adam's (0.9, 0.999) tuple
     assert op.grad_clip_norm == 1.0
+
+
+def test_builder_build_without_variant_raises():
+    """The dataclass requires `name` and `max_lr` (no defaults). The
+    Builder doesn't pre-empt that check — it forwards an empty kwargs
+    dict and the dataclass ctor surfaces the TypeError. Regression
+    protection for the Plan-1 / Plan-4 invariant.
+    """
+    import pytest
+
+    with pytest.raises(TypeError, match=r"missing.*required.*argument"):
+        NNOptimParams.builder().build()
+
+
+def test_builder_sgd_state_round_trips():
+    op = NNOptimParams.builder().sgd(max_lr=1e-2, momentum=0.9, weight_decay=5e-5).build()
+    assert NNOptimParams.from_state(op.state()) == op
+
+
+def test_builder_sgd_nesterov_state_round_trips():
+    op = NNOptimParams.builder().sgd_nesterov(max_lr=1e-2, momentum=0.9, weight_decay=0.0).build()
+    assert NNOptimParams.from_state(op.state()) == op
+
+
+def test_builder_adam_amsgrad_state_round_trips():
+    op = NNOptimParams.builder().adam_amsgrad(max_lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0).build()
+    assert NNOptimParams.from_state(op.state()) == op
