@@ -119,6 +119,10 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Least-privilege: this job only fetches from PyPI + imports nnx.
+    # No GITHUB_TOKEN scopes beyond contents:read needed.
+    permissions:
+      contents: read
     steps:
       - name: Extract version from tag
         id: ver
@@ -128,6 +132,8 @@ jobs:
           echo "Verifying that thekaveh-nnx==$version is reachable on PyPI..."
 
       - name: Set up Python
+        # No pip cache here — we want fresh resolution to catch PyPI
+        # propagation lag honestly. Cache would defeat the purpose.
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -135,10 +141,13 @@ jobs:
       - name: Wait for PyPI CDN propagation + install in a fresh venv
         # PyPI's CDN can lag by tens of seconds after a successful upload.
         # Retry up to 5 times with 30s backoff (~2.5min total budget).
+        # Each attempt starts from a clean venv to ensure a partial
+        # install on attempt N can't mask the regression on attempt N+1.
         run: |
           set -e
           version="${{ steps.ver.outputs.version }}"
           for attempt in 1 2 3 4 5; do
+            rm -rf .verify-venv
             python -m venv .verify-venv
             if .verify-venv/bin/python -m pip install --no-cache-dir "thekaveh-nnx==$version"; then
               echo "✓ pip install succeeded on attempt $attempt"
@@ -151,7 +160,6 @@ jobs:
               exit 1
             fi
             echo "Attempt $attempt failed (PyPI CDN propagation lag?); waiting 30s..."
-            rm -rf .verify-venv
             sleep 30
           done
           exit $exit_code

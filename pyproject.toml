@@ -22,6 +22,11 @@ keywords = [
     "quantization", "language-model", "transformer", "lora", "peft",
     "diffusion", "knowledge-distillation", "embeddings", "rag",
     "pruning", "model-surgery", "onnx", "gguf",
+    # Additional subsystems flagged by the post-#49 overnight-maintenance
+    # audit as missing from PyPI keywords despite being first-class
+    # entry points in nnx.* (see [PyPI keywords with features] convention).
+    "qat", "huggingface", "safetensors", "ollama",
+    "self-supervised-learning", "jepa", "dpo", "moe",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
