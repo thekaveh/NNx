@@ -21,7 +21,7 @@ Requires the ``gguf-write`` optional extra (for
 ``nnx.interop.write_gguf``) AND the ``lm`` extra (for
 ``NNTokenizerParams`` / ``train_bpe`` via HuggingFace ``tokenizers``):
 
-    pip install 'nnx[gguf-write,lm]'
+    pip install 'thekaveh-nnx[gguf-write,lm]'
 
 Run:
     python examples/18_publish_to_ollama.py

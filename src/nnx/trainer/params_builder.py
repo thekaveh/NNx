@@ -69,9 +69,11 @@ class NNTrainerParamsBuilder:
 
     def save_phase_checkpoints(self, value: bool) -> NNTrainerParamsBuilder:
         """Whether to write phase checkpoints (FIRST / Q1 / Q2 / Q3 /
-        LAST / BEST). Default True; only call to override."""
-        if value is not True:
-            self._fields["save_phase_checkpoints"] = value
+        LAST / BEST). Default True. The fluent contract is "last call
+        wins" — a prior `.save_phase_checkpoints(False)` followed by
+        `.save_phase_checkpoints(True)` leaves the dataclass at the
+        default (which `state()` then omits)."""
+        self._fields["save_phase_checkpoints"] = value
         return self
 
     def train_loader(self, loader: DataLoader) -> NNTrainerParamsBuilder:

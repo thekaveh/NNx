@@ -99,3 +99,30 @@ def test_chain_apply_matches_direct_apply_chain_call():
     via_chain = chain.apply(logits, token_history=history)
     via_direct = apply_chain(logits, token_history=history, processors=chain.processors)
     assert torch.equal(via_chain, via_direct)
+
+
+def test_chain_apply_passes_token_history_to_custom_processor():
+    """The apply path must forward `token_history` to every processor
+    in the chain — including custom ones. Pre-existing tests only
+    checked storage order, not call-time argument propagation, so a
+    regression that swallowed history or replaced it with [] would
+    have passed all the existing tests."""
+
+    class HistoryRecorder:
+        """Custom processor that records every (history) it sees."""
+
+        def __init__(self):
+            self.seen_histories: list[list[int]] = []
+
+        def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
+            self.seen_histories.append(list(token_history))
+            return logits
+
+    rec = HistoryRecorder()
+    chain = LogitsChain.builder().custom(rec).build()
+    logits = torch.tensor([[1.0, 2.0, 3.0]])
+    history = [0, 1, 2, 5]
+    chain.apply(logits, token_history=history)
+    assert rec.seen_histories == [history], (
+        f"Expected custom processor to receive token_history={history!r}, got {rec.seen_histories!r}"
+    )

@@ -15,7 +15,7 @@ See `docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..enum.optims import Optims
 from .nn_optim_params import NNOptimParams
@@ -30,11 +30,25 @@ class NNOptimParamsBuilder:
     Reach via `NNOptimParams.builder()`. Pick exactly one variant
     method (`adam`, `adam_amsgrad`, `sgd`, `sgd_nesterov`), then chain
     optional methods (`grad_clip`, `accumulate_grad`, `param_groups`),
-    then `.build()`.
+    then `.build()`. Method-call order is independent — a modifier
+    called before a variant survives the variant call, and the last
+    variant always wins.
     """
+
+    # Fields that a variant method owns. `_set_variant` drops these
+    # from `self._fields` before applying the new variant so a second
+    # variant call cleanly replaces the first AND any modifier-set
+    # keys (grad_clip_norm / accumulate_grad_batches / param_groups)
+    # survive.
+    _VARIANT_KEYS: ClassVar[tuple[str, ...]] = ("name", "max_lr", "momentum", "weight_decay")
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
+
+    def _set_variant(self, **fields: Any) -> None:
+        for k in self._VARIANT_KEYS:
+            self._fields.pop(k, None)
+        self._fields.update(fields)
 
     # ---------- variant methods ----------
 
@@ -50,12 +64,12 @@ class NNOptimParamsBuilder:
         `NNOptimParams.momentum` field (which holds the tuple for Adam
         variants).
         """
-        self._fields = {
-            "name": Optims.ADAM,
-            "max_lr": max_lr,
-            "momentum": betas,
-            "weight_decay": weight_decay,
-        }
+        self._set_variant(
+            name=Optims.ADAM,
+            max_lr=max_lr,
+            momentum=betas,
+            weight_decay=weight_decay,
+        )
         return self
 
     def adam_amsgrad(
@@ -68,12 +82,12 @@ class NNOptimParamsBuilder:
         """torch.optim.Adam with `amsgrad=True`. Same `betas` mapping
         as `adam()`.
         """
-        self._fields = {
-            "name": Optims.ADAM_AMSGRAD,
-            "max_lr": max_lr,
-            "momentum": betas,
-            "weight_decay": weight_decay,
-        }
+        self._set_variant(
+            name=Optims.ADAM_AMSGRAD,
+            max_lr=max_lr,
+            momentum=betas,
+            weight_decay=weight_decay,
+        )
         return self
 
     def sgd(
@@ -86,12 +100,12 @@ class NNOptimParamsBuilder:
         """torch.optim.SGD. The float momentum stays as `momentum`
         (no rename) — `betas` is an Adam-family term.
         """
-        self._fields = {
-            "name": Optims.SGD,
-            "max_lr": max_lr,
-            "momentum": momentum,
-            "weight_decay": weight_decay,
-        }
+        self._set_variant(
+            name=Optims.SGD,
+            max_lr=max_lr,
+            momentum=momentum,
+            weight_decay=weight_decay,
+        )
         return self
 
     def sgd_nesterov(
@@ -104,12 +118,12 @@ class NNOptimParamsBuilder:
         """torch.optim.SGD with `nesterov=True`. Same momentum shape
         as `sgd()`.
         """
-        self._fields = {
-            "name": Optims.SGD_NESTEROV,
-            "max_lr": max_lr,
-            "momentum": momentum,
-            "weight_decay": weight_decay,
-        }
+        self._set_variant(
+            name=Optims.SGD_NESTEROV,
+            max_lr=max_lr,
+            momentum=momentum,
+            weight_decay=weight_decay,
+        )
         return self
 
     # ---------- optional modifiers (chain after variant) ----------

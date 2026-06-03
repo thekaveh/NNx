@@ -100,24 +100,25 @@ class NNTransformerParamsBuilder:
 
     def tied_embeddings(self, value: bool) -> NNTransformerParamsBuilder:
         """Toggle weight-tying between input embeddings and LM head.
-        Default is True; only call this to set False."""
-        if value is not True:
-            self._fields["tie_embeddings"] = value
+        Default is True. The fluent contract is "last call wins" — a
+        prior `.tied_embeddings(False)` followed by `.tied_embeddings(True)`
+        leaves the dataclass at the default (which `state()` then omits)."""
+        self._fields["tie_embeddings"] = value
         return self
 
     def build(self) -> NNTransformerParams:
         """Construct the dataclass.
 
-        Fills in the dead parent-NNParams fields with their
-        LM-path defaults — `hidden_dims=None`, `dropout_prob=0.0`,
-        `activation=Activations.RELU`. These are required by the
-        parent dataclass but never read by the TransformerNN net, so
-        the Builder hides them. The user-visible API stays
-        LM-path-shaped.
+        Fills in the dead parent-NNParams fields the TransformerNN
+        net never reads but the parent dataclass requires at
+        construction. `activation` mirrors the parent NNParams's
+        default (`Activations.LEAKY_RELU`); a Builder-default
+        mismatch here previously produced a different `state()` /
+        `run.id` than the direct-kwarg ctor.
         """
         return NNTransformerParams(
             hidden_dims=None,
             dropout_prob=0.0,
-            activation=Activations.RELU,
+            activation=Activations.LEAKY_RELU,
             **self._fields,
         )

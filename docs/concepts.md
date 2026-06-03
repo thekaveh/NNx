@@ -84,6 +84,12 @@ opt = (
 )
 ```
 
+Three more Builders shipped alongside the two above:
+
+- **`NNTransformerParams.builder()`** — LM-path config. Six fluent methods (`vocab`, `layers`, `ffn`, `context`, `dropout`, `tied_embeddings`) hide the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`) the transformer net doesn't read. `.layers(n, heads, d_model)` enforces `d_model % heads == 0` at call-time. Full walkthrough in [`docs/lm.md`](lm.md).
+- **`NNTrainerParams.builder()`** — composite, wraps the prior two. `.optimizer(name, NNOptimParams)` + `.scheduler(name, NNSchedulerParams)` register entries under user-chosen names; `.build()` enforces `schedulers.keys() ⊆ optims.keys()` with an actionable error. Used for the GAN-recipe pattern in §8.
+- **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order; `.build()` sorts the standard processors into the canonical HF order (`RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`) with custom processors appended after. Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
+
 ## 3. Enums-as-factories
 
 Every enum's `__call__` constructs the underlying object:
@@ -363,11 +369,11 @@ from nnx import (
 
 §§10.1–10.3 below cover the four foundational paradigms (KD, SimCLR, Mixup, CutMix). The newer additions are documented in dedicated pages or under §15 (DPO ties into the LM path):
 
-- **Feature-KD** — extends `kd_train_step_factory` with an MSE term between named teacher/student intermediate activations; full signature in [API §10](api.md).
+- **Feature-KD** — extends `kd_train_step_factory` with an MSE term between named teacher/student intermediate activations; full signature in [API §14](api.md).
 - **MoE** — `MoELinear` drop-in for `nn.Linear` + `moe_train_step_factory` (sums per-layer `last_aux_loss` into the main loss as a Switch-style load-balancing penalty); demo in `examples/14_moe_classifier.py`.
 - **I-JEPA** — masked-patch → latent-prediction against an EMA target encoder; full walkthrough in [`docs/jepa.md`](jepa.md).
 - **DPO** — preference-pair fine-tuning against a frozen reference policy; see §15 and [`docs/dpo.md`](dpo.md).
-- **Born-Again** — `born_again_train(...)` iterates self-distillation across G generations; see [API §10](api.md).
+- **Born-Again** — `born_again_train(...)` iterates self-distillation across G generations; see [API §14](api.md).
 
 ### 10.1. Knowledge distillation
 
@@ -615,8 +621,8 @@ Downstream of the LM path, four follow-ons compose on top of it:
 
 Four Tier-2 subpackages are large enough to warrant a dedicated section but small enough that the canonical write-up lives elsewhere. This catalog is the pointer index — open the linked page for the full walkthrough.
 
-- **`nnx.quantize`** — PTQ INT8 weight-only (`quantize_int8(model)`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`), both built on `torchao`. The PTQ path is one call, no calibration data, no retraining; the QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit. Opt-in via `pip install thekaveh-nnx[quantize]`. See [API §11](api.md) for the full surface; `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
-- **`nnx.prune`** — `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net so pruned checkpoints load into stock code under `strict=True`. See [API §12](api.md); `examples/` does not yet ship a pruning demo (see deferred items in [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md)).
+- **`nnx.quantize`** — PTQ INT8 weight-only (`quantize_int8(model)`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`), both built on `torchao`. The PTQ path is one call, no calibration data, no retraining; the QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit. Opt-in via `pip install thekaveh-nnx[quantize]`. See [API §12](api.md) for the full surface; `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
+- **`nnx.prune`** — `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md); `examples/19_prune_mnist.py` ships an end-to-end magnitude-prune-and-fine-tune demo on MNIST.
 - **`nnx.surgery`** — `widen` / `deepen` (function-preserving Net2Net edits — Chen/Goodfellow/Shlens, ICLR 2016), `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 - **`nnx.embeddings`** — the one RAG-adjacent surface NNx ships. `train_contrastive` reuses the existing NT-Xent machinery for domain-specific text embedders; `export_to_faiss` writes the trained model's outputs to a FAISS index (Flat / HNSW) that any retrieval framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. The chunker, reranker, and vector-DB client are deliberately out of scope. See [`docs/embeddings.md`](embeddings.md) for the full when-to-use guide; `examples/13_train_domain_embedder.py` is the runnable demo.
 

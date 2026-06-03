@@ -23,6 +23,9 @@ training is out of scope.
 | `nnx.train_bpe(...)` | Quick BPE training helper (Whitespace pre-tokenizer + BPE + BpeTrainer). |
 | `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed)`. |
 | `nnx.{TemperatureScaling, TopKFilter, TopPFilter, RepetitionPenalty, apply_chain}` | LogitsProcessor chain — same shape as HF transformers' `LogitsProcessorList`. |
+| `nnx.NNTransformerParamsBuilder` | Fluent variant-gated builder for `NNTransformerParams` — hides the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`); reach via `NNTransformerParams.builder()`. |
+| `nnx.LogitsChain` | Frozen-dataclass wrapper around `list[LogitsProcessor]` with `.apply(logits, token_history) -> Tensor`. Pass via `GenerativeNNModel.generate(logits_chain=...)`. |
+| `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into canonical HF order at `.build()`. Reach via `LogitsChain.builder()`. |
 
 ## Install
 

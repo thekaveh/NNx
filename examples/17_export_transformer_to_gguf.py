@@ -22,7 +22,7 @@ package that backs ``nnx.interop.write_gguf``) AND the ``lm`` extra
 (for ``NNTokenizerParams`` / ``train_bpe`` via HuggingFace
 ``tokenizers``):
 
-    pip install 'nnx[gguf-write,lm]'
+    pip install 'thekaveh-nnx[gguf-write,lm]'
 
 Run:
     python examples/17_export_transformer_to_gguf.py

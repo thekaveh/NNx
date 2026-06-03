@@ -42,6 +42,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **HuggingFace Hub (opt-in via `thekaveh-nnx[hub]`)** — `NNModel` mixes in `PyTorchModelHubMixin`: `save_pretrained` / `push_to_hub` / `from_pretrained`, with safetensors as an opt-in checkpoint format via `NNCheckpoint.to_file(format="safetensors")`. See [docs/hub.md](docs/hub.md).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
+- **Fluent params construction** — `NNSchedulerParams.builder()`, `NNOptimParams.builder()`, `NNTransformerParams.builder()`, and `NNTrainerParams.builder()` (the composite, wraps the prior two for the multi-optim Trainer) expose variant-gated `.adam(...)` / `.sgd(...)` / `.one_cycle(...)` / etc. methods so the user can't construct an invalid kind/field combination. `LogitsChain.builder()` extends the pattern to the LM-decoding path — chain custom logit processors in any order; the Builder sorts them into the canonical HF order before `generate()` runs. All Builders are purely additive; the existing direct-kwarg ctors keep working.
 - **Enums-as-factories** — `Nets`, `Losses`, `Optims`, `Schedulers`, `Activations`, `Devices`, `Checkpoints`, `NoiseSchedulers`. Each enum value's `__call__` constructs the underlying object; adding a new option is a single-place change.
 - **Callbacks** — `Callback` base class with `on_{train,epoch}_{begin,end}` hooks. Stock: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom-epoch tags), `TensorBoardCallback` (opt-in via `thekaveh-nnx[tensorboard]`), `WandbCallback` (opt-in via `thekaveh-nnx[wandb]`). Legacy `Callable[[List[IDP]], None]` is still accepted.
 - **Visualization** — `VisUtils` (and module-level aliases) returns Plotly `Figure` objects: `confusion_matrix`, `classification_report` (returns a DataFrame), `multi_line_plot`, `scatter_plot`, `two_dim_tsne_checkpoint_logits`.
@@ -71,6 +72,9 @@ pip install "thekaveh-nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ
 pip install "thekaveh-nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
 pip install "thekaveh-nnx[embeddings]"          # nnx.embeddings: FAISS export + sentence-transformers
 pip install "thekaveh-nnx[lm]"                  # TransformerNN + HF tokenizer + generate()
+pip install "thekaveh-nnx[gguf-write]"          # nnx.interop GGUF + Ollama Modelfile export
+pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export
+pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)
 pip install "thekaveh-nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 

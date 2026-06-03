@@ -279,6 +279,32 @@ def test_generate_accepts_logits_chain_kwarg(tmp_path):
     assert len(out_a) >= len("the")
 
 
+def test_generate_logits_chain_matches_equivalent_inline_kwargs(tmp_path):
+    """A `logits_chain=` matching the inline-kwargs path must produce
+    the SAME output as the inline-kwargs call with equivalent
+    parameters (top_k + temperature). This proves the chain is
+    actually being used by generate() — a regression that silently
+    dropped `logits_chain=` and fell through to the inline path would
+    still produce a valid string in test_generate_accepts_logits_chain_kwarg,
+    but would diverge HERE if the inline-kwargs path differs from the
+    chain path in any way."""
+    from nnx import LogitsChain
+
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+
+    chain = LogitsChain.builder().top_k(5).temperature(0.8).build()
+    out_chain = model.generate(prompt="the", max_new_tokens=4, logits_chain=chain, seed=123)
+    out_inline = model.generate(prompt="the", max_new_tokens=4, top_k=5, temperature=0.8, seed=123)
+
+    assert out_chain == out_inline, (
+        f"chain-path output ({out_chain!r}) diverges from inline-kwargs "
+        f"output ({out_inline!r}) — the chain wiring in generate() may not "
+        f"actually be using `logits_chain.processors`."
+    )
+
+
 # ---------------- KV-cache ----------------
 
 

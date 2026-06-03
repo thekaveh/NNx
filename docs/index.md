@@ -57,6 +57,9 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 2.4. Look things up
 
 - [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
+- [Examples catalog](https://github.com/thekaveh/NNx/blob/main/examples/README.md) — annotated index of the runnable scripts under `examples/`.
+- [CONTRIBUTING](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
+- [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md) — user-visible changes per PR.
 
 ## 3. Status
 
