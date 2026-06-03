@@ -111,13 +111,7 @@ def test_builder_error_message_names_missing_optim():
 def test_builder_save_phase_checkpoints_false_appears_in_state():
     """save_phase_checkpoints(False) must store on the dataclass and
     appear in state() (it's non-default). Confirms the setter writes."""
-    tp = (
-        NNTrainerParams.builder()
-        .n_epochs(10)
-        .optimizer("main", _make_adam())
-        .save_phase_checkpoints(False)
-        .build()
-    )
+    tp = NNTrainerParams.builder().n_epochs(10).optimizer("main", _make_adam()).save_phase_checkpoints(False).build()
     assert tp.save_phase_checkpoints is False
     assert tp.state().get("save_phase_checkpoints") is False
 
