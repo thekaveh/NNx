@@ -2,9 +2,9 @@
 
 All notable changes to NNx are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is roughly [SemVer](https://semver.org/) — pre-1.0, we allow behavior changes (typically bug fixes) without renaming public APIs.
 
-## [Unreleased] — Expansion megamerge + Month-1 cluster + overnight-maintenance
+## [Unreleased] — Expansion megamerge + Month-1 cluster + overnight-maintenance + Builder rollout + PyPI rename
 
-Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#41 + the second overnight-maintenance pass (PRs #40 + #41 landed the first two cleanup rounds on 2026-05-30; this section also captures fixes shipped on the post-#41 overnight-maintenance branch immediately after). Test suite is **745 tests; 744 pass, 1 skip** (only the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners — the previously-skipped `onnxscript` dynamo paths now resolve under current torch / onnxscript).
+Spans the PR #29 megamerge (20 sub-projects) + PRs #30–#41 (Month-1 cluster + first overnight-maintenance pass) + PRs #42–#48 (security fix + 5-PR Builder-pattern rollout + LogitsChain) + PRs #47, #49 (two-step PyPI distribution rename `nnx` → `nnx-pytorch` → `thekaveh-nnx`) + the post-#49 overnight-maintenance pass (this section's tail). Test suite is **753 tests; 751 pass, 2 skip** (the CUDA-gated 2:4 semi-structured sparsity path skips on CPU runners; the network-gated `test_pypi_lists_the_current_distribution_name` skips on PyPI 404 until the first release ships).
 
 ### Changed — PyPI distribution name
 
