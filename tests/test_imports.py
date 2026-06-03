@@ -268,7 +268,7 @@ def test_top_level_optim_builder_importable():
     assert isinstance(builder, nnx.NNOptimParamsBuilder)
 
 
-def test_top_level_transformer_params_builder_importable():
+def test_top_level_transformer_builder_importable():
     import nnx
 
     assert hasattr(nnx, "NNTransformerParamsBuilder")
@@ -276,7 +276,7 @@ def test_top_level_transformer_params_builder_importable():
     assert isinstance(builder, nnx.NNTransformerParamsBuilder)
 
 
-def test_top_level_trainer_params_builder_importable():
+def test_top_level_trainer_builder_importable():
     import nnx
 
     assert hasattr(nnx, "NNTrainerParamsBuilder")
@@ -284,7 +284,7 @@ def test_top_level_trainer_params_builder_importable():
     assert isinstance(builder, nnx.NNTrainerParamsBuilder)
 
 
-def test_top_level_logits_chain_importable():
+def test_top_level_logits_chain_builder_importable():
     import nnx
 
     assert hasattr(nnx, "LogitsChain")
