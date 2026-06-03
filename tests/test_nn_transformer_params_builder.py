@@ -151,3 +151,22 @@ def test_builder_tied_embeddings_false_round_trips():
     assert state.get("tie_embeddings") is False
     # Round-trip
     assert NNTransformerParams.from_state(state) == params
+
+
+def test_builder_tied_embeddings_true_after_false_overrides_to_true():
+    """Regression: a prior `.tied_embeddings(False)` followed by
+    `.tied_embeddings(True)` must leave the dataclass at the default
+    (True). Pre-fix the True call was a silent no-op because the body
+    skipped storing when `value is True`, so the prior False persisted.
+    state() must omit `tie_embeddings` at the default."""
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .tied_embeddings(False)
+        .tied_embeddings(True)
+        .build()
+    )
+    assert params.tie_embeddings is True
+    assert "tie_embeddings" not in params.state()

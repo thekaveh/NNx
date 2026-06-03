@@ -108,6 +108,38 @@ def test_builder_error_message_names_missing_optim():
     assert "'g'" in msg and "'d'" in msg
 
 
+def test_builder_save_phase_checkpoints_false_appears_in_state():
+    """save_phase_checkpoints(False) must store on the dataclass and
+    appear in state() (it's non-default). Confirms the setter writes."""
+    tp = (
+        NNTrainerParams.builder()
+        .n_epochs(10)
+        .optimizer("main", _make_adam())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    assert tp.save_phase_checkpoints is False
+    assert tp.state().get("save_phase_checkpoints") is False
+
+
+def test_builder_save_phase_checkpoints_true_after_false_overrides_to_true():
+    """Regression: a prior `.save_phase_checkpoints(False)` followed
+    by `.save_phase_checkpoints(True)` must reach the dataclass default
+    (True). Pre-fix the True call was a silent no-op because the body
+    skipped storing when `value is True`. state() must omit the field
+    at the default."""
+    tp = (
+        NNTrainerParams.builder()
+        .n_epochs(10)
+        .optimizer("main", _make_adam())
+        .save_phase_checkpoints(False)
+        .save_phase_checkpoints(True)
+        .build()
+    )
+    assert tp.save_phase_checkpoints is True
+    assert "save_phase_checkpoints" not in tp.state()
+
+
 def test_builder_chains_train_loader_and_seed():
     """Builder composes the optional chainable methods cleanly."""
     import torch

@@ -100,9 +100,10 @@ class NNTransformerParamsBuilder:
 
     def tied_embeddings(self, value: bool) -> NNTransformerParamsBuilder:
         """Toggle weight-tying between input embeddings and LM head.
-        Default is True; only call this to set False."""
-        if value is not True:
-            self._fields["tie_embeddings"] = value
+        Default is True. The fluent contract is "last call wins" — a
+        prior `.tied_embeddings(False)` followed by `.tied_embeddings(True)`
+        leaves the dataclass at the default (which `state()` then omits)."""
+        self._fields["tie_embeddings"] = value
         return self
 
     def build(self) -> NNTransformerParams:
