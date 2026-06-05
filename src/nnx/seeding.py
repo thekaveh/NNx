@@ -119,10 +119,15 @@ def env_snapshot(force_refresh: bool = False) -> dict:
             return None
 
     def _nnx_version() -> Optional[str]:
+        # PyPI distribution is `thekaveh-nnx` (PR #49) — the bare `nnx` name
+        # is squatted by an abandoned JAX library, so a stale `version("nnx")`
+        # here silently returned None on every clean install of the renamed
+        # package, defeating metadata.yaml's reproducibility job. Mirror the
+        # same lookup `nnx.__version__` uses (`src/nnx/__init__.py`).
         try:
             from importlib.metadata import version
 
-            return version("nnx")
+            return version("thekaveh-nnx")
         except Exception:
             return None
 

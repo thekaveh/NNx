@@ -72,7 +72,16 @@ def export_ollama_modelfile(
     )
 
     modelfile_path = out_dir / "Modelfile"
-    modelfile_path.write_text(_render_modelfile(system=system, parameters=parameters, template=template))
+    # encoding="utf-8" explicit so a non-ASCII SYSTEM prompt / TEMPLATE
+    # (Asian-language fine-tunes, emoji prompts) round-trips correctly
+    # on Windows pre-PEP-686, where Path.write_text would otherwise fall
+    # back to the locale code page (cp1252) and silently mojibake.
+    # Matches the convention every other text-mode write in src/nnx
+    # carries (`feedback_utf8_explicit_text_opens`).
+    modelfile_path.write_text(
+        _render_modelfile(system=system, parameters=parameters, template=template),
+        encoding="utf-8",
+    )
     return str(modelfile_path)
 
 

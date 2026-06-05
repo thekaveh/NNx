@@ -20,6 +20,11 @@ from LangChain / LlamaIndex / Haystack / raw FAISS — chunking,
 reranking, and prompt orchestration are framework choices, not NNx
 concerns.
 
+Requires the ``embeddings`` optional extra (for ``faiss-cpu`` and
+``sentence-transformers``):
+
+    pip install 'thekaveh-nnx[embeddings]'
+
 Run:
     python examples/13_train_domain_embedder.py
 """

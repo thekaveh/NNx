@@ -213,6 +213,28 @@ def test_v3_env_snapshot_returns_serializable_dict():
     assert snap["numpy"] is not None
 
 
+def test_v3_env_snapshot_nnx_version_is_resolvable():
+    """Regression: `_nnx_version()` must query the actual installed
+    distribution name, not the squatted bare `nnx`. Pre-fix it called
+    `importlib.metadata.version("nnx")` which returned None on every
+    clean install of the renamed `thekaveh-nnx` distribution (caught
+    by the broad `except Exception` swallower), silently dropping
+    metadata.yaml's `nnx` field. metadata.yaml's job is reproducibility
+    — a silent None there defeats the whole point of the snapshot.
+    Mirrors the lookup `nnx.__version__` uses (`src/nnx/__init__.py`)."""
+    import nnx
+
+    snap = env_snapshot(force_refresh=True)
+    assert snap["nnx"] is not None, (
+        "env_snapshot()['nnx'] is None — _nnx_version() is querying a stale "
+        "distribution name. Should be `thekaveh-nnx` (matching __init__.py)."
+    )
+    assert snap["nnx"] == nnx.__version__, (
+        f"env_snapshot()['nnx']={snap['nnx']!r} disagrees with "
+        f"nnx.__version__={nnx.__version__!r} — both must read the same dist."
+    )
+
+
 def test_v3_env_snapshot_is_cached_across_calls():
     """Round-6 perf hardening: env_snapshot subprocesses `git rev-parse`
     every call, which the incremental NNRun.save fires every epoch.
