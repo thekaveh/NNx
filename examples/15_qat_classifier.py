@@ -24,8 +24,14 @@ Compared to PTQ (``examples/12_quantize_int8.py``):
     typically recovers most of the accuracy lost to int4 weights +
     int8 activations.
 
+Requires the ``quantize`` extra (for ``torchao``'s QAT primitives) AND
+the ``onnx-dynamo`` extra (Phase 5 exports the converted int4/int8
+model through the dynamo-based ONNX path — torchao's quantized tensor
+subclasses don't round-trip through the legacy TorchScript exporter):
+
+    pip install 'thekaveh-nnx[quantize,onnx-dynamo]'
+
 Run:
-    pip install thekaveh-nnx[quantize,onnx-dynamo]
     python examples/15_qat_classifier.py
 """
 
