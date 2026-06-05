@@ -12,8 +12,9 @@ python examples/01_synthetic_classification.py
 A handful of examples depend on optional extras — install them as needed:
 
 ```bash
-pip install "thekaveh-nnx[onnx]"             # 04_onnx_export.py
+pip install "thekaveh-nnx[onnx]"             # 04_onnx_export.py, 12_quantize_int8.py (Phase-5 export)
 pip install "thekaveh-nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
+pip install "thekaveh-nnx[onnx-dynamo]"      # 15_qat_classifier.py (Phase-5 dynamo export)
 pip install "thekaveh-nnx[embeddings]"       # 13_train_domain_embedder.py
 pip install "thekaveh-nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 22_dpo_tinystories.py
 pip install "thekaveh-nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py

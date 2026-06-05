@@ -9,12 +9,14 @@ without forbidding the deep paths existing notebook code relies on.
 from __future__ import annotations
 
 try:
-    from importlib.metadata import PackageNotFoundError
+    # Underscore-aliased so neither symbol leaks into `nnx.*` — these are
+    # implementation details of `__version__` lookup, not public nnx API.
+    from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
     from importlib.metadata import version as _version
 
     try:
         __version__ = _version("thekaveh-nnx")
-    except PackageNotFoundError:
+    except _PackageNotFoundError:
         # Editable install before metadata exists, or run from the source
         # tree without installation.
         __version__ = "0.1.0+local"

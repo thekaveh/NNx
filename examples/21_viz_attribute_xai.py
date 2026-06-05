@@ -12,8 +12,12 @@ useful methods (integrated_gradients, gradient_shap, deep_lift,
 saliency, input_x_gradient, occlusion) behind a single string-keyed
 dispatch with sensible per-method defaults.
 
+Requires the ``viz`` optional extra (for ``captum`` — the input-
+attribution backend ``nnx.viz.attribute`` dispatches into):
+
+    pip install 'thekaveh-nnx[viz]'
+
 Run:
-    pip install thekaveh-nnx[viz]
     python examples/21_viz_attribute_xai.py
 """
 

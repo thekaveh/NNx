@@ -19,8 +19,12 @@ Key API notes:
   - `train_bpe` must use the `texts=` keyword (not positional) when
     passing in-memory strings.
 
+Requires the ``lm`` optional extra (for the HuggingFace ``tokenizers``
+Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
+
+    pip install 'thekaveh-nnx[lm]'
+
 Run:
-    pip install thekaveh-nnx[lm]
     python examples/22_dpo_tinystories.py
 """
 

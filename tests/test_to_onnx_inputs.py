@@ -119,3 +119,37 @@ def test_to_onnx_accepts_tuple_with_numpy_element(tmp_path):
 
     assert Path(out).exists()
     assert _onnx_input_count(out) == 1
+
+
+def test_to_onnx_restores_training_mode_after_call(tmp_path):
+    """Regression: `to_onnx` must leave `self.net.training` exactly as
+    it found it. Pre-fix it called `self.net.eval()` without a paired
+    restore — the canonical train → to_onnx → train-more loop silently
+    disabled Dropout / BatchNorm-running-stats on the next training
+    step. Matches the non-destructive contract enforced by every
+    sibling inference helper (predict / evaluate / generate / sample /
+    embed_texts / lr_finder)."""
+    pytest.importorskip("onnx")
+
+    model = _model()
+    model.net.train()
+    assert model.net.training is True
+
+    model.to_onnx(str(tmp_path / "restore_train.onnx"), example_input=torch.randn(2, 4))
+
+    assert model.net.training is True, "to_onnx() did not restore training-mode"
+
+
+def test_to_onnx_preserves_eval_mode_caller(tmp_path):
+    """Symmetric: a caller already in eval() must stay in eval() after
+    `to_onnx` returns. The fix's `if was_training: self.net.train()`
+    branch must not flip an eval-mode caller into train."""
+    pytest.importorskip("onnx")
+
+    model = _model()
+    model.net.eval()
+    assert model.net.training is False
+
+    model.to_onnx(str(tmp_path / "preserve_eval.onnx"), example_input=torch.randn(2, 4))
+
+    assert model.net.training is False

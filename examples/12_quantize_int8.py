@@ -18,8 +18,14 @@ size win is closer to 4x and accuracy loss stays sub-percent for most
 classification tasks. The example demonstrates the *mechanism*; the
 real-world tradeoff is task-dependent.
 
+Requires the ``quantize`` extra (for ``torchao``) and the ``onnx`` extra
+(the Phase-5 sanity check calls ``NNModel.to_onnx`` on the quantized
+model — the legacy TorchScript exporter still needs the ``onnx`` PyPI
+package, even though the ``quantize`` extra alone covers steps 1-4):
+
+    pip install 'thekaveh-nnx[quantize,onnx]'
+
 Run:
-    pip install thekaveh-nnx[quantize]   # or: pip install 'torchao>=0.17'
     python examples/12_quantize_int8.py
 """
 

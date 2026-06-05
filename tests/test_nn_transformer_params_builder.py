@@ -227,3 +227,47 @@ def test_builder_tied_embeddings_true_after_false_overrides_to_true():
     )
     assert params.tie_embeddings is True
     assert "tie_embeddings" not in params.state()
+
+
+def test_builder_dropout_reset_to_default_after_non_default():
+    """Regression: `.dropout(attn=0.5).dropout(attn=0.0)` must leave
+    attn_dropout at 0.0 (the default), not at 0.5 from the prior call.
+    Pre-fix the second call was a silent no-op because the body gated
+    on `if attn != 0.0:`, so the prior 0.5 persisted — breaking the
+    fluent "last call wins" contract that every other setter on this
+    Builder honors (vocab/layers/ffn/tied_embeddings). state() must
+    omit `attn_dropout` at the default."""
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .dropout(attn=0.5, resid=0.3)
+        .dropout(attn=0.0, resid=0.0)
+        .build()
+    )
+    assert params.attn_dropout == 0.0
+    assert params.resid_dropout == 0.0
+    state = params.state()
+    assert "attn_dropout" not in state
+    assert "resid_dropout" not in state
+
+
+def test_builder_context_rope_base_reset_to_default_after_override():
+    """Regression: `.context(max_seq_len=2048, rope_base=500000.0)`
+    followed by `.context(max_seq_len=2048)` must leave rope_base at
+    the dataclass default (10000.0). Pre-fix the second call (with the
+    `rope_base=None` sentinel) was a silent no-op because the body
+    gated on `if rope_base is not None:`, so the prior override
+    persisted — breaking the fluent "last call wins" contract. state()
+    must omit `rope_base` at the default."""
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=2048, rope_base=500000.0)
+        .context(max_seq_len=2048)
+        .build()
+    )
+    assert params.rope_base == 10000.0
+    assert "rope_base" not in params.state()

@@ -297,24 +297,55 @@ class NNModel(_HubMixinBase):
             else:
                 dynamic_axes = {n: {0: "batch"} for n in in_names + out_names}
 
+        # Snapshot training mode so the train → to_onnx → train-more pattern
+        # doesn't silently strand the caller in .eval() (BatchNorm running-
+        # stats / Dropout masking would then stay disabled on the next train
+        # step). Matches the non-destructive contract every sibling inference
+        # helper enforces (predict / evaluate / generate / diffusion.sample /
+        # embed_texts / lr_finder / viz.activation_map / viz.attribute /
+        # viz.netron_export). The bare `self.net.eval()` here was the lone
+        # exception.
+        was_training = self.net.training
         self.net.eval()
         # torch>=2.5 defaults torch.onnx.export to the dynamo-based exporter,
         # which requires `onnxscript`. We pass `dynamo` through explicitly so
         # the default (False) keeps the legacy tracing path regardless of
         # the installed torch version — plain `pip install onnx` is enough.
         try:
-            if dynamo:
-                torch.onnx.export(
-                    self.net,
-                    example_input,
-                    path,
-                    input_names=in_names,
-                    output_names=out_names,
-                    dynamic_shapes=dynamic_shapes,
-                    opset_version=opset_version,
-                    dynamo=True,
-                )
-            else:
+            try:
+                if dynamo:
+                    torch.onnx.export(
+                        self.net,
+                        example_input,
+                        path,
+                        input_names=in_names,
+                        output_names=out_names,
+                        dynamic_shapes=dynamic_shapes,
+                        opset_version=opset_version,
+                        dynamo=True,
+                    )
+                else:
+                    torch.onnx.export(
+                        self.net,
+                        example_input,
+                        path,
+                        input_names=in_names,
+                        output_names=out_names,
+                        dynamic_axes=dynamic_axes,
+                        opset_version=opset_version,
+                        dynamo=False,
+                    )
+            except TypeError:
+                # Older torch versions don't accept the `dynamo` kwarg — they
+                # already use the legacy path by default. If the caller asked
+                # for `dynamo=True` on such a torch, fail loudly rather than
+                # silently falling back to legacy.
+                if dynamo:
+                    raise RuntimeError(
+                        "to_onnx(dynamo=True) requires torch>=2.5 (the dynamo-based "
+                        "ONNX exporter wasn't available before then). Upgrade torch or "
+                        "call with dynamo=False."
+                    ) from None
                 torch.onnx.export(
                     self.net,
                     example_input,
@@ -323,28 +354,10 @@ class NNModel(_HubMixinBase):
                     output_names=out_names,
                     dynamic_axes=dynamic_axes,
                     opset_version=opset_version,
-                    dynamo=False,
                 )
-        except TypeError:
-            # Older torch versions don't accept the `dynamo` kwarg — they
-            # already use the legacy path by default. If the caller asked
-            # for `dynamo=True` on such a torch, fail loudly rather than
-            # silently falling back to legacy.
-            if dynamo:
-                raise RuntimeError(
-                    "to_onnx(dynamo=True) requires torch>=2.5 (the dynamo-based "
-                    "ONNX exporter wasn't available before then). Upgrade torch or "
-                    "call with dynamo=False."
-                ) from None
-            torch.onnx.export(
-                self.net,
-                example_input,
-                path,
-                input_names=in_names,
-                output_names=out_names,
-                dynamic_axes=dynamic_axes,
-                opset_version=opset_version,
-            )
+        finally:
+            if was_training:
+                self.net.train()
         return path
 
     @staticmethod

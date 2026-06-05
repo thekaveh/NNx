@@ -354,3 +354,29 @@ def test_export_ollama_modelfile_minimal_no_system_no_params(tmp_path):
     text = (out_dir / "Modelfile").read_text()
     # Just the FROM line + trailing newline.
     assert text == "FROM ./model.gguf\n", repr(text)
+
+
+def test_export_ollama_modelfile_writes_utf8_for_non_ascii_system(tmp_path):
+    """Regression: `Path.write_text` was missing `encoding="utf-8"`, so
+    a SYSTEM prompt with non-ASCII content (Asian-language fine-tune,
+    emoji prompt) silently mojibake-encoded on Windows pre-PEP-686
+    (locale-default = cp1252). Round-trip as bytes + utf-8 decode to
+    catch any locale-default regression even on Linux/macOS runners."""
+    from nnx.interop import export_ollama_modelfile
+
+    net = _tiny_transformer()
+    tok = _tiny_tokenizer(tmp_path)
+    out_dir = tmp_path / "bundle"
+
+    # Mix of Japanese, accented Latin, and an emoji — every one of these
+    # would corrupt under cp1252 / latin-1 / ascii encoders.
+    non_ascii_system = "あなたは親切なアシスタントです。Café ☕"
+
+    export_ollama_modelfile(net, tok, out_dir, system=non_ascii_system)
+
+    # Decode as utf-8 from raw bytes; if the file was written with the
+    # locale-default encoder on a non-utf-8 platform, this would either
+    # raise UnicodeDecodeError or read mojibake.
+    raw = (out_dir / "Modelfile").read_bytes()
+    text = raw.decode("utf-8")
+    assert non_ascii_system in text, "non-ASCII SYSTEM content did not round-trip as utf-8"

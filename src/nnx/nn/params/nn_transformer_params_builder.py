@@ -75,10 +75,18 @@ class NNTransformerParamsBuilder:
         rope_base: Optional[float] = None,
     ) -> NNTransformerParamsBuilder:
         """Context-length and RoPE base. `max_seq_len` is required;
-        `rope_base` defaults to 10000.0 (the LLaMA / GPT convention)
-        when None — passing it explicitly overrides the default."""
+        `rope_base=None` is the sentinel for "use the dataclass default
+        (10000.0, the LLaMA / GPT convention)". The fluent contract is
+        "last call wins": `.context(rope_base=500000.0).context(max_seq_len=128)`
+        resets `rope_base` to the default — the second call's implicit
+        `rope_base=None` drops the prior override."""
         self._fields["max_seq_len"] = max_seq_len
-        if rope_base is not None:
+        if rope_base is None:
+            # Drop any prior override so the dataclass default governs
+            # at build time; this is what makes last-call-wins work for
+            # the None sentinel.
+            self._fields.pop("rope_base", None)
+        else:
             self._fields["rope_base"] = rope_base
         return self
 
@@ -90,12 +98,12 @@ class NNTransformerParamsBuilder:
     ) -> NNTransformerParamsBuilder:
         """Attention and residual dropout rates. Defaults are both
         0.0 (modern LLM convention; regularization comes from data
-        scale, not dropout). Calling this with the defaults is a no-op
-        on state() — the omit-when-default invariant kicks in."""
-        if attn != 0.0:
-            self._fields["attn_dropout"] = attn
-        if resid != 0.0:
-            self._fields["resid_dropout"] = resid
+        scale, not dropout). The fluent contract is "last call wins"
+        — `.dropout(attn=0.5).dropout(attn=0.0)` correctly resets to
+        `attn=0.0`. The dataclass's omit-when-default `state()` then
+        handles run.id stability automatically."""
+        self._fields["attn_dropout"] = attn
+        self._fields["resid_dropout"] = resid
         return self
 
     def tied_embeddings(self, value: bool) -> NNTransformerParamsBuilder:
