@@ -63,6 +63,25 @@ def test_subpackages_attribute_accessible_after_plain_import():
         assert hasattr(nnx, name), f"nnx.{name} must be attribute-accessible after plain `import nnx`"
 
 
+def test_packagenotfounderror_is_not_a_public_nnx_symbol():
+    """Regression for PR #51: `importlib.metadata.PackageNotFoundError`
+    is used inside the `__version__` try/except in `src/nnx/__init__.py`
+    and must be underscore-aliased so it doesn't leak as a public
+    `nnx.PackageNotFoundError` attribute. Pre-fix the unaliased import
+    accidentally exposed the importlib exception as part of the nnx
+    public surface — confusing for downstream readers / autocomplete
+    consumers and not part of NNx's API. The same pattern applies to any
+    future implementation-detail import that lives in the top-level
+    `nnx/__init__.py` — alias with a leading underscore."""
+    import nnx
+
+    assert not hasattr(nnx, "PackageNotFoundError"), (
+        "nnx.PackageNotFoundError leaked into the public namespace — "
+        "ensure the importlib.metadata import in src/nnx/__init__.py is "
+        "underscore-aliased (e.g. `as _PackageNotFoundError`)."
+    )
+
+
 def test_finetune_submodules_import():
     from nnx.finetune import freezing, loading, param_groups
 

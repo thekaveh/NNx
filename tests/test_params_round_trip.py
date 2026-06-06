@@ -46,6 +46,41 @@ def test_nn_params_round_trip_with_n_heads():
     assert NNParams.from_state(obj.state()) == obj
 
 
+def test_nn_params_state_omits_n_heads_when_none():
+    """Omit-when-default invariant: `n_heads=None` (the default, used
+    by every non-graph-attention path) must NOT appear in `state()` so
+    the run.id hash for a plain FFN config stays stable as the field
+    set evolves. The round-trip tests above cover behavior; this test
+    locks the on-disk-shape contract every other params class already
+    has an explicit assertion for ([[omit-when-default-state-invariant]])."""
+    obj = NNParams(
+        input_dim=784,
+        output_dim=10,
+        dropout_prob=0.2,
+        activation=Activations.RELU,
+        hidden_dims=[128, 64],
+        n_heads=None,
+    )
+    state = obj.state()
+    assert "n_heads" not in state, state
+
+
+def test_nn_params_state_emits_n_heads_when_set():
+    """Companion to the omit-when-default test: when `n_heads` IS set
+    (the GraphAttNN path), the field MUST appear in `state()` so the
+    run.id correctly distinguishes graph-attention configs from sibling
+    GNN configs that share every other field."""
+    obj = NNParams(
+        input_dim=8,
+        output_dim=3,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+        hidden_dims=None,
+        n_heads=4,
+    )
+    assert obj.state().get("n_heads") == 4
+
+
 def test_nn_model_params_round_trip():
     obj = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
     assert NNModelParams.from_state(obj.state()) == obj
