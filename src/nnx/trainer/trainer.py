@@ -40,7 +40,7 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_metric
-from ..nn.enum.checkpoints import Checkpoints
+from ..nn.enum.checkpoints import Checkpoints, phase_tag
 from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -391,14 +391,9 @@ class Trainer:
             net_state=self.model.net.state_dict(),
         )
         if save_phase_checkpoints:
-            if idx_epoch == 0:
-                checkpoint.save(run=run_id, type=Checkpoints.FIRST)
-            elif idx_epoch == int(n_epochs * 1 / 4) - 1:
-                checkpoint.save(run=run_id, type=Checkpoints.Q1)
-            elif idx_epoch == int(n_epochs * 2 / 4) - 1:
-                checkpoint.save(run=run_id, type=Checkpoints.Q2)
-            elif idx_epoch == int(n_epochs * 3 / 4) - 1:
-                checkpoint.save(run=run_id, type=Checkpoints.Q3)
+            tag = phase_tag(idx_epoch, n_epochs)
+            if tag is not None:
+                checkpoint.save(run=run_id, type=tag)
         checkpoint.save(run=run_id, type=Checkpoints.LAST)
         if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
             checkpoint.save(run=run_id, type=Checkpoints.BEST)

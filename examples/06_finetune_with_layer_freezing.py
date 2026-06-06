@@ -39,23 +39,27 @@ from nnx import (
 )
 
 
-def _make_loaders(seed: int, n: int = 256, d: int = 8, n_classes: int = 3):
-    """Random-feature / random-label dataset. The seed differs between the
-    pretrain and fine-tune calls so the two loaders draw distinct samples
-    — sufficient for showing that loss decreases on the new distribution
-    while the backbone stays frozen and only the head trains. (A
-    class-conditional Gaussian setup would make the demo more
-    informative; kept simple to minimize dependencies.)
+def _make_loaders(n: int = 256, d: int = 8, n_classes: int = 3):
+    """Random-feature / random-label dataset drawn from the CURRENT RNG
+    state — the caller seeds via `nnx.set_seed(...)` in `main()` before
+    each phase. Two phases use different seeds so the pretrain and
+    fine-tune draw distinct samples — sufficient for showing that loss
+    decreases on the new distribution while the backbone stays frozen
+    and only the head trains. (A class-conditional Gaussian setup would
+    make the demo more informative; kept simple to minimize dependencies.)
     """
-    torch.manual_seed(seed)
+    # No torch.manual_seed here — the caller does set_seed(...) in main()
+    # (convention: helpers consume the current RNG state; main() owns it).
     X = torch.randn(n, d)
     y = torch.randint(0, n_classes, (n,))
     train = DataLoader(TensorDataset(X, y), batch_size=32, shuffle=True)
     return train
 
 
-def _make_model(seed: int):
-    set_seed(seed)
+def _make_model():
+    # No set_seed here — the caller does it in main() before this call,
+    # so the per-phase seed (0 for pretrain, 1 for fine-tune) deterministically
+    # picks the init.
     return NNModel(
         net_params=NNParams(
             input_dim=8,
@@ -81,8 +85,9 @@ def main():
 
     # ── Phase 1: train a model from scratch on distribution A ──────────
     print("Phase 1: pretrain on distribution A")
-    pretrained = _make_model(seed=0)
-    loader_a = _make_loaders(seed=0)
+    set_seed(0)
+    pretrained = _make_model()
+    loader_a = _make_loaders()
     run_a = pretrained.train(
         params=train_params_template(lr=1e-2).with_train_loader(loader_a),
     )
@@ -96,7 +101,8 @@ def main():
 
     # ── Phase 2: load into a fresh model, freeze backbone, fine-tune ──
     print("\nPhase 2: fine-tune on distribution B (backbone frozen)")
-    fine = _make_model(seed=1)  # different random init
+    set_seed(1)  # different seed → different random init
+    fine = _make_model()
     result = load_pretrained(fine.net, weights_path)
     print(
         f"  loaded {len(result.loaded_keys)} keys, "
@@ -115,7 +121,8 @@ def main():
         f"{total - n_frozen_total}/{total} trainable"
     )
 
-    loader_b = _make_loaders(seed=42)  # distribution B
+    set_seed(42)  # distribution B uses a different seed
+    loader_b = _make_loaders()
     run_b = fine.train(
         params=train_params_template(lr=1e-3).with_train_loader(loader_b),
     )

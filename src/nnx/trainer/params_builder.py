@@ -102,7 +102,16 @@ class NNTrainerParamsBuilder:
         user sees the violation at the Builder boundary — e.g., they
         called `.scheduler("d", ...)` without first calling
         `.optimizer("d", ...)` — rather than at the dataclass ctor.
+
+        `n_epochs` has no meaningful default — call `.n_epochs(N)` before
+        `.build()`. Caught here too, for the same Builder-boundary reason.
         """
+        if "n_epochs" not in self._fields:
+            raise ValueError(
+                "NNTrainerParamsBuilder.n_epochs() must be called before .build() — "
+                "n_epochs has no meaningful default. Example: "
+                ".n_epochs(50).optimizer('main', NNOptimParams(...)).build()"
+            )
         unknown = set(self._schedulers.keys()) - set(self._optims.keys())
         if unknown:
             raise ValueError(

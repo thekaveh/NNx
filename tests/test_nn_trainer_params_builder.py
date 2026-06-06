@@ -91,6 +91,18 @@ def test_builder_rejects_build_without_any_optim():
         NNTrainerParams.builder().n_epochs(10).build()
 
 
+def test_builder_rejects_build_without_n_epochs():
+    """Builder-boundary check: `.build()` without a prior `.n_epochs(N)`
+    surfaces an actionable ValueError NAMING `.n_epochs` rather than
+    letting the dataclass raise a generic `missing required argument`
+    TypeError. Matches the schedulers⊆optims pre-emption in the same
+    `.build()`. Pre-fix the user saw
+    `TypeError: NNTrainerParams.__init__() missing 1 required keyword-only argument: 'n_epochs'`
+    which doesn't name the Builder method to call."""
+    with pytest.raises(ValueError, match=r"\.n_epochs\(\)"):
+        NNTrainerParams.builder().optimizer("main", _make_adam()).build()
+
+
 def test_builder_error_message_names_missing_optim():
     """The error message should be actionable — it names the
     unknown scheduler key AND lists the known optim names."""

@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from .._metrics import _resolve_metric
 from ..utils import Utils
-from .enum.checkpoints import Checkpoints
+from .enum.checkpoints import Checkpoints, phase_tag
 from .params.nn_checkpoint import NNCheckpoint
 from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
@@ -963,16 +963,12 @@ class NNModel(_HubMixinBase):
 
         # Phase markers at epoch boundaries — fractions are nominal (1/4, 2/4,
         # 3/4 of the planned epoch count); off-by-one allowed when n_epochs
-        # isn't divisible by 4. Opt-out via NNTrainParams.save_phase_checkpoints.
+        # isn't divisible by 4. See `phase_tag` for the small-`n_epochs`
+        # caveat. Opt-out via NNTrainParams.save_phase_checkpoints.
         if save_phase_checkpoints:
-            if idx_epoch == 0:
-                checkpoint.save(run=run_id, type=Checkpoints.FIRST)
-            elif idx_epoch == int(n_epochs * 1 / 4) - 1:
-                checkpoint.save(run=run_id, type=Checkpoints.Q1)
-            elif idx_epoch == int(n_epochs * 2 / 4) - 1:
-                checkpoint.save(run=run_id, type=Checkpoints.Q2)
-            elif idx_epoch == int(n_epochs * 3 / 4) - 1:
-                checkpoint.save(run=run_id, type=Checkpoints.Q3)
+            tag = phase_tag(idx_epoch, n_epochs)
+            if tag is not None:
+                checkpoint.save(run=run_id, type=tag)
 
         checkpoint.save(run=run_id, type=Checkpoints.LAST, optimizer_state=opt_state)
 

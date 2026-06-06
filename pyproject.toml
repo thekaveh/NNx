@@ -27,6 +27,12 @@ keywords = [
     # entry points in nnx.* (see [PyPI keywords with features] convention).
     "qat", "huggingface", "safetensors", "ollama",
     "self-supervised-learning", "jepa", "dpo", "moe",
+    # Post-#51 overnight-maintenance pass — three more first-class
+    # entry points that shipped without matching PyPI keywords:
+    # `nnx.lr_finder` (PR #35), `nnx.trainer.Trainer` multi-optim
+    # composite (PR #46), and the cross-cutting Builder pattern
+    # (`<Class>.builder()` on every params dataclass, PRs #43-#46, #48).
+    "learning-rate-finder", "multi-optimizer", "builder-pattern",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
