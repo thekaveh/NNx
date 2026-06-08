@@ -43,6 +43,8 @@ from typing import Union
 import torch
 from torch import nn
 
+from ._source import _resolve_source_to_state_dict
+
 
 class LoRALinear(nn.Module):
     """Linear layer wrapped with a LoRA low-rank residual.
@@ -237,16 +239,7 @@ def load_lora_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     base layer's frozen weights — which are NOT in the LoRA-only
     checkpoint — don't trigger a missing-keys error.
     """
-    if isinstance(source, (str, Path)):
-        # weights_only=True: the LoRA checkpoint is a plain dict of
-        # tensors, no Python objects, so the strict loader works AND
-        # removes the arbitrary-code-execution risk on user-supplied paths.
-        sd = torch.load(str(source), weights_only=True)
-    elif isinstance(source, dict):
-        sd = source
-    else:
-        raise TypeError(f"load_lora_weights source must be a path or dict, got {type(source).__name__}")
-
+    sd = _resolve_source_to_state_dict(source, "load_lora_weights")
     sd = _lora_keys_only(sd)
     module.load_state_dict(sd, strict=False)
     return len(sd)

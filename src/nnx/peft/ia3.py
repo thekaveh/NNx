@@ -33,6 +33,8 @@ from typing import Union
 import torch
 from torch import nn
 
+from ._source import _resolve_source_to_state_dict
+
 
 class IA3Linear(nn.Module):
     """Linear layer wrapped with an IA3 per-output-dim scaling vector.
@@ -179,16 +181,7 @@ def load_ia3_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     base layer's frozen weights — which are NOT in the IA3-only
     checkpoint — don't trigger a missing-keys error.
     """
-    if isinstance(source, (str, Path)):
-        # weights_only=True: the IA3 checkpoint is a plain dict of
-        # tensors, no Python objects, so the strict loader works AND
-        # removes the arbitrary-code-execution risk on user-supplied paths.
-        sd = torch.load(str(source), weights_only=True)
-    elif isinstance(source, dict):
-        sd = source
-    else:
-        raise TypeError(f"load_ia3_weights source must be a path or dict, got {type(source).__name__}")
-
+    sd = _resolve_source_to_state_dict(source, "load_ia3_weights")
     sd = _ia3_keys_only(sd)
     module.load_state_dict(sd, strict=False)
     return len(sd)
