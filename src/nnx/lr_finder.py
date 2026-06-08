@@ -24,7 +24,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 
-@dataclass
+@dataclass(frozen=True, kw_only=True, slots=True)
 class LRFinderResult:
     """Result of an :func:`lr_finder` sweep.
 

@@ -107,13 +107,14 @@ def test_builder_dropout_non_default():
 
 
 def test_builder_build_without_vocab_raises():
-    """The dataclass requires `vocab_size`, `n_layers`, `n_heads`,
-    `d_model`, `max_seq_len` (no defaults on these fields, plus the
-    parent NNParams requires `input_dim` and `output_dim`). The
-    Builder forwards only the keys the user touched, so building
-    without calling `.vocab()` and `.layers()` and `.context()`
-    surfaces the dataclass's TypeError unchanged."""
-    with pytest.raises(TypeError, match=r"missing.*required.*argument"):
+    """Calling .build() before .vocab() / .layers() / .context() raises
+    an actionable Builder-level ValueError naming the missing setter
+    methods — matches the [[builder-pattern-shape]] §11b convention PR
+    #52 established on NNTrainerParamsBuilder. The error message must
+    reference the Builder methods, not the dataclass fields, so the
+    user knows what to call next.
+    """
+    with pytest.raises(ValueError, match=r"NNTransformerParamsBuilder.*\.vocab.*\.layers.*\.context"):
         NNTransformerParams.builder().build()
 
 

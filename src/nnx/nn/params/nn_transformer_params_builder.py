@@ -117,13 +117,41 @@ class NNTransformerParamsBuilder:
     def build(self) -> NNTransformerParams:
         """Construct the dataclass.
 
+        Pre-empts the dataclass's missing-required-argument TypeError
+        with an actionable Builder-level ValueError naming the setter
+        methods that haven't been called yet — matches the
+        [[builder-pattern-shape]] §11b convention that PR #52
+        established on NNTrainerParamsBuilder.
+
         Fills in the dead parent-NNParams fields the TransformerNN
         net never reads but the parent dataclass requires at
         construction. `activation` mirrors the parent NNParams's
         default (`Activations.LEAKY_RELU`); a Builder-default
         mismatch here previously produced a different `state()` /
         `run.id` than the direct-kwarg ctor.
+
+        Raises:
+            ValueError: if `.vocab(size=...)`, `.layers(n=..., heads=...,
+                d_model=...)`, or `.context(max_seq_len=...)` was not
+                called before `.build()`. The message names the
+                specific setter methods that are still missing so the
+                user can complete the chain without consulting the
+                dataclass schema.
         """
+        missing: list[str] = []
+        if "vocab_size" not in self._fields:
+            missing.append(".vocab(size=...)")
+        if "n_layers" not in self._fields:
+            missing.append(".layers(n=..., heads=..., d_model=...)")
+        if "max_seq_len" not in self._fields:
+            missing.append(".context(max_seq_len=...)")
+        if missing:
+            raise ValueError(
+                "NNTransformerParamsBuilder: call "
+                + ", ".join(missing)
+                + " before .build() — each setter fills the dataclass's "
+                "required-no-default fields for the LM path."
+            )
         return NNTransformerParams(
             hidden_dims=None,
             dropout_prob=0.0,

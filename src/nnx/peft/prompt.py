@@ -42,6 +42,7 @@ import torch
 from torch import nn
 
 from ..nn.net.transformer_nn import TransformerNN
+from ._source import _resolve_source_to_state_dict
 
 
 class PromptTuner(nn.Module):
@@ -168,13 +169,7 @@ def load_prompt_weights(tuner: PromptTuner, source: Union[str, Path, dict]) -> i
     Returns:
         The number of parameter tensors loaded.
     """
-    if isinstance(source, (str, Path)):
-        sd = torch.load(str(source), weights_only=True)
-    elif isinstance(source, dict):
-        sd = source
-    else:
-        raise TypeError(f"load_prompt_weights source must be a path or dict, got {type(source).__name__}")
-
+    sd = _resolve_source_to_state_dict(source, "load_prompt_weights")
     sd = {k: v for k, v in sd.items() if "soft_prompt" in k}
     tuner.load_state_dict(sd, strict=False)
     return len(sd)

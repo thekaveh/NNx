@@ -20,6 +20,8 @@ the bottom of this file so callers can write `nnx.vis_utils.confusion_matrix(...
 instead of `nnx.vis_utils.VisUtils.confusion_matrix(...)`.
 """
 
+from __future__ import annotations
+
 import colorsys
 
 import numpy as np

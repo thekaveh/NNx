@@ -22,6 +22,7 @@ NNRun preserving the multi-optim config.
 from __future__ import annotations
 
 from .params import NNTrainerParams
+from .params_builder import NNTrainerParamsBuilder
 from .trainer import Trainer, TrainerStepContext, TrainerStepFn
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "TrainerStepContext",
     "TrainerStepFn",
     "NNTrainerParams",
+    "NNTrainerParamsBuilder",
 ]

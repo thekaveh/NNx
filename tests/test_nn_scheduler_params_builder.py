@@ -144,12 +144,14 @@ def test_builder_last_variant_wins_when_called_twice():
 
 
 def test_builder_build_without_variant_raises():
-    """Calling .build() before selecting a variant raises — the
-    underlying NNSchedulerParams has 5 required fields (min_lr,
-    factor, patience, cooldown, threshold) and the dataclass ctor
-    raises TypeError when they're absent.
+    """Calling .build() before selecting a variant raises an actionable
+    Builder-level ValueError naming the five variant methods — matches
+    the [[builder-pattern-shape]] §11b convention PR #52 established on
+    NNTrainerParamsBuilder. The error message must reference the
+    Builder methods (.reduce_on_plateau(), .step(), ...), not the
+    dataclass fields, so the user knows what to call next.
     """
-    with pytest.raises(TypeError, match="missing.*required.*argument"):
+    with pytest.raises(ValueError, match=r"NNSchedulerParamsBuilder.*\.reduce_on_plateau.*\.step"):
         NNSchedulerParams.builder().build()
 
 

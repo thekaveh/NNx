@@ -51,6 +51,7 @@ from ..nn.net.transformer_layers import (
     multi_head_causal_attention,
 )
 from ..nn.net.transformer_nn import TransformerNN
+from ._source import _resolve_source_to_state_dict
 
 
 class PrefixTuner(nn.Module):
@@ -271,13 +272,7 @@ def load_prefix_weights(tuner: PrefixTuner, source: Union[str, Path, dict]) -> i
     Returns:
         The number of parameter tensors loaded.
     """
-    if isinstance(source, (str, Path)):
-        sd = torch.load(str(source), weights_only=True)
-    elif isinstance(source, dict):
-        sd = source
-    else:
-        raise TypeError(f"load_prefix_weights source must be a path or dict, got {type(source).__name__}")
-
+    sd = _resolve_source_to_state_dict(source, "load_prefix_weights")
     # Filter to prefix-only keys defensively so a full-model state-dict
     # accidentally passed in doesn't blow up the loader.
     sd = {k: v for k, v in sd.items() if "prefix_" in k}
