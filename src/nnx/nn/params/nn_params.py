@@ -20,6 +20,13 @@ class NNParams:
 
     @property
     def dims(self) -> list[int]:
+        # `_dims` is set unconditionally in __post_init__, so the
+        # Optional type on the field is purely a dataclass artifact
+        # (no init=True default for slotted frozen subclasses). The
+        # assert documents that contract for both readers and the
+        # type-checker (pyright can't model __post_init__-set fields
+        # via `object.__setattr__`).
+        assert self._dims is not None
         return self._dims
 
     def __post_init__(self):

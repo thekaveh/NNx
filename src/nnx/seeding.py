@@ -100,6 +100,13 @@ def env_snapshot(force_refresh: bool = False) -> dict:
                 .decode()
                 .strip()
             )
+        # Broad catch is deliberate: env_snapshot() is opportunistic —
+        # the caller isn't in a git repo (CI tarball install, fresh
+        # `pip install` from PyPI, `tempfile.TemporaryDirectory` runs),
+        # `git` isn't on PATH, the 2-second timeout fired, or the
+        # subprocess crashed for any other reason. metadata.yaml just
+        # omits the field; we never want this lookup to surface as an
+        # exception to the user.
         except Exception:
             return None
 
@@ -115,6 +122,8 @@ def env_snapshot(force_refresh: bool = False) -> dict:
                 .strip()
             )
             return bool(out)
+        # Same opportunistic-fallback rationale as `_git_commit` above —
+        # the dirty flag is metadata.yaml decoration, not a precondition.
         except Exception:
             return None
 

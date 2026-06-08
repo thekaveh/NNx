@@ -202,6 +202,7 @@ __all__ = [
     "GraphSageNN",
     "GraphAttNN",
     # Decoder-only transformer / LM path
+    "generation",
     "TransformerNN",
     "NNTransformerParams",
     "NNTransformerParamsBuilder",
@@ -228,6 +229,7 @@ __all__ = [
     "VisUtils",
     "viz",
     # Fine-tuning
+    "finetune",
     "freeze",
     "unfreeze",
     "frozen",
@@ -235,18 +237,21 @@ __all__ = [
     "LoadPretrainedResult",
     "NNParamGroupSpec",
     # Multi-optimizer Trainer
+    "trainer",
     "Trainer",
     "TrainerStepContext",
     "TrainerStepFn",
     "NNTrainerParams",
     "NNTrainerParamsBuilder",
     # Diffusion
+    "diffusion",
     "DiffusionMLP",
     "NoiseSchedule",
     "NoiseSchedulers",
     "diffusion_train_step_factory",
     "sample",
     # Training paradigms
+    "paradigms",
     "kd_train_step_factory",
     "feature_kd_train_step_factory",
     "born_again_train",
@@ -267,6 +272,7 @@ __all__ = [
     "MoELinear",
     "moe_train_step_factory",
     # PEFT (LoRA + DoRA + IA3 + Prefix + Prompt + adapters)
+    "peft",
     "LoRALinear",
     "apply_lora_to",
     "save_lora_weights",
@@ -285,12 +291,14 @@ __all__ = [
     "load_prompt_weights",
     "AdapterLayer",
     # Quantization (PTQ INT8 weight-only + QAT 8da4w via torchao)
+    "quantize",
     "quantize_int8",
     "qat_train_step_factory",
     "QATLifecycleCallback",
     # Pruning (magnitude unstructured + 2:4 semi-structured)
     "prune",
     # Surgery (Net2Net + drop + low-rank + embedding)
+    "surgery",
     "widen",
     "deepen",
     "drop_layer",

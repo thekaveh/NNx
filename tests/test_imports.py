@@ -97,6 +97,57 @@ def test_trainer_submodules_import():
     assert hasattr(trainer, "Trainer")
 
 
+def test_nn_trainer_params_builder_importable_from_subpackage():
+    """``from nnx.trainer import NNTrainerParamsBuilder`` must work
+    just like ``from nnx.peft import LoRALinear`` does. Pre-fix the
+    subpackage ``__init__.py`` re-exported ``NNTrainerParams`` /
+    ``Trainer`` / ``TrainerStepContext`` / ``TrainerStepFn`` but
+    silently omitted the Builder — even though the top-level
+    ``nnx.NNTrainerParamsBuilder`` worked because the top-level
+    ``__init__.py`` imports it from ``trainer.params_builder``
+    directly, bypassing the subpackage's ``__all__``. Two access
+    paths, one missing — a small asymmetry that confuses users who
+    follow the ``from <subpackage> import <class>`` convention every
+    other builder supports."""
+    from nnx.trainer import NNTrainerParams, NNTrainerParamsBuilder
+
+    builder = NNTrainerParams.builder()
+    assert isinstance(builder, NNTrainerParamsBuilder)
+
+
+def test_subpackages_appear_in_top_level_all():
+    """Every subpackage that's attribute-accessible after a plain
+    ``import nnx`` (per ``test_subpackages_attribute_accessible_after_plain_import``)
+    must also appear in ``nnx.__all__``. ``__all__`` is the
+    documented public surface — IDEs, doc generators, Sphinx
+    autosummary, and ``from nnx import *`` all read it. Pre-fix only
+    four (viz / embeddings / interop / prune) were listed; the other
+    eight specialization subpackages (peft / diffusion / finetune /
+    generation / paradigms / quantize / surgery / trainer) were
+    attribute-accessible but absent from ``__all__``."""
+    import nnx
+
+    public_all = set(nnx.__all__)
+    for name in (
+        "diffusion",
+        "embeddings",
+        "finetune",
+        "generation",
+        "interop",
+        "paradigms",
+        "peft",
+        "prune",
+        "quantize",
+        "surgery",
+        "trainer",
+        "viz",
+    ):
+        assert name in public_all, (
+            f"nnx.{name} is attribute-accessible but missing from nnx.__all__; "
+            "add it to the appropriate section in src/nnx/__init__.py"
+        )
+
+
 def test_diffusion_submodules_import():
     from nnx.diffusion import nets, sampling, schedules, training
 
