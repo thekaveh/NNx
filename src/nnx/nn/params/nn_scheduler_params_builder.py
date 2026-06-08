@@ -177,6 +177,13 @@ class NNSchedulerParamsBuilder:
         Forwards only the keys present in `self._fields` so the
         dataclass defaults govern every untouched field — that's what
         preserves the omit-when-default state() invariant.
+
+        Raises:
+            ValueError: if no variant method (`.reduce_on_plateau`,
+                `.step`, `.cosine_annealing`, `.one_cycle`,
+                `.linear_warmup_decay`) was called before `.build()`.
+                The message names the five methods so the user can
+                fix the chain without consulting the dataclass schema.
         """
         # Every variant fills the 5 plateau-shape fields. An empty
         # _fields means no variant was called.

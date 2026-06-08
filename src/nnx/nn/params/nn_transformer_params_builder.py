@@ -129,6 +129,14 @@ class NNTransformerParamsBuilder:
         default (`Activations.LEAKY_RELU`); a Builder-default
         mismatch here previously produced a different `state()` /
         `run.id` than the direct-kwarg ctor.
+
+        Raises:
+            ValueError: if `.vocab(size=...)`, `.layers(n=..., heads=...,
+                d_model=...)`, or `.context(max_seq_len=...)` was not
+                called before `.build()`. The message names the
+                specific setter methods that are still missing so the
+                user can complete the chain without consulting the
+                dataclass schema.
         """
         missing: list[str] = []
         if "vocab_size" not in self._fields:

@@ -105,6 +105,14 @@ class NNTrainerParamsBuilder:
 
         `n_epochs` has no meaningful default — call `.n_epochs(N)` before
         `.build()`. Caught here too, for the same Builder-boundary reason.
+
+        Raises:
+            ValueError: if `.n_epochs(N)` was not called before
+                `.build()`, OR if a `.scheduler(name, ...)` was
+                attached for a name that has no corresponding
+                `.optimizer(name, ...)`. Both messages name the
+                Builder methods to call so the user can fix the chain
+                without consulting the dataclass schema.
         """
         if "n_epochs" not in self._fields:
             raise ValueError(

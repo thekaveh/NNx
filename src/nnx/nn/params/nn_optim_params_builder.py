@@ -163,6 +163,12 @@ class NNOptimParamsBuilder:
         Forwards only the keys present in `self._fields` so the
         dataclass defaults govern every untouched optional field —
         that's what preserves the omit-when-default state() invariant.
+
+        Raises:
+            ValueError: if no variant method (`.adam`, `.adam_amsgrad`,
+                `.sgd`, `.sgd_nesterov`) was called before `.build()`.
+                The message names the four methods so the user can
+                fix the chain without consulting the dataclass schema.
         """
         if "name" not in self._fields:
             raise ValueError(

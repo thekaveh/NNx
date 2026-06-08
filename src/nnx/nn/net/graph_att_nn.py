@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch_geometric as pyg
 from torch import nn
 
