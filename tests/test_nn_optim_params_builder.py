@@ -176,14 +176,16 @@ def test_builder_last_variant_wins_when_called_twice():
 
 
 def test_builder_build_without_variant_raises():
-    """The dataclass requires `name` and `max_lr` (no defaults). The
-    Builder doesn't pre-empt that check — it forwards an empty kwargs
-    dict and the dataclass ctor surfaces the TypeError. Regression
-    protection for the Plan-1 / Plan-4 invariant.
+    """Calling .build() before selecting a variant raises an actionable
+    Builder-level ValueError naming the four variant methods — matches
+    the [[builder-pattern-shape]] §11b convention PR #52 established on
+    NNTrainerParamsBuilder. The error message must reference the
+    Builder methods (.adam(), .sgd(), ...), not the dataclass fields,
+    so the user knows what to call next.
     """
     import pytest
 
-    with pytest.raises(TypeError, match=r"missing.*required.*argument"):
+    with pytest.raises(ValueError, match=r"NNOptimParamsBuilder.*\.adam.*\.sgd"):
         NNOptimParams.builder().build()
 
 

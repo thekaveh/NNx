@@ -155,8 +155,20 @@ class NNOptimParamsBuilder:
     def build(self) -> NNOptimParams:
         """Construct the dataclass from the fields the user touched.
 
+        Pre-empts the dataclass's missing-required-argument TypeError
+        with an actionable Builder-level ValueError naming the variant
+        methods — matches the [[builder-pattern-shape]] §11b convention
+        that PR #52 established on NNTrainerParamsBuilder.
+
         Forwards only the keys present in `self._fields` so the
         dataclass defaults govern every untouched optional field —
         that's what preserves the omit-when-default state() invariant.
         """
+        if "name" not in self._fields:
+            raise ValueError(
+                "NNOptimParamsBuilder: call one of .adam(...), "
+                ".adam_amsgrad(...), .sgd(...), or .sgd_nesterov(...) "
+                "before .build() — a variant selects the optimizer kind "
+                "and sets the required name/max_lr/momentum/weight_decay fields."
+            )
         return NNOptimParams(**self._fields)

@@ -169,8 +169,22 @@ class NNSchedulerParamsBuilder:
     def build(self) -> NNSchedulerParams:
         """Construct the dataclass from the fields the user touched.
 
+        Pre-empts the dataclass's missing-required-argument TypeError
+        with an actionable Builder-level ValueError naming the variant
+        methods — matches the [[builder-pattern-shape]] §11b convention
+        that PR #52 established on NNTrainerParamsBuilder.
+
         Forwards only the keys present in `self._fields` so the
         dataclass defaults govern every untouched field — that's what
         preserves the omit-when-default state() invariant.
         """
+        # Every variant fills the 5 plateau-shape fields. An empty
+        # _fields means no variant was called.
+        if "min_lr" not in self._fields:
+            raise ValueError(
+                "NNSchedulerParamsBuilder: call one of .reduce_on_plateau(...), "
+                ".step(...), .cosine_annealing(...), .one_cycle(...), or "
+                ".linear_warmup_decay(...) before .build() — a variant selects "
+                "the scheduler kind and sets the required plateau-shape fields."
+            )
         return NNSchedulerParams(**self._fields)

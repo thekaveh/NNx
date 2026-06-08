@@ -20,6 +20,7 @@ from nnx.nn.params.nn_optim_params import NNOptimParams
 from nnx.nn.params.nn_params import NNParams
 from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
 from nnx.nn.params.nn_train_params import NNTrainParams
+from nnx.nn.params.nn_transformer_params import NNTransformerParams
 
 
 def test_nn_params_round_trip():
@@ -300,6 +301,77 @@ def test_nn_scheduler_params_state_emits_kind_when_set():
     assert state.get("T_max") == 100
     rt = NNSchedulerParams.from_state(state)
     assert rt == obj
+
+
+def test_nn_transformer_params_round_trip_defaults():
+    """NNTransformerParams round-trip with every optional knob at its
+    default. The omit-when-default invariant means `state()` for this
+    config will be the minimal LM dict; `from_state()` must reconstruct
+    the same object using the dataclass defaults."""
+    obj = NNTransformerParams(
+        input_dim=1024,
+        output_dim=1024,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+        hidden_dims=None,
+        n_heads=4,
+        vocab_size=1024,
+        n_layers=4,
+        d_model=128,
+        max_seq_len=128,
+    )
+    assert NNTransformerParams.from_state(obj.state()) == obj
+
+
+def test_nn_transformer_params_round_trip_with_overrides():
+    """NNTransformerParams round-trip with every optional knob set to a
+    non-default value. Confirms `from_state()` honors the overrides
+    rather than silently falling back to the dataclass default."""
+    obj = NNTransformerParams(
+        input_dim=1024,
+        output_dim=1024,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+        hidden_dims=None,
+        n_heads=4,
+        vocab_size=1024,
+        n_layers=4,
+        d_model=128,
+        max_seq_len=128,
+        ffn_mult=8,
+        rope_base=500000.0,
+        tie_embeddings=False,
+        attn_dropout=0.1,
+        resid_dropout=0.05,
+    )
+    assert NNTransformerParams.from_state(obj.state()) == obj
+
+
+def test_nn_transformer_params_state_omits_defaults():
+    """CRITICAL back-compat invariant: every optional knob on
+    NNTransformerParams omits itself from `state()` when at its
+    default. A vanilla LM config must hash to a stable run.id even as
+    more knobs are added over time. Mirrors the explicit-omit pattern
+    every other params class in this suite already enforces
+    ([[omit-when-default-state-invariant]])."""
+    obj = NNTransformerParams(
+        input_dim=1024,
+        output_dim=1024,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+        hidden_dims=None,
+        n_heads=4,
+        vocab_size=1024,
+        n_layers=4,
+        d_model=128,
+        max_seq_len=128,
+    )
+    state = obj.state()
+    assert "ffn_mult" not in state, state
+    assert "rope_base" not in state, state
+    assert "tie_embeddings" not in state, state
+    assert "attn_dropout" not in state, state
+    assert "resid_dropout" not in state, state
 
 
 def test_nn_run_state_omits_trainer_when_none():
