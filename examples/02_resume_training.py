@@ -30,7 +30,11 @@ from nnx import (
 
 
 def _make_model_and_loader():
-    set_seed(7)
+    # No set_seed here — the caller does set_seed(...) in main() before
+    # each call, per the [[examples-seed-helper-override]] convention.
+    # Centralizing seed management in main() makes the reproducibility
+    # contract visible at the entry point and avoids hidden re-seeding
+    # inside helpers.
     X = torch.randn(128, 8)
     y = torch.randint(0, 3, (128,))
     loader = DataLoader(TensorDataset(X, y), batch_size=32, shuffle=True)
@@ -65,7 +69,9 @@ def main():
         threshold=1e-3,
     )
 
-    # Round 1: train from scratch.
+    # Round 1: train from scratch. Seed pinned so the random model
+    # init + DataLoader shuffle order are reproducible.
+    set_seed(7)
     model_a, loader = _make_model_and_loader()
     run_a = model_a.train(
         params=NNTrainParams(
@@ -78,6 +84,11 @@ def main():
     print(f"\nRound 1 done. run.id = {run_a.id}, {len(run_a.idps)} iterations")
 
     # Round 2: build a NEW model (random weights) and resume from round 1's LAST.
+    # Re-seed so the model has the same initial weights as Round 1 (which
+    # get overwritten by load_state_dict on resume anyway); the same seed
+    # also pins the DataLoader shuffle order for an apples-to-apples
+    # continuation of the training trajectory.
+    set_seed(7)
     model_b, loader2 = _make_model_and_loader()
     run_b = model_b.train(
         params=NNTrainParams(

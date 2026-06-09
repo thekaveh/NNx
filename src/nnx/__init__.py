@@ -99,6 +99,14 @@ except ImportError:  # pragma: no cover — exercised in CI without the lm extra
     NNTokenizerParams = None  # type: ignore[assignment,misc]
     train_bpe = None  # type: ignore[assignment]
 
+# Lower-level NNModel.train compatible factory for the embeddings path,
+# promoted alongside the other 10 *_train_step_factory functions for
+# uniform `nnx.<TAB>` discoverability. High-level `train_contrastive`
+# and FAISS export stay under `nnx.embeddings.*` to keep the top-level
+# surface focused on the train-step entry points users will most often
+# reach for.
+from .embeddings import text_contrastive_train_step_factory
+
 # LogitsProcessor chain — pure-torch, no optional deps; always available.
 from .generation import (
     LogitsChain,
@@ -306,6 +314,7 @@ __all__ = [
     "expand_embedding",
     # Embeddings (contrastive trainer + FAISS export)
     "embeddings",
+    "text_contrastive_train_step_factory",
     # Interop (GGUF / Ollama exporters; bound so README's
     # `nnx.interop.write_gguf(...)` works after a plain `import nnx`)
     "interop",
