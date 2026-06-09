@@ -322,7 +322,12 @@ class NNRun:
         # future state() change that smuggles in a non-primitive (e.g.
         # a torch.dtype or a numpy scalar) fails loudly here rather
         # than producing a run.yaml that fails to safe_load.
-        _atomic_write_text(yaml_path, yaml.safe_dump(self.state()))
+        # sort_keys=True is explicit so the on-disk YAML stays stable
+        # across PyYAML versions (the default was False prior to 5.1
+        # and True from 5.1 onward; we pin to the post-5.1 alphabetical
+        # ordering so a future major-version bump can't silently shift
+        # the file shape downstream tooling diffs against).
+        _atomic_write_text(yaml_path, yaml.safe_dump(self.state(), sort_keys=True))
 
         # Env snapshot: written separately so it does NOT contribute to
         # run.id (which is md5(state())). Captures library/torch/python
@@ -330,7 +335,7 @@ class NNRun:
         # debuggable even if the library has moved on.
         from ...seeding import env_snapshot
 
-        _atomic_write_text(metadata_path, yaml.safe_dump(env_snapshot()))
+        _atomic_write_text(metadata_path, yaml.safe_dump(env_snapshot(), sort_keys=True))
 
         _atomic_write_text(
             csv_path,

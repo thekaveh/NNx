@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import reduce
 from typing import Optional
 
+import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision.datasets import VisionDataset
 
@@ -25,6 +26,11 @@ class NNDataset(NNDatasetBase):
     # one batch" (resolved in __post_init__ once the split sizes are known).
     batch_sizes: tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
     val_proportion: float = 0.1
+    # Deterministic split when set — same `seed` + same `val_proportion`
+    # round-trips to the same train/val ids across runs. Default None falls
+    # back to the global torch RNG (the pre-fix behavior). Mirrors the
+    # NNPreferenceDataset contract that the seeded-split family already used.
+    seed: Optional[int] = None
 
     def __post_init__(self):
         full_train_dataset, test_dataset = (
@@ -38,7 +44,10 @@ class NNDataset(NNDatasetBase):
         full_train_len = len(full_train_dataset)
         val_size = int(full_train_len * self.val_proportion)
         train_size = full_train_len - val_size
-        train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size])
+        gen = torch.Generator()
+        if self.seed is not None:
+            gen.manual_seed(int(self.seed))
+        train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size], generator=gen)
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 

@@ -348,3 +348,58 @@ def test_f8_tabular_dataset_rejects_empty_df():
             feature_cols=["f1"],
             target_col="label",
         )
+
+
+def test_f8_tabular_dataset_seeded_split_is_deterministic():
+    """Reproducibility contract: two NNTabularDataset instances built
+    from the same DataFrame + same `seed` must yield identical
+    train/val/test row allocations. Pre-fix the underlying
+    ``random_split`` call had no ``generator=`` arg, so the split
+    consumed the global torch RNG — fragile under any intervening
+    RNG consumption between ``set_seed(...)`` and dataset construction.
+    Mirrors the seeded-split contract NNPreferenceDataset already had."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(200, dtype=float),
+            "f2": np.arange(200, dtype=float) * 2.0,
+            "label": np.arange(200) % 4,
+        }
+    )
+
+    def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
+        return (
+            sorted(ds.train_loader.dataset.indices),
+            sorted(ds.val_loader.dataset.indices),
+            sorted(ds.test_loader.dataset.indices),
+        )
+
+    a = NNTabularDataset(
+        df=df,
+        feature_cols=["f1", "f2"],
+        target_col="label",
+        val_proportion=0.2,
+        test_proportion=0.2,
+        seed=42,
+    )
+    b = NNTabularDataset(
+        df=df,
+        feature_cols=["f1", "f2"],
+        target_col="label",
+        val_proportion=0.2,
+        test_proportion=0.2,
+        seed=42,
+    )
+    assert _split_indices(a) == _split_indices(b)
+
+    # Sanity: different seed → different split (probabilistic, but with
+    # 200 rows + a 20/20/60 split the chance of accidental equality is
+    # astronomically small).
+    c = NNTabularDataset(
+        df=df,
+        feature_cols=["f1", "f2"],
+        target_col="label",
+        val_proportion=0.2,
+        test_proportion=0.2,
+        seed=7,
+    )
+    assert _split_indices(a) != _split_indices(c)

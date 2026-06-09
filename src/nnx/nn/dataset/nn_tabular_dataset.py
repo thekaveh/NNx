@@ -54,6 +54,11 @@ class NNTabularDataset(NNDatasetBase):
     test_proportion: float = 0.15
     name_override: Optional[str] = None
     feature_dtype: torch.dtype = field(default=torch.float32)
+    # Deterministic split when set — same `seed` + same `val_proportion` /
+    # `test_proportion` round-trips to the same train/val/test ids across
+    # runs. Default None falls back to the global torch RNG (the pre-fix
+    # behavior). Mirrors NNPreferenceDataset's seeded-split contract.
+    seed: Optional[int] = None
 
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
@@ -94,7 +99,10 @@ class NNTabularDataset(NNDatasetBase):
         n_val = int(n_total * self.val_proportion)
         n_test = int(n_total * self.test_proportion)
         n_train = n_total - n_val - n_test
-        train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test])
+        gen = torch.Generator()
+        if self.seed is not None:
+            gen.manual_seed(int(self.seed))
+        train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test], generator=gen)
 
         object.__setattr__(self, "name", self.name_override or "NNTabularDataset")
 

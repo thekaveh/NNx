@@ -29,12 +29,30 @@ def set_seed(seed: int, strict: bool = False) -> None:
 
     Args:
         seed: integer seed shared across Python `random`, NumPy, and PyTorch
-            (CPU + CUDA).
+            (CPU + CUDA). Also written to `os.environ["PYTHONHASHSEED"]`
+            so DataLoader workers started via the `spawn` method (default
+            on Windows + macOS/Py3.8+) inherit a deterministic hash seed.
+            Note: the current Python interpreter's hash state was fixed at
+            startup — this assignment only affects spawned subprocesses.
+            For full hash determinism in the current process, set
+            `PYTHONHASHSEED=<N>` in the shell BEFORE invoking Python.
         strict: when True also calls torch.use_deterministic_algorithms(True)
             and sets CUBLAS_WORKSPACE_CONFIG. Slower and may raise on ops
             that lack a deterministic CUDA implementation; opt in only when
             full bit-for-bit reproducibility matters.
     """
+    # PYTHONHASHSEED governs hash randomization in spawned subprocesses.
+    # The current interpreter's hash state was fixed at startup and is
+    # NOT affected by this assignment — but DataLoader workers using the
+    # `spawn` start method (default on Windows + macOS/Py3.8+) and any
+    # `subprocess.Popen` started downstream inherit this env var. Without
+    # it, those children re-randomize their dict/set hash order, so any
+    # code path that iterates a dict/set populated in the worker can
+    # differ between runs even when every other RNG is seeded. Setting
+    # it here is the cheap defensive move; the explicit caveat is in the
+    # function docstring.
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
