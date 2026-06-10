@@ -331,3 +331,55 @@ def test_nn_run_save_tolerates_default_none_idps(tmp_path):
     loaded = NNRun.load(run.id, root=str(tmp_path))
     assert loaded.idps == []
     assert loaded.id == run.id
+
+
+def test_train_rejects_fully_frozen_model():
+    """freeze('*') then train() previously died mid-loop with torch's
+    raw 'element 0 of tensors does not require grad' — the boundary now
+    names the actual cause."""
+    import pytest
+
+    from nnx.finetune import freeze
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    freeze(model.net, "*")
+    train_loader, _ = _make_tiny_loaders()
+    with pytest.raises(ValueError, match="no trainable parameters"):
+        model.train(params=_train_params(train_loader, None, n_epochs=1))
+
+
+def test_nn_run_load_names_the_corrupt_file(tmp_path, monkeypatch):
+    """Malformed-artifact errors must point at the file that's actually
+    broken: a dropped idps.csv column must not be blamed on run.yaml."""
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=_train_params(train_loader, None, n_epochs=1))
+    run_dir = tmp_path / "runs" / run.id
+
+    # Drop a CSV column → error names idps.csv.
+    import pandas as pd
+
+    from nnx.nn.params.nn_run import NNRun
+
+    csv_path = run_dir / "idps.csv"
+    df = pd.read_csv(csv_path)
+    df.drop(columns=["lr"]).to_csv(csv_path, index=False)
+    with pytest.raises(ValueError, match="idps.csv"):
+        NNRun.load(run.id)
+    df.to_csv(csv_path, index=False)  # restore
+
+    # Drop a run.yaml key → error names run.yaml.
+    import yaml
+
+    yaml_path = run_dir / "run.yaml"
+    rep = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    del rep["net"]
+    yaml_path.write_text(yaml.safe_dump(rep, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="run.yaml"):
+        NNRun.load(run.id)

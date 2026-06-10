@@ -214,6 +214,10 @@ class Trainer:
         for name, opt_params in params.optims.items():
             if not opt_params.is_valid():
                 raise ValueError(f"optim {name!r} has invalid config: {opt_params}")
+        if not any(p.requires_grad for p in self.model.net.parameters()):
+            raise ValueError(
+                "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
+            )
 
         if params.seed is not None:
             from ..seeding import set_seed

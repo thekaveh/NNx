@@ -427,20 +427,28 @@ class NNRun:
             # comment for the metadata round-trip).
             rep = yaml.safe_load(f)
 
-        idps = pd.read_csv(csv_path).to_dict(orient="records")
-
-        # Lazy import for trainer params — keeps `nnx.nn.params` importable
-        # without dragging the trainer subpackage in, and avoids a cycle
-        # if anything in `nnx.trainer` ever needs to import NNRun.
-        trainer_state = rep.get("trainer")
-        if trainer_state is not None:
-            from ...trainer.params import NNTrainerParams
-
-            trainer = NNTrainerParams.from_state(trainer_state)
-        else:
-            trainer = None
+        raw_idps = pd.read_csv(csv_path).to_dict(orient="records")
+        # Separate try-scopes per source file so a missing key names the
+        # FILE that's actually corrupt (a dropped CSV column must not be
+        # reported as a run.yaml problem, and vice versa).
+        try:
+            idps = [NNIterationDataPoint.from_state(idp) for idp in raw_idps]
+        except KeyError as e:
+            raise ValueError(f"malformed idps.csv at {csv_path}: missing column/key {e}") from e
 
         try:
+            # Lazy import for trainer params — keeps `nnx.nn.params`
+            # importable without dragging the trainer subpackage in, and
+            # avoids a cycle if anything in `nnx.trainer` ever needs to
+            # import NNRun.
+            trainer_state = rep.get("trainer")
+            if trainer_state is not None:
+                from ...trainer.params import NNTrainerParams
+
+                trainer = NNTrainerParams.from_state(trainer_state)
+            else:
+                trainer = None
+
             return NNRun(
                 # resolve_from_state: a TRANSFORMER run's net params must
                 # come back as NNTransformerParams, not be downgraded to
@@ -449,7 +457,7 @@ class NNRun:
                 train=NNTrainParams.from_state(rep["train"]),
                 model=NNModelParams.from_state(rep["model"]),
                 trainer=trainer,
-                idps=[NNIterationDataPoint.from_state(idp) for idp in idps],
+                idps=idps,
             )
         except KeyError as e:
             # A hand-edited / truncated run.yaml otherwise surfaces as a

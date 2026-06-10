@@ -453,3 +453,13 @@ def test_f8_tabular_dataset_rejects_noncontiguous_labels():
     df = pd.DataFrame({"f1": [1.0, 2.0, 3.0, 4.0], "label": [0, 5, 0, 5]})
     with pytest.raises(ValueError, match="contiguous"):
         NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")
+
+
+def test_f8_tabular_dataset_rejects_nan_cells():
+    """NaN features flow into NaN losses and a NaN target's float→int64
+    cast is undefined (silent class-0 on ARM) — and the contiguity
+    check can't see it because pandas min/max/nunique skip NaN.
+    Construction must fail fast naming the offending columns."""
+    df = pd.DataFrame({"f1": [1.0, float("nan"), 3.0], "label": [0, 1, 0]})
+    with pytest.raises(ValueError, match="NaN"):
+        NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")

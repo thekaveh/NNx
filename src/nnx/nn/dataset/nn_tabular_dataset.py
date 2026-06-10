@@ -78,6 +78,18 @@ class NNTabularDataset(NNDatasetBase):
         if self.target_col not in self.df.columns:
             raise KeyError(f"NNTabularDataset target_col {self.target_col!r} not in DataFrame")
 
+        # NaN anywhere in the modeled columns is silent poison: NaN
+        # features flow into NaN losses, and a NaN target's float→int64
+        # cast is UNDEFINED (class 0 on ARM, INT64_MIN on x86 → CUDA
+        # device assert) — and the contiguity check below can't see it
+        # because pandas min/max/nunique skip NaN.
+        modeled = self.df[[*self.feature_cols, self.target_col]]
+        if modeled.isna().any().any():
+            bad_cols = [c for c in modeled.columns if modeled[c].isna().any()]
+            raise ValueError(
+                f"NaN values in columns {bad_cols} — drop or impute rows before constructing NNTabularDataset."
+            )
+
         # Coerce features + target → tensors. Trust `dtype=` on torch.tensor
         # rather than going through an extra np.float32 intermediate copy.
         X = torch.tensor(

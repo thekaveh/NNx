@@ -603,6 +603,10 @@ class NNModel(_HubMixinBase):
             )
         if params.optim is None or not params.optim.is_valid():
             raise ValueError(f"train params has an invalid optim config: {params.optim!r}")
+        if not any(p.requires_grad for p in self.net.parameters()):
+            raise ValueError(
+                "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
+            )
 
         # V1: seed every RNG before constructing the run so dataset shuffling,
         # weight init, dropout — anything stochastic — is reproducible. The
