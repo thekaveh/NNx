@@ -79,7 +79,10 @@ in by sniffing the first few bytes:
 - Legacy `torch.save` (with `_use_new_zipfile_serialization=False`)
   and bare pickle files start with the `\x80` PROTO opcode.
 - safetensors files start with a little-endian u64 header length
-  followed by a JSON object — neither pickle prefix can appear there.
+  followed by a JSON object — byte 8 is always `{`. (The u64's low
+  byte can legitimately be `0x80`, colliding with the pickle PROTO
+  opcode, so the loader positively identifies safetensors via byte 8
+  before the pickle sniff.)
 
 The same call works for both:
 

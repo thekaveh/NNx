@@ -160,6 +160,7 @@ Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoar
 from nnx import TrainStepContext, NNEvaluationDataPoint
 
 def my_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+    ctx.model.net.zero_grad()  # the hook owns the full step — see §6.1
     X, _ = ctx.model.net.unpack_batch(ctx.batch)
     X = tuple(x.to(ctx.model.device) for x in X)
     recon, mu, logvar = ctx.model.net(*X)
@@ -592,8 +593,9 @@ alongside `NNModel` rather than replacing it:
   generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
   the returned KV-cache (measured ≈1.9× speedup at 128 tokens on CPU; the
-  gap widens on longer contexts and GPU, within `max_seq_len`). Sampling
-  defaults to greedy (`temperature=0`); the scalar kwargs build the standard
+  gap widens on longer contexts and GPU, within `max_seq_len`). Greedy decoding
+  is available via `temperature=0` (the default `temperature=1.0`
+  samples the full softmax); the scalar kwargs build the standard
   processor chain, and `logits_chain=LogitsChain.builder()...` is the
   power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.3).
 
