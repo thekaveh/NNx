@@ -62,9 +62,11 @@ jobs:
         run: ruff format --check src/ tests/ examples/
 
       - name: Type-check with pyright
-        # Basic mode only on src/; warnings don't fail the build today.
-        # Tighten to `--strict` over time as the codebase gets fully typed.
-        # pyright is now in [dev] extras so locals can reproduce CI.
+        # Advisory only: continue-on-error swallows ERRORS as well as
+        # warnings (the repo carries a known ~80-error baseline from the
+        # net: Tensor|Module typing pattern). The step exists to surface
+        # the report in CI logs; make it gating once the baseline is
+        # burned down. pyright is in [dev] extras so locals reproduce CI.
         run: pyright --warnings
         continue-on-error: true
 

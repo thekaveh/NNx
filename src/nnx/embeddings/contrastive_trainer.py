@@ -57,8 +57,10 @@ class ContrastiveTextDataset(Dataset):
 
     Args:
         pairs: list of ``(anchor, positive)`` string tuples. Empty
-            input raises :class:`ValueError` — NT-Xent needs at least
-            one pair to form a batch.
+            input raises :class:`ValueError`. Note that
+            :func:`train_contrastive` additionally requires >= 2 pairs
+            (NT-Xent needs a negative); a 1-pair dataset is accepted
+            here only for embedding/inference-style uses.
 
     Raises:
         ValueError: if ``pairs`` is empty or any entry isn't a 2-tuple
@@ -386,8 +388,8 @@ def train_contrastive(
     if n_epochs <= 0:
         raise ValueError(f"n_epochs must be positive, got {n_epochs}")
     if batch_size < 2:
-        # batch_size=1 would make EVERY batch hit the B<2 skip in the
-        # loop below — all epochs silently train nothing.
+        # NT-Xent needs at least one negative per batch; with
+        # batch_size=1 every step would be a 0.0-loss no-op.
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
@@ -407,11 +409,11 @@ def train_contrastive(
         batch_size=batch_size,
         shuffle=shuffle,
         collate_fn=pair_collate,
-        # NT-Xent on a single pair is exactly 0.0 loss with zero grads,
-        # but optimizer.step() would still move weights on stale Adam
-        # momentum and the 0.0 deflates the verbose epoch mean — drop
-        # the trailing batch ONLY when it would have size 1. Larger
-        # partial batches carry real contrastive signal and are kept.
+        # NT-Xent on a single pair is exactly 0.0 loss with zero grads
+        # — drop the trailing batch ONLY when it would have size 1.
+        # Larger partial batches carry real contrastive signal and are
+        # kept. Together with the batch_size >= 2 and len(dataset) >= 2
+        # guards above, this makes size-1 batches unreachable.
         drop_last=(len(dataset) > batch_size and len(dataset) % batch_size == 1),
     )
 
@@ -427,10 +429,6 @@ def train_contrastive(
     for epoch in range(n_epochs):
         epoch_losses: list[float] = []
         for anchors, positives in loader:
-            if len(anchors) < 2:
-                # Residual single-pair batch (dataset smaller than
-                # batch_size): no contrastive signal — skip.
-                continue
             optimizer.zero_grad()
             z1 = _encode(backbone, anchors, device)
             z2 = _encode(backbone, positives, device)
