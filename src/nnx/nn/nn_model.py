@@ -121,7 +121,12 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 
     This is the body that `NNModel.train()` runs when no custom
     `train_step_fn` is supplied. It honors:
-      - gradient accumulation (zero_grad at cycle start, step at cycle end)
+      - gradient accumulation (zero_grad at cycle start, step at cycle
+        end). Caveat: when an epoch's batch count isn't a multiple of
+        ``accumulate_grad_batches``, the trailing partial cycle's grads
+        are zeroed at the next epoch's first batch (or dropped at the
+        final epoch's end) without an optimizer step — size your loader
+        or accumulation factor accordingly.
       - AMP (unscales before grad clip; scaler.step + update at cycle end)
       - grad clipping by L2 norm
       - the NaN/Inf guard (raises FloatingPointError on divergent loss)
@@ -685,6 +690,7 @@ class NNModel(_HubMixinBase):
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
+                n_idps_before_epoch = len(idps)
                 for idx_batch, batch in enumerate(params.train_loader):
                     step_ctx = TrainStepContext(
                         model=self,
@@ -711,6 +717,16 @@ class NNModel(_HubMixinBase):
 
                     idx_iter += 1
                     tqdm_bar.update(1)
+
+                if len(idps) == n_idps_before_epoch:
+                    # Zero batches this epoch: first epoch would crash on
+                    # idps[-1] below; later epochs would silently attach
+                    # this epoch's val_edp to the PREVIOUS epoch's last
+                    # idp and reuse its stale train_edp.
+                    raise ValueError(
+                        f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
+                        "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
+                    )
 
                 val_edp = (
                     self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics) if validate else None

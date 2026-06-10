@@ -303,6 +303,7 @@ class Trainer:
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
+                n_idps_before_epoch = len(idps)
                 for idx_batch, batch in enumerate(params.train_loader):
                     step_ctx = TrainerStepContext(
                         model=self.model,
@@ -326,6 +327,15 @@ class Trainer:
                     )
                     idx_iter += 1
                     tqdm_bar.update(1)
+
+                if len(idps) == n_idps_before_epoch:
+                    # Same guard as NNModel.train: zero batches would
+                    # crash on idps[-1] (first epoch) or corrupt the
+                    # previous epoch's logged metrics (later epochs).
+                    raise ValueError(
+                        f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
+                        "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
+                    )
 
                 val_edp = (
                     self.model.evaluate(

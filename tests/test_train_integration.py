@@ -268,3 +268,26 @@ def test_run_checkpoints_slots_and_best_exclusion(tmp_path, monkeypatch):
     assert ckpts[0] is not None, "FIRST should exist"
     assert ckpts[4] is not None, "LAST should exist"
     assert ckpts[1] is None and ckpts[2] is None and ckpts[3] is None, "Q1-Q3 unwritten for n_epochs=1"
+
+
+def test_train_rejects_empty_train_loader(tmp_path, monkeypatch):
+    """A loader that yields zero batches (dataset smaller than
+    batch_size with drop_last=True) must fail fast with an actionable
+    error. Pre-fix the first epoch crashed on a bare IndexError at
+    idps[-1] — and a later zero-batch epoch would have silently
+    attached its val_edp to the previous epoch's last idp."""
+    import pytest
+    from torch.utils.data import DataLoader, TensorDataset
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    X = torch.randn(4, 8)
+    y = torch.randint(0, 3, (4,))
+    empty_loader = DataLoader(TensorDataset(X, y), batch_size=8, drop_last=True)
+    assert len(empty_loader) == 0
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    with pytest.raises(ValueError, match="yielded no batches"):
+        model.train(params=_train_params(empty_loader, None, n_epochs=1))

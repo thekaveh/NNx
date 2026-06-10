@@ -629,7 +629,5 @@ def test_generate_stop_string_in_prompt_does_not_halt_immediately(tmp_path):
     assert candidates, "fixture degenerate: every prompt word appears in the continuation"
     stop_word = candidates[0]
     for use_cache in (True, False):
-        out = model.generate(
-            prompt=prompt, max_new_tokens=8, temperature=0.0, stop=[stop_word], use_cache=use_cache
-        )
+        out = model.generate(prompt=prompt, max_new_tokens=8, temperature=0.0, stop=[stop_word], use_cache=use_cache)
         assert out == base, f"prompt-only stop {stop_word!r} halted generation (use_cache={use_cache})"
