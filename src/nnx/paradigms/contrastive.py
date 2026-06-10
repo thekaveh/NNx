@@ -40,7 +40,8 @@ def nt_xent_loss(
         Scalar loss tensor (mean across the 2B positions in the batch).
 
     Raises:
-        ValueError: if shapes mismatch or ``temperature`` ≤ 0.
+        ValueError: if shapes mismatch, ``temperature`` ≤ 0, or the
+            batch has fewer than 2 pairs (no negatives to contrast).
     """
     if z1.shape != z2.shape:
         raise ValueError(f"z1 / z2 shape mismatch: {z1.shape} vs {z2.shape}")
