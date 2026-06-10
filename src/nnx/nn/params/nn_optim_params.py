@@ -47,6 +47,23 @@ class NNOptimParams:
     accumulate_grad_batches: int = 1
     param_groups: Optional[list[NNParamGroupSpec]] = field(default=None)
 
+    def __post_init__(self):
+        # Fail fast on plain dicts: they construct fine but crash much
+        # later inside state() during NNRun hashing with an opaque
+        # AttributeError. Same construction-time convention as the
+        # dataset classes.
+        if self.param_groups is not None:
+            # Local import — module-top would create a cycle (same
+            # rationale as from_state's lazy import below).
+            from ...finetune.param_groups import NNParamGroupSpec
+
+            for i, g in enumerate(self.param_groups):
+                if not isinstance(g, NNParamGroupSpec):
+                    raise TypeError(
+                        f"param_groups[{i}] must be an NNParamGroupSpec, got {type(g).__name__} — "
+                        "wrap it: NNParamGroupSpec(name_pattern=..., lr=...)."
+                    )
+
     def __str__(self):
         return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"
 
