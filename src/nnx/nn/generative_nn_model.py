@@ -241,12 +241,23 @@ class GenerativeNNModel(NNModel):
         position's attention against the cached prefix. O(T) per
         step instead of O(T^2).
 
-        Sliding-window safety: when the prompt + max_new_tokens would
-        overflow ``max_seq_len``, we drop the oldest entry from each
-        layer's cached k/v before appending the next step. This keeps
-        long-context generation correct without rebuilding the cache
-        from scratch every overflow.
+        Sliding-window safety: once appending another token would
+        overflow ``max_seq_len``, the cache is rebuilt from the current
+        window. Cached k/v are RoPE-stamped at the absolute position
+        they were written at, so merely dropping the oldest entry would
+        pin every later token's offset at ``max_seq_len - 1`` and
+        corrupt the relative position geometry (logits drift vs the
+        no-cache path). Rebuilding re-rotates the window to positions
+        ``0..max_seq_len-1`` — exactly what the no-cache path computes,
+        so greedy/seeded parity holds across overflow. Post-overflow
+        steps therefore cost one full window forward, same as the
+        no-cache path; the O(T) win applies within the window.
         """
+        if max_new_tokens <= 0:
+            # Hard cap honored on this path too: the prefill below
+            # always samples one token, which would emit 1 instead of 0.
+            return
+
         # ----- Prefill pass on the prompt (sliding window). -----
         context_ids = generated[-max_seq_len:]
         ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
@@ -262,16 +273,18 @@ class GenerativeNNModel(NNModel):
 
         # ----- Incremental decode loop. -----
         for _ in range(max_new_tokens - 1):
-            # If appending another token would overflow max_seq_len,
-            # drop the oldest cached k/v position on every layer
-            # (sliding window — matches the no-cache path's behaviour).
             cached_len = past_kvs[0][0].size(-2) if past_kvs and past_kvs[0] is not None else 0
             if cached_len + 1 > max_seq_len:
-                past_kvs = [(k[..., 1:, :], v[..., 1:, :]) for (k, v) in past_kvs]
-
-            last_id = generated[-1]
-            ctx = torch.tensor([[last_id]], dtype=torch.long, device=self.device)
-            logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=past_kvs)
+                # Window full: rebuild the cache from the current
+                # window (see the docstring — dropping the oldest k/v
+                # would corrupt RoPE relative positions). The window
+                # includes generated[-1], so this forward both refills
+                # the cache and yields the next token's logits.
+                ctx = torch.tensor([generated[-max_seq_len:]], dtype=torch.long, device=self.device)
+                logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=None)
+            else:
+                ctx = torch.tensor([[generated[-1]]], dtype=torch.long, device=self.device)
+                logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=past_kvs)
             next_logits = logits[:, -1, :]
             adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
             next_id = sample_next_token(adjusted, generator=gen)

@@ -374,6 +374,101 @@ def test_kv_cache_handles_sliding_window_overflow(tmp_path):
     assert out_cached == out_full
 
 
+def test_kv_cache_logits_parity_across_window_overflow(tmp_path, monkeypatch):
+    """Logits-level parity across the sliding-window overflow. The
+    token-level overflow test above can pass by argmax luck while the
+    underlying distributions drift — pre-fix, the cache path dropped
+    the oldest RoPE-stamped k/v on overflow, pinning every later
+    token's rotary offset at max_seq_len-1 and drifting the sampler's
+    logits by ~0.5 on this fixture (argmax happened to agree). This
+    test spies on the raw logits entering apply_chain (before
+    TemperatureScaling — greedy's temperature=0 collapses them to ±inf
+    one-hots that would mask the drift) and requires the cache and
+    no-cache paths to produce the same distribution at every step."""
+    import nnx.nn.generative_nn_model as gnm
+
+    tokenizer = _make_tokenizer(tmp_path)
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=8,
+    )
+    model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    torch.manual_seed(11)
+    model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+
+    real_chain = gnm.apply_chain
+    captured: dict[str, list[torch.Tensor]] = {"cache": [], "full": []}
+
+    def _spy(key):
+        def spy(logits, *, token_history, processors):
+            captured[key].append(logits.detach().clone())
+            return real_chain(logits, token_history=token_history, processors=processors)
+
+        return spy
+
+    kwargs = dict(prompt="the cat sat on the mat", max_new_tokens=16, temperature=0.0)
+    monkeypatch.setattr(gnm, "apply_chain", _spy("cache"))
+    model.generate(**kwargs, use_cache=True)
+    monkeypatch.setattr(gnm, "apply_chain", _spy("full"))
+    model.generate(**kwargs, use_cache=False)
+
+    assert len(captured["cache"]) == len(captured["full"])
+    for step, (a, b) in enumerate(zip(captured["cache"], captured["full"])):
+        assert torch.allclose(a, b, atol=1e-4), (
+            f"sampler logits diverged at step {step}: max diff {(a - b).abs().max().item():.4f}"
+        )
+
+
+def test_generate_max_new_tokens_zero_emits_nothing(tmp_path):
+    """max_new_tokens=0 must emit zero new tokens on BOTH decode paths.
+    Pre-fix, the cache path's prefill unconditionally sampled one token
+    before entering the loop, so it emitted 1 while the no-cache path
+    emitted 0 — violating the documented hard cap and path parity."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+    expected = tokenizer.decode(tokenizer.encode("the"))
+    out_cached = model.generate(prompt="the", max_new_tokens=0, temperature=0.0, use_cache=True)
+    out_full = model.generate(prompt="the", max_new_tokens=0, temperature=0.0, use_cache=False)
+    assert out_cached == expected
+    assert out_full == expected
+
+
+def test_generate_stop_string_halts_decoding(tmp_path):
+    """`stop=` contract: generation halts early once a stop string
+    appears in the decoded text, and the stop string is present in the
+    output. We first run unconstrained to learn what the model emits,
+    pick a substring from the generated continuation, then re-run with
+    it as a stop string — deterministic because decoding is greedy."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+
+    free_run = model.generate(prompt="the", max_new_tokens=16, temperature=0.0)
+    continuation = free_run[len("the") :].strip()
+    assert continuation, "model emitted nothing; fixture is broken"
+    # Use the continuation's first token-ish chunk as the stop string.
+    stop_str = continuation.split()[0] if continuation.split() else continuation[:2]
+
+    for use_cache in (True, False):
+        out = model.generate(
+            prompt="the", max_new_tokens=16, temperature=0.0, stop=[stop_str], use_cache=use_cache
+        )
+        assert stop_str in out
+        # Halted at (or before) the point the stop string appeared, so
+        # the stopped output is a prefix of the unconstrained run and
+        # strictly shorter than it whenever the stop fired early.
+        assert len(out) <= len(free_run)
+        assert free_run.startswith(out)
+
+
 def test_kv_cache_speedup_at_long_context(tmp_path):
     """Performance regression test: the cache path should be measurably
     faster than the full-recompute path on a non-trivial generation.
