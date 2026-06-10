@@ -25,3 +25,14 @@ def test_utils_print_tree_executes(capsys):
     Utils.print_tree({"a": 1, "b": {"c": 2}})
     captured = capsys.readouterr()
     assert len(captured.out) > 0
+
+
+def test_utils_print_tree_tolerates_empty_dicts(capsys):
+    """Empty dicts — top-level or as a nested value — are a no-op, not a
+    ValueError from max() over zero keys (the pre-fix behavior)."""
+    from nnx.utils import Utils
+
+    Utils.print_tree({})
+    Utils.print_tree({"a": {}})
+    captured = capsys.readouterr()
+    assert "[-] a" in captured.out

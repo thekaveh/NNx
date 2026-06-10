@@ -38,8 +38,9 @@ def sinusoidal_time_embed(t: torch.Tensor, dim: int) -> torch.Tensor:
         raise ValueError(f"sinusoidal_time_embed dim must be even, got {dim}")
     half = dim // 2
     # Inverse-frequency scaling, matching the original Transformer paper
-    # and ho:DDPM.
-    decay = math.log(10000.0) / (half - 1)
+    # and ho:DDPM. half == 1 (dim=2) degenerates to a single unit
+    # frequency — special-cased so the divisor isn't zero.
+    decay = math.log(10000.0) / (half - 1) if half > 1 else 0.0
     freqs = torch.exp(-decay * torch.arange(half, dtype=torch.float32, device=t.device))
     args = t.float().unsqueeze(-1) * freqs.unsqueeze(0)
     return torch.cat([args.sin(), args.cos()], dim=-1)

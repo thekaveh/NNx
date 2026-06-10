@@ -20,6 +20,15 @@ def test_sinusoidal_time_embed_odd_dim_raises():
         sinusoidal_time_embed(torch.arange(4), dim=15)
 
 
+def test_sinusoidal_time_embed_dim_two_degenerates_gracefully():
+    """dim=2 (half=1) is the documented minimum even dim — pre-fix the
+    inverse-frequency divisor (half - 1) was zero and the call raised
+    ZeroDivisionError. It degenerates to a single unit frequency."""
+    out = sinusoidal_time_embed(torch.arange(4), dim=2)
+    assert out.shape == (4, 2)
+    assert torch.isfinite(out).all()
+
+
 def test_sinusoidal_time_embed_distinct_per_t():
     """Different timesteps must produce different embeddings — required
     for the conditioning to carry information."""
