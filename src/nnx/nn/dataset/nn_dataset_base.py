@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Protocol, TypeVar
+from typing import Optional, Protocol, TypeVar
 
 
 class DatasetProtocol(Protocol):
@@ -22,9 +22,11 @@ class NNDatasetBase(ABC):
     input_dim: int = field(init=False)
     output_dim: int = field(init=False)
 
-    train_loader: DatasetType = field(init=False)
-    val_loader: DatasetType = field(init=False)
-    test_loader: DatasetType = field(init=False)
+    train_loader: DatasetProtocol = field(init=False)
+    # val/test may be None: the tabular and preference subclasses set
+    # them to None for empty splits (their documented contract).
+    val_loader: Optional[DatasetProtocol] = field(init=False)
+    test_loader: Optional[DatasetProtocol] = field(init=False)
 
     _state: dict = field(repr=False, init=False)
 

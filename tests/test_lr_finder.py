@@ -339,3 +339,22 @@ def test_lr_finder_early_exits_on_divergence():
     # Sweep should have early-exited well before num_iter=100.
     assert len(result.lrs) < 100
     assert len(result.lrs) >= 1
+
+
+def test_lr_finder_sweep_reaches_end_lr():
+    """The docstring promises a sweep "from start_lr to end_lr"; the old
+    1/num_iter exponent stopped one multiplicative step short of
+    end_lr."""
+    model, loader = _tiny_model_and_loader()
+    result = lr_finder(
+        model,
+        loader,
+        loss_fn=nn.functional.cross_entropy,
+        start_lr=1e-5,
+        end_lr=1.0,
+        num_iter=10,
+    )
+    # Divergence can end the sweep early; when it runs to completion the
+    # last LR must hit end_lr (within float noise).
+    if len(result.lrs) == 10:
+        assert abs(result.lrs[-1] - 1.0) / 1.0 < 1e-6

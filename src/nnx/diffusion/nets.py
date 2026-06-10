@@ -71,6 +71,10 @@ class DiffusionMLP(nn.Module):
         super().__init__()
         if input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {input_dim}")
+        # Same fail-fast as input_dim: an odd/non-positive embed dim
+        # otherwise only surfaces at the first forward, mid-training.
+        if time_embed_dim <= 0 or time_embed_dim % 2 != 0:
+            raise ValueError(f"time_embed_dim must be a positive even integer, got {time_embed_dim}")
         if hidden_dims is None:
             hidden_dims = [128, 128]
         self.input_dim = input_dim

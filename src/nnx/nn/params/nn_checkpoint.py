@@ -221,8 +221,12 @@ class NNCheckpoint:
           opcode — so safetensors is positively identified by byte 8
           BEFORE the ``\x80`` pickle check. The ZIP magic is checked
           first of all (a ZIP's byte 8 is the compression method, never
-          ``{``; a legacy pickle's byte 8 is a frame-length byte,
-          ``0x00`` for any file under a terabyte).
+          ``{``; a torch-LEGACY pickle has the fixed magic byte ``0xf9``
+          at offset 8, and a protocol ≥ 4 bare pickle has a frame-length
+          byte there, ``0x00`` for any file under a terabyte. A
+          protocol-2/3 *bare* pickle's byte 8 is content-dependent, but
+          NNx never produces bare pickles and such a file failed under
+          the old routing too).
 
         Anything matching none of the positive sniffs falls through to
         the safetensors loader, whose error on a genuinely corrupt file

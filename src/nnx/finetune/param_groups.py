@@ -134,7 +134,7 @@ def build_param_groups(
         if not param.requires_grad:
             continue
         for spec, bucket in buckets:
-            if fnmatch.fnmatch(name, spec.name_pattern):
+            if fnmatch.fnmatchcase(name, spec.name_pattern):
                 bucket.append(param)
                 break
         else:

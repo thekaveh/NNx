@@ -81,3 +81,11 @@ def test_diffusion_mlp_unpack_batch_handles_tuple_and_tensor():
     (X_t2,), Y_t2 = net.unpack_batch(x)
     assert torch.equal(X_t2, x)
     assert Y_t2 is None
+
+
+def test_diffusion_mlp_rejects_odd_time_embed_dim():
+    """Fail at construction, not at the first forward mid-training."""
+    from nnx.diffusion import DiffusionMLP
+
+    with pytest.raises(ValueError, match="time_embed_dim"):
+        DiffusionMLP(input_dim=2, time_embed_dim=33)

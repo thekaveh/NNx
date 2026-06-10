@@ -380,3 +380,21 @@ def test_export_ollama_modelfile_writes_utf8_for_non_ascii_system(tmp_path):
     raw = (out_dir / "Modelfile").read_bytes()
     text = raw.decode("utf-8")
     assert non_ascii_system in text, "non-ASCII SYSTEM content did not round-trip as utf-8"
+
+
+def test_export_ollama_modelfile_rejects_injection_shaped_inputs(tmp_path):
+    """Modelfiles are line/token-delimited: an embedded triple-quote
+    terminates a SYSTEM/TEMPLATE block early and a newline in a
+    parameter value injects whole directives — the boundary must reject
+    these BEFORE the expensive GGUF write (so the model args are never
+    touched on the failure path)."""
+    import pytest
+
+    from nnx.interop import export_ollama_modelfile
+
+    with pytest.raises(ValueError, match="triple-quote"):
+        export_ollama_modelfile(None, None, str(tmp_path / "a"), system='x"""y')
+    with pytest.raises(ValueError, match="whitespace"):
+        export_ollama_modelfile(None, None, str(tmp_path / "b"), parameters={"bad key": 1})
+    with pytest.raises(ValueError, match="newlines"):
+        export_ollama_modelfile(None, None, str(tmp_path / "c"), parameters={"stop": "a\nFROM /etc/x"})

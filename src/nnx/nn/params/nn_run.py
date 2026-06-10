@@ -146,7 +146,11 @@ def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
     The loss fallback keeps BEST tracking alive for paradigm runs
     (diffusion / SimCLR / DPO / GAN) whose custom steps leave `.error`
     unset — previously every such run scored +inf, `inf < inf` is
-    False, and `runs/best` stayed frozen on whichever run saved first."""
+    False, and `runs/best` stayed frozen on whichever run saved first.
+    Disclosure: in a runs root mixing error-scored and loss-scored
+    runs, the cross-run comparison is between unlike metrics
+    (error ∈ [0,1] vs unbounded loss) — accepted, since the
+    alternative was a best pointer paradigm runs could never claim."""
     if checkpoint is None:
         return float("inf")
     metric = _resolve_metric(checkpoint.idp.val_edp, checkpoint.idp.train_edp)

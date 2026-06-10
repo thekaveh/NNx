@@ -444,3 +444,12 @@ def test_f8_tabular_dataset_seed_none_follows_global_rng():
     torch.manual_seed(456)
     c = _build()
     assert _split_indices(a) != _split_indices(c)
+
+
+def test_f8_tabular_dataset_rejects_noncontiguous_labels():
+    """Labels {0, 5} would size output_dim=2 from nunique() and only
+    fail much later inside cross-entropy — construction now fails fast
+    with a remapping hint."""
+    df = pd.DataFrame({"f1": [1.0, 2.0, 3.0, 4.0], "label": [0, 5, 0, 5]})
+    with pytest.raises(ValueError, match="contiguous"):
+        NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")

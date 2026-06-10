@@ -86,7 +86,7 @@ def magnitude_prune(
     # function defensive against any future PyTorch internals change.
     targets: list[tuple[str, nn.Linear]] = []
     for name, mod in net.named_modules():
-        if isinstance(mod, nn.Linear) and fnmatch.fnmatch(name, layer_pattern):
+        if isinstance(mod, nn.Linear) and fnmatch.fnmatchcase(name, layer_pattern):
             targets.append((name, mod))
 
     for _, mod in targets:

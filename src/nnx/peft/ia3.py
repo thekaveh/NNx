@@ -117,7 +117,7 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
         parent = module if not parent_path else module.get_submodule(parent_path)
         if isinstance(parent, IA3Linear):
             continue
-        if any(fnmatch.fnmatch(name, p) for p in name_patterns):
+        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
             targets.append(name)
 
     for name in targets:

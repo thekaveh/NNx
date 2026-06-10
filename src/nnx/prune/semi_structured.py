@@ -81,7 +81,7 @@ def semi_structured_24(net: nn.Module, *, layer_pattern: str = "*") -> int:
     # The same name list also drives the filter_fn we pass to torchao.
     targets: set[str] = set()
     for name, mod in net.named_modules():
-        if isinstance(mod, nn.Linear) and fnmatch.fnmatch(name, layer_pattern):
+        if isinstance(mod, nn.Linear) and fnmatch.fnmatchcase(name, layer_pattern):
             targets.add(name)
 
     if not targets:

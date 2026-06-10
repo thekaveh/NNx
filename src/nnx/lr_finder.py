@@ -116,7 +116,10 @@ def lr_finder(
     lrs: list[float] = []
     losses: list[float] = []
 
-    lr_mult = (end_lr / start_lr) ** (1.0 / num_iter)
+    # num_iter - 1: with num_iter points the LAST one must land on
+    # end_lr exactly (1/num_iter stopped one multiplicative step short
+    # of the documented sweep ceiling). num_iter >= 2 is enforced above.
+    lr_mult = (end_lr / start_lr) ** (1.0 / (num_iter - 1))
     current_lr = start_lr
 
     # Running EMA-smoothed loss and its minimum. The divergence check

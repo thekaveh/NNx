@@ -100,6 +100,14 @@ def load_pretrained(
                 if new_key.startswith(foreign):
                     new_key = local + new_key[len(foreign) :]
                     break
+        if new_key in remapped:
+            # Two source keys collapsed onto one target after prefix /
+            # key_map rewriting — silently letting the later one win
+            # would load unpredictable weights.
+            raise ValueError(
+                f"load_pretrained: remapping collapses multiple source keys onto {new_key!r} "
+                "— adjust `prefix` / `key_map` so targets stay unique."
+            )
         remapped[new_key] = val
 
     # 3. Match against the target module's keys and pick the overlap.

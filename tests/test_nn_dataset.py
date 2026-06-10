@@ -92,3 +92,35 @@ def test_nn_dataset_seed_none_follows_global_rng(tmp_path):
     c = NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False)
     assert _split_indices(a) == _split_indices(b)
     assert _split_indices(a) != _split_indices(c)
+
+
+def test_nn_dataset_rejects_bad_val_proportion(tmp_path):
+    """val_proportion outside [0, 1) must fail fast — pre-fix it flowed
+    into random_split / DataLoader and crashed with opaque errors."""
+    import pytest
+
+    with pytest.raises(ValueError, match="val_proportion"):
+        NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, val_proportion=1.5)
+
+
+def test_nn_dataset_val_proportion_zero_yields_empty_val_loader(tmp_path):
+    """val_proportion=0.0 is legal: the val loader exists but yields no
+    batches. Pre-fix, batch_size resolved to 0 and DataLoader raised
+    'batch_size should be a positive integer'."""
+    ds = NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, val_proportion=0.0)
+    assert len(ds.train_loader.dataset) == 30
+    assert len(list(ds.val_loader)) == 0
+
+
+def test_nn_dataset_rejects_shapeless_samples(tmp_path):
+    """Without a transform, torchvision datasets yield PIL Images with
+    no .shape — pre-fix the failure was an opaque AttributeError from
+    input_dim inference; now it's an actionable ValueError."""
+    import pytest
+
+    class _Shapeless(_TinyVision):
+        def __getitem__(self, idx):
+            return object(), 0  # stand-in for a PIL Image
+
+    with pytest.raises(ValueError, match="ToTensor"):
+        NNDataset(ds_class=_Shapeless, root_dir=str(tmp_path), download=False)

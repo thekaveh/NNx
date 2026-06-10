@@ -401,6 +401,12 @@ def train_contrastive(
         batch_size=batch_size,
         shuffle=shuffle,
         collate_fn=pair_collate,
+        # NT-Xent on a single pair is exactly 0.0 loss with zero grads,
+        # but optimizer.step() would still move weights on stale Adam
+        # momentum and the 0.0 deflates the verbose epoch mean — drop
+        # the size-1 trailing batch. Kept False when the whole dataset
+        # fits in one batch (dropping it would mean zero training).
+        drop_last=len(dataset) > batch_size,
     )
 
     trainable = [p for p in backbone.parameters() if p.requires_grad]
@@ -415,6 +421,10 @@ def train_contrastive(
     for epoch in range(n_epochs):
         epoch_losses: list[float] = []
         for anchors, positives in loader:
+            if len(anchors) < 2:
+                # Residual single-pair batch (dataset smaller than
+                # batch_size): no contrastive signal — skip.
+                continue
             optimizer.zero_grad()
             z1 = _encode(backbone, anchors, device)
             z2 = _encode(backbone, positives, device)

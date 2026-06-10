@@ -33,6 +33,8 @@ class NNDataset(NNDatasetBase):
     seed: Optional[int] = None
 
     def __post_init__(self):
+        if not 0.0 <= self.val_proportion < 1.0:
+            raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
         full_train_dataset, test_dataset = (
             self.ds_class(root=self.root_dir, train=True, download=self.download, transform=self.transform),
             self.ds_class(root=self.root_dir, train=False, download=self.download, transform=self.transform),
@@ -53,9 +55,23 @@ class NNDataset(NNDatasetBase):
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 
+        # Fail fast on the no-transform PIL case: torchvision datasets
+        # yield PIL Images without `transform`, and everything downstream
+        # (input_dim inference, batching) needs tensors.
+        sample = full_train_dataset[0][0]
+        if not hasattr(sample, "shape"):
+            raise ValueError(
+                f"{self.ds_class.__name__} samples have no .shape (got {type(sample).__name__}) — "
+                "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
+            )
+
         train_batch_size = self.batch_sizes[0] or len(train_dataset)
-        val_batch_size = self.batch_sizes[1] or len(val_dataset)
-        test_batch_size = self.batch_sizes[2] or len(test_dataset)
+        # max(1, ...): val_proportion=0.0 (or a tiny train set) yields an
+        # empty val split; batch_size=0 is rejected by DataLoader, and the
+        # empty loader simply yields no batches (mirrors the tabular /
+        # preference siblings' empty-split handling).
+        val_batch_size = self.batch_sizes[1] or max(1, len(val_dataset))
+        test_batch_size = self.batch_sizes[2] or max(1, len(test_dataset))
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
 
         object.__setattr__(self, "batch_sizes", resolved_batch_sizes)
@@ -74,7 +90,7 @@ class NNDataset(NNDatasetBase):
 
         # train_loader.dataset is now a Subset (from random_split); shape/classes
         # come from the underlying full_train_dataset instead.
-        object.__setattr__(self, "input_dim", reduce(lambda x, y: x * y, full_train_dataset[0][0].shape))
+        object.__setattr__(self, "input_dim", reduce(lambda x, y: x * y, sample.shape))
 
         object.__setattr__(self, "output_dim", len(full_train_dataset.classes))
 

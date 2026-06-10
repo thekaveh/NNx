@@ -135,7 +135,20 @@ class NNTabularDataset(NNDatasetBase):
 
         object.__setattr__(self, "input_dim", len(self.feature_cols))
         # Classification target dim = number of unique classes in the DF.
-        object.__setattr__(self, "output_dim", int(self.df[self.target_col].nunique()))
+        # Labels must be contiguous 0..K-1: nunique() on e.g. {0, 5}
+        # would size the model at 2 outputs and the mismatch only
+        # surfaces much later inside cross-entropy as an opaque index /
+        # device-side assert error. Fail fast with a fixable message.
+        n_classes = int(self.df[self.target_col].nunique())
+        target_min = int(self.df[self.target_col].min())
+        target_max = int(self.df[self.target_col].max())
+        if target_min != 0 or target_max != n_classes - 1:
+            raise ValueError(
+                f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
+                f"got min={target_min}, max={target_max}, n_unique={n_classes}. "
+                "Remap labels (e.g. pd.factorize) before constructing the dataset."
+            )
+        object.__setattr__(self, "output_dim", n_classes)
 
         object.__setattr__(
             self,
