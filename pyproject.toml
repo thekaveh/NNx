@@ -36,6 +36,9 @@ keywords = [
     # composite (PR #46), and the cross-cutting Builder pattern
     # (`<Class>.builder()` on every params dataclass, PRs #43-#46, #48).
     "learning-rate-finder", "multi-optimizer", "builder-pattern",
+    # Post-#54 overnight-maintenance pass — nnx.viz (six model-internals
+    # primitives + Captum attribution) had no matching keyword.
+    "visualization", "explainability",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

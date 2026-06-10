@@ -88,7 +88,7 @@ Three more Builders shipped alongside the two above:
 
 - **`NNTransformerParams.builder()`** — LM-path config. Six fluent methods (`vocab`, `layers`, `ffn`, `context`, `dropout`, `tied_embeddings`) hide the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`) the transformer net doesn't read. `.layers(n, heads, d_model)` enforces `d_model % heads == 0` at call-time. Full walkthrough in [`docs/lm.md`](lm.md).
 - **`NNTrainerParams.builder()`** — composite, wraps the prior two. `.optimizer(name, NNOptimParams)` + `.scheduler(name, NNSchedulerParams)` register entries under user-chosen names; `.build()` enforces `schedulers.keys() ⊆ optims.keys()` with an actionable error. Used for the GAN-recipe pattern in §8.
-- **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order; `.build()` sorts the standard processors into the canonical HF order (`RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`) with custom processors appended after. Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
+- **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order; `.build()` sorts the standard processors into NNx's canonical order (`RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`; temperature deliberately last — see [`docs/lm.md` §5](lm.md)) with custom processors appended after. Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
 
 ## 3. Enums-as-factories
 

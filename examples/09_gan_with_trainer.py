@@ -80,8 +80,10 @@ class MiniGAN(nn.Module):
 
 
 def sample_real(n: int) -> torch.Tensor:
-    """1D mixture of N(-3, 0.5) and N(3, 0.5). Bimodal, so G has to
-    learn distinct modes — a unimodal generator can't fool a strong D."""
+    """1D mixture of N(-3, 0.5) and N(3, 0.5). Bimodal, so covering the
+    real distribution requires G to learn distinct modes — though this
+    deliberately minimal GAN often collapses onto one of them, which is
+    itself a classic GAN failure mode worth observing."""
     # No torch.manual_seed here — the caller does set_seed(0) in main()
     # before calling us. Re-seeding torch inside this helper would
     # silently override the caller's seed (the recurring bug PR #31's

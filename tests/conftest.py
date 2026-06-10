@@ -26,7 +26,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 # its parallel search kernel when torch's libomp got loaded first.
 # Pinning OMP to a single thread sidesteps the buggy parallel path
 # entirely. Tests don't need multi-threaded BLAS / FAISS to be fast;
-# the suite already runs in ~7s single-threaded. Linux CI doesn't hit
+# the suite already runs in ~15s single-threaded. Linux CI doesn't hit
 # either problem but is also unaffected by the pin (still fast).
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 

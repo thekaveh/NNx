@@ -175,7 +175,11 @@ def _insert_after_linear_in_module_list(
     grandparent = new_model if not grandparent_path else new_model.get_submodule(grandparent_path)
     _check_relu_activation(grandparent, parent_path)
 
-    new_linear = _identity_linear(target.out_features, dtype=target.weight.dtype)
+    new_linear = _identity_linear(
+        target.out_features,
+        dtype=target.weight.dtype,
+        device=target.weight.device,
+    )
 
     # Build a fresh ModuleList with the insertion. nn.ModuleList has
     # .insert(idx, mod), but it mutates in place — to keep the

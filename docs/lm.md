@@ -25,7 +25,7 @@ training is out of scope.
 | `nnx.{TemperatureScaling, TopKFilter, TopPFilter, RepetitionPenalty, apply_chain}` | LogitsProcessor chain — same shape as HF transformers' `LogitsProcessorList`. |
 | `nnx.NNTransformerParamsBuilder` | Fluent variant-gated builder for `NNTransformerParams` — hides the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`); reach via `NNTransformerParams.builder()`. |
 | `nnx.LogitsChain` | Frozen-dataclass wrapper around `list[LogitsProcessor]` with `.apply(logits, token_history) -> Tensor`. Pass via `GenerativeNNModel.generate(logits_chain=...)`. |
-| `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into canonical HF order at `.build()`. Reach via `LogitsChain.builder()`. |
+| `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into NNx's canonical order at `.build()`. Reach via `LogitsChain.builder()`. |
 
 ## 2. Install
 
@@ -181,7 +181,7 @@ chain = (
 text = model.generate(prompt="Once upon", max_new_tokens=64, logits_chain=chain)
 ```
 
-The Builder enforces the canonical HF order (`RepetitionPenalty →
+The Builder enforces NNx's canonical order (`RepetitionPenalty →
 TopKFilter → TopPFilter → TemperatureScaling`) regardless of call
 order; custom processors added via `.custom(proc)` append after the
 canonical group in the order they were added.

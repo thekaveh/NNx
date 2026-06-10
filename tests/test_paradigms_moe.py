@@ -409,9 +409,8 @@ def test_moe_step_clears_stale_aux_loss_of_unexercised_layers():
     raised 'backward through the graph a second time'. The step now
     clears every MoELinear's last_aux_loss before the forward."""
     import torch
-    from torch import nn
 
-    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
     from nnx.nn.moe import MoELinear
     from nnx.nn.nn_model import TrainStepContext
     from nnx.paradigms.moe import moe_train_step_factory

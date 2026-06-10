@@ -205,8 +205,10 @@ def write_gguf(
 
     writer = gguf.GGUFWriter(out_path, arch=architecture)
 
-    # try/finally: any metadata/tensor error below would otherwise leak
-    # the open file handle and leave a partial .gguf without closing it.
+    # try/finally: GGUFWriter opens the file lazily inside
+    # write_header_to_file, so an error in the flush sequence (or in a
+    # future gguf version that opens earlier) would otherwise leak the
+    # handle alongside the partial .gguf. close() is idempotent.
     try:
         # ---------- general metadata ----------
         # ``GGUFWriter(arch=...)`` already records ``general.architecture``;
