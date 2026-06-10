@@ -28,8 +28,15 @@ def _validate_modelfile_inputs(system: str, template: Optional[str], parameters:
     fail fast (and BEFORE the expensive GGUF write) instead of emitting
     a corrupted Modelfile."""
     for label, text in (("system", system), ("template", template)):
-        if text and '"""' in text:
-            raise ValueError(f"{label} must not contain a triple-quote — it would terminate the Modelfile block early.")
+        # An embedded triple-quote terminates the block early; content
+        # merely ENDING in quotes merges with the closing delimiter into
+        # an early terminator too (e.g. 'x""' renders SYSTEM """x""""",
+        # whose first """ scan ends the block at the wrong spot).
+        if text and ('"""' in text or text.endswith('"')):
+            raise ValueError(
+                f"{label} must not contain a triple-quote or end with a double-quote — "
+                "it would terminate the Modelfile block early."
+            )
     if parameters:
         for key, val in parameters.items():
             if any(ch.isspace() for ch in str(key)):

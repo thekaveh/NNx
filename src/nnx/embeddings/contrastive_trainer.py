@@ -404,9 +404,9 @@ def train_contrastive(
         # NT-Xent on a single pair is exactly 0.0 loss with zero grads,
         # but optimizer.step() would still move weights on stale Adam
         # momentum and the 0.0 deflates the verbose epoch mean — drop
-        # the size-1 trailing batch. Kept False when the whole dataset
-        # fits in one batch (dropping it would mean zero training).
-        drop_last=len(dataset) > batch_size,
+        # the trailing batch ONLY when it would have size 1. Larger
+        # partial batches carry real contrastive signal and are kept.
+        drop_last=(len(dataset) > batch_size and len(dataset) % batch_size == 1),
     )
 
     trainable = [p for p in backbone.parameters() if p.requires_grad]

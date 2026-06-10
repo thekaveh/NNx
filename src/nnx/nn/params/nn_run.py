@@ -143,10 +143,11 @@ def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
     checkpoints or fully missing metrics so caller comparisons always
     prefer the *new* run when there's no prior signal.
 
-    The loss fallback keeps BEST tracking alive for paradigm runs
-    (diffusion / SimCLR / DPO / GAN) whose custom steps leave `.error`
-    unset — previously every such run scored +inf, `inf < inf` is
-    False, and `runs/best` stayed frozen on whichever run saved first.
+    The loss fallback keeps BEST tracking alive for runs whose steps
+    leave `.error` unset (custom trainer/GAN step functions — the
+    shipped diffusion/SimCLR/DPO factories do populate `.error`) —
+    previously every such run scored +inf, `inf < inf` is False, and
+    `runs/best` stayed frozen on whichever run saved first.
     Disclosure: in a runs root mixing error-scored and loss-scored
     runs, the cross-run comparison is between unlike metrics
     (error ∈ [0,1] vs unbounded loss) — accepted, since the

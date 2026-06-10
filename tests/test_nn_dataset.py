@@ -103,13 +103,15 @@ def test_nn_dataset_rejects_bad_val_proportion(tmp_path):
         NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, val_proportion=1.5)
 
 
-def test_nn_dataset_val_proportion_zero_yields_empty_val_loader(tmp_path):
-    """val_proportion=0.0 is legal: the val loader exists but yields no
-    batches. Pre-fix, batch_size resolved to 0 and DataLoader raised
-    'batch_size should be a positive integer'."""
+def test_nn_dataset_val_proportion_zero_yields_none_val_loader(tmp_path):
+    """val_proportion=0.0 is legal: val_loader is None (the documented
+    empty-split contract shared with the tabular/preference siblings),
+    so train() skips validation instead of crashing on a zero-sample
+    evaluate pass. Pre-fix, batch_size resolved to 0 and DataLoader
+    raised at construction."""
     ds = NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, val_proportion=0.0)
     assert len(ds.train_loader.dataset) == 30
-    assert len(list(ds.val_loader)) == 0
+    assert ds.val_loader is None
 
 
 def test_nn_dataset_rejects_shapeless_samples(tmp_path):

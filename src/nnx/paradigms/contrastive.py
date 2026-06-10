@@ -46,6 +46,12 @@ def nt_xent_loss(
         raise ValueError(f"z1 / z2 shape mismatch: {z1.shape} vs {z2.shape}")
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
+    if z1.shape[0] < 2:
+        # With a single pair there are no negatives: after the diagonal
+        # mask each row has exactly one finite logit (its positive), so
+        # the loss is identically 0.0 with zero gradient — a silent
+        # no-op train step. Raise instead.
+        raise ValueError(f"nt_xent_loss needs a batch of >= 2 pairs (got {z1.shape[0]}) — no negatives to contrast.")
 
     B = z1.shape[0]
     # L2-normalize so the matmul gives cosine similarity directly.

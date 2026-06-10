@@ -102,12 +102,14 @@ def load_pretrained(
                     break
         if new_key in remapped:
             # Two source keys collapsed onto one target after prefix /
-            # key_map rewriting — silently letting the later one win
-            # would load unpredictable weights.
-            raise ValueError(
-                f"load_pretrained: remapping collapses multiple source keys onto {new_key!r} "
-                "— adjust `prefix` / `key_map` so targets stay unique."
-            )
+            # key_map rewriting. Identical tensors (tied weights stored
+            # under two names) are harmless; differing ones would load
+            # whichever came last — unpredictable, so raise.
+            if not torch.equal(remapped[new_key], val):
+                raise ValueError(
+                    f"load_pretrained: remapping collapses multiple DIFFERING source keys onto {new_key!r} "
+                    "— adjust `prefix` / `key_map` so targets stay unique."
+                )
         remapped[new_key] = val
 
     # 3. Match against the target module's keys and pick the overlap.

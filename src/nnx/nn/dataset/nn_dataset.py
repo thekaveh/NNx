@@ -66,10 +66,8 @@ class NNDataset(NNDatasetBase):
             )
 
         train_batch_size = self.batch_sizes[0] or len(train_dataset)
-        # max(1, ...): val_proportion=0.0 (or a tiny train set) yields an
-        # empty val split; batch_size=0 is rejected by DataLoader, and the
-        # empty loader simply yields no batches (mirrors the tabular /
-        # preference siblings' empty-split handling).
+        # max(1, ...): an empty split would otherwise resolve to
+        # DataLoader(batch_size=0), which raises.
         val_batch_size = self.batch_sizes[1] or max(1, len(val_dataset))
         test_batch_size = self.batch_sizes[2] or max(1, len(test_dataset))
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
@@ -80,8 +78,16 @@ class NNDataset(NNDatasetBase):
             self, "train_loader", DataLoader(shuffle=True, dataset=train_dataset, batch_size=resolved_batch_sizes[0])
         )
 
+        # val_proportion=0.0 → val_loader=None, matching the tabular /
+        # preference siblings' documented empty-split contract (an empty
+        # DataLoader would instead make train() run a zero-sample
+        # validate pass and crash at the end of the first epoch).
         object.__setattr__(
-            self, "val_loader", DataLoader(shuffle=False, dataset=val_dataset, batch_size=resolved_batch_sizes[1])
+            self,
+            "val_loader",
+            DataLoader(shuffle=False, dataset=val_dataset, batch_size=resolved_batch_sizes[1])
+            if len(val_dataset) > 0
+            else None,
         )
 
         object.__setattr__(

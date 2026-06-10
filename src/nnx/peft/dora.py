@@ -154,6 +154,11 @@ def apply_dora_to(
     # invalidating the iterator while reassigning child attributes.
     targets: list[str] = []
     for name, child in module.named_modules():
+        if not name:
+            # named_modules() yields the root itself under "" — it has
+            # no parent attribute to reassign, so an in-place wrap is
+            # impossible. Skip it (wrap the root yourself if needed).
+            continue
         if not isinstance(child, nn.Linear):
             continue
         # Skip the inner .base of an existing LoRALinear (which covers

@@ -13,10 +13,12 @@ additions on top of the raw PyTorch API:
      ``weight_orig`` + ``weight_mask`` pair. This keeps the network's
      ``state_dict`` schema identical to the unpruned network — pruned
      checkpoints load into unpruned code, and vice versa, with
-     ``strict=True``. The trade-off is that once a weight is zeroed
-     it can't be un-pruned (the mask is gone); users who need
-     iterative-pruning schedules pass ``bake=False`` to keep the
-     reparameterization in place.
+     ``strict=True``. The trade-off is that the mask is gone: nothing
+     enforces the zeros afterward, so any SUBSEQUENT training
+     (fine-tuning included) immediately regrows the pruned entries and
+     sparsity decays toward dense. Prune-then-finetune and iterative
+     schedules must use ``bake=False`` (mask enforced through the
+     reparameterization) and bake once at the very end.
 """
 
 from __future__ import annotations
