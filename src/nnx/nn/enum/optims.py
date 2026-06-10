@@ -51,8 +51,9 @@ class Optims(Enum):
             raise ValueError("net must not be None")
 
         if param_groups is not None:
-            # Lazy import to avoid a cycle: build_param_groups lives in
-            # nnx.finetune, which depends on this module via NNOptimParams.
+            # Lazy import — defers the finetune subpackage until a
+            # param-grouped optimizer is actually built (no cycle today;
+            # matches NNOptimParams' deferral style).
             from ...finetune.param_groups import build_param_groups
 
             params_or_groups = build_param_groups(

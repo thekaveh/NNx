@@ -440,15 +440,21 @@ class NNRun:
         else:
             trainer = None
 
-        return NNRun(
-            # resolve_from_state: a TRANSFORMER run's net params must come
-            # back as NNTransformerParams, not be downgraded to NNParams.
-            net=NNParams.resolve_from_state(rep["net"]),
-            train=NNTrainParams.from_state(rep["train"]),
-            model=NNModelParams.from_state(rep["model"]),
-            trainer=trainer,
-            idps=[NNIterationDataPoint.from_state(idp) for idp in idps],
-        )
+        try:
+            return NNRun(
+                # resolve_from_state: a TRANSFORMER run's net params must
+                # come back as NNTransformerParams, not be downgraded to
+                # NNParams.
+                net=NNParams.resolve_from_state(rep["net"]),
+                train=NNTrainParams.from_state(rep["train"]),
+                model=NNModelParams.from_state(rep["model"]),
+                trainer=trainer,
+                idps=[NNIterationDataPoint.from_state(idp) for idp in idps],
+            )
+        except KeyError as e:
+            # A hand-edited / truncated run.yaml otherwise surfaces as a
+            # bare KeyError with no file context.
+            raise ValueError(f"malformed run.yaml at {yaml_path}: missing key {e}") from e
 
     @staticmethod
     def all(root: Optional[str] = None) -> list[NNRun]:
