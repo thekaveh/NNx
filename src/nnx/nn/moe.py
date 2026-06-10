@@ -118,6 +118,15 @@ class MoELinear(nn.Module):
         self.last_aux_loss: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # nn.Linear contract: accept (..., in_features). The routing /
+        # dispatch logic below is written for 2-D input, so flatten the
+        # leading dims here and restore them on return — a (B, T, C)
+        # sequence batch routes each token independently, which is the
+        # standard MoE-in-transformer semantics.
+        lead_shape = x.shape[:-1]
+        if x.dim() > 2:
+            x = x.reshape(-1, self.in_features)
+
         # Router logits: (B, num_experts). The full softmax across
         # all experts is used in the load-balancing penalty (Switch's
         # P_i term needs ALL experts' probability mass, not just the
@@ -173,6 +182,8 @@ class MoELinear(nn.Module):
         mean_prob = probs_full.mean(dim=0)  # (num_experts,)
         self.last_aux_loss = self.num_experts * (dispatch_frac * mean_prob).sum()
 
+        if len(lead_shape) > 1:
+            out = out.reshape(*lead_shape, self.out_features)
         return out
 
     def extra_repr(self) -> str:

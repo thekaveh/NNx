@@ -236,3 +236,19 @@ def test_moe_linear_extra_repr_includes_key_fields():
     repr_str = repr(layer)
     assert "num_experts=3" in repr_str
     assert "top_k=2" in repr_str
+
+
+def test_moe_linear_accepts_3d_input():
+    """The docstring promises nn.Linear drop-in compatibility, and
+    nn.Linear accepts (..., in_features). Pre-fix a (B, T, C) sequence
+    batch raised a cryptic IndexError mid-dispatch; tokens now route
+    independently with leading dims restored on return."""
+    torch.manual_seed(0)
+    layer = MoELinear(in_features=8, out_features=6, num_experts=4, top_k=2)
+    x = torch.randn(3, 5, 8)
+    out = layer(x)
+    assert out.shape == (3, 5, 6)
+    assert layer.last_aux_loss is not None
+    # Parity with the flattened 2-D call (same weights, same tokens).
+    out_flat = layer(x.reshape(-1, 8))
+    assert torch.allclose(out, out_flat.reshape(3, 5, 6), atol=1e-6)

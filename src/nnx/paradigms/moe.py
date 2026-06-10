@@ -77,6 +77,15 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         X = X.to(m.device)
         Y = Y.to(m.device)
 
+        # Clear stale aux losses BEFORE the forward: a MoELinear that's
+        # registered but not exercised by this batch (conditional branch,
+        # frozen tower) would otherwise contribute the previous step's
+        # tensor — whose graph the previous backward already freed —
+        # crashing with "backward through the graph a second time".
+        for module in m.net.modules():
+            if isinstance(module, MoELinear):
+                module.last_aux_loss = None
+
         # The supervised forward populates each MoELinear's
         # ``.last_aux_loss`` as a side effect.
         Y_hat_logits = m.net(X)
