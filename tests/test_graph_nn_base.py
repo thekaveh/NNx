@@ -107,6 +107,9 @@ def test_fwd_pass_scores_seed_nodes_only():
         edge_index=torch.tensor([[0, 1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 0]], dtype=torch.long),
         y=torch.tensor([0, 1, 1, 0, 1, 0]),
         batch_size=n_seed,
+        # input_id marks a genuine NeighborLoader subgraph (the seed
+        # indices) — it gates the slice; see the multi-graph test below.
+        input_id=torch.tensor([0, 1]),
     )
     _, Y, logits, Y_hat = model._fwd_pass(batch)
     assert Y.shape == (n_seed,)
@@ -118,3 +121,76 @@ def test_fwd_pass_scores_seed_nodes_only():
     _, Y_full, logits_full, _ = model._fwd_pass(full)
     assert Y_full.shape == (n_nodes,)
     assert logits_full.shape[0] == n_nodes
+
+
+def test_fwd_pass_does_not_slice_multi_graph_batches():
+    """A PyG Batch.from_data_list collation carries batch_size
+    (= num_graphs) but NO input_id — node-classification over a
+    multi-graph DataLoader must stay unsliced. An over-broad
+    discriminator here would silently truncate node-level logits to
+    the graph count."""
+    from types import SimpleNamespace
+
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams
+
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    n_nodes = 5
+    collated = SimpleNamespace(
+        x=torch.randn(n_nodes, 4),
+        edge_index=torch.tensor([[0, 1, 2, 3, 4], [1, 0, 3, 2, 4]], dtype=torch.long),
+        y=torch.tensor([0, 1, 0, 1, 0]),
+        batch_size=2,  # num_graphs — NOT a seed count
+    )
+    _, Y, logits, _ = model._fwd_pass(collated)
+    assert Y.shape == (n_nodes,)
+    assert logits.shape[0] == n_nodes
+
+
+def test_predict_loader_slices_to_seed_nodes():
+    """predict() over a NeighborLoader-style loader must return one row
+    per SEED node, not per subgraph node — neighbor rows would both
+    pollute the output and break row-count alignment with the loader's
+    node set."""
+    from types import SimpleNamespace
+
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams
+
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+    def _subgraph(n_nodes: int, n_seed: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            x=torch.randn(n_nodes, 4),
+            edge_index=torch.tensor([[i for i in range(n_nodes)], [(i + 1) % n_nodes for i in range(n_nodes)]]),
+            y=torch.zeros(n_nodes, dtype=torch.long),
+            batch_size=n_seed,
+            input_id=torch.arange(n_seed),
+        )
+
+    class _Loader:
+        def __iter__(self):
+            return iter([_subgraph(6, 2), _subgraph(5, 3)])
+
+    # predict() type-checks for DataLoader via isinstance — wrap minimally.
+    result = model.predict(X=_FakeDataLoader(_Loader()))
+    assert result.logits.shape[0] == 5  # 2 + 3 seeds, not 6 + 5 nodes
+    assert result.classes.shape[0] == 5
+
+
+class _FakeDataLoader(torch.utils.data.DataLoader):
+    """A DataLoader subclass whose iteration is fully overridden — lets
+    predict()'s isinstance(X, DataLoader) branch run on synthetic
+    NeighborLoader-shaped batches without torch_geometric machinery."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        # Minimal viable parent init: a one-item dataset, never used.
+        super().__init__(dataset=[0])
+
+    def __iter__(self):
+        return iter(self._inner)

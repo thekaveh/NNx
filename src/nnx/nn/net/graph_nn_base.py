@@ -49,8 +49,17 @@ class GraphNNBase(nn.Module):
         appends their sampled neighbors — which can belong to *other*
         splits. Loss and metrics must be computed on the seed rows only;
         scoring neighbor rows leaks val/test labels into the training
-        loss and train labels into val metrics. Returns None for plain
-        full-graph ``Data`` batches without the attribute.
+        loss and train labels into val metrics.
+
+        Returns None (no slicing) for anything that isn't a
+        NeighborLoader subgraph: plain full-graph ``Data`` has no
+        ``batch_size``, and a multi-graph ``Batch.from_data_list``
+        collation DOES carry ``batch_size`` (= ``num_graphs``) but no
+        ``input_id`` — slicing there would truncate node-level output
+        to the graph count. ``input_id`` is the NeighborLoader-specific
+        marker (the seed indices), so it gates the slice.
         """
+        if getattr(batch, "input_id", None) is None:
+            return None
         n = getattr(batch, "batch_size", None)
         return int(n) if n is not None else None
