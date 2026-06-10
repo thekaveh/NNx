@@ -158,7 +158,8 @@ class NNCheckpoint:
         """Save the checkpoint to disk atomically.
 
         When `optimizer_state` is supplied, a sibling file is written at
-        ``<id>/checkpoints/<type>.opt.pt`` holding the optimizer state dict.
+        ``<id>/checkpoints/<type>.pt.opt.pt`` (the checkpoint path plus
+        an ``.opt.pt`` suffix) holding the optimizer state dict.
         This sidecar is used by NNModel.train(resume_from=...) to warm-resume
         with the prior optimizer momentum / Adam state.
         """

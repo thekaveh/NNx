@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thekaveh-nnx"
-version = "0.1.0"
+# 0.2.0: the dated CHANGELOG [0.1.0] section (2026-05-18 baseline, never
+# tagged or published) already claims 0.1.0; the first real release must
+# ship the [Unreleased] content under a fresh number.
+version = "0.2.0"
 description = "Lightweight PyTorch training/eval/visualization toolkit"
 readme = "README.md"
 license = { file = "LICENSE" }

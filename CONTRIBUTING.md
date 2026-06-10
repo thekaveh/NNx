@@ -15,7 +15,7 @@ pre-commit install              # optional but recommended
 Verify a clean baseline:
 
 ```bash
-pytest                          # full suite (~5s on CPU)
+pytest                          # full suite (~15s on CPU)
 ruff check src/ tests/ examples/  # lint
 ruff format --check src/ tests/ examples/  # format check (matches CI + pre-commit)
 mkdocs build --strict           # docs (gates CI)

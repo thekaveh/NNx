@@ -9,7 +9,7 @@ never touched by the optimizer.
 The shipped path is sized for "verify-the-plumbing on a laptop, run a
 ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
 
-## Public surface
+## 1. Public surface
 
 | Symbol | Notes |
 |---|---|
@@ -21,7 +21,7 @@ ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
 | `nnx.random_block_mask(n_patches, grid_size, …)` | Sample one rectangular block as the prediction target. Returns `(context_mask, target_mask)` 1-D BoolTensors. |
 | `nnx.jepa_train_step_factory(target_encoder, predictor, mask_fn, *, ema_momentum=0.996)` | Returns a `TrainStepFn` for `NNModel.train(..., train_step_fn=...)`. |
 
-## How a step runs
+## 2. How a step runs
 
 ```
 1. mask_fn(n_patches, device) -> (ctx_mask_1d, tgt_mask_1d)
@@ -34,7 +34,7 @@ ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
 7. update_ema(model.net, target_encoder, ema_momentum)
 ```
 
-## Quickstart
+## 3. Quickstart
 
 ```python
 import torch
@@ -101,9 +101,9 @@ run = model.train(
 The full example with an optional CIFAR-10 download lives in
 [`examples/16_ijepa_cifar10.py`](https://github.com/thekaveh/NNx/blob/main/examples/16_ijepa_cifar10.py).
 
-## Design notes
+## 4. Design notes
 
-### Why a separate `ViTNN` instead of reusing `TransformerNN`
+### 4.1. Why a separate `ViTNN` instead of reusing `TransformerNN`
 
 `TransformerNN` (the LM path; see [`docs/lm.md`](lm.md)) is a decoder-only LM stack. Its
 `MultiHeadCausalAttention` hard-codes a causal mask + RoPE on Q/K;
@@ -113,7 +113,7 @@ path that vision callers would have to remember to flip, `ViTNN`
 ships a sibling `_MultiHeadSelfAttention` and reuses the parts that
 generalize (`RMSNorm`, `SwiGLU`).
 
-### Why a single block mask per step
+### 4.2. Why a single block mask per step
 
 The reference I-JEPA samples 4 target blocks per image. The shipped
 `random_block_mask` samples 1 — enough for the demo and forced to
@@ -123,7 +123,7 @@ recipe can compose four calls inside a custom `mask_fn`; the only
 hard constraint is that **kept-counts per batch row must agree** (or
 the encoder will raise).
 
-### EMA update is name-keyed, not positional
+### 4.3. EMA update is name-keyed, not positional
 
 `update_ema` walks `target.named_parameters()` and looks each name
 up on the source. Composing the predictor as a submodule of
@@ -133,14 +133,14 @@ appear on `source.named_parameters()` but not on the target, and
 the EMA correctly leaves them alone. Mismatches the other direction
 (target param missing on source) raise — that's a real bug.
 
-### Loss reporting
+### 4.4. Loss reporting
 
 JEPA has no classification metric. The returned
 `NNEvaluationDataPoint` reports the L2 loss in both `.loss` and
 `.error` so `BEST` checkpoint tracking and `ReduceLROnPlateau` have
 a signal to lock onto. The other classification fields stay zero.
 
-### Sharp edges
+### 4.5. Sharp edges
 
 * **`NNModelParams.mixed_precision=True`** is rejected by the
   factory's `finalize_step` call — like every paradigm step factory

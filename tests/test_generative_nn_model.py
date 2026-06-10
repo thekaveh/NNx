@@ -420,7 +420,7 @@ def test_kv_cache_logits_parity_across_window_overflow(tmp_path, monkeypatch):
     model.generate(**kwargs, use_cache=False)
 
     assert len(captured["cache"]) == len(captured["full"])
-    for step, (a, b) in enumerate(zip(captured["cache"], captured["full"])):
+    for step, (a, b) in enumerate(zip(captured["cache"], captured["full"], strict=True)):
         assert torch.allclose(a, b, atol=1e-4), (
             f"sampler logits diverged at step {step}: max diff {(a - b).abs().max().item():.4f}"
         )

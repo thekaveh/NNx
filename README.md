@@ -255,7 +255,7 @@ Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 m
 Bug reports and PRs welcome via GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup + style guide. Running locally:
 
 ```bash
-pytest                                       # full suite (~5s)
+pytest                                       # full suite (~15s)
 pytest tests/test_callbacks.py::test_lr_monitor_records_history  # one test
 ruff check src/ tests/ examples/             # lint (gates CI)
 ruff format --check src/ tests/ examples/    # format (gates CI)

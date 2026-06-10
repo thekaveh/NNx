@@ -12,7 +12,7 @@ This is intentionally a one-way handoff (NNx -> GGUF). The reverse
 direction (GGUF -> NNx) isn't covered here — every other Python tool
 also writes GGUF; nothing reads it back into a training-shaped framework.
 
-## Install
+## 1. Install
 
 The writer is opt-in — pull in the upstream `gguf` package via the
 `gguf-write` extra:
@@ -24,7 +24,7 @@ pip install "thekaveh-nnx[gguf-write]"   # adds gguf>=0.19.0
 `gguf` is the same Python writer every other GGUF producer uses, so
 the artifact is byte-compatible with every GGUF reader in the ecosystem.
 
-## Public surface
+## 2. Public surface
 
 | Symbol | Notes |
 |---|---|
@@ -32,7 +32,7 @@ the artifact is byte-compatible with every GGUF reader in the ecosystem.
 | `nnx.interop.export_ollama_modelfile` | Emit a directory containing `model.gguf` + `Modelfile` ready for `ollama create`. |
 | `nnx.interop.gguf.SUPPORTED_QUANTIZATIONS` | The pure-Python quantizations — `("F32", "F16", "BF16")`. |
 
-## Quickstart — GGUF
+## 3. Quickstart — GGUF
 
 ```python
 from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe  # noqa: F401
@@ -53,7 +53,7 @@ The fused-QKV projection in NNx's `TransformerNN.attn.w_qkv` is split
 into three tensors (`attn_q`, `attn_k`, `attn_v`) on write so that
 llama.cpp's reader sees the layout it expects.
 
-## Quantization
+## 4. Quantization
 
 | Label | Path |
 |---|---|
@@ -79,7 +79,7 @@ llama-quantize out/model.gguf out/model.Q4_K_M.gguf Q4_K_M
 If you ask `write_gguf(..., quantization="Q4_K_M")` directly it raises
 `ImportError` with the recipe in the message.
 
-## Architecture tag
+## 5. Architecture tag
 
 By default the writer stamps `general.architecture = "nnx_transformer"`.
 This is readable by patched / forked llama.cpp builds and by any
@@ -98,7 +98,7 @@ Verify against your target reader version before deploying — small
 divergences (e.g. RMS-norm epsilon) can show up as numerical drift
 even when the tensor shapes match.
 
-## Ollama bundles
+## 6. Ollama bundles
 
 `export_ollama_modelfile` produces a directory ready for `ollama create`:
 
@@ -149,14 +149,14 @@ ollama create my-nnx-model -f Modelfile
 ollama run my-nnx-model
 ```
 
-## End-to-end examples
+## 7. End-to-end examples
 
 | Example | Demonstrates |
 |---|---|
 | [`examples/17_export_transformer_to_gguf.py`](https://github.com/thekaveh/NNx/blob/main/examples/17_export_transformer_to_gguf.py) | Build TransformerNN -> write F16 GGUF -> round-trip via `gguf.GGUFReader`. |
 | [`examples/18_publish_to_ollama.py`](https://github.com/thekaveh/NNx/blob/main/examples/18_publish_to_ollama.py) | Bundle GGUF + Modelfile + parameters for `ollama create`. |
 
-## Scope
+## 8. Scope
 
 The writer covers `TransformerNN` (NNx's decoder-only LM). Other
 architectures (FeedFwd, the GNNs, diffusion nets) aren't applicable to

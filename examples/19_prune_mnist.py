@@ -47,6 +47,10 @@ from nnx.prune import magnitude_prune
 
 
 def _make_data(n_samples: int = 1024, n_features: int = 16) -> tuple[DataLoader, DataLoader]:
+    # No torch.manual_seed here — the caller does set_seed(42) in main()
+    # before calling us. Re-seeding torch inside this helper would
+    # silently override the caller's seed (the same bug PR #31's review
+    # originally caught in this very file).
     X = torch.randn(n_samples, n_features)
     # Three Gaussian-mixture classes separated by a learned random projection.
     proj = torch.randn(n_features, 3)
