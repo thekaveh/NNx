@@ -426,6 +426,54 @@ def test_kv_cache_logits_parity_across_window_overflow(tmp_path, monkeypatch):
         )
 
 
+def test_kv_cache_incremental_to_rebuild_boundary_parity(tmp_path, monkeypatch):
+    """Covers the incremental→rebuild transition the other overflow
+    tests miss: with a 1-token prompt and max_seq_len=8, the first ~7
+    decode steps take the incremental-append branch and the rest take
+    the rebuild branch — the classic off-by-one site is the
+    `cached_len + 1 > max_seq_len` boundary between them. Logits-level
+    comparison vs the no-cache path at every step."""
+    import nnx.nn.generative_nn_model as gnm
+
+    tokenizer = _make_tokenizer(tmp_path)
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=8,
+    )
+    model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    torch.manual_seed(5)
+    model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+
+    real_chain = gnm.apply_chain
+    captured: dict[str, list[torch.Tensor]] = {"cache": [], "full": []}
+
+    def _spy(key):
+        def spy(logits, *, token_history, processors):
+            captured[key].append(logits.detach().clone())
+            return real_chain(logits, token_history=token_history, processors=processors)
+
+        return spy
+
+    kwargs = dict(prompt="the", max_new_tokens=16, temperature=0.0)
+    monkeypatch.setattr(gnm, "apply_chain", _spy("cache"))
+    model.generate(**kwargs, use_cache=True)
+    monkeypatch.setattr(gnm, "apply_chain", _spy("full"))
+    model.generate(**kwargs, use_cache=False)
+
+    assert len(captured["cache"]) == len(captured["full"])
+    for step, (a, b) in enumerate(zip(captured["cache"], captured["full"], strict=True)):
+        assert torch.allclose(a, b, atol=1e-4), (
+            f"logits diverged at step {step}: max diff {(a - b).abs().max().item():.4f}"
+        )
+
+
 def test_generate_max_new_tokens_zero_emits_nothing(tmp_path):
     """max_new_tokens=0 must emit zero new tokens on BOTH decode paths.
     Pre-fix, the cache path's prefill unconditionally sampled one token

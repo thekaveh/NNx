@@ -237,3 +237,53 @@ def test_mixup_factory_rejects_gradient_accumulation(tmp_path, monkeypatch):
             ),
             train_step_fn=mixup_train_step_factory(alpha=0.4),
         )
+
+
+# -------------------------------------------------------------------------
+# softened_kl — direct unit tests (previously only transitively covered
+# through the distillation trend tests, which a swapped KL direction or a
+# dropped T² factor would likely still pass)
+# -------------------------------------------------------------------------
+
+
+def test_softened_kl_matches_hand_computed_value():
+    """Pin direction (KL(teacher || student)) and value against an
+    independent hand computation at T=1."""
+    from nnx._step_helpers import softened_kl
+
+    student = torch.tensor([[0.0, 0.0]])  # uniform
+    teacher = torch.tensor([[math.log(3.0), 0.0]])  # probs (0.75, 0.25)
+
+    p = (0.75, 0.25)  # teacher softmax
+    q = (0.5, 0.5)  # student softmax
+    expected = sum(pi * (math.log(pi) - math.log(qi)) for pi, qi in zip(p, q, strict=True))
+
+    out = softened_kl(student, teacher, temperature=1.0)
+    assert out.item() == pytest.approx(expected, rel=1e-5)
+
+    # Direction check: KL is asymmetric, so swapping the args must give
+    # a different value for these distributions.
+    swapped = softened_kl(teacher, student, temperature=1.0)
+    assert abs(swapped.item() - out.item()) > 1e-4
+
+
+def test_softened_kl_temperature_scaling():
+    """At temperature T, the result is KL of the T-softened
+    distributions times T² (Hinton 2015 §2) — computed here from raw
+    probabilities, independent of F.kl_div."""
+    from nnx._step_helpers import softened_kl
+
+    student = torch.tensor([[1.0, -1.0]])
+    teacher = torch.tensor([[2.0, 0.0]])
+    T = 2.0
+
+    def _softmax2(a, b):
+        ea, eb = math.exp(a), math.exp(b)
+        return ea / (ea + eb), eb / (ea + eb)
+
+    p = _softmax2(2.0 / T, 0.0 / T)
+    q = _softmax2(1.0 / T, -1.0 / T)
+    expected = (T**2) * sum(pi * (math.log(pi) - math.log(qi)) for pi, qi in zip(p, q, strict=True))
+
+    out = softened_kl(student, teacher, temperature=T)
+    assert out.item() == pytest.approx(expected, rel=1e-5)

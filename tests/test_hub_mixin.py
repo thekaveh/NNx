@@ -148,7 +148,7 @@ def test_hub_from_pretrained_strict_is_honored(tmp_path):
     del sd[dropped]
     save_file(sd, str(weights_path))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="[Mm]issing key"):
         NNModel.from_pretrained(str(tmp_path))  # default strict=True
 
     rt = NNModel.from_pretrained(str(tmp_path), strict=False)

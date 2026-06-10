@@ -59,3 +59,25 @@ def test_resolve_metric_falls_back_to_train_loss_when_only_loss_set_anywhere():
     val = _edp()  # both None
     train = _edp(error=None, loss=0.55)
     assert _resolve_metric(val, train) == 0.55
+
+
+def test_classification_edp_arithmetic():
+    """Direct unit test for the shared classification epilogue: top-1
+    error, loss attachment, and extra-metric invocation (previously
+    only transitively covered through the step-factory tests)."""
+    import torch
+
+    from nnx._metrics import classification_edp
+
+    Y = torch.tensor([0, 1, 1, 0])
+    Y_hat = torch.tensor([0, 1, 0, 0])  # 3 of 4 correct
+    edp = classification_edp(
+        Y=Y,
+        Y_hat=Y_hat,
+        loss=0.5,
+        extra_metrics={"n_samples": lambda y, y_hat: float(len(y))},
+    )
+    assert edp.loss == 0.5
+    assert edp.error == 0.25
+    assert edp.accuracy == 0.75
+    assert edp.extra["n_samples"] == 4.0
