@@ -92,8 +92,12 @@ class DoRALinear(LoRALinear):
         # ``self.scaling = alpha / r``, used for the inherited LoRA
         # forward; we reuse it here for the DoRA recomposition.
         lora_update = (self.lora_B @ self.lora_A) * self.scaling
-        # Optional dropout on the LoRA matrix (not the input) — DoRA's
-        # dropout semantics mirror LoRA's: it perturbs the update path.
+        # Optional dropout on the LoRA matrix (not the input). NOTE:
+        # this is DropConnect-style — it zeroes/rescales entries of the
+        # composed BA *weight matrix* batch-wide, unlike LoRALinear,
+        # which drops entries of the *input activations* per sample.
+        # Deliberate: dropping x here would also perturb the row norms
+        # the magnitude renormalization below depends on.
         # ``self.lora_dropout`` is Identity when dropout=0, so this is
         # a no-op in the common case.
         lora_update = self.lora_dropout(lora_update)

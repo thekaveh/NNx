@@ -183,5 +183,8 @@ def load_ia3_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     """
     sd = _resolve_source_to_state_dict(source, "load_ia3_weights")
     sd = _ia3_keys_only(sd)
-    module.load_state_dict(sd, strict=False)
-    return len(sd)
+    result = module.load_state_dict(sd, strict=False)
+    # strict=False silently drops keys that don't exist on the module
+    # (e.g. loading into an un-adapted model) — subtract them so the
+    # return value is the number of tensors that actually landed.
+    return len(sd) - len(result.unexpected_keys)

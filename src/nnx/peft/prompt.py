@@ -171,5 +171,7 @@ def load_prompt_weights(tuner: PromptTuner, source: Union[str, Path, dict]) -> i
     """
     sd = _resolve_source_to_state_dict(source, "load_prompt_weights")
     sd = {k: v for k, v in sd.items() if "soft_prompt" in k}
-    tuner.load_state_dict(sd, strict=False)
-    return len(sd)
+    result = tuner.load_state_dict(sd, strict=False)
+    # strict=False silently drops keys that don't exist on the tuner —
+    # subtract them so the return value counts tensors that landed.
+    return len(sd) - len(result.unexpected_keys)
