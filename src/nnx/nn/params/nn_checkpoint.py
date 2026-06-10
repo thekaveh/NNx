@@ -271,7 +271,9 @@ class NNCheckpoint:
         return NNCheckpoint(
             idp=_idp_from_nested_state(json.loads(meta["idp"])),
             model_params=NNModelParams.from_state(json.loads(meta["model_params"])),
-            net_params=NNParams.from_state(json.loads(meta["net_params"])),
+            # resolve_from_state: transformer checkpoints round-trip as
+            # NNTransformerParams instead of degrading to base NNParams.
+            net_params=NNParams.resolve_from_state(json.loads(meta["net_params"])),
             net_state=net_state,
         )
 

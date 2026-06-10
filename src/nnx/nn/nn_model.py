@@ -496,7 +496,9 @@ class NNModel(_HubMixinBase):
         net_params_state = config.get("net_params", config)
         model_params_state = config.get("params", config)
 
-        net_params = NNParams.from_state(net_params_state)
+        # resolve_from_state dispatches transformer configs to
+        # NNTransformerParams so LM models round-trip through the Hub.
+        net_params = NNParams.resolve_from_state(net_params_state)
         params = NNModelParams.from_state(model_params_state)
 
         model = cls(net_params=net_params, params=params)

@@ -402,7 +402,9 @@ class NNRun:
             trainer = None
 
         return NNRun(
-            net=NNParams.from_state(rep["net"]),
+            # resolve_from_state: a TRANSFORMER run's net params must come
+            # back as NNTransformerParams, not be downgraded to NNParams.
+            net=NNParams.resolve_from_state(rep["net"]),
             train=NNTrainParams.from_state(rep["train"]),
             model=NNModelParams.from_state(rep["model"]),
             trainer=trainer,
