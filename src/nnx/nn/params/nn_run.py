@@ -289,7 +289,17 @@ class NNRun:
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
-    def checkpoints(self, root: Optional[str] = None) -> list[NNCheckpoint]:
+    def checkpoints(self, root: Optional[str] = None) -> list[Optional[NNCheckpoint]]:
+        """Load this run's five phase checkpoints, in cadence order
+        (FIRST, Q1, Q2, Q3, LAST). Entries are None when the tag was
+        never written — e.g. runs trained with
+        ``save_phase_checkpoints=False`` write only LAST and BEST.
+
+        BEST is deliberately excluded: it duplicates whichever phase
+        checkpoint won, so including it would double-count. Load it
+        directly via ``NNCheckpoint.load(run=run.id,
+        type=Checkpoints.BEST)``.
+        """
         return [
             NNCheckpoint.load(run=self.id, type=Checkpoints.FIRST, root=root),
             NNCheckpoint.load(run=self.id, type=Checkpoints.Q1, root=root),

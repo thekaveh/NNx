@@ -223,3 +223,48 @@ def test_train_rejects_none_or_invalid_params():
     )
     with pytest.raises(ValueError, match=r"^train params has an invalid optim config:"):
         model.train(params=bad_params)
+
+
+def test_train_rejects_none_train_loader():
+    """params.train_loader=None (the dataclass default — "wire later via
+    with_train_loader") must fail fast with an actionable ValueError.
+    Pre-fix, train() printed the run-details table and then crashed in
+    the epoch loop with a raw `TypeError: 'NoneType' object is not
+    iterable`."""
+    import pytest
+
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    params = NNTrainParams(
+        n_epochs=1,
+        optim=NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-3,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+        ),
+    )
+    with pytest.raises(ValueError, match="train_loader is required"):
+        model.train(params=params)
+
+
+def test_run_checkpoints_slots_and_best_exclusion(tmp_path, monkeypatch):
+    """NNRun.checkpoints() contract: five cadence slots in order (FIRST,
+    Q1, Q2, Q3, LAST); None where the tag was never written (a 1-epoch
+    run writes only FIRST and LAST — see phase_tag's small-n_epochs
+    caveat); BEST deliberately excluded as a duplicate pointer."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    train_loader, val_loader = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=_train_params(train_loader, val_loader, n_epochs=1))
+
+    ckpts = run.checkpoints()
+    assert len(ckpts) == 5
+    assert ckpts[0] is not None, "FIRST should exist"
+    assert ckpts[4] is not None, "LAST should exist"
+    assert ckpts[1] is None and ckpts[2] is None and ckpts[3] is None, "Q1-Q3 unwritten for n_epochs=1"

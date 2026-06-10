@@ -195,11 +195,16 @@ class Trainer:
             alongside the standard FIRST/Q1/Q2/Q3/LAST/BEST checkpoints.
 
         Raises:
-            ValueError: when params is None, trainer_step_fn is None, or
-                any optim's NNOptimParams.is_valid() returns False.
+            ValueError: when params is None, params.train_loader is None,
+                trainer_step_fn is None, or any optim's
+                NNOptimParams.is_valid() returns False.
         """
         if params is None:
             raise ValueError("trainer params must not be None")
+        if params.train_loader is None:
+            raise ValueError(
+                "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
+            )
         if trainer_step_fn is None:
             raise ValueError(
                 "trainer_step_fn is required — Trainer has no default "

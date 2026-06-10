@@ -117,3 +117,39 @@ def test_hub_mixin_inheritance_is_visible():
     assert hasattr(NNModel, "save_pretrained")
     assert hasattr(NNModel, "from_pretrained")
     assert hasattr(NNModel, "push_to_hub")
+
+
+def test_hub_from_pretrained_rejects_unexpected_model_kwargs(tmp_path):
+    """Unknown kwargs forwarded by the mixin must raise instead of being
+    silently dropped — NNModel rebuilds entirely from config.json, so a
+    silently-ignored kwarg (e.g. a typo'd knob) would lie to the caller."""
+    import pytest
+
+    m = _tiny_model()
+    m.save_pretrained(str(tmp_path))
+    with pytest.raises(TypeError, match="unexpected model kwargs"):
+        NNModel.from_pretrained(str(tmp_path), nonexistent_knob=1)
+
+
+def test_hub_from_pretrained_strict_is_honored(tmp_path):
+    """`strict` must actually reach load_state_dict. Pre-fix the code
+    read `strict=strict if strict else True` — always True — so
+    strict=False was impossible. Default stays strict (a key mismatch
+    means a corrupted artifact); strict=False opts into partial loads."""
+    import pytest
+    from safetensors.torch import load_file, save_file
+
+    m = _tiny_model()
+    m.save_pretrained(str(tmp_path))
+
+    weights_path = tmp_path / "model.safetensors"
+    sd = load_file(str(weights_path))
+    dropped = sorted(sd)[0]
+    del sd[dropped]
+    save_file(sd, str(weights_path))
+
+    with pytest.raises(RuntimeError):
+        NNModel.from_pretrained(str(tmp_path))  # default strict=True
+
+    rt = NNModel.from_pretrained(str(tmp_path), strict=False)
+    assert isinstance(rt, NNModel)

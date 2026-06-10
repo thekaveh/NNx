@@ -437,7 +437,7 @@ class NNModel(_HubMixinBase):
         local_files_only: bool = False,
         token=None,
         map_location: str = "cpu",
-        strict: bool = False,
+        strict: bool = True,
         **model_kwargs,
     ) -> NNModel:
         """Rebuild an NNModel from a save_pretrained directory or Hub repo.
@@ -445,17 +445,31 @@ class NNModel(_HubMixinBase):
         Dispatched-to by :meth:`PyTorchModelHubMixin.from_pretrained`,
         which handles the remote-download path before calling this. Local
         paths skip the download. Either way, we read ``config.json`` to
-        reconstruct ``NNParams`` and ``NNModelParams`` via their public
+        reconstruct the net params and ``NNModelParams`` via their public
         ``from_state`` constructors, then load ``model.safetensors`` into
         the freshly-built ``self.net``.
 
-        ``map_location`` and ``strict`` are accepted for parity with the
-        mixin's PyTorch contract but ignored on the safetensors path —
-        the weights are deserialized into CPU tensors then moved by
-        ``NNModel.__init__`` to ``self.device`` via the ``self.net.to(device)``
-        call. ``strict`` doesn't apply because we instantiate the net from
-        the config first, so the keys must match by construction.
+        ``map_location`` is forwarded as the safetensors ``device=`` (the
+        net is then moved to ``self.device`` by ``NNModel.__init__``
+        regardless). ``strict`` is forwarded to ``load_state_dict``; it
+        defaults to True because the net is instantiated from the same
+        config the weights were saved with, so any key mismatch indicates
+        a corrupted or hand-edited artifact. Unrecognized ``model_kwargs``
+        raise instead of being silently dropped — NNModel reconstructs
+        entirely from ``config.json``.
         """
+        # The mixin inspects NNModel.__init__'s signature and auto-injects
+        # matching config.json entries ("net_params"/"params") as kwargs.
+        # Both are rebuilt from config.json below via from_state — the
+        # raw dicts are dropped knowingly. Anything else is a caller
+        # error (a typo'd knob would otherwise vanish silently).
+        model_kwargs.pop("net_params", None)
+        model_kwargs.pop("params", None)
+        if model_kwargs:
+            raise TypeError(
+                f"from_pretrained got unexpected model kwargs {sorted(model_kwargs)!r} — "
+                "NNModel reconstructs entirely from the repo's config.json."
+            )
         try:
             from safetensors.torch import load_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
@@ -503,7 +517,7 @@ class NNModel(_HubMixinBase):
 
         model = cls(net_params=net_params, params=params)
         state_dict = load_file(weights_path, device=map_location)
-        model.net.load_state_dict(state_dict, strict=strict if strict else True)
+        model.net.load_state_dict(state_dict, strict=strict)
         return model
 
     def freeze(self, *patterns: str) -> int:
@@ -573,13 +587,18 @@ class NNModel(_HubMixinBase):
             object is returned with the in-memory idps list attached.
 
         Raises:
-            ValueError: if `params` is None or `params.optim` is invalid.
+            ValueError: if `params` is None, `params.train_loader` is
+                None, or `params.optim` is invalid.
             FloatingPointError: from `default_train_step` if training
                 loss becomes non-finite (custom `train_step_fn` hooks are
                 responsible for their own divergence checks).
         """
         if params is None:
             raise ValueError("train params must be non-None")
+        if params.train_loader is None:
+            raise ValueError(
+                "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
+            )
         if params.optim is None or not params.optim.is_valid():
             raise ValueError(f"train params has an invalid optim config: {params.optim!r}")
 

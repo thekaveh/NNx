@@ -126,6 +126,26 @@ def test_trainer_train_rejects_none_step_fn():
         trainer.train(params=params, trainer_step_fn=None)
 
 
+def test_trainer_train_rejects_none_train_loader():
+    """train_loader=None must fail fast with an actionable ValueError
+    instead of the raw TypeError the epoch loop used to throw after
+    printing the run-details table."""
+    trainer = Trainer(model=_supervised_model())
+    params = NNTrainerParams(
+        n_epochs=1,
+        optims={
+            "main": NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            )
+        },
+    )
+    with pytest.raises(ValueError, match="train_loader is required"):
+        trainer.train(params=params, trainer_step_fn=_supervised_step)
+
+
 def test_trainer_train_rejects_invalid_optim():
     trainer = Trainer(model=_supervised_model())
     # Adam with a scalar momentum is invalid (Adam wants (beta1, beta2)).
