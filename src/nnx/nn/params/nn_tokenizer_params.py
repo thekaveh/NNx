@@ -64,6 +64,13 @@ class NNTokenizerParams:
         # leave a truncated tokenizer.json that from_state can never
         # load (matches the atomic-write convention of NNRun.save /
         # NNCheckpoint.to_file).
+        # Parent dir first: the Rust-side save otherwise fails from a
+        # fresh cwd with a cryptic "No such file or directory (os error
+        # 2)" for paths like "artifacts/tok.json" (parity with
+        # write_gguf / export_ollama_modelfile).
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         tmp = path + ".tmp"
         tokenizer.save(tmp)
         os.replace(tmp, path)

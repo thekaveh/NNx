@@ -96,3 +96,14 @@ def test_tokenizer_params_from_state_loads_from_disk(tmp_path):
     tk.save(str(tokenizer_path))
     loaded = NNTokenizerParams.from_state({"path": str(tokenizer_path)})
     assert loaded.vocab_size == tk.get_vocab_size()
+
+
+def test_of_creates_parent_directories(tmp_path):
+    """NNTokenizerParams.of("artifacts/tok.json") from a fresh cwd
+    previously failed with a cryptic Rust-side 'No such file or
+    directory' — parity with write_gguf / export_ollama_modelfile."""
+    tk = train_bpe(files=None, vocab_size=64, texts=_tiny_corpus(), special_tokens=["<pad>", "<bos>", "<eos>"])
+    nested = tmp_path / "deep" / "nested" / "tok.json"
+    params = NNTokenizerParams.of(tokenizer=tk, path=str(nested))
+    assert nested.exists()
+    assert params.path == str(nested)
