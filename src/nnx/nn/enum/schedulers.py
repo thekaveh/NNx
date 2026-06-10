@@ -82,6 +82,8 @@ class Schedulers(Enum):
                     return max(0.0, 1.0 - progress)
 
                 return lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
+
+
 def _reject_short_total_steps(total_steps: int, n_epochs: int) -> None:
     """NNx steps schedulers once per EPOCH (not per batch, the HF habit),
     so an explicit total_steps < n_epochs is always a config error:
