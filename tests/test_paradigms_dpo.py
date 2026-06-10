@@ -290,3 +290,32 @@ def test_dpo_ref_model_stays_frozen(tmp_path, monkeypatch):
         )
     # And requires_grad stays cleared.
     assert all(not p.requires_grad for p in ref_model.net.parameters())
+
+
+def test_response_logprob_excludes_pad_positions():
+    """Right-padded responses must not be scored on their padding:
+    extending a response with extra pad tokens leaves its log-prob
+    unchanged when pad_token_id is passed. Pre-fix, every pad position
+    was summed in — the terms don't cancel between policy/reference or
+    chosen/rejected, biasing the DPO objective and training the policy
+    to emit pads after short responses."""
+    from torch import nn
+
+    from nnx.paradigms.dpo import _response_logprob
+
+    torch.manual_seed(0)
+    vocab = 11
+    net = nn.Embedding(vocab, vocab)  # (B, T) -> (B, T, vocab) logits stub
+    prompt = torch.tensor([[3, 4]])
+    resp = torch.tensor([[5, 6]])
+    pads = torch.full((1, 3), 7)
+    short = torch.cat([prompt, resp], dim=1)
+    padded = torch.cat([prompt, resp, pads], dim=1)
+
+    lp_short = _response_logprob(net, short, 2, pad_token_id=7)
+    lp_padded = _response_logprob(net, padded, 2, pad_token_id=7)
+    assert torch.allclose(lp_short, lp_padded, atol=1e-6)
+
+    # Without the mask, the pads ARE scored and the totals differ.
+    lp_unmasked = _response_logprob(net, padded, 2)
+    assert not torch.allclose(lp_short, lp_unmasked, atol=1e-4)

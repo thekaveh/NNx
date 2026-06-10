@@ -29,6 +29,8 @@ that's out of scope here. See ``docs/dpo.md`` for the honest tradeoffs.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -41,6 +43,7 @@ def dpo_train_step_factory(
     ref_model: NNModel,
     *,
     beta: float = 0.1,
+    pad_token_id: Optional[int] = None,
 ) -> TrainStepFn:
     """Build a Direct Preference Optimization :class:`TrainStepFn`.
 
@@ -50,6 +53,15 @@ def dpo_train_step_factory(
             from. Its ``net`` is set to eval mode and every parameter
             has ``requires_grad`` cleared on factory call. Must share
             ``vocab_size`` and tokenization with the policy.
+        pad_token_id: the id the dataset used to right-pad chosen /
+            rejected responses (``NNPreferenceDataset.pad_token_id``).
+            When set, padded positions are excluded from the response
+            log-prob sums. Without it, pad tokens are scored too — the
+            pad terms don't cancel between policy/reference or
+            chosen/rejected (different contexts), biasing the objective
+            and training the policy to emit pads after short responses.
+            ``None`` is only appropriate when every response genuinely
+            fills ``max_response_len``.
         beta: temperature on the implicit reward. Larger ``beta`` makes
             the loss sharper (closer to a hard preference); smaller
             ``beta`` keeps the policy closer to the reference. The
@@ -97,8 +109,8 @@ def dpo_train_step_factory(
         prompt_len = prompt_ids.shape[1]
 
         # Policy log-probs (with gradient).
-        policy_chosen_logp = _response_logprob(m.net, chosen_seq, prompt_len)
-        policy_rejected_logp = _response_logprob(m.net, rejected_seq, prompt_len)
+        policy_chosen_logp = _response_logprob(m.net, chosen_seq, prompt_len, pad_token_id=pad_token_id)
+        policy_rejected_logp = _response_logprob(m.net, rejected_seq, prompt_len, pad_token_id=pad_token_id)
 
         # Reference log-probs — no gradient, but move tensors through
         # ref_model's device frame in case it lives elsewhere.
@@ -107,11 +119,13 @@ def dpo_train_step_factory(
                 ref_model.net,
                 chosen_seq.to(ref_model.device),
                 prompt_len,
+                pad_token_id=pad_token_id,
             ).to(m.device)
             ref_rejected_logp = _response_logprob(
                 ref_model.net,
                 rejected_seq.to(ref_model.device),
                 prompt_len,
+                pad_token_id=pad_token_id,
             ).to(m.device)
 
         # DPO loss: −log σ(β · ((logπ_w − logπ_l) − (logπref_w − logπref_l))).
@@ -166,6 +180,8 @@ def _response_logprob(
     net: torch.nn.Module,
     full_ids: torch.Tensor,
     prompt_len: int,
+    *,
+    pad_token_id: Optional[int] = None,
 ) -> torch.Tensor:
     """Sum of per-token log-probabilities of the response continuation.
 
@@ -200,5 +216,10 @@ def _response_logprob(
     response_targets = full_ids[:, prompt_len:]
     # gather along vocab dim using the targets as indices.
     token_logp = response_logits.gather(dim=-1, index=response_targets.unsqueeze(-1)).squeeze(-1)
+    if pad_token_id is not None:
+        # Zero out padded positions (multiplying keeps the graph intact
+        # with zero gradient on pads) so right-padded responses aren't
+        # scored on their padding.
+        token_logp = token_logp * (response_targets != pad_token_id)
     # Sum across the response positions for a per-row total log-prob.
     return token_logp.sum(dim=-1)

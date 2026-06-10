@@ -144,7 +144,10 @@ def main() -> None:
         for p in ref_model.net.parameters():
             p.requires_grad = False
 
-        dpo_step = dpo_train_step_factory(ref_model=ref_model, beta=0.1)
+        # pad_token_id: exclude the dataset's right-padding from the
+        # response log-prob sums (NNPreferenceDataset pads with id 0 by
+        # default).
+        dpo_step = dpo_train_step_factory(ref_model=ref_model, beta=0.1, pad_token_id=pref_ds.pad_token_id)
 
         # Snapshot log-probs BEFORE DPO (use a deep-copy so training
         # doesn't touch these weights).

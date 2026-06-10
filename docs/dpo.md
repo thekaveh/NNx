@@ -103,7 +103,9 @@ preferences = NNPreferenceDataset(
 )
 
 # 5. DPO step — frozen reference + β temperature.
-step_fn = dpo_train_step_factory(ref_model, beta=0.1)
+# pad_token_id matches the dataset's — padded response positions are
+# excluded from the log-prob sums.
+step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
 
 # 6. Train. NNModel.train() machinery is unchanged — callbacks, schedulers,
 #    checkpointing all work as usual.
