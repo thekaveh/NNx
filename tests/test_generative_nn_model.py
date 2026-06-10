@@ -458,9 +458,7 @@ def test_generate_stop_string_halts_decoding(tmp_path):
     stop_str = continuation.split()[0] if continuation.split() else continuation[:2]
 
     for use_cache in (True, False):
-        out = model.generate(
-            prompt="the", max_new_tokens=16, temperature=0.0, stop=[stop_str], use_cache=use_cache
-        )
+        out = model.generate(prompt="the", max_new_tokens=16, temperature=0.0, stop=[stop_str], use_cache=use_cache)
         assert stop_str in out
         # Halted at (or before) the point the stop string appeared, so
         # the stopped output is a prefix of the unconstrained run and

@@ -461,9 +461,7 @@ def test_nn_run_round_trip_preserves_transformer_params(tmp_path):
                 iter_idx=0,
                 epoch_idx=0,
                 batch_idx=0,
-                train_edp=NNEvaluationDataPoint(
-                    loss=1.0, error=0.5, accuracy=0.5, f1=0.5, recall=0.5, precision=0.5
-                ),
+                train_edp=NNEvaluationDataPoint(loss=1.0, error=0.5, accuracy=0.5, f1=0.5, recall=0.5, precision=0.5),
             )
         ],
     )

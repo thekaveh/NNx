@@ -65,9 +65,7 @@ class NNIterationDataPoint:
             return None if v is None or _is_nan(v) else v
 
         val_edp = None
-        if any(
-            _field(f"val_edp.{k}") is not None for k in ("loss", "error", "accuracy", "f1", "recall", "precision")
-        ):
+        if any(_field(f"val_edp.{k}") is not None for k in ("loss", "error", "accuracy", "f1", "recall", "precision")):
             val_edp = NNEvaluationDataPoint.from_state(
                 dict(
                     loss=_field("val_edp.loss"),
