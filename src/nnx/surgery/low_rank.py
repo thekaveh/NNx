@@ -82,12 +82,15 @@ def low_rank_factorize(
     # First Linear: in → k. Its weight (k, in) is (S_k * Vh_k); no bias
     # since the original bias is added after the second matmul.
     down_weight = (S_k.unsqueeze(1) * Vh_k).to(orig_dtype)
-    down = nn.Linear(in_features, rank, bias=False, dtype=orig_dtype)
+    # device= threads the original layer's placement — without it a
+    # CUDA-resident model gets CPU layers spliced in and the next
+    # forward crashes with a device mismatch (widen already does this).
+    down = nn.Linear(in_features, rank, bias=False, dtype=orig_dtype, device=W.device)
     down.weight.data.copy_(down_weight)
 
     # Second Linear: k → out. Weight is U_k. Bias is the original.
     up_weight = U_k.to(orig_dtype)
-    up = nn.Linear(rank, out_features, bias=linear.bias is not None, dtype=orig_dtype)
+    up = nn.Linear(rank, out_features, bias=linear.bias is not None, dtype=orig_dtype, device=W.device)
     up.weight.data.copy_(up_weight)
     if linear.bias is not None:
         up.bias.data.copy_(linear.bias.data)

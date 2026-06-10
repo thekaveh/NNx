@@ -143,3 +143,25 @@ def test_deepen_rejects_relu_with_no_upstream_linear():
     net = nn.Sequential(nn.ReLU(), nn.Linear(4, 2))
     with pytest.raises(ValueError, match="upstream nn.Linear"):
         deepen(net, after_layer_name="0")
+
+
+def test_deepen_dtype_follows_dim_source_linear_through_dropout():
+    """The identity layer's dtype must come from the SAME upstream
+    Linear that sourced the hidden dim. Pre-fix, the dtype probe peeked
+    at parent[idx-1] — with a Dropout between the Linear and the ReLU
+    that's not a Linear, so the probe fell back to float32 and the
+    spliced layer crashed a float64 forward with a dtype mismatch."""
+    torch.manual_seed(0)
+    net = nn.Sequential(
+        nn.Linear(4, 8),
+        nn.Dropout(p=0.0),
+        nn.ReLU(),
+        nn.Linear(8, 2),
+    ).double()
+    x = torch.randn(3, 4, dtype=torch.float64)
+    orig_out = net(x)
+
+    deeper = deepen(net, after_layer_name="2")  # the ReLU
+    assert deeper[3].weight.dtype == torch.float64
+    new_out = deeper(x)
+    assert torch.allclose(orig_out, new_out, atol=1e-10)
