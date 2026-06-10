@@ -384,6 +384,8 @@ def train_contrastive(
             non-positive epochs, or non-positive temperature — NT-Xent
             needs at least one negative, so both the dataset and every
             batch must carry >= 2 pairs.
+        FloatingPointError: when the contrastive loss goes non-finite
+            mid-training (check lr / temperature / input normalization).
     """
     if n_epochs <= 0:
         raise ValueError(f"n_epochs must be positive, got {n_epochs}")

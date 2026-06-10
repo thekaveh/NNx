@@ -77,6 +77,8 @@ def update_ema(source: nn.Module, target: nn.Module, momentum: float) -> None:
 
     Raises:
         ValueError: when ``momentum`` is outside ``[0, 1)``.
+        KeyError: when a target parameter has no same-named source
+            parameter (the name-keyed update contract).
     """
     if not (0.0 <= momentum < 1.0):
         raise ValueError(f"EMA momentum must be in [0, 1), got {momentum}")
