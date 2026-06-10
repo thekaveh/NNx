@@ -378,13 +378,17 @@ def train_contrastive(
         The (in-place-mutated) ``backbone``.
 
     Raises:
-        ValueError: on empty dataset, non-positive epochs / batch_size,
-            or non-positive temperature.
+        ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
+            non-positive epochs, or non-positive temperature — NT-Xent
+            needs at least one negative, so both the dataset and every
+            batch must carry >= 2 pairs.
     """
     if n_epochs <= 0:
         raise ValueError(f"n_epochs must be positive, got {n_epochs}")
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
+    if batch_size < 2:
+        # batch_size=1 would make EVERY batch hit the B<2 skip in the
+        # loop below — all epochs silently train nothing.
+        raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
 
