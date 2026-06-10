@@ -44,9 +44,11 @@ class NNDataset(NNDatasetBase):
         full_train_len = len(full_train_dataset)
         val_size = int(full_train_len * self.val_proportion)
         train_size = full_train_len - val_size
-        gen = torch.Generator()
-        if self.seed is not None:
-            gen.manual_seed(int(self.seed))
+        # seed=None must genuinely fall back to the global torch RNG (the
+        # documented contract): a fresh torch.Generator() is NOT that —
+        # it always carries the same fixed default seed, which would make
+        # every unseeded split bit-identical and deaf to torch.manual_seed.
+        gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
         train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size], generator=gen)
 
         object.__setattr__(self, "name", self.ds_class.__name__)

@@ -99,9 +99,11 @@ class NNTabularDataset(NNDatasetBase):
         n_val = int(n_total * self.val_proportion)
         n_test = int(n_total * self.test_proportion)
         n_train = n_total - n_val - n_test
-        gen = torch.Generator()
-        if self.seed is not None:
-            gen.manual_seed(int(self.seed))
+        # seed=None must genuinely fall back to the global torch RNG (the
+        # documented contract): a fresh torch.Generator() is NOT that —
+        # it always carries the same fixed default seed, which would make
+        # every unseeded split bit-identical and deaf to torch.manual_seed.
+        gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
         train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test], generator=gen)
 
         object.__setattr__(self, "name", self.name_override or "NNTabularDataset")

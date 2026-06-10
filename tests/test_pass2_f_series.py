@@ -403,3 +403,49 @@ def test_f8_tabular_dataset_seeded_split_is_deterministic():
         seed=7,
     )
     assert _split_indices(a) != _split_indices(c)
+
+
+def test_f8_tabular_dataset_seed_none_follows_global_rng():
+    """The documented `seed=None` contract: the split falls back to the
+    *global* torch RNG, so `torch.manual_seed(N)` controls it and
+    different global seeds give different splits. Pre-fix the code
+    passed a fresh `torch.Generator()` — which always carries the same
+    fixed default seed — so every unseeded split was bit-identical and
+    completely deaf to `torch.manual_seed`."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(200, dtype=float),
+            "f2": np.arange(200, dtype=float) * 2.0,
+            "label": np.arange(200) % 4,
+        }
+    )
+
+    def _build() -> NNTabularDataset:
+        return NNTabularDataset(
+            df=df,
+            feature_cols=["f1", "f2"],
+            target_col="label",
+            val_proportion=0.2,
+            test_proportion=0.2,
+        )
+
+    def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
+        return (
+            sorted(ds.train_loader.dataset.indices),
+            sorted(ds.val_loader.dataset.indices),
+            sorted(ds.test_loader.dataset.indices),
+        )
+
+    # Same global seed → same split (the split consumes the global RNG).
+    torch.manual_seed(123)
+    a = _build()
+    torch.manual_seed(123)
+    b = _build()
+    assert _split_indices(a) == _split_indices(b)
+
+    # Different global seed → different split (astronomically unlikely
+    # to collide with 200 rows and a 60/20/20 split). This is the
+    # assertion the pre-fix constant-generator behavior fails.
+    torch.manual_seed(456)
+    c = _build()
+    assert _split_indices(a) != _split_indices(c)

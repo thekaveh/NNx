@@ -153,9 +153,11 @@ class NNPreferenceDataset(NNDatasetBase):
         # Deterministic split when seed is given — matches NNTabularDataset's
         # implicit contract that the same inputs round-trip to the same
         # train/val/test ids when seeded externally.
-        gen = torch.Generator()
-        if self.seed is not None:
-            gen.manual_seed(int(self.seed))
+        # seed=None must genuinely fall back to the global torch RNG: a
+        # fresh torch.Generator() always carries the same fixed default
+        # seed, which would make unseeded splits bit-identical across
+        # runs and deaf to torch.manual_seed.
+        gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
         train_ds, val_ds, test_ds = random_split(full, [n_train, n_val, n_test], generator=gen)
 
         object.__setattr__(self, "name", self.name_override or "NNPreferenceDataset")
