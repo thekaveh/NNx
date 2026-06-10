@@ -71,7 +71,11 @@ class Schedulers(Enum):
 
                 def _lr_lambda(step: int) -> float:
                     if step < warmup_steps:
-                        return float(step) / float(max(1, warmup_steps))
+                        # step+1: the scheduler steps once per EPOCH, so
+                        # a 0.0 factor at step 0 would train the entire
+                        # first epoch at LR=0 (HF's per-batch stepping
+                        # only wastes one batch with the 0-based form).
+                        return float(step + 1) / float(max(1, warmup_steps))
                     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
                     return max(0.0, 1.0 - progress)
 

@@ -101,6 +101,13 @@ class EarlyStopping(Callback):
             return None
         return getattr(edp, field, None)
 
+    def on_train_begin(self, ctx: _CallbackContext) -> None:
+        # Fresh run, fresh patience: without this reset, reusing one
+        # EarlyStopping instance across train() calls compares against
+        # the previous run's best and can stop the new run immediately.
+        self._best = None
+        self._wait = 0
+
     def _is_improvement(self, current: float, best: float) -> bool:
         if self.mode == "min":
             return current < best - self.min_delta

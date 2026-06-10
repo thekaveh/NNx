@@ -106,3 +106,18 @@ def test_scheduler_params_backwards_compat_no_kind():
     # And from the legacy explicit-None form (older on-disk run.yaml files).
     reconstructed_legacy = NNSchedulerParams.from_state({**state, "kind": None})
     assert reconstructed_legacy.kind is None
+
+
+def test_linear_warmup_decay_first_epoch_lr_nonzero():
+    """The scheduler steps once per EPOCH, so a 0.0 warmup factor at
+    step 0 trains the entire first epoch at LR=0 (the pre-fix
+    behavior). The ramp is 1-based: epoch 0 runs at base_lr/warmup."""
+    opt = _make_optimizer()
+    Schedulers.LINEAR_WARMUP_DECAY(
+        opt,
+        _base_params(warmup_steps=5, total_steps=20),
+        n_epochs=20,
+    )
+    # LambdaLR applies the step-0 factor at construction time — this is
+    # the LR epoch 0 actually trains with.
+    assert opt.param_groups[0]["lr"] > 0.0

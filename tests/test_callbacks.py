@@ -238,3 +238,16 @@ def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):
     # No custom_e*.pt files — only the standard cycle wrote anything.
     custom_files = list(ckpt_dir.glob("custom*"))
     assert custom_files == []
+
+
+def test_early_stopping_resets_state_on_train_begin():
+    """Reusing one EarlyStopping instance across train() calls must
+    start the second run with fresh best/patience state — pre-fix the
+    previous run's best leaked in and could stop the new run after
+    `patience` epochs even while it was improving."""
+    es = EarlyStopping(monitor="train_edp.loss", patience=2)
+    es._best = 0.0001  # simulate a finished prior run
+    es._wait = 1
+    es.on_train_begin(ctx=None)  # the hook reads nothing from ctx
+    assert es._best is None
+    assert es._wait == 0

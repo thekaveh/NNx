@@ -262,3 +262,27 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
     moved = any(not torch.equal(pre[n], p.detach()) for n, p in model.net.named_parameters())
     assert moved, "CutMix train step ran but model weights did not change"
+
+
+def test_mixup_lambda_draws_respect_set_seed():
+    """The mixup λ stream must be controlled by set_seed: pre-fix the
+    factory used np.random.default_rng() (OS-entropy self-seeded), so
+    identically-seeded runs mixed batches differently, contradicting
+    train()'s reproducibility contract. The factory now derives its
+    numpy seed from the torch RNG."""
+    import numpy as np
+
+    def _draws(seed: int) -> list[float]:
+        set_seed(seed)
+        factory_rng_probe = mixup_train_step_factory(alpha=0.4)
+        # Reach the factory's rng through the closure to sample its
+        # stream without running a full train step.
+        rng = next(
+            cell.cell_contents
+            for cell in factory_rng_probe.__closure__
+            if isinstance(cell.cell_contents, np.random.Generator)
+        )
+        return [float(rng.beta(0.4, 0.4)) for _ in range(5)]
+
+    assert _draws(123) == _draws(123)
+    assert _draws(123) != _draws(456)
