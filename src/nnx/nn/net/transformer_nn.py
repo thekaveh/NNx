@@ -31,6 +31,13 @@ class TransformerNN(nn.Module):
         self.params = params
 
         self.tok_embed = nn.Embedding(num_embeddings=params.vocab_size, embedding_dim=params.d_model)
+        # GPT-2/LLaMA-style small-std init. nn.Embedding's default is
+        # N(0, 1) — with tied embeddings, the input token's own logit
+        # then includes e·e ≈ d_model, so an untrained model starts at
+        # CE ≈ d_model instead of ln(vocab) and greedy/sampled decoding
+        # degenerates into repeating the last prompt token. The shared
+        # tensor also covers lm_head when tie_embeddings=True.
+        nn.init.normal_(self.tok_embed.weight, mean=0.0, std=0.02)
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
