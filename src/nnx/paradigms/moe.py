@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import torch
 
+from .._metrics import classification_edp
 from .._step_helpers import finalize_step
 from ..nn.moe import MoELinear
 from ..nn.nn_model import TrainStepContext, TrainStepFn
@@ -96,15 +97,11 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         loss = supervised_loss + aux_loss_weight * aux_loss
         loss_val = finalize_step(loss, ctx, paradigm="moe")
 
-        Y_hat = Y_hat_logits.argmax(dim=-1)
-        return (
-            NNEvaluationDataPoint.of(
-                Y=Y.cpu().numpy(),
-                Y_hat=Y_hat.cpu().numpy(),
-                extra_metrics=ctx.extra_metrics,
-            )
-            .with_loss(value=loss_val)
-            .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+        return classification_edp(
+            Y=Y,
+            Y_hat=Y_hat_logits.argmax(dim=-1),
+            loss=loss_val,
+            extra_metrics=ctx.extra_metrics,
         )
 
     return step

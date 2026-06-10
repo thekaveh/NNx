@@ -40,7 +40,7 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_metric
-from ..nn.enum.checkpoints import Checkpoints, phase_tag
+from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -272,6 +272,8 @@ class Trainer:
         ctx.trainer = self
 
         idps: list[NNIterationDataPoint] = []
+        # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
+        # Fall back to None so tqdm renders without a total instead of crashing.
         try:
             n_iter: Optional[int] = int(params.n_epochs * len(params.train_loader))
         except TypeError:
@@ -356,7 +358,9 @@ class Trainer:
                 for sched in schedulers.values():
                     _step_scheduler(sched, val_edp, train_edp)
 
-                self._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp)
+                # Verbatim-shared with the NNModel.train loop — one
+                # implementation, so the postfix format can't drift.
+                self.model._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp)
 
                 run.with_idps(idps).save()
 
@@ -385,27 +389,18 @@ class Trainer:
         best_checkpoint: Optional[NNCheckpoint],
         save_phase_checkpoints: bool,
     ) -> NNCheckpoint:
-        """Same FIRST/Q1/Q2/Q3/LAST/BEST cadence as NNModel._save_checkpoints,
-        minus the optimizer-state sidecar. Trainer-mode warm-resume is a
-        follow-up — saving multiple sidecars (`<tag>.opt.<name>.pt`) is the
-        natural extension when that lands."""
-        checkpoint = NNCheckpoint(
+        """Delegates to NNModel._save_checkpoints with optimizer=None —
+        same FIRST/Q1/Q2/Q3/LAST/BEST cadence, minus the optimizer-state
+        sidecar (a single sidecar can't represent the multi-optim dict).
+        Trainer-mode warm-resume is a follow-up — saving one sidecar per
+        optim (`<tag>.opt.<name>.pt`) is the natural extension when that
+        lands."""
+        return self.model._save_checkpoints(
             idp=idp,
-            model_params=self.model.params,
-            net_params=self.model.net_params,
-            net_state=self.model.net.state_dict(),
+            run_id=run_id,
+            idx_epoch=idx_epoch,
+            n_epochs=n_epochs,
+            best_checkpoint=best_checkpoint,
+            save_phase_checkpoints=save_phase_checkpoints,
+            optimizer=None,
         )
-        if save_phase_checkpoints:
-            tag = phase_tag(idx_epoch, n_epochs)
-            if tag is not None:
-                checkpoint.save(run=run_id, type=tag)
-        checkpoint.save(run=run_id, type=Checkpoints.LAST)
-        if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
-            checkpoint.save(run=run_id, type=Checkpoints.BEST)
-        return checkpoint
-
-    def _update_tqdm_postfix(self, tqdm_bar, opt, val_edp, train_edp) -> None:
-        lr = opt.param_groups[0]["lr"]
-        err = _resolve_metric(val_edp, train_edp)
-        err_str = f"{err:.4f}" if err is not None else "n/a"
-        tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")

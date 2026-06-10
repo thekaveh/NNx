@@ -12,7 +12,7 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .._metrics import _resolve_metric
+from .._metrics import _resolve_metric, classification_edp
 from ..utils import Utils
 from .enum.checkpoints import Checkpoints, phase_tag
 from .params.nn_checkpoint import NNCheckpoint
@@ -180,14 +180,11 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             "or input normalization."
         )
 
-    return (
-        NNEvaluationDataPoint.of(
-            Y=Y.cpu().numpy(),
-            Y_hat=Y_hat.cpu().numpy(),
-            extra_metrics=ctx.extra_metrics,
-        )
-        .with_loss(value=loss_value)
-        .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+    return classification_edp(
+        Y=Y,
+        Y_hat=Y_hat,
+        loss=loss_value,
+        extra_metrics=ctx.extra_metrics,
     )
 
 

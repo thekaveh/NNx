@@ -355,6 +355,17 @@ def _collect_special_tokens(tk) -> list[str]:
     try:
         tk_json = json.loads(tk.to_str())
     except Exception:  # pragma: no cover — paranoia; to_str shouldn't fail
+        # Don't fail the whole export over special-token markers, but
+        # don't degrade the artifact silently either — a GGUF with no
+        # CONTROL-marked tokens changes downstream chat-template
+        # behavior in llama.cpp consumers.
+        import warnings
+
+        warnings.warn(
+            "could not parse the tokenizer's added_tokens; the GGUF will mark no special tokens as CONTROL.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return []
     added = tk_json.get("added_tokens") or []
     return [a["content"] for a in added if isinstance(a, dict) and a.get("special")]
