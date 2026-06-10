@@ -426,6 +426,10 @@ class NNRun:
             # always used (see seeding.py's "yaml.safe_load-compatible"
             # comment for the metadata round-trip).
             rep = yaml.safe_load(f)
+        if not isinstance(rep, dict):
+            # An empty / truncated-to-zero file safe_loads to None and
+            # would otherwise die on rep.get(...) with no file context.
+            raise ValueError(f"malformed run.yaml at {yaml_path}: expected a mapping, got {type(rep).__name__}")
 
         raw_idps = pd.read_csv(csv_path).to_dict(orient="records")
         # Separate try-scopes per source file so a missing key names the

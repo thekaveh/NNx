@@ -83,7 +83,10 @@ class NNTabularDataset(NNDatasetBase):
         # cast is UNDEFINED (class 0 on ARM, INT64_MIN on x86 → CUDA
         # device assert) — and the contiguity check below can't see it
         # because pandas min/max/nunique skip NaN.
-        modeled = self.df[[*self.feature_cols, self.target_col]]
+        # dict.fromkeys dedupes while preserving order — target_col
+        # repeated inside feature_cols would otherwise make modeled[c]
+        # a DataFrame and break the bad-cols comprehension below.
+        modeled = self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))]
         if modeled.isna().any().any():
             bad_cols = [c for c in modeled.columns if modeled[c].isna().any()]
             raise ValueError(

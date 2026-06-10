@@ -147,3 +147,18 @@ def test_linear_warmup_decay_never_overshoots_base_lr():
     # Decay phase (post-warmup) is non-increasing.
     decay = lrs[5:]
     assert all(a >= b - 1e-12 for a, b in zip(decay, decay[1:], strict=False)), decay
+
+
+def test_schedulers_reject_total_steps_below_n_epochs():
+    """NNx steps schedulers once per EPOCH; total_steps < n_epochs is
+    always a config error (OneCycle raises mid-train losing an epoch's
+    idps; LINEAR_WARMUP_DECAY silently trains the tail at LR=0)."""
+    import pytest
+
+    for kind, extra in (
+        (Schedulers.ONE_CYCLE, dict(max_lr=1e-2, total_steps=5)),
+        (Schedulers.LINEAR_WARMUP_DECAY, dict(warmup_steps=2, total_steps=5)),
+    ):
+        opt = _make_optimizer()
+        with pytest.raises(ValueError, match="once per epoch"):
+            kind(opt, _base_params(**extra), n_epochs=10)
