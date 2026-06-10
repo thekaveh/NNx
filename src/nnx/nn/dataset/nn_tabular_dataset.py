@@ -77,15 +77,21 @@ class NNTabularDataset(NNDatasetBase):
             raise KeyError(f"NNTabularDataset feature_cols not in DataFrame: {missing_features}")
         if self.target_col not in self.df.columns:
             raise KeyError(f"NNTabularDataset target_col {self.target_col!r} not in DataFrame")
+        if self.target_col in self.feature_cols:
+            # Silent label leakage: the model would train on its own
+            # target as an input feature and report near-perfect val
+            # accuracy (classic feature_cols=list(df.columns) mistake).
+            raise ValueError(
+                f"target_col {self.target_col!r} must not appear in feature_cols — that trains on the label."
+            )
 
         # NaN anywhere in the modeled columns is silent poison: NaN
         # features flow into NaN losses, and a NaN target's float→int64
         # cast is UNDEFINED (class 0 on ARM, INT64_MIN on x86 → CUDA
         # device assert) — and the contiguity check below can't see it
         # because pandas min/max/nunique skip NaN.
-        # dict.fromkeys dedupes while preserving order — target_col
-        # repeated inside feature_cols would otherwise make modeled[c]
-        # a DataFrame and break the bad-cols comprehension below.
+        # dict.fromkeys dedupes (order-preserving) duplicates WITHIN
+        # feature_cols — target/feature overlap is rejected above.
         modeled = self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))]
         if modeled.isna().any().any():
             bad_cols = [c for c in modeled.columns if modeled[c].isna().any()]

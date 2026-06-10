@@ -463,3 +463,12 @@ def test_f8_tabular_dataset_rejects_nan_cells():
     df = pd.DataFrame({"f1": [1.0, float("nan"), 3.0], "label": [0, 1, 0]})
     with pytest.raises(ValueError, match="NaN"):
         NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")
+
+
+def test_f8_tabular_dataset_rejects_target_in_feature_cols():
+    """Silent label leakage: feature_cols containing the target trains
+    the model on its own label (near-perfect val accuracy from the
+    classic feature_cols=list(df.columns) mistake)."""
+    df = pd.DataFrame({"f1": [1.0, 2.0, 3.0], "label": [0, 1, 0]})
+    with pytest.raises(ValueError, match="must not appear in feature_cols"):
+        NNTabularDataset(df=df, feature_cols=["f1", "label"], target_col="label")

@@ -383,3 +383,20 @@ def test_nn_run_load_names_the_corrupt_file(tmp_path, monkeypatch):
     yaml_path.write_text(yaml.safe_dump(rep, sort_keys=True), encoding="utf-8")
     with pytest.raises(ValueError, match="run.yaml"):
         NNRun.load(run.id)
+
+
+def test_nn_run_load_rejects_empty_run_yaml(tmp_path, monkeypatch):
+    """An empty / truncated-to-zero run.yaml safe_loads to None — the
+    error must name the file instead of a bare AttributeError."""
+    import pytest
+
+    from nnx.nn.params.nn_run import NNRun
+
+    monkeypatch.chdir(tmp_path)
+    run_id = "a" * 32
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.yaml").write_text("", encoding="utf-8")
+    (run_dir / "idps.csv").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="expected a mapping"):
+        NNRun.load(run_id)
