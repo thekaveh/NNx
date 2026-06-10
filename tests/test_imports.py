@@ -363,3 +363,33 @@ def test_top_level_logits_chain_builder_importable():
     assert isinstance(chain, nnx.LogitsChain)
     builder = nnx.LogitsChain.builder()
     assert isinstance(builder, nnx.LogitsChainBuilder)
+
+
+def test_every_train_step_factory_is_top_level():
+    """Convention: every `*_train_step_factory` defined anywhere in the
+    package must be re-exported at top-level `nnx.*` AND listed in
+    `nnx.__all__` — 11 factories visible in one `nnx.<TAB>`. The
+    convention was broken once (PR #54 caught
+    `text_contrastive_train_step_factory` reachable only via
+    `nnx.embeddings.*`); this test makes a 12th factory — or a refactor
+    dropping an existing one from `__all__` — fail loudly. Discovery is
+    AST-based over src/nnx so a factory in a brand-new subpackage can't
+    hide from the scan."""
+    import ast
+    from pathlib import Path
+
+    import nnx
+
+    src_root = Path(nnx.__file__).parent
+    defined: set[str] = set()
+    for py in src_root.rglob("*.py"):
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name.endswith("_train_step_factory"):
+                defined.add(node.name)
+
+    assert len(defined) >= 11, f"factory scan looks broken — found only {sorted(defined)}"
+    missing_attr = sorted(n for n in defined if not hasattr(nnx, n))
+    missing_all = sorted(n for n in defined if n not in nnx.__all__)
+    assert not missing_attr, f"not reachable at top-level nnx.*: {missing_attr}"
+    assert not missing_all, f"missing from nnx.__all__: {missing_all}"
