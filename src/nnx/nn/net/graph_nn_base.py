@@ -7,6 +7,8 @@ _build_layers() to provide the PyG conv constructor.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -39,3 +41,16 @@ class GraphNNBase(nn.Module):
 
     def unpack_batch(self, batch) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
         return (batch.x, batch.edge_index), batch.y
+
+    def seed_count(self, batch) -> Optional[int]:
+        """Number of seed rows at the head of a NeighborLoader subgraph.
+
+        NeighborLoader puts the ``batch_size`` seed nodes first and
+        appends their sampled neighbors — which can belong to *other*
+        splits. Loss and metrics must be computed on the seed rows only;
+        scoring neighbor rows leaks val/test labels into the training
+        loss and train labels into val metrics. Returns None for plain
+        full-graph ``Data`` batches without the attribute.
+        """
+        n = getattr(batch, "batch_size", None)
+        return int(n) if n is not None else None

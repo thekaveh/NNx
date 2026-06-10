@@ -85,3 +85,36 @@ def test_base_class_requires_build_layers():
 
     with pytest.raises(NotImplementedError):
         GraphNNBase(params=_params())
+
+
+def test_fwd_pass_scores_seed_nodes_only():
+    """NeighborLoader batches put the batch_size seed nodes first and
+    append sampled neighbors, which can belong to other splits.
+    _fwd_pass must slice logits/labels to the seeds — pre-fix it scored
+    every subgraph node, leaking val/test labels into the training loss
+    and train labels into val metrics."""
+    from types import SimpleNamespace
+
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams
+
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    n_nodes, n_seed = 6, 2
+    batch = SimpleNamespace(
+        x=torch.randn(n_nodes, 4),
+        edge_index=torch.tensor([[0, 1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 0]], dtype=torch.long),
+        y=torch.tensor([0, 1, 1, 0, 1, 0]),
+        batch_size=n_seed,
+    )
+    _, Y, logits, Y_hat = model._fwd_pass(batch)
+    assert Y.shape == (n_seed,)
+    assert logits.shape[0] == n_seed
+    assert Y_hat.shape == (n_seed,)
+
+    # Plain full-graph Data (no batch_size attribute) stays unsliced.
+    full = SimpleNamespace(x=batch.x, edge_index=batch.edge_index, y=batch.y)
+    _, Y_full, logits_full, _ = model._fwd_pass(full)
+    assert Y_full.shape == (n_nodes,)
+    assert logits_full.shape[0] == n_nodes

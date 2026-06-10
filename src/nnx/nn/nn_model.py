@@ -854,6 +854,17 @@ class NNModel(_HubMixinBase):
                         X_in, _ = self.net.unpack_batch(batch)
                         X_in = tuple(x.to(self.device) for x in X_in)
                         logits = self.net(*X_in).cpu().numpy()
+                        # NeighborLoader subgraphs: only the leading seed
+                        # rows are this batch's nodes (see
+                        # GraphNNBase.seed_count) — without the slice,
+                        # predictions for sampled neighbors pollute the
+                        # output and the row count exceeds the loader's
+                        # node set.
+                        seed_count = getattr(self.net, "seed_count", None)
+                        if seed_count is not None:
+                            n_seed = seed_count(batch)
+                            if n_seed is not None:
+                                logits = logits[:n_seed]
                         logits_chunks.append(logits)
                         classes_chunks.append(logits.argmax(axis=1))
                 return PredictResult(
@@ -892,6 +903,15 @@ class NNModel(_HubMixinBase):
         Y = Y.to(self.device)
 
         Y_hat_logits = self.net(*X)
+        # Graph nets score every node in the sampled subgraph, but only
+        # the leading seed rows belong to this batch's split — see
+        # GraphNNBase.seed_count for the leakage this prevents.
+        seed_count = getattr(self.net, "seed_count", None)
+        if seed_count is not None:
+            n_seed = seed_count(batch)
+            if n_seed is not None:
+                Y_hat_logits = Y_hat_logits[:n_seed]
+                Y = Y[:n_seed]
         Y_hat = Y_hat_logits.argmax(dim=1)
 
         return X, Y, Y_hat_logits, Y_hat
