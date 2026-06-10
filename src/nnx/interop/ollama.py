@@ -66,7 +66,10 @@ def export_ollama_modelfile(
         tokenizer: Corresponding ``NNTokenizerParams``.
         out_dir: Output directory. Created if it doesn't exist.
         system: Optional system prompt; emitted as a ``SYSTEM ...``
-            block (triple-quoted) when non-empty.
+            block (triple-quoted) when non-empty. Must not contain a
+            triple-quote or end with a double-quote (Modelfile block
+            delimiters — validated, raises ``ValueError``); same
+            constraint applies to ``template``.
         parameters: Optional dict of Ollama runtime parameters
             (``{"temperature": 0.8, "top_k": 40}`` etc.). Each entry
             becomes a ``PARAMETER <key> <value>`` line. Lists become

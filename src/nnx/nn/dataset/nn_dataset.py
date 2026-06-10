@@ -105,7 +105,9 @@ class NNDataset(NNDatasetBase):
             input_dim=self.input_dim,
             output_dim=self.output_dim,
             train_batch_size=f"{self.batch_sizes[0]:,}",
-            val_batch_size=f"{self.batch_sizes[1]:,}",
+            # 0 when the val split is empty (val_loader is None) — the
+            # resolved batch_sizes carry a placeholder 1 there.
+            val_batch_size=f"{self.batch_sizes[1] if len(val_dataset) > 0 else 0:,}",
             test_batch_size=f"{self.batch_sizes[2]:,}",
         )
 

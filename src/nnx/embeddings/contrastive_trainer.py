@@ -390,8 +390,10 @@ def train_contrastive(
 
     if isinstance(dataset, list):
         dataset = ContrastiveTextDataset(dataset)
-    if len(dataset) == 0:
-        raise ValueError("dataset is empty")
+    if len(dataset) < 2:
+        # 0 pairs: nothing to train. 1 pair: every batch hits the B<2
+        # skip below, so all epochs would silently train nothing.
+        raise ValueError(f"train_contrastive needs >= 2 pairs (got {len(dataset)}) — NT-Xent requires negatives.")
 
     device = _resolve_device(backbone, device)
     backbone.to(device)
