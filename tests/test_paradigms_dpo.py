@@ -217,7 +217,9 @@ def test_dpo_step_reduces_chosen_rejected_logprob_gap(tmp_path, monkeypatch):
 
     initial_gap = _compute_gap(policy.net)
 
-    step_fn = dpo_train_step_factory(ref_model, beta=0.1)
+    # pad_token_id=1 matches _preference_loader's padding - exercises
+    # the 4-site masking threading (policy/ref x chosen/rejected).
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     policy.train(
         params=NNTrainParams(
             n_epochs=8,
@@ -261,7 +263,9 @@ def test_dpo_ref_model_stays_frozen(tmp_path, monkeypatch):
     ref_snapshot = copy.deepcopy({k: v.clone() for k, v in ref_model.net.state_dict().items()})
 
     loader = _preference_loader(tokenizer, n_pairs=6, batch_size=2)
-    step_fn = dpo_train_step_factory(ref_model, beta=0.1)
+    # pad_token_id=1 matches _preference_loader's padding - exercises
+    # the 4-site masking threading (policy/ref x chosen/rejected).
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     policy.train(
         params=NNTrainParams(
             n_epochs=4,

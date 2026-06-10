@@ -131,6 +131,10 @@ def main() -> None:
             tokenizer=tokenizer,
             max_prompt_len=8,
             max_response_len=8,
+            # id 1 is "<pad>" in train_bpe's default specials — the
+            # dataset default of 0 would pad (and the DPO step would
+            # mask) with "<unk>", dropping genuine unknown tokens.
+            pad_token_id=1,
             batch_sizes=(8, 4, 4),
             val_proportion=0.1,
             test_proportion=0.1,

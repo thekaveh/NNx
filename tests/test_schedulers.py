@@ -121,3 +121,29 @@ def test_linear_warmup_decay_first_epoch_lr_nonzero():
     # LambdaLR applies the step-0 factor at construction time — this is
     # the LR epoch 0 actually trains with.
     assert opt.param_groups[0]["lr"] > 0.0
+
+
+def test_linear_warmup_decay_never_overshoots_base_lr():
+    """Across the warmup-to-decay boundary the factor must stay in
+    (0, 1] and be non-increasing after warmup - guards the 1-based
+    numerator against a future off-by-one overshooting base_lr."""
+    opt = _make_optimizer()
+    base_lr = opt.param_groups[0]["lr"]
+    sched = Schedulers.LINEAR_WARMUP_DECAY(
+        opt,
+        _base_params(warmup_steps=5, total_steps=20),
+        n_epochs=20,
+    )
+    opt.zero_grad()
+    for p in opt.param_groups[0]["params"]:
+        p.grad = torch.zeros_like(p)
+    opt.step()
+
+    lrs = [opt.param_groups[0]["lr"]]
+    for _ in range(20):
+        sched.step()
+        lrs.append(opt.param_groups[0]["lr"])
+    assert all(0.0 <= lr <= base_lr + 1e-12 for lr in lrs), lrs
+    # Decay phase (post-warmup) is non-increasing.
+    decay = lrs[5:]
+    assert all(a >= b - 1e-12 for a, b in zip(decay, decay[1:], strict=False)), decay

@@ -53,6 +53,11 @@ def dpo_train_step_factory(
             from. Its ``net`` is set to eval mode and every parameter
             has ``requires_grad`` cleared on factory call. Must share
             ``vocab_size`` and tokenization with the policy.
+        beta: temperature on the implicit reward. Larger ``beta`` makes
+            the loss sharper (closer to a hard preference); smaller
+            ``beta`` keeps the policy closer to the reference. The
+            original DPO paper uses 0.1 as the default; values in
+            ``[0.01, 0.5]`` are common. Must be > 0.
         pad_token_id: the id the dataset used to right-pad chosen /
             rejected responses (``NNPreferenceDataset.pad_token_id``).
             When set, padded positions are excluded from the response
@@ -61,12 +66,12 @@ def dpo_train_step_factory(
             chosen/rejected (different contexts), biasing the objective
             and training the policy to emit pads after short responses.
             ``None`` is only appropriate when every response genuinely
-            fills ``max_response_len``.
-        beta: temperature on the implicit reward. Larger ``beta`` makes
-            the loss sharper (closer to a hard preference); smaller
-            ``beta`` keeps the policy closer to the reference. The
-            original DPO paper uses 0.1 as the default; values in
-            ``[0.01, 0.5]`` are common. Must be > 0.
+            fills ``max_response_len``. Two caveats: masking is by
+            token-id equality, so a genuine occurrence of the pad id
+            inside a response is dropped too (pick a dedicated pad id);
+            and prompt-side padding remains visible to the model (no
+            attention mask) — a pre-existing modeling bias this knob
+            doesn't address.
 
     Returns:
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
