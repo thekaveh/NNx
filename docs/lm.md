@@ -99,7 +99,7 @@ net_params = (
     NNTransformerParams.builder()
     .vocab(tokenizer.vocab_size)
     .layers(n=4, heads=4, d_model=128)
-    .context(max_seq_len=128)
+    .context(max_seq_len=64)
     .build()
 )
 ```

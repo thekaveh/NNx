@@ -398,3 +398,17 @@ def test_export_ollama_modelfile_rejects_injection_shaped_inputs(tmp_path):
         export_ollama_modelfile(None, None, str(tmp_path / "b"), parameters={"bad key": 1})
     with pytest.raises(ValueError, match="newlines"):
         export_ollama_modelfile(None, None, str(tmp_path / "c"), parameters={"stop": "a\nFROM /etc/x"})
+
+
+def test_write_gguf_creates_parent_directories(tmp_path):
+    """write_gguf("out/model.gguf") from a fresh cwd previously raised
+    FileNotFoundError — the ollama exporter mkdirs, the raw writer
+    didn't."""
+    from nnx.interop.gguf import write_gguf
+
+    net = _tiny_transformer()
+    tokenizer = _tiny_tokenizer(tmp_path)
+    nested = tmp_path / "deep" / "nested" / "model.gguf"
+    out = write_gguf(net, tokenizer, nested)
+    assert nested.exists()
+    assert out == str(nested)

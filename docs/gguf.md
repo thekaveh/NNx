@@ -126,7 +126,7 @@ Layout produced:
 out/ollama_bundle/
   model.gguf
   Modelfile
-  tokenizer.json     # (only if you used NNTokenizerParams.of for the tokenizer)
+  tokenizer.json     # (only if you saved it there via NNTokenizerParams.of(path=...), as examples/18 does)
 ```
 
 The `Modelfile` looks like:

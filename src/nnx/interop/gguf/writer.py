@@ -187,6 +187,10 @@ def write_gguf(
     from .tensor_name_map import map_tensors
 
     out_path = str(Path(out_path).expanduser().resolve())
+    # Create the parent directory — GGUFWriter open()s the path
+    # directly, so a fresh cwd writing "out/model.gguf" otherwise dies
+    # with FileNotFoundError (the ollama exporter already mkdirs).
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     params = transformer_nn.params
     # NNParams declares ``n_heads`` as Optional[int]; NNTransformerParams
