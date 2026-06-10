@@ -3,8 +3,9 @@
 Each processor takes the current logits tensor (shape ``(batch, vocab)``)
 plus the token history so far and returns an adjusted logits tensor of
 the same shape. Composing them into a chain — apply_chain — gives the
-classic temperature → top-k → top-p → repetition-penalty decoding setup
-without coupling sampling logic into the model.
+classic repetition-penalty / top-k / top-p / temperature decoding setup
+without coupling sampling logic into the model (see LogitsChain for the
+canonical composition order).
 """
 
 from __future__ import annotations

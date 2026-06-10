@@ -46,9 +46,9 @@ def magnitude_prune(
     Args:
         net: root module to walk. The function mutates ``net`` in place.
         sparsity: fraction of weights to zero, in ``[0, 1)``. ``0.0``
-            is a valid no-op; ``1.0`` is rejected because torch's
-            l1_unstructured rejects it (and a fully-zeroed Linear is
-            not useful).
+            is a valid no-op; ``1.0`` is rejected here — a fully-zeroed
+            Linear is never useful (torch itself would accept
+            ``amount=1.0`` and silently zero the whole weight).
         layer_pattern: fnmatch glob against dotted submodule name.
             ``"*"`` (the default) matches every :class:`nn.Linear`.
         bake: when ``True`` (default), call

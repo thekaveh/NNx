@@ -213,7 +213,9 @@ purely opt-in.
   defaults `use_cache=True` and runs a single prefill pass through
   `forward_with_cache` followed by incremental token-by-token decoding,
   for ≈1.9× speedup at 128 tokens on CPU (gap widens on longer contexts
-  and on GPU).
+  and on GPU — up to `max_seq_len`; once generation slides past the
+  window, the cache is rebuilt each step for RoPE-position correctness
+  and the cost converges to the full-recompute path).
 
 ## 7. Scope explicit
 
@@ -225,7 +227,7 @@ The decoder-only LM path covers:
 - Autoregressive `generate()` with greedy + sampling (`LogitsProcessor`
   chain: temperature / top-k / top-p / repetition-penalty).
 - KV-cache acceleration on by default (≈1.9× speedup at 128 tokens on
-  CPU; wider on longer contexts and GPU).
+  CPU; wider on longer contexts and GPU, within `max_seq_len`).
 - CPU-friendly TinyStories-class training (sub-30-min runs).
 - Onward integrations shipped post-LM: `Prefix-Tuner` / `Prompt-Tuner`
   PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)),

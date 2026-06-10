@@ -181,7 +181,7 @@ model.train(params=train_params, train_step_fn=my_step)
 
 The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`); honoring them is on you. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-The four paradigm factories in `nnx.paradigms` and `nnx.diffusion.diffusion_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not yet handled inside paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
+The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not yet handled inside paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
@@ -542,7 +542,7 @@ result.figure.show()
 
 ### 13.2. Non-destructive contract for inference and inspection helpers
 
-`lr_finder` isn't the only helper that snapshots and restores caller state. Nine NNx call sites share the same non-destructive contract — they put the underlying `nn.Module` into `eval()` mode (needed for correct BatchNorm / Dropout semantics) for the duration of the call, then restore `model.training` to whatever it was on entry. The restore runs inside a `try/finally`, so the contract holds even when the body raises mid-call:
+`lr_finder` isn't the only helper that snapshots and restores caller state. Ten NNx call sites share the same non-destructive contract — they put the underlying `nn.Module` into `eval()` mode (needed for correct BatchNorm / Dropout semantics) for the duration of the call, then restore `model.training` to whatever it was on entry. The restore runs inside a `try/finally`, so the contract holds even when the body raises mid-call:
 
 - `nnx.lr_finder`
 - `NNModel.predict`, `NNModel.evaluate`
@@ -550,6 +550,7 @@ result.figure.show()
 - `nnx.diffusion.sample`
 - `nnx.embeddings.embed_texts`
 - `nnx.viz.activation_map`, `nnx.viz.netron_export`, `nnx.viz.attribute`
+- `NNModel.to_onnx` (joined in the post-PR-#50 pass — the last holdout)
 
 This means a common train → evaluate → train-more (or train → predict → train-more) loop no longer strands the model in `.eval()` mode after the helper returns — Dropout and BatchNorm pick up exactly where they left off on the next training step. Before the post-PR-#40 maintenance pass, `predict` / `evaluate` / `generate` / `sample` / `embed_texts` leaked `.eval()` state, silently disabling Dropout masking and BatchNorm running-stats updates on the next training step unless the caller remembered to call `model.net.train()` themselves.
 
@@ -586,13 +587,15 @@ alongside `NNModel` rather than replacing it:
   `resid_dropout`). Every optional field omits itself from `state()` at
   default — the same broken-three-times invariant covered in §2.2.
 - **`GenerativeNNModel`** — a thin subclass of `NNModel` adding
-  `generate(prompt, *, max_new_tokens, logits_processors=...)`. The
-  generation loop runs the prompt through `TransformerNN.forward_with_kv`
+  `generate(prompt, *, max_new_tokens, temperature, top_k, top_p,
+  repetition_penalty, stop, seed, use_cache, logits_chain)`. The
+  generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
   the returned KV-cache (measured ≈1.9× speedup at 128 tokens on CPU; the
-  gap widens on longer contexts and GPU). Sampling defaults to greedy; pass a
-  list of `nnx.generation.LogitsProcessor` (temperature, top-k, top-p,
-  repetition-penalty) to switch.
+  gap widens on longer contexts and GPU, within `max_seq_len`). Sampling
+  defaults to greedy (`temperature=0`); the scalar kwargs build the standard
+  processor chain, and `logits_chain=LogitsChain.builder()...` is the
+  power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.3).
 
 The LM path stays optional behind the `lm` extra (`pip install "thekaveh-nnx[lm]"` —
 pulls `tokenizers` + `datasets`); the rest of NNx works without it. See

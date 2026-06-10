@@ -11,8 +11,13 @@ forbidden tokens) without having to drop down to
 themselves.
 
 Builder ordering: regardless of the method-call order, `.build()`
-sorts the processors into the canonical HF order:
+sorts the processors into NNx's canonical order (the same order
+`GenerativeNNModel.generate` builds from its inline kwargs):
     RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling
+Temperature is deliberately LAST — temperature=0 greedy is implemented
+via ±inf argmax markers that must not be re-filtered, so this differs
+from HF's transformers, which applies temperature before top-k/top-p
+(for temperature≠1 the nucleus token set can differ).
 Custom processors (added via `.custom(processor)`) are appended after
 TemperatureScaling — the "post-default" slot for user extensions.
 """
@@ -71,7 +76,9 @@ class LogitsChainBuilder:
     """Fluent builder for a `LogitsChain`.
 
     Method order at the call site doesn't matter — `.build()` sorts
-    the standard processors into the canonical HF order:
+    the standard processors into NNx's canonical order (matching
+    `generate()`'s inline-kwargs chain; see the module docstring for
+    why temperature is deliberately last):
     `RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`.
     Custom processors (added via `.custom(processor)`) are appended in
     the order they were added, after the canonical group.
