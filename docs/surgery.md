@@ -140,6 +140,8 @@ If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) e
 `expand_embedding` returns a `frozen_mask` of bool shape `(new_num_embeddings,)` — `True` for rows that came from the original embedding, `False` for new rows. The mask is a hand-off to the caller's training step:
 
 ```python
+from nnx import NNParamGroupSpec, expand_embedding
+
 new_emb, frozen_mask = expand_embedding(model.net.embed, new_num_embeddings=20_000, init="copy_mean")
 model.net.embed = new_emb  # reattach — expand_embedding returns a NEW module
 
