@@ -77,8 +77,10 @@ class GenerativeNNModel(NNModel):
             top_p: nucleus (top-p) cutoff. None disables.
             repetition_penalty: divide previously-seen tokens' positive
                 logits by this. 1.0 is no-op (default).
-            stop: list of stop strings — generation halts when any of
-                them appears in the decoded prefix.
+            stop: list of stop strings — generation halts once any of
+                them appears in the decoded CONTINUATION (the prompt
+                itself is not searched, so a prompt containing a stop
+                string doesn't halt generation immediately).
             seed: when set, sampling is reproducible — two calls with
                 the same seed + prompt + model produce identical output.
             use_cache: when True (default), uses an incremental KV
@@ -111,12 +113,6 @@ class GenerativeNNModel(NNModel):
                 "GenerativeNNModel.generate requires a tokenizer. "
                 "Construct with `GenerativeNNModel(..., tokenizer=NNTokenizerParams.of(tk, path))`."
             )
-        # Snapshot training-mode for non-destructive restore on exit
-        # (matches NNModel.predict / evaluate / nnx.viz.activation_map /
-        # nnx.lr_finder). The body is wrapped in try/finally below.
-        was_training = self.net.training
-        self.net.eval()
-
         prompt_ids = self.tokenizer.encode(prompt)
         if not prompt_ids:
             # Use a single space as a non-empty seed when the prompt
@@ -130,10 +126,11 @@ class GenerativeNNModel(NNModel):
         # Build the processor chain. Two paths:
         # (a) If the caller supplied a pre-built ``logits_chain``, use
         #     its processors as-is — they've already been ordered.
-        # (b) Otherwise build the standard chain from kwargs in the
-        #     conventional HF order: repetition penalty first
-        #     (raw logits), then top-k / top-p (filtering), then
-        #     temperature (scaling). Temperature is always applied;
+        # (b) Otherwise build the standard chain from kwargs in NNx's
+        #     canonical order: repetition penalty first (raw logits),
+        #     then top-k / top-p (filtering), then temperature
+        #     (scaling — deliberately last: temperature=0's ±inf greedy
+        #     markers must not be re-filtered). Temperature is always applied;
         #     temperature=0 is the greedy short-circuit (still routed
         #     through TemperatureScaling so the sampler path is
         #     uniform).
@@ -165,11 +162,20 @@ class GenerativeNNModel(NNModel):
             use_cache = False
 
         generated: list[int] = list(prompt_ids)
+        # Snapshot training-mode for non-destructive restore on exit
+        # (matches NNModel.predict / evaluate / nnx.viz.activation_map /
+        # nnx.lr_finder). Deliberately the LAST thing before the
+        # try/finally: an exception in the validation / chain-building
+        # code above would otherwise strand the net in eval() with no
+        # finally to restore it.
+        was_training = self.net.training
+        self.net.eval()
         try:
             with torch.no_grad():
                 if use_cache:
                     self._generate_with_cache(
                         generated=generated,
+                        n_prompt=len(prompt_ids),
                         max_new_tokens=max_new_tokens,
                         max_seq_len=max_seq_len,
                         processors=processors,
@@ -179,6 +185,7 @@ class GenerativeNNModel(NNModel):
                 else:
                     self._generate_no_cache(
                         generated=generated,
+                        n_prompt=len(prompt_ids),
                         max_new_tokens=max_new_tokens,
                         max_seq_len=max_seq_len,
                         processors=processors,
@@ -197,6 +204,7 @@ class GenerativeNNModel(NNModel):
         self,
         *,
         generated: list[int],
+        n_prompt: int,
         max_new_tokens: int,
         max_seq_len: int,
         processors: list[LogitsProcessor],
@@ -218,18 +226,20 @@ class GenerativeNNModel(NNModel):
             next_id = sample_next_token(adjusted, generator=gen)
             generated.append(next_id)
 
-            # Optional stop-string check. We only decode once per
-            # iteration when stops are configured — keeps the hot
-            # loop cheap when they aren't.
+            # Optional stop-string check, scoped to the CONTINUATION —
+            # a stop string already present in the prompt must not halt
+            # generation after one token. Only decodes when stops are
+            # configured, keeping the hot loop cheap otherwise.
             if stop:
-                text_so_far = self.tokenizer.decode(generated)
-                if any(s in text_so_far for s in stop):
+                continuation = self.tokenizer.decode(generated[n_prompt:])
+                if any(s in continuation for s in stop):
                     break
 
     def _generate_with_cache(
         self,
         *,
         generated: list[int],
+        n_prompt: int,
         max_new_tokens: int,
         max_seq_len: int,
         processors: list[LogitsProcessor],
@@ -267,8 +277,9 @@ class GenerativeNNModel(NNModel):
         next_id = sample_next_token(adjusted, generator=gen)
         generated.append(next_id)
         if stop:
-            text_so_far = self.tokenizer.decode(generated)
-            if any(s in text_so_far for s in stop):
+            # Continuation-scoped, like the loop check below.
+            continuation = self.tokenizer.decode(generated[n_prompt:])
+            if any(s in continuation for s in stop):
                 return
 
         # ----- Incremental decode loop. -----
@@ -291,6 +302,7 @@ class GenerativeNNModel(NNModel):
             generated.append(next_id)
 
             if stop:
-                text_so_far = self.tokenizer.decode(generated)
-                if any(s in text_so_far for s in stop):
+                # Continuation-scoped — see _generate_no_cache.
+                continuation = self.tokenizer.decode(generated[n_prompt:])
+                if any(s in continuation for s in stop):
                     break

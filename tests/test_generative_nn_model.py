@@ -592,3 +592,44 @@ def test_generate_requires_tokenizer(tmp_path):
     model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=None)
     with pytest.raises(ValueError, match="tokenizer"):
         model.generate(prompt="anything", max_new_tokens=2)
+
+
+def test_generate_restores_training_mode_on_early_validation_error(tmp_path):
+    """An exception raised BEFORE the decode loop (here: TemperatureScaling
+    rejecting a negative temperature) must still leave net.training as it
+    found it. Pre-fix, the eval() switch happened before validation /
+    chain construction but the restoring try/finally only wrapped the
+    loop — early raises stranded the net in eval mode, contradicting the
+    docstring's non-destructive promise."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+    model.net.train()
+    with pytest.raises(ValueError):
+        model.generate(prompt="the", max_new_tokens=4, temperature=-1.0)
+    assert model.net.training is True, "early-raise path stranded the net in eval()"
+
+
+def test_generate_stop_string_in_prompt_does_not_halt_immediately(tmp_path):
+    """stop= applies to the CONTINUATION only. Pre-fix the check decoded
+    prompt + continuation, so a prompt already containing the stop
+    string halted after exactly one token on every path."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+    prompt = "the cat"
+    base = model.generate(prompt=prompt, max_new_tokens=8, temperature=0.0, stop=None)
+    prompt_decoded = tokenizer.decode(tokenizer.encode(prompt))
+    base_continuation = base[len(prompt_decoded) :]
+    # Pick a prompt word the greedy continuation provably does NOT emit,
+    # so a correctly-scoped stop check never fires and the output must
+    # equal the unconstrained run exactly. Pre-fix, the full-text check
+    # saw the word in the prompt and halted after one token.
+    candidates = [w for w in prompt.split() if w not in base_continuation]
+    assert candidates, "fixture degenerate: every prompt word appears in the continuation"
+    stop_word = candidates[0]
+    for use_cache in (True, False):
+        out = model.generate(
+            prompt=prompt, max_new_tokens=8, temperature=0.0, stop=[stop_word], use_cache=use_cache
+        )
+        assert out == base, f"prompt-only stop {stop_word!r} halted generation (use_cache={use_cache})"
