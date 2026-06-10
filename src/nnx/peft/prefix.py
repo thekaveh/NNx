@@ -68,9 +68,8 @@ class PrefixTuner(nn.Module):
         n_prefix: number of virtual prefix tokens per layer. Must be > 0.
         n_layers: number of leading transformer blocks to attach a prefix
             to. ``None`` (default) targets every block in
-            ``model.net.blocks`` if ``model`` is a wrapper that exposes
-            blocks via ``model.blocks`` directly. The first ``n_layers``
-            blocks are targeted; later blocks run un-prefixed.
+            ``model.blocks``. When set, the first ``n_layers`` blocks
+            are targeted; later blocks run un-prefixed.
 
     Note on shape: the prefix uses ``n_heads`` and ``head_dim`` taken
     from the model's ``params`` — there's no per-block override, since
@@ -176,6 +175,14 @@ class PrefixTuner(nn.Module):
                 k = torch.cat([past_k, k], dim=-2)
                 v = torch.cat([past_v, v], dim=-2)
 
+            # Snapshot the cache BEFORE prefix injection: the cache must
+            # hold real-token K/V only. Caching the prefix-injected
+            # tensors would re-prepend the prefix on top of the cached
+            # copy every decode step (n_prefix duplicate slots per step)
+            # and inflate the RoPE offset above by n_prefix per step —
+            # cached logits drifted ~2.0 from the full forward.
+            new_kv = (k, v) if use_cache else None
+
             # Inject the learned K/V prefix for this layer. Shape:
             # (n_prefix, n_heads, head_dim) -> (1, n_heads, n_prefix, head_dim)
             # broadcast over the batch dim by .expand.
@@ -206,7 +213,6 @@ class PrefixTuner(nn.Module):
             attn_out = attn_out.transpose(1, 2).contiguous().view(b, t, mha.d_model)
             out = mha.w_o(attn_out)
 
-            new_kv = (k, v) if use_cache else None
             return out, new_kv
 
         return patched_forward

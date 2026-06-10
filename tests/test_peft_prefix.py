@@ -150,3 +150,33 @@ def test_prefix_tuner_validates_n_prefix():
         PrefixTuner(model, n_prefix=0)
     with pytest.raises(ValueError, match="n_prefix"):
         PrefixTuner(model, n_prefix=-1)
+
+
+def test_prefix_tuner_kv_cache_matches_full_forward():
+    """Cache-path parity: incremental forward_with_cache on a
+    prefix-tuned TransformerNN must match the full forward's last-token
+    logits at every decode step, and the cache must hold real-token K/V
+    only. Pre-fix, the patched MHA cached the prefix-INJECTED K/V, so
+    every decode step re-prepended the prefix on top of the cached copy
+    (n_prefix duplicate slots per step) and inflated the RoPE offset by
+    n_prefix — cached logits drifted ~2.0 from the full forward."""
+    set_seed(0)
+    net = _tiny_transformer()
+    tuner = PrefixTuner(net, n_prefix=3)
+    assert tuner is not None  # patching happens in __init__
+    net.eval()
+
+    seq = torch.randint(0, 100, (1, 12))
+    with torch.no_grad():
+        _, past = net.forward_with_cache(seq[:, :4], past_kvs=None)
+        for i in range(4, 12):
+            inc, past = net.forward_with_cache(seq[:, i : i + 1], past_kvs=past)
+            full = net(seq[:, : i + 1])
+            assert torch.allclose(inc[:, -1, :], full[:, -1, :], atol=1e-4), (
+                f"cached logits diverged at position {i}: "
+                f"max diff {(inc[:, -1, :] - full[:, -1, :]).abs().max().item():.4f}"
+            )
+            # No prefix slots may leak into the cache.
+            assert past[0][0].size(-2) == i + 1, (
+                f"cache holds {past[0][0].size(-2)} slots at position {i}; expected {i + 1} real tokens"
+            )
