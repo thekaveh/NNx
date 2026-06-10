@@ -188,8 +188,9 @@ class ViTNN(nn.Module):
         the full sequence (i.e., ``arange(1, n_patches + 1)`` — CLS is
         position 0).
 
-        Exposed so I-JEPA's predictor can look up position embeddings
-        for the *target* patch indices without rebuilding the arange.
+        Exposed so the I-JEPA step factory can derive its context /
+        target position indices by boolean-masking this tensor instead
+        of rebuilding the arange (see ``jepa_train_step_factory``).
         """
         return torch.arange(1, self.n_patches + 1, device=self.pos_embed.device)
 
