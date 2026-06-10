@@ -18,6 +18,7 @@ the path; out of scope for the TinyStories-scale LM path.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -58,15 +59,27 @@ class NNTokenizerParams:
         """
         _require_tokenizers()
         # save() is the official HF Rust path — produces the same JSON
-        # blob that ``Tokenizer.from_file`` consumes.
-        tokenizer.save(path)
+        # blob that ``Tokenizer.from_file`` consumes. Write to a temp
+        # name and os.replace into place so an interrupt mid-save can't
+        # leave a truncated tokenizer.json that from_state can never
+        # load (matches the atomic-write convention of NNRun.save /
+        # NNCheckpoint.to_file).
+        tmp = path + ".tmp"
+        tokenizer.save(tmp)
+        os.replace(tmp, path)
         return NNTokenizerParams(path=path, tokenizer=tokenizer)
 
     @staticmethod
     def from_state(state: dict) -> NNTokenizerParams:
         """Load from a state dict produced by :meth:`state`. The single
         required key is ``path``; the tokenizer is reconstructed from
-        the file the path points to."""
+        the file the path points to.
+
+        The path is stored exactly as the caller gave it to :meth:`of` —
+        typically cwd-relative — so loading from a different working
+        directory requires the same relative layout. That's deliberate:
+        storing an absolute path would break run portability across
+        machines, which is the more common need."""
         _require_tokenizers()
         path = state["path"]
         tk = Tokenizer.from_file(path)  # type: ignore[union-attr]

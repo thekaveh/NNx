@@ -744,7 +744,7 @@ class NNModel(_HubMixinBase):
                 )
                 # In-memory best_checkpoint tracking must use the same
                 # comparison as the on-disk BEST write inside
-                # _save_checkpoints (val_edp → train_edp → +inf fall-through).
+                # _save_checkpoints (val→train, error→loss, +inf fall-through).
                 # Without this, val_loader=None runs would silently overwrite
                 # best_checkpoint every epoch (because checkpoint.idp.val_edp
                 # is None there) while the on-disk BEST tracks training error,
@@ -1029,7 +1029,7 @@ class NNModel(_HubMixinBase):
         # BEST tracking goes through the same _best_err helper used by
         # NNRun.save's cross-run comparison and by Trainer._save_checkpoint
         # — single source of truth for "what's the comparable error here"
-        # (val_edp → train_edp → +inf fall-through, tolerating None EDP
+        # (val→train, error→loss, +inf fall-through, tolerating None EDP
         # or None .error from custom train_step_fn paradigms).
         if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
             checkpoint.save(run=run_id, type=Checkpoints.BEST, optimizer_state=opt_state)

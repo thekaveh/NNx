@@ -141,8 +141,13 @@ class NNCheckpoint:
 
         # safetensors save_file doesn't accept OrderedDict (only dict). The
         # iteration order is preserved either way in Python 3.7+, so coerce.
-        # We also detach to drop any autograd graph attached to live params.
-        tensors = {k: v.detach().contiguous() for k, v in self.net_state.items()}
+        # Detach drops any autograd graph attached to live params; clone
+        # breaks storage sharing — safetensors rejects tied tensors
+        # (TransformerNN's tok_embed/lm_head share storage by default,
+        # and .contiguous() is a no-op on already-contiguous views).
+        # On reload, load_state_dict assigns both identical copies back
+        # into the tied parameter, so the tie survives the round-trip.
+        tensors = {k: v.detach().contiguous().clone() for k, v in self.net_state.items()}
 
         tmp = path + ".tmp"
         save_file(tensors, tmp, metadata=metadata)
@@ -162,6 +167,13 @@ class NNCheckpoint:
         an ``.opt.pt`` suffix) holding the optimizer state dict.
         This sidecar is used by NNModel.train(resume_from=...) to warm-resume
         with the prior optimizer momentum / Adam state.
+
+        Each of the two writes is individually atomic, but the PAIR is
+        not: an interrupt between them leaves a fresh checkpoint beside
+        the previous epoch's sidecar, and a warm-resume then restores
+        one-epoch-stale optimizer state (weights stay correct; momentum
+        is briefly mismatched). Accepted: a validation stamp would
+        change the sidecar format for a one-epoch-soft failure mode.
         """
         ckpt_path = _checkpoint_path(run, type, root=root)
         self.to_file(path=ckpt_path)
@@ -203,13 +215,18 @@ class NNCheckpoint:
           and bare pickle files begin with ``\\x80`` (the pickle PROTO
           opcode for protocol >= 2).
         - safetensors files begin with a little-endian u64 header length
-          followed by a JSON object. Neither of the pickle prefixes can
-          appear there (the JSON section always starts with ``{``).
+          followed by a JSON object — byte 8 is always ``{``. The u64's
+          LOW byte can legitimately be ``0x80`` (any header length
+          ≡ 128 mod 256), which would collide with the pickle PROTO
+          opcode — so safetensors is positively identified by byte 8
+          BEFORE the ``\x80`` pickle check. The ZIP magic is checked
+          first of all (a ZIP's byte 8 is the compression method, never
+          ``{``; a legacy pickle's byte 8 is a frame-length byte,
+          ``0x00`` for any file under a terabyte).
 
-        We positively-identify pickle via either prefix and otherwise
-        fall through to the safetensors path. A genuinely corrupt file
-        will surface as a clear error from the underlying loader rather
-        than a misleading sniff.
+        Anything matching none of the positive sniffs falls through to
+        the safetensors loader, whose error on a genuinely corrupt file
+        is clearer than a misleading unpickle attempt.
 
         SECURITY: the pickle branch calls ``torch.load(weights_only=False)``,
         which unpickles arbitrary Python objects. NEVER call this on a
@@ -224,13 +241,19 @@ class NNCheckpoint:
             return None
 
         with open(path, "rb") as f:
-            head = f.read(4)
+            head = f.read(9)
         if not head:
             return None
 
-        # Pickle: either the modern torch-save ZIP container (``PK\x03\x04``)
-        # or the legacy / bare-pickle ``\x80`` protocol prefix.
-        if head[:4] == b"PK\x03\x04" or head[:1] == b"\x80":
+        # Modern torch-save ZIP container.
+        if head[:4] == b"PK\x03\x04":
+            return NNCheckpoint._from_pickle_file(path)
+        # safetensors: byte 8 is the opening brace of the JSON header.
+        # Checked BEFORE the \x80 pickle sniff — see the docstring.
+        if len(head) == 9 and head[8:9] == b"{":
+            return NNCheckpoint._from_safetensors_file(path)
+        # Legacy / bare-pickle protocol prefix.
+        if head[:1] == b"\x80":
             return NNCheckpoint._from_pickle_file(path)
         return NNCheckpoint._from_safetensors_file(path)
 

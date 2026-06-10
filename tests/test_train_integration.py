@@ -291,3 +291,43 @@ def test_train_rejects_empty_train_loader(tmp_path, monkeypatch):
     model = NNModel(net_params=net_params, params=model_params)
     with pytest.raises(ValueError, match="yielded no batches"):
         model.train(params=_train_params(empty_loader, None, n_epochs=1))
+
+
+def test_best_err_falls_back_to_loss_for_paradigm_runs():
+    """BEST tracking for paradigm runs (diffusion / SimCLR / DPO / GAN)
+    whose custom steps leave `.error` unset: _best_err must fall back to
+    `.loss` via the shared resolver. Pre-fix every such checkpoint
+    scored +inf, `inf < inf` is False, and runs/best stayed frozen on
+    whichever run saved first."""
+    from nnx import NNCheckpoint, NNEvaluationDataPoint, NNIterationDataPoint
+    from nnx.nn.params.nn_run import _best_err
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    loss_only_edp = NNEvaluationDataPoint(accuracy=0.0, f1=0.0, recall=0.0, precision=0.0, loss=0.42)
+    ckpt = NNCheckpoint(
+        idp=NNIterationDataPoint(lr=1e-3, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=loss_only_edp),
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+    )
+    assert _best_err(ckpt) == 0.42
+    assert _best_err(None) == float("inf")
+
+
+def test_nn_run_save_tolerates_default_none_idps(tmp_path):
+    """NNRun(...).save() with the dataclass-default idps=None must write
+    an empty idps.csv instead of raising TypeError, and load back with
+    zero idps."""
+    from nnx.nn.params.nn_run import NNRun
+
+    net_params, model_params = _make_params()
+    run = NNRun(
+        net=net_params,
+        train=_train_params(None, None, n_epochs=1),
+        model=model_params,
+    )
+    run.save(root=str(tmp_path))
+    loaded = NNRun.load(run.id, root=str(tmp_path))
+    assert loaded.idps == []
+    assert loaded.id == run.id

@@ -350,6 +350,15 @@ def test_f8_tabular_dataset_rejects_empty_df():
         )
 
 
+def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
+    """Sorted per-split row indices — shared by the two F8 seed tests."""
+    return (
+        sorted(ds.train_loader.dataset.indices),
+        sorted(ds.val_loader.dataset.indices),
+        sorted(ds.test_loader.dataset.indices),
+    )
+
+
 def test_f8_tabular_dataset_seeded_split_is_deterministic():
     """Reproducibility contract: two NNTabularDataset instances built
     from the same DataFrame + same `seed` must yield identical
@@ -365,13 +374,6 @@ def test_f8_tabular_dataset_seeded_split_is_deterministic():
             "label": np.arange(200) % 4,
         }
     )
-
-    def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
-        return (
-            sorted(ds.train_loader.dataset.indices),
-            sorted(ds.val_loader.dataset.indices),
-            sorted(ds.test_loader.dataset.indices),
-        )
 
     a = NNTabularDataset(
         df=df,
@@ -427,13 +429,6 @@ def test_f8_tabular_dataset_seed_none_follows_global_rng():
             target_col="label",
             val_proportion=0.2,
             test_proportion=0.2,
-        )
-
-    def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
-        return (
-            sorted(ds.train_loader.dataset.indices),
-            sorted(ds.val_loader.dataset.indices),
-            sorted(ds.test_loader.dataset.indices),
         )
 
     # Same global seed → same split (the split consumes the global RNG).

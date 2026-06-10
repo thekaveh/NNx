@@ -80,7 +80,10 @@ class GenerativeNNModel(NNModel):
             stop: list of stop strings — generation halts once any of
                 them appears in the decoded CONTINUATION (the prompt
                 itself is not searched, so a prompt containing a stop
-                string doesn't halt generation immediately).
+                string doesn't halt generation immediately; a stop
+                string straddling the prompt/continuation boundary is
+                likewise not detected — matching the generated-text-only
+                convention HF uses).
             seed: when set, sampling is reproducible — two calls with
                 the same seed + prompt + model produce identical output.
             use_cache: when True (default), uses an incremental KV

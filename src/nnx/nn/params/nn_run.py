@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 import pandas as pd
 import yaml
 
+from ..._metrics import _resolve_metric
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
 from ..params.nn_iteration_data_point import NNIterationDataPoint
@@ -82,18 +83,34 @@ def _point_best(best_run_path: str, run_path: str) -> None:
     """Make `best_run_path` point at `run_path`. Uses a symlink where the
     platform supports it (POSIX and Windows-with-developer-mode); falls
     back to writing a `best/POINTER.txt` text file with the run path.
-    Either way ``_read_best_pointer`` can recover the target run."""
-    if os.path.lexists(best_run_path):
-        if os.path.islink(best_run_path):
-            os.remove(best_run_path)
-        else:
-            # Existing pointer directory from a prior fallback — clear it.
+    Either way ``_read_best_pointer`` can recover the target run.
+
+    Atomicity: the symlink is created at a temp name and os.replace'd
+    over the old pointer, so a crash mid-repoint leaves either the old
+    or the new pointer — never none (a missing pointer would make the
+    next save claim `best` unconditionally). Concurrent savers from
+    separate processes race check-then-act benignly (last writer wins);
+    multi-process best tracking is out of scope.
+
+    target_is_directory=True matters on Windows-with-developer-mode:
+    without it a *file* symlink to a directory is created, which
+    Windows cannot traverse — best tracking would silently break."""
+    tmp_link = best_run_path + ".tmp"
+    try:
+        if os.path.lexists(tmp_link):
+            os.remove(tmp_link)  # stale temp from a prior crash
+        os.symlink(src=run_path, dst=tmp_link, target_is_directory=True)
+        if os.path.lexists(best_run_path) and not os.path.islink(best_run_path):
+            # Prior POINTER.txt fallback layout — clear the directory so
+            # os.replace can land the symlink (one-time layout upgrade;
+            # this transition window existed before and is unavoidable).
             import shutil
 
             shutil.rmtree(best_run_path)
-    try:
-        os.symlink(src=run_path, dst=best_run_path)
+        os.replace(tmp_link, best_run_path)
     except (OSError, NotImplementedError):
+        if os.path.lexists(tmp_link):
+            os.remove(tmp_link)
         # Windows without developer mode: write a pointer file instead.
         # Atomic write so a KeyboardInterrupt during the fallback can't
         # leave a half-written POINTER.txt that confuses _read_best_pointer.
@@ -120,15 +137,20 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
 
 
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
-    """Pull the error metric from a checkpoint, preferring val over train.
-    Returns +inf for missing checkpoints or fully missing metrics so caller
-    comparisons always prefer the *new* run when there's no prior signal."""
+    """Pull the comparable metric from a checkpoint via the shared
+    val→train, error→loss fallback resolver (the same walk the
+    schedulers and tqdm postfix use). Returns +inf for missing
+    checkpoints or fully missing metrics so caller comparisons always
+    prefer the *new* run when there's no prior signal.
+
+    The loss fallback keeps BEST tracking alive for paradigm runs
+    (diffusion / SimCLR / DPO / GAN) whose custom steps leave `.error`
+    unset — previously every such run scored +inf, `inf < inf` is
+    False, and `runs/best` stayed frozen on whichever run saved first."""
     if checkpoint is None:
         return float("inf")
-    edp = checkpoint.idp.val_edp if checkpoint.idp.val_edp is not None else checkpoint.idp.train_edp
-    if edp is None or edp.error is None:
-        return float("inf")
-    return edp.error
+    metric = _resolve_metric(checkpoint.idp.val_edp, checkpoint.idp.train_edp)
+    return float("inf") if metric is None else metric
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -349,7 +371,9 @@ class NNRun:
 
         _atomic_write_text(
             csv_path,
-            pd.json_normalize(data=[idp.state() for idp in self.idps]).to_csv(),
+            # `or []`: idps defaults to None on the dataclass; an empty
+            # frame round-trips cleanly through read_csv on load.
+            pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
         )
 
         if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
