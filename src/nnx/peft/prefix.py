@@ -76,6 +76,14 @@ class PrefixTuner(nn.Module):
     Note on shape: the prefix uses ``n_heads`` and ``head_dim`` taken
     from the model's ``params`` — there's no per-block override, since
     every block in a TransformerNN shares the same attention shape.
+
+    Raises:
+        TypeError: if ``model`` is not a :class:`TransformerNN`.
+        ValueError: if ``n_prefix`` or ``n_layers`` is out of range, or
+            if ``model`` is already prefix-tuned — a second tuner would
+            silently hijack the patched forwards (they read the MHA's
+            ``_nnx_prefix_tuner`` ref, which the second tuner overwrites,
+            so the first tuner's parameters stop receiving gradients).
     """
 
     def __init__(
@@ -98,6 +106,14 @@ class PrefixTuner(nn.Module):
             raise ValueError(f"n_layers must be positive, got {n_layers}")
         if n_layers > total_blocks:
             raise ValueError(f"n_layers={n_layers} exceeds model depth ({total_blocks} blocks)")
+        if any(hasattr(block.attn, "_nnx_prefix_tuner") for block in model.blocks):
+            raise ValueError(
+                "PrefixTuner: this TransformerNN is already prefix-tuned. A second "
+                "tuner would silently hijack the patched attention forwards (the "
+                "first tuner's parameters would stop receiving gradients while its "
+                "forward injects the new tuner's prefixes). Wrap a fresh model, or "
+                "copy.deepcopy the tuned one first."
+            )
 
         self.model = model
         self.n_prefix = n_prefix

@@ -374,6 +374,15 @@ def test_nn_run_load_names_the_corrupt_file(tmp_path, monkeypatch):
         NNRun.load(run.id)
     df.to_csv(csv_path, index=False)  # restore
 
+    # Zero-byte idps.csv (external truncation — our own writes always
+    # emit at least the frame header) → error names idps.csv instead of
+    # pandas' context-free EmptyDataError.
+    csv_text = csv_path.read_text(encoding="utf-8")
+    csv_path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="idps.csv"):
+        NNRun.load(run.id)
+    csv_path.write_text(csv_text, encoding="utf-8")  # restore
+
     # Drop a run.yaml key → error names run.yaml.
     import yaml
 

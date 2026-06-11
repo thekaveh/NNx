@@ -96,10 +96,17 @@ def _point_best(best_run_path: str, run_path: str) -> None:
     without it a *file* symlink to a directory is created, which
     Windows cannot traverse — best tracking would silently break."""
     tmp_link = best_run_path + ".tmp"
+    # The symlink target is the sibling run-dir BASENAME: a symlink
+    # target resolves relative to the symlink's own directory (the runs
+    # root), not the creator's cwd. A raw run_path target broke under a
+    # relative root= (dangling from birth, so every save took the
+    # repoint-unconditionally branch — best tracked the most RECENT run,
+    # not the best); an absolute target would dangle on any repo move.
+    target = os.path.basename(os.path.normpath(run_path))
     try:
         if os.path.lexists(tmp_link):
             os.remove(tmp_link)  # stale temp from a prior crash
-        os.symlink(src=run_path, dst=tmp_link, target_is_directory=True)
+        os.symlink(src=target, dst=tmp_link, target_is_directory=True)
         if os.path.lexists(best_run_path) and not os.path.islink(best_run_path):
             # Prior POINTER.txt fallback layout — clear the directory so
             # os.replace can land the symlink (one-time layout upgrade;
@@ -431,7 +438,13 @@ class NNRun:
             # would otherwise die on rep.get(...) with no file context.
             raise ValueError(f"malformed run.yaml at {yaml_path}: expected a mapping, got {type(rep).__name__}")
 
-        raw_idps = pd.read_csv(csv_path).to_dict(orient="records")
+        try:
+            raw_idps = pd.read_csv(csv_path).to_dict(orient="records")
+        except pd.errors.EmptyDataError as e:
+            # A zero-byte file (external truncation — our own atomic
+            # writes never produce one; even an idps-less run writes the
+            # frame header) raises a pandas error with no file context.
+            raise ValueError(f"malformed idps.csv at {csv_path}: {e}") from e
         # Separate try-scopes per source file so a missing key names the
         # FILE that's actually corrupt (a dropped CSV column must not be
         # reported as a run.yaml problem, and vice versa).

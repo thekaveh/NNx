@@ -179,6 +179,34 @@ def test_review_read_best_pointer_resolves_symlink_or_pointer_file(tmp_path):
     assert _read_best_pointer(best_path) == "abc123"
 
 
+def test_point_best_symlink_resolves_under_relative_root(tmp_path, monkeypatch):
+    """_point_best used the raw run_path as the symlink target, but a
+    symlink target resolves relative to the symlink's OWN directory —
+    with a relative root= (run.save(root="experiments")) the link
+    dangled from birth, so every save took the repoint-unconditionally
+    dangling branch and `runs/best` tracked the most RECENT run instead
+    of the best. The target is now the sibling run-dir basename, which
+    also survives relocating the runs root."""
+    import os
+
+    from nnx.nn.params.nn_run import _point_best, _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    run_id = "a" * 32
+    runs_root = tmp_path / "experiments" / "runs"
+    (runs_root / run_id).mkdir(parents=True)
+    best_path = str(runs_root / "best")
+
+    # The relative shape NNRun.save builds from root="experiments".
+    _point_best(best_path, os.path.join("experiments", "runs", run_id))
+    assert os.path.exists(best_path), "best symlink dangles under a relative root"
+    assert _read_best_pointer(best_path) == run_id
+
+    # Sibling-basename target keeps resolving after the root moves.
+    (tmp_path / "experiments").rename(tmp_path / "elsewhere")
+    assert os.path.exists(str(tmp_path / "elsewhere" / "runs" / "best"))
+
+
 def test_review_pointer_file_compared_correctly_under_symlink_fallback(tmp_path, monkeypatch):
     """Pre-fix: under the POINTER.txt fallback, `NNCheckpoint.load(run="best", ...)`
     looked for `runs/best/checkpoints/best.pt` which didn't exist (best/ was a

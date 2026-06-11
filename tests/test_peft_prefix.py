@@ -152,6 +152,21 @@ def test_prefix_tuner_validates_n_prefix():
         PrefixTuner(model, n_prefix=-1)
 
 
+def test_prefix_tuner_rejects_already_tuned_model():
+    """A second PrefixTuner on the same net silently hijacked the first:
+    the patched forwards read mha._nnx_prefix_tuner, which the second
+    tuner overwrote — so the first tuner's parameters stopped receiving
+    gradients while its forward injected the SECOND tuner's prefixes
+    (training an optimizer over tuner-1's params became a silent no-op).
+    Loud rejection instead; deepcopy remains the supported way to fork
+    a tuned net."""
+    set_seed(0)
+    model = _tiny_transformer()
+    PrefixTuner(model, n_prefix=2)
+    with pytest.raises(ValueError, match="already prefix-tuned"):
+        PrefixTuner(model, n_prefix=2)
+
+
 def test_prefix_tuner_kv_cache_matches_full_forward():
     """Cache-path parity: incremental forward_with_cache on a
     prefix-tuned TransformerNN must match the full forward's last-token
