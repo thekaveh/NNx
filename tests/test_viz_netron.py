@@ -16,7 +16,14 @@ import pytest
 import torch
 from torch import nn
 
-from nnx import (
+# Same optional-extra convention every other gated test file follows:
+# skip gracefully when the required extras aren't installed (the
+# shipped sdist's suite must not hard-fail without them).
+# onnx is needed by torch.onnx.export's proto save in EVERY test here,
+# not just the explicit round-trip import below.
+pytest.importorskip("onnx")
+
+from nnx import (  # noqa: E402
     Activations,
     Devices,
     Losses,
@@ -52,7 +59,7 @@ def test_netron_export_produces_valid_onnx_file(tmp_path, tiny_feedfwd):
     assert returned == str(out)
     assert out.exists()
     assert os.path.getsize(out) > 0
-    # Round-trip via the onnx package (already in the `dev` extra) to
+    # Round-trip via the onnx package (gated module-level above) to
     # confirm the file is structurally valid, not just non-empty.
     import onnx
 

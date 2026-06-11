@@ -12,9 +12,16 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
-from nnx import (
+# Same optional-extra convention every other gated test file follows:
+# skip gracefully when the required extras aren't installed (the
+# shipped sdist's suite must not hard-fail without them).
+pytest.importorskip("huggingface_hub")
+pytest.importorskip("safetensors")
+
+from nnx import (  # noqa: E402
     Activations,
     Devices,
     Losses,
