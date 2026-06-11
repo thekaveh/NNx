@@ -358,3 +358,23 @@ def test_lr_finder_sweep_reaches_end_lr():
     # last LR must hit end_lr (within float noise).
     if len(result.lrs) == 10:
         assert abs(result.lrs[-1] - 1.0) / 1.0 < 1e-6
+
+
+def test_lr_finder_restores_global_rng_state():
+    """The non-destructive contract covers reproducibility: a seeded
+    pipeline must produce identical draws whether or not an lr_finder
+    pre-flight ran. Pre-fix, the sweep leaked its dropout draws (the
+    helper itself calls .train()) and the DataLoader base-seed draw
+    into the caller's RNG stream, so seed → lr_finder → train diverged
+    from seed → train."""
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Dropout(0.5), nn.Linear(8, 3))
+    X = torch.randn(64, 4)
+    y = torch.randint(0, 3, (64,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=8, shuffle=True)
+
+    torch.manual_seed(7)
+    expected = torch.randn(4)
+    torch.manual_seed(7)
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=5)
+    assert torch.equal(torch.randn(4), expected)

@@ -5,10 +5,11 @@ Runs an exponential LR sweep from ``start_lr`` to ``end_lr`` over
 recommended ``max_lr`` is the LR at the steepest descent point of the
 smoothed loss curve — the classic Smith (2017) heuristic.
 
-The sweep is **non-destructive**: the model's initial weights are
-snapshotted before the sweep starts and restored on exit, so the
-caller can use this as a pre-flight check before the real training
-run without disturbing any subsequent reproducibility.
+The sweep is **non-destructive**: the model's initial weights AND the
+RNG state (CPU + the active device's) are snapshotted before the sweep
+starts and restored on exit, so the caller can use this as a pre-flight
+check before the real training run without disturbing any subsequent
+reproducibility.
 """
 
 from __future__ import annotations
@@ -64,8 +65,8 @@ def lr_finder(
 
     Args:
         model: the network to sweep against. ``model.train()`` is
-            called internally; both the original training-mode
-            state AND the weights are restored on exit.
+            called internally; the original training-mode state, the
+            weights, AND the RNG state are all restored on exit.
         train_loader: a DataLoader yielding ``(X, Y)`` batches the
             model can forward and ``loss_fn`` can score against. The
             loader is iterated, and if the sweep exceeds one epoch
@@ -108,9 +109,19 @@ def lr_finder(
     if device is None:
         device = next(model.parameters()).device
 
-    # Snapshot for non-destructive restore on exit (mode + weights).
+    # Snapshot for non-destructive restore on exit (mode + weights + RNG).
+    # The sweep consumes RNG (dropout under .train(), the DataLoader's
+    # base-seed draw) — without the RNG restore, a seeded pipeline that
+    # ran lr_finder as a pre-flight diverged from the same pipeline
+    # without it, breaking the module docstring's reproducibility claim.
     was_training = model.training
     initial_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    cpu_rng_state = torch.get_rng_state()
+    device_rng_state: Optional[torch.Tensor] = None
+    if device.type == "cuda":
+        device_rng_state = torch.cuda.get_rng_state(device)
+    elif device.type == "mps":
+        device_rng_state = torch.mps.get_rng_state()
 
     optimizer = optimizer_cls(model.parameters(), lr=start_lr)
     lrs: list[float] = []
@@ -175,11 +186,16 @@ def lr_finder(
             losses.append(loss_val)
             current_lr *= lr_mult
     finally:
-        # Restore weights + training mode — sweep is fully non-destructive
-        # regardless of whether the loop completed, early-exited on
-        # divergence, or raised mid-iter.
+        # Restore weights + training mode + RNG — sweep is fully
+        # non-destructive regardless of whether the loop completed,
+        # early-exited on divergence, or raised mid-iter.
         model.load_state_dict(initial_state)
         model.train(was_training)
+        torch.set_rng_state(cpu_rng_state)
+        if device.type == "cuda":
+            torch.cuda.set_rng_state(device_rng_state, device)
+        elif device.type == "mps":
+            torch.mps.set_rng_state(device_rng_state)
 
     suggested_lr = _suggest_lr(lrs, losses, ema_alpha) if lrs else start_lr
 
