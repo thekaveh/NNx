@@ -405,3 +405,14 @@ def test_lr_finder_restores_loader_attached_generator_state():
     state2 = gen2.get_state()
     lr_finder(model, loader2, loss_fn=nn.functional.cross_entropy, num_iter=5)
     assert torch.equal(gen2.get_state(), state2)
+
+    # And when it hides inside an explicit batch_sampler= — torch fills
+    # loader.sampler with a dummy SequentialSampler on this form, so the
+    # live stream sits at loader.batch_sampler.sampler.generator.
+    from torch.utils.data import BatchSampler
+
+    gen3 = torch.Generator().manual_seed(44)
+    loader3 = DataLoader(ds, batch_sampler=BatchSampler(RandomSampler(ds, generator=gen3), 8, False))
+    state3 = gen3.get_state()
+    lr_finder(model, loader3, loss_fn=nn.functional.cross_entropy, num_iter=5)
+    assert torch.equal(gen3.get_state(), state3)

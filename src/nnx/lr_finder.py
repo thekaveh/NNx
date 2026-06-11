@@ -130,6 +130,9 @@ def lr_finder(
     loader_generators = (
         getattr(train_loader, "generator", None),
         getattr(getattr(train_loader, "sampler", None), "generator", None),
+        # An explicit batch_sampler= hides its stream one level deeper —
+        # torch fills loader.sampler with a dummy SequentialSampler then.
+        getattr(getattr(getattr(train_loader, "batch_sampler", None), "sampler", None), "generator", None),
     )
     loader_gen_states = [(g, g.get_state()) for g in dict.fromkeys(g for g in loader_generators if g is not None)]
 
