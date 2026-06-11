@@ -165,3 +165,16 @@ def test_deepen_dtype_follows_dim_source_linear_through_dropout():
     assert deeper[3].weight.dtype == torch.float64
     new_out = deeper(x)
     assert torch.allclose(orig_out, new_out, atol=1e-10)
+
+
+def test_deepen_does_not_advance_global_rng():
+    """deepen() must be a no-op on the global torch RNG stream — the
+    identity Linear is built uninitialized (skip_init) since both its
+    params are overwritten. Pre-fix, the fresh layer's kaiming init
+    drew from the default generator, silently diverging any seeded
+    caller pipeline."""
+    net = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    torch.manual_seed(123)
+    state = torch.get_rng_state()
+    deepen(net, after_layer_name="1")
+    assert torch.equal(torch.get_rng_state(), state)

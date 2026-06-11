@@ -121,3 +121,17 @@ def test_expand_embedding_rejects_unknown_init():
     old = nn.Embedding(num_embeddings=10, embedding_dim=4)
     with pytest.raises(ValueError, match="unknown init strategy"):
         expand_embedding(old, new_num_embeddings=12, init="random")  # type: ignore[arg-type]
+
+
+def test_expand_embedding_does_not_advance_global_rng():
+    """expand_embedding() must be a no-op on the global torch RNG
+    stream — every row of the fresh Embedding is overwritten, so it is
+    built uninitialized (skip_init). Pre-fix, the fresh layer's normal_
+    init drew from the default generator, silently diverging any
+    seeded caller pipeline. Covers both init modes."""
+    old = nn.Embedding(num_embeddings=10, embedding_dim=4)
+    torch.manual_seed(123)
+    state = torch.get_rng_state()
+    expand_embedding(old, new_num_embeddings=15, init="zeros")
+    expand_embedding(old, new_num_embeddings=15, init="copy_mean")
+    assert torch.equal(torch.get_rng_state(), state)

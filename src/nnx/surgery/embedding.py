@@ -27,6 +27,7 @@ from typing import Literal
 
 import torch
 from torch import nn
+from torch.nn.utils import skip_init
 
 InitStrategy = Literal["zeros", "copy_mean"]
 
@@ -70,7 +71,11 @@ def expand_embedding(
         raise ValueError(f"unknown init strategy {init!r}; expected 'zeros' or 'copy_mean'")
 
     dim = emb.embedding_dim
-    new_emb = nn.Embedding(
+    # skip_init: every row is overwritten below (originals copied, new
+    # rows zeroed / mean-filled), so meta-device construction avoids
+    # consuming global RNG on a discarded normal_ init.
+    new_emb = skip_init(
+        nn.Embedding,
         num_embeddings=new_num_embeddings,
         embedding_dim=dim,
         padding_idx=emb.padding_idx,

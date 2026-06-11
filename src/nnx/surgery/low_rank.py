@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.nn.utils import skip_init
 
 _SUPPORTED_METHODS = ("svd",)
 
@@ -85,12 +86,14 @@ def low_rank_factorize(
     # device= threads the original layer's placement — without it a
     # CUDA-resident model gets CPU layers spliced in and the next
     # forward crashes with a device mismatch (widen already does this).
-    down = nn.Linear(in_features, rank, bias=False, dtype=orig_dtype, device=W.device)
+    # skip_init: every param is fully overwritten, so meta-device
+    # construction keeps the surgery off the global RNG stream.
+    down = skip_init(nn.Linear, in_features, rank, bias=False, dtype=orig_dtype, device=W.device)
     down.weight.data.copy_(down_weight)
 
     # Second Linear: k → out. Weight is U_k. Bias is the original.
     up_weight = U_k.to(orig_dtype)
-    up = nn.Linear(rank, out_features, bias=linear.bias is not None, dtype=orig_dtype, device=W.device)
+    up = skip_init(nn.Linear, rank, out_features, bias=linear.bias is not None, dtype=orig_dtype, device=W.device)
     up.weight.data.copy_(up_weight)
     if linear.bias is not None:
         up.bias.data.copy_(linear.bias.data)

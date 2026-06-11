@@ -38,6 +38,7 @@ import copy
 
 import torch
 from torch import nn
+from torch.nn.utils import skip_init
 
 from ._utils import get_module
 
@@ -238,9 +239,11 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str) -> None:
         )
 
 
-def _identity_linear(dim: int, *, dtype=torch.float32, device=None) -> nn.Linear:
+def _identity_linear(dim: int, *, dtype=torch.float32, device="cpu") -> nn.Linear:
     """A fresh ``nn.Linear(dim, dim)`` with weight = I and bias = 0."""
-    layer = nn.Linear(dim, dim, bias=True, dtype=dtype, device=device)
+    # skip_init: both params are overwritten below — meta-device
+    # construction keeps the surgery off the global RNG stream.
+    layer = skip_init(nn.Linear, dim, dim, bias=True, dtype=dtype, device=device)
     with torch.no_grad():
         layer.weight.copy_(torch.eye(dim, dtype=dtype, device=layer.weight.device))
         layer.bias.zero_()

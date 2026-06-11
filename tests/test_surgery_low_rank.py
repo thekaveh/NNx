@@ -116,3 +116,16 @@ def test_low_rank_factorize_method_kwarg_accepts_svd():
     b = low_rank_factorize(linear, rank=4, method="svd")
     for pa, pb in zip(a.parameters(), b.parameters(), strict=True):
         assert torch.equal(pa, pb)
+
+
+def test_low_rank_factorize_does_not_advance_global_rng():
+    """low_rank_factorize() must be a no-op on the global torch RNG
+    stream — both factored Linears are fully overwritten, so they are
+    built uninitialized (skip_init). Pre-fix, their kaiming inits drew
+    from the default generator, silently diverging any seeded caller
+    pipeline."""
+    linear = nn.Linear(16, 8)
+    torch.manual_seed(123)
+    state = torch.get_rng_state()
+    low_rank_factorize(linear, rank=4)
+    assert torch.equal(torch.get_rng_state(), state)

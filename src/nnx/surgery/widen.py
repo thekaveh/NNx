@@ -25,6 +25,7 @@ from typing import Optional
 
 import torch
 from torch import nn
+from torch.nn.utils import skip_init
 
 from ._utils import get_module, set_module
 
@@ -51,9 +52,10 @@ def widen(
         new_width: desired ``out_features``. Must be strictly greater
             than the current ``out_features``.
         rng_seed: seed for the unit-duplication choices. Pass an int
-            for deterministic surgery; ``None`` to draw from the
-            ambient :func:`torch.seed`. Defaults to ``0`` so the
-            primitive is deterministic by default.
+            for deterministic surgery; ``None`` to seed the local
+            generator non-deterministically (fresh entropy — the global
+            torch RNG is never read or advanced). Defaults to ``0`` so
+            the primitive is deterministic by default.
 
     Returns:
         A new :class:`nn.Module` (same class as ``model``) with the
@@ -94,7 +96,11 @@ def widen(
 
     # --- Expand the target layer (in-out: in → cur+q) -----------------
     new_weight = torch.cat([layer.weight.data, layer.weight.data[duplicates]], dim=0)
-    new_layer = nn.Linear(
+    # skip_init: every param is fully overwritten below, so meta-device
+    # construction avoids burning ambient RNG draws on a discarded init
+    # (a seeded caller pipeline would otherwise silently diverge).
+    new_layer = skip_init(
+        nn.Linear,
         layer.in_features,
         new_width,
         bias=layer.bias is not None,
@@ -125,7 +131,8 @@ def widen(
     extended_rep = torch.cat([replication_count, replication_count[duplicates]])
     new_down_weight = new_down_weight / extended_rep.unsqueeze(0)
 
-    new_down_layer = nn.Linear(
+    new_down_layer = skip_init(
+        nn.Linear,
         new_width,
         down_layer.out_features,
         bias=down_layer.bias is not None,
