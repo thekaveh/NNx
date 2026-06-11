@@ -410,10 +410,15 @@ class NNModel(_HubMixinBase):
         save_dir = Path(save_directory)
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # Detach + contiguous matches the same hygiene NNCheckpoint applies
-        # on its safetensors path: drop autograd hooks, ensure C-contiguous
-        # storage so safetensors' zero-copy reader works.
-        tensors = {k: v.detach().contiguous() for k, v in self.net.state_dict().items()}
+        # Detach + contiguous + clone matches the hygiene NNCheckpoint
+        # applies on its safetensors path: drop autograd hooks, ensure
+        # C-contiguous storage, and BREAK STORAGE SHARING — safetensors
+        # rejects tied tensors (tok_embed/lm_head share storage on every
+        # default TransformerNN), and .contiguous() is a no-op on an
+        # already-contiguous shared view. load_state_dict reassembles the
+        # tie on reload by copying both identical keys into the shared
+        # parameter.
+        tensors = {k: v.detach().contiguous().clone() for k, v in self.net.state_dict().items()}
         save_file(tensors, str(save_dir / _HUB_MODEL_FILENAME))
 
         config = {

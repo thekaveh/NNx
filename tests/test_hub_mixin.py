@@ -153,3 +153,52 @@ def test_hub_from_pretrained_strict_is_honored(tmp_path):
 
     rt = NNModel.from_pretrained(str(tmp_path), strict=False)
     assert isinstance(rt, NNModel)
+
+
+def test_hub_round_trip_tied_transformer(tmp_path):
+    """save_pretrained on a DEFAULT transformer (tie_embeddings=True)
+    crashed with safetensors' 'Some tensors share memory' — the Hub
+    writer missed the .clone() its NNCheckpoint sibling carries. The
+    round-trip must restore weights bit-exactly with the tie intact and
+    greedy generation parity."""
+    import pytest
+
+    pytest.importorskip("tokenizers")
+    from nnx import GenerativeNNModel, NNTransformerParams
+    from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
+
+    torch.manual_seed(0)
+    params = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        vocab_size=64,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=16,
+    )
+    tk = train_bpe(
+        files=None,
+        texts=["the cat sat on the mat"],
+        vocab_size=64,
+        special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"],
+    )
+    tokenizer = NNTokenizerParams.of(tokenizer=tk, path=str(tmp_path / "tok.json"))
+    m = GenerativeNNModel(
+        net_params=params,
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        tokenizer=tokenizer,
+    )
+    out_dir = tmp_path / "hub"
+    m.save_pretrained(str(out_dir))  # pre-fix: RuntimeError (shared memory)
+
+    rt = GenerativeNNModel.from_pretrained(str(out_dir))
+    rt.tokenizer = tokenizer
+    for k in m.net.state_dict():
+        assert torch.equal(m.net.state_dict()[k], rt.net.state_dict()[k])
+    assert rt.net.lm_head.weight is rt.net.tok_embed.weight, "tie not reassembled"
+    a = m.generate(prompt="the", max_new_tokens=6, temperature=0.0)
+    b = rt.generate(prompt="the", max_new_tokens=6, temperature=0.0)
+    assert a == b
