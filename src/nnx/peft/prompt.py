@@ -88,6 +88,14 @@ class PromptTuner(nn.Module):
         self.soft_prompt = nn.Parameter(torch.empty(n_prompt_tokens, d_model))
         nn.init.normal_(self.soft_prompt, std=0.02)
 
+
+    @property
+    def effective_max_seq_len(self) -> int:
+        """Window available for REAL tokens: the soft prompt occupies
+        ``n_prompt_tokens`` of the wrapped model's ``max_seq_len`` slots.
+        ``GenerativeNNModel.generate`` reads this so its sliding window
+        never overflows the wrapped model mid-generation."""
+        return self.model.params.max_seq_len - self.n_prompt_tokens
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """Run the wrapped model with the soft prompt prepended.
 

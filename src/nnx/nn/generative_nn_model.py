@@ -125,6 +125,10 @@ class GenerativeNNModel(NNModel):
         max_seq_len = getattr(self.net_params, "max_seq_len", None)
         if max_seq_len is None:
             raise ValueError("net_params must expose `max_seq_len` (got a non-Transformer net?)")
+        # Wrappers that consume window slots (PromptTuner's soft prompt)
+        # advertise a smaller effective window — without this, the
+        # sliding window overflows the wrapped model mid-generation.
+        max_seq_len = getattr(self.net, "effective_max_seq_len", max_seq_len)
 
         # Build the processor chain. Two paths:
         # (a) If the caller supplied a pre-built ``logits_chain``, use
