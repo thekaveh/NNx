@@ -7,7 +7,14 @@ Thin wrapper around torchinfo.summary. Two contracts:
 
 from __future__ import annotations
 
-from nnx import (
+import pytest
+
+# Same optional-extra convention every other gated test file follows:
+# skip gracefully when the [viz] extra isn't installed (the shipped
+# sdist's suite must not hard-fail without it).
+pytest.importorskip("torchinfo")
+
+from nnx import (  # noqa: E402
     Activations,
     Devices,
     Losses,
