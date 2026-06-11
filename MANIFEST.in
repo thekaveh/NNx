@@ -1,0 +1,6 @@
+# Ship the COMPLETE test suite in the sdist: setuptools' legacy default
+# glob includes tests/test*.py but silently drops conftest.py and
+# tests/__init__.py, leaving distro packagers a half-suite that fails
+# with "fixture not found" (conftest defines load-bearing fixtures and
+# the macOS OMP guards).
+recursive-include tests *.py
