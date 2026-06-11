@@ -378,3 +378,30 @@ def test_lr_finder_restores_global_rng_state():
     torch.manual_seed(7)
     lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=5)
     assert torch.equal(torch.randn(4), expected)
+
+
+def test_lr_finder_restores_loader_attached_generator_state():
+    """The PyTorch reproducibility recipe attaches a seeded generator to
+    the DataLoader (or an explicit sampler); the sweep's iteration draws
+    its shuffle permutations from THAT stream, not global RNG. Pre-fix,
+    the global-RNG restore left loader-attached generators advanced, so
+    pipelines using generator= still diverged after a pre-flight."""
+    from torch.utils.data import RandomSampler
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3))
+    ds = TensorDataset(torch.randn(64, 4), torch.randint(0, 3, (64,)))
+
+    gen = torch.Generator().manual_seed(42)
+    loader = DataLoader(ds, batch_size=8, shuffle=True, generator=gen)
+    state = gen.get_state()
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=5)
+    assert torch.equal(gen.get_state(), state)
+
+    # Same contract when the generator rides on an explicit sampler
+    # (loader.generator stays None on this construction).
+    gen2 = torch.Generator().manual_seed(43)
+    loader2 = DataLoader(ds, batch_size=8, sampler=RandomSampler(ds, generator=gen2))
+    state2 = gen2.get_state()
+    lr_finder(model, loader2, loss_fn=nn.functional.cross_entropy, num_iter=5)
+    assert torch.equal(gen2.get_state(), state2)

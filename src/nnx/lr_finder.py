@@ -5,11 +5,12 @@ Runs an exponential LR sweep from ``start_lr`` to ``end_lr`` over
 recommended ``max_lr`` is the LR at the steepest descent point of the
 smoothed loss curve — the classic Smith (2017) heuristic.
 
-The sweep is **non-destructive**: the model's initial weights AND the
-RNG state (CPU + the active device's) are snapshotted before the sweep
-starts and restored on exit, so the caller can use this as a pre-flight
-check before the real training run without disturbing any subsequent
-reproducibility.
+The sweep is **non-destructive**: the model's initial weights AND every
+RNG stream the sweep consumes (global CPU, the active device's, and any
+loader/sampler-attached ``generator=``) are snapshotted before the
+sweep starts and restored on exit, so the caller can use this as a
+pre-flight check before the real training run without disturbing any
+subsequent reproducibility.
 """
 
 from __future__ import annotations
@@ -122,6 +123,15 @@ def lr_finder(
         device_rng_state = torch.cuda.get_rng_state(device)
     elif device.type == "mps":
         device_rng_state = torch.mps.get_rng_state()
+    # A loader built per the PyTorch reproducibility recipe draws its
+    # shuffle permutation and worker base-seed from its OWN generator
+    # (DataLoader(generator=...) or an explicit sampler's), not global
+    # RNG — a third stream the global restore can't cover.
+    loader_generators = (
+        getattr(train_loader, "generator", None),
+        getattr(getattr(train_loader, "sampler", None), "generator", None),
+    )
+    loader_gen_states = [(g, g.get_state()) for g in dict.fromkeys(g for g in loader_generators if g is not None)]
 
     optimizer = optimizer_cls(model.parameters(), lr=start_lr)
     lrs: list[float] = []
@@ -196,6 +206,8 @@ def lr_finder(
             torch.cuda.set_rng_state(device_rng_state, device)
         elif device.type == "mps":
             torch.mps.set_rng_state(device_rng_state)
+        for g, s in loader_gen_states:
+            g.set_state(s)
 
     suggested_lr = _suggest_lr(lrs, losses, ema_alpha) if lrs else start_lr
 
