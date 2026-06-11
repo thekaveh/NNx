@@ -213,3 +213,30 @@ def test_prefix_tuner_deepcopy_is_independent():
         # The clone's own prefix params are live (its attention reads them).
         clone.blocks[0].attn._nnx_prefix_tuner.prefix_keys[0].add_(5.0)
         assert not torch.equal(clone(ids), baseline)
+
+
+def test_prefix_tuned_net_torch_save_round_trips(tmp_path):
+    """torch.save/load of a WHOLE prefix-tuned net must round-trip:
+    MethodType pickles by name-lookup on the instance, which the
+    class-level _prefix_patched_forward alias resolves. Pre-fix the
+    save succeeded but the load died with AttributeError — a silently
+    unloadable artifact."""
+    import copy  # noqa: F401
+
+    set_seed(0)
+    net = _tiny_transformer()
+    PrefixTuner(net, n_prefix=3)
+    net.eval()
+    ids = torch.randint(0, 100, (1, 6))
+    with torch.no_grad():
+        baseline = net(ids).clone()
+
+    path = tmp_path / "prefix_net.pt"
+    torch.save(net, path)
+    loaded = torch.load(path, weights_only=False)
+    loaded.eval()
+    with torch.no_grad():
+        assert torch.equal(loaded(ids), baseline)
+        # The loaded net's prefix refs are live and self-consistent.
+        loaded.blocks[0].attn._nnx_prefix_tuner.prefix_keys[0].add_(5.0)
+        assert not torch.equal(loaded(ids), baseline)

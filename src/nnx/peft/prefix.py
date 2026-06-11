@@ -19,9 +19,10 @@ Mechanism in this file:
     targets (all blocks by default, or a prefix of them via
     ``n_layers``).
   - At construction time we MONKEY-PATCH each target block's
-    ``MultiHeadCausalAttention.forward`` with a closure that runs the
-    original attention but injects the learned K/V prefix after RoPE
-    is applied to the real K. The prefix tensors are RoPE-free (they're
+    ``MultiHeadCausalAttention.forward`` with a bound module-level
+    function (deepcopy/pickle-safe — see ``_prefix_patched_forward``)
+    that runs the original attention but injects the learned K/V
+    prefix after RoPE is applied to the real K. The prefix tensors are RoPE-free (they're
     learned content, not positional offsets — same convention as the
     original prefix-tuning paper).
   - The attention mask is extended so the ``n_prefix`` prefix columns
@@ -299,3 +300,13 @@ def _prefix_patched_forward(
     out = mha.w_o(attn_out)
 
     return out, new_kv
+
+
+# Pickle resolution for the MethodType binding: torch.save of a WHOLE
+# prefix-tuned net pickles each bound method by name-lookup on its
+# instance (MethodType.__reduce__ → getattr(mha, func.__name__)).
+# Exposing the function on the class makes that lookup succeed, so
+# save/load of a prefix-tuned net round-trips with a self-consistent
+# (non-aliasing) reconstruction. Without it, the save succeeds but the
+# load dies with an AttributeError.
+MultiHeadCausalAttention._prefix_patched_forward = _prefix_patched_forward
