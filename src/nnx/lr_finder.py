@@ -7,10 +7,11 @@ smoothed loss curve — the classic Smith (2017) heuristic.
 
 The sweep is **non-destructive**: the model's initial weights AND every
 RNG stream the sweep consumes (global CPU, the active device's, and any
-loader/sampler-attached ``generator=``) are snapshotted before the
-sweep starts and restored on exit, so the caller can use this as a
+loader/sampler-attached torch ``generator=``) are snapshotted before
+the sweep starts and restored on exit, so the caller can use this as a
 pre-flight check before the real training run without disturbing any
-subsequent reproducibility.
+subsequent reproducibility. (A non-torch stream a custom sampler may
+carry — e.g. a numpy ``Generator`` — is skipped: it stays caller-owned.)
 """
 
 from __future__ import annotations
@@ -136,7 +137,12 @@ def lr_finder(
         # A custom batch sampler may own its generator directly.
         getattr(getattr(train_loader, "batch_sampler", None), "generator", None),
     )
-    loader_gen_states = [(g, g.get_state()) for g in dict.fromkeys(g for g in loader_generators if g is not None)]
+    # isinstance filter: an exotic sampler may carry e.g. a numpy
+    # Generator under the same attribute name — no get_state(), and not
+    # a stream this helper can restore; it stays caller-owned.
+    loader_gen_states = [
+        (g, g.get_state()) for g in dict.fromkeys(g for g in loader_generators if isinstance(g, torch.Generator))
+    ]
     # persistent_workers caches the first iterator ON the loader: if the
     # sweep creates it, the caller's first epoch would _reset() that
     # cache instead of drawing a fresh worker base seed, shifting their

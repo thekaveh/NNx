@@ -437,6 +437,27 @@ def test_lr_finder_restores_loader_attached_generator_state():
     lr_finder(model, loader4, loss_fn=nn.functional.cross_entropy, num_iter=5)
     assert torch.equal(gen4.get_state(), state4)
 
+    # A NON-torch generator riding the same attribute name must not
+    # crash the snapshot — it has no get_state() and is skipped as a
+    # caller-owned stream (pre-fix: AttributeError before the sweep).
+    import numpy as np
+
+    class _NumpyBatchSampler:
+        def __init__(self, n: int, batch_size: int, rng):
+            self.n, self.batch_size, self.generator = n, batch_size, rng
+
+        def __iter__(self):
+            perm = self.generator.permutation(self.n)
+            for i in range(0, self.n, self.batch_size):
+                yield perm[i : i + self.batch_size].tolist()
+
+        def __len__(self):
+            return (self.n + self.batch_size - 1) // self.batch_size
+
+    loader5 = DataLoader(ds, batch_sampler=_NumpyBatchSampler(64, 8, np.random.default_rng(0)))
+    result = lr_finder(model, loader5, loss_fn=nn.functional.cross_entropy, num_iter=5)
+    assert len(result.lrs) >= 1
+
 
 def test_lr_finder_discards_persistent_workers_iterator_it_created():
     """persistent_workers=True caches the first iterator ON the loader;
