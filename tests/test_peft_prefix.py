@@ -180,3 +180,36 @@ def test_prefix_tuner_kv_cache_matches_full_forward():
             assert past[0][0].size(-2) == i + 1, (
                 f"cache holds {past[0][0].size(-2)} slots at position {i}; expected {i + 1} real tokens"
             )
+
+
+def test_prefix_tuner_deepcopy_is_independent():
+    """copy.deepcopy of a prefix-tuned net must be fully decoupled.
+    Pre-fix, the patched MHA forwards were instance closures, which
+    deepcopy treats as atomic — the copy's attention silently kept
+    reading the ORIGINAL weights and prefix params (corrupting
+    quantize-on-copy, born-again frozen teachers, and surgery copies).
+    The patch is now a MethodType-bound module-level function with its
+    refs stored on the MHA, so deepcopy rebinds and re-references
+    through the memo."""
+    import copy
+
+    set_seed(0)
+    net = _tiny_transformer()
+    tuner = PrefixTuner(net, n_prefix=3)
+    net.eval()
+    ids = torch.randint(0, 100, (1, 6))
+
+    with torch.no_grad():
+        baseline = net(ids).clone()
+        clone = copy.deepcopy(net)
+        clone.eval()
+        assert torch.equal(clone(ids), baseline)
+
+        # Mutating the ORIGINAL (weights + prefix) must not move the clone.
+        net.blocks[0].attn.w_qkv.weight.add_(1.0)
+        tuner.prefix_keys[0].add_(5.0)
+        assert torch.equal(clone(ids), baseline), "deepcopy aliases the original"
+
+        # The clone's own prefix params are live (its attention reads them).
+        clone.blocks[0].attn._nnx_prefix_tuner.prefix_keys[0].add_(5.0)
+        assert not torch.equal(clone(ids), baseline)
