@@ -416,3 +416,48 @@ def test_lr_finder_restores_loader_attached_generator_state():
     state3 = gen3.get_state()
     lr_finder(model, loader3, loss_fn=nn.functional.cross_entropy, num_iter=5)
     assert torch.equal(gen3.get_state(), state3)
+
+    # Fourth attachment shape: a custom batch sampler owning its
+    # generator directly (no .sampler indirection).
+    class _GenBatchSampler:
+        def __init__(self, n: int, batch_size: int, generator: torch.Generator):
+            self.n, self.batch_size, self.generator = n, batch_size, generator
+
+        def __iter__(self):
+            perm = torch.randperm(self.n, generator=self.generator)
+            for i in range(0, self.n, self.batch_size):
+                yield perm[i : i + self.batch_size].tolist()
+
+        def __len__(self):
+            return (self.n + self.batch_size - 1) // self.batch_size
+
+    gen4 = torch.Generator().manual_seed(45)
+    loader4 = DataLoader(ds, batch_sampler=_GenBatchSampler(64, 8, gen4))
+    state4 = gen4.get_state()
+    lr_finder(model, loader4, loss_fn=nn.functional.cross_entropy, num_iter=5)
+    assert torch.equal(gen4.get_state(), state4)
+
+
+def test_lr_finder_discards_persistent_workers_iterator_it_created():
+    """persistent_workers=True caches the first iterator ON the loader;
+    when the sweep creates that cache, the caller's first epoch
+    _reset()s it instead of drawing a fresh worker base seed — shifting
+    their batch stream even though every RNG snapshot is restored. The
+    sweep must discard an iterator it created so the caller's first
+    epoch is identical with or without the pre-flight."""
+
+    def make_loader():
+        ds = TensorDataset(
+            torch.arange(64, dtype=torch.float32).reshape(64, 1).expand(64, 4).contiguous(),
+            torch.zeros(64, dtype=torch.long),
+        )
+        g = torch.Generator().manual_seed(42)
+        return DataLoader(ds, batch_size=8, shuffle=True, generator=g, num_workers=1, persistent_workers=True)
+
+    reference_first_batch = next(iter(make_loader()))[0]
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3))
+    loader = make_loader()
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+    assert torch.equal(next(iter(loader))[0], reference_first_batch)

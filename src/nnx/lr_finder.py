@@ -133,8 +133,16 @@ def lr_finder(
         # An explicit batch_sampler= hides its stream one level deeper —
         # torch fills loader.sampler with a dummy SequentialSampler then.
         getattr(getattr(getattr(train_loader, "batch_sampler", None), "sampler", None), "generator", None),
+        # A custom batch sampler may own its generator directly.
+        getattr(getattr(train_loader, "batch_sampler", None), "generator", None),
     )
     loader_gen_states = [(g, g.get_state()) for g in dict.fromkeys(g for g in loader_generators if g is not None)]
+    # persistent_workers caches the first iterator ON the loader: if the
+    # sweep creates it, the caller's first epoch would _reset() that
+    # cache instead of drawing a fresh worker base seed, shifting their
+    # batch stream even though every RNG snapshot here is restored. The
+    # finally discards only an iterator the sweep itself created.
+    had_cached_iterator = getattr(train_loader, "_iterator", None) is not None
 
     optimizer = optimizer_cls(model.parameters(), lr=start_lr)
     lrs: list[float] = []
@@ -211,6 +219,10 @@ def lr_finder(
             torch.mps.set_rng_state(device_rng_state)
         for g, s in loader_gen_states:
             g.set_state(s)
+        if not had_cached_iterator and getattr(train_loader, "_iterator", None) is not None:
+            # Dropping the reference shuts the persistent workers down
+            # via the iterator's finalizer.
+            train_loader._iterator = None
 
     suggested_lr = _suggest_lr(lrs, losses, ema_alpha) if lrs else start_lr
 
