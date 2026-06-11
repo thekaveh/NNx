@@ -221,8 +221,6 @@ def test_prefix_tuned_net_torch_save_round_trips(tmp_path):
     class-level _prefix_patched_forward alias resolves. Pre-fix the
     save succeeded but the load died with AttributeError — a silently
     unloadable artifact."""
-    import copy  # noqa: F401
-
     set_seed(0)
     net = _tiny_transformer()
     PrefixTuner(net, n_prefix=3)
