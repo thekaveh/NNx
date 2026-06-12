@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 import pandas as pd
 import yaml
 
+from ..._metrics import _resolve_metric
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
 from ..params.nn_iteration_data_point import NNIterationDataPoint
@@ -82,18 +83,41 @@ def _point_best(best_run_path: str, run_path: str) -> None:
     """Make `best_run_path` point at `run_path`. Uses a symlink where the
     platform supports it (POSIX and Windows-with-developer-mode); falls
     back to writing a `best/POINTER.txt` text file with the run path.
-    Either way ``_read_best_pointer`` can recover the target run."""
-    if os.path.lexists(best_run_path):
-        if os.path.islink(best_run_path):
-            os.remove(best_run_path)
-        else:
-            # Existing pointer directory from a prior fallback — clear it.
+    Either way ``_read_best_pointer`` can recover the target run.
+
+    Atomicity: the symlink is created at a temp name and os.replace'd
+    over the old pointer, so a crash mid-repoint leaves either the old
+    or the new pointer — never none (a missing pointer would make the
+    next save claim `best` unconditionally). Concurrent savers from
+    separate processes race check-then-act benignly (last writer wins);
+    multi-process best tracking is out of scope.
+
+    target_is_directory=True matters on Windows-with-developer-mode:
+    without it a *file* symlink to a directory is created, which
+    Windows cannot traverse — best tracking would silently break."""
+    tmp_link = best_run_path + ".tmp"
+    # The symlink target is the sibling run-dir BASENAME: a symlink
+    # target resolves relative to the symlink's own directory (the runs
+    # root), not the creator's cwd. A raw run_path target broke under a
+    # relative root= (dangling from birth, so every save took the
+    # repoint-unconditionally branch — best tracked the most RECENT run,
+    # not the best); an absolute target would dangle on any repo move.
+    target = os.path.basename(os.path.normpath(run_path))
+    try:
+        if os.path.lexists(tmp_link):
+            os.remove(tmp_link)  # stale temp from a prior crash
+        os.symlink(src=target, dst=tmp_link, target_is_directory=True)
+        if os.path.lexists(best_run_path) and not os.path.islink(best_run_path):
+            # Prior POINTER.txt fallback layout — clear the directory so
+            # os.replace can land the symlink (one-time layout upgrade;
+            # this transition window existed before and is unavoidable).
             import shutil
 
             shutil.rmtree(best_run_path)
-    try:
-        os.symlink(src=run_path, dst=best_run_path)
+        os.replace(tmp_link, best_run_path)
     except (OSError, NotImplementedError):
+        if os.path.lexists(tmp_link):
+            os.remove(tmp_link)
         # Windows without developer mode: write a pointer file instead.
         # Atomic write so a KeyboardInterrupt during the fallback can't
         # leave a half-written POINTER.txt that confuses _read_best_pointer.
@@ -120,15 +144,25 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
 
 
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
-    """Pull the error metric from a checkpoint, preferring val over train.
-    Returns +inf for missing checkpoints or fully missing metrics so caller
-    comparisons always prefer the *new* run when there's no prior signal."""
+    """Pull the comparable metric from a checkpoint via the shared
+    val→train, error→loss fallback resolver (the same walk the
+    schedulers and tqdm postfix use). Returns +inf for missing
+    checkpoints or fully missing metrics so caller comparisons always
+    prefer the *new* run when there's no prior signal.
+
+    The loss fallback keeps BEST tracking alive for runs whose steps
+    leave `.error` unset (custom trainer/GAN step functions — the
+    shipped diffusion/SimCLR/DPO factories do populate `.error`) —
+    previously every such run scored +inf, `inf < inf` is False, and
+    `runs/best` stayed frozen on whichever run saved first.
+    Disclosure: in a runs root mixing error-scored and loss-scored
+    runs, the cross-run comparison is between unlike metrics
+    (error ∈ [0,1] vs unbounded loss) — accepted, since the
+    alternative was a best pointer paradigm runs could never claim."""
     if checkpoint is None:
         return float("inf")
-    edp = checkpoint.idp.val_edp if checkpoint.idp.val_edp is not None else checkpoint.idp.train_edp
-    if edp is None or edp.error is None:
-        return float("inf")
-    return edp.error
+    metric = _resolve_metric(checkpoint.idp.val_edp, checkpoint.idp.train_edp)
+    return float("inf") if metric is None else metric
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -289,7 +323,17 @@ class NNRun:
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
-    def checkpoints(self, root: Optional[str] = None) -> list[NNCheckpoint]:
+    def checkpoints(self, root: Optional[str] = None) -> list[Optional[NNCheckpoint]]:
+        """Load this run's five phase checkpoints, in cadence order
+        (FIRST, Q1, Q2, Q3, LAST). Entries are None when the tag was
+        never written — e.g. runs trained with
+        ``save_phase_checkpoints=False`` write only LAST and BEST.
+
+        BEST is deliberately excluded: it duplicates whichever phase
+        checkpoint won, so including it would double-count. Load it
+        directly via ``NNCheckpoint.load(run=run.id,
+        type=Checkpoints.BEST)``.
+        """
         return [
             NNCheckpoint.load(run=self.id, type=Checkpoints.FIRST, root=root),
             NNCheckpoint.load(run=self.id, type=Checkpoints.Q1, root=root),
@@ -339,7 +383,9 @@ class NNRun:
 
         _atomic_write_text(
             csv_path,
-            pd.json_normalize(data=[idp.state() for idp in self.idps]).to_csv(),
+            # `or []`: idps defaults to None on the dataclass; an empty
+            # frame round-trips cleanly through read_csv on load.
+            pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
         )
 
         if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
@@ -387,27 +433,53 @@ class NNRun:
             # always used (see seeding.py's "yaml.safe_load-compatible"
             # comment for the metadata round-trip).
             rep = yaml.safe_load(f)
+        if not isinstance(rep, dict):
+            # An empty / truncated-to-zero file safe_loads to None and
+            # would otherwise die on rep.get(...) with no file context.
+            raise ValueError(f"malformed run.yaml at {yaml_path}: expected a mapping, got {type(rep).__name__}")
 
-        idps = pd.read_csv(csv_path).to_dict(orient="records")
+        try:
+            raw_idps = pd.read_csv(csv_path).to_dict(orient="records")
+        except pd.errors.EmptyDataError as e:
+            # A zero-byte file (external truncation — our own atomic
+            # writes never produce one; even an idps-less run writes the
+            # frame header) raises a pandas error with no file context.
+            raise ValueError(f"malformed idps.csv at {csv_path}: {e}") from e
+        # Separate try-scopes per source file so a missing key names the
+        # FILE that's actually corrupt (a dropped CSV column must not be
+        # reported as a run.yaml problem, and vice versa).
+        try:
+            idps = [NNIterationDataPoint.from_state(idp) for idp in raw_idps]
+        except KeyError as e:
+            raise ValueError(f"malformed idps.csv at {csv_path}: missing column/key {e}") from e
 
-        # Lazy import for trainer params — keeps `nnx.nn.params` importable
-        # without dragging the trainer subpackage in, and avoids a cycle
-        # if anything in `nnx.trainer` ever needs to import NNRun.
-        trainer_state = rep.get("trainer")
-        if trainer_state is not None:
-            from ...trainer.params import NNTrainerParams
+        try:
+            # Lazy import for trainer params — keeps `nnx.nn.params`
+            # importable without dragging the trainer subpackage in, and
+            # avoids a cycle if anything in `nnx.trainer` ever needs to
+            # import NNRun.
+            trainer_state = rep.get("trainer")
+            if trainer_state is not None:
+                from ...trainer.params import NNTrainerParams
 
-            trainer = NNTrainerParams.from_state(trainer_state)
-        else:
-            trainer = None
+                trainer = NNTrainerParams.from_state(trainer_state)
+            else:
+                trainer = None
 
-        return NNRun(
-            net=NNParams.from_state(rep["net"]),
-            train=NNTrainParams.from_state(rep["train"]),
-            model=NNModelParams.from_state(rep["model"]),
-            trainer=trainer,
-            idps=[NNIterationDataPoint.from_state(idp) for idp in idps],
-        )
+            return NNRun(
+                # resolve_from_state: a TRANSFORMER run's net params must
+                # come back as NNTransformerParams, not be downgraded to
+                # NNParams.
+                net=NNParams.resolve_from_state(rep["net"]),
+                train=NNTrainParams.from_state(rep["train"]),
+                model=NNModelParams.from_state(rep["model"]),
+                trainer=trainer,
+                idps=idps,
+            )
+        except KeyError as e:
+            # A hand-edited / truncated run.yaml otherwise surfaces as a
+            # bare KeyError with no file context.
+            raise ValueError(f"malformed run.yaml at {yaml_path}: missing key {e}") from e
 
     @staticmethod
     def all(root: Optional[str] = None) -> list[NNRun]:

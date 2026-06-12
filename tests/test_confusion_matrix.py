@@ -54,3 +54,24 @@ def test_confusion_matrix_normalize_returns_figure():
     Y_pred = np.array([0, 1, 1, 1, 0])
     fig = VisUtils.confusion_matrix(Y_true, Y_pred, normalize=True)
     assert isinstance(fig, go.Figure)
+
+
+def test_confusion_matrix_aligns_labels_when_class_absent():
+    """With class_names given and a class absent from the data, sklearn
+    orders rows by the classes PRESENT unless labels= is pinned — every
+    class after the gap was shifted onto the wrong row/column name."""
+    import numpy as np
+
+    from nnx.vis_utils import VisUtils
+
+    # Class 1 never appears; 3 names must still map onto a 3x3 grid.
+    y_true = np.array([0, 0, 2, 2])
+    y_pred = np.array([0, 2, 2, 0])
+    fig = VisUtils.confusion_matrix(y_true, y_pred, class_names=["a", "b", "c"])
+    z = fig.data[0].z
+    assert z.shape == (3, 3)
+    # Row 1 / column 1 (class "b") must be all zeros, not absorbed by "c".
+    assert z[1].sum() == 0
+    assert z[:, 1].sum() == 0
+    # The real counts sit where the names say they do.
+    assert z[0][0] == 1 and z[0][2] == 1 and z[2][2] == 1 and z[2][0] == 1

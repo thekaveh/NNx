@@ -359,3 +359,41 @@ def test_pre_transformer_run_yaml_still_loads(tmp_path, monkeypatch):
     loaded = NNRun.load(id=run.id)
     assert loaded.model.net == Nets.FEED_FWD
     assert loaded.id == run.id  # same hash → no run.id shift
+
+
+def test_untrained_lm_starts_near_uniform_ce():
+    """A freshly initialized TransformerNN must start near the uniform
+    baseline CE = ln(vocab). Pre-fix, nn.Embedding's default N(0,1)
+    init combined with the tied LM head put the input token's own
+    logit at e·e ≈ d_model, so an untrained model started at
+    CE ≈ d_model (123 measured on a d_model=128 config — worse than
+    uniform-random) and decoding degenerated into repeating the last
+    prompt token."""
+    import math
+
+    import torch.nn.functional as F
+
+    from nnx.nn.params.nn_transformer_params import NNTransformerParams
+
+    torch.manual_seed(0)
+    vocab, d_model = 64, 64
+    params = NNTransformerParams(
+        input_dim=vocab,
+        output_dim=vocab,
+        dropout_prob=0.0,
+        vocab_size=vocab,
+        n_layers=2,
+        n_heads=4,
+        d_model=d_model,
+        max_seq_len=32,
+    )
+    net = TransformerNN(params)
+    net.eval()
+    tokens = torch.randint(0, vocab, (4, 16))
+    with torch.no_grad():
+        logits = net(tokens)
+    ce = F.cross_entropy(logits[:, :-1].reshape(-1, vocab), tokens[:, 1:].reshape(-1))
+    uniform = math.log(vocab)
+    assert ce.item() < 2 * uniform, (
+        f"untrained CE {ce.item():.2f} far above the uniform baseline {uniform:.2f} — embedding init regressed"
+    )

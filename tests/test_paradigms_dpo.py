@@ -217,7 +217,9 @@ def test_dpo_step_reduces_chosen_rejected_logprob_gap(tmp_path, monkeypatch):
 
     initial_gap = _compute_gap(policy.net)
 
-    step_fn = dpo_train_step_factory(ref_model, beta=0.1)
+    # pad_token_id=1 matches _preference_loader's padding - exercises
+    # the 4-site masking threading (policy/ref x chosen/rejected).
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     policy.train(
         params=NNTrainParams(
             n_epochs=8,
@@ -261,7 +263,9 @@ def test_dpo_ref_model_stays_frozen(tmp_path, monkeypatch):
     ref_snapshot = copy.deepcopy({k: v.clone() for k, v in ref_model.net.state_dict().items()})
 
     loader = _preference_loader(tokenizer, n_pairs=6, batch_size=2)
-    step_fn = dpo_train_step_factory(ref_model, beta=0.1)
+    # pad_token_id=1 matches _preference_loader's padding - exercises
+    # the 4-site masking threading (policy/ref x chosen/rejected).
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     policy.train(
         params=NNTrainParams(
             n_epochs=4,
@@ -290,3 +294,32 @@ def test_dpo_ref_model_stays_frozen(tmp_path, monkeypatch):
         )
     # And requires_grad stays cleared.
     assert all(not p.requires_grad for p in ref_model.net.parameters())
+
+
+def test_response_logprob_excludes_pad_positions():
+    """Right-padded responses must not be scored on their padding:
+    extending a response with extra pad tokens leaves its log-prob
+    unchanged when pad_token_id is passed. Pre-fix, every pad position
+    was summed in — the terms don't cancel between policy/reference or
+    chosen/rejected, biasing the DPO objective and training the policy
+    to emit pads after short responses."""
+    from torch import nn
+
+    from nnx.paradigms.dpo import _response_logprob
+
+    torch.manual_seed(0)
+    vocab = 11
+    net = nn.Embedding(vocab, vocab)  # (B, T) -> (B, T, vocab) logits stub
+    prompt = torch.tensor([[3, 4]])
+    resp = torch.tensor([[5, 6]])
+    pads = torch.full((1, 3), 7)
+    short = torch.cat([prompt, resp], dim=1)
+    padded = torch.cat([prompt, resp, pads], dim=1)
+
+    lp_short = _response_logprob(net, short, 2, pad_token_id=7)
+    lp_padded = _response_logprob(net, padded, 2, pad_token_id=7)
+    assert torch.allclose(lp_short, lp_padded, atol=1e-6)
+
+    # Without the mask, the pads ARE scored and the totals differ.
+    lp_unmasked = _response_logprob(net, padded, 2)
+    assert not torch.allclose(lp_short, lp_unmasked, atol=1e-4)

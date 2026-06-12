@@ -5,7 +5,8 @@ Pipeline:
 
   1. Load TinyStories (or a synthetic fallback corpus for offline runs).
   2. Train a tiny BPE tokenizer on a 1% subset.
-  3. Build a ~10M-param TransformerNN + NNTokenizerParams.
+  3. Build a ~1M-param TransformerNN + NNTokenizerParams (the script
+     prints the exact count at startup).
   4. Train via the standard `NNModel.train()` loop with a custom
      next-token train_step.
   5. Call `model.generate("Once upon a time")` to confirm the model

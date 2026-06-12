@@ -60,6 +60,7 @@ class Schedulers(Enum):
             case Schedulers.ONE_CYCLE:
                 max_lr = params.max_lr if params.max_lr is not None else optimizer.param_groups[0]["lr"]
                 total_steps = params.total_steps if params.total_steps is not None else n_epochs
+                _reject_short_total_steps(total_steps, n_epochs)
                 return lr_scheduler.OneCycleLR(
                     optimizer,
                     max_lr=max_lr,
@@ -68,11 +69,29 @@ class Schedulers(Enum):
             case Schedulers.LINEAR_WARMUP_DECAY:
                 warmup_steps = params.warmup_steps if params.warmup_steps is not None else max(1, n_epochs // 10)
                 total_steps = params.total_steps if params.total_steps is not None else n_epochs
+                _reject_short_total_steps(total_steps, n_epochs)
 
                 def _lr_lambda(step: int) -> float:
                     if step < warmup_steps:
-                        return float(step) / float(max(1, warmup_steps))
+                        # step+1: the scheduler steps once per EPOCH, so
+                        # a 0.0 factor at step 0 would train the entire
+                        # first epoch at LR=0 (HF's per-batch stepping
+                        # only wastes one batch with the 0-based form).
+                        return float(step + 1) / float(max(1, warmup_steps))
                     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
                     return max(0.0, 1.0 - progress)
 
                 return lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
+
+
+def _reject_short_total_steps(total_steps: int, n_epochs: int) -> None:
+    """NNx steps schedulers once per EPOCH (not per batch, the HF habit),
+    so an explicit total_steps < n_epochs is always a config error:
+    OneCycleLR raises mid-train at epoch total_steps+1 (losing that
+    epoch's idps), and LINEAR_WARMUP_DECAY's decay clamp silently trains
+    every remaining epoch at LR=0."""
+    if total_steps < n_epochs:
+        raise ValueError(
+            f"total_steps ({total_steps}) must be >= n_epochs ({n_epochs}) — "
+            "NNx schedulers step once per epoch, not per batch."
+        )

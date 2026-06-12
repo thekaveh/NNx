@@ -286,3 +286,21 @@ def test_train_end_to_end_with_param_groups(tmp_path, monkeypatch):
     assert reloaded.train.optim.param_groups is not None
     assert reloaded.train.optim.param_groups[0].name_pattern == "layers.0.*"
     assert reloaded.train.optim.param_groups[0].lr == 1e-4
+
+
+def test_nn_optim_params_rejects_plain_dict_param_groups():
+    """Plain dicts in param_groups constructed fine and only crashed
+    much later inside state() during NNRun hashing — construction now
+    fails fast with a wrap-it hint."""
+    import pytest
+
+    from nnx import NNOptimParams, Optims
+
+    with pytest.raises(TypeError, match="NNParamGroupSpec"):
+        NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-3,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+            param_groups=[{"name_pattern": "encoder.*", "lr": 1e-5}],
+        )

@@ -63,9 +63,14 @@ def born_again_train(
             call. The same ``run.id`` would be computed every generation
             if nothing else changed, but in practice each generation
             mutates the model's weights between calls, so the underlying
-            artifacts (idps / checkpoints) diverge generation to
-            generation even with the same id — write to a fresh
-            ``runs/`` root per call if you want them separated on disk.
+            artifacts (idps / phase checkpoints) diverge generation to
+            generation even with the same id. Caveat: the shared id
+            also means each generation's BEST tracking seeds from the
+            previous generation's on-disk BEST — a generation that
+            never beats its predecessor leaves BEST pointing at the
+            EARLIER generation's weights. Run each generation from a
+            fresh ``runs/`` root (fresh cwd) if you need per-generation
+            artifacts or independent BEST tracking.
         **kd_kwargs: forwarded to :func:`kd_train_step_factory` for
             generations ≥ 1 (``alpha``, ``temperature``). Ignored on
             generation 0 (no teacher).
@@ -83,13 +88,18 @@ def born_again_train(
 
     runs: list[NNRun] = []
     teacher: NNModel | None = None
-    for _ in range(generations):
+    for g in range(generations):
         if teacher is None:
             run = model.train(params=train_params)
         else:
             step_fn = kd_train_step_factory(teacher=teacher, **kd_kwargs)
             run = model.train(params=train_params, train_step_fn=step_fn)
         runs.append(run)
+
+        if g == generations - 1:
+            # The last generation has no successor — deep-copying a
+            # never-used teacher would only double peak memory at exit.
+            break
 
         # Snapshot the just-trained model as the next generation's
         # teacher. deepcopy duplicates the net's parameters into a

@@ -5,10 +5,13 @@ Runs an exponential LR sweep from ``start_lr`` to ``end_lr`` over
 recommended ``max_lr`` is the LR at the steepest descent point of the
 smoothed loss curve — the classic Smith (2017) heuristic.
 
-The sweep is **non-destructive**: the model's initial weights are
-snapshotted before the sweep starts and restored on exit, so the
-caller can use this as a pre-flight check before the real training
-run without disturbing any subsequent reproducibility.
+The sweep is **non-destructive**: the model's initial weights AND every
+RNG stream the sweep consumes (global CPU, the active device's, and any
+loader/sampler-attached torch ``generator=``) are snapshotted before
+the sweep starts and restored on exit, so the caller can use this as a
+pre-flight check before the real training run without disturbing any
+subsequent reproducibility. (A non-torch stream a custom sampler may
+carry — e.g. a numpy ``Generator`` — is skipped: it stays caller-owned.)
 """
 
 from __future__ import annotations
@@ -64,8 +67,8 @@ def lr_finder(
 
     Args:
         model: the network to sweep against. ``model.train()`` is
-            called internally; both the original training-mode
-            state AND the weights are restored on exit.
+            called internally; the original training-mode state, the
+            weights, AND the RNG state are all restored on exit.
         train_loader: a DataLoader yielding ``(X, Y)`` batches the
             model can forward and ``loss_fn`` can score against. The
             loader is iterated, and if the sweep exceeds one epoch
@@ -108,15 +111,53 @@ def lr_finder(
     if device is None:
         device = next(model.parameters()).device
 
-    # Snapshot for non-destructive restore on exit (mode + weights).
+    # Snapshot for non-destructive restore on exit (mode + weights + RNG).
+    # The sweep consumes RNG (dropout under .train(), the DataLoader's
+    # base-seed draw) — without the RNG restore, a seeded pipeline that
+    # ran lr_finder as a pre-flight diverged from the same pipeline
+    # without it, breaking the module docstring's reproducibility claim.
     was_training = model.training
     initial_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    cpu_rng_state = torch.get_rng_state()
+    device_rng_state: Optional[torch.Tensor] = None
+    if device.type == "cuda":
+        device_rng_state = torch.cuda.get_rng_state(device)
+    elif device.type == "mps":
+        device_rng_state = torch.mps.get_rng_state()
+    # A loader built per the PyTorch reproducibility recipe draws its
+    # shuffle permutation and worker base-seed from its OWN generator
+    # (DataLoader(generator=...) or an explicit sampler's), not global
+    # RNG — a third stream the global restore can't cover.
+    loader_generators = (
+        getattr(train_loader, "generator", None),
+        getattr(getattr(train_loader, "sampler", None), "generator", None),
+        # An explicit batch_sampler= hides its stream one level deeper —
+        # torch fills loader.sampler with a dummy SequentialSampler then.
+        getattr(getattr(getattr(train_loader, "batch_sampler", None), "sampler", None), "generator", None),
+        # A custom batch sampler may own its generator directly.
+        getattr(getattr(train_loader, "batch_sampler", None), "generator", None),
+    )
+    # isinstance filter: an exotic sampler may carry e.g. a numpy
+    # Generator under the same attribute name — no get_state(), and not
+    # a stream this helper can restore; it stays caller-owned.
+    loader_gen_states = [
+        (g, g.get_state()) for g in dict.fromkeys(g for g in loader_generators if isinstance(g, torch.Generator))
+    ]
+    # persistent_workers caches the first iterator ON the loader: if the
+    # sweep creates it, the caller's first epoch would _reset() that
+    # cache instead of drawing a fresh worker base seed, shifting their
+    # batch stream even though every RNG snapshot here is restored. The
+    # finally discards only an iterator the sweep itself created.
+    had_cached_iterator = getattr(train_loader, "_iterator", None) is not None
 
     optimizer = optimizer_cls(model.parameters(), lr=start_lr)
     lrs: list[float] = []
     losses: list[float] = []
 
-    lr_mult = (end_lr / start_lr) ** (1.0 / num_iter)
+    # num_iter - 1: with num_iter points the LAST one must land on
+    # end_lr exactly (1/num_iter stopped one multiplicative step short
+    # of the documented sweep ceiling). num_iter >= 2 is enforced above.
+    lr_mult = (end_lr / start_lr) ** (1.0 / (num_iter - 1))
     current_lr = start_lr
 
     # Running EMA-smoothed loss and its minimum. The divergence check
@@ -172,11 +213,22 @@ def lr_finder(
             losses.append(loss_val)
             current_lr *= lr_mult
     finally:
-        # Restore weights + training mode — sweep is fully non-destructive
-        # regardless of whether the loop completed, early-exited on
-        # divergence, or raised mid-iter.
+        # Restore weights + training mode + RNG — sweep is fully
+        # non-destructive regardless of whether the loop completed,
+        # early-exited on divergence, or raised mid-iter.
         model.load_state_dict(initial_state)
         model.train(was_training)
+        torch.set_rng_state(cpu_rng_state)
+        if device.type == "cuda":
+            torch.cuda.set_rng_state(device_rng_state, device)
+        elif device.type == "mps":
+            torch.mps.set_rng_state(device_rng_state)
+        for g, s in loader_gen_states:
+            g.set_state(s)
+        if not had_cached_iterator and getattr(train_loader, "_iterator", None) is not None:
+            # Dropping the reference shuts the persistent workers down
+            # via the iterator's finalizer.
+            train_loader._iterator = None
 
     suggested_lr = _suggest_lr(lrs, losses, ema_alpha) if lrs else start_lr
 

@@ -99,3 +99,48 @@ def test_prompt_tuner_validates_n_prompt_tokens():
         PromptTuner(model, n_prompt_tokens=0)
     with pytest.raises(ValueError, match="n_prompt_tokens"):
         PromptTuner(model, n_prompt_tokens=-1)
+
+
+def test_prompt_tuned_generate_survives_window_overflow(tmp_path):
+    """generate() sized its sliding window from net_params.max_seq_len,
+    but a PromptTuner consumes n_prompt_tokens of those slots — long
+    generations crashed mid-stream once the window plus the soft prompt
+    exceeded the wrapped model's max_seq_len. generate() now honors the
+    wrapper's effective_max_seq_len."""
+    pytest.importorskip("tokenizers")
+    from nnx import GenerativeNNModel, NNModelParams
+    from nnx.nn.enum.devices import Devices
+    from nnx.nn.enum.losses import Losses
+    from nnx.nn.enum.nets import Nets
+    from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
+
+    set_seed(0)
+    params = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        vocab_size=64,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=32,
+    )
+    tk = train_bpe(
+        files=None,
+        texts=["the cat sat on the mat", "the dog ran in the park"],
+        vocab_size=64,
+        special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"],
+    )
+    tokenizer = NNTokenizerParams.of(tokenizer=tk, path=str(tmp_path / "tok.json"))
+    model = GenerativeNNModel(
+        net_params=params,
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        tokenizer=tokenizer,
+    )
+    model.net = PromptTuner(model.net, n_prompt_tokens=4)
+    assert model.net.effective_max_seq_len == 28
+    # 40 new tokens forces the sliding window well past 28 — pre-fix
+    # this raised ValueError mid-generation.
+    out = model.generate(prompt="the", max_new_tokens=40, temperature=0.0)
+    assert isinstance(out, str)

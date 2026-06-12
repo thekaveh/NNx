@@ -162,3 +162,18 @@ def test_widen_parameter_count_grows():
     # and +8 new in-features on layer 2 → +8*2 weight (no extra bias).
     expected = orig_params + (8 * 4 + 8) + (8 * 2)
     assert new_params == expected
+
+
+def test_widen_does_not_advance_global_rng():
+    """widen() must be a no-op on the global torch RNG stream — the
+    fresh layers are built uninitialized (skip_init) because every
+    param is fully overwritten. Pre-fix, their kaiming inits drew from
+    the default generator, so any seeded caller pipeline silently
+    diverged after a surgery call. Covers both the seeded and the
+    rng_seed=None (local-entropy) paths."""
+    net = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    torch.manual_seed(123)
+    state = torch.get_rng_state()
+    widen(net, layer_name="0", new_width=16)
+    widen(net, layer_name="0", new_width=16, rng_seed=None)
+    assert torch.equal(torch.get_rng_state(), state)

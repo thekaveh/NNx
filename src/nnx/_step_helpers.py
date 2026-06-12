@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .nn.nn_model import TrainStepContext
 
@@ -106,3 +107,26 @@ def finalize_step(
     ctx.optimizer.step()
 
     return loss_val
+
+
+def softened_kl(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Hinton-style distillation loss: ``KL(teacher_soft || student_soft) * T²``.
+
+    Both logits are softened by ``temperature``. ``F.kl_div``'s contract
+    is ``sum target*(log target - input)`` with ``input`` in log-space
+    and ``target`` in probability space — that evaluates to
+    ``KL(target || exp(input)) = KL(teacher_soft || student_soft)``.
+    The ``T²`` factor keeps the soft-loss gradient magnitude comparable
+    across temperatures (Hinton et al., 2015, §2). Shared by the
+    distillation and feature-KD factories so the direction of the KL
+    and the ``T²`` scaling can't drift between them.
+    """
+    return F.kl_div(
+        F.log_softmax(student_logits / temperature, dim=-1),
+        F.softmax(teacher_logits / temperature, dim=-1),
+        reduction="batchmean",
+    ) * (temperature**2)

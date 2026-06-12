@@ -140,15 +140,31 @@ If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) e
 `expand_embedding` returns a `frozen_mask` of bool shape `(new_num_embeddings,)` — `True` for rows that came from the original embedding, `False` for new rows. The mask is a hand-off to the caller's training step:
 
 ```python
-new_emb, frozen_mask = expand_embedding(model.embed, new_num_embeddings=20_000, init="copy_mean")
+from nnx import NNParamGroupSpec, expand_embedding
 
-# In a custom train_step_fn (see the train_step_fn hook in concepts.md),
-# zero out gradients on frozen rows after backward(), before optimizer.step():
-def freeze_old_rows_train_step(ctx):
-    loss = default_train_step(ctx)  # same supervised step as before
-    if new_emb.weight.grad is not None:
-        new_emb.weight.grad[frozen_mask] = 0.0
-    return loss
+new_emb, frozen_mask = expand_embedding(model.net.embed, new_num_embeddings=20_000, init="copy_mean")
+model.net.embed = new_emb  # reattach — expand_embedding returns a NEW module
+
+# Register a gradient hook ONCE before training: hooks fire during
+# backward(), i.e. before optimizer.step(), so frozen rows receive
+# zero gradient. (Zeroing .grad AFTER default_train_step(ctx) would
+# be too late — that helper already stepped the optimizer.)
+keep = (~frozen_mask).unsqueeze(1)
+new_emb.weight.register_hook(lambda g: g * keep.to(g.dtype))
+
+# One more trap: Adam applies weight decay INSIDE step() — after the
+# hook — so the frozen rows would still drift under the default
+# weight_decay. Give the embedding a decay-free param group:
+optim = NNOptimParams(
+    name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=5e-5,
+    param_groups=[NNParamGroupSpec(name_pattern="embed.*", weight_decay=0.0)],
+)
+from dataclasses import replace
+
+model.train(params=replace(train_params, optim=optim))  # default supervised step works as-is
 ```
+
+(Verified: with the reattach + hook + decay-free group, frozen-row
+drift is exactly 0.0 over training while the new rows learn.)
 
 `nnx.finetune.freeze` covers the simpler case of freezing entire parameter tensors via fnmatch globs; the `frozen_mask` covers the row-level case that `freeze` can't reach.

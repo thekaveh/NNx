@@ -42,7 +42,10 @@ class NNParams:
             output_dim=self.output_dim,
             dropout_prob=self.dropout_prob,
             hidden_dims=str(self.hidden_dims),
-            activation=str(self.activation),
+            # None stays None (yaml null / json null) rather than the
+            # string "None", which from_state could never parse back
+            # into the Activations enum.
+            activation=str(self.activation) if self.activation is not None else None,
         )
 
         if self.n_heads is not None:
@@ -52,11 +55,32 @@ class NNParams:
 
     @staticmethod
     def from_state(state: dict) -> NNParams:
+        raw_activation = state["activation"]
         return NNParams(
             input_dim=state["input_dim"],
             output_dim=state["output_dim"],
             dropout_prob=state["dropout_prob"],
-            activation=Activations(state["activation"]),
+            activation=Activations(raw_activation) if raw_activation is not None else None,
             hidden_dims=ast.literal_eval(state["hidden_dims"]),
             n_heads=state["n_heads"] if "n_heads" in state else None,
         )
+
+    @staticmethod
+    def resolve_from_state(state: dict) -> NNParams:
+        """Dispatch to the params subclass that wrote ``state``.
+
+        ``NNTransformerParams.state()`` always emits its required
+        architectural keys (``vocab_size`` among them); base
+        ``NNParams.state()`` never does. Without this dispatch a
+        transformer state is silently downgraded to base ``NNParams`` —
+        the subclass keys are dropped, the reloaded run re-hashes to a
+        different id, and net rebuilding crashes. Every loader
+        (``NNRun.load``, the ``NNCheckpoint`` readers, hub
+        ``from_pretrained``) resolves through here.
+        """
+        if "vocab_size" in state:
+            # Local import: nn_transformer_params imports this module.
+            from .nn_transformer_params import NNTransformerParams
+
+            return NNTransformerParams.from_state(state)
+        return NNParams.from_state(state)

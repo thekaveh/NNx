@@ -350,6 +350,15 @@ def test_f8_tabular_dataset_rejects_empty_df():
         )
 
 
+def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
+    """Sorted per-split row indices — shared by the two F8 seed tests."""
+    return (
+        sorted(ds.train_loader.dataset.indices),
+        sorted(ds.val_loader.dataset.indices),
+        sorted(ds.test_loader.dataset.indices),
+    )
+
+
 def test_f8_tabular_dataset_seeded_split_is_deterministic():
     """Reproducibility contract: two NNTabularDataset instances built
     from the same DataFrame + same `seed` must yield identical
@@ -365,13 +374,6 @@ def test_f8_tabular_dataset_seeded_split_is_deterministic():
             "label": np.arange(200) % 4,
         }
     )
-
-    def _split_indices(ds: NNTabularDataset) -> tuple[list[int], list[int], list[int]]:
-        return (
-            sorted(ds.train_loader.dataset.indices),
-            sorted(ds.val_loader.dataset.indices),
-            sorted(ds.test_loader.dataset.indices),
-        )
 
     a = NNTabularDataset(
         df=df,
@@ -403,3 +405,70 @@ def test_f8_tabular_dataset_seeded_split_is_deterministic():
         seed=7,
     )
     assert _split_indices(a) != _split_indices(c)
+
+
+def test_f8_tabular_dataset_seed_none_follows_global_rng():
+    """The documented `seed=None` contract: the split falls back to the
+    *global* torch RNG, so `torch.manual_seed(N)` controls it and
+    different global seeds give different splits. Pre-fix the code
+    passed a fresh `torch.Generator()` — which always carries the same
+    fixed default seed — so every unseeded split was bit-identical and
+    completely deaf to `torch.manual_seed`."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(200, dtype=float),
+            "f2": np.arange(200, dtype=float) * 2.0,
+            "label": np.arange(200) % 4,
+        }
+    )
+
+    def _build() -> NNTabularDataset:
+        return NNTabularDataset(
+            df=df,
+            feature_cols=["f1", "f2"],
+            target_col="label",
+            val_proportion=0.2,
+            test_proportion=0.2,
+        )
+
+    # Same global seed → same split (the split consumes the global RNG).
+    torch.manual_seed(123)
+    a = _build()
+    torch.manual_seed(123)
+    b = _build()
+    assert _split_indices(a) == _split_indices(b)
+
+    # Different global seed → different split (astronomically unlikely
+    # to collide with 200 rows and a 60/20/20 split). This is the
+    # assertion the pre-fix constant-generator behavior fails.
+    torch.manual_seed(456)
+    c = _build()
+    assert _split_indices(a) != _split_indices(c)
+
+
+def test_f8_tabular_dataset_rejects_noncontiguous_labels():
+    """Labels {0, 5} would size output_dim=2 from nunique() and only
+    fail much later inside cross-entropy — construction now fails fast
+    with a remapping hint."""
+    df = pd.DataFrame({"f1": [1.0, 2.0, 3.0, 4.0], "label": [0, 5, 0, 5]})
+    with pytest.raises(ValueError, match="contiguous"):
+        NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")
+
+
+def test_f8_tabular_dataset_rejects_nan_cells():
+    """NaN features flow into NaN losses and a NaN target's float→int64
+    cast is undefined (silent class-0 on ARM) — and the contiguity
+    check can't see it because pandas min/max/nunique skip NaN.
+    Construction must fail fast naming the offending columns."""
+    df = pd.DataFrame({"f1": [1.0, float("nan"), 3.0], "label": [0, 1, 0]})
+    with pytest.raises(ValueError, match="NaN"):
+        NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")
+
+
+def test_f8_tabular_dataset_rejects_target_in_feature_cols():
+    """Silent label leakage: feature_cols containing the target trains
+    the model on its own label (near-perfect val accuracy from the
+    classic feature_cols=list(df.columns) mistake)."""
+    df = pd.DataFrame({"f1": [1.0, 2.0, 3.0], "label": [0, 1, 0]})
+    with pytest.raises(ValueError, match="must not appear in feature_cols"):
+        NNTabularDataset(df=df, feature_cols=["f1", "label"], target_col="label")

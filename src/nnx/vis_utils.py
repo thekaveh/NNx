@@ -64,7 +64,9 @@ class VisUtils:
 
     @staticmethod
     def generate_colors(n):
-        hues = np.linspace(0, 1, n)
+        # endpoint=False: hue is circular (0.0 == 1.0 == red), so the
+        # closed interval gave the first and last class identical colors.
+        hues = np.linspace(0, 1, n, endpoint=False)
         rgb_colors = [colorsys.hsv_to_rgb(h, 0.6, 0.95) for h in hues]
         hex_colors = [f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}" for r, g, b in rgb_colors]
 
@@ -89,8 +91,10 @@ class VisUtils:
 
         Each group in `yss` is drawn with a distinct color; each line within
         a group uses a distinct dash style. `yss_legend` is a (group_labels,
-        line_labels) tuple — both legends are added as no-trace markers so
-        the legend reads cleanly.
+        line_labels) tuple — group_labels name the colored groups (one per
+        entry in `yss`), line_labels name the dash styles shared across
+        groups. Both legends are added as no-trace markers so the legend
+        reads cleanly; data traces carry "group (line)" hover names.
 
         Returns the Figure. If `renderer` is non-None, also calls
         `fig.show(renderer=renderer)` so notebook callers see the chart
@@ -105,7 +109,8 @@ class VisUtils:
         cs = VisUtils.generate_colors(n=len(yss))
         n_lines_per_series = len(yss[0])
 
-        for ys_idx, (ys, ys_legend) in enumerate(zip(yss, yss_legend[1], strict=False)):
+        group_labels, line_labels = yss_legend
+        for ys_idx, ys in enumerate(yss):
             for y_idx, y in enumerate(ys):
                 fig.add_trace(
                     go.Scatter(
@@ -113,7 +118,7 @@ class VisUtils:
                         y=y,
                         mode="lines",
                         showlegend=False,
-                        name=ys_legend[y_idx],
+                        name=f"{group_labels[ys_idx]} ({line_labels[y_idx]})",
                         line=dict(width=2, color=cs[ys_idx], dash=ls[y_idx]),
                     )
                 )
@@ -124,14 +129,14 @@ class VisUtils:
                     x=[None],
                     y=[None],
                     mode="lines",
-                    name=yss_legend[0][idx],
+                    name=line_labels[idx],
                     line=dict(width=2, dash=linestyle, color="black"),
                 )
             )
 
         for idx, color in enumerate(cs[: len(yss)]):
             fig.add_trace(
-                go.Scatter(x=[None], y=[None], mode="lines", line=dict(width=2, color=color), name=yss_legend[1][idx])
+                go.Scatter(x=[None], y=[None], mode="lines", line=dict(width=2, color=color), name=group_labels[idx])
             )
 
         fig.update_layout(
@@ -292,7 +297,11 @@ class VisUtils:
 
         Y_true = np.asarray(Y_true)
         Y_pred = np.asarray(Y_pred)
-        cm = _sk_cm(Y_true, Y_pred)
+        # labels=...: without it sklearn orders rows by the classes
+        # PRESENT in the data, so an absent class silently shifts every
+        # later row/column onto the wrong name.
+        cm_labels = list(range(len(class_names))) if class_names is not None else None
+        cm = _sk_cm(Y_true, Y_pred, labels=cm_labels)
         if normalize:
             row_sums = cm.sum(axis=1, keepdims=True)
             row_sums[row_sums == 0] = 1

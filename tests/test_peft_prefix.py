@@ -150,3 +150,106 @@ def test_prefix_tuner_validates_n_prefix():
         PrefixTuner(model, n_prefix=0)
     with pytest.raises(ValueError, match="n_prefix"):
         PrefixTuner(model, n_prefix=-1)
+
+
+def test_prefix_tuner_rejects_already_tuned_model():
+    """A second PrefixTuner on the same net silently hijacked the first:
+    the patched forwards read mha._nnx_prefix_tuner, which the second
+    tuner overwrote — so the first tuner's parameters stopped receiving
+    gradients while its forward injected the SECOND tuner's prefixes
+    (training an optimizer over tuner-1's params became a silent no-op).
+    Loud rejection instead; deepcopy remains the supported way to fork
+    a tuned net."""
+    set_seed(0)
+    model = _tiny_transformer()
+    PrefixTuner(model, n_prefix=2)
+    with pytest.raises(ValueError, match="already prefix-tuned"):
+        PrefixTuner(model, n_prefix=2)
+
+
+def test_prefix_tuner_kv_cache_matches_full_forward():
+    """Cache-path parity: incremental forward_with_cache on a
+    prefix-tuned TransformerNN must match the full forward's last-token
+    logits at every decode step, and the cache must hold real-token K/V
+    only. Pre-fix, the patched MHA cached the prefix-INJECTED K/V, so
+    every decode step re-prepended the prefix on top of the cached copy
+    (n_prefix duplicate slots per step) and inflated the RoPE offset by
+    n_prefix — cached logits drifted ~2.0 from the full forward."""
+    set_seed(0)
+    net = _tiny_transformer()
+    tuner = PrefixTuner(net, n_prefix=3)
+    assert tuner is not None  # patching happens in __init__
+    net.eval()
+
+    seq = torch.randint(0, 100, (1, 12))
+    with torch.no_grad():
+        _, past = net.forward_with_cache(seq[:, :4], past_kvs=None)
+        for i in range(4, 12):
+            inc, past = net.forward_with_cache(seq[:, i : i + 1], past_kvs=past)
+            full = net(seq[:, : i + 1])
+            assert torch.allclose(inc[:, -1, :], full[:, -1, :], atol=1e-4), (
+                f"cached logits diverged at position {i}: "
+                f"max diff {(inc[:, -1, :] - full[:, -1, :]).abs().max().item():.4f}"
+            )
+            # No prefix slots may leak into the cache.
+            assert past[0][0].size(-2) == i + 1, (
+                f"cache holds {past[0][0].size(-2)} slots at position {i}; expected {i + 1} real tokens"
+            )
+
+
+def test_prefix_tuner_deepcopy_is_independent():
+    """copy.deepcopy of a prefix-tuned net must be fully decoupled.
+    Pre-fix, the patched MHA forwards were instance closures, which
+    deepcopy treats as atomic — the copy's attention silently kept
+    reading the ORIGINAL weights and prefix params (corrupting
+    quantize-on-copy, born-again frozen teachers, and surgery copies).
+    The patch is now a MethodType-bound module-level function with its
+    refs stored on the MHA, so deepcopy rebinds and re-references
+    through the memo."""
+    import copy
+
+    set_seed(0)
+    net = _tiny_transformer()
+    tuner = PrefixTuner(net, n_prefix=3)
+    net.eval()
+    ids = torch.randint(0, 100, (1, 6))
+
+    with torch.no_grad():
+        baseline = net(ids).clone()
+        clone = copy.deepcopy(net)
+        clone.eval()
+        assert torch.equal(clone(ids), baseline)
+
+        # Mutating the ORIGINAL (weights + prefix) must not move the clone.
+        net.blocks[0].attn.w_qkv.weight.add_(1.0)
+        tuner.prefix_keys[0].add_(5.0)
+        assert torch.equal(clone(ids), baseline), "deepcopy aliases the original"
+
+        # The clone's own prefix params are live (its attention reads them).
+        clone.blocks[0].attn._nnx_prefix_tuner.prefix_keys[0].add_(5.0)
+        assert not torch.equal(clone(ids), baseline)
+
+
+def test_prefix_tuned_net_torch_save_round_trips(tmp_path):
+    """torch.save/load of a WHOLE prefix-tuned net must round-trip:
+    MethodType pickles by name-lookup on the instance, which the
+    class-level _prefix_patched_forward alias resolves. Pre-fix the
+    save succeeded but the load died with AttributeError — a silently
+    unloadable artifact."""
+    set_seed(0)
+    net = _tiny_transformer()
+    PrefixTuner(net, n_prefix=3)
+    net.eval()
+    ids = torch.randint(0, 100, (1, 6))
+    with torch.no_grad():
+        baseline = net(ids).clone()
+
+    path = tmp_path / "prefix_net.pt"
+    torch.save(net, path)
+    loaded = torch.load(path, weights_only=False)
+    loaded.eval()
+    with torch.no_grad():
+        assert torch.equal(loaded(ids), baseline)
+        # The loaded net's prefix refs are live and self-consistent.
+        loaded.blocks[0].attn._nnx_prefix_tuner.prefix_keys[0].add_(5.0)
+        assert not torch.equal(loaded(ids), baseline)

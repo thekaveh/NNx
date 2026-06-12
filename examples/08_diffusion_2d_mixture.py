@@ -50,6 +50,10 @@ from nnx import (
 def make_mixture_loader(n: int = 1024, batch_size: int = 64) -> DataLoader:
     """4 isotropic Gaussians at (±2, ±2). DataLoader yields (x, dummy_y)
     so the standard (X, Y) batch contract holds — Y is ignored."""
+    # No torch.manual_seed here — the caller does set_seed(0) in main()
+    # before calling us. Re-seeding torch inside this helper would
+    # silently override the caller's seed (the recurring bug PR #31's
+    # review caught in examples 19 / 21 / 23).
     centers = torch.tensor([[-2, -2], [-2, 2], [2, -2], [2, 2]], dtype=torch.float32)
     idx = torch.randint(0, 4, (n,))
     means = centers[idx]

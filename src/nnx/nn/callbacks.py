@@ -91,12 +91,22 @@ class EarlyStopping(Callback):
         self._best: Optional[float] = None
         self._wait: int = 0
 
-    def _resolve_metric(self, idp: NNIterationDataPoint) -> Optional[float]:
+    def _lookup_monitored(self, idp: NNIterationDataPoint) -> Optional[float]:
+        # Named distinctly from nnx._metrics._resolve_metric (the
+        # val→train / error→loss fallback resolver) — this one just
+        # dereferences the user's `monitor` string, e.g. "val_edp.loss".
         edp_name, _, field = self.monitor.partition(".")
         edp = getattr(idp, edp_name, None)
         if edp is None:
             return None
         return getattr(edp, field, None)
+
+    def on_train_begin(self, ctx: _CallbackContext) -> None:
+        # Fresh run, fresh patience: without this reset, reusing one
+        # EarlyStopping instance across train() calls compares against
+        # the previous run's best and can stop the new run immediately.
+        self._best = None
+        self._wait = 0
 
     def _is_improvement(self, current: float, best: float) -> bool:
         if self.mode == "min":
@@ -106,7 +116,7 @@ class EarlyStopping(Callback):
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         if ctx.idp is None:
             return
-        current = self._resolve_metric(ctx.idp)
+        current = self._lookup_monitored(ctx.idp)
         if current is None:
             return
         if self._best is None or self._is_improvement(current, self._best):

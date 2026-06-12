@@ -88,7 +88,7 @@ Three more Builders shipped alongside the two above:
 
 - **`NNTransformerParams.builder()`** — LM-path config. Six fluent methods (`vocab`, `layers`, `ffn`, `context`, `dropout`, `tied_embeddings`) hide the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`) the transformer net doesn't read. `.layers(n, heads, d_model)` enforces `d_model % heads == 0` at call-time. Full walkthrough in [`docs/lm.md`](lm.md).
 - **`NNTrainerParams.builder()`** — composite, wraps the prior two. `.optimizer(name, NNOptimParams)` + `.scheduler(name, NNSchedulerParams)` register entries under user-chosen names; `.build()` enforces `schedulers.keys() ⊆ optims.keys()` with an actionable error. Used for the GAN-recipe pattern in §8.
-- **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order; `.build()` sorts the standard processors into the canonical HF order (`RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`) with custom processors appended after. Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
+- **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order; `.build()` sorts the standard processors into NNx's canonical order (`RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`; temperature deliberately last — see [`docs/lm.md` §5](lm.md)) with custom processors appended after. Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
 
 ## 3. Enums-as-factories
 
@@ -124,7 +124,7 @@ runs/<id>/
 
 ### 4.1. The `runs/best` pointer
 
-The `runs/best` symlink points at the lowest-error run across all runs in the directory (on Windows without developer mode, it's a `POINTER.txt` file instead).
+The `runs/best` symlink points at the lowest-error run across all runs in the directory — lowest-loss for paradigm runs whose steps don't produce a supervised error; in a runs root mixing both kinds, the comparison is between unlike metrics (accepted trade-off vs. a `best` pointer paradigm runs could never claim). On Windows without developer mode it's a `POINTER.txt` file instead.
 
 ### 4.2. Atomicity + incremental writes
 
@@ -160,6 +160,7 @@ Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoar
 from nnx import TrainStepContext, NNEvaluationDataPoint
 
 def my_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+    ctx.model.net.zero_grad()  # the hook owns the full step — see §6.1
     X, _ = ctx.model.net.unpack_batch(ctx.batch)
     X = tuple(x.to(ctx.model.device) for x in X)
     recon, mu, logvar = ctx.model.net(*X)
@@ -181,7 +182,7 @@ model.train(params=train_params, train_step_fn=my_step)
 
 The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`); honoring them is on you. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-The four paradigm factories in `nnx.paradigms` and `nnx.diffusion.diffusion_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not yet handled inside paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
+The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not yet handled inside paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
@@ -417,7 +418,7 @@ When a pretrained model is too large to fine-tune in full, PEFT keeps the origin
 
 - **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector and recomposing the layer's weight as `W = magnitude · V / ||V||_c`. Often outperforms LoRA at the same rank with only `out_features` extra params. Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices; the `magnitude` parameter rides along via the full `state_dict()` round-trip.
 - **IA3** (`IA3Linear` / `apply_ia3_to`) — the smallest adapter in the family: a single learned per-output-dim scaling vector applied to a frozen `nn.Linear`'s output. Dedicated `save_ia3_weights` / `load_ia3_weights` persist only the scaling tensor.
-- **PrefixTuner** (`PrefixTuner` / `save_prefix_weights` / `load_prefix_weights`) — prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`. The model itself is unchanged; the tuner stores the prefix tensors and routes them through the attention forward via a hook.
+- **PrefixTuner** (`PrefixTuner` / `save_prefix_weights` / `load_prefix_weights`) — prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`. The wrapped model is mutated in place: every parameter is frozen and each targeted block's attention forward is monkey-patched to inject the prefix (a forward hook fires on outputs, too late to reach the intermediate K/V). Wrapping an already-tuned net raises — `copy.deepcopy` the tuner to fork it.
 - **PromptTuner** (`PromptTuner` / `save_prompt_weights` / `load_prompt_weights`) — prepends learned soft-prompt embeddings ahead of the input tokens of a frozen `TransformerNN`. Cheapest of the LM-targeted PEFT methods; useful when even the rank-decomposed LoRA budget is too large.
 
 ### 11.1. LoRA — low-rank adaptation
@@ -542,7 +543,7 @@ result.figure.show()
 
 ### 13.2. Non-destructive contract for inference and inspection helpers
 
-`lr_finder` isn't the only helper that snapshots and restores caller state. Nine NNx call sites share the same non-destructive contract — they put the underlying `nn.Module` into `eval()` mode (needed for correct BatchNorm / Dropout semantics) for the duration of the call, then restore `model.training` to whatever it was on entry. The restore runs inside a `try/finally`, so the contract holds even when the body raises mid-call:
+`lr_finder` isn't the only helper that snapshots and restores caller state. Ten NNx call sites share the same non-destructive contract — nine put the underlying `nn.Module` into `eval()` mode (needed for correct BatchNorm / Dropout semantics) for the duration of the call, while `lr_finder` forces `train()` for its sweep; all ten restore `model.training` to whatever it was on entry. The restore runs inside a `try/finally`, so the contract holds even when the body raises mid-call:
 
 - `nnx.lr_finder`
 - `NNModel.predict`, `NNModel.evaluate`
@@ -550,6 +551,7 @@ result.figure.show()
 - `nnx.diffusion.sample`
 - `nnx.embeddings.embed_texts`
 - `nnx.viz.activation_map`, `nnx.viz.netron_export`, `nnx.viz.attribute`
+- `NNModel.to_onnx` (joined in the post-PR-#50 pass — the last holdout)
 
 This means a common train → evaluate → train-more (or train → predict → train-more) loop no longer strands the model in `.eval()` mode after the helper returns — Dropout and BatchNorm pick up exactly where they left off on the next training step. Before the post-PR-#40 maintenance pass, `predict` / `evaluate` / `generate` / `sample` / `embed_texts` leaked `.eval()` state, silently disabling Dropout masking and BatchNorm running-stats updates on the next training step unless the caller remembered to call `model.net.train()` themselves.
 
@@ -586,13 +588,16 @@ alongside `NNModel` rather than replacing it:
   `resid_dropout`). Every optional field omits itself from `state()` at
   default — the same broken-three-times invariant covered in §2.2.
 - **`GenerativeNNModel`** — a thin subclass of `NNModel` adding
-  `generate(prompt, *, max_new_tokens, logits_processors=...)`. The
-  generation loop runs the prompt through `TransformerNN.forward_with_kv`
+  `generate(prompt, *, max_new_tokens, temperature, top_k, top_p,
+  repetition_penalty, stop, seed, use_cache, logits_chain)`. The
+  generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
   the returned KV-cache (measured ≈1.9× speedup at 128 tokens on CPU; the
-  gap widens on longer contexts and GPU). Sampling defaults to greedy; pass a
-  list of `nnx.generation.LogitsProcessor` (temperature, top-k, top-p,
-  repetition-penalty) to switch.
+  gap widens on longer contexts and GPU, within `max_seq_len`). Greedy decoding
+  is available via `temperature=0` (the default `temperature=1.0`
+  samples the full softmax); the scalar kwargs build the standard
+  processor chain, and `logits_chain=LogitsChain.builder()...` is the
+  power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.3).
 
 The LM path stays optional behind the `lm` extra (`pip install "thekaveh-nnx[lm]"` —
 pulls `tokenizers` + `datasets`); the rest of NNx works without it. See

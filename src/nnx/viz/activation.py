@@ -76,6 +76,8 @@ def activation_map(
 
     Raises:
         ValueError: If `layer_name` doesn't resolve to a submodule of `model`.
+        RuntimeError: If the forward hook on `layer_name` never fires
+            (the layer is not reached by this input's forward path).
     """
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel

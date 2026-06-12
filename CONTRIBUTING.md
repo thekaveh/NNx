@@ -15,7 +15,7 @@ pre-commit install              # optional but recommended
 Verify a clean baseline:
 
 ```bash
-pytest                          # full suite (~5s on CPU)
+pytest                          # full suite (~15s on CPU)
 ruff check src/ tests/ examples/  # lint
 ruff format --check src/ tests/ examples/  # format check (matches CI + pre-commit)
 mkdocs build --strict           # docs (gates CI)
@@ -55,7 +55,7 @@ pytest -k "graph"               # name filter
 pytest --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
-Tests live under `tests/`. The `conftest.py` registers two session-wide hygiene fixtures (NNX_TQDM_DISABLE, env_snapshot cache reset between tests); otherwise it's intentionally minimal. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
+Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixtures (session-wide NNX_TQDM_DISABLE, a per-test env_snapshot cache reset, and a dynamo-dispatch skip guard); otherwise it's intentionally minimal. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
 
 ## 6. Submitting a PR
 

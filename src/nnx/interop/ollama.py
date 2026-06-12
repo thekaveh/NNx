@@ -21,6 +21,32 @@ if TYPE_CHECKING:
     from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams
 
 
+def _validate_modelfile_inputs(system: str, template: Optional[str], parameters: Optional[dict]) -> None:
+    """Validate-at-boundary: Modelfiles are line/token-delimited, so
+    unescaped user strings can terminate a triple-quoted block early or
+    inject whole directives (FROM/ADAPTER/...) via embedded newlines —
+    fail fast (and BEFORE the expensive GGUF write) instead of emitting
+    a corrupted Modelfile."""
+    for label, text in (("system", system), ("template", template)):
+        # An embedded triple-quote terminates the block early; content
+        # merely ENDING in quotes merges with the closing delimiter into
+        # an early terminator too (e.g. 'x""' renders SYSTEM """x""""",
+        # whose first """ scan ends the block at the wrong spot).
+        if text and ('"""' in text or text.endswith('"')):
+            raise ValueError(
+                f"{label} must not contain a triple-quote or end with a double-quote — "
+                "it would terminate the Modelfile block early."
+            )
+    if parameters:
+        for key, val in parameters.items():
+            if any(ch.isspace() for ch in str(key)):
+                raise ValueError(f"parameter key {key!r} must not contain whitespace.")
+            vals = val if isinstance(val, (list, tuple)) else [val]
+            for item in vals:
+                if isinstance(item, str) and ("\n" in item or '"' in item):
+                    raise ValueError(f"parameter {key!r} value {item!r} must not contain newlines or double quotes.")
+
+
 def export_ollama_modelfile(
     transformer_nn: TransformerNN,
     tokenizer: NNTokenizerParams,
@@ -40,7 +66,10 @@ def export_ollama_modelfile(
         tokenizer: Corresponding ``NNTokenizerParams``.
         out_dir: Output directory. Created if it doesn't exist.
         system: Optional system prompt; emitted as a ``SYSTEM ...``
-            block (triple-quoted) when non-empty.
+            block (triple-quoted) when non-empty. Must not contain a
+            triple-quote or end with a double-quote (Modelfile block
+            delimiters — validated, raises ``ValueError``); same
+            constraint applies to ``template``.
         parameters: Optional dict of Ollama runtime parameters
             (``{"temperature": 0.8, "top_k": 40}`` etc.). Each entry
             becomes a ``PARAMETER <key> <value>`` line. Lists become
@@ -54,6 +83,8 @@ def export_ollama_modelfile(
     Returns:
         Absolute path to the emitted ``Modelfile``.
     """
+    _validate_modelfile_inputs(system, template, parameters)
+
     # Local import — keeps the ``nnx.interop`` boot path light when
     # only one of the two exporters is used, and matches the lazy-import
     # style in writer.py.

@@ -7,6 +7,8 @@ _build_layers() to provide the PyG conv constructor.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -39,3 +41,25 @@ class GraphNNBase(nn.Module):
 
     def unpack_batch(self, batch) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
         return (batch.x, batch.edge_index), batch.y
+
+    def seed_count(self, batch) -> Optional[int]:
+        """Number of seed rows at the head of a NeighborLoader subgraph.
+
+        NeighborLoader puts the ``batch_size`` seed nodes first and
+        appends their sampled neighbors — which can belong to *other*
+        splits. Loss and metrics must be computed on the seed rows only;
+        scoring neighbor rows leaks val/test labels into the training
+        loss and train labels into val metrics.
+
+        Returns None (no slicing) for anything that isn't a
+        NeighborLoader subgraph: plain full-graph ``Data`` has no
+        ``batch_size``, and a multi-graph ``Batch.from_data_list``
+        collation DOES carry ``batch_size`` (= ``num_graphs``) but no
+        ``input_id`` — slicing there would truncate node-level output
+        to the graph count. ``input_id`` is the NeighborLoader-specific
+        marker (the seed indices), so it gates the slice.
+        """
+        if getattr(batch, "input_id", None) is None:
+            return None
+        n = getattr(batch, "batch_size", None)
+        return int(n) if n is not None else None

@@ -68,7 +68,11 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
     """
     if alpha <= 0:
         raise ValueError(f"alpha must be positive, got {alpha}")
-    rng = np.random.default_rng()
+    # Seed from the torch RNG so set_seed(...) controls the lambda draws
+    # (and CutMix boxes): a bare default_rng() self-seeds from OS entropy
+    # and ignores the run's reproducibility contract. Drawing the seed
+    # through torch also keeps two factories' streams distinct.
+    rng = np.random.default_rng(int(torch.randint(0, 2**31 - 1, (1,)).item()))
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -118,7 +122,11 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
     """
     if alpha <= 0:
         raise ValueError(f"alpha must be positive, got {alpha}")
-    rng = np.random.default_rng()
+    # Seed from the torch RNG so set_seed(...) controls the lambda draws
+    # (and CutMix boxes): a bare default_rng() self-seeds from OS entropy
+    # and ignores the run's reproducibility contract. Drawing the seed
+    # through torch also keeps two factories' streams distinct.
+    rng = np.random.default_rng(int(torch.randint(0, 2**31 - 1, (1,)).item()))
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model

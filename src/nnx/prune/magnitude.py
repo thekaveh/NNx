@@ -13,10 +13,12 @@ additions on top of the raw PyTorch API:
      ``weight_orig`` + ``weight_mask`` pair. This keeps the network's
      ``state_dict`` schema identical to the unpruned network — pruned
      checkpoints load into unpruned code, and vice versa, with
-     ``strict=True``. The trade-off is that once a weight is zeroed
-     it can't be un-pruned (the mask is gone); users who need
-     iterative-pruning schedules pass ``bake=False`` to keep the
-     reparameterization in place.
+     ``strict=True``. The trade-off is that the mask is gone: nothing
+     enforces the zeros afterward, so any SUBSEQUENT training
+     (fine-tuning included) immediately regrows the pruned entries and
+     sparsity decays toward dense. Prune-then-finetune and iterative
+     schedules must use ``bake=False`` (mask enforced through the
+     reparameterization) and bake once at the very end.
 """
 
 from __future__ import annotations
@@ -46,9 +48,9 @@ def magnitude_prune(
     Args:
         net: root module to walk. The function mutates ``net`` in place.
         sparsity: fraction of weights to zero, in ``[0, 1)``. ``0.0``
-            is a valid no-op; ``1.0`` is rejected because torch's
-            l1_unstructured rejects it (and a fully-zeroed Linear is
-            not useful).
+            is a valid no-op; ``1.0`` is rejected here — a fully-zeroed
+            Linear is never useful (torch itself would accept
+            ``amount=1.0`` and silently zero the whole weight).
         layer_pattern: fnmatch glob against dotted submodule name.
             ``"*"`` (the default) matches every :class:`nn.Linear`.
         bake: when ``True`` (default), call
@@ -86,7 +88,7 @@ def magnitude_prune(
     # function defensive against any future PyTorch internals change.
     targets: list[tuple[str, nn.Linear]] = []
     for name, mod in net.named_modules():
-        if isinstance(mod, nn.Linear) and fnmatch.fnmatch(name, layer_pattern):
+        if isinstance(mod, nn.Linear) and fnmatch.fnmatchcase(name, layer_pattern):
             targets.append((name, mod))
 
     for _, mod in targets:

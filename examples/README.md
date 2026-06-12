@@ -5,7 +5,7 @@ Runnable scripts demonstrating common NNx patterns. Each is self-contained — n
 ## 1. Run
 
 ```bash
-pip install thekaveh-nnx                # core (covers examples 01–06)
+pip install thekaveh-nnx                # core (covers every example not listed below)
 python examples/01_synthetic_classification.py
 ```
 
@@ -62,8 +62,8 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize]"`. |
-| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Reports the pre-/post-convert accuracy delta. Requires `pip install "thekaveh-nnx[quantize]"`. |
+| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. |
+| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Reports the pre-/post-convert accuracy delta. Requires `pip install "thekaveh-nnx[quantize,onnx-dynamo]"`. |
 
 ### 2.6. Embeddings + FAISS export
 
@@ -81,16 +81,16 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `16_ijepa_cifar10.py` | I-JEPA on CIFAR-10: a small `ViTNN` context encoder predicts the latent of masked patches against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `update_ema` + `random_block_mask`. No pixel reconstruction, no strong augmentations. |
+| `16_ijepa_cifar10.py` | I-JEPA on CIFAR-10: a small `ViTNN` context encoder predicts the latent of masked patches against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `random_block_mask` (EMA updates happen inside the step factory). No pixel reconstruction, no strong augmentations. |
 
 ### 2.9. GGUF + Ollama export
 
 | Example | What it demonstrates |
 |---|---|
-| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "thekaveh-nnx[gguf-write]"`. |
-| `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "thekaveh-nnx[gguf-write]"`. |
+| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
+| `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
 
-### 2.10. Pruning, surgery, quantization
+### 2.10. Pruning + surgery
 
 | Example | What it demonstrates |
 |---|---|

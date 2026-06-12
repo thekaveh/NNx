@@ -35,12 +35,16 @@ from nnx import (
 def main():
     set_seed(0)
 
-    # 1. Build a tiny synthetic dataset.
+    # 1. Build a tiny synthetic dataset. Labels derive from the inputs
+    #    through a fixed random projection so the task is LEARNABLE —
+    #    with random labels the val error would sit at 3-class chance
+    #    and the BEST checkpoint would be selecting noise.
     n_train, n_val = 256, 64
+    proj = torch.randn(8, 3)
     X_train = torch.randn(n_train, 8)
-    y_train = torch.randint(0, 3, (n_train,))
+    y_train = (X_train @ proj).argmax(dim=1)
     X_val = torch.randn(n_val, 8)
-    y_val = torch.randint(0, 3, (n_val,))
+    y_val = (X_val @ proj).argmax(dim=1)
     train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=32, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=32)
 

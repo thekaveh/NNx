@@ -18,10 +18,11 @@ try:
         __version__ = _version("thekaveh-nnx")
     except _PackageNotFoundError:
         # Editable install before metadata exists, or run from the source
-        # tree without installation.
-        __version__ = "0.1.0+local"
+        # tree without installation. Keep in sync with pyproject.toml
+        # [project] version on every bump.
+        __version__ = "0.2.0+local"
 except ImportError:  # pragma: no cover — Python <3.8.
-    __version__ = "0.1.0+local"
+    __version__ = "0.2.0+local"
 
 from . import embeddings, interop, prune, viz
 from .diffusion import (

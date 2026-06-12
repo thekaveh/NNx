@@ -106,3 +106,59 @@ def test_scheduler_params_backwards_compat_no_kind():
     # And from the legacy explicit-None form (older on-disk run.yaml files).
     reconstructed_legacy = NNSchedulerParams.from_state({**state, "kind": None})
     assert reconstructed_legacy.kind is None
+
+
+def test_linear_warmup_decay_first_epoch_lr_nonzero():
+    """The scheduler steps once per EPOCH, so a 0.0 warmup factor at
+    step 0 trains the entire first epoch at LR=0 (the pre-fix
+    behavior). The ramp is 1-based: epoch 0 runs at base_lr/warmup."""
+    opt = _make_optimizer()
+    Schedulers.LINEAR_WARMUP_DECAY(
+        opt,
+        _base_params(warmup_steps=5, total_steps=20),
+        n_epochs=20,
+    )
+    # LambdaLR applies the step-0 factor at construction time — this is
+    # the LR epoch 0 actually trains with.
+    assert opt.param_groups[0]["lr"] > 0.0
+
+
+def test_linear_warmup_decay_never_overshoots_base_lr():
+    """Across the warmup-to-decay boundary the factor must stay in
+    (0, 1] and be non-increasing after warmup - guards the 1-based
+    numerator against a future off-by-one overshooting base_lr."""
+    opt = _make_optimizer()
+    base_lr = opt.param_groups[0]["lr"]
+    sched = Schedulers.LINEAR_WARMUP_DECAY(
+        opt,
+        _base_params(warmup_steps=5, total_steps=20),
+        n_epochs=20,
+    )
+    opt.zero_grad()
+    for p in opt.param_groups[0]["params"]:
+        p.grad = torch.zeros_like(p)
+    opt.step()
+
+    lrs = [opt.param_groups[0]["lr"]]
+    for _ in range(20):
+        sched.step()
+        lrs.append(opt.param_groups[0]["lr"])
+    assert all(0.0 <= lr <= base_lr + 1e-12 for lr in lrs), lrs
+    # Decay phase (post-warmup) is non-increasing.
+    decay = lrs[5:]
+    assert all(a >= b - 1e-12 for a, b in zip(decay, decay[1:], strict=False)), decay
+
+
+def test_schedulers_reject_total_steps_below_n_epochs():
+    """NNx steps schedulers once per EPOCH; total_steps < n_epochs is
+    always a config error (OneCycle raises mid-train losing an epoch's
+    idps; LINEAR_WARMUP_DECAY silently trains the tail at LR=0)."""
+    import pytest
+
+    for kind, extra in (
+        (Schedulers.ONE_CYCLE, dict(max_lr=1e-2, total_steps=5)),
+        (Schedulers.LINEAR_WARMUP_DECAY, dict(warmup_steps=2, total_steps=5)),
+    ):
+        opt = _make_optimizer()
+        with pytest.raises(ValueError, match="once per epoch"):
+            kind(opt, _base_params(**extra), n_epochs=10)

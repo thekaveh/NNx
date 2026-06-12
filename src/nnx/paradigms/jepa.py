@@ -77,6 +77,8 @@ def update_ema(source: nn.Module, target: nn.Module, momentum: float) -> None:
 
     Raises:
         ValueError: when ``momentum`` is outside ``[0, 1)``.
+        KeyError: when a target parameter has no same-named source
+            parameter (the name-keyed update contract).
     """
     if not (0.0 <= momentum < 1.0):
         raise ValueError(f"EMA momentum must be in [0, 1), got {momentum}")
@@ -377,10 +379,12 @@ def jepa_train_step_factory(
         context_embeds = m.net(x, mask=context_mask)  # (B, T_ctx + 1, d_model)
 
         # Build position indices the predictor needs. CLS is position 0;
-        # patch positions are 1..n_patches.
-        kept_patch_positions = torch.where(context_mask_1d)[0] + 1  # +1 for CLS shift
+        # ViTNN.patch_positions() owns the 1..n_patches CLS shift, so
+        # boolean-masking it yields the kept/target position indices.
+        patch_positions = m.net.patch_positions()
+        kept_patch_positions = patch_positions[context_mask_1d]
         context_positions = torch.cat([torch.zeros(1, dtype=torch.long, device=m.device), kept_patch_positions])
-        target_positions = torch.where(target_mask_1d)[0] + 1
+        target_positions = patch_positions[target_mask_1d]
 
         # Forward FULL image through EMA target (no grad), then slice
         # out the target-position embeddings only. Skip CLS at index 0.

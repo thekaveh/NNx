@@ -29,7 +29,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step
+from .._metrics import classification_edp
+from .._step_helpers import finalize_step, softened_kl
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
@@ -95,28 +96,17 @@ def kd_train_step_factory(
             teacher_logits = teacher.net(X.to(teacher.device)).to(m.device)
 
         # KL(teacher || student) with both softened by T — the standard
-        # Hinton direction. F.kl_div's contract is
-        # ``sum target*(log target - input)``, with `input` in log-space
-        # and `target` in probability space; that evaluates to
-        # KL(target || exp(input)) = KL(teacher_soft || student_soft).
-        soft_loss = F.kl_div(
-            F.log_softmax(student_logits / temperature, dim=-1),
-            F.softmax(teacher_logits / temperature, dim=-1),
-            reduction="batchmean",
-        ) * (temperature**2)
+        # Hinton direction (see softened_kl for the F.kl_div contract).
+        soft_loss = softened_kl(student_logits, teacher_logits, temperature)
         hard_loss = m.loss_fn(student_logits, Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
-        Y_hat = student_logits.argmax(dim=-1)
-        return (
-            NNEvaluationDataPoint.of(
-                Y=Y.cpu().numpy(),
-                Y_hat=Y_hat.cpu().numpy(),
-                extra_metrics=ctx.extra_metrics,
-            )
-            .with_loss(value=loss_val)
-            .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+        return classification_edp(
+            Y=Y,
+            Y_hat=student_logits.argmax(dim=-1),
+            loss=loss_val,
+            extra_metrics=ctx.extra_metrics,
         )
 
     return step
@@ -272,24 +262,16 @@ def feature_kd_train_step_factory(
         # to how many pairs the user provided.
         feature_loss = feature_loss / len(auxiliary_layers)
 
-        soft_loss = F.kl_div(
-            F.log_softmax(student_logits / temperature, dim=-1),
-            F.softmax(teacher_logits / temperature, dim=-1),
-            reduction="batchmean",
-        ) * (temperature**2)
+        soft_loss = softened_kl(student_logits, teacher_logits, temperature)
         hard_loss = m.loss_fn(student_logits, Y)
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")
 
-        Y_hat = student_logits.argmax(dim=-1)
-        return (
-            NNEvaluationDataPoint.of(
-                Y=Y.cpu().numpy(),
-                Y_hat=Y_hat.cpu().numpy(),
-                extra_metrics=ctx.extra_metrics,
-            )
-            .with_loss(value=loss_val)
-            .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+        return classification_edp(
+            Y=Y,
+            Y_hat=student_logits.argmax(dim=-1),
+            loss=loss_val,
+            extra_metrics=ctx.extra_metrics,
         )
 
     return step

@@ -131,6 +131,10 @@ def main() -> None:
             tokenizer=tokenizer,
             max_prompt_len=8,
             max_response_len=8,
+            # id 1 is "<pad>" in train_bpe's default specials — the
+            # dataset default of 0 would pad (and the DPO step would
+            # mask) with "<unk>", dropping genuine unknown tokens.
+            pad_token_id=1,
             batch_sizes=(8, 4, 4),
             val_proportion=0.1,
             test_proportion=0.1,
@@ -144,7 +148,10 @@ def main() -> None:
         for p in ref_model.net.parameters():
             p.requires_grad = False
 
-        dpo_step = dpo_train_step_factory(ref_model=ref_model, beta=0.1)
+        # pad_token_id: exclude the dataset's right-padding from the
+        # response log-prob sums (NNPreferenceDataset pads with id 0 by
+        # default).
+        dpo_step = dpo_train_step_factory(ref_model=ref_model, beta=0.1, pad_token_id=pref_ds.pad_token_id)
 
         # Snapshot log-probs BEFORE DPO (use a deep-copy so training
         # doesn't touch these weights).

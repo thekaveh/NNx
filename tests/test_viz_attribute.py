@@ -18,6 +18,12 @@ import sys
 
 import plotly.graph_objects as go
 import pytest
+
+# Same optional-extra convention every other gated test file follows:
+# skip gracefully when the [viz] extra isn't installed. (The
+# missing-captum ImportError test below simulates absence via
+# sys.modules, so it still runs when captum IS installed.)
+pytest.importorskip("captum")
 import torch
 
 from nnx import (

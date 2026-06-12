@@ -19,9 +19,10 @@ Mechanism in this file:
     targets (all blocks by default, or a prefix of them via
     ``n_layers``).
   - At construction time we MONKEY-PATCH each target block's
-    ``MultiHeadCausalAttention.forward`` with a closure that runs the
-    original attention but injects the learned K/V prefix after RoPE
-    is applied to the real K. The prefix tensors are RoPE-free (they're
+    ``MultiHeadCausalAttention.forward`` with a bound module-level
+    function (deepcopy/pickle-safe — see ``_prefix_patched_forward``)
+    that runs the original attention but injects the learned K/V
+    prefix after RoPE is applied to the real K. The prefix tensors are RoPE-free (they're
     learned content, not positional offsets — same convention as the
     original prefix-tuning paper).
   - The attention mask is extended so the ``n_prefix`` prefix columns
@@ -37,6 +38,7 @@ intrusive than per-instance forward replacement.
 
 from __future__ import annotations
 
+import types
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Optional, Union
@@ -68,13 +70,20 @@ class PrefixTuner(nn.Module):
         n_prefix: number of virtual prefix tokens per layer. Must be > 0.
         n_layers: number of leading transformer blocks to attach a prefix
             to. ``None`` (default) targets every block in
-            ``model.net.blocks`` if ``model`` is a wrapper that exposes
-            blocks via ``model.blocks`` directly. The first ``n_layers``
-            blocks are targeted; later blocks run un-prefixed.
+            ``model.blocks``. When set, the first ``n_layers`` blocks
+            are targeted; later blocks run un-prefixed.
 
     Note on shape: the prefix uses ``n_heads`` and ``head_dim`` taken
     from the model's ``params`` — there's no per-block override, since
     every block in a TransformerNN shares the same attention shape.
+
+    Raises:
+        TypeError: if ``model`` is not a :class:`TransformerNN`.
+        ValueError: if ``n_prefix`` or ``n_layers`` is out of range, or
+            if ``model`` is already prefix-tuned — a second tuner would
+            silently hijack the patched forwards (they read the MHA's
+            ``_nnx_prefix_tuner`` ref, which the second tuner overwrites,
+            so the first tuner's parameters stop receiving gradients).
     """
 
     def __init__(
@@ -97,6 +106,14 @@ class PrefixTuner(nn.Module):
             raise ValueError(f"n_layers must be positive, got {n_layers}")
         if n_layers > total_blocks:
             raise ValueError(f"n_layers={n_layers} exceeds model depth ({total_blocks} blocks)")
+        if any(hasattr(block.attn, "_nnx_prefix_tuner") for block in model.blocks):
+            raise ValueError(
+                "PrefixTuner: this TransformerNN is already prefix-tuned. A second "
+                "tuner would silently hijack the patched attention forwards (the "
+                "first tuner's parameters would stop receiving gradients while its "
+                "forward injects the new tuner's prefixes). Wrap a fresh model, or "
+                "copy.deepcopy the tuned one first."
+            )
 
         self.model = model
         self.n_prefix = n_prefix
@@ -136,80 +153,19 @@ class PrefixTuner(nn.Module):
             block = model.blocks[i]
             mha = block.attn
             self._original_attn_forwards.append(mha.forward)
-            mha.forward = self._make_patched_forward(mha, layer_idx=i)
-
-    def _make_patched_forward(self, mha: MultiHeadCausalAttention, layer_idx: int):
-        """Build a closure that replaces ``mha.forward`` with the
-        prefix-injecting variant for layer ``layer_idx``.
-
-        The body mirrors :meth:`MultiHeadCausalAttention.forward`
-        exactly — same QKV projection, same RoPE application — except
-        after RoPE on K it prepends the layer's learned prefix K/V
-        slots and extends the causal mask so queries can attend back
-        to the prefix unmasked.
-        """
-        tuner = self
-
-        def patched_forward(
-            x: torch.Tensor,
-            past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-            use_cache: bool = False,
-        ) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
-            b, t, _ = x.shape
-            qkv = mha.w_qkv(x)
-            q, k, v = qkv.chunk(3, dim=-1)
-            q = q.view(b, t, mha.n_heads, mha.head_dim).transpose(1, 2)
-            k = k.view(b, t, mha.n_heads, mha.head_dim).transpose(1, 2)
-            v = v.view(b, t, mha.n_heads, mha.head_dim).transpose(1, 2)
-
-            # RoPE on q / k. Prefix-tuning does NOT apply RoPE to the
-            # prefix slots — they're learned content, not positional.
-            offset = 0
-            if use_cache and past_kv is not None:
-                offset = past_kv[0].size(-2)
-            cos, sin = mha.rope(seq_len=t, offset=offset)
-            q = apply_rotary(q, cos, sin)
-            k = apply_rotary(k, cos, sin)
-
-            if use_cache and past_kv is not None:
-                past_k, past_v = past_kv
-                k = torch.cat([past_k, k], dim=-2)
-                v = torch.cat([past_v, v], dim=-2)
-
-            # Inject the learned K/V prefix for this layer. Shape:
-            # (n_prefix, n_heads, head_dim) -> (1, n_heads, n_prefix, head_dim)
-            # broadcast over the batch dim by .expand.
-            pk = tuner.prefix_keys[layer_idx].permute(1, 0, 2).unsqueeze(0)
-            pv = tuner.prefix_values[layer_idx].permute(1, 0, 2).unsqueeze(0)
-            pk = pk.expand(b, -1, -1, -1)
-            pv = pv.expand(b, -1, -1, -1)
-            k = torch.cat([pk, k], dim=-2)  # (B, H, n_prefix + T_kv, D_head)
-            v = torch.cat([pv, v], dim=-2)
-
-            # Build the attention mask. The query dim is t (the real
-            # tokens). The key dim is n_prefix + kv_len. The prefix
-            # columns are always unmasked; the real-token columns get a
-            # standard causal mask.
-            kv_len = k.size(-2) - tuner.n_prefix  # length of real K/V
-            real_mask = build_causal_mask(seq_len=max(kv_len, t), device=x.device)
-            if t < kv_len:
-                # Cache path: only the trailing t rows of the full mask
-                # apply, like the unpatched MHA forward does.
-                real_mask = real_mask[-t:, :kv_len]
-            else:
-                # Train / no-cache path: kv_len == t.
-                real_mask = real_mask[:t, :kv_len]
-            prefix_mask = torch.zeros(t, tuner.n_prefix, device=x.device)
-            mask = torch.cat([prefix_mask, real_mask], dim=-1)  # (t, n_prefix + kv_len)
-
-            attn_out = multi_head_causal_attention(q, k, v, mask, dropout_p=mha.attn_dropout if mha.training else 0.0)
-            attn_out = attn_out.transpose(1, 2).contiguous().view(b, t, mha.d_model)
-            out = mha.w_o(attn_out)
-
-            new_kv = (k, v) if use_cache else None
-            return out, new_kv
-
-        return patched_forward
+            # Deepcopy-safety: the patch is a MODULE-LEVEL function bound
+            # via MethodType, with the tuner/layer refs stored on the MHA
+            # itself (raw __dict__ entries — object.__setattr__ bypasses
+            # Module registration, avoiding a tuner<->model submodule
+            # cycle). copy.deepcopy rebinds the method to the COPIED mha
+            # and deep-copies the refs through the memo, so a deepcopy of
+            # a prefix-tuned net is fully independent. A closure here
+            # would be copied atomically, leaving the copy's attention
+            # silently reading the ORIGINAL weights/prefix (bit ptq,
+            # born_again teachers, and surgery copies).
+            object.__setattr__(mha, "_nnx_prefix_tuner", self)
+            mha._nnx_prefix_layer_idx = i
+            mha.forward = types.MethodType(_prefix_patched_forward, mha)
 
     # ------------------------------------------------------------------
     # Forward + trainable params
@@ -276,5 +232,97 @@ def load_prefix_weights(tuner: PrefixTuner, source: Union[str, Path, dict]) -> i
     # Filter to prefix-only keys defensively so a full-model state-dict
     # accidentally passed in doesn't blow up the loader.
     sd = {k: v for k, v in sd.items() if "prefix_" in k}
-    tuner.load_state_dict(sd, strict=False)
-    return len(sd)
+    result = tuner.load_state_dict(sd, strict=False)
+    # strict=False silently drops keys that don't exist on the tuner —
+    # subtract them so the return value counts tensors that landed.
+    return len(sd) - len(result.unexpected_keys)
+
+
+def _prefix_patched_forward(
+    mha: MultiHeadCausalAttention,
+    x: torch.Tensor,
+    past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    use_cache: bool = False,
+) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
+    """Prefix-injecting replacement for ``MultiHeadCausalAttention.forward``.
+
+    Bound to each targeted MHA via ``types.MethodType`` (see
+    ``PrefixTuner.__init__`` for the deepcopy-safety rationale). The
+    body mirrors the stock forward exactly — same QKV projection, same
+    RoPE application — except after RoPE on K it prepends the layer's
+    learned prefix K/V slots and extends the causal mask so queries can
+    attend back to the prefix unmasked.
+    """
+    tuner = mha._nnx_prefix_tuner
+    layer_idx = mha._nnx_prefix_layer_idx
+
+    b, t, _ = x.shape
+    qkv = mha.w_qkv(x)
+    q, k, v = qkv.chunk(3, dim=-1)
+    q = q.view(b, t, mha.n_heads, mha.head_dim).transpose(1, 2)
+    k = k.view(b, t, mha.n_heads, mha.head_dim).transpose(1, 2)
+    v = v.view(b, t, mha.n_heads, mha.head_dim).transpose(1, 2)
+
+    # RoPE on q / k. Prefix-tuning does NOT apply RoPE to the
+    # prefix slots — they're learned content, not positional.
+    offset = 0
+    if use_cache and past_kv is not None:
+        offset = past_kv[0].size(-2)
+    cos, sin = mha.rope(seq_len=t, offset=offset)
+    q = apply_rotary(q, cos, sin)
+    k = apply_rotary(k, cos, sin)
+
+    if use_cache and past_kv is not None:
+        past_k, past_v = past_kv
+        k = torch.cat([past_k, k], dim=-2)
+        v = torch.cat([past_v, v], dim=-2)
+
+    # Snapshot the cache BEFORE prefix injection: the cache must
+    # hold real-token K/V only. Caching the prefix-injected
+    # tensors would re-prepend the prefix on top of the cached
+    # copy every decode step (n_prefix duplicate slots per step)
+    # and inflate the RoPE offset above by n_prefix per step —
+    # cached logits drifted ~2.0 from the full forward.
+    new_kv = (k, v) if use_cache else None
+
+    # Inject the learned K/V prefix for this layer. Shape:
+    # (n_prefix, n_heads, head_dim) -> (1, n_heads, n_prefix, head_dim)
+    # broadcast over the batch dim by .expand.
+    pk = tuner.prefix_keys[layer_idx].permute(1, 0, 2).unsqueeze(0)
+    pv = tuner.prefix_values[layer_idx].permute(1, 0, 2).unsqueeze(0)
+    pk = pk.expand(b, -1, -1, -1)
+    pv = pv.expand(b, -1, -1, -1)
+    k = torch.cat([pk, k], dim=-2)  # (B, H, n_prefix + T_kv, D_head)
+    v = torch.cat([pv, v], dim=-2)
+
+    # Build the attention mask. The query dim is t (the real
+    # tokens). The key dim is n_prefix + kv_len. The prefix
+    # columns are always unmasked; the real-token columns get a
+    # standard causal mask.
+    kv_len = k.size(-2) - tuner.n_prefix  # length of real K/V
+    real_mask = build_causal_mask(seq_len=max(kv_len, t), device=x.device)
+    if t < kv_len:
+        # Cache path: only the trailing t rows of the full mask
+        # apply, like the unpatched MHA forward does.
+        real_mask = real_mask[-t:, :kv_len]
+    else:
+        # Train / no-cache path: kv_len == t.
+        real_mask = real_mask[:t, :kv_len]
+    prefix_mask = torch.zeros(t, tuner.n_prefix, device=x.device)
+    mask = torch.cat([prefix_mask, real_mask], dim=-1)  # (t, n_prefix + kv_len)
+
+    attn_out = multi_head_causal_attention(q, k, v, mask, dropout_p=mha.attn_dropout if mha.training else 0.0)
+    attn_out = attn_out.transpose(1, 2).contiguous().view(b, t, mha.d_model)
+    out = mha.w_o(attn_out)
+
+    return out, new_kv
+
+
+# Pickle resolution for the MethodType binding: torch.save of a WHOLE
+# prefix-tuned net pickles each bound method by name-lookup on its
+# instance (MethodType.__reduce__ → getattr(mha, func.__name__)).
+# Exposing the function on the class makes that lookup succeed, so
+# save/load of a prefix-tuned net round-trips with a self-consistent
+# (non-aliasing) reconstruction. Without it, the save succeeds but the
+# load dies with an AttributeError.
+MultiHeadCausalAttention._prefix_patched_forward = _prefix_patched_forward

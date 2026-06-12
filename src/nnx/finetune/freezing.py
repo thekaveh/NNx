@@ -7,7 +7,7 @@ parameters by `fnmatch`-style glob pattern against their dotted name:
 
     freeze(model.net, "encoder.*")         # freeze the whole encoder
     freeze(model.net, "*.bias")            # freeze every bias term
-    unfreeze(model.net, "encoder.layer.5") # un-freeze one specific block
+    unfreeze(model.net, "encoder.layer.5.*") # un-freeze one specific block
 
 `NNModel.freeze` / `NNModel.unfreeze` delegate here; using the free
 functions directly is useful when you're freezing parameters of a
@@ -48,7 +48,7 @@ def freeze(module: nn.Module, *patterns: str) -> int:
         raise ValueError("freeze() requires at least one pattern; pass '*' to freeze every parameter")
     n = 0
     for name, param in module.named_parameters():
-        if any(fnmatch.fnmatch(name, p) for p in patterns):
+        if any(fnmatch.fnmatchcase(name, p) for p in patterns):
             if param.requires_grad:
                 n += 1
             param.requires_grad = False
@@ -62,7 +62,7 @@ def unfreeze(module: nn.Module, *patterns: str) -> int:
         raise ValueError("unfreeze() requires at least one pattern; pass '*' to unfreeze every parameter")
     n = 0
     for name, param in module.named_parameters():
-        if any(fnmatch.fnmatch(name, p) for p in patterns):
+        if any(fnmatch.fnmatchcase(name, p) for p in patterns):
             if not param.requires_grad:
                 n += 1
             param.requires_grad = True

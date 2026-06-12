@@ -158,3 +158,23 @@ def test_nnmodel_export_state_dict_round_trip(tmp_path):
         strict=True,
     ):
         assert torch.equal(va, vb)
+
+
+def test_load_pretrained_rejects_remap_collisions():
+    """Prefix-stripping can collapse two source keys onto one target
+    ('model.x' and 'x' both -> 'x') — silently letting the later one
+    win loads unpredictable weights; it must raise instead."""
+    import pytest
+    import torch
+    from torch import nn
+
+    from nnx.finetune import load_pretrained
+
+    target = nn.Linear(2, 2)
+    src = {
+        "weight": torch.zeros(2, 2),
+        "model.weight": torch.ones(2, 2),
+        "model.bias": torch.zeros(2),
+    }
+    with pytest.raises(ValueError, match="collapses"):
+        load_pretrained(target, src, prefix="model.")

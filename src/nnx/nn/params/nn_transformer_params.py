@@ -115,8 +115,14 @@ class NNTransformerParams(NNParams):
         input_dim = state.get("input_dim", vocab_size)
         output_dim = state.get("output_dim", vocab_size)
 
-        activation_str = state.get("activation")
-        activation = Activations(activation_str) if activation_str is not None else Activations.LEAKY_RELU
+        if "activation" in state and state["activation"] is not None:
+            activation = Activations(state["activation"])
+        elif "activation" in state:
+            # Explicit null — the config was built with activation=None.
+            activation = None
+        else:
+            # Key absent entirely — legacy LM configs omitted it.
+            activation = Activations.LEAKY_RELU
 
         return NNTransformerParams(
             input_dim=input_dim,

@@ -38,6 +38,7 @@ import copy
 
 import torch
 from torch import nn
+from torch.nn.utils import skip_init
 
 from ._utils import get_module
 
@@ -108,20 +109,26 @@ def _insert_after_relu_in_sequential(
 
     # Find the most recent Linear earlier in the Sequential — its
     # out_features is the activation's hidden dimension.
-    dim = None
+    src_linear = None
     for j in range(idx - 1, -1, -1):
         if isinstance(parent[j], nn.Linear):
-            dim = parent[j].out_features
+            src_linear = parent[j]
             break
-    if dim is None:
+    if src_linear is None:
         raise ValueError(
             "deepen: could not find an upstream nn.Linear before "
             f"the ReLU at position {idx} to source the hidden dim from."
         )
 
+    # dtype/device come from the SAME Linear that sourced the dim — the
+    # old probe peeked at parent[idx-1], which is wrong whenever a
+    # non-Linear (Dropout, norm) sits between the Linear and the ReLU,
+    # and it never threaded the device, splicing a CPU layer into a
+    # CUDA-resident model.
     new_linear = _identity_linear(
-        dim,
-        dtype=(parent[idx - 1].weight.dtype if idx > 0 and isinstance(parent[idx - 1], nn.Linear) else torch.float32),
+        src_linear.out_features,
+        dtype=src_linear.weight.dtype,
+        device=src_linear.weight.device,
     )
     new_relu = nn.ReLU()
 
@@ -169,7 +176,11 @@ def _insert_after_linear_in_module_list(
     grandparent = new_model if not grandparent_path else new_model.get_submodule(grandparent_path)
     _check_relu_activation(grandparent, parent_path)
 
-    new_linear = _identity_linear(target.out_features, dtype=target.weight.dtype)
+    new_linear = _identity_linear(
+        target.out_features,
+        dtype=target.weight.dtype,
+        device=target.weight.device,
+    )
 
     # Build a fresh ModuleList with the insertion. nn.ModuleList has
     # .insert(idx, mod), but it mutates in place — to keep the
@@ -228,11 +239,13 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str) -> None:
         )
 
 
-def _identity_linear(dim: int, *, dtype=torch.float32) -> nn.Linear:
+def _identity_linear(dim: int, *, dtype=torch.float32, device="cpu") -> nn.Linear:
     """A fresh ``nn.Linear(dim, dim)`` with weight = I and bias = 0."""
-    layer = nn.Linear(dim, dim, bias=True, dtype=dtype)
+    # skip_init: both params are overwritten below — meta-device
+    # construction keeps the surgery off the global RNG stream.
+    layer = skip_init(nn.Linear, dim, dim, bias=True, dtype=dtype, device=device)
     with torch.no_grad():
-        layer.weight.copy_(torch.eye(dim, dtype=dtype))
+        layer.weight.copy_(torch.eye(dim, dtype=dtype, device=layer.weight.device))
         layer.bias.zero_()
     return layer
 

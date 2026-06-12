@@ -270,6 +270,23 @@ def test_load_lora_weights_with_empty_dict_is_zero_op():
         assert torch.equal(pre[k], post[k]), f"empty-dict load_lora_weights mutated {k!r}"
 
 
+def test_load_lora_weights_into_unadapted_model_returns_zero():
+    """Loading a LoRA checkpoint into a module that was never LoRA-fied
+    must report 0 tensors loaded — pre-fix it returned len(source dict)
+    because load_state_dict(strict=False) silently drops keys the
+    module doesn't have, masking exactly the misuse the docstring warns
+    about."""
+    torch.manual_seed(0)
+    net = _TinyNet()
+    apply_lora_to(net, "layers.*", r=2)
+    sd = {n: p.clone() for n, p in net.named_parameters() if "lora_" in n}
+    assert len(sd) > 0
+
+    plain = _TinyNet()  # never adapted — no lora_* keys exist
+    n_loaded = load_lora_weights(plain, sd)
+    assert n_loaded == 0, f"reported {n_loaded} loaded into an un-adapted model"
+
+
 # -------------------------------------------------------------------------
 # End-to-end: PEFT fine-tuning preserves base weights
 # -------------------------------------------------------------------------

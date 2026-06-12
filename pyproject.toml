@@ -1,13 +1,18 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# >=77: PEP 639 SPDX license metadata below. "wheel" is auto-provided.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "thekaveh-nnx"
-version = "0.1.0"
+# 0.2.0: the dated CHANGELOG [0.1.0] section (2026-05-18 baseline, never
+# tagged or published) already claims 0.1.0; the first real release must
+# ship the [Unreleased] content under a fresh number.
+version = "0.2.0"
 description = "Lightweight PyTorch training/eval/visualization toolkit"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Kaveh Razavi", email = "kaveh.razavi@gmail.com" }
 ]
@@ -33,12 +38,14 @@ keywords = [
     # composite (PR #46), and the cross-cutting Builder pattern
     # (`<Class>.builder()` on every params dataclass, PRs #43-#46, #48).
     "learning-rate-finder", "multi-optimizer", "builder-pattern",
+    # Post-#54 overnight-maintenance pass — nnx.viz (six model-internals
+    # primitives + Captum attribution) had no matching keyword.
+    "visualization", "explainability",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

@@ -352,3 +352,13 @@ def test_is_sentence_transformer_detects_sbert_subclass():
             return {}
 
     assert _is_sentence_transformer(_FakeSBERT()) is True
+
+
+def test_train_contrastive_rejects_batch_size_one():
+    """batch_size=1 makes every batch hit the B<2 skip, so all epochs
+    would silently train nothing (weights untouched, 0.0 means printed)
+    — it must raise instead."""
+    pairs = [("a b", "a c"), ("d e", "d f"), ("g h", "g i")]
+    backbone = _HashEmbedder(vocab_size=64, dim=8)
+    with pytest.raises(ValueError, match="batch_size"):
+        train_contrastive(backbone, pairs, n_epochs=1, batch_size=1)

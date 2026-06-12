@@ -211,6 +211,27 @@ def test_export_to_safetensors_writes_a_file(tmp_path):
     assert out.stat().st_size > 0
 
 
+@pytest.mark.skipif(not HAS_SAFETENSORS, reason="needs the real safetensors writer")
+def test_export_to_safetensors_handles_tied_weights(tmp_path):
+    """Modules with tied (storage-sharing) weights — TransformerNN's
+    default tie_embeddings, and most HF LMs — must export. Pre-fix the
+    cleaner used .contiguous(), a no-op on an already-contiguous shared
+    tensor, and safetensors raised 'Some tensors share memory'."""
+
+    class _Tied(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.emb = nn.Embedding(16, 8)
+            self.head = nn.Linear(8, 16, bias=False)
+            self.head.weight = self.emb.weight  # tie
+
+    tied = _Tied()
+    out = tmp_path / "tied.safetensors"
+    path = export_to_safetensors(tied, str(out))
+    assert path == str(out)
+    assert out.stat().st_size > 0
+
+
 def test_export_to_safetensors_roundtrip_torch_save_fallback(tmp_path):
     """The torch.save fallback (used when safetensors isn't installed)
     must round-trip the state_dict. We verify by loading with

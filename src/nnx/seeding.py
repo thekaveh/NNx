@@ -97,9 +97,12 @@ def env_snapshot(force_refresh: bool = False) -> dict:
     inside a git repo. Safe to call from anywhere — failures degrade to
     `None` per field rather than raising.
 
-    Result is memoized within the process (env doesn't change between
-    calls). Pass ``force_refresh=True`` to re-compute — useful in tests
-    that mutate the environment.
+    Result is memoized within the process (versions/hardware don't
+    change between calls). Caveat: the ``git_commit`` / ``git_dirty``
+    fields are frozen at first call too, so a long session that commits
+    mid-run records the session-start git state in later runs'
+    metadata.yaml. Pass ``force_refresh=True`` to re-compute — useful
+    in tests that mutate the environment, or to re-stamp git state.
     """
     global _ENV_SNAPSHOT_CACHE
     if _ENV_SNAPSHOT_CACHE is not None and not force_refresh:

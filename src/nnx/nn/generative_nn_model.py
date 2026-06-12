@@ -77,8 +77,13 @@ class GenerativeNNModel(NNModel):
             top_p: nucleus (top-p) cutoff. None disables.
             repetition_penalty: divide previously-seen tokens' positive
                 logits by this. 1.0 is no-op (default).
-            stop: list of stop strings — generation halts when any of
-                them appears in the decoded prefix.
+            stop: list of stop strings — generation halts once any of
+                them appears in the decoded CONTINUATION (the prompt
+                itself is not searched, so a prompt containing a stop
+                string doesn't halt generation immediately; a stop
+                string straddling the prompt/continuation boundary is
+                likewise not detected — matching the generated-text-only
+                convention HF uses).
             seed: when set, sampling is reproducible — two calls with
                 the same seed + prompt + model produce identical output.
             use_cache: when True (default), uses an incremental KV
@@ -111,12 +116,6 @@ class GenerativeNNModel(NNModel):
                 "GenerativeNNModel.generate requires a tokenizer. "
                 "Construct with `GenerativeNNModel(..., tokenizer=NNTokenizerParams.of(tk, path))`."
             )
-        # Snapshot training-mode for non-destructive restore on exit
-        # (matches NNModel.predict / evaluate / nnx.viz.activation_map /
-        # nnx.lr_finder). The body is wrapped in try/finally below.
-        was_training = self.net.training
-        self.net.eval()
-
         prompt_ids = self.tokenizer.encode(prompt)
         if not prompt_ids:
             # Use a single space as a non-empty seed when the prompt
@@ -126,14 +125,19 @@ class GenerativeNNModel(NNModel):
         max_seq_len = getattr(self.net_params, "max_seq_len", None)
         if max_seq_len is None:
             raise ValueError("net_params must expose `max_seq_len` (got a non-Transformer net?)")
+        # Wrappers that consume window slots (PromptTuner's soft prompt)
+        # advertise a smaller effective window — without this, the
+        # sliding window overflows the wrapped model mid-generation.
+        max_seq_len = getattr(self.net, "effective_max_seq_len", max_seq_len)
 
         # Build the processor chain. Two paths:
         # (a) If the caller supplied a pre-built ``logits_chain``, use
         #     its processors as-is — they've already been ordered.
-        # (b) Otherwise build the standard chain from kwargs in the
-        #     conventional HF order: repetition penalty first
-        #     (raw logits), then top-k / top-p (filtering), then
-        #     temperature (scaling). Temperature is always applied;
+        # (b) Otherwise build the standard chain from kwargs in NNx's
+        #     canonical order: repetition penalty first (raw logits),
+        #     then top-k / top-p (filtering), then temperature
+        #     (scaling — deliberately last: temperature=0's ±inf greedy
+        #     markers must not be re-filtered). Temperature is always applied;
         #     temperature=0 is the greedy short-circuit (still routed
         #     through TemperatureScaling so the sampler path is
         #     uniform).
@@ -165,11 +169,20 @@ class GenerativeNNModel(NNModel):
             use_cache = False
 
         generated: list[int] = list(prompt_ids)
+        # Snapshot training-mode for non-destructive restore on exit
+        # (matches NNModel.predict / evaluate / nnx.viz.activation_map /
+        # nnx.lr_finder). Deliberately the LAST thing before the
+        # try/finally: an exception in the validation / chain-building
+        # code above would otherwise strand the net in eval() with no
+        # finally to restore it.
+        was_training = self.net.training
+        self.net.eval()
         try:
             with torch.no_grad():
                 if use_cache:
                     self._generate_with_cache(
                         generated=generated,
+                        n_prompt=len(prompt_ids),
                         max_new_tokens=max_new_tokens,
                         max_seq_len=max_seq_len,
                         processors=processors,
@@ -179,6 +192,7 @@ class GenerativeNNModel(NNModel):
                 else:
                     self._generate_no_cache(
                         generated=generated,
+                        n_prompt=len(prompt_ids),
                         max_new_tokens=max_new_tokens,
                         max_seq_len=max_seq_len,
                         processors=processors,
@@ -197,6 +211,7 @@ class GenerativeNNModel(NNModel):
         self,
         *,
         generated: list[int],
+        n_prompt: int,
         max_new_tokens: int,
         max_seq_len: int,
         processors: list[LogitsProcessor],
@@ -218,18 +233,20 @@ class GenerativeNNModel(NNModel):
             next_id = sample_next_token(adjusted, generator=gen)
             generated.append(next_id)
 
-            # Optional stop-string check. We only decode once per
-            # iteration when stops are configured — keeps the hot
-            # loop cheap when they aren't.
+            # Optional stop-string check, scoped to the CONTINUATION —
+            # a stop string already present in the prompt must not halt
+            # generation after one token. Only decodes when stops are
+            # configured, keeping the hot loop cheap otherwise.
             if stop:
-                text_so_far = self.tokenizer.decode(generated)
-                if any(s in text_so_far for s in stop):
+                continuation = self.tokenizer.decode(generated[n_prompt:])
+                if any(s in continuation for s in stop):
                     break
 
     def _generate_with_cache(
         self,
         *,
         generated: list[int],
+        n_prompt: int,
         max_new_tokens: int,
         max_seq_len: int,
         processors: list[LogitsProcessor],
@@ -241,12 +258,23 @@ class GenerativeNNModel(NNModel):
         position's attention against the cached prefix. O(T) per
         step instead of O(T^2).
 
-        Sliding-window safety: when the prompt + max_new_tokens would
-        overflow ``max_seq_len``, we drop the oldest entry from each
-        layer's cached k/v before appending the next step. This keeps
-        long-context generation correct without rebuilding the cache
-        from scratch every overflow.
+        Sliding-window safety: once appending another token would
+        overflow ``max_seq_len``, the cache is rebuilt from the current
+        window. Cached k/v are RoPE-stamped at the absolute position
+        they were written at, so merely dropping the oldest entry would
+        pin every later token's offset at ``max_seq_len - 1`` and
+        corrupt the relative position geometry (logits drift vs the
+        no-cache path). Rebuilding re-rotates the window to positions
+        ``0..max_seq_len-1`` — exactly what the no-cache path computes,
+        so greedy/seeded parity holds across overflow. Post-overflow
+        steps therefore cost one full window forward, same as the
+        no-cache path; the O(T) win applies within the window.
         """
+        if max_new_tokens <= 0:
+            # Hard cap honored on this path too: the prefill below
+            # always samples one token, which would emit 1 instead of 0.
+            return
+
         # ----- Prefill pass on the prompt (sliding window). -----
         context_ids = generated[-max_seq_len:]
         ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
@@ -256,28 +284,32 @@ class GenerativeNNModel(NNModel):
         next_id = sample_next_token(adjusted, generator=gen)
         generated.append(next_id)
         if stop:
-            text_so_far = self.tokenizer.decode(generated)
-            if any(s in text_so_far for s in stop):
+            # Continuation-scoped, like the loop check below.
+            continuation = self.tokenizer.decode(generated[n_prompt:])
+            if any(s in continuation for s in stop):
                 return
 
         # ----- Incremental decode loop. -----
         for _ in range(max_new_tokens - 1):
-            # If appending another token would overflow max_seq_len,
-            # drop the oldest cached k/v position on every layer
-            # (sliding window — matches the no-cache path's behaviour).
             cached_len = past_kvs[0][0].size(-2) if past_kvs and past_kvs[0] is not None else 0
             if cached_len + 1 > max_seq_len:
-                past_kvs = [(k[..., 1:, :], v[..., 1:, :]) for (k, v) in past_kvs]
-
-            last_id = generated[-1]
-            ctx = torch.tensor([[last_id]], dtype=torch.long, device=self.device)
-            logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=past_kvs)
+                # Window full: rebuild the cache from the current
+                # window (see the docstring — dropping the oldest k/v
+                # would corrupt RoPE relative positions). The window
+                # includes generated[-1], so this forward both refills
+                # the cache and yields the next token's logits.
+                ctx = torch.tensor([generated[-max_seq_len:]], dtype=torch.long, device=self.device)
+                logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=None)
+            else:
+                ctx = torch.tensor([[generated[-1]]], dtype=torch.long, device=self.device)
+                logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=past_kvs)
             next_logits = logits[:, -1, :]
             adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
             next_id = sample_next_token(adjusted, generator=gen)
             generated.append(next_id)
 
             if stop:
-                text_so_far = self.tokenizer.decode(generated)
-                if any(s in text_so_far for s in stop):
+                # Continuation-scoped — see _generate_no_cache.
+                continuation = self.tokenizer.decode(generated[n_prompt:])
+                if any(s in continuation for s in stop):
                     break

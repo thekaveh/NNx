@@ -12,7 +12,7 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .._metrics import _resolve_metric
+from .._metrics import _resolve_metric, classification_edp
 from ..utils import Utils
 from .enum.checkpoints import Checkpoints, phase_tag
 from .params.nn_checkpoint import NNCheckpoint
@@ -121,7 +121,12 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 
     This is the body that `NNModel.train()` runs when no custom
     `train_step_fn` is supplied. It honors:
-      - gradient accumulation (zero_grad at cycle start, step at cycle end)
+      - gradient accumulation (zero_grad at cycle start, step at cycle
+        end). Caveat: when an epoch's batch count isn't a multiple of
+        ``accumulate_grad_batches``, the trailing partial cycle's grads
+        are zeroed at the next epoch's first batch (or dropped at the
+        final epoch's end) without an optimizer step — size your loader
+        or accumulation factor accordingly.
       - AMP (unscales before grad clip; scaler.step + update at cycle end)
       - grad clipping by L2 norm
       - the NaN/Inf guard (raises FloatingPointError on divergent loss)
@@ -180,14 +185,11 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             "or input normalization."
         )
 
-    return (
-        NNEvaluationDataPoint.of(
-            Y=Y.cpu().numpy(),
-            Y_hat=Y_hat.cpu().numpy(),
-            extra_metrics=ctx.extra_metrics,
-        )
-        .with_loss(value=loss_value)
-        .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
+    return classification_edp(
+        Y=Y,
+        Y_hat=Y_hat,
+        loss=loss_value,
+        extra_metrics=ctx.extra_metrics,
     )
 
 
@@ -408,10 +410,15 @@ class NNModel(_HubMixinBase):
         save_dir = Path(save_directory)
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # Detach + contiguous matches the same hygiene NNCheckpoint applies
-        # on its safetensors path: drop autograd hooks, ensure C-contiguous
-        # storage so safetensors' zero-copy reader works.
-        tensors = {k: v.detach().contiguous() for k, v in self.net.state_dict().items()}
+        # Detach + contiguous + clone matches the hygiene NNCheckpoint
+        # applies on its safetensors path: drop autograd hooks, ensure
+        # C-contiguous storage, and BREAK STORAGE SHARING — safetensors
+        # rejects tied tensors (tok_embed/lm_head share storage on every
+        # default TransformerNN), and .contiguous() is a no-op on an
+        # already-contiguous shared view. load_state_dict reassembles the
+        # tie on reload by copying both identical keys into the shared
+        # parameter.
+        tensors = {k: v.detach().contiguous().clone() for k, v in self.net.state_dict().items()}
         save_file(tensors, str(save_dir / _HUB_MODEL_FILENAME))
 
         config = {
@@ -437,7 +444,7 @@ class NNModel(_HubMixinBase):
         local_files_only: bool = False,
         token=None,
         map_location: str = "cpu",
-        strict: bool = False,
+        strict: bool = True,
         **model_kwargs,
     ) -> NNModel:
         """Rebuild an NNModel from a save_pretrained directory or Hub repo.
@@ -445,17 +452,31 @@ class NNModel(_HubMixinBase):
         Dispatched-to by :meth:`PyTorchModelHubMixin.from_pretrained`,
         which handles the remote-download path before calling this. Local
         paths skip the download. Either way, we read ``config.json`` to
-        reconstruct ``NNParams`` and ``NNModelParams`` via their public
+        reconstruct the net params and ``NNModelParams`` via their public
         ``from_state`` constructors, then load ``model.safetensors`` into
         the freshly-built ``self.net``.
 
-        ``map_location`` and ``strict`` are accepted for parity with the
-        mixin's PyTorch contract but ignored on the safetensors path —
-        the weights are deserialized into CPU tensors then moved by
-        ``NNModel.__init__`` to ``self.device`` via the ``self.net.to(device)``
-        call. ``strict`` doesn't apply because we instantiate the net from
-        the config first, so the keys must match by construction.
+        ``map_location`` is forwarded as the safetensors ``device=`` (the
+        net is then moved to ``self.device`` by ``NNModel.__init__``
+        regardless). ``strict`` is forwarded to ``load_state_dict``; it
+        defaults to True because the net is instantiated from the same
+        config the weights were saved with, so any key mismatch indicates
+        a corrupted or hand-edited artifact. Unrecognized ``model_kwargs``
+        raise instead of being silently dropped — NNModel reconstructs
+        entirely from ``config.json``.
         """
+        # The mixin inspects NNModel.__init__'s signature and auto-injects
+        # matching config.json entries ("net_params"/"params") as kwargs.
+        # Both are rebuilt from config.json below via from_state — the
+        # raw dicts are dropped knowingly. Anything else is a caller
+        # error (a typo'd knob would otherwise vanish silently).
+        model_kwargs.pop("net_params", None)
+        model_kwargs.pop("params", None)
+        if model_kwargs:
+            raise TypeError(
+                f"from_pretrained got unexpected model kwargs {sorted(model_kwargs)!r} — "
+                "NNModel reconstructs entirely from the repo's config.json."
+            )
         try:
             from safetensors.torch import load_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
@@ -496,12 +517,14 @@ class NNModel(_HubMixinBase):
         net_params_state = config.get("net_params", config)
         model_params_state = config.get("params", config)
 
-        net_params = NNParams.from_state(net_params_state)
+        # resolve_from_state dispatches transformer configs to
+        # NNTransformerParams so LM models round-trip through the Hub.
+        net_params = NNParams.resolve_from_state(net_params_state)
         params = NNModelParams.from_state(model_params_state)
 
         model = cls(net_params=net_params, params=params)
         state_dict = load_file(weights_path, device=map_location)
-        model.net.load_state_dict(state_dict, strict=strict if strict else True)
+        model.net.load_state_dict(state_dict, strict=strict)
         return model
 
     def freeze(self, *patterns: str) -> int:
@@ -571,15 +594,24 @@ class NNModel(_HubMixinBase):
             object is returned with the in-memory idps list attached.
 
         Raises:
-            ValueError: if `params` is None or `params.optim` is invalid.
+            ValueError: if `params` is None, `params.train_loader` is
+                None, or `params.optim` is invalid.
             FloatingPointError: from `default_train_step` if training
                 loss becomes non-finite (custom `train_step_fn` hooks are
                 responsible for their own divergence checks).
         """
         if params is None:
             raise ValueError("train params must be non-None")
+        if params.train_loader is None:
+            raise ValueError(
+                "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
+            )
         if params.optim is None or not params.optim.is_valid():
             raise ValueError(f"train params has an invalid optim config: {params.optim!r}")
+        if not any(p.requires_grad for p in self.net.parameters()):
+            raise ValueError(
+                "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
+            )
 
         # V1: seed every RNG before constructing the run so dataset shuffling,
         # weight init, dropout — anything stochastic — is reproducible. The
@@ -667,6 +699,7 @@ class NNModel(_HubMixinBase):
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
+                n_idps_before_epoch = len(idps)
                 for idx_batch, batch in enumerate(params.train_loader):
                     step_ctx = TrainStepContext(
                         model=self,
@@ -694,6 +727,16 @@ class NNModel(_HubMixinBase):
                     idx_iter += 1
                     tqdm_bar.update(1)
 
+                if len(idps) == n_idps_before_epoch:
+                    # Zero batches this epoch: first epoch would crash on
+                    # idps[-1] below; later epochs would silently attach
+                    # this epoch's val_edp to the PREVIOUS epoch's last
+                    # idp and reuse its stale train_edp.
+                    raise ValueError(
+                        f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
+                        "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
+                    )
+
                 val_edp = (
                     self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics) if validate else None
                 )
@@ -710,7 +753,7 @@ class NNModel(_HubMixinBase):
                 )
                 # In-memory best_checkpoint tracking must use the same
                 # comparison as the on-disk BEST write inside
-                # _save_checkpoints (val_edp → train_edp → +inf fall-through).
+                # _save_checkpoints (val→train, error→loss, +inf fall-through).
                 # Without this, val_loader=None runs would silently overwrite
                 # best_checkpoint every epoch (because checkpoint.idp.val_edp
                 # is None there) while the on-disk BEST tracks training error,
@@ -836,6 +879,17 @@ class NNModel(_HubMixinBase):
                         X_in, _ = self.net.unpack_batch(batch)
                         X_in = tuple(x.to(self.device) for x in X_in)
                         logits = self.net(*X_in).cpu().numpy()
+                        # NeighborLoader subgraphs: only the leading seed
+                        # rows are this batch's nodes (see
+                        # GraphNNBase.seed_count) — without the slice,
+                        # predictions for sampled neighbors pollute the
+                        # output and the row count exceeds the loader's
+                        # node set.
+                        seed_count = getattr(self.net, "seed_count", None)
+                        if seed_count is not None:
+                            n_seed = seed_count(batch)
+                            if n_seed is not None:
+                                logits = logits[:n_seed]
                         logits_chunks.append(logits)
                         classes_chunks.append(logits.argmax(axis=1))
                 return PredictResult(
@@ -874,6 +928,15 @@ class NNModel(_HubMixinBase):
         Y = Y.to(self.device)
 
         Y_hat_logits = self.net(*X)
+        # Graph nets score every node in the sampled subgraph, but only
+        # the leading seed rows belong to this batch's split — see
+        # GraphNNBase.seed_count for the leakage this prevents.
+        seed_count = getattr(self.net, "seed_count", None)
+        if seed_count is not None:
+            n_seed = seed_count(batch)
+            if n_seed is not None:
+                Y_hat_logits = Y_hat_logits[:n_seed]
+                Y = Y[:n_seed]
         Y_hat = Y_hat_logits.argmax(dim=1)
 
         return X, Y, Y_hat_logits, Y_hat
@@ -975,7 +1038,7 @@ class NNModel(_HubMixinBase):
         # BEST tracking goes through the same _best_err helper used by
         # NNRun.save's cross-run comparison and by Trainer._save_checkpoint
         # — single source of truth for "what's the comparable error here"
-        # (val_edp → train_edp → +inf fall-through, tolerating None EDP
+        # (val→train, error→loss, +inf fall-through, tolerating None EDP
         # or None .error from custom train_step_fn paradigms).
         if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
             checkpoint.save(run=run_id, type=Checkpoints.BEST, optimizer_state=opt_state)

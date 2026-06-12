@@ -64,11 +64,48 @@ def summary(
 
     if isinstance(model, NNModel):
         model = model.net
-    return _ti_summary(
-        model,
-        input_size=input_size,
-        input_data=input_data,
-        depth=depth,
-        col_names=col_names,
-        verbose=0,
-    )
+
+    if input_size is None:
+        return _ti_summary(
+            model,
+            input_size=input_size,
+            input_data=input_data,
+            depth=depth,
+            col_names=col_names,
+            verbose=0,
+        )
+
+    # torchinfo synthesizes the input_size= dummy via torch.rand — an
+    # incidental draw whose values never affect the statistics, but
+    # which silently shifts any seeded pipeline probing a summary
+    # mid-run (the concepts.md idiom). Snapshot/restore RNG around it.
+    # Device mirrors torchinfo's own inference: the model's parameter
+    # device, else CUDA when available.
+    param = next(model.parameters(), None)
+    if param is not None:
+        dev = param.device
+    elif torch.cuda.is_available():
+        dev = torch.device("cuda")
+    else:
+        dev = torch.device("cpu")
+    cpu_rng_state = torch.get_rng_state()
+    device_rng_state = None
+    if dev.type == "cuda":
+        device_rng_state = torch.cuda.get_rng_state(dev)
+    elif dev.type == "mps":
+        device_rng_state = torch.mps.get_rng_state()
+    try:
+        return _ti_summary(
+            model,
+            input_size=input_size,
+            input_data=input_data,
+            depth=depth,
+            col_names=col_names,
+            verbose=0,
+        )
+    finally:
+        torch.set_rng_state(cpu_rng_state)
+        if dev.type == "cuda":
+            torch.cuda.set_rng_state(device_rng_state, dev)
+        elif dev.type == "mps":
+            torch.mps.set_rng_state(device_rng_state)

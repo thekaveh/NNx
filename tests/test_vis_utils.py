@@ -71,3 +71,13 @@ def test_multi_line_plot_raises_on_empty_yss():
             y_axis_label="y",
             renderer=None,
         )
+
+
+def test_generate_colors_are_pairwise_distinct():
+    """Hue is circular, so the old closed linspace gave the first and
+    last class identical colors in every scatter/t-SNE plot."""
+    from nnx.vis_utils import VisUtils
+
+    for n in (2, 3, 5, 8):
+        colors = VisUtils.generate_colors(n)
+        assert len(set(colors)) == n, f"duplicate colors at n={n}: {colors}"

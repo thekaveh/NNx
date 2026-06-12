@@ -92,8 +92,12 @@ class DoRALinear(LoRALinear):
         # ``self.scaling = alpha / r``, used for the inherited LoRA
         # forward; we reuse it here for the DoRA recomposition.
         lora_update = (self.lora_B @ self.lora_A) * self.scaling
-        # Optional dropout on the LoRA matrix (not the input) — DoRA's
-        # dropout semantics mirror LoRA's: it perturbs the update path.
+        # Optional dropout on the LoRA matrix (not the input). NOTE:
+        # this is DropConnect-style — it zeroes/rescales entries of the
+        # composed BA *weight matrix* batch-wide, unlike LoRALinear,
+        # which drops entries of the *input activations* per sample.
+        # Deliberate: dropping x here would also perturb the row norms
+        # the magnitude renormalization below depends on.
         # ``self.lora_dropout`` is Identity when dropout=0, so this is
         # a no-op in the common case.
         lora_update = self.lora_dropout(lora_update)
@@ -150,6 +154,11 @@ def apply_dora_to(
     # invalidating the iterator while reassigning child attributes.
     targets: list[str] = []
     for name, child in module.named_modules():
+        if not name:
+            # named_modules() yields the root itself under "" — it has
+            # no parent attribute to reassign, so an in-place wrap is
+            # impossible. Skip it (wrap the root yourself if needed).
+            continue
         if not isinstance(child, nn.Linear):
             continue
         # Skip the inner .base of an existing LoRALinear (which covers
@@ -158,7 +167,7 @@ def apply_dora_to(
         parent = module if not parent_path else module.get_submodule(parent_path)
         if isinstance(parent, LoRALinear):
             continue
-        if any(fnmatch.fnmatch(name, p) for p in name_patterns):
+        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
             targets.append(name)
 
     for name in targets:

@@ -109,6 +109,11 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
 
     targets: list[str] = []
     for name, child in module.named_modules():
+        if not name:
+            # named_modules() yields the root itself under "" — it has
+            # no parent attribute to reassign, so an in-place wrap is
+            # impossible. Skip it (wrap the root yourself if needed).
+            continue
         if not isinstance(child, nn.Linear):
             continue
         # Skip the inner .base of an existing IA3Linear — re-applying
@@ -117,7 +122,7 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
         parent = module if not parent_path else module.get_submodule(parent_path)
         if isinstance(parent, IA3Linear):
             continue
-        if any(fnmatch.fnmatch(name, p) for p in name_patterns):
+        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
             targets.append(name)
 
     for name in targets:
@@ -183,5 +188,8 @@ def load_ia3_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     """
     sd = _resolve_source_to_state_dict(source, "load_ia3_weights")
     sd = _ia3_keys_only(sd)
-    module.load_state_dict(sd, strict=False)
-    return len(sd)
+    result = module.load_state_dict(sd, strict=False)
+    # strict=False silently drops keys that don't exist on the module
+    # (e.g. loading into an un-adapted model) — subtract them so the
+    # return value is the number of tensors that actually landed.
+    return len(sd) - len(result.unexpected_keys)

@@ -12,9 +12,16 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
-from nnx import (
+# Same optional-extra convention every other gated test file follows:
+# skip gracefully when the required extras aren't installed (the
+# shipped sdist's suite must not hard-fail without them).
+pytest.importorskip("huggingface_hub")
+pytest.importorskip("safetensors")
+
+from nnx import (  # noqa: E402
     Activations,
     Devices,
     Losses,
@@ -117,3 +124,88 @@ def test_hub_mixin_inheritance_is_visible():
     assert hasattr(NNModel, "save_pretrained")
     assert hasattr(NNModel, "from_pretrained")
     assert hasattr(NNModel, "push_to_hub")
+
+
+def test_hub_from_pretrained_rejects_unexpected_model_kwargs(tmp_path):
+    """Unknown kwargs forwarded by the mixin must raise instead of being
+    silently dropped — NNModel rebuilds entirely from config.json, so a
+    silently-ignored kwarg (e.g. a typo'd knob) would lie to the caller."""
+    import pytest
+
+    m = _tiny_model()
+    m.save_pretrained(str(tmp_path))
+    with pytest.raises(TypeError, match="unexpected model kwargs"):
+        NNModel.from_pretrained(str(tmp_path), nonexistent_knob=1)
+
+
+def test_hub_from_pretrained_strict_is_honored(tmp_path):
+    """`strict` must actually reach load_state_dict. Pre-fix the code
+    read `strict=strict if strict else True` — always True — so
+    strict=False was impossible. Default stays strict (a key mismatch
+    means a corrupted artifact); strict=False opts into partial loads."""
+    import pytest
+    from safetensors.torch import load_file, save_file
+
+    m = _tiny_model()
+    m.save_pretrained(str(tmp_path))
+
+    weights_path = tmp_path / "model.safetensors"
+    sd = load_file(str(weights_path))
+    dropped = sorted(sd)[0]
+    del sd[dropped]
+    save_file(sd, str(weights_path))
+
+    with pytest.raises(RuntimeError, match="[Mm]issing key"):
+        NNModel.from_pretrained(str(tmp_path))  # default strict=True
+
+    rt = NNModel.from_pretrained(str(tmp_path), strict=False)
+    assert isinstance(rt, NNModel)
+
+
+def test_hub_round_trip_tied_transformer(tmp_path):
+    """save_pretrained on a DEFAULT transformer (tie_embeddings=True)
+    crashed with safetensors' 'Some tensors share memory' — the Hub
+    writer missed the .clone() its NNCheckpoint sibling carries. The
+    round-trip must restore weights bit-exactly with the tie intact and
+    greedy generation parity."""
+    import pytest
+
+    pytest.importorskip("tokenizers")
+    from nnx import GenerativeNNModel, NNTransformerParams
+    from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
+
+    torch.manual_seed(0)
+    params = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        vocab_size=64,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=16,
+    )
+    tk = train_bpe(
+        files=None,
+        texts=["the cat sat on the mat"],
+        vocab_size=64,
+        special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"],
+    )
+    tokenizer = NNTokenizerParams.of(tokenizer=tk, path=str(tmp_path / "tok.json"))
+    m = GenerativeNNModel(
+        net_params=params,
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        tokenizer=tokenizer,
+    )
+    out_dir = tmp_path / "hub"
+    m.save_pretrained(str(out_dir))  # pre-fix: RuntimeError (shared memory)
+
+    rt = GenerativeNNModel.from_pretrained(str(out_dir))
+    rt.tokenizer = tokenizer
+    for k in m.net.state_dict():
+        assert torch.equal(m.net.state_dict()[k], rt.net.state_dict()[k])
+    assert rt.net.lm_head.weight is rt.net.tok_embed.weight, "tie not reassembled"
+    a = m.generate(prompt="the", max_new_tokens=6, temperature=0.0)
+    b = rt.generate(prompt="the", max_new_tokens=6, temperature=0.0)
+    assert a == b

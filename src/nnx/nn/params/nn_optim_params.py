@@ -47,6 +47,32 @@ class NNOptimParams:
     accumulate_grad_batches: int = 1
     param_groups: Optional[list[NNParamGroupSpec]] = field(default=None)
 
+    def __post_init__(self):
+        # Fail fast on plain dicts: they construct fine but crash much
+        # later inside state() during NNRun hashing with an opaque
+        # AttributeError. Same construction-time convention as the
+        # dataset classes.
+        if self.param_groups is not None:
+            if not isinstance(self.param_groups, (list, tuple)):
+                # A generator would be silently EXHAUSTED by the
+                # validation loop below — state() would then emit an
+                # empty param_groups and training would run single-group
+                # with a shifted run.id.
+                raise TypeError(
+                    f"param_groups must be a list/tuple of NNParamGroupSpec, got {type(self.param_groups).__name__}"
+                )
+            # Lazy import — keeps this low-level dataclass importable
+            # without eagerly loading the finetune subpackage (no cycle
+            # today; same deferral style as from_state below).
+            from ...finetune.param_groups import NNParamGroupSpec
+
+            for i, g in enumerate(self.param_groups):
+                if not isinstance(g, NNParamGroupSpec):
+                    raise TypeError(
+                        f"param_groups[{i}] must be an NNParamGroupSpec, got {type(g).__name__} — "
+                        "wrap it: NNParamGroupSpec(name_pattern=..., lr=...)."
+                    )
+
     def __str__(self):
         return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"
 
@@ -70,9 +96,9 @@ class NNOptimParams:
 
     @staticmethod
     def from_state(state: dict) -> NNOptimParams:
-        # Lazy import: nn_optim_params is a low-level dataclass that
-        # nn.finetune.param_groups depends on (transitively, via NNOptimParams).
-        # Importing NNParamGroupSpec at module top would create a cycle.
+        # Lazy import — defers the finetune subpackage so this
+        # low-level dataclass stays light at import time (no actual
+        # cycle today: param_groups.py imports only stdlib + torch).
         from ...finetune.param_groups import NNParamGroupSpec
 
         raw_pg = state.get("param_groups")

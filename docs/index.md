@@ -9,7 +9,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 1.1. Core capabilities
 
 - **Generic training loop** — callbacks, early stopping, schedulers, AMP, gradient clipping, gradient accumulation, and seeded reproducibility.
-- **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags and a `runs/best` symlink that always points at your lowest-error run.
+- **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags and a `runs/best` symlink that always points at your lowest-error run (lowest-loss for paradigm runs without a supervised error).
 - **Warm-resume training** — load weights AND optimizer state from any saved checkpoint.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** — opt-in via extras.

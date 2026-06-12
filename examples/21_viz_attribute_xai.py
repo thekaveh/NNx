@@ -5,7 +5,7 @@ Pipeline:
   1. Train a tiny classifier on synthetic data.
   2. Run integrated_gradients via `nnx.viz.attribute(model.net, X, method="integrated_gradients", target=0)`.
   3. Print the attribution tensor's shape + the figure's basic info.
-  4. Try four other Captum methods to demonstrate the dispatcher.
+  4. Try three other Captum methods to demonstrate the dispatcher.
 
 The Captum API surface is large; NNx's wrapper folds the six most
 useful methods (integrated_gradients, gradient_shap, deep_lift,

@@ -28,6 +28,11 @@ env/
 runs/
 tb_logs/
 *.onnx
+# Dataset download cache. examples/16_ijepa_cifar10.py --cifar pulls
+# CIFAR-10 (~170 MB) into data/cifar10/, and NNDataset's default
+# root_dir is "./data". Same `git add -A` hazard as artifacts/ below.
+data/
+
 # Example-script output directories. Three examples write here:
 #   examples/11_tinystories_lm.py        → artifacts/tinystories_lm/
 #   examples/17_export_transformer_to_gguf.py → artifacts/lm_export/

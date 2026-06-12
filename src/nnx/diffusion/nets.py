@@ -38,8 +38,9 @@ def sinusoidal_time_embed(t: torch.Tensor, dim: int) -> torch.Tensor:
         raise ValueError(f"sinusoidal_time_embed dim must be even, got {dim}")
     half = dim // 2
     # Inverse-frequency scaling, matching the original Transformer paper
-    # and ho:DDPM.
-    decay = math.log(10000.0) / (half - 1)
+    # and ho:DDPM. half == 1 (dim=2) degenerates to a single unit
+    # frequency — special-cased so the divisor isn't zero.
+    decay = math.log(10000.0) / (half - 1) if half > 1 else 0.0
     freqs = torch.exp(-decay * torch.arange(half, dtype=torch.float32, device=t.device))
     args = t.float().unsqueeze(-1) * freqs.unsqueeze(0)
     return torch.cat([args.sin(), args.cos()], dim=-1)
@@ -70,6 +71,10 @@ class DiffusionMLP(nn.Module):
         super().__init__()
         if input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {input_dim}")
+        # Same fail-fast as input_dim: an odd/non-positive embed dim
+        # otherwise only surfaces at the first forward, mid-training.
+        if time_embed_dim <= 0 or time_embed_dim % 2 != 0:
+            raise ValueError(f"time_embed_dim must be a positive even integer, got {time_embed_dim}")
         if hidden_dims is None:
             hidden_dims = [128, 128]
         self.input_dim = input_dim

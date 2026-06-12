@@ -11,7 +11,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from nnx import (
+# Same optional-extra convention every other gated test file follows:
+# skip gracefully when the required extras aren't installed (the
+# shipped sdist's suite must not hard-fail without them).
+pytest.importorskip("safetensors")
+
+from nnx import (  # noqa: E402
     Activations,
     Devices,
     Losses,
@@ -147,3 +152,80 @@ def test_checkpoint_to_file_rejects_unknown_format(tmp_path):
     ckpt = _build_checkpoint(m)
     with pytest.raises(ValueError, match="unknown checkpoint format"):
         ckpt.to_file(str(tmp_path / "ckpt.bin"), format="hdf5")  # type: ignore[arg-type]
+
+
+def test_checkpoint_safetensors_handles_tied_weights(tmp_path):
+    """A default TransformerNN ties tok_embed/lm_head storage, and its
+    state_dict carries BOTH keys pointing at one tensor — safetensors
+    rejects shared storage, so to_file(format="safetensors") crashed on
+    every tied-weight net pre-fix (.contiguous() is a no-op on an
+    already-contiguous view; .clone() is what breaks the aliasing).
+    The reload assigns both identical copies back into the tied
+    parameter, so the round-trip preserves values and the tie."""
+    pytest.importorskip("safetensors")
+    from nnx.nn.net.transformer_nn import TransformerNN
+    from nnx.nn.params.nn_transformer_params import NNTransformerParams
+
+    torch.manual_seed(0)
+    params = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        vocab_size=64,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=8,
+    )
+    net = TransformerNN(params)
+    ckpt = NNCheckpoint(
+        net_params=params,
+        net_state=net.state_dict(),
+        model_params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        idp=_tiny_idp(),
+    )
+    path = str(tmp_path / "tied.safetensors")
+    ckpt.to_file(path, format="safetensors")
+
+    loaded = NNCheckpoint.from_file(path)
+    assert loaded is not None
+    assert torch.equal(loaded.net_state["tok_embed.weight"], net.state_dict()["tok_embed.weight"])
+    assert torch.equal(loaded.net_state["lm_head.weight"], net.state_dict()["lm_head.weight"])
+    # Loading back into a fresh tied net keeps the tie intact.
+    net2 = TransformerNN(params)
+    net2.load_state_dict(loaded.net_state)
+    assert net2.lm_head.weight is net2.tok_embed.weight
+
+
+def test_checkpoint_sniff_handles_0x80_header_length(tmp_path):
+    """A safetensors header length ≡ 128 mod 256 makes the file's FIRST
+    byte 0x80 — the pickle PROTO opcode. Pre-fix the magic-byte sniff
+    routed such files to torch.load, which died with a confusing
+    UnpicklingError. Byte 8 (the JSON header's '{') now positively
+    identifies safetensors before the pickle check."""
+    pytest.importorskip("safetensors")
+    import json
+
+    from safetensors.torch import save_file
+
+    model = _tiny_model()
+    base_meta = {
+        "nnx_format_version": "1",
+        "model_params": json.dumps(model.params.state()),
+        "net_params": json.dumps(model.net_params.state()),
+        "idp": json.dumps(_tiny_idp().state()),
+    }
+    tensors = {k: v.detach().clone() for k, v in model.net.state_dict().items()}
+    path = str(tmp_path / "padded.safetensors")
+    for pad in range(256):
+        save_file(tensors, path, metadata={**base_meta, "pad": "x" * pad})
+        with open(path, "rb") as f:
+            if f.read(1) == b"\x80":
+                break
+    else:  # pragma: no cover — alignment should always allow 0x80
+        pytest.skip("could not coax a 0x80 leading byte out of the header alignment")
+
+    loaded = NNCheckpoint.from_file(path)
+    assert loaded is not None
+    assert loaded.idp == _tiny_idp()

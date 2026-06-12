@@ -236,3 +236,39 @@ def test_moe_linear_extra_repr_includes_key_fields():
     repr_str = repr(layer)
     assert "num_experts=3" in repr_str
     assert "top_k=2" in repr_str
+
+
+def test_moe_linear_accepts_3d_input():
+    """The docstring promises nn.Linear drop-in compatibility, and
+    nn.Linear accepts (..., in_features). Pre-fix a (B, T, C) sequence
+    batch raised a cryptic IndexError mid-dispatch; tokens now route
+    independently with leading dims restored on return."""
+    torch.manual_seed(0)
+    layer = MoELinear(in_features=8, out_features=6, num_experts=4, top_k=2)
+    x = torch.randn(3, 5, 8)
+    out = layer(x)
+    assert out.shape == (3, 5, 6)
+    assert layer.last_aux_loss is not None
+    # Parity with the flattened 2-D call (same weights, same tokens).
+    out_flat = layer(x.reshape(-1, 8))
+    assert torch.allclose(out, out_flat.reshape(3, 5, 6), atol=1e-6)
+    # Aux loss must be computed per-token over the flattened batch -
+    # identical to the 2-D call on the same tokens.
+    layer(x)
+    aux_3d = layer.last_aux_loss.clone()
+    layer(x.reshape(-1, 8))
+    aux_2d = layer.last_aux_loss.clone()
+    assert torch.allclose(aux_3d, aux_2d, atol=1e-6)
+
+
+def test_moe_linear_accepts_1d_input():
+    """nn.Linear also accepts an unbatched (in_features,) vector - the
+    drop-in claim covers it. Pre-fix this raised the same cryptic
+    IndexError as the 3-D case."""
+    torch.manual_seed(0)
+    layer = MoELinear(in_features=8, out_features=6, num_experts=4, top_k=2)
+    x = torch.randn(8)
+    out = layer(x)
+    assert out.shape == (6,)
+    out_2d = layer(x.unsqueeze(0))
+    assert torch.allclose(out, out_2d.squeeze(0), atol=1e-6)

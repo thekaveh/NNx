@@ -16,6 +16,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 import tempfile
 
 import torch
@@ -94,16 +95,19 @@ def main():
     print(f"  pretrained {len(run_a.idps)} iterations\n")
 
     # ── Save the pretrained backbone as a plain state-dict ─────────────
-    with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
-        weights_path = f.name
-    pretrained.export_state_dict(weights_path)
-    print(f"  exported weights to {weights_path}")
+    # TemporaryDirectory (not NamedTemporaryFile(delete=False)) so the
+    # exported .pt is cleaned up when the block exits instead of leaking
+    # into the OS temp dir on every run. Matches examples 04 / 07 / 12.
+    with tempfile.TemporaryDirectory() as tmp:
+        weights_path = os.path.join(tmp, "pretrained.pt")
+        pretrained.export_state_dict(weights_path)
+        print(f"  exported weights to {weights_path}")
 
-    # ── Phase 2: load into a fresh model, freeze backbone, fine-tune ──
-    print("\nPhase 2: fine-tune on distribution B (backbone frozen)")
-    set_seed(1)  # different seed → different random init
-    fine = _make_model()
-    result = load_pretrained(fine.net, weights_path)
+        # ── Phase 2: load into a fresh model, freeze backbone ─────────
+        print("\nPhase 2: fine-tune on distribution B (backbone frozen)")
+        set_seed(1)  # different seed → different random init
+        fine = _make_model()
+        result = load_pretrained(fine.net, weights_path)
     print(
         f"  loaded {len(result.loaded_keys)} keys, "
         f"{len(result.missing_keys)} missing, "

@@ -397,6 +397,176 @@ def test_nn_run_state_omits_trainer_when_none():
     )
 
 
+def test_resolve_from_state_dispatches_transformer():
+    """NNParams.resolve_from_state must reconstruct an NNTransformerParams
+    (not silently downgrade to base NNParams) when the state carries the
+    transformer architectural keys. Every loader — NNRun.load, the
+    NNCheckpoint readers, hub from_pretrained — resolves through it."""
+    obj = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+        hidden_dims=None,
+        n_heads=2,
+        vocab_size=64,
+        n_layers=1,
+        d_model=16,
+        max_seq_len=8,
+    )
+    rt = NNParams.resolve_from_state(obj.state())
+    assert isinstance(rt, NNTransformerParams)
+    assert rt == obj
+
+
+def test_resolve_from_state_keeps_base_params():
+    """Base NNParams states (no transformer keys) must come back as exactly
+    NNParams — the dispatcher must not over-trigger."""
+    obj = NNParams(
+        input_dim=784,
+        output_dim=10,
+        dropout_prob=0.2,
+        activation=Activations.RELU,
+        hidden_dims=[128, 64],
+    )
+    rt = NNParams.resolve_from_state(obj.state())
+    assert type(rt) is NNParams
+    assert rt == obj
+
+
+def test_nn_run_round_trip_preserves_transformer_params(tmp_path):
+    """End-to-end: a TRANSFORMER run saved and reloaded keeps its
+    NNTransformerParams — and therefore re-hashes to the same run.id as
+    the directory it was loaded from."""
+    from nnx.nn.params.nn_run import NNRun
+
+    run = NNRun(
+        net=NNTransformerParams(
+            input_dim=64,
+            output_dim=64,
+            dropout_prob=0.0,
+            activation=Activations.LEAKY_RELU,
+            hidden_dims=None,
+            n_heads=2,
+            vocab_size=64,
+            n_layers=1,
+            d_model=16,
+            max_seq_len=8,
+        ),
+        train=NNTrainParams(n_epochs=1),
+        model=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        idps=[
+            NNIterationDataPoint(
+                lr=1e-3,
+                iter_idx=0,
+                epoch_idx=0,
+                batch_idx=0,
+                train_edp=NNEvaluationDataPoint(loss=1.0, error=0.5, accuracy=0.5, f1=0.5, recall=0.5, precision=0.5),
+            )
+        ],
+    )
+    run.save(root=str(tmp_path))
+    loaded = NNRun.load(run.id, root=str(tmp_path))
+    assert isinstance(loaded.net, NNTransformerParams)
+    assert loaded.net == run.net
+    assert loaded.id == run.id
+
+
+def test_nn_params_activation_none_round_trip():
+    """activation=None must survive state()/from_state(): state() stores a
+    real null (not the string "None", which Activations() can never parse
+    back), and from_state restores None."""
+    obj = NNParams(
+        input_dim=4,
+        output_dim=2,
+        dropout_prob=0.0,
+        activation=None,
+        hidden_dims=None,
+    )
+    state = obj.state()
+    assert state["activation"] is None
+    rt = NNParams.from_state(state)
+    assert rt.activation is None
+    assert rt == obj
+
+
+def test_nn_transformer_params_activation_none_round_trip():
+    """Same null-activation contract on the transformer subclass: explicit
+    null restores None; only a fully absent key falls back to the legacy
+    LEAKY_RELU default."""
+    obj = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        activation=None,
+        hidden_dims=None,
+        n_heads=2,
+        vocab_size=64,
+        n_layers=1,
+        d_model=16,
+        max_seq_len=8,
+    )
+    state = obj.state()
+    assert state["activation"] is None
+    rt = NNTransformerParams.from_state(state)
+    assert rt.activation is None
+    assert rt == obj
+    # Legacy LM configs omitted the key entirely → default applies.
+    legacy = dict(state)
+    del legacy["activation"]
+    assert NNTransformerParams.from_state(legacy).activation == Activations.LEAKY_RELU
+
+
+def test_iteration_data_point_from_state_nan_val_edp_is_none():
+    """CSV round-trip: rows where val_edp was absent come back from
+    pd.read_csv as NaN cells, not None. from_state must map them to
+    val_edp=None — the class contract says only the last idp of each
+    epoch carries a val_edp."""
+    nan = float("nan")
+    flat = {
+        "lr": 1e-3,
+        "iter_idx": 0,
+        "epoch_idx": 0,
+        "batch_idx": 0,
+        "train_edp.loss": 0.5,
+        "train_edp.error": 0.2,
+        "train_edp.accuracy": 0.8,
+        "train_edp.f1": 0.79,
+        "train_edp.recall": 0.78,
+        "train_edp.precision": 0.81,
+        "val_edp.loss": nan,
+        "val_edp.error": nan,
+        "val_edp.accuracy": nan,
+        "val_edp.f1": nan,
+        "val_edp.recall": nan,
+        "val_edp.precision": nan,
+    }
+    obj = NNIterationDataPoint.from_state(flat)
+    assert obj.val_edp is None
+
+
+def test_iteration_data_point_from_state_nan_optional_fields_to_none():
+    """NaN cells for the optional loss/error fields (None at save time)
+    map back to None instead of leaking NaN into the loaded edp."""
+    nan = float("nan")
+    flat = {
+        "lr": 1e-3,
+        "iter_idx": 0,
+        "epoch_idx": 0,
+        "batch_idx": 0,
+        "train_edp.loss": nan,
+        "train_edp.error": nan,
+        "train_edp.accuracy": 0.8,
+        "train_edp.f1": 0.79,
+        "train_edp.recall": 0.78,
+        "train_edp.precision": 0.81,
+    }
+    obj = NNIterationDataPoint.from_state(flat)
+    assert obj.train_edp.loss is None
+    assert obj.train_edp.error is None
+    assert obj.train_edp.accuracy == 0.8
+
+
 def test_iteration_data_point_round_trip_with_val():
     train_edp = NNEvaluationDataPoint(
         loss=0.5,

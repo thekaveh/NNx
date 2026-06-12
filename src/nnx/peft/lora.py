@@ -175,6 +175,11 @@ def apply_lora_to(
     # order. Collecting first keeps the loop predictable.
     targets: list[str] = []
     for name, child in module.named_modules():
+        if not name:
+            # named_modules() yields the root itself under "" — it has
+            # no parent attribute to reassign, so an in-place wrap is
+            # impossible. Skip it (wrap the root yourself if needed).
+            continue
         if not isinstance(child, nn.Linear):
             continue
         # Skip the inner .base of an existing LoRALinear — its parent
@@ -183,7 +188,7 @@ def apply_lora_to(
         parent = module if not parent_path else module.get_submodule(parent_path)
         if isinstance(parent, LoRALinear):
             continue
-        if any(fnmatch.fnmatch(name, p) for p in name_patterns):
+        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
             targets.append(name)
 
     for name in targets:
@@ -241,5 +246,8 @@ def load_lora_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     """
     sd = _resolve_source_to_state_dict(source, "load_lora_weights")
     sd = _lora_keys_only(sd)
-    module.load_state_dict(sd, strict=False)
-    return len(sd)
+    result = module.load_state_dict(sd, strict=False)
+    # strict=False silently drops keys that don't exist on the module
+    # (e.g. loading into an un-adapted model) — subtract them so the
+    # return value is the number of tensors that actually landed.
+    return len(sd) - len(result.unexpected_keys)

@@ -223,3 +223,189 @@ def test_train_rejects_none_or_invalid_params():
     )
     with pytest.raises(ValueError, match=r"^train params has an invalid optim config:"):
         model.train(params=bad_params)
+
+
+def test_train_rejects_none_train_loader():
+    """params.train_loader=None (the dataclass default — "wire later via
+    with_train_loader") must fail fast with an actionable ValueError.
+    Pre-fix, train() printed the run-details table and then crashed in
+    the epoch loop with a raw `TypeError: 'NoneType' object is not
+    iterable`."""
+    import pytest
+
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    params = NNTrainParams(
+        n_epochs=1,
+        optim=NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-3,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+        ),
+    )
+    with pytest.raises(ValueError, match="train_loader is required"):
+        model.train(params=params)
+
+
+def test_run_checkpoints_slots_and_best_exclusion(tmp_path, monkeypatch):
+    """NNRun.checkpoints() contract: five cadence slots in order (FIRST,
+    Q1, Q2, Q3, LAST); None where the tag was never written (a 1-epoch
+    run writes only FIRST and LAST — see phase_tag's small-n_epochs
+    caveat); BEST deliberately excluded as a duplicate pointer."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    train_loader, val_loader = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=_train_params(train_loader, val_loader, n_epochs=1))
+
+    ckpts = run.checkpoints()
+    assert len(ckpts) == 5
+    assert ckpts[0] is not None, "FIRST should exist"
+    assert ckpts[4] is not None, "LAST should exist"
+    assert ckpts[1] is None and ckpts[2] is None and ckpts[3] is None, "Q1-Q3 unwritten for n_epochs=1"
+
+
+def test_train_rejects_empty_train_loader(tmp_path, monkeypatch):
+    """A loader that yields zero batches (dataset smaller than
+    batch_size with drop_last=True) must fail fast with an actionable
+    error. Pre-fix the first epoch crashed on a bare IndexError at
+    idps[-1] — and a later zero-batch epoch would have silently
+    attached its val_edp to the previous epoch's last idp."""
+    import pytest
+    from torch.utils.data import DataLoader, TensorDataset
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    X = torch.randn(4, 8)
+    y = torch.randint(0, 3, (4,))
+    empty_loader = DataLoader(TensorDataset(X, y), batch_size=8, drop_last=True)
+    assert len(empty_loader) == 0
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    with pytest.raises(ValueError, match="yielded no batches"):
+        model.train(params=_train_params(empty_loader, None, n_epochs=1))
+
+
+def test_best_err_falls_back_to_loss_for_paradigm_runs():
+    """BEST tracking for paradigm runs (diffusion / SimCLR / DPO / GAN)
+    whose custom steps leave `.error` unset: _best_err must fall back to
+    `.loss` via the shared resolver. Pre-fix every such checkpoint
+    scored +inf, `inf < inf` is False, and runs/best stayed frozen on
+    whichever run saved first."""
+    from nnx import NNCheckpoint, NNEvaluationDataPoint, NNIterationDataPoint
+    from nnx.nn.params.nn_run import _best_err
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    loss_only_edp = NNEvaluationDataPoint(accuracy=0.0, f1=0.0, recall=0.0, precision=0.0, loss=0.42)
+    ckpt = NNCheckpoint(
+        idp=NNIterationDataPoint(lr=1e-3, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=loss_only_edp),
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+    )
+    assert _best_err(ckpt) == 0.42
+    assert _best_err(None) == float("inf")
+
+
+def test_nn_run_save_tolerates_default_none_idps(tmp_path):
+    """NNRun(...).save() with the dataclass-default idps=None must write
+    an empty idps.csv instead of raising TypeError, and load back with
+    zero idps."""
+    from nnx.nn.params.nn_run import NNRun
+
+    net_params, model_params = _make_params()
+    run = NNRun(
+        net=net_params,
+        train=_train_params(None, None, n_epochs=1),
+        model=model_params,
+    )
+    run.save(root=str(tmp_path))
+    loaded = NNRun.load(run.id, root=str(tmp_path))
+    assert loaded.idps == []
+    assert loaded.id == run.id
+
+
+def test_train_rejects_fully_frozen_model():
+    """freeze('*') then train() previously died mid-loop with torch's
+    raw 'element 0 of tensors does not require grad' — the boundary now
+    names the actual cause."""
+    import pytest
+
+    from nnx.finetune import freeze
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    freeze(model.net, "*")
+    train_loader, _ = _make_tiny_loaders()
+    with pytest.raises(ValueError, match="no trainable parameters"):
+        model.train(params=_train_params(train_loader, None, n_epochs=1))
+
+
+def test_nn_run_load_names_the_corrupt_file(tmp_path, monkeypatch):
+    """Malformed-artifact errors must point at the file that's actually
+    broken: a dropped idps.csv column must not be blamed on run.yaml."""
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=_train_params(train_loader, None, n_epochs=1))
+    run_dir = tmp_path / "runs" / run.id
+
+    # Drop a CSV column → error names idps.csv.
+    import pandas as pd
+
+    from nnx.nn.params.nn_run import NNRun
+
+    csv_path = run_dir / "idps.csv"
+    df = pd.read_csv(csv_path)
+    df.drop(columns=["lr"]).to_csv(csv_path, index=False)
+    with pytest.raises(ValueError, match="idps.csv"):
+        NNRun.load(run.id)
+    df.to_csv(csv_path, index=False)  # restore
+
+    # Zero-byte idps.csv (external truncation — our own writes always
+    # emit at least the frame header) → error names idps.csv instead of
+    # pandas' context-free EmptyDataError.
+    csv_text = csv_path.read_text(encoding="utf-8")
+    csv_path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="idps.csv"):
+        NNRun.load(run.id)
+    csv_path.write_text(csv_text, encoding="utf-8")  # restore
+
+    # Drop a run.yaml key → error names run.yaml.
+    import yaml
+
+    yaml_path = run_dir / "run.yaml"
+    rep = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    del rep["net"]
+    yaml_path.write_text(yaml.safe_dump(rep, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="run.yaml"):
+        NNRun.load(run.id)
+
+
+def test_nn_run_load_rejects_empty_run_yaml(tmp_path, monkeypatch):
+    """An empty / truncated-to-zero run.yaml safe_loads to None — the
+    error must name the file instead of a bare AttributeError."""
+    import pytest
+
+    from nnx.nn.params.nn_run import NNRun
+
+    monkeypatch.chdir(tmp_path)
+    run_id = "a" * 32
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.yaml").write_text("", encoding="utf-8")
+    (run_dir / "idps.csv").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="expected a mapping"):
+        NNRun.load(run_id)

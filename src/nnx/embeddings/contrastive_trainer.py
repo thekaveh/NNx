@@ -57,8 +57,10 @@ class ContrastiveTextDataset(Dataset):
 
     Args:
         pairs: list of ``(anchor, positive)`` string tuples. Empty
-            input raises :class:`ValueError` — NT-Xent needs at least
-            one pair to form a batch.
+            input raises :class:`ValueError`. Note that
+            :func:`train_contrastive` additionally requires >= 2 pairs
+            (NT-Xent needs a negative); a 1-pair dataset is accepted
+            here only for embedding/inference-style uses.
 
     Raises:
         ValueError: if ``pairs`` is empty or any entry isn't a 2-tuple
@@ -378,20 +380,30 @@ def train_contrastive(
         The (in-place-mutated) ``backbone``.
 
     Raises:
-        ValueError: on empty dataset, non-positive epochs / batch_size,
-            or non-positive temperature.
+        ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
+            non-positive epochs, or non-positive temperature — NT-Xent
+            needs at least one negative, so both the dataset and every
+            batch must carry >= 2 pairs.
+        FloatingPointError: when the contrastive loss goes non-finite
+            mid-training (check lr / temperature / input normalization).
     """
     if n_epochs <= 0:
         raise ValueError(f"n_epochs must be positive, got {n_epochs}")
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
+    if batch_size < 2:
+        # NT-Xent needs at least one negative per batch (nt_xent_loss
+        # itself raises on B < 2 as the backstop; rejecting here gives
+        # the error before any training work happens).
+        raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
 
     if isinstance(dataset, list):
         dataset = ContrastiveTextDataset(dataset)
-    if len(dataset) == 0:
-        raise ValueError("dataset is empty")
+    if len(dataset) < 2:
+        # 0 pairs: nothing to train. 1 pair: the only possible batch has
+        # no negative, which nt_xent_loss rejects — fail here with the
+        # dataset-level message instead.
+        raise ValueError(f"train_contrastive needs >= 2 pairs (got {len(dataset)}) — NT-Xent requires negatives.")
 
     device = _resolve_device(backbone, device)
     backbone.to(device)
@@ -401,6 +413,14 @@ def train_contrastive(
         batch_size=batch_size,
         shuffle=shuffle,
         collate_fn=pair_collate,
+        # Drop the trailing batch ONLY when it would have size 1 — a
+        # single pair has no negative (nt_xent_loss raises on B < 2).
+        # Larger partial batches carry real contrastive signal and are
+        # kept. Together with the batch_size >= 2 and len(dataset) >= 2
+        # guards above, this makes size-1 batches unreachable; if a
+        # future loader change reintroduced one, nt_xent_loss fails
+        # loudly rather than silently no-op'ing.
+        drop_last=(len(dataset) > batch_size and len(dataset) % batch_size == 1),
     )
 
     trainable = [p for p in backbone.parameters() if p.requires_grad]

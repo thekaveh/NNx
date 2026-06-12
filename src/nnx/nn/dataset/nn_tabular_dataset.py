@@ -77,6 +77,27 @@ class NNTabularDataset(NNDatasetBase):
             raise KeyError(f"NNTabularDataset feature_cols not in DataFrame: {missing_features}")
         if self.target_col not in self.df.columns:
             raise KeyError(f"NNTabularDataset target_col {self.target_col!r} not in DataFrame")
+        if self.target_col in self.feature_cols:
+            # Silent label leakage: the model would train on its own
+            # target as an input feature and report near-perfect val
+            # accuracy (classic feature_cols=list(df.columns) mistake).
+            raise ValueError(
+                f"target_col {self.target_col!r} must not appear in feature_cols — that trains on the label."
+            )
+
+        # NaN anywhere in the modeled columns is silent poison: NaN
+        # features flow into NaN losses, and a NaN target's float→int64
+        # cast is UNDEFINED (class 0 on ARM, INT64_MIN on x86 → CUDA
+        # device assert) — and the contiguity check below can't see it
+        # because pandas min/max/nunique skip NaN.
+        # dict.fromkeys dedupes (order-preserving) duplicates WITHIN
+        # feature_cols — target/feature overlap is rejected above.
+        modeled = self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))]
+        if modeled.isna().any().any():
+            bad_cols = [c for c in modeled.columns if modeled[c].isna().any()]
+            raise ValueError(
+                f"NaN values in columns {bad_cols} — drop or impute rows before constructing NNTabularDataset."
+            )
 
         # Coerce features + target → tensors. Trust `dtype=` on torch.tensor
         # rather than going through an extra np.float32 intermediate copy.
@@ -99,9 +120,11 @@ class NNTabularDataset(NNDatasetBase):
         n_val = int(n_total * self.val_proportion)
         n_test = int(n_total * self.test_proportion)
         n_train = n_total - n_val - n_test
-        gen = torch.Generator()
-        if self.seed is not None:
-            gen.manual_seed(int(self.seed))
+        # seed=None must genuinely fall back to the global torch RNG (the
+        # documented contract): a fresh torch.Generator() is NOT that —
+        # it always carries the same fixed default seed, which would make
+        # every unseeded split bit-identical and deaf to torch.manual_seed.
+        gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
         train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test], generator=gen)
 
         object.__setattr__(self, "name", self.name_override or "NNTabularDataset")
@@ -133,7 +156,20 @@ class NNTabularDataset(NNDatasetBase):
 
         object.__setattr__(self, "input_dim", len(self.feature_cols))
         # Classification target dim = number of unique classes in the DF.
-        object.__setattr__(self, "output_dim", int(self.df[self.target_col].nunique()))
+        # Labels must be contiguous 0..K-1: nunique() on e.g. {0, 5}
+        # would size the model at 2 outputs and the mismatch only
+        # surfaces much later inside cross-entropy as an opaque index /
+        # device-side assert error. Fail fast with a fixable message.
+        n_classes = int(self.df[self.target_col].nunique())
+        target_min = int(self.df[self.target_col].min())
+        target_max = int(self.df[self.target_col].max())
+        if target_min != 0 or target_max != n_classes - 1:
+            raise ValueError(
+                f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
+                f"got min={target_min}, max={target_max}, n_unique={n_classes}. "
+                "Remap labels (e.g. pd.factorize) before constructing the dataset."
+            )
+        object.__setattr__(self, "output_dim", n_classes)
 
         object.__setattr__(
             self,

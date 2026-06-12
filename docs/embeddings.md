@@ -66,9 +66,14 @@ export_to_faiss(backbone, corpus, "domain.faiss")
 `domain.faiss` is now a standard FAISS index file. Hand it off to any framework:
 
 ```python
-# LangChain
+# LangChain — wrap the raw index; LCFAISS.load_local expects a *folder*
+# with index.faiss + index.pkl (docstore), not a bare index file.
+import faiss
+from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS as LCFAISS
-vs = LCFAISS.load_local("domain.faiss", embeddings=...)
+idx = faiss.read_index("domain.faiss")
+vs = LCFAISS(embedding_function=..., index=idx,
+             docstore=InMemoryDocstore({}), index_to_docstore_id={})
 
 # LlamaIndex
 from llama_index.vector_stores.faiss import FaissVectorStore

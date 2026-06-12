@@ -12,7 +12,7 @@ is sized to "train end-to-end on a laptop, end up with a model whose
 architecture matches what GGUF / HF Hub / Ollama expect." Production-scale
 training is out of scope.
 
-## Public surface
+## 1. Public surface
 
 | Symbol | Notes |
 |---|---|
@@ -21,13 +21,13 @@ training is out of scope.
 | `nnx.NNTransformerParams` | Frozen dataclass (subclass of `NNParams`) — `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Every optional field omits itself from `state()` when at default (the omit-when-default invariant). |
 | `nnx.NNTokenizerParams` | Wraps `tokenizers.Tokenizer`; `state()` returns `{"path": "<tokenizer.json>"}`. Available when `thekaveh-nnx[lm]` is installed. |
 | `nnx.train_bpe(...)` | Quick BPE training helper (Whitespace pre-tokenizer + BPE + BpeTrainer). |
-| `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed)`. |
+| `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed, use_cache, logits_chain)`. |
 | `nnx.{TemperatureScaling, TopKFilter, TopPFilter, RepetitionPenalty, apply_chain}` | LogitsProcessor chain — same shape as HF transformers' `LogitsProcessorList`. |
 | `nnx.NNTransformerParamsBuilder` | Fluent variant-gated builder for `NNTransformerParams` — hides the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`); reach via `NNTransformerParams.builder()`. |
 | `nnx.LogitsChain` | Frozen-dataclass wrapper around `list[LogitsProcessor]` with `.apply(logits, token_history) -> Tensor`. Pass via `GenerativeNNModel.generate(logits_chain=...)`. |
-| `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into canonical HF order at `.build()`. Reach via `LogitsChain.builder()`. |
+| `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into NNx's canonical order at `.build()`. Reach via `LogitsChain.builder()`. |
 
-## Install
+## 2. Install
 
 The LM path is opt-in:
 
@@ -39,7 +39,7 @@ pip install "thekaveh-nnx[lm]"        # adds tokenizers>=0.20, datasets>=2.20
 used by the example for downloading TinyStories — the rest of the LM path
 runs without it.
 
-## Quickstart
+## 3. Quickstart
 
 ```python
 import torch
@@ -99,7 +99,7 @@ net_params = (
     NNTransformerParams.builder()
     .vocab(tokenizer.vocab_size)
     .layers(n=4, heads=4, d_model=128)
-    .context(max_seq_len=128)
+    .context(max_seq_len=64)
     .build()
 )
 ```
@@ -107,9 +107,9 @@ net_params = (
 Both paths produce identical `NNTransformerParams` instances and
 round-trip through `state()` / `from_state()` interchangeably.
 
-## When to use what
+## 4. When to use what
 
-### Greedy decoding (deterministic)
+### 4.1. Greedy decoding (deterministic)
 
 ```python
 model.generate(prompt="...", temperature=0.0)
@@ -118,7 +118,7 @@ model.generate(prompt="...", temperature=0.0)
 `temperature=0` short-circuits to argmax. Two calls with the same prompt
 produce identical output — this is the regression-test contract.
 
-### Sampling with top-k
+### 4.2. Sampling with top-k
 
 ```python
 model.generate(prompt="...", temperature=0.8, top_k=40)
@@ -127,7 +127,7 @@ model.generate(prompt="...", temperature=0.8, top_k=40)
 `top_k=40` is the original GPT-2 default. Smaller `top_k` (≤ 10) gives more
 focused, less creative output.
 
-### Nucleus (top-p) sampling
+### 4.3. Nucleus (top-p) sampling
 
 ```python
 model.generate(prompt="...", temperature=1.0, top_p=0.9)
@@ -137,7 +137,7 @@ Top-p adaptively shrinks the candidate set per token. Combine `top_k` +
 `top_p` to layer both filters (top-k applied first, then top-p over what
 remains).
 
-### Repetition penalty
+### 4.4. Repetition penalty
 
 ```python
 model.generate(prompt="...", repetition_penalty=1.2)
@@ -147,7 +147,7 @@ Divides positive logits of seen tokens by 1.2 (HF semantics — for negative
 logits, the penalty *multiplies* so the relative mass still drops). A
 penalty of 1.0 (the default) is a no-op.
 
-### Reproducible sampling
+### 4.5. Reproducible sampling
 
 ```python
 out1 = model.generate(prompt="x", temperature=1.0, top_k=20, seed=42)
@@ -158,7 +158,7 @@ assert out1 == out2
 The `seed` kwarg constructs a `torch.Generator` pinned to the model's
 device — same seed + same prompt + same model = same output.
 
-## Power-user decoding: `LogitsChain`
+## 5. Power-user decoding: `LogitsChain`
 
 For decoding setups that need custom logit processors — e.g., a
 logit-bias for forbidden tokens, a forced-decoder pattern, or a
@@ -181,7 +181,7 @@ chain = (
 text = model.generate(prompt="Once upon", max_new_tokens=64, logits_chain=chain)
 ```
 
-The Builder enforces the canonical HF order (`RepetitionPenalty →
+The Builder enforces NNx's canonical order (`RepetitionPenalty →
 TopKFilter → TopPFilter → TemperatureScaling`) regardless of call
 order; custom processors added via `.custom(proc)` append after the
 canonical group in the order they were added.
@@ -190,7 +190,7 @@ When `logits_chain=None` (the default), `generate()` constructs the
 chain from the kwargs exactly as it did before — the new path is
 purely opt-in.
 
-## How it composes with the rest of NNx
+## 6. How it composes with the rest of NNx
 
 - **Custom `train_step_fn`** — `GenerativeNNModel` doesn't ship a
   built-in LM training step. The convention (see `examples/11_tinystories_lm.py`)
@@ -213,9 +213,11 @@ purely opt-in.
   defaults `use_cache=True` and runs a single prefill pass through
   `forward_with_cache` followed by incremental token-by-token decoding,
   for ≈1.9× speedup at 128 tokens on CPU (gap widens on longer contexts
-  and on GPU).
+  and on GPU — up to `max_seq_len`; once generation slides past the
+  window, the cache is rebuilt each step for RoPE-position correctness
+  and the cost converges to the full-recompute path).
 
-## Scope explicit
+## 7. Scope explicit
 
 The decoder-only LM path covers:
 
@@ -225,7 +227,7 @@ The decoder-only LM path covers:
 - Autoregressive `generate()` with greedy + sampling (`LogitsProcessor`
   chain: temperature / top-k / top-p / repetition-penalty).
 - KV-cache acceleration on by default (≈1.9× speedup at 128 tokens on
-  CPU; wider on longer contexts and GPU).
+  CPU; wider on longer contexts and GPU, within `max_seq_len`).
 - CPU-friendly TinyStories-class training (sub-30-min runs).
 - Onward integrations shipped post-LM: `Prefix-Tuner` / `Prompt-Tuner`
   PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)),

@@ -22,17 +22,20 @@ def print_tree(tree, level: int = 0, *, file=None) -> None:
     Defaults to ``sys.stdout``.
     """
     out = file if file is not None else sys.stdout
-    if not isinstance(tree, dict):
+    if not isinstance(tree, dict) or not tree:
+        # Empty dict (top-level or nested value): nothing to print, and
+        # the max() below would raise on an empty key sequence.
         return
 
-    max_key_len = max(len(key) for key in tree.keys())
+    # str(...): keys may be non-string (int epochs, enums).
+    max_key_len = max(len(str(key)) for key in tree.keys())
 
     for key, val in tree.items():
         if isinstance(val, dict):
             print(" " * level * 4 + f"[-] {key}: ", file=out)
             print_tree(val, level + 1, file=out)
         else:
-            print(" " * level * 4 + f"[+] {key.ljust(max_key_len)} : {val}", file=out)
+            print(" " * level * 4 + f"[+] {str(key).ljust(max_key_len)} : {val}", file=out)
 
 
 def print_table(data: dict, header: bool = True, title: Optional[str] = None, *, file=None) -> None:

@@ -25,7 +25,7 @@ class NNIterationDataPoint:
     train_edp: NNEvaluationDataPoint
     val_edp: Optional[NNEvaluationDataPoint] = None
 
-    def with_val_edp(self, value: NNEvaluationDataPoint):
+    def with_val_edp(self, value: Optional[NNEvaluationDataPoint]) -> NNIterationDataPoint:
         return replace(self, val_edp=value)
 
     def state(self) -> dict:
@@ -57,18 +57,23 @@ class NNIterationDataPoint:
                 and not _is_nan(v)
             }
 
+        def _field(key: str):
+            # CSV round-trip (NNRun.load → pd.read_csv) yields NaN, not
+            # None, for cells that were None at save time. Map both back
+            # to None so loaded idps match what state() wrote.
+            v = state.get(key)
+            return None if v is None or _is_nan(v) else v
+
         val_edp = None
-        if any(
-            state.get(f"val_edp.{k}") is not None for k in ("loss", "error", "accuracy", "f1", "recall", "precision")
-        ):
+        if any(_field(f"val_edp.{k}") is not None for k in ("loss", "error", "accuracy", "f1", "recall", "precision")):
             val_edp = NNEvaluationDataPoint.from_state(
                 dict(
-                    loss=state.get("val_edp.loss"),
-                    error=state.get("val_edp.error"),
-                    accuracy=state.get("val_edp.accuracy"),
-                    f1=state.get("val_edp.f1"),
-                    recall=state.get("val_edp.recall"),
-                    precision=state.get("val_edp.precision"),
+                    loss=_field("val_edp.loss"),
+                    error=_field("val_edp.error"),
+                    accuracy=_field("val_edp.accuracy"),
+                    f1=_field("val_edp.f1"),
+                    recall=_field("val_edp.recall"),
+                    precision=_field("val_edp.precision"),
                     extra=_collect_extra("val_edp"),
                 )
             )
@@ -79,12 +84,12 @@ class NNIterationDataPoint:
             batch_idx=state["batch_idx"],
             train_edp=NNEvaluationDataPoint.from_state(
                 dict(
-                    loss=state["train_edp.loss"],
-                    error=state["train_edp.error"],
-                    accuracy=state["train_edp.accuracy"],
-                    f1=state["train_edp.f1"],
-                    recall=state["train_edp.recall"],
-                    precision=state["train_edp.precision"],
+                    loss=_field("train_edp.loss"),
+                    error=_field("train_edp.error"),
+                    accuracy=_field("train_edp.accuracy"),
+                    f1=_field("train_edp.f1"),
+                    recall=_field("train_edp.recall"),
+                    precision=_field("train_edp.precision"),
                     extra=_collect_extra("train_edp"),
                 )
             ),

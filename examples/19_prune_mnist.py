@@ -13,11 +13,15 @@ Pipeline:
   5. Compare:
      - Sparsity (% of weight entries set to zero).
      - Validation accuracy before vs. after.
-  6. Briefly fine-tune the pruned net and verify accuracy holds.
+  6. Briefly fine-tune, then RE-prune to 50% and report the accuracy
+     of the network that actually ships sparse. With `bake=True` the
+     mask is dropped, so plain fine-tuning regrows the zeroed weights —
+     an iterative prune→tune schedule would use `bake=False` masks.
 
 Magnitude pruning sets the smallest-magnitude weight entries to zero
 based on their L1 norm. At 50% sparsity on a small classifier this is
-typically nondestructive; the fine-tune compensates for any drop.
+typically nondestructive; the tune→re-prune step recovers most of any
+drop while keeping the final network genuinely 50% sparse.
 
 Run:
     pip install thekaveh-nnx
@@ -47,6 +51,10 @@ from nnx.prune import magnitude_prune
 
 
 def _make_data(n_samples: int = 1024, n_features: int = 16) -> tuple[DataLoader, DataLoader]:
+    # No torch.manual_seed here — the caller does set_seed(42) in main()
+    # before calling us. Re-seeding torch inside this helper would
+    # silently override the caller's seed (the same bug PR #31's review
+    # originally caught in this very file).
     X = torch.randn(n_samples, n_features)
     # Three Gaussian-mixture classes separated by a learned random projection.
     proj = torch.randn(n_features, 3)
@@ -146,8 +154,21 @@ def main() -> None:
     )
     final_run = model.train(params=finetune_params)
     final_val_idps = [idp for idp in final_run.idps if idp.val_edp is not None]
-    final_acc = 1.0 - final_val_idps[-1].val_edp.error
-    print(f"Pruned+finetuned val accuracy: {final_acc:.3f}")
+    print(f"Fine-tuned val accuracy: {1.0 - final_val_idps[-1].val_edp.error:.3f}")
+    # With bake=True the mask is gone, so fine-tuning regrows the
+    # zeroed weights (sparsity drifts back toward dense). Re-prune to
+    # the target sparsity and report the accuracy that actually ships
+    # — an iterative prune→tune→prune schedule would use bake=False.
+    print(f"Sparsity after fine-tune (regrown): {_sparsity(model.net):.1%}")
+    magnitude_prune(model.net, sparsity=0.5)
+    model.net.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for X, y in val_loader:
+            preds = model.net(X).argmax(dim=1)
+            correct += (preds == y).sum().item()
+            total += y.numel()
+    print(f"Re-pruned val accuracy: {correct / total:.3f}")
     print(f"Final sparsity: {_sparsity(model.net):.1%}")
 
 

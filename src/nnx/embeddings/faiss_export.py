@@ -194,17 +194,19 @@ def export_to_safetensors(backbone: Any, out_path: Union[str, Path]) -> str:
         torch.save(sd, out_path)
         return out_path
 
-    # safetensors only accepts contiguous tensors. Some state_dict
-    # entries (e.g. non-leaf tensors from shared embeddings) might be
-    # non-contiguous; force contiguous + detach + CPU to keep the
-    # writer happy and the file device-portable.
+    # safetensors rejects tensors that share storage (e.g. tied
+    # embedding/head weights — TransformerNN's default, and common in
+    # HF models) and requires contiguous memory. `.contiguous()` is a
+    # no-op on an already-contiguous shared tensor, so `.clone()` is
+    # what actually breaks the aliasing; detach + CPU keep the file
+    # device-portable.
     cleaned: dict[str, torch.Tensor] = {}
     for k, v in sd.items():
         if not isinstance(v, torch.Tensor):
             # Skip non-tensor state (rare — schedulers / metadata).
             # The user can save those separately if they need them.
             continue
-        cleaned[k] = v.detach().cpu().contiguous()
+        cleaned[k] = v.detach().cpu().contiguous().clone()
 
     save_file(cleaned, out_path)
     return out_path

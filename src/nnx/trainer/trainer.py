@@ -40,7 +40,7 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_metric
-from ..nn.enum.checkpoints import Checkpoints, phase_tag
+from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -195,11 +195,16 @@ class Trainer:
             alongside the standard FIRST/Q1/Q2/Q3/LAST/BEST checkpoints.
 
         Raises:
-            ValueError: when params is None, trainer_step_fn is None, or
-                any optim's NNOptimParams.is_valid() returns False.
+            ValueError: when params is None, params.train_loader is None,
+                trainer_step_fn is None, or any optim's
+                NNOptimParams.is_valid() returns False.
         """
         if params is None:
             raise ValueError("trainer params must not be None")
+        if params.train_loader is None:
+            raise ValueError(
+                "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
+            )
         if trainer_step_fn is None:
             raise ValueError(
                 "trainer_step_fn is required — Trainer has no default "
@@ -209,6 +214,10 @@ class Trainer:
         for name, opt_params in params.optims.items():
             if not opt_params.is_valid():
                 raise ValueError(f"optim {name!r} has invalid config: {opt_params}")
+        if not any(p.requires_grad for p in self.model.net.parameters()):
+            raise ValueError(
+                "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
+            )
 
         if params.seed is not None:
             from ..seeding import set_seed
@@ -267,6 +276,8 @@ class Trainer:
         ctx.trainer = self
 
         idps: list[NNIterationDataPoint] = []
+        # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
+        # Fall back to None so tqdm renders without a total instead of crashing.
         try:
             n_iter: Optional[int] = int(params.n_epochs * len(params.train_loader))
         except TypeError:
@@ -296,6 +307,7 @@ class Trainer:
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
+                n_idps_before_epoch = len(idps)
                 for idx_batch, batch in enumerate(params.train_loader):
                     step_ctx = TrainerStepContext(
                         model=self.model,
@@ -319,6 +331,15 @@ class Trainer:
                     )
                     idx_iter += 1
                     tqdm_bar.update(1)
+
+                if len(idps) == n_idps_before_epoch:
+                    # Same guard as NNModel.train: zero batches would
+                    # crash on idps[-1] (first epoch) or corrupt the
+                    # previous epoch's logged metrics (later epochs).
+                    raise ValueError(
+                        f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
+                        "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
+                    )
 
                 val_edp = (
                     self.model.evaluate(
@@ -351,7 +372,9 @@ class Trainer:
                 for sched in schedulers.values():
                     _step_scheduler(sched, val_edp, train_edp)
 
-                self._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp)
+                # Verbatim-shared with the NNModel.train loop — one
+                # implementation, so the postfix format can't drift.
+                self.model._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp)
 
                 run.with_idps(idps).save()
 
@@ -380,27 +403,18 @@ class Trainer:
         best_checkpoint: Optional[NNCheckpoint],
         save_phase_checkpoints: bool,
     ) -> NNCheckpoint:
-        """Same FIRST/Q1/Q2/Q3/LAST/BEST cadence as NNModel._save_checkpoints,
-        minus the optimizer-state sidecar. Trainer-mode warm-resume is a
-        follow-up — saving multiple sidecars (`<tag>.opt.<name>.pt`) is the
-        natural extension when that lands."""
-        checkpoint = NNCheckpoint(
+        """Delegates to NNModel._save_checkpoints with optimizer=None —
+        same FIRST/Q1/Q2/Q3/LAST/BEST cadence, minus the optimizer-state
+        sidecar (a single sidecar can't represent the multi-optim dict).
+        Trainer-mode warm-resume is a follow-up — saving one sidecar per
+        optim (`<tag>.opt.<name>.pt`) is the natural extension when that
+        lands."""
+        return self.model._save_checkpoints(
             idp=idp,
-            model_params=self.model.params,
-            net_params=self.model.net_params,
-            net_state=self.model.net.state_dict(),
+            run_id=run_id,
+            idx_epoch=idx_epoch,
+            n_epochs=n_epochs,
+            best_checkpoint=best_checkpoint,
+            save_phase_checkpoints=save_phase_checkpoints,
+            optimizer=None,
         )
-        if save_phase_checkpoints:
-            tag = phase_tag(idx_epoch, n_epochs)
-            if tag is not None:
-                checkpoint.save(run=run_id, type=tag)
-        checkpoint.save(run=run_id, type=Checkpoints.LAST)
-        if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
-            checkpoint.save(run=run_id, type=Checkpoints.BEST)
-        return checkpoint
-
-    def _update_tqdm_postfix(self, tqdm_bar, opt, val_edp, train_edp) -> None:
-        lr = opt.param_groups[0]["lr"]
-        err = _resolve_metric(val_edp, train_edp)
-        err_str = f"{err:.4f}" if err is not None else "n/a"
-        tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")

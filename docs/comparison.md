@@ -36,7 +36,7 @@ Each row: what NNx ships today, the credible competitor on that axis, and the sc
 |---|---|---|
 | Loop abstraction | `NNModel.train(params, train_step_fn=...)` — functional injection hook | `LightningModule.training_step(self, batch, batch_idx)` — class method override |
 | Callback bus | `Callback.on_{train,epoch}_{begin,end}` — 4 hooks | `Callback.on_*` — ~30 hooks |
-| Auto-resume | Content-addressed, `resume_from_run_id="last"` | Manual checkpoint-by-epoch-number |
+| Auto-resume | Content-addressed: `resume_from_run_id=run.id` + `resume_from_checkpoint="last"` | Manual checkpoint-by-epoch-number |
 | Custom step | `train_step_fn=...` kwarg | Subclass override |
 
 ### 3.2. Distributed / scale

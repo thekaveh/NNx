@@ -400,3 +400,56 @@ def test_moe_layer_recognized_via_isinstance():
     layer = MoELinear(8, 4, num_experts=4, top_k=2)
     assert isinstance(layer, nn.Module)
     assert isinstance(layer, MoELinear)
+
+
+def test_moe_step_clears_stale_aux_loss_of_unexercised_layers():
+    """A MoELinear registered on the net but not exercised by the
+    current batch's forward must not contribute last step's aux tensor
+    — its graph was freed by the previous backward, so collecting it
+    raised 'backward through the graph a second time'. The step now
+    clears every MoELinear's last_aux_loss before the forward."""
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+    from nnx.nn.moe import MoELinear
+    from nnx.nn.nn_model import TrainStepContext
+    from nnx.paradigms.moe import moe_train_step_factory
+
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=8,
+            output_dim=3,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    # Swap one Linear for MoE (exercised) and attach a SECOND MoELinear
+    # that the forward never touches (simulates a conditional branch).
+    model.net.layers[1] = MoELinear(in_features=16, out_features=3, num_experts=4, top_k=2)
+    model.net.unused_moe = MoELinear(in_features=8, out_features=8, num_experts=2, top_k=1)
+    # Give the unused layer a stale aux loss from a fake "previous step"
+    # whose graph has already been consumed.
+    stale = model.net.unused_moe(torch.randn(4, 8)).sum()
+    stale.backward()
+    assert model.net.unused_moe.last_aux_loss is not None
+
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=1e-3)
+    step = moe_train_step_factory(aux_loss_weight=0.01)
+    batch = (torch.randn(8, 8), torch.randint(0, 3, (8,)))
+    ctx = TrainStepContext(
+        model=model,
+        batch=batch,
+        optimizer=optimizer,
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+    )
+    edp = step(ctx)  # pre-fix: RuntimeError (backward through freed graph)
+    assert edp.loss is not None
+    assert model.net.unused_moe.last_aux_loss is None

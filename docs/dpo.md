@@ -7,7 +7,7 @@ training loop. Combined with `nnx.NNPreferenceDataset` and an
 `nnx.GenerativeNNModel` (the decoder-only LM path; see [`docs/lm.md`](lm.md)), DPO becomes a
 drop-in `train_step_fn=` for the standard `NNModel.train(...)` call.
 
-## What DPO does
+## 1. What DPO does
 
 Given a frozen **reference policy** `π_ref` (typically the SFT
 checkpoint the model was warm-started from) and a trainable **policy**
@@ -23,7 +23,7 @@ L_DPO = -log σ(β · ( (log π_θ(y_w | x) - log π_ref(y_w | x))
 relative to the reference's. There's no separate reward model and no
 RL loop; the standard `NNModel.train()` machinery just runs.
 
-## When DPO beats SFT
+## 2. When DPO beats SFT
 
 SFT (supervised fine-tuning on `(prompt, good_response)` pairs)
 maximises the likelihood of "good" responses but says nothing about
@@ -50,7 +50,7 @@ Pick SFT (or layered SFT → DPO) over DPO when:
 - The base model is still learning the target task's basic format —
   preference data won't fix raw fluency.
 
-## Quickstart
+## 3. Quickstart
 
 ```python
 import torch
@@ -103,7 +103,9 @@ preferences = NNPreferenceDataset(
 )
 
 # 5. DPO step — frozen reference + β temperature.
-step_fn = dpo_train_step_factory(ref_model, beta=0.1)
+# pad_token_id matches the dataset's — padded response positions are
+# excluded from the log-prob sums.
+step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
 
 # 6. Train. NNModel.train() machinery is unchanged — callbacks, schedulers,
 #    checkpointing all work as usual.
@@ -120,7 +122,7 @@ policy.train(
 )
 ```
 
-## The `beta` knob
+## 4. The `beta` knob
 
 `beta` controls how sharply the policy is allowed to diverge from the
 reference. The original paper recommends `0.1` as the default; values
@@ -136,7 +138,7 @@ in `[0.01, 0.5]` are common in practice.
 If training diverges or the model collapses (output goes to gibberish
 or to a single fixed answer), lower `beta` first.
 
-## Pair with HF Hub preference datasets
+## 5. Pair with HF Hub preference datasets
 
 `NNPreferenceDataset` takes three parallel lists of strings — easy to
 fill from the `datasets` library:
@@ -160,7 +162,7 @@ The convention `(prompt, chosen, rejected)` matches the published
 datasets directly — most HF Hub preference corpora ship in this shape
 or one isomorphic to it.
 
-## Honest scope
+## 6. Honest scope
 
 NNx's DPO is built for **small-LM experimentation** — the same
 TinyStories-class sub-30-minute-on-a-laptop scope as the LM path's
@@ -188,7 +190,7 @@ path. The implementation is intentionally short and readable — the
 whole training step is ~30 lines — so you can also use it as a
 reference for understanding the DPO loss before scaling up.
 
-## How it composes with the rest of NNx
+## 7. How it composes with the rest of NNx
 
 - **`train_step_fn=` hook** — `dpo_train_step_factory` returns a
   standard `TrainStepFn`; same plug shape as KD, SimCLR, Mixup,
