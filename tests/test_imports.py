@@ -115,6 +115,28 @@ def test_nn_trainer_params_builder_importable_from_subpackage():
     assert isinstance(builder, NNTrainerParamsBuilder)
 
 
+def test_every_name_in_top_level_all_is_attribute_accessible():
+    """The inverse of ``test_subpackages_appear_in_top_level_all``: every
+    name listed in ``nnx.__all__`` must actually be bound on the package.
+    Catches the regression where a symbol lands in ``__all__`` (typed by
+    the author, or pasted from a sibling list) but the corresponding
+    ``from .X import Y`` line is missing — ``import nnx`` succeeds, but
+    ``from nnx import Y`` and ``nnx.Y`` both fail.
+
+    The existing per-module probes only check 13 named symbols + the
+    train-step-factory AST sweep, so a typo'd new entry in ``__all__``
+    (or a renamed symbol whose ``__all__`` entry didn't track) would
+    silently pass CI."""
+    import nnx
+
+    missing = sorted(name for name in nnx.__all__ if not hasattr(nnx, name))
+    assert not missing, (
+        f"{len(missing)} name(s) in nnx.__all__ are not bound on nnx: {missing}. "
+        "Either add the missing `from .X import Y` to src/nnx/__init__.py, "
+        "or remove the entry from `__all__`."
+    )
+
+
 def test_subpackages_appear_in_top_level_all():
     """Every subpackage that's attribute-accessible after a plain
     ``import nnx`` (per ``test_subpackages_attribute_accessible_after_plain_import``)
