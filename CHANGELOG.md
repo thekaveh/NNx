@@ -4,7 +4,9 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
-_No changes yet since 0.2.0. Add user-visible entries here under `### Added` / `### Changed` / `### Fixed` / `### Removed`; `release-please` (see `CONTRIBUTING.md` §7) promotes this block to a dated heading on each release._
+### Fixed
+
+- **`NNModel.train` / `Trainer.train` no longer print "Run saved to X" before the save actually completes.** Both wrappers ended with `print(...); return run.save()` — if `.save()` raised (disk full, permissions, path inaccessible), the success line had already reached the user, contradicting the exception that followed. Both now save first and print only after, so a failed save surfaces only the real exception. Incremental per-epoch checkpoints already wrote to `runs/<id>/` throughout the loop, so the directory existed when the print fired; the message ordering is the only thing that changed.
 
 ## [0.2.0] — 2026-06-13 — Expansion megamerge + Month-1 cluster + overnight-maintenance + Builder rollout + PyPI rename
 
