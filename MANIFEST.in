@@ -4,3 +4,10 @@
 # with "fixture not found" (conftest defines load-bearing fixtures and
 # the macOS OMP guards).
 recursive-include tests *.py
+
+# Ship the historical record + contributor onramp in the sdist. setuptools
+# auto-includes LICENSE + README (via pyproject metadata) but not these,
+# so distro packagers and PyPI source-archive readers would otherwise see
+# a release with no changelog and no contributing guide.
+include CHANGELOG.md
+include CONTRIBUTING.md
