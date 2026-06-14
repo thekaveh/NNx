@@ -1,6 +1,7 @@
 """Diffusion (DDPM-style) training and sampling.
 
-Public surface — re-exported from the top-level ``nnx`` package:
+Public surface (all reachable via ``nnx.diffusion.<name>``; the first
+five are also re-exported at top-level ``nnx``):
 
   - :class:`NoiseSchedulers` — enum-as-factory for LINEAR and COSINE
     variance schedules.
@@ -11,6 +12,10 @@ Public surface — re-exported from the top-level ``nnx`` package:
   - :func:`diffusion_train_step_factory` — turns a schedule into a
     :class:`nnx.TrainStepFn` for use with :meth:`NNModel.train`.
   - :func:`sample` — reverse-diffusion sampler.
+  - :func:`sinusoidal_time_embed` — sinusoidal positional embedding for
+    timestep conditioning; subpackage-only (``nnx.diffusion.sinusoidal_time_embed``)
+    so callers building custom diffusion nets can reuse the same embedding
+    that :class:`DiffusionMLP` uses internally.
 
 The diffusion paradigm hits NNx through the ``train_step_fn`` hook
 introduced earlier — no Trainer or NNModel changes needed.
