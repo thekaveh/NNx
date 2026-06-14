@@ -230,7 +230,7 @@ class VisUtils:
         checkpoint: NNCheckpoint,
         ds: NNDataset,
         n_samples: int,
-        renderer: str = RENDERER,
+        renderer: str | None = RENDERER,
         fig_size: tuple = FIG_SIZE,
         title_size: int = TITLE_SIZE,
         label_size: int = LABEL_SIZE,
