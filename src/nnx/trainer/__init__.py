@@ -10,6 +10,9 @@ Public surface — re-exported from the top-level ``nnx`` package:
   - :class:`NNTrainerParams` — frozen dataclass with name-keyed
     ``optims`` / ``schedulers`` dicts; round-trips through ``state()``
     like every other params dataclass.
+  - :class:`NNTrainerParamsBuilder` — fluent builder for
+    ``NNTrainerParams``; matches the ``.builder()`` convention used by
+    every other top-level params dataclass.
   - :class:`TrainerStepContext` — per-batch bundle passed into the
     user-supplied ``trainer_step_fn``.
   - :class:`TrainerStepFn` — type alias for the step function signature.

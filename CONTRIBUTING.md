@@ -64,13 +64,23 @@ Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixt
 - Wait for CI to go green (lint + format + tests + mkdocs on 3.10 / 3.11 / 3.12).
 - Address review comments by pushing new commits — we squash on merge.
 
-## 7. Things we won't merge
+## 7. Releases
+
+NNx uses [release-please](https://github.com/googleapis/release-please-action) for automated version bumps, changelog updates, and tagging. Contributors don't touch versions or tags — just write a [Conventional Commit](https://www.conventionalcommits.org/)-style PR title (`feat:`, `fix:`, `chore:`, `docs:`, etc.) and (optionally) add a one-line entry under `[Unreleased]` in `CHANGELOG.md` for any user-visible change.
+
+The end-to-end flow:
+
+1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Pre-1.0, `feat:` triggers a minor bump (`0.X.0`); `fix:` and most other types trigger a patch bump (`0.X.Y`).
+2. A maintainer reviews and merges the Release PR when ready to ship. That merge pushes a `v*` tag.
+3. The tag push fires `release.yml`: full test matrix → build → OIDC-trusted publish to PyPI (gated by the `pypi` GitHub Environment's approval rule) → `verify-published` confirms `pip install thekaveh-nnx==X.Y.Z` works from a clean venv.
+
+## 8. Things we won't merge
 
 - Changes that break on-disk format compatibility without a versioned reader.
 - Public API renames without a deprecation shim and a `__getattr__` alias for at least one minor version.
 - Code without tests.
 - Dependencies added to `[project.dependencies]` (the core deps list) when they could go under `[project.optional-dependencies]` instead.
 
-## 8. License
+## 9. License
 
 By contributing you agree that your contribution will be licensed under the [MIT License](LICENSE).

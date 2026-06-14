@@ -51,7 +51,10 @@ def _build_attributor(method: str, model: nn.Module) -> Any:
             Saliency,
         )
     except ImportError as e:
-        raise ImportError("nnx.viz.attribute requires captum: pip install captum") from e
+        raise ImportError(
+            "nnx.viz.attribute requires captum — install via `pip install thekaveh-nnx[viz]` "
+            "or `pip install captum>=0.7.0`."
+        ) from e
 
     factories = {
         "integrated_gradients": IntegratedGradients,
@@ -142,8 +145,8 @@ def attribute(
             4-D) are mean-pooled over channels before rendering.
 
     Raises:
-        ImportError: If `captum` is not installed. Install with
-            `pip install captum`.
+        ImportError: If `captum` is not installed. Install via
+            `pip install thekaveh-nnx[viz]` or `pip install captum>=0.7.0`.
         ValueError: If `method` is not one of the supported keys.
     """
     if method not in SUPPORTED_METHODS:

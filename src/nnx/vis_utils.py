@@ -64,8 +64,13 @@ class VisUtils:
 
     @staticmethod
     def generate_colors(n):
-        # endpoint=False: hue is circular (0.0 == 1.0 == red), so the
-        # closed interval gave the first and last class identical colors.
+        """Return `n` distinct hex-color strings spaced evenly around the HSV hue circle.
+
+        Uses 60% saturation and 95% brightness for legend readability. `endpoint=False`
+        keeps the first and last hues maximally distinct — the hue circle wraps (0.0 ==
+        1.0 == red), so a closed interval would hand the first and last class identical
+        colors. Used by every other VisUtils method that draws categorical groups.
+        """
         hues = np.linspace(0, 1, n, endpoint=False)
         rgb_colors = [colorsys.hsv_to_rgb(h, 0.6, 0.95) for h in hues]
         hex_colors = [f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}" for r, g, b in rgb_colors]
@@ -225,7 +230,7 @@ class VisUtils:
         checkpoint: NNCheckpoint,
         ds: NNDataset,
         n_samples: int,
-        renderer: str = RENDERER,
+        renderer: str | None = RENDERER,
         fig_size: tuple = FIG_SIZE,
         title_size: int = TITLE_SIZE,
         label_size: int = LABEL_SIZE,

@@ -220,7 +220,7 @@ class TensorBoardCallback(Callback):
         except ImportError as e:
             raise ImportError(
                 "TensorBoardCallback requires `tensorboard`. "
-                "Install with `pip install tensorboard` or `pip install thekaveh-nnx[tensorboard]`."
+                "Install with `pip install thekaveh-nnx[tensorboard]` or `pip install tensorboard`."
             ) from e
         self._writer = SummaryWriter(log_dir=log_dir)
         self._flush_each_epoch = flush_each_epoch
@@ -262,7 +262,7 @@ class WandbCallback(Callback):
                 import wandb
             except ImportError as e:
                 raise ImportError(
-                    "WandbCallback requires `wandb`. Install with `pip install wandb` or `pip install thekaveh-nnx[wandb]`."
+                    "WandbCallback requires `wandb`. Install with `pip install thekaveh-nnx[wandb]` or `pip install wandb`."
                 ) from e
             self._run = wandb.init(project=project, **init_kwargs)
             self._owns_run = True

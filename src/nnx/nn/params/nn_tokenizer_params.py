@@ -116,8 +116,8 @@ def _require_tokenizers() -> None:
     if not _HAS_TOKENIZERS:
         raise ImportError(
             "The `tokenizers` package is required for NNTokenizerParams. "
-            "Install with `pip install 'tokenizers>=0.20'` or "
-            "`pip install -e '.[lm]'` from the NNx checkout."
+            "Install with `pip install thekaveh-nnx[lm]` "
+            "or `pip install 'tokenizers>=0.20'` directly."
         )
 
 

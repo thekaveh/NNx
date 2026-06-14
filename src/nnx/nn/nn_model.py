@@ -782,10 +782,11 @@ class NNModel(_HubMixinBase):
             for cb in normalized_callbacks:
                 cb.on_train_end(ctx)
 
+        saved = run.with_idps(idps).save()
         print()
         runs_root_path = os.path.join(os.getcwd(), "runs", run.id)
         print(f"Run saved to {runs_root_path}")
-        return run.with_idps(idps).save()
+        return saved
 
     def evaluate(self, loader: DataLoader, extra_metrics=None) -> NNEvaluationDataPoint:
         """Aggregate predictions across all batches in `loader` and compute

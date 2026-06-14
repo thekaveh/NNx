@@ -2,10 +2,21 @@
 
 Public surface:
   * :class:`LogitsProcessor` — protocol for the chain-of-transformations
-    that adjust raw logits before sampling (temperature, top-k, top-p,
-    repetition penalty).
+    that adjust raw logits before sampling.
+  * :class:`TemperatureScaling` — divides logits by ``T``; placed last in
+    the canonical chain order so the ``T=0`` greedy marker survives.
+  * :class:`TopKFilter` — keep the top-``k`` logits, mask the rest.
+  * :class:`TopPFilter` — keep the smallest set of logits whose softmax
+    mass reaches ``p`` (nucleus sampling).
+  * :class:`RepetitionPenalty` — divide / multiply logits for previously
+    sampled tokens; sign-aware so it works for both positive and
+    negative scores.
   * :func:`apply_chain` — run a list of LogitsProcessors over a logits
     tensor in order.
+  * :class:`LogitsChain` — frozen container for an ordered list of
+    processors with a single :meth:`__call__` entry point.
+  * :class:`LogitsChainBuilder` — fluent builder for ``LogitsChain``;
+    matches the :class:`nnx.NNTransformerParamsBuilder` convention.
   * :func:`sample_next_token` — sample one next token given prepared
     logits + an optional torch.Generator for seeded sampling.
 
