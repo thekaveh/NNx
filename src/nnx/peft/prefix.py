@@ -117,7 +117,6 @@ class PrefixTuner(nn.Module):
 
         self.model = model
         self.n_prefix = n_prefix
-        self.n_target_layers = n_layers
 
         # Freeze every parameter of the wrapped TransformerNN — the
         # prefix tensors are the only trainable bit going forward.

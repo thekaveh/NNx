@@ -33,7 +33,7 @@ The two public entry points are:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from typing import Any, Optional, Union
 
 import torch
@@ -98,13 +98,6 @@ def pair_collate(batch: Iterable[tuple[str, str]]) -> tuple[list[str], list[str]
         anchors.append(a)
         positives.append(p)
     return anchors, positives
-
-
-# A text encoder is any callable taking a list of strings and returning
-# a (B, D) tensor of embeddings. SentenceTransformer instances qualify
-# via a small adapter (we call .preprocess + forward); raw nn.Modules
-# qualify directly if their forward signature matches.
-TextEncoder = Union[torch.nn.Module, Callable[[list[str]], torch.Tensor]]
 
 
 def _is_sentence_transformer(backbone: Any) -> bool:
