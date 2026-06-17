@@ -48,6 +48,24 @@ class NNOptimParams:
     param_groups: Optional[list[NNParamGroupSpec]] = field(default=None)
 
     def __post_init__(self):
+        # Fail fast on out-of-range scalars — both construct fine but
+        # misbehave silently/obscurely deep in the train loop:
+        #   * accumulate_grad_batches < 1: =0 dies mid-training with
+        #     `ZeroDivisionError` on `batch_idx % accumulate_grad_batches`
+        #     (AFTER printing the whole run-config table); <0 scales the
+        #     loss by 1/N < 0 and silently performs gradient *ascent*.
+        #   * grad_clip_norm <= 0 (when not the None "off" sentinel): 0.0
+        #     passes the `is not None` clip-enable check and zeros every
+        #     gradient, so training runs to completion making no progress.
+        if self.accumulate_grad_batches < 1:
+            raise ValueError(
+                f"accumulate_grad_batches must be >= 1, got {self.accumulate_grad_batches} "
+                "(1 = step every batch; N = step every N batches)."
+            )
+        if self.grad_clip_norm is not None and self.grad_clip_norm <= 0:
+            raise ValueError(
+                f"grad_clip_norm must be > 0 when set, got {self.grad_clip_norm} (use None to disable clipping, not 0)."
+            )
         # Fail fast on plain dicts: they construct fine but crash much
         # later inside state() during NNRun hashing with an opaque
         # AttributeError. Same construction-time convention as the

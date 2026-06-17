@@ -4,9 +4,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
 from torch_geometric.data import Dataset
 from torch_geometric.loader import NeighborLoader
 
+from ...seeding import dataloader_worker_init_fn
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -20,6 +22,13 @@ class NNGraphDataset(NNDatasetBase):
     # Per-split batch size. None for any entry means "use every node in the
     # split mask" (resolved in __post_init__ from the train/val/test masks).
     batch_sizes: tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
+    # Deterministic neighbor sampling when set — the train loader shuffles
+    # (RandomSampler reads `generator`) and the default `n_workers=4` spawns
+    # worker processes whose numpy/python RNG must be pinned via
+    # `dataloader_worker_init_fn`. Default None falls back to the global torch
+    # RNG (the pre-fix behavior). Mirrors the seed contract the other datasets
+    # (NNDataset / NNTabularDataset / NNPreferenceDataset) already expose.
+    seed: Optional[int] = None
 
     def __post_init__(self):
         dataset = self.ds_class(root=self.root_dir, transform=self.transform)
@@ -27,6 +36,12 @@ class NNGraphDataset(NNDatasetBase):
         # This replaces the historical private `dataset._data` access, which
         # was renamed/removed across PyG versions.
         data = dataset[0]
+
+        # seed=None must genuinely fall back to the global torch RNG (the
+        # documented contract): a fresh torch.Generator() always carries the
+        # same fixed default seed, which would make every unseeded run
+        # bit-identical and deaf to torch.manual_seed.
+        gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 
@@ -47,6 +62,8 @@ class NNGraphDataset(NNDatasetBase):
                 num_neighbors=self.n_neighbors,
                 batch_size=resolved_batch_sizes[0],
                 input_nodes=data.train_mask,
+                generator=gen,
+                worker_init_fn=dataloader_worker_init_fn,
             ),
         )
 
@@ -60,6 +77,8 @@ class NNGraphDataset(NNDatasetBase):
                 num_neighbors=self.n_neighbors,
                 batch_size=resolved_batch_sizes[1],
                 input_nodes=data.val_mask,
+                generator=gen,
+                worker_init_fn=dataloader_worker_init_fn,
             ),
         )
 
@@ -73,6 +92,8 @@ class NNGraphDataset(NNDatasetBase):
                 num_neighbors=self.n_neighbors,
                 batch_size=resolved_batch_sizes[2],
                 input_nodes=data.test_mask,
+                generator=gen,
+                worker_init_fn=dataloader_worker_init_fn,
             ),
         )
 

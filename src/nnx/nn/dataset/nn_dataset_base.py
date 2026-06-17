@@ -3,16 +3,13 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Optional, Protocol, TypeVar
+from typing import Optional, Protocol
 
 
 class DatasetProtocol(Protocol):
     def __iter__(self) -> Iterable: ...
 
     def __len__(self) -> int: ...
-
-
-DatasetType = TypeVar("DatasetType", bound=DatasetProtocol)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

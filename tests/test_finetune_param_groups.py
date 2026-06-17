@@ -304,3 +304,43 @@ def test_nn_optim_params_rejects_plain_dict_param_groups():
             weight_decay=0.0,
             param_groups=[{"name_pattern": "encoder.*", "lr": 1e-5}],
         )
+
+
+def _adam(**overrides):
+    from nnx import NNOptimParams, Optims
+
+    base = dict(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)
+    base.update(overrides)
+    return NNOptimParams(**base)
+
+
+@pytest.mark.parametrize("bad", [0, -1, -2])
+def test_nn_optim_params_rejects_non_positive_accumulate_grad_batches(bad):
+    """accumulate_grad_batches < 1 constructed fine but misbehaved deep in
+    the train loop: =0 died with ZeroDivisionError on `batch_idx % N` (after
+    printing the whole run table), <0 silently scaled the loss by 1/N < 0
+    (gradient ascent). Construction now fails fast."""
+    with pytest.raises(ValueError, match="accumulate_grad_batches must be >= 1"):
+        _adam(accumulate_grad_batches=bad)
+
+
+def test_nn_optim_params_accepts_accumulate_grad_batches_one_and_above():
+    """The valid boundary (>= 1) still constructs."""
+    assert _adam(accumulate_grad_batches=1).accumulate_grad_batches == 1
+    assert _adam(accumulate_grad_batches=8).accumulate_grad_batches == 8
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+def test_nn_optim_params_rejects_non_positive_grad_clip_norm(bad):
+    """grad_clip_norm=0.0 passed the `is not None` clip-enable check and
+    zeroed every gradient (training ran to completion making no progress);
+    the disable sentinel is None, not 0. Construction now fails fast."""
+    with pytest.raises(ValueError, match="grad_clip_norm must be > 0"):
+        _adam(grad_clip_norm=bad)
+
+
+def test_nn_optim_params_grad_clip_norm_none_and_positive_ok():
+    """None (disabled, the back-compat default) and any positive norm
+    still construct."""
+    assert _adam().grad_clip_norm is None
+    assert _adam(grad_clip_norm=1.0).grad_clip_norm == 1.0
