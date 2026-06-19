@@ -63,6 +63,30 @@ def test_builder_enforces_heads_divides_d_model_in_layers_call():
         NNTransformerParams.builder().layers(n=4, heads=5, d_model=128)
 
 
+@pytest.mark.parametrize("bad_n_heads", [0, -2, None])
+def test_direct_ctor_rejects_non_positive_n_heads(bad_n_heads):
+    """`NNTransformerParams.__post_init__` fails loudly when `n_heads`
+    is non-positive or unset (None) — the [[params-boundary-validation]]
+    class that regressed in PR #60. `n_heads` is required for the
+    TRANSFORMER path (lifted from NNParams where it was Optional), and
+    it is used downstream as a head-count divisor of `d_model`, so a
+    0/None value would otherwise blow up far from its origin during the
+    forward pass. The sibling `d_model % n_heads != 0` branch is covered
+    by the Builder's `.layers()` test above; this exercises the
+    non-positive/None branch directly on the dataclass."""
+    with pytest.raises(ValueError, match="requires n_heads > 0"):
+        NNTransformerParams(
+            input_dim=8,
+            output_dim=8,
+            dropout_prob=0.0,
+            n_layers=1,
+            d_model=8,
+            vocab_size=10,
+            max_seq_len=4,
+            n_heads=bad_n_heads,
+        )
+
+
 def test_builder_ffn_override():
     params = (
         NNTransformerParams.builder()
