@@ -4,6 +4,10 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Changed
+
+- **Relicensed from MIT to the Apache License 2.0.** The `LICENSE` file now carries the full Apache 2.0 text and the package metadata declares `license = "Apache-2.0"` (SPDX). Apache 2.0 adds an explicit patent grant and patent-retaliation termination clause on top of MIT's permissions; it remains a permissive license. Copyright holder is unchanged (Kaveh Razavi).
+
 ### Fixed
 
 - **`NNOptimParams` fails fast on out-of-range `accumulate_grad_batches` / `grad_clip_norm`.** Both fields constructed fine but misbehaved deep in the train loop: `accumulate_grad_batches=0` died mid-training with `ZeroDivisionError` on `batch_idx % accumulate_grad_batches` (after printing the whole run-config table), a negative value silently scaled the loss by `1/N < 0` and performed gradient *ascent*, and `grad_clip_norm=0.0` passed the `is not None` clip-enable check and zeroed every gradient so training ran to completion making no progress. `__post_init__` now raises a clear `ValueError` for `accumulate_grad_batches < 1` and for `grad_clip_norm <= 0` (use `None`, not `0`, to disable clipping) — same construction-time fail-fast convention already used for `param_groups` and the dataset classes.

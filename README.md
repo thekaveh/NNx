@@ -264,4 +264,4 @@ mkdocs build --strict                        # docs (gates CI)
 
 ### 6.3. License
 
-MIT. See [LICENSE](LICENSE).
+Apache License 2.0. Copyright 2026 Kaveh Razavi. See [LICENSE](LICENSE).

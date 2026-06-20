@@ -11,7 +11,7 @@ name = "thekaveh-nnx"
 version = "0.2.0"
 description = "Lightweight PyTorch training/eval/visualization toolkit"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
     { name = "Kaveh Razavi", email = "kaveh.razavi@gmail.com" }

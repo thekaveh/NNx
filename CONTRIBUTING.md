@@ -83,4 +83,4 @@ The end-to-end flow:
 
 ## 9. License
 
-By contributing you agree that your contribution will be licensed under the [MIT License](LICENSE).
+By contributing you agree that your contribution will be licensed under the [Apache License 2.0](LICENSE).
