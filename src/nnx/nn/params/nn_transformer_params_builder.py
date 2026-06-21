@@ -98,10 +98,18 @@ class NNTransformerParamsBuilder:
     ) -> NNTransformerParamsBuilder:
         """Attention and residual dropout rates. Defaults are both
         0.0 (modern LLM convention; regularization comes from data
-        scale, not dropout). The fluent contract is "last call wins"
-        — `.dropout(attn=0.5).dropout(attn=0.0)` correctly resets to
-        `attn=0.0`. The dataclass's omit-when-default `state()` then
-        handles run.id stability automatically."""
+        scale, not dropout).
+
+        Like `.context()`, a `dropout()` call specifies BOTH rates
+        together — each call fully replaces the pair, and a rate left
+        at its 0.0 default is reset, not carried over from a prior
+        call. So `.dropout(resid=0.3).dropout(attn=0.5)` yields
+        `attn=0.5, resid=0.0` (the second call's implicit `resid=0.0`
+        drops the prior override); call `.dropout(attn=0.5, resid=0.3)`
+        once to set both. Same-field last-call-wins still holds:
+        `.dropout(attn=0.5).dropout(attn=0.0)` resets to `attn=0.0`.
+        The dataclass's omit-when-default `state()` then handles
+        run.id stability automatically."""
         self._fields["attn_dropout"] = attn
         self._fields["resid_dropout"] = resid
         return self

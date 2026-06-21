@@ -278,6 +278,30 @@ def test_builder_dropout_reset_to_default_after_non_default():
     assert "resid_dropout" not in state
 
 
+def test_builder_dropout_call_fully_replaces_the_pair():
+    """`.dropout()` specifies BOTH rates atomically (same model as
+    `.context()`): a partial call resets the un-passed rate to its 0.0
+    default rather than preserving a prior override. So
+    `.dropout(resid=0.3).dropout(attn=0.5)` yields `attn=0.5,
+    resid=0.0`. This pins the documented cross-field semantics so the
+    docstring's "each call fully replaces the pair" claim cannot
+    silently drift to per-field independence."""
+    params = (
+        NNTransformerParams.builder()
+        .vocab(1024)
+        .layers(n=4, heads=4, d_model=128)
+        .context(max_seq_len=128)
+        .dropout(resid=0.3)
+        .dropout(attn=0.5)
+        .build()
+    )
+    assert params.attn_dropout == 0.5
+    assert params.resid_dropout == 0.0
+    state = params.state()
+    assert state.get("attn_dropout") == 0.5
+    assert "resid_dropout" not in state
+
+
 def test_builder_context_rope_base_reset_to_default_after_override():
     """Regression: `.context(max_seq_len=2048, rope_base=500000.0)`
     followed by `.context(max_seq_len=2048)` must leave rope_base at
