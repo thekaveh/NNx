@@ -360,9 +360,10 @@ def train_contrastive(
             ``.device`` if present, else its first parameter's device,
             else CPU).
         shuffle: shuffle the dataset each epoch. Default True.
-        grad_clip_norm: global L2 grad-clip norm. ``None`` to disable.
-            Default 1.0 — text encoders are sensitive to gradient
-            spikes early in fine-tuning.
+        grad_clip_norm: global L2 grad-clip norm. ``None`` to disable;
+            must be positive otherwise (a non-positive norm zeros every
+            gradient). Default 1.0 — text encoders are sensitive to
+            gradient spikes early in fine-tuning.
         weight_decay: AdamW weight decay. Default 0.0.
         optimizer_cls: optimizer constructor. Default
             :class:`torch.optim.AdamW`. Receives
@@ -374,9 +375,10 @@ def train_contrastive(
 
     Raises:
         ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
-            non-positive epochs, or non-positive temperature — NT-Xent
-            needs at least one negative, so both the dataset and every
-            batch must carry >= 2 pairs.
+            non-positive epochs, non-positive temperature, or a
+            non-positive ``grad_clip_norm`` — NT-Xent needs at least one
+            negative, so both the dataset and every batch must carry
+            >= 2 pairs.
         FloatingPointError: when the contrastive loss goes non-finite
             mid-training (check lr / temperature / input normalization).
     """
@@ -389,6 +391,13 @@ def train_contrastive(
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
+    if grad_clip_norm is not None and grad_clip_norm <= 0:
+        # `None` disables clipping; a non-positive norm would otherwise slip
+        # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
+        # scales every gradient by 0.0/total_norm == 0, silently zeroing all
+        # grads so the backbone never learns. Same footgun NNOptimParams
+        # guards against; fail fast here before any training work happens.
+        raise ValueError(f"grad_clip_norm must be positive or None to disable, got {grad_clip_norm}")
 
     if isinstance(dataset, list):
         dataset = ContrastiveTextDataset(dataset)

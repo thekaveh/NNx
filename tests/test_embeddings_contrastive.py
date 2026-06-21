@@ -135,6 +135,13 @@ def test_train_contrastive_rejects_bad_inputs():
         train_contrastive(backbone, pairs, batch_size=0)
     with pytest.raises(ValueError, match="temperature"):
         train_contrastive(backbone, pairs, temperature=0.0)
+    # grad_clip_norm=0.0 slips past the `is not None` guard and would make
+    # clip_grad_norm_(..., 0.0) zero every gradient (silent no-learning);
+    # reject it at the boundary like the other numeric args.
+    with pytest.raises(ValueError, match="grad_clip_norm"):
+        train_contrastive(backbone, pairs, grad_clip_norm=0.0)
+    with pytest.raises(ValueError, match="grad_clip_norm"):
+        train_contrastive(backbone, pairs, grad_clip_norm=-1.0)
 
 
 def test_train_contrastive_rejects_all_frozen_backbone():
