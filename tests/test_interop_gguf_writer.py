@@ -157,9 +157,12 @@ def test_qkv_split_is_correct():
 
 def test_write_gguf_round_trip_f16(tmp_path):
     """Write a tiny TransformerNN at F16, read it back via GGUFReader,
-    verify shapes match. The end-to-end pin: if this passes, the format
-    is consumable by every llama.cpp-derived stack."""
+    verify shapes AND tensor values round-trip. The end-to-end pin: if
+    this passes, the format is consumable by every llama.cpp-derived
+    stack, and the bytes written are the model's actual weights (not just
+    correctly-shaped garbage)."""
     import gguf
+    import numpy as np
 
     net = _tiny_transformer()
     tok = _tiny_tokenizer(tmp_path)
@@ -186,6 +189,13 @@ def test_write_gguf_round_trip_f16(tmp_path):
         # stores dims in reverse order in the on-disk header.
         observed_shape = tuple(int(x) for x in reversed(list(t.shape)))
         assert observed_shape == expected_shape, (t.name, observed_shape, expected_shape)
+        # Values must survive the F16 write+read, not just the shapes. The
+        # on-disk buffer is the same row-major order as the source numpy
+        # array, so compare flattened with the F16-rounded reference
+        # (exact, since write_gguf casts to F16 the same way).
+        observed = t.data.astype(np.float32).flatten()
+        expected_f16 = expected[t.name].astype(np.float16).astype(np.float32).flatten()
+        assert np.array_equal(observed, expected_f16), t.name
 
 
 def test_write_gguf_emits_architecture_metadata(tmp_path):
