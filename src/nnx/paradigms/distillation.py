@@ -186,15 +186,13 @@ def feature_kd_train_step_factory(
     # raises a clear error on factory call (not deep inside the first
     # forward where the AttributeError would be cryptic).
     teacher_layers: dict[str, torch.nn.Module] = {}
-    student_layers_by_name: list[str] = []
-    for t_name, s_name in auxiliary_layers.items():
+    for t_name in auxiliary_layers:
         try:
             teacher_layers[t_name] = teacher.net.get_submodule(t_name)
         except AttributeError as e:
             raise ValueError(
                 f"auxiliary_layers: teacher has no submodule named {t_name!r} (get_submodule raised: {e})"
             ) from e
-        student_layers_by_name.append(s_name)
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
