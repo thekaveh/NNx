@@ -77,6 +77,11 @@ class DiffusionMLP(nn.Module):
             raise ValueError(f"time_embed_dim must be a positive even integer, got {time_embed_dim}")
         if hidden_dims is None:
             hidden_dims = [128, 128]
+        # Same fail-fast + convention as NNParams.hidden_dims: a non-positive
+        # entry otherwise builds a zero/negative-width nn.Linear silently. An
+        # empty list is valid (a single input+t -> input projection).
+        if not all(d > 0 for d in hidden_dims):
+            raise ValueError(f"hidden_dims entries must be positive, got {hidden_dims}")
         self.input_dim = input_dim
         self.time_embed_dim = time_embed_dim
 

@@ -70,6 +70,21 @@ def test_diffusion_mlp_invalid_input_dim_raises():
         DiffusionMLP(input_dim=0)
 
 
+@pytest.mark.parametrize("bad_hidden", [[8, 0, 8], [-4], [0]])
+def test_diffusion_mlp_non_positive_hidden_dims_raises(bad_hidden):
+    """hidden_dims entries validate like NNParams.hidden_dims — a zero/negative
+    width otherwise builds a degenerate nn.Linear silently."""
+    with pytest.raises(ValueError, match="hidden_dims entries must be positive"):
+        DiffusionMLP(input_dim=2, hidden_dims=bad_hidden)
+
+
+def test_diffusion_mlp_accepts_empty_hidden_dims():
+    """An empty hidden_dims is valid: a single (input+t) -> input projection."""
+    net = DiffusionMLP(input_dim=2, hidden_dims=[], time_embed_dim=8)
+    out = net(torch.randn(3, 2), torch.zeros(3, dtype=torch.long))
+    assert out.shape == (3, 2)
+
+
 def test_diffusion_mlp_unpack_batch_handles_tuple_and_tensor():
     net = DiffusionMLP(input_dim=2, time_embed_dim=8)
     x = torch.randn(4, 2)
