@@ -34,6 +34,7 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    ViTBlock,
     ViTNN,
     build_target_encoder,
     jepa_train_step_factory,
@@ -300,3 +301,70 @@ def test_jepa_predictor_forward_shapes():
     tgt_pos = torch.arange(11, 17)  # 6 target patches
     out = pred(ctx, ctx_pos, tgt_pos)
     assert out.shape == (3, 6, 16)
+
+
+# --- Boundary validation: net constructors that bypass the params dataclasses ---
+# These take raw numeric kwargs and would otherwise build silently degenerate
+# models (n_layers=0 -> attention-free; ffn_mult=0 -> zero-width FFN; d_model=0
+# -> head_dim=0 divisor-masking) — the same [[params-boundary-validation]] class
+# guarded on NNTransformerParams. All are public top-level nnx.* exports.
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"d_model": 0}, "d_model > 0"),  # masks itself through `0 % n_heads == 0`
+        ({"n_layers": 0}, "n_layers > 0"),
+        ({"n_layers": -1}, "n_layers > 0"),
+        ({"ffn_mult": 0}, "ffn_mult > 0"),
+        ({"image_size": 0}, "image_size > 0"),
+        ({"patch_size": 0}, "patch_size > 0"),
+        ({"in_channels": 0}, "in_channels > 0"),
+        ({"n_heads": 0}, "n_heads > 0"),
+    ],
+)
+def test_vit_nn_rejects_non_positive_dims(overrides, match):
+    kwargs = dict(image_size=16, patch_size=4, in_channels=3, d_model=32, n_layers=2, n_heads=4)
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=match):
+        ViTNN(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"d_model": 0}, "d_model > 0"),
+        ({"n_heads": -1}, "n_heads > 0"),
+        ({"ffn_mult": 0}, "ffn_mult > 0"),
+    ],
+)
+def test_vit_block_rejects_non_positive_dims(overrides, match):
+    kwargs = dict(d_model=32, n_heads=4, ffn_mult=4)
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=match):
+        ViTBlock(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"embed_dim": 0}, "embed_dim > 0"),
+        ({"n_patches": 0}, "n_patches > 0"),
+        ({"n_layers": 0}, "n_layers > 0"),
+        ({"n_heads": -2}, "n_heads > 0"),
+        ({"ffn_mult": 0}, "ffn_mult > 0"),
+        ({"predictor_dim": 0}, "predictor_dim > 0 when set"),
+    ],
+)
+def test_jepa_predictor_rejects_non_positive_dims(overrides, match):
+    kwargs = dict(embed_dim=16, n_patches=16, n_layers=2, n_heads=2, ffn_mult=4)
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=match):
+        JEPAPredictor(**kwargs)
+
+
+def test_jepa_predictor_accepts_none_predictor_dim():
+    """predictor_dim=None is the documented default (resolves to embed_dim//2);
+    the guard must not reject it."""
+    pred = JEPAPredictor(embed_dim=16, n_patches=16, predictor_dim=None, n_layers=1, n_heads=2)
+    assert pred.predictor_dim == 8

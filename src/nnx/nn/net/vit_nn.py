@@ -94,6 +94,13 @@ class ViTBlock(nn.Module):
         resid_dropout: float = 0.0,
     ):
         super().__init__()
+        # ViTBlock is a public top-level export (nnx.ViTBlock), so it owns its
+        # own positive-dimension guards rather than relying on ViTNN's. ffn_mult=0
+        # would otherwise build a zero-width SwiGLU FFN silently; d_model<=0 /
+        # n_heads<=0 a zero attention. Matches the ViTNN guard above.
+        for _name, _value in (("d_model", d_model), ("n_heads", n_heads), ("ffn_mult", ffn_mult)):
+            if _value <= 0:
+                raise ValueError(f"ViTBlock requires {_name} > 0, got {_value}")
         self.norm1 = RMSNorm(d_model)
         self.attn = _MultiHeadSelfAttention(d_model, n_heads, attn_dropout=attn_dropout)
         self.norm2 = RMSNorm(d_model)
@@ -140,6 +147,23 @@ class ViTNN(nn.Module):
         resid_dropout: float = 0.0,
     ):
         super().__init__()
+        # Positive-dimension guards run BEFORE the divisibility checks: a
+        # zero/negative value can otherwise mask itself (e.g. d_model=0 passes
+        # `0 % n_heads == 0` then zeroes head_dim; image_size=-32 passes
+        # `-32 % 4 == 0` then yields a wrong n_patches) and build a silently
+        # degenerate model with no error — the same [[params-boundary-validation]]
+        # footgun guarded on NNTransformerParams. These do not affect any state().
+        for _name, _value in (
+            ("image_size", image_size),
+            ("patch_size", patch_size),
+            ("in_channels", in_channels),
+            ("d_model", d_model),
+            ("n_layers", n_layers),
+            ("n_heads", n_heads),
+            ("ffn_mult", ffn_mult),
+        ):
+            if _value <= 0:
+                raise ValueError(f"ViTNN requires {_name} > 0, got {_value}")
         if image_size % patch_size != 0:
             raise ValueError(f"image_size={image_size} must be divisible by patch_size={patch_size}")
         if d_model % n_heads != 0:

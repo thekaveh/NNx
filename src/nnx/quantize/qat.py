@@ -61,6 +61,13 @@ def _build_quantizer(qat_config: str, *, groupsize: int = 32):
     with a pointer to the pip extra when torchao isn't installed and
     ValueError when the recipe name isn't recognized.
     """
+    if groupsize <= 0:
+        # Fail fast: groupsize is the int4 weight grouping width. A negative
+        # value builds a silently mis-quantized model (the quantizer accepts
+        # it), and 0 surfaces only as a cryptic ZeroDivisionError deep inside
+        # prepare()/model.train(). Validated here — the single chokepoint both
+        # QATLifecycleCallback and qat_train_step_factory route through.
+        raise ValueError(f"groupsize must be a positive int, got {groupsize}")
     try:
         from torchao.quantization.qat import Int8DynActInt4WeightQATQuantizer
     except ImportError as e:  # pragma: no cover — opt-in extra

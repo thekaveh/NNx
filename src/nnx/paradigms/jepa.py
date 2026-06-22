@@ -219,6 +219,23 @@ class JEPAPredictor(nn.Module):
         # building blocks).
         from ..nn.net.vit_nn import ViTBlock
 
+        # Positive-dimension guards: JEPAPredictor is a public top-level export
+        # (nnx.JEPAPredictor) that builds ViTBlocks from raw numeric kwargs, so
+        # n_layers=0 / ffn_mult=0 / embed_dim=0 would otherwise build a silently
+        # degenerate predictor — the same [[params-boundary-validation]] footgun.
+        # Validate predictor_dim before the None-resolution below.
+        for _name, _value in (
+            ("embed_dim", embed_dim),
+            ("n_patches", n_patches),
+            ("n_layers", n_layers),
+            ("n_heads", n_heads),
+            ("ffn_mult", ffn_mult),
+        ):
+            if _value <= 0:
+                raise ValueError(f"JEPAPredictor requires {_name} > 0, got {_value}")
+        if predictor_dim is not None and predictor_dim <= 0:
+            raise ValueError(f"JEPAPredictor requires predictor_dim > 0 when set, got {predictor_dim}")
+
         if predictor_dim is None:
             predictor_dim = max(8, embed_dim // 2)
         self.embed_dim = embed_dim
