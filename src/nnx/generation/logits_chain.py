@@ -1,8 +1,6 @@
 """LogitsChain — a typed, ordered chain of LogitsProcessors.
 
-Plan 5 of the Builder-pattern rollout (see
-`docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
-§3.5). The Builder is the opt-in alternative to
+Plan 5 of the Builder-pattern rollout. The Builder is the opt-in alternative to
 `GenerativeNNModel.generate(temperature=..., top_k=..., top_p=...,
 repetition_penalty=...)`: it lets the user compose the chain
 declaratively and add custom processors (e.g., logit-bias for

@@ -8,9 +8,6 @@ for the chosen optimizer kind (see `NNOptimParams.is_valid()`).
 The rename is purely Builder-side. `from_state` and the direct-kwarg
 ctor still take `momentum`, so on-disk YAML round-trips unchanged. The
 Builder is the spot where we present the PyTorch-native spelling.
-
-See `docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
-§3.3 for the rubric scoring and design rationale.
 """
 
 from __future__ import annotations
