@@ -321,6 +321,8 @@ def test_jepa_predictor_forward_shapes():
         ({"patch_size": 0}, "patch_size > 0"),
         ({"in_channels": 0}, "in_channels > 0"),
         ({"n_heads": 0}, "n_heads > 0"),
+        ({"attn_dropout": 1.5}, "0.0 <= attn_dropout <= 1.0"),
+        ({"resid_dropout": -0.1}, "0.0 <= resid_dropout <= 1.0"),
     ],
 )
 def test_vit_nn_rejects_non_positive_dims(overrides, match):
@@ -336,6 +338,8 @@ def test_vit_nn_rejects_non_positive_dims(overrides, match):
         ({"d_model": 0}, "d_model > 0"),
         ({"n_heads": -1}, "n_heads > 0"),
         ({"ffn_mult": 0}, "ffn_mult > 0"),
+        ({"attn_dropout": 1.5}, "0.0 <= attn_dropout <= 1.0"),
+        ({"resid_dropout": -0.1}, "0.0 <= resid_dropout <= 1.0"),
     ],
 )
 def test_vit_block_rejects_non_positive_dims(overrides, match):

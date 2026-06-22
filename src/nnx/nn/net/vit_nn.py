@@ -101,6 +101,9 @@ class ViTBlock(nn.Module):
         for _name, _value in (("d_model", d_model), ("n_heads", n_heads), ("ffn_mult", ffn_mult)):
             if _value <= 0:
                 raise ValueError(f"ViTBlock requires {_name} > 0, got {_value}")
+        for _name, _value in (("attn_dropout", attn_dropout), ("resid_dropout", resid_dropout)):
+            if not 0.0 <= _value <= 1.0:
+                raise ValueError(f"ViTBlock requires 0.0 <= {_name} <= 1.0, got {_value}")
         self.norm1 = RMSNorm(d_model)
         self.attn = _MultiHeadSelfAttention(d_model, n_heads, attn_dropout=attn_dropout)
         self.norm2 = RMSNorm(d_model)
@@ -164,6 +167,9 @@ class ViTNN(nn.Module):
         ):
             if _value <= 0:
                 raise ValueError(f"ViTNN requires {_name} > 0, got {_value}")
+        for _name, _value in (("attn_dropout", attn_dropout), ("resid_dropout", resid_dropout)):
+            if not 0.0 <= _value <= 1.0:
+                raise ValueError(f"ViTNN requires 0.0 <= {_name} <= 1.0, got {_value}")
         if image_size % patch_size != 0:
             raise ValueError(f"image_size={image_size} must be divisible by patch_size={patch_size}")
         if d_model % n_heads != 0:

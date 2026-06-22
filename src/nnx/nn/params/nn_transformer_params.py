@@ -75,6 +75,15 @@ class NNTransformerParams(NNParams):
             value = getattr(self, name)
             if value <= 0:
                 raise ValueError(f"NNTransformerParams requires {name} > 0, got {value}")
+        # Probability fields validated alongside the base-class `dropout_prob`
+        # (checked by NNParams.__post_init__ above) so all three dropout knobs
+        # fail fast at construction rather than at the first training forward
+        # (F.dropout / scaled_dot_product_attention reject p>1 only when
+        # training=True, far from the config's origin).
+        for name in ("attn_dropout", "resid_dropout"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
 

@@ -125,6 +125,31 @@ def test_direct_ctor_rejects_non_positive_architectural_dims(field_name, overrid
         NNTransformerParams(**kwargs)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [("attn_dropout", -0.1), ("attn_dropout", 1.5), ("resid_dropout", -0.1), ("resid_dropout", 1.5)],
+)
+def test_direct_ctor_rejects_out_of_range_dropout(field_name, bad_value):
+    """`attn_dropout` / `resid_dropout` validate alongside the base-class
+    `dropout_prob` so all three dropout knobs fail fast at construction —
+    the [[params-boundary-validation]] consistency contract. Without this,
+    p>1 surfaces only at the first training forward (F.dropout /
+    scaled_dot_product_attention), far from the config's origin."""
+    kwargs = dict(
+        input_dim=8,
+        output_dim=8,
+        dropout_prob=0.0,
+        n_layers=1,
+        d_model=8,
+        vocab_size=10,
+        max_seq_len=4,
+        n_heads=2,
+    )
+    kwargs[field_name] = bad_value
+    with pytest.raises(ValueError, match=f"0.0 <= {field_name} <= 1.0"):
+        NNTransformerParams(**kwargs)
+
+
 def test_builder_ffn_override():
     params = (
         NNTransformerParams.builder()
