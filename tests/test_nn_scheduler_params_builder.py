@@ -155,29 +155,50 @@ def test_builder_build_without_variant_raises():
         NNSchedulerParams.builder().build()
 
 
-def test_builder_rejects_invalid_one_cycle_max_lr():
-    """Negative max_lr is nonsensical. The dataclass doesn't validate
-    this today (no __post_init__ on NNSchedulerParams), but OneCycleLR
-    will reject at scheduler-construction time. We document the
-    pass-through behaviour: Builder produces a dataclass; downstream
-    validators run later.
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"factor": 0.0}, "factor > 0"),
+        ({"factor": -0.5}, "factor > 0"),
+        ({"min_lr": -1e-7}, "min_lr >= 0"),
+        ({"threshold": -1e-3}, "threshold >= 0"),
+        ({"patience": -1}, "patience >= 0"),
+        ({"cooldown": -1}, "cooldown >= 0"),
+        ({"step_size": 0}, "step_size > 0 when set"),
+        ({"T_max": -10}, "T_max > 0 when set"),
+        ({"total_steps": 0}, "total_steps > 0 when set"),
+        ({"warmup_steps": -5}, "warmup_steps > 0 when set"),
+    ],
+)
+def test_direct_ctor_rejects_out_of_range_fields(overrides, match):
+    """`NNSchedulerParams.__post_init__` fails fast on out-of-range numeric
+    fields — the [[params-boundary-validation]] class. Required fields have
+    non-negative/positive bounds; present (non-None) variant knobs must be
+    positive step/length counts. None of these are emitted into state() at
+    their defaults, so validation never shifts a run.id."""
+    kwargs = dict(min_lr=1e-7, factor=0.5, patience=8, cooldown=2, threshold=1e-3)
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=match):
+        NNSchedulerParams(**kwargs)
 
-    This test is a smoke check that the Builder doesn't accidentally
-    silently swallow obviously-bad input. If NNSchedulerParams gains
-    a __post_init__ later, update to assert ValueError here.
-    """
-    sp = (
-        NNSchedulerParams.builder()
-        .one_cycle(
-            max_lr=-1.0,  # bad but currently unchecked at dataclass level
-            total_steps=10_000,
-            min_lr=1e-7,
-            factor=0.5,
-            patience=10,
-            cooldown=2,
-            threshold=1e-3,
+
+def test_builder_rejects_invalid_one_cycle_max_lr():
+    """Negative max_lr is nonsensical. `NNSchedulerParams.__post_init__`
+    now fails-fast at dataclass-construction time (via the Builder's
+    `.build()`), per the [[params-boundary-validation]] contract — the
+    error surfaces at config construction rather than deep inside the
+    OneCycleLR constructor at scheduler-build time."""
+    with pytest.raises(ValueError, match="max_lr > 0 when set"):
+        (
+            NNSchedulerParams.builder()
+            .one_cycle(
+                max_lr=-1.0,
+                total_steps=10_000,
+                min_lr=1e-7,
+                factor=0.5,
+                patience=10,
+                cooldown=2,
+                threshold=1e-3,
+            )
+            .build()
         )
-        .build()
-    )
-    # Builder does NOT validate today — documenting the pass-through.
-    assert sp.max_lr == -1.0

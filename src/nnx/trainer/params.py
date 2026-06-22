@@ -63,6 +63,11 @@ class NNTrainerParams:
     extra_metrics: Optional[Mapping[str, Callable]] = field(repr=False, default=None)
 
     def __post_init__(self):
+        # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in Trainer.train,
+        # so a value < 1 silently makes training a no-op. Symmetric with
+        # NNTrainParams.__post_init__.
+        if self.n_epochs < 1:
+            raise ValueError(f"NNTrainerParams requires n_epochs >= 1, got {self.n_epochs}")
         if not self.optims:
             raise ValueError(
                 "NNTrainerParams.optims must have at least one entry — the Trainer constructs one Optimizer per name."

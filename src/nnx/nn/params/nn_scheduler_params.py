@@ -28,6 +28,30 @@ class NNSchedulerParams:
     total_steps: Optional[int] = None  # ONE_CYCLE, LINEAR_WARMUP_DECAY
     warmup_steps: Optional[int] = None  # LINEAR_WARMUP_DECAY
 
+    def __post_init__(self):
+        # Fail-fast on out-of-range numeric fields. None of these are emitted
+        # into state() when at their defaults, so validation never shifts a
+        # run.id — same [[params-boundary-validation]] contract as the other
+        # params dataclasses. `factor` is the LR multiplier (the torch
+        # ReduceLROnPlateau ctor additionally requires factor < 1, which it
+        # enforces itself for that variant); `patience`/`cooldown` are epoch
+        # counts; `min_lr`/`threshold` are non-negative bounds. Present
+        # (non-None) variant knobs are positive step/length counts.
+        if self.factor <= 0:
+            raise ValueError(f"NNSchedulerParams requires factor > 0, got {self.factor}")
+        if self.min_lr < 0:
+            raise ValueError(f"NNSchedulerParams requires min_lr >= 0, got {self.min_lr}")
+        if self.threshold < 0:
+            raise ValueError(f"NNSchedulerParams requires threshold >= 0, got {self.threshold}")
+        if self.patience < 0:
+            raise ValueError(f"NNSchedulerParams requires patience >= 0, got {self.patience}")
+        if self.cooldown < 0:
+            raise ValueError(f"NNSchedulerParams requires cooldown >= 0, got {self.cooldown}")
+        for name in ("step_size", "T_max", "max_lr", "total_steps", "warmup_steps"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"NNSchedulerParams requires {name} > 0 when set, got {value}")
+
     def __str__(self) -> str:
         if self.kind is None:
             return (

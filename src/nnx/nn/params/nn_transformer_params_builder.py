@@ -6,9 +6,6 @@ exposing the dead parent-NNParams fields (`hidden_dims`, `activation`,
 doesn't use. `.layers(n, heads, d_model)` enforces
 `d_model % heads == 0` at call-time so the user finds out at the
 chain step that introduced the mismatch, not at .build() much later.
-
-See `docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
-§3.2 for the rubric scoring and design rationale.
 """
 
 from __future__ import annotations

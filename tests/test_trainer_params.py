@@ -73,6 +73,17 @@ def test_trainer_params_empty_optims_raises():
         NNTrainerParams(n_epochs=1, optims={})
 
 
+@pytest.mark.parametrize("bad_n_epochs", [0, -1])
+def test_trainer_params_rejects_non_positive_n_epochs(bad_n_epochs):
+    """`NNTrainerParams.__post_init__` fails fast on `n_epochs < 1` — the
+    [[params-boundary-validation]] class. `n_epochs` drives
+    `range(params.n_epochs)` in Trainer.train, so a 0/negative value would
+    otherwise make training a silent no-op (empty idps, no BEST checkpoint)
+    rather than raising. Symmetric with NNTrainParams."""
+    with pytest.raises(ValueError, match="n_epochs >= 1"):
+        NNTrainerParams(n_epochs=bad_n_epochs, optims={"G": _g_optim()})
+
+
 def test_trainer_params_orphan_scheduler_raises():
     with pytest.raises(ValueError, match="not present in optims"):
         NNTrainerParams(

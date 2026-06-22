@@ -65,6 +65,25 @@ class NNTransformerParams(NNParams):
         # the forward pass.
         if self.n_heads is None or self.n_heads <= 0:
             raise ValueError(f"NNTransformerParams requires n_heads > 0, got {self.n_heads!r}")
+        # Required positive architectural dimensions. `d_model` must be
+        # validated BEFORE the divisibility test below: `d_model=0` passes
+        # `0 % n_heads == 0` but then yields `head_dim = d_model // n_heads = 0`
+        # (a zero attention-scale divisor and zero-width FFN) downstream — a
+        # silent-failure footgun, not a loud one. `n_layers<=0` likewise builds
+        # a degenerate embed→norm→head model with no error at all.
+        for name in ("vocab_size", "n_layers", "d_model", "max_seq_len", "ffn_mult"):
+            value = getattr(self, name)
+            if value <= 0:
+                raise ValueError(f"NNTransformerParams requires {name} > 0, got {value}")
+        # Probability fields validated alongside the base-class `dropout_prob`
+        # (checked by NNParams.__post_init__ above) so all three dropout knobs
+        # fail fast at construction rather than at the first training forward
+        # (F.dropout / scaled_dot_product_attention reject p>1 only when
+        # training=True, far from the config's origin).
+        for name in ("attn_dropout", "resid_dropout"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
 

@@ -12,9 +12,6 @@ user-touched fields to the dataclass at `.build()` time. This is the
 mechanism that preserves the omit-when-default state() invariant: any
 field the user doesn't touch stays at the dataclass default and is
 absent from `self._fields`, so `state()` continues to omit it.
-
-See `docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
-§3.1 for the rubric scoring and design rationale.
 """
 
 from __future__ import annotations

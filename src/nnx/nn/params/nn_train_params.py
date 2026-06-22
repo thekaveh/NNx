@@ -57,6 +57,15 @@ class NNTrainParams:
     resume_from_run_id: Optional[str] = field(repr=False, default=None)
     resume_from_checkpoint: Optional[str] = field(repr=False, default="last")
 
+    def __post_init__(self):
+        # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in the train
+        # loop, so a value < 1 silently makes training a no-op (empty idps, a
+        # degenerate saved run, no BEST checkpoint) rather than erroring.
+        # `n_epochs` is always emitted into state(), so this never shifts a
+        # run.id for any valid config.
+        if self.n_epochs < 1:
+            raise ValueError(f"NNTrainParams requires n_epochs >= 1, got {self.n_epochs}")
+
     def with_train_loader(self, value: DataLoader) -> NNTrainParams:
         return replace(self, train_loader=value)
 

@@ -84,6 +84,17 @@ def test_qat_train_step_factory_rejects_unknown_config():
         qat_train_step_factory(qat_config="bogus-recipe")
 
 
+@pytest.mark.parametrize("bad_groupsize", [0, -32])
+def test_qat_lifecycle_callback_rejects_non_positive_groupsize(bad_groupsize):
+    """``groupsize`` is the int4 weight grouping width. A negative value
+    silently builds a mis-quantized model and 0 surfaces only as a cryptic
+    ZeroDivisionError deep inside prepare(); both fail fast at construction
+    via the shared ``_build_quantizer`` chokepoint — the
+    [[params-boundary-validation]] class."""
+    with pytest.raises(ValueError, match="groupsize must be a positive int"):
+        QATLifecycleCallback(qat_config="8da4w", groupsize=bad_groupsize)
+
+
 def test_qat_train_step_factory_returns_base_step_unchanged():
     """The factory is a thin wrapper: no base => default_train_step;
     custom base => same callable returned. The fake-quant insertion

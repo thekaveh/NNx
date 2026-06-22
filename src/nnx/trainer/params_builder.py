@@ -3,7 +3,7 @@
 Composes Plan 1's NNSchedulerParams.builder() + Plan 2's
 NNOptimParams.builder() output via name-keyed dicts. `.optimizer(name,
 params)` and `.scheduler(name, params)` accept pre-built params
-instances — the simplest composition path. (The spec's lambda-Builder
+instances — the simplest composition path. (A lambda-Builder
 variant is deferred — composability via the lambda is elegant but
 makes the call-site harder to read; we ship the direct form first.)
 
@@ -11,9 +11,6 @@ makes the call-site harder to read; we ship the direct form first.)
 constructing the dataclass, so the user sees the constraint failure
 at the Builder boundary rather than from inside the dataclass's
 __post_init__.
-
-See `docs/superpowers/specs/2026-05-31-builder-pattern-investigation.md`
-§3.4 for the rubric scoring and design rationale.
 """
 
 from __future__ import annotations
