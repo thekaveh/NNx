@@ -87,6 +87,44 @@ def test_direct_ctor_rejects_non_positive_n_heads(bad_n_heads):
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "overrides", "match"),
+    [
+        # d_model=0 is the divisor-masking footgun: it passes the
+        # `0 % n_heads == 0` divisibility check but yields head_dim=0
+        # downstream. It MUST be rejected by the positive-dimension guard
+        # that runs before the divisibility test.
+        ("d_model", {"d_model": 0, "n_heads": 1}, "d_model > 0"),
+        # n_layers<=0 silently builds a degenerate embed->norm->head model.
+        ("n_layers", {"n_layers": 0}, "n_layers > 0"),
+        ("n_layers", {"n_layers": -1}, "n_layers > 0"),
+        ("vocab_size", {"vocab_size": 0}, "vocab_size > 0"),
+        ("max_seq_len", {"max_seq_len": 0}, "max_seq_len > 0"),
+        ("ffn_mult", {"ffn_mult": 0}, "ffn_mult > 0"),
+    ],
+)
+def test_direct_ctor_rejects_non_positive_architectural_dims(field_name, overrides, match):
+    """`NNTransformerParams.__post_init__` fails loudly when any required
+    positive architectural dimension is non-positive — the
+    [[params-boundary-validation]] class. These are silent-failure
+    footguns: `d_model=0` masks itself through the `% n_heads` check then
+    zeroes `head_dim`; `n_layers<=0` builds an attention-free model with
+    no error at all; `ffn_mult<=0` zeroes the FFN width."""
+    kwargs = dict(
+        input_dim=8,
+        output_dim=8,
+        dropout_prob=0.0,
+        n_layers=1,
+        d_model=8,
+        vocab_size=10,
+        max_seq_len=4,
+        n_heads=2,
+    )
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=match):
+        NNTransformerParams(**kwargs)
+
+
 def test_builder_ffn_override():
     params = (
         NNTransformerParams.builder()

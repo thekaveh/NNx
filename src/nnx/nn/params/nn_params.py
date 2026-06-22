@@ -30,6 +30,20 @@ class NNParams:
         return self._dims
 
     def __post_init__(self):
+        # Fail-fast on out-of-range numeric fields at construction time rather
+        # than deep inside layer building. nn.Dropout / nn.Linear would raise
+        # eventually for these, but far from the origin — surfacing the error
+        # here keeps the [[params-boundary-validation]] contract consistent
+        # with the rest of the params hierarchy. None of these touch state().
+        if not 0.0 <= self.dropout_prob <= 1.0:
+            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob}")
+        if self.input_dim <= 0:
+            raise ValueError(f"NNParams requires input_dim > 0, got {self.input_dim}")
+        if self.output_dim <= 0:
+            raise ValueError(f"NNParams requires output_dim > 0, got {self.output_dim}")
+        if self.hidden_dims is not None and not all(d > 0 for d in self.hidden_dims):
+            raise ValueError(f"NNParams requires all hidden_dims > 0, got {self.hidden_dims}")
+
         dims = [self.input_dim]
         dims += self.hidden_dims if self.hidden_dims is not None else []
         dims += [self.output_dim]
