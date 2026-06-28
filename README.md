@@ -223,6 +223,8 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 ## 5. Documentation
 
+📖 **Rendered docs site: <https://thekaveh.github.io/NNx/>** — searchable, with the full auto-generated [API reference](https://thekaveh.github.io/NNx/api/). The pages below link the in-repo `docs/` sources the site is built from.
+
 ### 5.1. Conceptual + reference
 
 - [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
