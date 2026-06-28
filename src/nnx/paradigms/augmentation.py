@@ -65,6 +65,9 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Reports a Mixup-weighted ``error`` and the mixed loss. The
         loss honors the model's ``loss_fn`` (so this works for any
         classification loss, not just CrossEntropy).
+
+    Raises:
+        ValueError: if ``alpha`` <= 0.
     """
     if alpha <= 0:
         raise ValueError(f"alpha must be positive, got {alpha}")
@@ -119,6 +122,9 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         A ``TrainStepFn`` for image classification (4D ``(B, C, H, W)``
         inputs). Raises at step time on lower-rank input — CutMix's
         spatial cut isn't well-defined without H and W.
+
+    Raises:
+        ValueError: if ``alpha`` <= 0.
     """
     if alpha <= 0:
         raise ValueError(f"alpha must be positive, got {alpha}")
