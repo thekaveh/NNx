@@ -12,7 +12,7 @@ composes:
     NNTabularDataset, NNGraphDataset, NNPreferenceDataset).
   - `nnx.nn.enum` — typed enums for activations, optimizers, schedulers,
     losses, devices, nets, checkpoints.
-  - `nnx.nn.callbacks` — the Callback abstract base + the four built-ins
+  - `nnx.nn.callbacks` — the Callback abstract base + the five built-ins
     shipped with NNx (EarlyStopping / LRMonitor / ModelCheckpoint /
     TensorBoardCallback / WandbCallback).
   - `nnx.nn.nn_model` / `nnx.nn.generative_nn_model` — the NNModel
