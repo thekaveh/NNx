@@ -43,7 +43,7 @@ nav:
   - DPO: dpo.md
   - API Reference: api.md
   - vs Lightning / HF / fastai: comparison.md
-  - Architecture diagram: architecture.html
+  - Architecture diagram: architecture.md
 
 # Working design docs aren't user-facing — exclude them from the
 # published site. Local-only spec files under docs/specs/ shouldn't break
@@ -65,6 +65,7 @@ plugins:
 
 markdown_extensions:
   - admonition
+  - attr_list
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.highlight
