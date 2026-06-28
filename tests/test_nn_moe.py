@@ -14,7 +14,11 @@ from nnx import MoELinear, set_seed
 
 
 def test_moe_linear_validates_inputs():
-    """``top_k > num_experts`` and ``num_experts ≤ 1`` both raise."""
+    """Non-positive dims, ``num_experts ≤ 1``, and bad ``top_k`` all raise."""
+    with pytest.raises(ValueError, match="in_features"):
+        MoELinear(0, 4, num_experts=4, top_k=2)
+    with pytest.raises(ValueError, match="out_features"):
+        MoELinear(8, 0, num_experts=4, top_k=2)
     with pytest.raises(ValueError, match="top_k"):
         MoELinear(8, 4, num_experts=2, top_k=3)
     with pytest.raises(ValueError, match="top_k"):

@@ -76,8 +76,8 @@ class MoELinear(nn.Module):
             :meth:`forward`. ``None`` before the first forward.
 
     Raises:
-        ValueError: if ``num_experts <= 1``, ``top_k <= 0``, or
-            ``top_k > num_experts``.
+        ValueError: if ``in_features <= 0``, ``out_features <= 0``,
+            ``num_experts <= 1``, ``top_k <= 0``, or ``top_k > num_experts``.
     """
 
     def __init__(
@@ -89,6 +89,10 @@ class MoELinear(nn.Module):
         top_k: int = 2,
     ):
         super().__init__()
+        if in_features <= 0:
+            raise ValueError(f"in_features must be positive, got {in_features}")
+        if out_features <= 0:
+            raise ValueError(f"out_features must be positive, got {out_features}")
         if num_experts <= 1:
             raise ValueError(
                 f"num_experts must be ≥ 2 (a single-expert MoELinear is just "
