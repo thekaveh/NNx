@@ -358,3 +358,26 @@ def test_nn_optim_params_grad_clip_norm_none_and_positive_ok():
     still construct."""
     assert _adam().grad_clip_norm is None
     assert _adam(grad_clip_norm=1.0).grad_clip_norm == 1.0
+
+
+@pytest.mark.parametrize("bad", [-1e-3, -1.0])
+def test_nn_optim_params_rejects_negative_max_lr(bad):
+    """A negative max_lr performs gradient ascent — construction fails fast.
+    max_lr=0 is allowed (an explicit 'freeze updates' choice)."""
+    with pytest.raises(ValueError, match="max_lr must be non-negative"):
+        _adam(max_lr=bad)
+
+
+def test_nn_optim_params_accepts_zero_and_positive_max_lr():
+    """max_lr=0 (explicit freeze) and any positive LR still construct."""
+    assert _adam(max_lr=0.0).max_lr == 0.0
+    assert _adam(max_lr=1e-2).max_lr == 1e-2
+
+
+@pytest.mark.parametrize("bad", [-1e-4, -1.0])
+def test_nn_optim_params_rejects_negative_weight_decay(bad):
+    """Negative weight_decay grows weights; matches the per-group
+    NNParamGroupSpec guard. weight_decay=0 (disabled) is fine."""
+    with pytest.raises(ValueError, match="weight_decay must be non-negative"):
+        _adam(weight_decay=bad)
+    assert _adam(weight_decay=0.0).weight_decay == 0.0
