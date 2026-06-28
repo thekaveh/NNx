@@ -49,6 +49,20 @@ def test_param_group_spec_lr_xor_multiplier():
         NNParamGroupSpec(name_pattern="*", lr=1e-3, lr_multiplier=0.1)
 
 
+def test_param_group_spec_rejects_nonpositive_lr_and_negative_weight_decay():
+    """lr / lr_multiplier must be positive; weight_decay must be non-negative."""
+    with pytest.raises(ValueError, match="lr must be positive"):
+        NNParamGroupSpec(name_pattern="*", lr=0.0)
+    with pytest.raises(ValueError, match="lr must be positive"):
+        NNParamGroupSpec(name_pattern="*", lr=-1e-3)
+    with pytest.raises(ValueError, match="lr_multiplier must be positive"):
+        NNParamGroupSpec(name_pattern="*", lr_multiplier=0.0)
+    with pytest.raises(ValueError, match="weight_decay must be non-negative"):
+        NNParamGroupSpec(name_pattern="*", weight_decay=-0.1)
+    # weight_decay == 0 is valid — it disables weight decay for the group.
+    NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0)
+
+
 def test_param_group_spec_state_omits_unset_fields():
     """A spec with only name_pattern set should produce a 1-key state()."""
     spec = NNParamGroupSpec(name_pattern="head.*")

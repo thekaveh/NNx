@@ -241,6 +241,19 @@ class Trainer:
         # not also the default-bucket leftovers. Without this, opt_G
         # would also hold D's params (unmatched by G's specs) and the
         # two optimizers would silently fight over the same gradients.
+        #
+        # That contract only bites when each optimizer HAS specs: an optimizer
+        # with `param_groups=None` routes to all `net.parameters()`, so two such
+        # optimizers would each step the full set — silently double-stepping
+        # every parameter. Require explicit scoping up front (the params object
+        # itself stays constructible for serialization / builder round-trips).
+        unscoped = sorted(n for n, op in params.optims.items() if op.param_groups is None)
+        if len(params.optims) >= 2 and unscoped:
+            raise ValueError(
+                "Trainer with multiple optimizers requires every optimizer to scope its "
+                "parameters via `param_groups` (NNParamGroupSpec); these have none and would "
+                f"each grab all net parameters, double-stepping them: {unscoped}."
+            )
         optimizers = {
             name: opt_params.name(
                 net=self.model.net,
