@@ -366,6 +366,12 @@ def jepa_train_step_factory(
         m.net.train()
         predictor.train()
         m.net.zero_grad()
+        # The predictor may live outside `model.net` (its params added to the
+        # optimizer directly, per the docstring's alternate path) — then
+        # `m.net.zero_grad()` above does not reach it. Zero it explicitly so
+        # its gradients don't accumulate across steps. No-op when it is a
+        # submodule of `model.net` (the recommended path).
+        predictor.zero_grad()
 
         # Standard dataloader contract: (X, Y) or single tensor. Y is
         # ignored — JEPA is self-supervised.
