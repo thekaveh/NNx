@@ -141,6 +141,7 @@ def test_quickstart_end_to_end(tmp_path, monkeypatch):
 
     assert isinstance(run.id, str) and len(run.id) == 32
     assert (tmp_path / "runs" / run.id / "run.yaml").exists()
+    assert len(run.idps) == 4  # 2 batches/epoch (32/16) × 2 epochs — one IDP per batch
 
     import numpy as np
 
