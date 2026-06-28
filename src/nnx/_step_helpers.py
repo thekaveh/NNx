@@ -1,6 +1,6 @@
 """Shared utilities for custom train_step_fn factories.
 
-The paradigm step factories (KD, SimCLR, Mixup, CutMix, diffusion) all
+The paradigm step factories (e.g. KD, SimCLR, Mixup, CutMix, diffusion) all
 do the same boilerplate after their per-paradigm loss computation:
 NaN-guard, gradient clipping, optimizer step. Without a shared helper,
 each factory either silently dropped the relevant NNOptimParams knobs
