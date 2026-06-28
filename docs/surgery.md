@@ -1,6 +1,6 @@
 # Model surgery — `nnx.surgery`
 
-The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Module` and return a fresh module with a structural change applied. Three of the five (`widen`, `deepen`, `low_rank_factorize` at max rank) are **function-preserving** — the surged module's forward output equals the original's *before any training step*, so `NNModel.train()` can immediately resume refinement without an accuracy cliff. The remaining two (`drop_layer`, `low_rank_factorize` at lower rank) are chain-preserving but change the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality.
+The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Module` and return a fresh module with a structural change applied. Four are **function-preserving** in some sense — `widen` and `deepen` unconditionally preserve the forward output (before any training step); `low_rank_factorize` is function-preserving at max rank and approximate below; `expand_embedding` preserves the forward output on original token IDs. Only `drop_layer` is purely chain-preserving — it changes the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality. See the table in §1 for the per-primitive breakdown.
 
 This is the unique compositional payoff of pairing surgery primitives with a training loop in the same toolkit: every primitive returns a fresh `nn.Module` instance, and that instance is a drop-in target for `NNModel.train()`.
 
@@ -134,6 +134,12 @@ If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) e
 - `drop_layer` is never function-preserving (with one degenerate exception: if the dropped layer was already the identity on its inputs — e.g. a ReLU fed strictly positive activations). The function is chain-preserving: dotted-name lookup, downstream shapes, and the forward pass still work.
 - `low_rank_factorize` at `rank < min(out, in)` is an *approximation*. The Frobenius error of the truncation is bounded by the L2 norm of the discarded singular values (Eckart-Young) — that bound is asserted as a regression test in `tests/test_surgery_low_rank.py`.
 - `expand_embedding` preserves the original rows exactly (so any token ID `< old_num` is unchanged) but introduces new rows that *must* be initialized — pick `init="zeros"` for a safe default, `init="copy_mean"` when you want the new rows to warm-start near the existing manifold.
+
+## See it in practice
+
+Worked end-to-end in [ml-lab](https://github.com/thekaveh/ml-lab):
+
+- [model_surgery-mnist-ffnn-pytorch](https://github.com/thekaveh/ml-lab/blob/main/model_surgery-mnist-ffnn-pytorch/notebook.ipynb) — applies `nnx.surgery.widen` and `nnx.surgery.deepen` for function-preserving architectural edits on a trained MNIST `FeedFwdNN`.
 
 ## 6. Combining with `nnx.finetune` for the "freeze old, train new" pattern
 

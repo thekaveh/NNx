@@ -15,7 +15,7 @@ ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
 |---|---|
 | `nnx.ViTNN` | Small Vision Transformer encoder. Patch-embed conv + learned pos embeds + CLS + N pre-norm blocks (RMSNorm + bidirectional MHA + SwiGLU). `forward(x, mask=None)` accepts an optional `BoolTensor[B, n_patches]` mask — True = keep — so masked patches never enter attention. |
 | `nnx.ViTBlock` | Single pre-norm ViT block. Reused by `JEPAPredictor`. |
-| `nnx.JEPAPredictor` | Small predictor module mapping `(context_embeds, context_positions, target_positions) -> predicted_target_embeds`. Uses its own (smaller) hidden width + position embeddings + a learned mask token. |
+| `nnx.JEPAPredictor` | Small predictor module mapping `(context_embeds, context_positions, target_positions) -> predicted_target_embeds`. Uses its own (smaller) hidden width + position embeddings + a learned mask token. Constructor params: `embed_dim, n_patches, predictor_dim=None, n_layers, n_heads, ffn_mult` (default `4`). |
 | `nnx.build_target_encoder(source)` | Deep-copy `source`, freeze every param (`requires_grad=False`), pin to `eval()`. The factory function freezes again defensively. |
 | `nnx.update_ema(source, target, momentum)` | In-place EMA update: `target ← momentum · target + (1 - momentum) · source`. Name-keyed against the target's params so a source with extra submodules (the typical "predictor under model.net" idiom) is fine. |
 | `nnx.random_block_mask(n_patches, grid_size, …)` | Sample one rectangular block as the prediction target. Returns `(context_mask, target_mask)` 1-D BoolTensors. |

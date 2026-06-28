@@ -106,7 +106,7 @@ Adding a new option is a one-place change: extend the enum + the `match` block. 
 
 ## 4. What lands on disk
 
-Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the run's `state()` dict):
+Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer]}` partial dict):
 
 ```
 runs/<id>/
