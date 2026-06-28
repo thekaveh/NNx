@@ -1,0 +1,130 @@
+/* ==========================================================================
+   NNx docs — "Slate + Cobalt" theme
+   Neutrals: a cool-slate ramp (#0B121B … #A4ABAF).
+   Accent:   cobalt blue (#2563EB light / #5C9DFF dark), used only on the
+             things you act on — links, active nav, code rail, primary buttons.
+   Body = Inter, code = JetBrains Mono (theme.font); headings = Space Grotesk.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap');
+
+/* ---------- LIGHT (default scheme): slate neutrals + cobalt ---------- */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color:           #FAFBFC;
+  --md-default-fg-color:           #1A2430;
+  --md-default-fg-color--light:    #404C57;
+  --md-default-fg-color--lighter:  #5E6974;
+  --md-default-fg-color--lightest: #E6E9EB;
+
+  --md-primary-fg-color:           #1A2430;
+  --md-primary-fg-color--light:    #404C57;
+  --md-primary-fg-color--dark:     #0B121B;
+  --md-primary-bg-color:           #FFFFFF;
+  --md-primary-bg-color--light:    rgba(255, 255, 255, .7);
+
+  --md-accent-fg-color:            #1D4ED8;
+  --md-typeset-a-color:            #2563EB;
+
+  --md-code-bg-color:              #F1F4F6;
+  --md-code-fg-color:              #1A2430;
+
+  --nnx-surface:                   #FFFFFF;
+  --nnx-border:                    #E6E9EB;
+}
+
+/* ---------- DARK (slate scheme): slate neutrals + brighter cobalt ---------- */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color:           #0B121B;
+  --md-default-fg-color:           #B6BDC3;
+  --md-default-fg-color--light:    #8C959A;
+  --md-default-fg-color--lighter:  #7B848B;
+  --md-default-fg-color--lightest: #2E3945;
+
+  --md-primary-fg-color:           #0B121B;
+  --md-primary-fg-color--light:    #1A2430;
+  --md-primary-fg-color--dark:     #060B12;
+  --md-primary-bg-color:           #D7DCE0;
+  --md-primary-bg-color--light:    rgba(215, 220, 224, .7);
+
+  --md-accent-fg-color:            #93C0FF;
+  --md-typeset-a-color:            #5C9DFF;
+
+  --md-code-bg-color:              #121A24;
+  --md-code-fg-color:              #C2C8CD;
+
+  --nnx-surface:                   #1A2430;
+  --nnx-border:                    #2E3945;
+
+  --md-footer-bg-color:            #0B121B;
+  --md-footer-bg-color--dark:      #060B12;
+}
+
+/* ---------- typography: Space Grotesk display, tightened ---------- */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-header__title,
+.md-nav__title {
+  font-family: "Space Grotesk", var(--md-text-font, "Inter"), -apple-system, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.md-typeset h1 { color: var(--md-default-fg-color); }
+
+/* ---------- neutral header + tabs (no saturated band) ---------- */
+.md-header {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  box-shadow: 0 1px 0 var(--nnx-border);
+}
+.md-tabs {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  box-shadow: inset 0 -1px 0 var(--nnx-border);
+}
+
+/* ---------- links: refined underline, cobalt hover ---------- */
+.md-typeset a {
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--md-typeset-a-color) 38%, transparent);
+}
+.md-typeset a:hover {
+  color: var(--md-accent-fg-color);
+  border-bottom-color: currentColor;
+}
+
+/* active / hovered nav in cobalt */
+.md-nav__link--active,
+.md-nav__link:focus,
+.md-nav__link:hover { color: var(--md-typeset-a-color); }
+
+/* ---------- signature: cobalt rail on fenced code blocks ---------- */
+.md-typeset .highlight {
+  border: 1px solid var(--nnx-border);
+  border-left: 3px solid var(--md-typeset-a-color);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.md-typeset .highlight pre { margin: 0; }
+
+/* inline code: subtle border */
+.md-typeset code {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 5px;
+}
+.md-typeset .highlight code { border: 0; }
+
+/* ---------- admonitions + buttons ---------- */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 10px;
+  border-left-width: 3px;
+}
+.md-typeset .md-button--primary {
+  background-color: var(--md-typeset-a-color);
+  border-color: var(--md-typeset-a-color);
+  color: #ffffff;
+}
+
+/* tighten body measure a touch for readability */
+.md-grid { max-width: 62rem; }
