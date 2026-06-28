@@ -31,6 +31,24 @@ def test_gradient_flow_returns_plotly_figure_after_backward():
     assert isinstance(fig, go.Figure)
 
 
+def test_gradient_flow_accepts_nnmodel_and_unwraps_net():
+    """gradient_flow accepts an NNModel (unwrapped to .net), like the sibling viz fns."""
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams, NNParams
+
+    m = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    x = torch.randn(2, 4)
+    y = torch.tensor([0, 1])
+    nn.functional.cross_entropy(m.net(x), y).backward()
+
+    fig = gradient_flow(m)  # NNModel — previously raised AttributeError
+    assert isinstance(fig, go.Figure)
+    # Identical to passing the unwrapped .net.
+    assert len(fig.data[0].x) == len(gradient_flow(m.net).data[0].x)
+
+
 def test_gradient_flow_one_bar_per_trainable_param():
     """The bar trace's x-axis has one entry per nn.Parameter with a gradient."""
     model = _tiny_model()

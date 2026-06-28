@@ -10,8 +10,10 @@ sites. Centralized here so a future tightening (or relaxation under
 documented context) happens in exactly one place.
 
 The companion ``load_pretrained`` in ``nnx.finetune.loading`` accepts
-an additional ``nn.Module`` source and uses ``map_location="cpu"``, so
-it deliberately does not consume this helper — its surface is wider.
+an additional ``nn.Module`` source, so it deliberately does not consume
+this helper — its surface is wider. Both paths load tensors with
+``map_location="cpu"`` so a GPU-saved checkpoint restores on a CPU-only
+machine.
 """
 
 from __future__ import annotations
@@ -49,8 +51,11 @@ def _resolve_source_to_state_dict(source: PeftStateDictSource, fn_name: str) -> 
         # weights_only=True: the adapter checkpoint is a plain dict of
         # tensors with no Python objects, so the strict loader works
         # AND removes the arbitrary-code-execution risk on
-        # user-supplied paths.
-        return torch.load(str(source), weights_only=True)
+        # user-supplied paths. map_location="cpu" lets a GPU-saved
+        # adapter load on a CPU-only machine — the downstream
+        # load_state_dict copies the tensors onto the target module's
+        # device — matching nnx.finetune.load_pretrained.
+        return torch.load(str(source), weights_only=True, map_location="cpu")
     if isinstance(source, dict):
         return source
     raise TypeError(f"{fn_name} source must be a path or dict, got {type(source).__name__}")
