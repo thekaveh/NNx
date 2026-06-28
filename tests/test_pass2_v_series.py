@@ -155,6 +155,20 @@ def test_v1_train_params_from_state_legacy_yaml_no_seed_key():
     assert p.seed is None
 
 
+def test_v1_set_seed_strict_enables_deterministic_algorithms():
+    """`set_seed(strict=True)` toggles torch deterministic-algorithms mode.
+
+    That flag is global process state, so save/restore in finally to keep the
+    rest of the suite isolated.
+    """
+    prior = torch.are_deterministic_algorithms_enabled()
+    try:
+        set_seed(0, strict=True)
+        assert torch.are_deterministic_algorithms_enabled() is True
+    finally:
+        torch.use_deterministic_algorithms(prior)
+
+
 def test_v2_dataloader_worker_init_fn_deterministic():
     """Two calls to worker_init_fn with the same worker_id under the same
     torch seed produce the same numpy RNG state."""
