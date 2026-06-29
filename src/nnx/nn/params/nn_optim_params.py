@@ -66,6 +66,19 @@ class NNOptimParams:
             raise ValueError(
                 f"grad_clip_norm must be > 0 when set, got {self.grad_clip_norm} (use None to disable clipping, not 0)."
             )
+        #   * max_lr < 0: a negative LR performs gradient *ascent*. max_lr=0
+        #     is allowed — it is an explicit "freeze updates" choice (used as a
+        #     no-update idiom, e.g. probing a loss without changing weights);
+        #     unlike the knobs above, 0 is intended, not a silent footgun.
+        #   * weight_decay < 0: grows weights instead of decaying them (matches
+        #     the per-group NNParamGroupSpec guard).
+        if self.max_lr < 0:
+            raise ValueError(
+                f"max_lr must be non-negative, got {self.max_lr} "
+                "(a negative LR performs gradient ascent; 0 freezes updates)."
+            )
+        if self.weight_decay < 0:
+            raise ValueError(f"weight_decay must be non-negative, got {self.weight_decay} (use 0 to disable).")
         # Fail fast on plain dicts: they construct fine but crash much
         # later inside state() during NNRun hashing with an opaque
         # AttributeError. Same construction-time convention as the

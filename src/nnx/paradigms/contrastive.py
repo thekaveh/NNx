@@ -112,6 +112,9 @@ def simclr_train_step_factory(*, temperature: float = 0.5) -> TrainStepFn:
         ``(view1=X, view2=Y)`` and produce a shape-mismatch in
         :func:`nt_xent_loss`. Use a paired-view dataset whose
         ``__getitem__`` returns ``(view1, view2)`` instead.
+
+    Raises:
+        ValueError: if ``temperature`` <= 0.
     """
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")

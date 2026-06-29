@@ -603,3 +603,19 @@ def test_trainer_per_optim_param_groups_partition_params(tmp_path, monkeypatch):
     assert all(n.startswith("G.") for n in g_names)
     d_names = {n for n, p in model.net.named_parameters() if id(p) in d_param_ids}
     assert all(n.startswith("D.") for n in d_names)
+
+
+def test_trainer_multi_optim_without_param_groups_raises(tmp_path, monkeypatch):
+    """Two optimizers with no param_groups would each grab all net parameters and
+    silently double-step them. The Trainer fails fast at train(); the params
+    object itself stays constructible (serialization / builder round-trips)."""
+    monkeypatch.chdir(tmp_path)
+    model = _make_gan_model()
+    unscoped = NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_gan_loader(n=16),
+        optims={"G": unscoped, "D": unscoped},
+    )  # constructs fine — the guard lives at train(), not __post_init__
+    with pytest.raises(ValueError, match="scope its parameters via"):
+        Trainer(model=model).train(params=params, trainer_step_fn=lambda ctx: None)

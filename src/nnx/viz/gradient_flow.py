@@ -7,11 +7,16 @@ gradients are still attached to the parameters.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Union
+
 import plotly.graph_objects as go
 from torch import nn
 
+if TYPE_CHECKING:
+    from ..nn.nn_model import NNModel
 
-def gradient_flow(model: nn.Module) -> go.Figure:
+
+def gradient_flow(model: Union[nn.Module, NNModel]) -> go.Figure:
     """Return a Plotly bar chart of per-parameter L2 gradient norms.
 
     Call AFTER ``loss.backward()`` and BEFORE ``optimizer.zero_grad()``.
@@ -24,8 +29,9 @@ def gradient_flow(model: nn.Module) -> go.Figure:
     during the forward pass) are also skipped.
 
     Args:
-        model: an ``nn.Module`` whose gradients have just been populated
-            by ``loss.backward()``.
+        model: an ``NNModel`` (unwrapped to its ``.net``) or any
+            ``nn.Module`` whose gradients have just been populated by
+            ``loss.backward()``.
 
     Returns:
         A Plotly ``Figure`` with one bar per trainable parameter,
@@ -36,6 +42,11 @@ def gradient_flow(model: nn.Module) -> go.Figure:
             often because ``loss.backward()`` wasn't called before
             this function.
     """
+    from ..nn.nn_model import NNModel
+
+    if isinstance(model, NNModel):
+        model = model.net
+
     names: list[str] = []
     norms: list[float] = []
     for name, param in model.named_parameters():

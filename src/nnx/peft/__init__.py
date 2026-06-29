@@ -5,6 +5,11 @@ without re-training the full weight matrix:
 
   - **LoRA** (Low-Rank Adaptation) — wraps an existing :class:`nn.Linear`
     with a frozen base and trainable low-rank residual. See :mod:`lora`.
+  - **DoRA** (Weight-Decomposed Low-Rank Adaptation) — extends LoRA with a
+    trainable per-output-row magnitude vector. See :mod:`dora`.
+  - **IA³** (Infused Adapter by Inhibiting and Amplifying Inner Activations)
+    — a single learned per-output-dim scaling vector on a frozen Linear; the
+    smallest adapter in the family. See :mod:`ia3`.
   - **Adapter layers** — bottleneck residual blocks the user inserts
     into the forward pass. See :mod:`adapters`.
   - **Prefix tuning** — learnable per-layer K/V prefixes attached to a

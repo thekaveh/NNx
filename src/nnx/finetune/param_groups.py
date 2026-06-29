@@ -64,6 +64,26 @@ class NNParamGroupSpec:
                 f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): "
                 "specify at most one of `lr` and `lr_multiplier`, not both"
             )
+        # Fail-fast on lr/scale footguns (same convention as NNOptimParams /
+        # NNSchedulerParams): lr or lr_multiplier <= 0 silently zeros the group's
+        # effective learning rate (params never update) or, when negative, runs
+        # gradient ascent on that group. weight_decay == 0 is valid (disables it),
+        # so only reject a negative.
+        if self.lr is not None and self.lr <= 0:
+            raise ValueError(
+                f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): lr must be positive, "
+                f"got {self.lr} (to freeze a group use nnx.finetune.freeze, not lr=0)"
+            )
+        if self.lr_multiplier is not None and self.lr_multiplier <= 0:
+            raise ValueError(
+                f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): lr_multiplier must be "
+                f"positive, got {self.lr_multiplier}"
+            )
+        if self.weight_decay is not None and self.weight_decay < 0:
+            raise ValueError(
+                f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): weight_decay must be "
+                f"non-negative, got {self.weight_decay}"
+            )
 
     def state(self) -> dict:
         d: dict = dict(name_pattern=self.name_pattern)
