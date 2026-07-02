@@ -1,0 +1,2 @@
+# Tooling used by repository automation, not runtime package dependencies.
+uv==0.11.19

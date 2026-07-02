@@ -42,6 +42,7 @@ nav:
   - GGUF & Ollama: gguf.md
   - DPO: dpo.md
   - API Reference: api.md
+  - External dependency contracts: external-contracts.md
   - vs Lightning / HF / fastai: comparison.md
   - Architecture diagram: architecture.md
 

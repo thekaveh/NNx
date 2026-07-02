@@ -105,8 +105,8 @@ def test_drop_layer_picks_minimum_importance_candidate():
     assert isinstance(dropped[4], nn.Linear)
 
 
-def test_drop_layer_importance_ignored_for_single_string():
-    """Passing importance with a single layer_name is silently ignored."""
+def test_drop_layer_rejects_importance_for_single_string():
+    """Passing importance with a single layer_name is ambiguous."""
     net = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
     sentinel = {"called": False}
 
@@ -114,8 +114,8 @@ def test_drop_layer_importance_ignored_for_single_string():
         sentinel["called"] = True
         return 0.0
 
-    dropped = drop_layer(net, layer_name="1", importance=score)
-    assert isinstance(dropped[1], nn.Identity)
+    with pytest.raises(ValueError, match="single layer_name"):
+        drop_layer(net, layer_name="1", importance=score)
     assert sentinel["called"] is False
 
 

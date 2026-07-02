@@ -57,7 +57,7 @@ def main():
     def hamming_error(Y, Y_hat):
         return float((Y != Y_hat).mean())
 
-    def predicted_class_entropy(Y, Y_hat):
+    def predicted_class_entropy(_Y, Y_hat):
         # Distribution of predicted classes, then Shannon entropy in nats.
         _, counts = np.unique(Y_hat, return_counts=True)
         p = counts / counts.sum()

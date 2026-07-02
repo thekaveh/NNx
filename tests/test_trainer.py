@@ -287,6 +287,44 @@ def test_trainer_invokes_callbacks(tmp_path, monkeypatch):
     ]
 
 
+def test_trainer_step_exception_still_dispatches_train_end(tmp_path, monkeypatch):
+    """Trainer callbacks must clean up even when the step function aborts."""
+    monkeypatch.chdir(tmp_path)
+
+    from nnx import Callback
+
+    class _RecordingCallback(Callback):
+        ended = False
+
+        def on_train_end(self, ctx):
+            self.ended = True
+
+    def boom_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:  # noqa: ARG001
+        raise RuntimeError("trainer boom")
+
+    cb = _RecordingCallback()
+    trainer = Trainer(model=_supervised_model())
+    with pytest.raises(RuntimeError, match="trainer boom"):
+        trainer.train(
+            params=NNTrainerParams(
+                n_epochs=1,
+                train_loader=_supervised_loader(n=8),
+                optims={
+                    "main": NNOptimParams(
+                        name=Optims.ADAM,
+                        max_lr=1e-3,
+                        momentum=(0.9, 0.999),
+                        weight_decay=0.0,
+                    )
+                },
+            ),
+            trainer_step_fn=boom_step,
+            callbacks=[cb],
+        )
+
+    assert cb.ended is True
+
+
 def test_trainer_early_stop_via_callback(tmp_path, monkeypatch):
     """A callback setting ctx.should_stop = True must terminate the
     Trainer loop early — same contract as NNModel.train."""

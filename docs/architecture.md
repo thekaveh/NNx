@@ -8,7 +8,6 @@ written breakdown.
 
 ![NNx architecture](assets/architecture.svg)
 
-!!! tip "Interactive version"
-    Open the [full interactive diagram](architecture.html){target="_blank" rel="noopener"}
-    in a new tab — it renders the same flow with hover labels on every node plus a
-    per-layer explanation card grid.
+!!! tip "Standalone version"
+    Open the [standalone diagram page](architecture.html){target="_blank" rel="noopener"}
+    in a new tab — it renders the same flow with a per-layer explanation card grid.
