@@ -39,7 +39,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-tools.txt
+            uv.lock
+
+      - name: Verify dependency lock
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-tools.txt
+          uv lock --check
 
       - name: Install package (editable + dev + every optional extra)
         # Match ci.yml — every optional-dep extra is installed for the
@@ -48,7 +57,6 @@ jobs:
         # publish to PyPI. A poisoned release is permanent (PyPI versions
         # can be yanked but not deleted), so the gate must be thorough.
         run: |
-          python -m pip install --upgrade pip
           pip install -e ".[dev,docs,hub,viz,viz-interactive,quantize,tensorboard,wandb,onnx,onnx-dynamo,embeddings,lm,gguf-write]"
 
       - name: Lint with ruff

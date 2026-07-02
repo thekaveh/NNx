@@ -78,6 +78,13 @@ pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for
 pip install "thekaveh-nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
 ```
 
+For a reproducible contributor environment, install with the committed resolver state:
+
+```bash
+python -m pip install -r requirements-tools.txt
+uv sync --all-extras --frozen
+```
+
 For local development (editable install from a git checkout, including the test/lint toolchain), see [CONTRIBUTING.md §1](CONTRIBUTING.md#1-getting-set-up).
 
 ## 3. Quickstart

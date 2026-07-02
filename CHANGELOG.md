@@ -10,6 +10,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 - **Added dependency/security maintenance automation.** Dependabot now watches GitHub Actions and Python dependency manifests weekly, and a new `security` workflow runs `pip-audit` against the project dependency graph on relevant PRs, weekly schedule, and manual dispatch.
 - **Pinned GitHub Actions workflows to immutable SHAs.** CI, docs, release, release-please, and security workflows now execute exact action commits, with comments preserving the source tag/branch each SHA was resolved from.
+- **Added a committed dependency lock and drift gate.** `uv.lock` now captures the resolved dependency graph, `requirements-tools.txt` pins the resolver tool, README documents frozen `uv` sync, and CI/release gates run `uv lock --check` before installing test extras.
 - **Relicensed from MIT to the Apache License 2.0.** The `LICENSE` file now carries the full Apache 2.0 text and the package metadata declares `license = "Apache-2.0"` (SPDX). Apache 2.0 adds an explicit patent grant and patent-retaliation termination clause on top of MIT's permissions; it remains a permissive license. Copyright holder is unchanged (Kaveh Razavi).
 
 ### Fixed

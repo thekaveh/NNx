@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "pyproject.toml"
+      - "requirements-tools.txt"
+      - "uv.lock"
       - ".github/workflows/security.yml"
   schedule:
     - cron: "23 9 * * 1"
