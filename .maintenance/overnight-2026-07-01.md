@@ -16,6 +16,7 @@
 | 1 | Genuine | 13 | Fixed or disposition recorded | Scanned package entry points, training loops, ONNX export paths, visualization helpers, surgery API, docs navigation, numbering, examples, CI, release hygiene, supply-chain automation, and architecture docs. |
 | 2 | Genuine | 1 | Fixed | Rechecked workflow action references, resolved each upstream tag/branch with `git ls-remote`, pinned all workflow `uses:` refs to immutable SHAs, and validated workflow YAML. |
 | 3 | Genuine | 1 | Fixed | Audited dependency-resolution reproducibility, generated `uv.lock`, pinned the `uv` tool in `requirements-tools.txt`, added CI/release lock drift gates, and documented frozen contributor installs. |
+| 4 | Genuine | 1 | Fixed | Classified test import boundaries, added a public-facade export regression test, and documented when deep test imports are intentional implementation-unit coverage. |
 
 ## 1.3. Issue Log
 
@@ -34,8 +35,8 @@
 | OM-011 | Example hygiene | `examples/03_custom_metrics.py` | Low | Example metric accepted an unused `Y` parameter. | It encouraged noisy unused-argument patterns. | Rename the parameter to `_Y`. | Fixed | Ruff and full pytest suite. |
 | OM-012 | Build reproducibility | Packaging / CI | Medium | The project had no committed lockfile or constraints file for release dependency resolution. | Reproducible release environments remained dependent on resolver state. | Commit `uv.lock`, pin the resolver tool, document frozen contributor sync, and gate CI/release on `uv lock --check`. | Fixed | `uv lock`, `uv lock --check`, `uv sync --all-extras --frozen --dry-run`, workflow YAML validation. |
 | OM-013 | CI hardening | `.github/workflows/*.yml` | Low | GitHub Actions were pinned to moving tags rather than immutable SHAs. | Tag movement is a supply-chain risk. | Pin action references to SHAs while preserving source tag comments for reviewability. | Fixed | Resolved refs with `git ls-remote`; workflow YAML validation. |
-| OM-014 | Test architecture | `tests/` | Low | Some behavior tests import deep implementation modules directly. | Deep imports can make public contract tests more brittle. | Split public-contract tests from implementation-unit tests over future passes. | Deferred | Existing tests remain passing; future pass should classify each deep import. |
+| OM-014 | Test architecture | `tests/` | Low | Some behavior tests imported deep implementation modules without an explicit boundary policy. | Deep imports can make public contract tests more brittle. | Document the public-vs-implementation import policy and add top-level facade regression coverage. | Fixed | `tests/test_public_api_exports.py`; full pytest suite. |
 
 ## 1.4. Deferred Decisions
 
-- Deep test imports are deferred for classification so implementation-unit coverage is not accidentally weakened while moving public-contract assertions.
+- None currently recorded after pass 4.
