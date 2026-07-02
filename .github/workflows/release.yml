@@ -30,10 +30,12 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        # actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -82,10 +84,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        # actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.11'
           cache: pip
@@ -122,11 +126,13 @@ jobs:
         # Only runs on tag pushes; workflow_dispatch builds without publishing
         # so you can inspect the artifacts before cutting a real release.
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
 
       - name: Upload build artifacts (workflow_dispatch dry-run)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v5
+        # actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: dist
           path: dist/
@@ -155,7 +161,8 @@ jobs:
       - name: Set up Python
         # No pip cache here — we want fresh resolution to catch PyPI
         # propagation lag honestly. Cache would defeat the purpose.
-        uses: actions/setup-python@v6
+        # actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.11'
 
