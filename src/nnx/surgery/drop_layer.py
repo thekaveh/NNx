@@ -46,8 +46,8 @@ def drop_layer(
         importance: optional callable ``fn(submodule) -> float``. When
             ``layer_name`` is a list, the candidate with the *minimum*
             importance score is dropped (lowest = least informative =
-            safest to remove). Ignored when ``layer_name`` is a single
-            string.
+            safest to remove). Rejected when ``layer_name`` is a single
+            string because there is no candidate-selection step to score.
 
     Returns:
         A fresh :class:`nn.Module` with the chosen layer replaced by
@@ -60,7 +60,8 @@ def drop_layer(
     Raises:
         KeyError: if any candidate name is missing.
         ValueError: if ``layer_name`` is an empty list, or a list
-            without ``importance``.
+            without ``importance``, or a single string with
+            ``importance``.
     """
     chosen = _resolve_target(model, layer_name, importance)
 
@@ -80,7 +81,11 @@ def _resolve_target(
     """Resolve ``layer_name`` (string or list) + optional ``importance``
     to a single dotted name. Raises on empty / missing / no-importance."""
     if isinstance(layer_name, str):
-        # Single name: confirm it resolves; ignore importance.
+        if importance is not None:
+            raise ValueError(
+                "drop_layer: importance= is only valid when layer_name is a candidate list, not a single layer_name"
+            )
+        # Single name: confirm it resolves.
         get_module(model, layer_name)
         return layer_name
 

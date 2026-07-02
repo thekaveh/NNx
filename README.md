@@ -10,7 +10,7 @@ NNx owns the boilerplate around supervised training so you can focus on the mode
 
 ![NNx architecture](docs/assets/architecture.svg)
 
-The diagram is generated via the `architecture-diagram` skill. A standalone interactive copy lives at [`docs/architecture.html`](docs/architecture.html); the embedded SVG above mirrors its content.
+The diagram is generated via the `architecture-diagram` skill. A standalone themed copy lives at [`docs/architecture.html`](docs/architecture.html); the embedded SVG above mirrors its content.
 
 **Reading the diagram top-to-bottom (summary):**
 
@@ -238,7 +238,8 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 - [Model surgery](docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
 - [API reference](docs/api.md) — auto-generated from docstrings via mkdocstrings. Read this when you want the canonical signature / docstring for a public symbol.
 - [Comparison vs Lightning / HF / fastai / Composer](docs/comparison.md) — honest scope-explicit comparison: when to use NNx vs Lightning vs HF Transformers vs fastai vs MosaicML Composer, axis by axis. Read this when you're picking a PyTorch training toolkit and want a real decision matrix instead of a marketing page.
-- [Architecture diagram](docs/architecture.md) — the §1.1 diagram as a themed page, with a link to the standalone interactive (hover-label) HTML version. Read this when the embedded SVG is hard to follow.
+- [Architecture diagram](docs/architecture.md) — the §1.1 diagram as a themed page, with a link to the standalone HTML version. Read this when the embedded SVG is hard to follow.
+- [External dependency contracts](docs/external-contracts.md) — ledger of optional integrations, version sources, verification coverage, and intentionally gated real-service checks. Read this before changing dependency ranges, external CLI commands, or publish workflows.
 
 ### 5.2. Workflow + history
 

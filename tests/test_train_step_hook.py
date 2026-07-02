@@ -14,11 +14,13 @@ Covers:
 
 from __future__ import annotations
 
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Callback,
     Devices,
     Losses,
     Nets,
@@ -118,6 +120,31 @@ def test_custom_train_step_fn_is_invoked(tmp_path, monkeypatch):
     )
     assert calls["n"] == 4
     assert len(run.idps) == 4
+
+
+def test_train_step_exception_still_dispatches_train_end(tmp_path, monkeypatch):
+    """Callback cleanup must run even when a custom train step aborts."""
+    monkeypatch.chdir(tmp_path)
+
+    class _RecordingCallback(Callback):
+        ended = False
+
+        def on_train_end(self, ctx):
+            self.ended = True
+
+    def boom_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:  # noqa: ARG001
+        raise RuntimeError("boom")
+
+    cb = _RecordingCallback()
+    model = _make_model()
+    with pytest.raises(RuntimeError, match="boom"):
+        model.train(
+            params=_make_train_params(_make_loader(n=8), n_epochs=1),
+            train_step_fn=boom_step,
+            callbacks=[cb],
+        )
+
+    assert cb.ended is True
 
 
 def test_train_step_context_carries_batch_and_epoch_idx(tmp_path, monkeypatch):

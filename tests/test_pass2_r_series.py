@@ -100,6 +100,11 @@ class _ConstantLoss(torch.nn.Module):
         return torch.tensor(self._value, requires_grad=True)
 
 
+class _LogitScaledNaNLoss(torch.nn.Module):
+    def forward(self, logits, _y):  # noqa: ARG002
+        return logits.sum() * float("nan")
+
+
 def test_r1_nan_loss_raises(tmp_path, monkeypatch):
     """Stub the loss to NaN; the train loop should detect the non-finite
     value and raise FloatingPointError rather than continuing to save
@@ -116,6 +121,27 @@ def test_r1_nan_loss_raises(tmp_path, monkeypatch):
 
     with pytest.raises(FloatingPointError, match="non-finite training loss"):
         model.train(params=_train_params(loader))
+
+
+def test_r1_nan_loss_does_not_mutate_weights(tmp_path, monkeypatch):
+    """The non-finite guard must run before backward/step, so divergent
+    losses cannot poison weights before the exception reaches the caller."""
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+
+    X = torch.randn(32, 4)
+    y = torch.randint(0, 2, (32,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=16)
+
+    model = _model()
+    before = {name: param.detach().clone() for name, param in model.net.named_parameters()}
+    model.loss_fn = _LogitScaledNaNLoss()
+
+    with pytest.raises(FloatingPointError, match="non-finite training loss"):
+        model.train(params=_train_params(loader))
+
+    for name, param in model.net.named_parameters():
+        assert torch.equal(param, before[name])
 
 
 def test_r1_inf_loss_raises(tmp_path, monkeypatch):

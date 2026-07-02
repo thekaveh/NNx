@@ -135,13 +135,13 @@ If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) e
 - `low_rank_factorize` at `rank < min(out, in)` is an *approximation*. The Frobenius error of the truncation is bounded by the L2 norm of the discarded singular values (Eckart-Young) — that bound is asserted as a regression test in `tests/test_surgery_low_rank.py`.
 - `expand_embedding` preserves the original rows exactly (so any token ID `< old_num` is unchanged) but introduces new rows that *must* be initialized — pick `init="zeros"` for a safe default, `init="copy_mean"` when you want the new rows to warm-start near the existing manifold.
 
-## See it in practice
+## 6. See it in practice
 
 Worked end-to-end in [ml-lab](https://github.com/thekaveh/ml-lab):
 
 - [model_surgery-mnist-ffnn-pytorch](https://github.com/thekaveh/ml-lab/blob/main/model_surgery-mnist-ffnn-pytorch/notebook.ipynb) — applies `nnx.surgery.widen` and `nnx.surgery.deepen` for function-preserving architectural edits on a trained MNIST `FeedFwdNN`.
 
-## 6. Combining with `nnx.finetune` for the "freeze old, train new" pattern
+## 7. Combining with `nnx.finetune` for the "freeze old, train new" pattern
 
 `expand_embedding` returns a `frozen_mask` of bool shape `(new_num_embeddings,)` — `True` for rows that came from the original embedding, `False` for new rows. The mask is a hand-off to the caller's training step:
 

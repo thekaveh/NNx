@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from collections.abc import Callable, Mapping
@@ -74,6 +75,20 @@ LegacyCallback = Callable[[list[NNIterationDataPoint]], None]
 CallbackLike = Union["Callback", LegacyCallback]
 
 
+class _CallbackFinalizer:
+    def __init__(self, callbacks: list[Any], ctx: Any):
+        self._callbacks = callbacks
+        self._ctx = ctx
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for cb in self._callbacks:
+            cb.on_train_end(self._ctx)
+        return False
+
+
 class PredictResult(NamedTuple):
     """Structured result of NNModel.predict().
 
@@ -116,6 +131,20 @@ class TrainStepContext:
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
 
 
+def _finite_training_loss_value(train_loss: torch.Tensor) -> float:
+    loss_value = float(train_loss.detach())
+    # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
+    # weights. Raise before backward/step so non-finite gradients cannot
+    # mutate model parameters.
+    if not np.isfinite(loss_value):
+        raise FloatingPointError(
+            f"non-finite training loss ({loss_value!r}) — training diverged. "
+            "Check learning rate, gradient clipping (NNOptimParams.grad_clip_norm), "
+            "or input normalization."
+        )
+    return loss_value
+
+
 def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     """Standard supervised training step: forward → loss → backward → step.
 
@@ -156,6 +185,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         with torch.amp.autocast(device_type="cuda"):
             X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
             train_loss = model.loss_fn(Y_hat_logits, Y)
+        loss_value = _finite_training_loss_value(train_loss)
         # Scale loss by 1/N so accumulated grads = mean across batches.
         scaler.scale(train_loss / accumulate_grad_batches).backward()
         if is_cycle_end:
@@ -169,21 +199,12 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     else:
         X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
         train_loss = model.loss_fn(Y_hat_logits, Y)
+        loss_value = _finite_training_loss_value(train_loss)
         (train_loss / accumulate_grad_batches).backward()
         if is_cycle_end:
             if ctx.grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
             ctx.optimizer.step()
-
-    loss_value = float(train_loss.detach())
-    # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
-    # weights. Raise so the training session terminates loudly.
-    if not np.isfinite(loss_value):
-        raise FloatingPointError(
-            f"non-finite training loss ({loss_value!r}) — training diverged. "
-            "Check learning rate, gradient clipping (NNOptimParams.grad_clip_norm), "
-            "or input normalization."
-        )
 
     return classification_edp(
         Y=Y,
@@ -314,40 +335,36 @@ class NNModel(_HubMixinBase):
         # the default (False) keeps the legacy tracing path regardless of
         # the installed torch version — plain `pip install onnx` is enough.
         try:
-            try:
-                if dynamo:
-                    torch.onnx.export(
-                        self.net,
-                        example_input,
-                        path,
-                        input_names=in_names,
-                        output_names=out_names,
-                        dynamic_shapes=dynamic_shapes,
-                        opset_version=opset_version,
-                        dynamo=True,
-                    )
-                else:
-                    torch.onnx.export(
-                        self.net,
-                        example_input,
-                        path,
-                        input_names=in_names,
-                        output_names=out_names,
-                        dynamic_axes=dynamic_axes,
-                        opset_version=opset_version,
-                        dynamo=False,
-                    )
-            except TypeError:
-                # Older torch versions don't accept the `dynamo` kwarg — they
-                # already use the legacy path by default. If the caller asked
-                # for `dynamo=True` on such a torch, fail loudly rather than
-                # silently falling back to legacy.
-                if dynamo:
+            export_accepts_dynamo = "dynamo" in inspect.signature(torch.onnx.export).parameters
+            if dynamo:
+                if not export_accepts_dynamo:
                     raise RuntimeError(
                         "to_onnx(dynamo=True) requires torch>=2.5 (the dynamo-based "
                         "ONNX exporter wasn't available before then). Upgrade torch or "
                         "call with dynamo=False."
-                    ) from None
+                    )
+                torch.onnx.export(
+                    self.net,
+                    example_input,
+                    path,
+                    input_names=in_names,
+                    output_names=out_names,
+                    dynamic_shapes=dynamic_shapes,
+                    opset_version=opset_version,
+                    dynamo=True,
+                )
+            elif export_accepts_dynamo:
+                torch.onnx.export(
+                    self.net,
+                    example_input,
+                    path,
+                    input_names=in_names,
+                    output_names=out_names,
+                    dynamic_axes=dynamic_axes,
+                    opset_version=opset_version,
+                    dynamo=False,
+                )
+            else:
                 torch.onnx.export(
                     self.net,
                     example_input,
@@ -693,6 +710,7 @@ class NNModel(_HubMixinBase):
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
+            _CallbackFinalizer(normalized_callbacks, ctx),
         ):
             for idx_epoch in range(params.n_epochs):
                 ctx.epoch = idx_epoch
@@ -778,9 +796,6 @@ class NNModel(_HubMixinBase):
 
                 if ctx.should_stop:
                     break
-
-            for cb in normalized_callbacks:
-                cb.on_train_end(ctx)
 
         saved = run.with_idps(idps).save()
         print()

@@ -19,6 +19,7 @@ export without spawning a long-lived viewer process.
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Union
 
 import numpy as np
@@ -97,7 +98,8 @@ def netron_export(
         # Mirror NNModel.to_onnx — pin to the legacy TorchScript path so
         # plain `pip install onnx` is enough; the dynamo path needs
         # `onnxscript` which we keep off the viz dep set.
-        try:
+        export_accepts_dynamo = "dynamo" in inspect.signature(torch.onnx.export).parameters
+        if export_accepts_dynamo:
             torch.onnx.export(
                 net,
                 example_input,
@@ -108,9 +110,7 @@ def netron_export(
                 opset_version=opset_version,
                 dynamo=False,
             )
-        except TypeError:
-            # Older torch (<2.5) doesn't accept the `dynamo` kwarg —
-            # already uses the legacy path by default.
+        else:
             torch.onnx.export(
                 net,
                 example_input,

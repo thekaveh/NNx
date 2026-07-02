@@ -41,7 +41,7 @@ from tqdm import tqdm
 
 from .._metrics import _resolve_metric
 from ..nn.enum.checkpoints import Checkpoints
-from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext
+from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext, _CallbackFinalizer
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
@@ -314,6 +314,7 @@ class Trainer:
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
+            _CallbackFinalizer(normalized_callbacks, ctx),
         ):
             for idx_epoch in range(params.n_epochs):
                 ctx.epoch = idx_epoch
@@ -398,9 +399,6 @@ class Trainer:
 
                 if ctx.should_stop:
                     break
-
-            for cb in normalized_callbacks:
-                cb.on_train_end(ctx)
 
         saved = run.with_idps(idps).save()
         print()

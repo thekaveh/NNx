@@ -111,3 +111,18 @@ def test_to_onnx_dynamo_true_without_onnxscript_raises_clear_error(tmp_path, mon
 
     with pytest.raises(ImportError, match=r"onnx-dynamo"):
         model.to_onnx(str(onnx_path), example_input=example, dynamo=True)
+
+
+def test_to_onnx_dynamo_true_preserves_exporter_typeerror(tmp_path, monkeypatch):
+    """A real exporter/model TypeError must not be rewritten as an
+    old-torch missing-dynamo message."""
+    pytest.importorskip("onnxscript")
+
+    def fake_export(*args, dynamo=False, **kwargs):  # noqa: ARG001
+        raise TypeError("model exploded")
+
+    monkeypatch.setattr(torch.onnx, "export", fake_export)
+
+    model = _model()
+    with pytest.raises(TypeError, match="model exploded"):
+        model.to_onnx(str(tmp_path / "model.onnx"), example_input=torch.randn(2, 4), dynamo=True)

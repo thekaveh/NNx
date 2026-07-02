@@ -23,6 +23,7 @@ instead of `nnx.vis_utils.VisUtils.confusion_matrix(...)`.
 from __future__ import annotations
 
 import colorsys
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -230,6 +231,7 @@ class VisUtils:
         checkpoint: NNCheckpoint,
         ds: NNDataset,
         n_samples: int,
+        random_state: int | None = 0,
         renderer: str | None = RENDERER,
         fig_size: tuple = FIG_SIZE,
         title_size: int = TITLE_SIZE,
@@ -243,18 +245,35 @@ class VisUtils:
         checkpoint — pass the BEST checkpoint to see how well-trained the
         decision space ended up. Returns the Plotly Figure.
         """
-        model = NNModel.from_checkpoint(checkpoint=checkpoint)
+        if n_samples < 2:
+            raise ValueError("two_dim_tsne_checkpoint_logits requires n_samples >= 2")
+
+        model = cast(Any, NNModel.from_checkpoint(checkpoint=checkpoint))
 
         ts = [t for t in range(ds.output_dim)]
         cs = VisUtils.generate_colors(n=ds.output_dim)
 
-        test_batch = next(iter(ds.test_loader))
-        test_X, test_Y = model.net.unpack_batch(test_batch)
-        # model.predict accepts tensors directly; convert only test_Y, which
-        # we need as a numpy column for the pandas DataFrame below.
-        df_test_Y = pd.DataFrame(data=test_Y.numpy(), columns=["target"])
+        if ds.test_loader is None:
+            raise ValueError("two_dim_tsne_checkpoint_logits requires ds.test_loader")
 
-        test_Y_hat = model.predict(X=test_X)
+        logits_chunks = []
+        target_chunks = []
+        remaining = n_samples
+        test_loader = cast(Any, ds.test_loader)
+        for test_batch in test_loader:
+            test_X, test_Y = model.net.unpack_batch(test_batch)
+            test_Y_hat = model.predict(X=test_X)
+            take = min(remaining, len(test_Y_hat.logits))
+            logits_chunks.append(np.asarray(test_Y_hat.logits)[:take])
+            target_chunks.append(test_Y.detach().cpu().numpy()[:take])
+            remaining -= take
+            if remaining == 0:
+                break
+
+        logits = np.concatenate(logits_chunks, axis=0) if logits_chunks else np.empty((0, 0))
+        targets = np.concatenate(target_chunks, axis=0) if target_chunks else np.empty((0,))
+        if len(logits) < 2:
+            raise ValueError("two_dim_tsne_checkpoint_logits requires at least 2 samples from ds.test_loader")
 
         return VisUtils.scatter_plot(
             renderer=renderer,
@@ -267,12 +286,14 @@ class VisUtils:
                     axis=1,
                     objs=[
                         pd.DataFrame(
-                            data=TSNE(n_components=2).fit_transform(
-                                X=pd.DataFrame(data=test_Y_hat.logits).iloc[:n_samples, :]
-                            ),
+                            data=TSNE(
+                                n_components=2,
+                                perplexity=min(30, len(logits) - 1),
+                                random_state=random_state,
+                            ).fit_transform(X=pd.DataFrame(data=logits)),
                             columns=["tsne_1", "tsne_2"],
                         ),
-                        df_test_Y.iloc[:n_samples, :],
+                        pd.DataFrame(data=targets, columns=["target"]),
                     ],
                 ),
                 uni_ts=ts,
