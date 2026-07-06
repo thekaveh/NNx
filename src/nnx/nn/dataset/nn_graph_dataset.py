@@ -100,25 +100,15 @@ class NNGraphDataset(NNDatasetBase):
         object.__setattr__(self, "batch_sizes", resolved_batch_sizes)
 
         if self.sampler == "full":
-            object.__setattr__(
-                self, "train_loader", _full_batch_loader(data, data.train_mask)
-            )
-            object.__setattr__(
-                self, "val_loader", _full_batch_loader(data, data.val_mask)
-            )
-            object.__setattr__(
-                self, "test_loader", _full_batch_loader(data, data.test_mask)
-            )
+            object.__setattr__(self, "train_loader", _full_batch_loader(data, data.train_mask))
+            object.__setattr__(self, "val_loader", _full_batch_loader(data, data.val_mask))
+            object.__setattr__(self, "test_loader", _full_batch_loader(data, data.test_mask))
         else:
             # seed=None must genuinely fall back to the global torch RNG (the
             # documented contract): a fresh torch.Generator() always carries the
             # same fixed default seed, which would make every unseeded run
             # bit-identical and deaf to torch.manual_seed.
-            gen = (
-                torch.Generator().manual_seed(int(self.seed))
-                if self.seed is not None
-                else torch.default_generator
-            )
+            gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
 
             object.__setattr__(
                 self,

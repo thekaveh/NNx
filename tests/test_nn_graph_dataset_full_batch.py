@@ -54,9 +54,7 @@ class _TinyFullBatch:
         g = torch.Generator().manual_seed(7)
         x = torch.randn(n, self.num_features, generator=g)
         # 0→1→2→3→4→0  (directed cycle)
-        edge_index = torch.tensor(
-            [[0, 1, 2, 3, 4], [1, 2, 3, 4, 0]], dtype=torch.long
-        )
+        edge_index = torch.tensor([[0, 1, 2, 3, 4], [1, 2, 3, 4, 0]], dtype=torch.long)
         train_mask = torch.zeros(n, dtype=torch.bool)
         train_mask[[0, 2]] = True  # 2 train nodes
         val_mask = torch.zeros(n, dtype=torch.bool)
@@ -226,10 +224,7 @@ def test_full_batch_cora_parity(tmp_path, monkeypatch):
     result = model.evaluate(loader=ds.val_loader)  # type: ignore[arg-type]
     val_acc = result.accuracy
 
-    assert val_acc >= 0.55, (
-        f"Full-batch GCN on Cora (5 epochs) reached val-acc={val_acc:.3f}, "
-        "expected ≥ 0.55."
-    )
+    assert val_acc >= 0.55, f"Full-batch GCN on Cora (5 epochs) reached val-acc={val_acc:.3f}, expected ≥ 0.55."
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +242,7 @@ class _TinyNeighbor:
         n = 8
         g = torch.Generator().manual_seed(0)
         x = torch.randn(n, self.num_features, generator=g)
-        edge_index = torch.tensor(
-            [[0, 1, 2, 3, 0, 2], [1, 2, 3, 0, 2, 0]], dtype=torch.long
-        )
+        edge_index = torch.tensor([[0, 1, 2, 3, 0, 2], [1, 2, 3, 0, 2, 0]], dtype=torch.long)
         train_mask = torch.zeros(n, dtype=torch.bool)
         train_mask[:4] = True
         val_mask = torch.zeros(n, dtype=torch.bool)
