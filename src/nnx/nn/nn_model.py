@@ -797,6 +797,24 @@ class NNModel(_HubMixinBase):
                 if ctx.should_stop:
                     break
 
+        # #87: on_train_end callbacks (fired in _CallbackFinalizer.__exit__ as
+        # the with-block closed above) may mutate self.net — QAT's convert()
+        # swaps Linear modules for quantized ones. Every in-loop LAST save
+        # predates that, so re-save LAST from the live net so the on-disk
+        # artifact matches the post-on_train_end model. Unconditional rather
+        # than diffed: state_dict() returns live tensor references, so an
+        # in-place value mutation would compare equal against the stale
+        # in-memory checkpoint even though the disk copy is pre-mutation.
+        # Costs one extra checkpoint write per training run. BEST is
+        # deliberately untouched — it tracks the best *training-time* state.
+        if idps:
+            NNCheckpoint(
+                idp=idps[-1],
+                model_params=self.params,
+                net_params=self.net_params,
+                net_state=self.net.state_dict(),
+            ).save(run=run.id, type=Checkpoints.LAST, optimizer_state=optimizer.state_dict())
+
         saved = run.with_idps(idps).save()
         print()
         runs_root_path = os.path.join(os.getcwd(), "runs", run.id)
