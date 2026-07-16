@@ -31,7 +31,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout@v5
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Set up Python ${{ matrix.python-version }}
         # actions/setup-python@v6
@@ -93,7 +93,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout@v5
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Set up Python
         # actions/setup-python@v6
@@ -140,7 +140,7 @@ jobs:
       - name: Upload build artifacts (workflow_dispatch dry-run)
         if: github.event_name == 'workflow_dispatch'
         # actions/upload-artifact@v5
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist
           path: dist/
