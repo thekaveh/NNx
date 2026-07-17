@@ -131,6 +131,28 @@ class TrainStepContext:
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
 
 
+@dataclass(frozen=True, slots=True)
+class EvalStepContext:
+    """Frozen bundle of state passed into a validation-step function (#86).
+
+    Mirrors :class:`TrainStepContext` for the per-epoch VALIDATION pass: users
+    can pass ``eval_step_fn: Callable[[EvalStepContext], NNEvaluationDataPoint]``
+    to ``NNModel.train()`` to replace the built-in classification ``evaluate()``
+    for non-classification paradigms (next-token LM perplexity, DPO margins,
+    regression MAE, ...). The step runs under ``torch.no_grad()`` and its
+    returned EDP becomes ``val_edp`` — recorded on the epoch's last idp and
+    persisted through the incremental run save like any built-in val metric.
+    """
+
+    model: NNModel
+    val_loader: DataLoader
+    extra_metrics: Optional[Mapping[str, Callable]]
+    epoch_idx: int
+
+
+EvalStepFn = Callable[[EvalStepContext], NNEvaluationDataPoint]
+
+
 def _finite_training_loss_value(train_loss: torch.Tensor) -> float:
     loss_value = float(train_loss.detach())
     # NaN/Inf guard: silent divergence leaves checkpoints full of garbage
@@ -584,6 +606,7 @@ class NNModel(_HubMixinBase):
         params: NNTrainParams,
         callbacks: Optional[list[CallbackLike]] = None,
         train_step_fn: Optional[TrainStepFn] = None,
+        eval_step_fn: Optional[EvalStepFn] = None,
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -598,6 +621,14 @@ class NNModel(_HubMixinBase):
             train_step_fn: optional override for the per-batch training
                 step. When None (default), runs `default_train_step` —
                 supervised forward → loss_fn(net(X), Y) → backward → step.
+            eval_step_fn: optional override for the per-epoch VALIDATION
+                pass (#86), symmetric with train_step_fn. When set (and a
+                val_loader is present), each epoch calls
+                ``eval_step_fn(EvalStepContext(...))`` under no-grad and
+                records its EDP as val_edp — instead of the built-in
+                classification ``evaluate()`` (which argmaxes logits and is
+                meaningless for LM/DPO/regression val). When None (default),
+                behavior is unchanged. Ignored when val_loader is None.
                 Pass a `Callable[[TrainStepContext], NNEvaluationDataPoint]`
                 for non-supervised paradigms (autoencoder, VAE, link
                 prediction, recommendation, diffusion). The custom function
@@ -755,9 +786,23 @@ class NNModel(_HubMixinBase):
                         "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
                     )
 
-                val_edp = (
-                    self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics) if validate else None
-                )
+                if validate and eval_step_fn is not None:
+                    # #86: pluggable validation step (mirrors train_step_fn) —
+                    # LM/DPO/regression val metrics computed INSIDE the loop so
+                    # they persist through the incremental run save below.
+                    with torch.no_grad():
+                        val_edp = eval_step_fn(
+                            EvalStepContext(
+                                model=self,
+                                val_loader=params.val_loader,
+                                extra_metrics=params.extra_metrics,
+                                epoch_idx=idx_epoch,
+                            )
+                        )
+                elif validate:
+                    val_edp = self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
+                else:
+                    val_edp = None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
                 checkpoint = self._save_checkpoints(
@@ -796,6 +841,24 @@ class NNModel(_HubMixinBase):
 
                 if ctx.should_stop:
                     break
+
+        # #87: on_train_end callbacks (fired in _CallbackFinalizer.__exit__ as
+        # the with-block closed above) may mutate self.net — QAT's convert()
+        # swaps Linear modules for quantized ones. Every in-loop LAST save
+        # predates that, so re-save LAST from the live net so the on-disk
+        # artifact matches the post-on_train_end model. Unconditional rather
+        # than diffed: state_dict() returns live tensor references, so an
+        # in-place value mutation would compare equal against the stale
+        # in-memory checkpoint even though the disk copy is pre-mutation.
+        # Costs one extra checkpoint write per training run. BEST is
+        # deliberately untouched — it tracks the best *training-time* state.
+        if idps:
+            NNCheckpoint(
+                idp=idps[-1],
+                model_params=self.params,
+                net_params=self.net_params,
+                net_state=self.net.state_dict(),
+            ).save(run=run.id, type=Checkpoints.LAST, optimizer_state=optimizer.state_dict())
 
         saved = run.with_idps(idps).save()
         print()

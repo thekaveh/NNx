@@ -1,0 +1,197 @@
+"""``NNModel.train`` must persist net mutations made by ``on_train_end`` callbacks.
+
+Regression tests for #87: the epoch loop saves the LAST checkpoint *inside* the
+loop, but ``on_train_end`` fires in ``_CallbackFinalizer.__exit__`` — after the
+final in-loop save. A callback that mutates ``model.net`` in ``on_train_end``
+(the QAT ``convert()`` being the flagship case) therefore had its mutation
+silently lost on disk: the in-memory net was converted, the persisted LAST was
+pre-convert.
+
+The fix re-writes the LAST checkpoint from the live net after the finalizer
+exits, so the on-disk artifact always matches the post-``on_train_end`` net.
+BEST semantics are deliberately untouched (BEST tracks the best *training-time*
+state).
+"""
+
+from __future__ import annotations
+
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+
+from nnx import (
+    Activations,
+    Devices,
+    Losses,
+    Nets,
+    NNModel,
+    NNModelParams,
+    NNOptimParams,
+    NNSchedulerParams,
+    NNTrainParams,
+    Optims,
+)
+from nnx.nn.callbacks import Callback
+from nnx.nn.enum.checkpoints import Checkpoints
+from nnx.nn.params.nn_checkpoint import NNCheckpoint
+from nnx.nn.params.nn_params import NNParams
+
+
+def _tiny_model() -> NNModel:
+    return NNModel(
+        net_params=NNParams(
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[8],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+        ),
+        params=NNModelParams(
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
+        ),
+    )
+
+
+def _tiny_train_params(loader: DataLoader, n_epochs: int = 2) -> NNTrainParams:
+    return NNTrainParams(
+        n_epochs=n_epochs,
+        train_loader=loader,
+        optim=NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-3,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+        ),
+        scheduler=NNSchedulerParams(
+            min_lr=1e-7,
+            factor=0.5,
+            patience=1,
+            cooldown=1,
+            threshold=1e-3,
+        ),
+    )
+
+
+def _loader() -> DataLoader:
+    torch.manual_seed(0)
+    X = torch.randn(16, 4)
+    y = torch.randint(0, 2, (16,))
+    return DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
+
+
+class _MutateNetOnTrainEnd(Callback):
+    """Structurally mutates the net in ``on_train_end`` — a minimal stand-in for
+    QAT's ``convert()`` (which swaps Linear modules, changing state-dict keys)."""
+
+    def on_train_end(self, ctx) -> None:  # noqa: ANN001 - Callback context
+        ctx.model.net.register_buffer("post_train_end_marker", torch.tensor([42.0]))
+
+
+def test_last_checkpoint_contains_on_train_end_mutation(tmp_path, monkeypatch):
+    """A net mutation made in ``on_train_end`` must be present in the persisted
+    LAST checkpoint (previously the final save preceded the finalizer)."""
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_model()
+    run = model.train(params=_tiny_train_params(_loader()), callbacks=[_MutateNetOnTrainEnd()])
+
+    # In-memory net carries the mutation (sanity — this always held).
+    assert "post_train_end_marker" in model.net.state_dict()
+
+    # THE FIX: the on-disk LAST must carry it too.
+    ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert ckpt is not None
+    assert "post_train_end_marker" in ckpt.net_state, (
+        "LAST checkpoint was saved before on_train_end fired — the callback's net mutation was lost on disk (#87)"
+    )
+    assert torch.equal(ckpt.net_state["post_train_end_marker"], torch.tensor([42.0]))
+
+
+def test_last_checkpoint_unchanged_without_mutating_callbacks(tmp_path, monkeypatch):
+    """No-mutation regression guard: a plain train's LAST checkpoint still
+    matches the live net exactly (the post-finalizer re-save is a content no-op)."""
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_model()
+    run = model.train(params=_tiny_train_params(_loader()))
+
+    ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert ckpt is not None
+    live = model.net.state_dict()
+    assert set(ckpt.net_state.keys()) == set(live.keys())
+    for k in live:
+        assert torch.equal(ckpt.net_state[k], live[k])
+
+
+def test_last_checkpoint_keeps_optimizer_sidecar(tmp_path, monkeypatch):
+    """The re-saved LAST must not lose the optimizer sidecar (warm-resume path)."""
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_model()
+    run = model.train(params=_tiny_train_params(_loader()), callbacks=[_MutateNetOnTrainEnd()])
+
+    opt_state = NNCheckpoint.load_optimizer_state(run=run.id, type=Checkpoints.LAST)
+    assert opt_state is not None, "LAST .opt.pt sidecar missing after the post-train_end re-save"
+
+
+def test_best_checkpoint_stays_pre_mutation(tmp_path, monkeypatch):
+    """BEST semantics untouched: BEST tracks the best training-time state and
+    must NOT absorb the on_train_end mutation."""
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_model()
+    run = model.train(params=_tiny_train_params(_loader()), callbacks=[_MutateNetOnTrainEnd()])
+
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None
+    assert "post_train_end_marker" not in best.net_state
+
+
+def test_qat_convert_state_persists_in_last(tmp_path, monkeypatch):
+    """Flagship #87 case: QAT ``convert()`` (on_train_end) swaps Linear modules;
+    the persisted LAST must carry the quantized keys, and reloading it into a
+    prepared+converted net must round-trip. Skipped without the torchao extra."""
+    import pytest
+
+    pytest.importorskip("torchao")
+    from nnx import QATLifecycleCallback, qat_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    # Hidden widths divide the default int4 groupsize (32).
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=32,
+            output_dim=3,
+            hidden_dims=[64, 64],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    X = torch.randn(32, 32)
+    y = torch.randint(0, 3, (32,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=False)
+    qat_cb = QATLifecycleCallback()
+    run = model.train(
+        params=_tiny_train_params(loader, n_epochs=1),
+        train_step_fn=qat_train_step_factory(),
+        callbacks=[qat_cb],
+    )
+
+    assert qat_cb.is_converted is True
+    live_keys = set(model.net.state_dict().keys())
+    ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert ckpt is not None
+    saved_keys = set(ckpt.net_state.keys())
+    # The persisted LAST mirrors the converted net exactly — including the
+    # quantized parametrization keys convert() introduced.
+    assert saved_keys == live_keys
+    assert any(("scales" in k) or ("zeros" in k) for k in saved_keys), (
+        f"no quantized keys persisted; saved keys: {sorted(saved_keys)[:8]}"
+    )
+
+    # Round-trip: a fresh net taken through the same prepare+convert shape
+    # absorbs the persisted state (mirrors a consumer's reload path).
+    fresh = NNModel(net_params=ckpt.net_params, params=ckpt.model_params)
+    cb2 = QATLifecycleCallback()
+    cb2.quantizer.prepare(fresh.net)
+    cb2.quantizer.convert(fresh.net)
+    fresh.net.load_state_dict(ckpt.net_state)
