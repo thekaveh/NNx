@@ -33,10 +33,10 @@ class GraphNNBase(nn.Module):
         raise NotImplementedError("subclass must implement _build_layers()")
 
     def forward(self, X: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
-        for layer in self.layers[:-1]:
+        for i, layer in enumerate(self.layers[:-1]):
             X = layer(X, E)
-            X = self.params.activation()(X)
-            X = F.dropout(X, p=self.params.dropout_prob, training=self.training)
+            X = self.params.activation_for(i)()(X)
+            X = F.dropout(X, p=self.params.dropout_for(i), training=self.training)
         return self.layers[-1](X, E)
 
     def unpack_batch(self, batch) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
