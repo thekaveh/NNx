@@ -14,6 +14,12 @@ schemes. The flow:
   4. ``on_train_end`` converts the fake-quant linears to real
      int4/int8 modules (``Int8DynActInt4WeightLinear``). The resulting
      model is ready for inference / dynamo-based ONNX export.
+  5. The saved LAST checkpoint holds the CONVERTED (quantized) weights
+     — ``NNModel.train`` re-saves it after ``on_train_end`` fires, so
+     the on-disk state carries the int4 scales/zeros, not the pre-convert
+     FP32 tensors. Reloading takes a fresh net through the same
+     prepare→convert before ``load_state_dict`` (the quantized state
+     dict has keys a plain FP32 net can't absorb).
 
 Compared to PTQ (``examples/12_quantize_int8.py``):
 
@@ -25,7 +31,7 @@ Compared to PTQ (``examples/12_quantize_int8.py``):
     int8 activations.
 
 Requires the ``quantize`` extra (for ``torchao``'s QAT primitives) AND
-the ``onnx-dynamo`` extra (Phase 5 exports the converted int4/int8
+the ``onnx-dynamo`` extra (Phase 6 exports the converted int4/int8
 model through the dynamo-based ONNX path — torchao's quantized tensor
 subclasses don't round-trip through the legacy TorchScript exporter):
 
@@ -45,9 +51,11 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Checkpoints,
     Devices,
     Losses,
     Nets,
+    NNCheckpoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -136,7 +144,7 @@ def main():
     print("=" * 60)
     print("Phase 2: training with QAT")
     print("=" * 60)
-    model.train(
+    run = model.train(
         params=NNTrainParams(
             n_epochs=6,
             train_loader=train_loader,
@@ -177,11 +185,34 @@ def main():
     acc = _val_accuracy(model, val_loader)
     print(f"int4/int8 (8da4w) val accuracy: {acc * 100:.2f}%")
 
+    # ---- Checkpoint round-trip. The LAST checkpoint is re-saved AFTER
+    # ``on_train_end`` runs, so it holds the CONVERTED weights — the int4
+    # scales/zeros are on disk, not the pre-convert FP32 tensors. A fresh
+    # net must go through the same prepare→convert (with the same
+    # groupsize — the scales/zeros shapes depend on it) before it can
+    # absorb the quantized state dict.
+    print("\n" + "=" * 60)
+    print("Phase 5: checkpoint round-trip (quantized state persists)")
+    print("=" * 60)
+    ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert ckpt is not None
+    quant_keys = sorted(k for k in ckpt.net_state if k.endswith(("scales", "zeros")))
+    print(f"quantized keys in the saved LAST checkpoint: {quant_keys}")
+
+    reloaded = _make_classifier()
+    quantizer = QATLifecycleCallback(qat_config="8da4w").quantizer
+    quantizer.prepare(reloaded.net)
+    quantizer.convert(reloaded.net)
+    reloaded.net.load_state_dict(ckpt.net_state)
+    reloaded_acc = _val_accuracy(reloaded, val_loader)
+    print(f"reloaded val accuracy: {reloaded_acc * 100:.2f}%  (converted model: {acc * 100:.2f}%)")
+    assert reloaded_acc == acc, "reloaded quantized model should match the converted one"
+
     # ---- Confirm ONNX export still works on the converted model.
     # The legacy TorchScript exporter trips on torchao's quantized
     # matmul; use the dynamo path (requires onnxscript).
     print("\n" + "=" * 60)
-    print("Phase 5: ONNX export (dynamo)")
+    print("Phase 6: ONNX export (dynamo)")
     print("=" * 60)
     try:
         import onnxscript  # noqa: F401

@@ -1,14 +1,18 @@
-"""Mixture-of-Experts classifier — drop an MoELinear in place of
-nn.Linear and train with the MoE-aware step factory.
+"""Mixture-of-Experts classifier — the first-class MoE model type:
+``NNMoEParams`` + ``Nets.FEED_FWD_MOE``.
 
 Demonstrates:
 
-  1. Constructing a feed-forward classifier whose hidden layer is an
-     :class:`MoELinear` (4 experts, top-k=2) instead of a plain
-     :class:`nn.Linear`. The router has more parameters than a plain
-     linear of the same shape (each expert is a full linear), but
-     per-token FLOPs stay roughly constant (only ``top_k`` of
-     ``num_experts`` experts run per token).
+  1. Building an MoE feed-forward classifier directly from params:
+     :class:`NNMoEParams` (a drop-in :class:`NNParams` subclass carrying
+     ``num_experts``/``top_k``) with ``Nets.FEED_FWD_MOE`` gives a
+     ``FeedFwdMoENN`` whose every hidden layer is an :class:`MoELinear`
+     (the classifier head stays a plain ``nn.Linear``). No custom
+     subclassing or ``model.net`` swapping — earlier versions of this
+     example hand-rolled exactly that workaround, which also silently
+     hashed to the SAME ``run.id`` as a plain feed-forward twin.
+     ``NNMoEParams.state()`` always emits ``num_experts``, so MoE runs
+     get distinct ids and checkpoints round-trip to the right class.
   2. Training with :func:`moe_train_step_factory` — the standard
      supervised step augmented with the Switch-style load-balancing
      aux loss summed across every :class:`MoELinear` layer. Without
@@ -16,6 +20,9 @@ Demonstrates:
      and waste the rest of the parameter budget.
   3. Verifying that the aux loss decreases across the run — proof
      that the load-balancing penalty is doing its job.
+  4. Checkpoint round-trip: the saved LAST checkpoint restores an
+     ``NNMoEParams`` (via ``resolve_from_state``) and rebuilds the
+     MoE net with identical logits.
 
 Like the other tutorial examples, this is mechanism-first: it doesn't
 claim the MoE classifier beats a plain feed-forward of the same total
@@ -33,40 +40,22 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Checkpoints,
     Devices,
-    FeedFwdNN,
     Losses,
     MoELinear,
     Nets,
+    NNCheckpoint,
     NNModel,
     NNModelParams,
+    NNMoEParams,
     NNOptimParams,
-    NNParams,
     NNSchedulerParams,
     NNTrainParams,
     Optims,
     moe_train_step_factory,
     set_seed,
 )
-
-
-class MoEClassifier(FeedFwdNN):
-    """FeedFwdNN whose first hidden layer is an :class:`MoELinear`.
-
-    Subclassing :class:`FeedFwdNN` inherits the ``(X,), Y = unpack_batch``
-    contract that the paradigm factories use for supervised data, so
-    the model still trains via the standard
-    ``NNModel.train(train_step_fn=...)`` path with no further plumbing.
-    """
-
-    def __init__(self, params: NNParams, *, num_experts: int, top_k: int):
-        super().__init__(params)
-        # Swap the FIRST hidden layer for an MoELinear of matching
-        # in/out dims. The activation + final classifier layer stay
-        # untouched (the MoE only operates on the hidden projection).
-        in_dim = params.dims[0]
-        out_dim = params.dims[1]
-        self.layers[0] = MoELinear(in_dim, out_dim, num_experts=num_experts, top_k=top_k)
 
 
 def _make_loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
@@ -92,29 +81,29 @@ def main() -> None:
 
     NUM_EXPERTS, TOP_K = 4, 2
 
-    # Build the model. NNModel auto-instantiates a vanilla FeedFwdNN;
-    # we replace that with the MoEClassifier afterward so the model
-    # keeps the same params object (and therefore the same run.id
-    # state hash as a plain FeedFwdNN of equivalent shape).
-    net_params = NNParams(
+    # Build the model straight from params — Nets.FEED_FWD_MOE
+    # instantiates a FeedFwdMoENN whose hidden layers are MoELinear.
+    net_params = NNMoEParams(
         input_dim=8,
         output_dim=3,
         hidden_dims=[16],
         dropout_prob=0.0,
         activation=Activations.RELU,
+        num_experts=NUM_EXPERTS,
+        top_k=TOP_K,
     )
     model = NNModel(
         net_params=net_params,
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        params=NNModelParams(net=Nets.FEED_FWD_MOE, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
-    model.net = MoEClassifier(net_params, num_experts=NUM_EXPERTS, top_k=TOP_K).to(model.device)
 
     moe_layer: MoELinear = model.net.layers[0]  # type: ignore[assignment]
+    assert isinstance(moe_layer, MoELinear)
     total_params = sum(p.numel() for p in model.net.parameters())
     expert_params = sum(p.numel() for e in moe_layer.experts for p in e.parameters())
     router_params = sum(p.numel() for p in moe_layer.router.parameters())
     print("=" * 60)
-    print(f"MoE classifier: {NUM_EXPERTS} experts, top_k={TOP_K}")
+    print(f"MoE classifier ({type(model.net).__name__}): {NUM_EXPERTS} experts, top_k={TOP_K}")
     print("=" * 60)
     print(f"total params:   {total_params}")
     print(f"  router:       {router_params}")
@@ -178,6 +167,20 @@ def main() -> None:
         )
     else:
         print("aux loss decreased during training: routing is more balanced")
+
+    # ---- Checkpoint round-trip: the MoE fields ride along in state().
+    # ``resolve_from_state`` dispatches on the always-emitted
+    # ``num_experts`` key, so the reloaded model is an MoE net — not a
+    # silently-downgraded plain feed-forward.
+    ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert ckpt is not None and isinstance(ckpt.net_params, NNMoEParams)
+    reloaded = NNModel.from_checkpoint(ckpt)
+    model.net.eval()
+    reloaded.net.eval()
+    with torch.no_grad():
+        same = torch.allclose(model.net(all_X), reloaded.net(all_X))
+    print(f"\ncheckpoint round-trip: net_params={type(ckpt.net_params).__name__}, ")
+    print(f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}")
 
 
 if __name__ == "__main__":
