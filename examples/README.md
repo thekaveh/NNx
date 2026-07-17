@@ -14,7 +14,7 @@ A handful of examples depend on optional extras — install them as needed:
 ```bash
 pip install "thekaveh-nnx[onnx]"             # 04_onnx_export.py, 12_quantize_int8.py (Phase-5 export)
 pip install "thekaveh-nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
-pip install "thekaveh-nnx[onnx-dynamo]"      # 15_qat_classifier.py (Phase-5 dynamo export)
+pip install "thekaveh-nnx[onnx-dynamo]"      # 15_qat_classifier.py (Phase-6 dynamo export)
 pip install "thekaveh-nnx[embeddings]"       # 13_train_domain_embedder.py
 pip install "thekaveh-nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py, 22_dpo_tinystories.py
 pip install "thekaveh-nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
@@ -35,6 +35,8 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | `02_resume_training.py` | Warm-resume training from a prior run's LAST checkpoint with optimizer state preserved. |
 | `03_custom_metrics.py` | Plug a custom `metric_fn(Y, Y_hat)` into `NNTrainParams.extra_metrics`; inspect `idp.train_edp.extra` and `idp.val_edp.extra`. |
 | `04_onnx_export.py` | Export a trained model to ONNX, validate via `onnx.checker`. |
+| `25_conv_classifier.py` | LeNet-style conv classifier via `NNConvParams` + `Nets.CONV`: conv-stack arithmetic helpers (`spatial_sizes()`/`flatten_dim()`), per-layer FC `activations`/`dropout_probs` overrides, image-vs-flat input equivalence, and a checkpoint round-trip through `resolve_from_state`. Synthetic stripes/checkerboard imagery — no download. |
+| `26_custom_eval_step.py` | Train a non-classification paradigm end-to-end: a regression `train_step_fn` (the default step's argmax metrics crash on continuous targets) paired with `eval_step_fn(EvalStepContext) -> NNEvaluationDataPoint` — a custom MSE/MAE val pass whose metrics persist per-epoch in the run history (`idp.val_edp`, MAE riding in `extra`). |
 
 ### 2.2. `train_step_fn` hook
 
@@ -56,14 +58,14 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | `08_diffusion_2d_mixture.py` | DDPM-style diffusion on a 2D mixture of 4 Gaussians: `NoiseSchedulers.LINEAR` + `DiffusionMLP` + `diffusion_train_step_factory` + reverse-diffusion `sample()`. |
 | `09_gan_with_trainer.py` | Multi-optimizer training via `nnx.trainer.Trainer` — a tiny GAN on a 1D mixture of Gaussians, with disjoint optimizers for `G` and `D` scoped via `NNParamGroupSpec`. |
 | `10_knowledge_distillation.py` | Hinton-style KD: pretrain a wider teacher, then distill into a much smaller student (~4% of the teacher's parameters) via `kd_train_step_factory`. Verifies the teacher's weights are frozen across the student's training. |
-| `14_moe_classifier.py` | Sparse top-k Mixture-of-Experts: a feed-forward classifier whose hidden layer is an `MoELinear(num_experts=4, top_k=2)` instead of `nn.Linear`. Trained via `moe_train_step_factory` (supervised loss + Switch-style load-balancing aux). Reports the param-count breakdown and verifies the aux loss decreases as routing balances out. |
+| `14_moe_classifier.py` | Sparse top-k Mixture-of-Experts as a first-class model type: `NNMoEParams(num_experts=4, top_k=2)` + `Nets.FEED_FWD_MOE` builds a `FeedFwdMoENN` (every hidden layer an `MoELinear`), trained via `moe_train_step_factory` (supervised loss + Switch-style load-balancing aux). Reports the param-count breakdown, verifies the aux loss decreases as routing balances out, and round-trips the MoE params through a checkpoint. |
 
 ### 2.5. Quantization
 
 | Example | What it demonstrates |
 |---|---|
 | `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. |
-| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Reports the pre-/post-convert accuracy delta. Requires `pip install "thekaveh-nnx[quantize,onnx-dynamo]"`. |
+| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Verifies the saved LAST checkpoint holds the CONVERTED int4 state (scales/zeros on disk) and round-trips it into a fresh prepare→convert net. Requires `pip install "thekaveh-nnx[quantize,onnx-dynamo]"`. |
 
 ### 2.6. Embeddings + FAISS export
 
