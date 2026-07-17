@@ -82,7 +82,7 @@ dev = [
     # between minor versions; without a ceiling, a fresh `pip install -e
     # .[dev]` six months from now can fail CI on rules that didn't
     # exist when the codebase was written.
-    "ruff>=0.6,<0.10",
+    "ruff>=0.6,<0.16",
     "pyright>=1.1.380",    # CI runs `pyright --warnings`; pin here so locals match
     "tensorboard>=2.15",   # exercises TensorBoardCallback path in tests
     "onnx>=1.15",          # exercises NNModel.to_onnx in tests
@@ -146,7 +146,7 @@ docs = [
     # whenever any markdown page contains a fenced code block or
     # mkdocstrings renders source. Pin below 2.20 until upstream
     # releases a fix.
-    "Pygments<2.20",
+    "Pygments<2.21",
 ]
 
 [project.urls]
