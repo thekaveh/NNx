@@ -70,6 +70,8 @@ from .nn.net.graph_sage_nn import GraphSageNN
 from .nn.net.transformer_nn import TransformerNN
 from .nn.net.vit_nn import ViTBlock, ViTNN
 from .nn.nn_model import (
+    EvalStepContext,
+    EvalStepFn,
     NNModel,
     PredictResult,
     TrainStepContext,
@@ -176,6 +178,8 @@ __all__ = [
     "PredictResult",
     "TrainStepContext",
     "TrainStepFn",
+    "EvalStepContext",
+    "EvalStepFn",
     "default_train_step",
     # Callbacks
     "Callback",
