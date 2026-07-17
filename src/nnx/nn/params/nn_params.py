@@ -143,4 +143,9 @@ class NNParams:
             from .nn_transformer_params import NNTransformerParams
 
             return NNTransformerParams.from_state(state)
+        if "num_experts" in state:
+            # Local import: nn_moe_params imports this module (#88).
+            from .nn_moe_params import NNMoEParams
+
+            return NNMoEParams.from_state(state)
         return NNParams.from_state(state)
