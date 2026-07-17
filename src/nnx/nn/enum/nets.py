@@ -4,6 +4,7 @@ from enum import Enum
 
 from torch import nn
 
+from ..net.conv_nn import ConvNN
 from ..net.feed_fwd_moe_nn import FeedFwdMoENN
 from ..net.feed_fwd_nn import FeedFwdNN
 from ..net.graph_att_nn import GraphAttNN
@@ -14,6 +15,9 @@ from ..params.nn_params import NNParams
 
 
 class Nets(Enum):
+    # LeNet-style conv classifier (#89); consumed by NNConvParams.
+    # Back-compat-safe addition (see the TRANSFORMER comment).
+    CONV = "conv"
     FEED_FWD = "feed_fwd"
     # MoE feed-forward (#88): hidden layers are MoELinear; consumed by
     # NNMoEParams. Back-compat-safe addition (see the TRANSFORMER comment).
@@ -37,6 +41,8 @@ class Nets(Enum):
             raise ValueError("params must not be None")
 
         match self:
+            case Nets.CONV:
+                return ConvNN(params=params)
             case Nets.FEED_FWD:
                 return FeedFwdNN(params=params)
             case Nets.FEED_FWD_MOE:
