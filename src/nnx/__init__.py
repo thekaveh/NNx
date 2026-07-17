@@ -70,6 +70,8 @@ from .nn.net.graph_sage_nn import GraphSageNN
 from .nn.net.transformer_nn import TransformerNN
 from .nn.net.vit_nn import ViTBlock, ViTNN
 from .nn.nn_model import (
+    EvalStepContext,
+    EvalStepFn,
     NNModel,
     PredictResult,
     TrainStepContext,
@@ -77,9 +79,11 @@ from .nn.nn_model import (
     default_train_step,
 )
 from .nn.params.nn_checkpoint import NNCheckpoint
+from .nn.params.nn_conv_params import NNConvParams
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .nn.params.nn_iteration_data_point import NNIterationDataPoint
 from .nn.params.nn_model_params import NNModelParams
+from .nn.params.nn_moe_params import NNMoEParams
 from .nn.params.nn_optim_params import NNOptimParams
 from .nn.params.nn_optim_params_builder import NNOptimParamsBuilder
 from .nn.params.nn_params import NNParams
@@ -176,6 +180,8 @@ __all__ = [
     "PredictResult",
     "TrainStepContext",
     "TrainStepFn",
+    "EvalStepContext",
+    "EvalStepFn",
     "default_train_step",
     # Callbacks
     "Callback",
@@ -186,6 +192,8 @@ __all__ = [
     "WandbCallback",
     # Params
     "NNParams",
+    "NNConvParams",
+    "NNMoEParams",
     "NNRun",
     "NNCheckpoint",
     "NNModelParams",
