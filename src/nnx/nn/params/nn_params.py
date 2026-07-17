@@ -148,4 +148,9 @@ class NNParams:
             from .nn_moe_params import NNMoEParams
 
             return NNMoEParams.from_state(state)
+        if "conv_channels" in state:
+            # Local import: nn_conv_params imports this module (#89).
+            from .nn_conv_params import NNConvParams
+
+            return NNConvParams.from_state(state)
         return NNParams.from_state(state)
