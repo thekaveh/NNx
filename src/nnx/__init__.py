@@ -79,6 +79,7 @@ from .nn.nn_model import (
     default_train_step,
 )
 from .nn.params.nn_checkpoint import NNCheckpoint
+from .nn.params.nn_conv_params import NNConvParams
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .nn.params.nn_iteration_data_point import NNIterationDataPoint
 from .nn.params.nn_model_params import NNModelParams
@@ -191,6 +192,7 @@ __all__ = [
     "WandbCallback",
     # Params
     "NNParams",
+    "NNConvParams",
     "NNMoEParams",
     "NNRun",
     "NNCheckpoint",
