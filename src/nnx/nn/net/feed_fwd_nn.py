@@ -23,10 +23,10 @@ class FeedFwdNN(nn.Module):
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         X = X.view(X.size(0), -1)
 
-        for layer in self.layers[:-1]:
+        for i, layer in enumerate(self.layers[:-1]):
             X = layer(X)
-            X = self.params.activation()(X)
-            X = F.dropout(X, p=self.params.dropout_prob, training=self.training)
+            X = self.params.activation_for(i)()(X)
+            X = F.dropout(X, p=self.params.dropout_for(i), training=self.training)
 
         X = self.layers[-1](X)
 
