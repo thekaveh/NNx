@@ -62,6 +62,8 @@ from .nn.enum.optims import Optims
 from .nn.enum.schedulers import Schedulers
 from .nn.generative_nn_model import GenerativeNNModel
 from .nn.moe import MoELinear
+from .nn.net.conv_nn import ConvNN
+from .nn.net.feed_fwd_moe_nn import FeedFwdMoENN
 from .nn.net.feed_fwd_nn import FeedFwdNN
 from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN
@@ -214,6 +216,8 @@ __all__ = [
     "Schedulers",
     # Networks
     "FeedFwdNN",
+    "FeedFwdMoENN",
+    "ConvNN",
     "GraphNNBase",
     "GraphConvNN",
     "GraphSageNN",
