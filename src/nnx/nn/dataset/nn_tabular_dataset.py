@@ -93,8 +93,8 @@ class NNTabularDataset(NNDatasetBase):
         # dict.fromkeys dedupes (order-preserving) duplicates WITHIN
         # feature_cols — target/feature overlap is rejected above.
         modeled = cast(pd.DataFrame, self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))])
-        if modeled.isna().any().any():
-            bad_cols = [c for c in modeled.columns if modeled[c].isna().any()]
+        if bool(modeled.isna().to_numpy().any()):
+            bad_cols = [c for c in modeled.columns if bool(modeled[c].isna().to_numpy().any())]
             raise ValueError(
                 f"NaN values in columns {bad_cols} — drop or impute rows before constructing NNTabularDataset."
             )
