@@ -291,9 +291,9 @@ class VisUtils:
                                 perplexity=min(30, len(logits) - 1),
                                 random_state=random_state,
                             ).fit_transform(X=pd.DataFrame(data=logits)),
-                            columns=["tsne_1", "tsne_2"],
+                            columns=pd.Index(["tsne_1", "tsne_2"]),
                         ),
-                        pd.DataFrame(data=targets, columns=["target"]),
+                        pd.DataFrame(data=targets, columns=pd.Index(["target"])),
                     ],
                 ),
                 uni_ts=ts,
@@ -372,7 +372,7 @@ class VisUtils:
             Y_pred,
             target_names=target_names,
             output_dict=True,
-            zero_division=0,
+            zero_division=cast(Any, 0),
         )
         return pd.DataFrame(report).transpose()
 

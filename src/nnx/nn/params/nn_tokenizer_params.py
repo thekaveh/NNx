@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
+
+if TYPE_CHECKING:
+    from tokenizers import Tokenizer as TokenizerType
 
 try:
     from tokenizers import Tokenizer
@@ -72,7 +75,7 @@ class NNTokenizerParams:
         if parent:
             os.makedirs(parent, exist_ok=True)
         tmp = path + ".tmp"
-        tokenizer.save(tmp)
+        cast(Any, tokenizer).save(tmp)
         os.replace(tmp, path)
         return NNTokenizerParams(path=path, tokenizer=tokenizer)
 
@@ -128,7 +131,7 @@ def train_bpe(
     texts: Optional[list[str]] = None,
     special_tokens: Optional[list[str]] = None,
     min_frequency: int = 2,
-) -> Tokenizer:  # bound to `None` when the optional `lm` extra isn't installed; annotation only evaluated lazily under `from __future__ import annotations`
+) -> TokenizerType:
     """Train a BPE tokenizer on either a list of files or a list of texts.
 
     Mirrors the HF "quick BPE" recipe — Whitespace pre-tokenizer + BPE
@@ -166,6 +169,7 @@ def train_bpe(
     if files is not None:
         tk.train(files=list(files), trainer=trainer)
     else:
+        assert texts is not None
         tk.train_from_iterator(iter(texts), trainer=trainer, length=len(texts))
 
     return tk

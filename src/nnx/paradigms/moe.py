@@ -24,6 +24,8 @@ as the KD / SimCLR / Mixup / CutMix paradigm factories.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import torch
 
 from .._metrics import classification_edp
@@ -73,7 +75,7 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         # Single-input destructuring — same contract as the other
         # supervised paradigm factories (Mixup / CutMix / KD).
         # Multi-input nets need a custom step.
-        (X,), Y = m.net.unpack_batch(ctx.batch)
+        (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
         X = X.to(m.device)
         Y = Y.to(m.device)
 

@@ -1,17 +1,18 @@
-"""Export a TransformerNN to a GGUF file.
+"""Export a TransformerNN to an experimental GGUF artifact.
 
-GGUF is the on-disk format consumed by llama.cpp, Ollama, LM Studio,
-and the rest of the llama.cpp-derived inference ecosystem. This script
-demonstrates the canonical "trained in NNx, served via llama.cpp"
-handoff:
+This script demonstrates NNx's GGUF container writer:
 
   1. Build a tiny TransformerNN + BPE tokenizer (or load one off disk).
   2. Call ``nnx.interop.gguf.write_gguf`` to produce ``model.gguf``.
   3. Optionally probe the file with ``gguf.GGUFReader`` to verify.
 
-Scope: F16 directly (the default). For Q4_K_M / Q5_K_M / etc., the
-recipe is to write F16 here and then shell out to the ``llama-quantize``
-binary that ships with ``pip install llama-cpp-python``:
+The output uses ``general.architecture=nnx_transformer``. Stock llama.cpp,
+Ollama, and LM Studio do not implement that architecture; use the artifact for
+inspection or with a runtime explicitly patched for NNx. Do not relabel it as
+``llama`` because NNx and LLaMA use different RoPE layouts.
+
+For Q4_K_M / Q5_K_M / etc., write F16 here and build the official
+``llama-quantize`` tool from the llama.cpp source repository:
 
     python examples/17_export_transformer_to_gguf.py
     llama-quantize artifacts/lm_export/model.gguf \\
@@ -85,7 +86,7 @@ def main() -> None:
     # --- 4. Pointer at the sub-F16 quantization recipe ---
     print(
         "\n[gguf] For Q4_K_M / Q5_K_M / Q8_0 quantization, install the\n"
-        "       llama.cpp `llama-quantize` binary (`pip install llama-cpp-python`)\n"
+        "       official llama.cpp `llama-quantize` binary from a source build\n"
         f"       and run: `llama-quantize {gguf_path} {gguf_path.with_suffix('.Q4_K_M.gguf')} Q4_K_M`"
     )
 

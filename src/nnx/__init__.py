@@ -20,9 +20,9 @@ try:
         # Editable install before metadata exists, or run from the source
         # tree without installation. Keep in sync with pyproject.toml
         # [project] version on every bump.
-        __version__ = "0.2.0+local"
+        __version__ = "0.2.0+local"  # x-release-please-version
 except ImportError:  # pragma: no cover — Python <3.8.
-    __version__ = "0.2.0+local"
+    __version__ = "0.2.0+local"  # x-release-please-version
 
 from . import embeddings, interop, prune, viz
 from .diffusion import (
@@ -62,6 +62,8 @@ from .nn.enum.optims import Optims
 from .nn.enum.schedulers import Schedulers
 from .nn.generative_nn_model import GenerativeNNModel
 from .nn.moe import MoELinear
+from .nn.net.conv_nn import ConvNN
+from .nn.net.feed_fwd_moe_nn import FeedFwdMoENN
 from .nn.net.feed_fwd_nn import FeedFwdNN
 from .nn.net.graph_att_nn import GraphAttNN
 from .nn.net.graph_conv_nn import GraphConvNN
@@ -214,6 +216,8 @@ __all__ = [
     "Schedulers",
     # Networks
     "FeedFwdNN",
+    "FeedFwdMoENN",
+    "ConvNN",
     "GraphNNBase",
     "GraphConvNN",
     "GraphSageNN",
@@ -324,7 +328,7 @@ __all__ = [
     # Embeddings (contrastive trainer + FAISS export)
     "embeddings",
     "text_contrastive_train_step_factory",
-    # Interop (GGUF / Ollama exporters; bound so README's
+    # Interop (safetensors + experimental GGUF; bound so README's
     # `nnx.interop.write_gguf(...)` works after a plain `import nnx`)
     "interop",
     # Reproducibility

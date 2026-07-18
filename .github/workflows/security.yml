@@ -2,7 +2,7 @@ name: security
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "pyproject.toml"
       - "requirements-tools.txt"
@@ -23,23 +23,31 @@ jobs:
   pip-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout
         # actions/checkout@v5
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         # actions/setup-python@v6
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-tools.txt
+            uv.lock
 
       - name: Install pip-audit
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pip-audit
+          python -m pip install -r requirements-tools.txt
 
-      - name: Audit project dependency graph
-        run: python -m pip_audit . --progress-spinner off
+      - name: Audit frozen dependency graph
+        run: |
+          uv export --frozen --all-extras --python "${{ matrix.python-version }}" --no-emit-project --no-hashes --output-file frozen-requirements.txt
+          python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off

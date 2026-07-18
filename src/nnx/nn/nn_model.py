@@ -3,9 +3,10 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
 import torch
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 # a thin stub that defers errors to call time. This keeps `pip install thekaveh-nnx`
 # working without huggingface_hub.
 try:
-    from huggingface_hub import PyTorchModelHubMixin as _HubMixinBase
+    from huggingface_hub import PyTorchModelHubMixin as _HubMixinBase  # pyright: ignore[reportAssignmentType]
 
     _HUB_AVAILABLE = True
 except ImportError:  # pragma: no cover — gated by optional dep
@@ -79,13 +80,41 @@ class _CallbackFinalizer:
     def __init__(self, callbacks: list[Any], ctx: Any):
         self._callbacks = callbacks
         self._ctx = ctx
+        self._started: list[Any] = []
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def start(self) -> None:
         for cb in self._callbacks:
-            cb.on_train_end(self._ctx)
+            cb.on_train_begin(self._ctx)
+            self._started.append(cb)
+
+    def __exit__(self, exc_type, exc, tb):
+        cleanup_errors: list[BaseException] = []
+        for cb in reversed(self._started):
+            try:
+                cb.on_train_end(self._ctx)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+
+        if exc is not None:
+            for cleanup_error in cleanup_errors:
+                warnings.warn(
+                    f"on_train_end cleanup failed while handling {type(exc).__name__}: {cleanup_error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return False
+
+        if cleanup_errors:
+            for cleanup_error in cleanup_errors[1:]:
+                warnings.warn(
+                    f"additional on_train_end cleanup failed: {cleanup_error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            raise cleanup_errors[0]
         return False
 
 
@@ -204,6 +233,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     amp_enabled = scaler is not None and model.device.type == "cuda"
 
     if amp_enabled:
+        assert scaler is not None
         with torch.amp.autocast(device_type="cuda"):
             X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
             train_loss = model.loss_fn(Y_hat_logits, Y)
@@ -245,6 +275,8 @@ class NNModel(_HubMixinBase):
     those three methods raise a clear ImportError pointing at the extra;
     no other NNModel functionality is affected.
     """
+
+    net: torch.nn.Module
 
     def __init__(self, net_params: NNParams, params: NNModelParams):
         # NOTE: we deliberately do NOT call super().__init__() — the
@@ -722,9 +754,6 @@ class NNModel(_HubMixinBase):
         Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
         ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
-        for cb in normalized_callbacks:
-            cb.on_train_begin(ctx)
-
         # Default to the standard supervised step when the caller doesn't
         # override. Custom step gets dispatched from inside the batch loop
         # below so the rest of train() (scheduler, callbacks, checkpoint
@@ -741,8 +770,9 @@ class NNModel(_HubMixinBase):
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
-            _CallbackFinalizer(normalized_callbacks, ctx),
+            _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
+            callback_lifecycle.start()
             for idx_epoch in range(params.n_epochs):
                 ctx.epoch = idx_epoch
                 for cb in normalized_callbacks:
@@ -787,6 +817,7 @@ class NNModel(_HubMixinBase):
                     )
 
                 if validate and eval_step_fn is not None:
+                    assert params.val_loader is not None
                     # #86: pluggable validation step (mirrors train_step_fn) —
                     # LM/DPO/regression val metrics computed INSIDE the loop so
                     # they persist through the incremental run save below.
@@ -800,6 +831,7 @@ class NNModel(_HubMixinBase):
                             )
                         )
                 elif validate:
+                    assert params.val_loader is not None
                     val_edp = self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
                 else:
                     val_edp = None
@@ -955,7 +987,7 @@ class NNModel(_HubMixinBase):
                     for batch in X:
                         # net.unpack_batch handles both (X, Y) tuples and PyG Data,
                         # returning the X-tuple. The label is discarded for predict.
-                        X_in, _ = self.net.unpack_batch(batch)
+                        X_in, _ = cast(Any, self.net).unpack_batch(batch)
                         X_in = tuple(x.to(self.device) for x in X_in)
                         logits = self.net(*X_in).cpu().numpy()
                         # NeighborLoader subgraphs: only the leading seed
@@ -971,6 +1003,8 @@ class NNModel(_HubMixinBase):
                                 logits = logits[:n_seed]
                         logits_chunks.append(logits)
                         classes_chunks.append(logits.argmax(axis=1))
+                if not logits_chunks:
+                    raise ValueError("predict() loader produced zero batches")
                 return PredictResult(
                     logits=np.concatenate(logits_chunks),
                     classes=np.concatenate(classes_chunks),
@@ -1001,7 +1035,7 @@ class NNModel(_HubMixinBase):
         run net, take argmax over class logits. Used by `default_train_step`
         and `evaluate()`; custom train_step_fn's may call this directly
         or roll their own forward pass."""
-        X, Y = self.net.unpack_batch(batch)
+        X, Y = cast(Any, self.net).unpack_batch(batch)
 
         X = tuple(x.to(self.device) for x in X)
         Y = Y.to(self.device)
@@ -1196,3 +1230,5 @@ class _CallbackContext:
         self.idp: Optional[NNIterationDataPoint] = None
         self.idps: list[NNIterationDataPoint] = []
         self.should_stop: bool = False
+        self.optimizers: Any = None
+        self.trainer: Any = None

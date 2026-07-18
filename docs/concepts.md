@@ -13,7 +13,7 @@ The diagram has eight layers, top-to-bottom:
 1. **User code + PyTorch** (slate) — the consumer surface.
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `trainer_step_fn`** (orange bus) — the optional hook every specialization plugs into.
-4. **Specialization subpackages** (amber) — model-side: `nnx.finetune`, `nnx.peft` (LoRA / DoRA / IA3 / Prefix / Prompt / Adapters), `nnx.prune`, `nnx.surgery`, `nnx.quantize`; data + paradigm side: `nnx.diffusion`, `nnx.paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), `nnx.trainer`; interop + downstream: `nnx.embeddings` (contrastive + FAISS), `nnx.interop` (GGUF + Ollama + safetensors), `nnx.generation` (LogitsProcessor chain), `nnx.viz` (model-internals viz). All plug into the orange `train_step_fn` / `trainer_step_fn` hook from Layer 3 — plus the shared `nnx._step_helpers`.
+4. **Specialization subpackages** (amber) — model-side: `nnx.finetune`, `nnx.peft` (LoRA / DoRA / IA3 / Prefix / Prompt / Adapters), `nnx.prune`, `nnx.surgery`, `nnx.quantize`; data + paradigm side: `nnx.diffusion`, `nnx.paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), `nnx.trainer`; interop + downstream: `nnx.embeddings` (contrastive + FAISS), `nnx.interop` (safetensors + experimental GGUF), `nnx.generation` (LogitsProcessor chain), `nnx.viz` (model-internals viz). Hook-producing packages plug into the orange `train_step_fn` / `eval_step_fn` / `trainer_step_fn` surface from Layer 3, with shared finalization in `nnx._step_helpers`.
 5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
@@ -186,9 +186,19 @@ The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
-### 6.2. What about `evaluate()` and `predict()`?
+### 6.2. Custom evaluation
 
-They still assume supervised classification; they'll grow `eval_step_fn` / `predict_fn` equivalents when the first task that needs them lands.
+`NNModel.train(..., eval_step_fn=...)` accepts the validation-side equivalent of
+`train_step_fn`. The hook receives an `EvalStepContext` containing the model,
+batch, loss function, and epoch/batch indices, and returns one
+`NNEvaluationDataPoint` per validation batch. NNx aggregates those points and
+persists the result in `idp.val_edp`, including custom values in `extra`.
+
+This supports regression and other non-classification validation without
+replacing the training loop. See
+[`examples/26_custom_eval_step.py`](https://github.com/thekaveh/NNx/blob/main/examples/26_custom_eval_step.py).
+Standalone `evaluate()` and `predict()` still use the built-in supervised
+classification path; there is no `predict_fn` hook yet.
 
 ## 7. Fine-tuning (transfer learning)
 
@@ -614,10 +624,13 @@ Downstream of the LM path, four follow-ons compose on top of it:
   fine-tunes a `TransformerNN` against `(prompt, chosen, rejected)`
   preference triples via the Rafailov et al. 2023 chosen-vs-rejected
   log-ratio objective, no reward modeling or RL.
-- **GGUF + Ollama export** — `nnx.interop.write_gguf` writes a
-  llama.cpp-compatible `.gguf` (fused-QKV split, SwiGLU `w1`/`w3`/`w2` →
-  `ffn_gate`/`ffn_up`/`ffn_down`, RoPE/RMSNorm metadata). See
-  [`docs/gguf.md`](gguf.md).
+- **Experimental GGUF export** — `nnx.interop.write_gguf` writes a
+  structurally readable `.gguf` tagged `nnx_transformer`; fused QKV and SwiGLU
+  tensors are split into stable NNx names. Stock llama.cpp, Ollama, and LM Studio
+  do not implement this architecture, so the artifact is for inspection or a
+  runtime patched for NNx. `export_ollama_modelfile` only generates the adjacent
+  bundle files; it does not make the architecture executable by stock Ollama.
+  See [`docs/gguf.md`](gguf.md).
 - **HuggingFace Hub publish** — via the `PyTorchModelHubMixin` integration
   on `NNModel` itself (any subclass inherits it). See
   [`docs/hub.md`](hub.md).
@@ -631,4 +644,4 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 - **`nnx.surgery`** — `widen` / `deepen` (function-preserving Net2Net edits — Chen/Goodfellow/Shlens, ICLR 2016), `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 - **`nnx.embeddings`** — the one RAG-adjacent surface NNx ships. `train_contrastive` reuses the existing NT-Xent machinery for domain-specific text embedders; `export_to_faiss` writes the trained model's outputs to a FAISS index (Flat / HNSW) that any retrieval framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. The chunker, reranker, and vector-DB client are deliberately out of scope. See [`docs/embeddings.md`](embeddings.md) for the full when-to-use guide; `examples/13_train_domain_embedder.py` is the runnable demo.
 
-`nnx.generation` (LogitsProcessor chain) is documented inline in §15 since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` (safetensors + GGUF + Ollama) is documented under §15 and on [`docs/gguf.md`](gguf.md) / [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.
+`nnx.generation` (LogitsProcessor chain) is documented inline in §15 since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` (safetensors + experimental NNx-tagged GGUF) is documented under §15 and on [`docs/gguf.md`](gguf.md) / [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.

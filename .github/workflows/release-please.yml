@@ -3,9 +3,9 @@ name: Release Please
 # release-please watches main for Conventional Commits and maintains a
 # long-lived "release PR" that bumps the version + updates CHANGELOG.md
 # according to what's accumulated since the last tag. Merging that PR
-# pushes a vX.Y.Z tag, which fires release.yml's tag-triggered publish
-# job — so the human gate stays on the release PR merge, and the
-# version-bump / CHANGELOG / tag are all mechanical from there.
+# creates a vX.Y.Z release. The publish job below calls the reusable
+# release workflow in the same run because events created by GITHUB_TOKEN
+# do not trigger a second workflow. Direct tag pushes remain supported.
 on:
   push:
     branches: [main]
@@ -22,8 +22,25 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Release Please
+        id: release
         # googleapis/release-please-action@v4
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      release_ref: ${{ steps.release.outputs.sha }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      release_ref: ${{ needs.release-please.outputs.release_ref }}
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: read
+      id-token: write

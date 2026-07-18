@@ -1,15 +1,13 @@
-"""Bundle a TransformerNN + Modelfile for ``ollama create``.
+"""Generate an experimental TransformerNN GGUF + Modelfile bundle.
 
 The Ollama UX is: a directory containing ``model.gguf`` + a
 ``Modelfile`` that says ``FROM ./model.gguf`` plus optional
 ``SYSTEM`` / ``PARAMETER`` / ``TEMPLATE`` directives.
 
-This script produces that directory. To register the model:
-
-    python examples/18_publish_to_ollama.py
-    cd artifacts/ollama_bundle
-    ollama create my-nnx-model -f Modelfile
-    ollama run my-nnx-model
+This script produces that directory as a bundle fixture. Stock Ollama does not
+implement the ``nnx_transformer`` architecture and cannot run the generated
+model. Use it for inspecting the bundle or developing a patched runtime; do not
+relabel the GGUF as ``llama`` because the RoPE layouts differ.
 
 Scope: the GGUF is written at F16 (the default). For smaller files use
 the ``llama-quantize`` shell-out recipe from
@@ -69,13 +67,13 @@ def main() -> None:
         out_dir,
         system="You are a small storytelling model.",
         parameters={
-            # Tune these for the Ollama runtime; defaults are fine for a smoke test.
+            # Representative Modelfile parameters for bundle inspection.
             "temperature": 0.8,
             "top_k": 40,
             "top_p": 0.95,
             "stop": ["<eos>"],
         },
-        # Optional Go-template — Ollama renders it on every chat turn.
+        # Optional Go-template carried by the generated Modelfile.
         # The TinyStories model has no chat structure, so we keep it
         # minimal here.
         template="{{ .Prompt }}",
@@ -83,12 +81,8 @@ def main() -> None:
 
     print(f"[ollama] Modelfile: {mf_path}")
     print(f"[ollama] GGUF:      {out_dir / 'model.gguf'}")
-    print(
-        "\n[ollama] Register with:\n"
-        f"  cd {out_dir}\n"
-        "  ollama create my-nnx-model -f Modelfile\n"
-        "  ollama run my-nnx-model"
-    )
+    print("\n[ollama] Stock Ollama cannot run the nnx_transformer architecture.")
+    print("         Inspect this bundle or use a runtime explicitly patched for NNx.")
 
 
 if __name__ == "__main__":

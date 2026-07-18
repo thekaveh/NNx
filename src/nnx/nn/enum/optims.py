@@ -68,6 +68,7 @@ class Optims(Enum):
 
         match self:
             case Optims.SGD:
+                assert isinstance(momentum, float)
                 return optim.SGD(
                     params_or_groups,
                     lr=lr_start,
@@ -75,6 +76,7 @@ class Optims(Enum):
                     weight_decay=weight_decay,
                 )
             case Optims.ADAM:
+                assert isinstance(momentum, tuple)
                 return optim.Adam(
                     params_or_groups,
                     lr=lr_start,
@@ -82,6 +84,7 @@ class Optims(Enum):
                     weight_decay=weight_decay,
                 )
             case Optims.ADAM_AMSGRAD:
+                assert isinstance(momentum, tuple)
                 return optim.Adam(
                     params_or_groups,
                     amsgrad=True,
@@ -90,6 +93,7 @@ class Optims(Enum):
                     weight_decay=weight_decay,
                 )
             case Optims.SGD_NESTEROV:
+                assert isinstance(momentum, float)
                 return optim.SGD(
                     params_or_groups,
                     nesterov=True,

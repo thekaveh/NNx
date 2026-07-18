@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 from sklearn import metrics
@@ -32,7 +32,7 @@ class NNEvaluationDataPoint:
     # Custom metrics injected by the caller. Keys are metric names; values
     # are floats. Default factory keeps the dataclass hashable-by-value via
     # the dict default.
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, float] = field(default_factory=dict)
 
     def with_loss(self, value: float):
         return replace(self, loss=value)
@@ -70,10 +70,12 @@ class NNEvaluationDataPoint:
                 extra[name] = float(fn(Y, Y_hat))
 
         return NNEvaluationDataPoint(
-            accuracy=metrics.accuracy_score(y_true=Y, y_pred=Y_hat),
-            f1=metrics.f1_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0),
-            recall=metrics.recall_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0),
-            precision=metrics.precision_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=0),
+            accuracy=float(metrics.accuracy_score(y_true=Y, y_pred=Y_hat)),
+            f1=float(metrics.f1_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=cast(Any, 0))),
+            recall=float(metrics.recall_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=cast(Any, 0))),
+            precision=float(
+                metrics.precision_score(y_true=Y, y_pred=Y_hat, average=average, zero_division=cast(Any, 0))
+            ),
             extra=extra,
         )
 
@@ -100,19 +102,22 @@ class NNEvaluationDataPoint:
         An ``extra`` key present on some but not all edps is averaged over
         the edps where it IS present (skipped on the rest).
         """
+        if not edps:
+            raise ValueError("mean_of() requires at least one evaluation data point")
+
         # Aggregate the standard fields with the existing logic.
         ret = NNEvaluationDataPoint(
-            f1=np.mean([edp.f1 for edp in edps]),
-            recall=np.mean([edp.recall for edp in edps]),
-            accuracy=np.mean([edp.accuracy for edp in edps]),
-            precision=np.mean([edp.precision for edp in edps]),
+            f1=float(np.mean([edp.f1 for edp in edps])),
+            recall=float(np.mean([edp.recall for edp in edps])),
+            accuracy=float(np.mean([edp.accuracy for edp in edps])),
+            precision=float(np.mean([edp.precision for edp in edps])),
         )
 
         if len([edp.loss for edp in edps if edp.loss is not None]) > 0:
-            ret = ret.with_loss(np.mean([edp.loss for edp in edps if edp.loss is not None]))
+            ret = ret.with_loss(float(np.mean([edp.loss for edp in edps if edp.loss is not None])))
 
         if len([edp.error for edp in edps if edp.error is not None]) > 0:
-            ret = ret.with_error(np.mean([edp.error for edp in edps if edp.error is not None]))
+            ret = ret.with_error(float(np.mean([edp.error for edp in edps if edp.error is not None])))
 
         # Propagate extras: union the key set across edps, mean per key
         # over the edps that have it. Keys missing from some edps are
@@ -131,7 +136,7 @@ class NNEvaluationDataPoint:
         return ret
 
     def state(self) -> dict:
-        d = dict(
+        d: dict[str, object] = dict(
             f1=self.f1,
             recall=self.recall,
             accuracy=self.accuracy,

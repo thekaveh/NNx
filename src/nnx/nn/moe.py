@@ -22,8 +22,9 @@ The layer exposes ``.last_aux_loss`` after each forward — the
 Switch-Transformer load-balancing penalty
 ``α · N · Σ f_i · P_i`` (`fedus:switch`), where ``f_i`` is the
 fraction of dispatched tokens routed to expert ``i`` and ``P_i`` is
-the mean router probability for ``i``. The penalty is minimized
-(equal to 1) when routing is perfectly uniform across experts. A
+the mean router probability for ``i``. It equals 1 when both routing
+and mean probability are perfectly uniform across experts; it is a
+balancing objective, not a metric with a universal lower bound of 1. A
 companion paradigm factory in :mod:`nnx.paradigms.moe` reads this
 attribute across every :class:`MoELinear` in the net and adds it to
 the main supervised loss with a configurable weight.
@@ -169,12 +170,11 @@ class MoELinear(nn.Module):
         #   f_i = fraction of dispatched (token, slot) pairs routed
         #         to expert i, averaged over batch and top_k slots.
         #   P_i = mean router probability for expert i over the batch.
-        # Both terms are in [0, 1] and sum to 1 across i. The product
-        # is minimized at uniform f and P; at uniform routing each
-        # equals 1/N, the sum equals N · 1/N² = 1/N, and the whole
-        # penalty equals 1. So the minimum value of this loss term
-        # is 1, not 0 — that's the property tested by
-        # ``test_moe_linear_aux_loss_zero_at_uniform``.
+        # Both terms are in [0, 1] and sum to 1 across i. When both are
+        # uniform, each equals 1/N and the penalty equals 1. This is a
+        # useful reference point, but not a universal lower bound: for
+        # finite batches, dispatch fractions and mean probabilities can
+        # be anti-correlated.
         #
         # Broadcasting: topk_idx is (B, top_k); the [..., None]
         # expansion yields (B, top_k, 1), comparing against

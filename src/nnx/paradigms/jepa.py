@@ -31,7 +31,7 @@ from __future__ import annotations
 import copy
 import math
 from collections.abc import Callable
-from typing import Optional
+from typing import Any, Optional, cast
 
 import torch
 import torch.nn.functional as F
@@ -375,8 +375,9 @@ def jepa_train_step_factory(
 
         # Standard dataloader contract: (X, Y) or single tensor. Y is
         # ignored — JEPA is self-supervised.
-        if hasattr(m.net, "unpack_batch"):
-            (x,), _ = m.net.unpack_batch(ctx.batch)
+        dynamic_net = cast(Any, m.net)
+        if hasattr(dynamic_net, "unpack_batch"):
+            (x,), _ = dynamic_net.unpack_batch(ctx.batch)
         elif isinstance(ctx.batch, (list, tuple)):
             x = ctx.batch[0]
         else:
@@ -384,7 +385,7 @@ def jepa_train_step_factory(
         x = x.to(m.device)
 
         # Sample the per-step mask. Both masks are 1-D length n_patches.
-        n_patches = m.net.n_patches
+        n_patches = int(dynamic_net.n_patches)
         context_mask_1d, target_mask_1d = mask_fn(n_patches, m.device)
         if context_mask_1d.shape != (n_patches,) or target_mask_1d.shape != (n_patches,):
             raise ValueError(
@@ -404,7 +405,7 @@ def jepa_train_step_factory(
         # Build position indices the predictor needs. CLS is position 0;
         # ViTNN.patch_positions() owns the 1..n_patches CLS shift, so
         # boolean-masking it yields the kept/target position indices.
-        patch_positions = m.net.patch_positions()
+        patch_positions = dynamic_net.patch_positions()
         kept_patch_positions = patch_positions[context_mask_1d]
         context_positions = torch.cat([torch.zeros(1, dtype=torch.long, device=m.device), kept_patch_positions])
         target_positions = patch_positions[target_mask_1d]

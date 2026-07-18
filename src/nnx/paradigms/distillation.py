@@ -26,6 +26,8 @@ stays one.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import torch
 import torch.nn.functional as F
 
@@ -84,7 +86,7 @@ def kd_train_step_factory(
 
         # unpack_batch returns ((X,), Y); the singleton destructure asserts
         # a single-input net and binds X to that one tensor.
-        (X,), Y = m.net.unpack_batch(ctx.batch)
+        (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
         X = X.to(m.device)
         Y = Y.to(m.device)
 
@@ -199,7 +201,7 @@ def feature_kd_train_step_factory(
         m.net.train()
         m.net.zero_grad()
 
-        (X,), Y = m.net.unpack_batch(ctx.batch)
+        (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
         X = X.to(m.device)
         Y = Y.to(m.device)
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -166,6 +167,11 @@ def test_review_mean_of_propagates_extra():
     assert abs(avg.extra["shared"] - 15.0) < 1e-9
     assert avg.extra["my_metric"] == 1.0  # only in e1
     assert avg.extra["other_metric"] == 2.0  # only in e2
+
+
+def test_mean_of_rejects_empty_input():
+    with pytest.raises(ValueError, match="at least one"):
+        NNEvaluationDataPoint.mean_of([])
 
 
 def test_review_load_optimizer_state_uses_weights_only(tmp_path, monkeypatch):

@@ -4,7 +4,7 @@ import json
 import os
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import torch
 
@@ -78,7 +78,7 @@ def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNCheckpoint:
     net_params: NNParams
-    net_state: OrderedDict
+    net_state: dict[str, Any]
     model_params: NNModelParams
     idp: NNIterationDataPoint
 
@@ -158,7 +158,7 @@ class NNCheckpoint:
         run: str,
         type: Checkpoints,
         root: Optional[str] = None,
-        optimizer_state: Optional[OrderedDict] = None,
+        optimizer_state: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -185,7 +185,7 @@ class NNCheckpoint:
         run: str,
         type: Checkpoints,
         root: Optional[str] = None,
-    ) -> Optional[OrderedDict]:
+    ) -> Optional[dict[str, Any]]:
         """Load the optimizer state sidecar for a checkpoint. Returns None
         when no sidecar exists (e.g., checkpoints written before resume
         support was added).

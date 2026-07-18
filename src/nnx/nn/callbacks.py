@@ -154,7 +154,7 @@ class ModelCheckpoint(Callback):
         self.tag = tag
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
-        if ctx.epoch not in self.epochs:
+        if ctx.epoch not in self.epochs or ctx.idp is None:
             return
         # Build the NNCheckpoint inline — same shape as NNModel._save_checkpoints
         # but with a custom path so it doesn't collide with the Checkpoints enum
