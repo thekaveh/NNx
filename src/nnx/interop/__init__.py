@@ -2,10 +2,10 @@
 
 Currently houses:
 
-* ``nnx.interop.gguf`` — GGUF (llama.cpp / Ollama) writer for
+* ``nnx.interop.gguf`` — experimental NNx-tagged GGUF writer for
   ``TransformerNN``. Optional dep: ``pip install 'thekaveh-nnx[gguf-write]'``.
-* ``nnx.interop.ollama`` — Modelfile + GGUF bundle emitter for
-  ``ollama create``.
+* ``nnx.interop.ollama`` — Modelfile + GGUF bundle emitter for inspection
+  or a runtime explicitly patched for ``nnx_transformer``.
 
 Both submodules import lazily so that ``import nnx.interop`` works even
 when the optional ``gguf`` package isn't installed. The actual import

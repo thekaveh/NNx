@@ -26,6 +26,11 @@ LayerKV = Optional[tuple[torch.Tensor, torch.Tensor]]
 
 
 class TransformerNN(nn.Module):
+    tok_embed: nn.Embedding
+    blocks: nn.ModuleList
+    norm_out: RMSNorm
+    lm_head: nn.Linear
+
     def __init__(self, params: NNTransformerParams):
         super().__init__()
         self.params = params
@@ -38,6 +43,7 @@ class TransformerNN(nn.Module):
         # degenerates into repeating the last prompt token. The shared
         # tensor also covers lm_head when tie_embeddings=True.
         nn.init.normal_(self.tok_embed.weight, mean=0.0, std=0.02)
+        assert params.n_heads is not None
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
@@ -127,14 +133,13 @@ class TransformerNN(nn.Module):
                 f"exceeds max_seq_len={self.params.max_seq_len}"
             )
 
-        if past_kvs is None:
-            past_kvs = [None] * len(self.blocks)
-        if len(past_kvs) != len(self.blocks):
-            raise ValueError(f"past_kvs has {len(past_kvs)} entries but model has {len(self.blocks)} layers")
+        layer_kvs: list[LayerKV] = [None for _ in self.blocks] if past_kvs is None else past_kvs
+        if len(layer_kvs) != len(self.blocks):
+            raise ValueError(f"past_kvs has {len(layer_kvs)} entries but model has {len(self.blocks)} layers")
 
         x = self.tok_embed(tokens)  # (B, T, d_model)
         new_kvs: list[LayerKV] = []
-        for block, layer_past in zip(self.blocks, past_kvs, strict=True):
+        for block, layer_past in zip(self.blocks, layer_kvs, strict=True):
             x, new_kv = block(x, past_kv=layer_past, use_cache=True)
             new_kvs.append(new_kv)
         x = self.norm_out(x)

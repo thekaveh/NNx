@@ -19,6 +19,8 @@ Requires 4D ``(B, C, H, W)`` image tensors; raises on lower-rank input.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import torch
 
@@ -39,7 +41,7 @@ def _unpack_supervised(ctx: TrainStepContext) -> tuple[torch.Tensor, torch.Tenso
     train_step_fn for those.
     """
     m = ctx.model
-    (X,), Y = m.net.unpack_batch(ctx.batch)
+    (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
     return X.to(m.device), Y.to(m.device)
 
 

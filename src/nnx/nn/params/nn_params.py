@@ -70,11 +70,13 @@ class NNParams:
 
         object.__setattr__(self, "_dims", dims)
 
-    def activation_for(self, layer_idx: int):
+    def activation_for(self, layer_idx: int) -> Activations:
         """The activation for hidden layer ``layer_idx`` — the per-layer entry
         when `activations` is set, else the net-wide scalar (#85)."""
         if self.activations is not None:
             return self.activations[layer_idx]
+        if self.activation is None:
+            raise ValueError("activation must be set when no per-layer activation override is available")
         return self.activation
 
     def dropout_for(self, layer_idx: int) -> float:

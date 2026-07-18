@@ -52,6 +52,9 @@ class RoPE(nn.Module):
     `max_seq_len` precompute on every call.
     """
 
+    cos_cached: torch.Tensor
+    sin_cached: torch.Tensor
+
     def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
         super().__init__()
         if dim % 2 != 0:

@@ -27,7 +27,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Training paradigms** — knowledge distillation (Hinton + FitNets-style feature-KD), contrastive (SimCLR / NT-Xent), Mixup, CutMix, sparse top-k Mixture-of-Experts (`MoELinear` + Switch-style aux loss), I-JEPA self-supervised pretraining, DPO preference fine-tuning, Born-Again iterated self-distillation.
 - **Language modeling** — `TransformerNN` (decoder-only: RMSNorm + RoPE + SwiGLU + KV-cache) + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with greedy / top-k / top-p / repetition-penalty sampling.
 - **Embeddings + FAISS** — contrastive text-embedder training + FAISS index export for downstream RAG.
-- **GGUF + Ollama export** — write a `.gguf` for the llama.cpp / Ollama / LM Studio ecosystem, including the Ollama Modelfile bundle.
+- **Experimental GGUF export** — write and inspect an NNx-tagged `.gguf`, or prepare a bundle for a runtime patched to support the NNx architecture. Stock llama.cpp-derived runtimes do not load it.
 - **HuggingFace Hub** — `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel` via the `PyTorchModelHubMixin`, plus safetensors checkpoint format.
 - **Model-internals visualization** — `nnx.viz.summary` (torchinfo) + `weight_histogram` + `activation_map` + `attribute` (Captum) + `gradient_flow` (per-layer gradient-norm diagnostic) + `netron_export`.
 - **Training-loop diagnostics** — `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure; non-destructive (model state + training-mode restored on exit).
@@ -51,7 +51,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - [Model surgery](surgery.md) — function-preserving Net2Net + low-rank + drop primitives.
 - [Embeddings + FAISS](embeddings.md) — contrastive training + RAG-ready export.
 - [HuggingFace Hub](hub.md) — safetensors + Hub publish/load.
-- [GGUF & Ollama](gguf.md) — export to llama.cpp ecosystem.
+- [Experimental GGUF export](gguf.md) — container inspection, quantization notes, and runtime limits.
 - [Comparison vs Lightning / HF / fastai / Composer](comparison.md) — scope-explicit decision matrix for picking the right PyTorch training toolkit.
 
 ### 2.4. Look things up

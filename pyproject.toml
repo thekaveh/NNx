@@ -1,6 +1,6 @@
 [build-system]
 # >=77: PEP 639 SPDX license metadata below. "wheel" is auto-provided.
-requires = ["setuptools>=77"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -140,12 +140,8 @@ docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.24",
-    # Pygments 2.20.0 broke `pymdownx.highlight`: a `filename=None`
-    # propagates into `HtmlFormatter.__init__` and crashes with
-    # `AttributeError: 'NoneType' object has no attribute 'replace'`
-    # whenever any markdown page contains a fenced code block or
-    # mkdocstrings renders source. Pin below 2.20 until upstream
-    # releases a fix.
+    # Keep a ceiling so docs rendering remains reproducible across
+    # Pygments formatter changes; 2.20.0 includes the current security fix.
     "Pygments<2.21",
 ]
 

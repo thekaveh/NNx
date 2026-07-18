@@ -145,6 +145,17 @@ def test_predict_restores_training_mode_after_exception():
     )
 
 
+def test_predict_rejects_empty_loader_and_restores_training_mode():
+    model = _tiny_nnmodel()
+    model.net.train()
+    empty = DataLoader(TensorDataset(torch.empty(0, 4), torch.empty(0, dtype=torch.long)), batch_size=8)
+
+    with pytest.raises(ValueError, match=r"predict\(\) loader produced zero batches"):
+        model.predict(empty)
+
+    assert model.net.training is True
+
+
 def _make_diffusion_model_with_schedule():
     """Shared fixture-factory for the two diffusion.sample mode-restore
     tests. Returns (model, schedule) primed for a 4-step reverse-diffusion

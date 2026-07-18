@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import reduce
-from typing import Optional
+from typing import Any, Optional, cast
 
 import torch
 from torch.utils.data import DataLoader, random_split
@@ -35,9 +35,10 @@ class NNDataset(NNDatasetBase):
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
+        dataset_factory = cast(Any, self.ds_class)
         full_train_dataset, test_dataset = (
-            self.ds_class(root=self.root_dir, train=True, download=self.download, transform=self.transform),
-            self.ds_class(root=self.root_dir, train=False, download=self.download, transform=self.transform),
+            dataset_factory(root=self.root_dir, train=True, download=self.download, transform=self.transform),
+            dataset_factory(root=self.root_dir, train=False, download=self.download, transform=self.transform),
         )
 
         # Carve val out of train so the test set stays held-out for final eval.

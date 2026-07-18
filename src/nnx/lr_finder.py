@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional, cast
 
 import plotly.graph_objects as go
 import torch
@@ -150,7 +150,7 @@ def lr_finder(
     # finally discards only an iterator the sweep itself created.
     had_cached_iterator = getattr(train_loader, "_iterator", None) is not None
 
-    optimizer = optimizer_cls(model.parameters(), lr=start_lr)
+    optimizer = cast(Any, optimizer_cls)(model.parameters(), lr=start_lr)
     lrs: list[float] = []
     losses: list[float] = []
 
@@ -220,8 +220,10 @@ def lr_finder(
         model.train(was_training)
         torch.set_rng_state(cpu_rng_state)
         if device.type == "cuda":
+            assert device_rng_state is not None
             torch.cuda.set_rng_state(device_rng_state, device)
         elif device.type == "mps":
+            assert device_rng_state is not None
             torch.mps.set_rng_state(device_rng_state)
         for g, s in loader_gen_states:
             g.set_state(s)

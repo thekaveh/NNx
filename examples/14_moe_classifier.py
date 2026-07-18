@@ -18,8 +18,8 @@ Demonstrates:
      aux loss summed across every :class:`MoELinear` layer. Without
      the aux term, the router can collapse onto one or two experts
      and waste the rest of the parameter budget.
-  3. Verifying that the aux loss decreases across the run — proof
-     that the load-balancing penalty is doing its job.
+  3. Comparing the aux loss before and after training as a routing
+     diagnostic. On a tiny stochastic problem it is not a guarantee.
   4. Checkpoint round-trip: the saved LAST checkpoint restores an
      ``NNMoEParams`` (via ``resolve_from_state``) and rebuilds the
      MoE net with identical logits.
@@ -117,7 +117,7 @@ def main() -> None:
     with torch.no_grad():
         _ = model.net(all_X)
     aux_start = float(moe_layer.last_aux_loss)
-    print(f"\naux loss at init:  {aux_start:.4f}  (minimum is 1.0 at uniform routing)")
+    print(f"\naux loss at init:  {aux_start:.4f}")
 
     # Train with the MoE step factory. ``aux_loss_weight=0.05`` is a
     # tutorial-scale value — enough to nudge routing toward uniform
@@ -152,7 +152,7 @@ def main() -> None:
     aux_end = float(moe_layer.last_aux_loss)
     val_err = run.idps[-1].val_edp.error
 
-    print(f"aux loss post-train: {aux_end:.4f}  (gap to 1.0: {aux_end - 1.0:.4f})")
+    print(f"aux loss post-train: {aux_end:.4f}")
     print(f"final val error:     {val_err:.4f}")
 
     if aux_end >= aux_start:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 import pandas as pd
 import yaml
@@ -176,8 +176,8 @@ class NNRun:
     # run.id hashes for NNModel runs are preserved exactly.
     trainer: Optional[NNTrainerParams] = field(default=None)
 
-    _id: Optional[str] = field(repr=False, default=None)
-    _state: Optional[dict] = field(repr=False, default=None)
+    _id: str = field(init=False, repr=False)
+    _state: dict[str, object] = field(init=False, repr=False)
     idps: Optional[list[NNIterationDataPoint]] = field(repr=False, default=None)
 
     def __str__(self):
@@ -207,7 +207,7 @@ class NNRun:
         return self._id
 
     def __post_init__(self):
-        state = dict(model=self.model.state(), net=self.net.state(), train=self.train.state())
+        state: dict[str, object] = dict(model=self.model.state(), net=self.net.state(), train=self.train.state())
         # `trainer` is omitted when None so existing NNModel runs hash to
         # the same run.id as before this field existed. Same omit-when-
         # default pattern as NNTrainParams.seed / save_phase_checkpoints
@@ -276,8 +276,8 @@ class NNRun:
 
         import plotly.graph_objects as go
 
-        epoch_buckets: dict[int, list] = defaultdict(list)
-        for idp in self.idps:
+        epoch_buckets: dict[int, list[NNIterationDataPoint]] = defaultdict(list)
+        for idp in cast(list[NNIterationDataPoint], self.idps):
             epoch_buckets[idp.epoch_idx].append(idp)
 
         epochs: list[int] = sorted(epoch_buckets.keys())
@@ -291,15 +291,20 @@ class NNRun:
 
         for epoch_idx in epochs:
             idp_list = epoch_buckets[epoch_idx]
-            losses = [idp.train_edp.loss for idp in idp_list if idp.train_edp.loss is not None]
-            errs = [idp.train_edp.error for idp in idp_list if idp.train_edp.error is not None]
+            losses = [
+                idp.train_edp.loss for idp in idp_list if idp.train_edp is not None and idp.train_edp.loss is not None
+            ]
+            errs = [
+                idp.train_edp.error for idp in idp_list if idp.train_edp is not None and idp.train_edp.error is not None
+            ]
             train_losses.append(sum(losses) / len(losses) if losses else float("nan"))
             train_errs.append(sum(errs) / len(errs) if errs else float("nan"))
             # val_edp is set only on the last idp of each epoch (when a
             # val_loader was supplied). Use the last non-None val_edp found.
             val_idp = next((idp for idp in reversed(idp_list) if idp.val_edp is not None), None)
-            val_losses.append(val_idp.val_edp.loss if val_idp and val_idp.val_edp.loss is not None else float("nan"))
-            val_errs.append(val_idp.val_edp.error if val_idp and val_idp.val_edp.error is not None else float("nan"))
+            val_edp = val_idp.val_edp if val_idp is not None else None
+            val_losses.append(val_edp.loss if val_edp is not None and val_edp.loss is not None else float("nan"))
+            val_errs.append(val_edp.error if val_edp is not None and val_edp.error is not None else float("nan"))
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=epochs, y=train_losses, name="train_loss", mode="lines+markers"))

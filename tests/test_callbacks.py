@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from nnx.nn.callbacks import (
     Callback,
     EarlyStopping,
     LRMonitor,
     _LegacyCallback,
 )
+from nnx.nn.nn_model import _CallbackFinalizer
 
 
 def _make_ctx(epoch=0, val_error=None, train_error=0.5, lr=1e-3):
@@ -37,6 +40,85 @@ def test_callback_base_class_hooks_are_no_op():
     cb.on_epoch_end(ctx)
     cb.on_train_end(ctx)
     assert ctx.should_stop is False
+
+
+def test_callback_finalizer_runs_every_cleanup_after_failure():
+    events: list[str] = []
+
+    class _Failing(Callback):
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("failing")
+            raise RuntimeError("cleanup failed")
+
+    class _Following(Callback):
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("following")
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        with _CallbackFinalizer([_Following(), _Failing()], _make_ctx()) as lifecycle:
+            lifecycle.start()
+
+    assert events == ["failing", "following"]
+
+
+def test_callback_finalizer_runs_every_cleanup_after_keyboard_interrupt():
+    events: list[str] = []
+
+    class _Interrupting(Callback):
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("interrupting")
+            raise KeyboardInterrupt
+
+    class _Following(Callback):
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("following")
+
+    with pytest.raises(KeyboardInterrupt):
+        with _CallbackFinalizer([_Following(), _Interrupting()], _make_ctx()) as lifecycle:
+            lifecycle.start()
+
+    assert events == ["interrupting", "following"]
+
+
+def test_callback_finalizer_preserves_training_exception():
+    class _Failing(Callback):
+        def on_train_end(self, ctx):  # noqa: ARG002
+            raise RuntimeError("cleanup failed")
+
+    with pytest.warns(RuntimeWarning, match="cleanup failed"):
+        with pytest.raises(ValueError, match="training failed"):
+            with _CallbackFinalizer([_Failing()], _make_ctx()) as lifecycle:
+                lifecycle.start()
+                raise ValueError("training failed")
+
+
+def test_callback_finalizer_unwinds_started_callbacks_after_begin_failure():
+    events: list[str] = []
+
+    class _Started(Callback):
+        def on_train_begin(self, ctx):  # noqa: ARG002
+            events.append("started.begin")
+
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("started.end")
+
+    class _BeginFailure(Callback):
+        def on_train_begin(self, ctx):  # noqa: ARG002
+            events.append("failing.begin")
+            raise RuntimeError("begin failed")
+
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("failing.end")
+
+    class _NeverStarted(Callback):
+        def on_train_begin(self, ctx):  # noqa: ARG002
+            events.append("never.begin")
+
+    with pytest.raises(RuntimeError, match="begin failed"):
+        with _CallbackFinalizer([_Started(), _BeginFailure(), _NeverStarted()], _make_ctx()) as lifecycle:
+            lifecycle.start()
+
+    assert events == ["started.begin", "failing.begin", "started.end"]
 
 
 def test_early_stopping_triggers_after_patience():
@@ -168,6 +250,18 @@ def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     ckpt = NNCheckpoint.from_file(str(ckpt_dir / "snap_e0.pt"))
     assert ckpt is not None
     assert ckpt.idp.epoch_idx == 0
+
+
+def test_model_checkpoint_ignores_epoch_without_completed_idp(tmp_path, monkeypatch):
+    from nnx.nn.callbacks import ModelCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    ctx = _make_ctx(epoch=0)
+    ctx.idp = None
+
+    ModelCheckpoint(epochs=[0]).on_epoch_end(ctx)
+
+    assert not (tmp_path / "runs").exists()
 
 
 def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):

@@ -85,12 +85,12 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 |---|---|
 | `16_ijepa_cifar10.py` | I-JEPA on CIFAR-10: a small `ViTNN` context encoder predicts the latent of masked patches against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `random_block_mask` (EMA updates happen inside the step factory). No pixel reconstruction, no strong augmentations. |
 
-### 2.9. GGUF + Ollama export
+### 2.9. Experimental GGUF export
 
 | Example | What it demonstrates |
 |---|---|
-| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write a `.gguf` via `nnx.interop.write_gguf`, round-trip via `gguf.GGUFReader`. Includes the shell-out recipe for sub-F16 quantization (`llama-quantize`). Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
-| `18_publish_to_ollama.py` | Bundle `model.gguf` + a generated `Modelfile` (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) so `ollama create -f Modelfile` registers the model locally. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
+| `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write an NNx-tagged `.gguf`, and inspect it with `gguf.GGUFReader`. Includes the official llama.cpp source-build path for `llama-quantize`. Stock llama.cpp-derived runtimes do not implement the NNx architecture. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
+| `18_publish_to_ollama.py` | Generate `model.gguf` + a Modelfile (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) as an experimental bundle fixture. Stock Ollama cannot run `nnx_transformer`; use only with a compatible patched runtime. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
 
 ### 2.10. Pruning + surgery
 

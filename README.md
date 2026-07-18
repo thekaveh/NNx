@@ -10,12 +10,12 @@ NNx owns the boilerplate around supervised training so you can focus on the mode
 
 ![NNx architecture](docs/assets/architecture.svg)
 
-The diagram is generated via the `architecture-diagram` skill. A standalone themed copy lives at [`docs/architecture.html`](docs/architecture.html); the embedded SVG above mirrors its content.
+The architecture separates user-facing orchestration, per-batch extension hooks, callback lifecycle, and persisted run artifacts.
 
 **Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. Both expose the **`train_step_fn` / `trainer_step_fn`** hook — the orange bus through which the **Specialization subpackages** plug into the loop: `finetune`, `peft` (LoRA / DoRA / IA3 / prefix / prompt / adapters), `quantize` (PTQ-INT8 + QAT-8da4w via torchao), `prune` (magnitude + 2:4), `surgery` (Net2Net widen / deepen / drop / low-rank / embedding), `embeddings` (contrastive + FAISS export), `interop` (safetensors + GGUF + Ollama), `generation` (LogitsProcessor chain + KV-cache), `viz` (model-internals viz: summary / weight histogram / activation map / Captum attribution / Netron), `diffusion`, `paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), and `trainer` — plus the shared `_step_helpers`.
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the extension bus through which the **Specialization subpackages** plug into the loop: `finetune`, `peft` (LoRA / DoRA / IA3 / prefix / prompt / adapters), `quantize` (PTQ-INT8 + QAT-8da4w via torchao), `prune` (magnitude + 2:4), `surgery` (Net2Net widen / deepen / drop / low-rank / embedding), `embeddings` (contrastive + FAISS export), `interop` (safetensors + experimental GGUF), `generation` (LogitsProcessor chain + KV-cache), `viz` (model-internals viz: summary / weight histogram / activation map / Captum attribution / Netron), `diffusion`, `paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), and `trainer`, plus the shared `_step_helpers`.
 3. The **Training-loop internals** run `_step_scheduler` and `_save_checkpoints` each batch / epoch; paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. **`NNRun`** and **`NNCheckpoint`** write to **`runs/<id>/`** atomically after every epoch.
@@ -36,9 +36,9 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **Pruning** — `nnx.prune.magnitude_prune` (mask-based unstructured, checkpoint-safe) and `nnx.prune.semi_structured_24` (2:4 semi-structured via torchao, Ampere+ hardware speedups).
 - **Model surgery — Net2Net + drop + low-rank + embedding** — `nnx.surgery.{widen, deepen, drop_layer, low_rank_factorize, expand_embedding}`. `widen` and `deepen` are function-preserving Net2Net edits (Chen/Goodfellow/Shlens, ICLR 2016) — the surged module's forward output matches the original's *before* refinement, so `NNModel.train()` can resume immediately without an accuracy cliff. `low_rank_factorize` is SVD truncation on a Linear (exact at max rank, Eckart-Young-bounded below it). `drop_layer` replaces a named layer with `nn.Identity`; `expand_embedding` grows an Embedding's row count and returns a frozen-mask for the original rows. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "refine after surgery" loop.
 - **Embeddings — contrastive trainer + FAISS export** — `nnx.embeddings.{ContrastiveTextDataset, train_contrastive, embed_texts, text_contrastive_train_step_factory, export_to_faiss, export_to_safetensors}`. Train a domain-specific text embedder from `(anchor, positive)` pairs via the existing NT-Xent machinery, then export to a FAISS index file that any RAG framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. NNx's job ends at the FAISS index — chunking / reranking / prompt orchestration live downstream. Optional dep: `pip install "thekaveh-nnx[embeddings]"` for `faiss-cpu` + `sentence-transformers`.
-- **Networks** — `FeedFwdNN` (vision / tabular), `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase` so they differ only in their PyG layer constructor), `TransformerNN` (decoder-only LM: RMSNorm + RoPE + SwiGLU + tied embeddings + KV-cache), and `ViTNN` (small ViT encoder, used as the I-JEPA backbone).
+- **Networks** — `FeedFwdNN`, `FeedFwdMoENN`, `ConvNN`, `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase`), `TransformerNN` (decoder-only LM: RMSNorm + RoPE + SwiGLU + tied embeddings + KV-cache), and `ViTNN` (small ViT encoder used as the I-JEPA backbone).
 - **Language modeling (opt-in via `thekaveh-nnx[lm]`)** — `TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` (HF Rust BPE wrapper) + `GenerativeNNModel.generate(prompt, ...)` with **KV-cache acceleration** for autoregressive decoding (1.9× speedup on CPU at 128 tokens, larger on GPU / longer contexts within `max_seq_len`; past the window the cache rebuilds per step and converges to full-recompute cost) and greedy / top-k / top-p / repetition-penalty sampling via a `LogitsProcessor` chain. See [docs/lm.md](docs/lm.md) for the full walkthrough; `examples/11_tinystories_lm.py` ships an end-to-end TinyStories-class training run.
-- **GGUF + Ollama export (opt-in via `thekaveh-nnx[gguf-write]`)** — `nnx.interop.write_gguf(model, tokenizer, path)` writes a llama.cpp-compatible `.gguf` (fused QKV split, SwiGLU `w1`/`w3`/`w2` → `ffn_gate`/`ffn_up`/`ffn_down`, RoPE / RMSNorm metadata). `nnx.interop.export_ollama_modelfile` bundles the GGUF with a Modelfile so `ollama create -f Modelfile` registers the model locally. See [docs/gguf.md](docs/gguf.md).
+- **Experimental GGUF export (opt-in via `thekaveh-nnx[gguf-write]`)** — `nnx.interop.write_gguf(model, tokenizer, path)` writes a structurally valid GGUF artifact with NNx tensor names and `general.architecture=nnx_transformer`. Stock llama.cpp, Ollama, and LM Studio do not implement that architecture; use the output for inspection or a reader explicitly patched for NNx. See [docs/gguf.md](docs/gguf.md).
 - **HuggingFace Hub (opt-in via `thekaveh-nnx[hub]`)** — `NNModel` mixes in `PyTorchModelHubMixin`: `save_pretrained` / `push_to_hub` / `from_pretrained`, with safetensors as an opt-in checkpoint format via `NNCheckpoint.to_file(format="safetensors")`. See [docs/hub.md](docs/hub.md).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders), `NNPreferenceDataset` (tokenized `(prompt, chosen, rejected)` preference triples for DPO).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
@@ -72,7 +72,7 @@ pip install "thekaveh-nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ
 pip install "thekaveh-nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
 pip install "thekaveh-nnx[embeddings]"          # nnx.embeddings: FAISS export + sentence-transformers
 pip install "thekaveh-nnx[lm]"                  # TransformerNN + HF tokenizer + generate()
-pip install "thekaveh-nnx[gguf-write]"          # nnx.interop GGUF + Ollama Modelfile export
+pip install "thekaveh-nnx[gguf-write]"          # experimental NNx GGUF writer
 pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export
 pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)
 pip install "thekaveh-nnx[docs]"                # mkdocs build (mkdocs-material + mkdocstrings)
@@ -230,7 +230,7 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 ## 5. Documentation
 
-📖 **Rendered docs site: <https://thekaveh.github.io/NNx/>** — searchable, with the full auto-generated [API reference](https://thekaveh.github.io/NNx/api/). The pages below link the in-repo `docs/` sources the site is built from.
+The documentation below covers the public API, architecture, extension contracts, and runnable examples.
 
 ### 5.1. Conceptual + reference
 
@@ -239,7 +239,7 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 - [Language modeling](docs/lm.md) — the decoder-only Transformer path: `TransformerNN` + HF tokenizer + `GenerativeNNModel.generate()` with KV-cache. Read this when you want to train a tiny LM end-to-end on CPU.
 - [Direct Preference Optimization](docs/dpo.md) — `dpo_train_step_factory` for fine-tuning a TransformerNN against `(prompt, chosen, rejected)` preference pairs via the Rafailov et al. 2023 chosen-vs-rejected log-ratio objective against a frozen reference policy. Read this when you have preference data and want to steer LM behavior post-SFT without reward modeling or RL.
 - [I-JEPA](docs/jepa.md) — Joint Embedding Predictive Architecture: masked-patch → latent-prediction self-supervised pretraining against an EMA target encoder. Read this when you want to pretrain a vision encoder without pixel-reconstruction or strong augmentations.
-- [GGUF & Ollama export](docs/gguf.md) — `nnx.interop.write_gguf` for llama.cpp / Ollama / LM Studio. Read this when you've trained a `TransformerNN` and want to ship it to the llama.cpp ecosystem; includes the shell-out recipe for sub-F16 quantization via `llama-quantize`.
+- [Experimental GGUF export](docs/gguf.md) — `nnx.interop.write_gguf` for producing and inspecting an NNx-tagged GGUF artifact; includes the official llama.cpp `llama-quantize` build path and the current stock-runtime limitation.
 - [HuggingFace Hub](docs/hub.md) — safetensors checkpoints + `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`. Read this when you want to publish a trained model to the Hub, load from it, or write checkpoints in a format outside-of-Python tools (ComfyUI, vLLM, AutoGPTQ) can read.
 - [Embeddings + FAISS export](docs/embeddings.md) — walkthrough for training a domain-specific text embedder via contrastive learning and exporting it to a FAISS index for any RAG stack to consume.
 - [Model surgery](docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
@@ -250,7 +250,8 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 ### 5.2. Workflow + history
 
-- [Examples catalog](examples/README.md) — ordered tour of the 24 runnable scripts under `examples/`, grouped foundational → specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF / Ollama export, self-supervised, pruning, surgery, explainability, DPO, distillation variants). Start here if you'd rather read a working script than the concepts doc.
+- [Examples catalog](examples/README.md) — ordered tour of the 26 runnable scripts under `examples/`, grouped foundational to specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF inspection, self-supervised learning, pruning, surgery, explainability, DPO, and distillation variants).
+- [Test import boundaries](tests/README.md) — when tests should use the public facade and when a deep implementation import is intentional.
 - [Contributing](CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
 - [Changelog](CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
 

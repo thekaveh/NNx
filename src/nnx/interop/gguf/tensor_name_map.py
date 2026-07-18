@@ -24,7 +24,7 @@ expected naming holds without changing the NNx forward path.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
@@ -75,7 +75,8 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
 
     d_model = net.params.d_model
 
-    for i, block in enumerate(net.blocks):
+    for i, raw_block in enumerate(net.blocks):
+        block = cast(Any, raw_block)
         # Pre-attention norm (RMSNorm).
         out[f"blk.{i}.attn_norm.weight"] = _to_numpy(_weight(block.norm1))
 

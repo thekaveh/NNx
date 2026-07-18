@@ -1,9 +1,10 @@
-"""Ollama Modelfile + GGUF bundle exporter.
+"""Experimental Modelfile + GGUF bundle exporter.
 
-The Ollama UX is: a directory containing ``model.gguf`` and a
-``Modelfile`` that points at it via ``FROM ./model.gguf``. Running
-``ollama create my-model -f Modelfile`` then registers the model in
-the local Ollama daemon.
+The Ollama bundle shape is a directory containing ``model.gguf`` and a
+``Modelfile`` that points at it via ``FROM ./model.gguf``. The emitted
+Modelfile is syntactically valid, but stock Ollama cannot
+load NNx's ``nnx_transformer`` GGUF architecture. The bundle is useful
+for patched runtimes and for developing a future compatible conversion.
 
 This module's job is the bundle assembly. Quantization / tokenizer
 bookkeeping all live in :mod:`nnx.interop.gguf`; this file is the
@@ -58,7 +59,11 @@ def export_ollama_modelfile(
     quantization: str = "F16",
     model_name: Optional[str] = None,
 ) -> str:
-    """Emit ``model.gguf`` + ``Modelfile`` into ``out_dir``.
+    """Emit an experimental ``model.gguf`` + ``Modelfile`` bundle.
+
+    Stock Ollama does not implement the ``nnx_transformer`` GGUF
+    architecture. Emission verifies bundle structure only; it does not
+    establish runtime compatibility.
 
     Args:
         transformer_nn: An NNx ``TransformerNN`` instance — the model

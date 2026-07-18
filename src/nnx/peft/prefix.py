@@ -41,7 +41,7 @@ from __future__ import annotations
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union, cast
 
 import torch
 from torch import nn
@@ -86,6 +86,11 @@ class PrefixTuner(nn.Module):
             so the first tuner's parameters stop receiving gradients).
     """
 
+    model: TransformerNN
+    n_prefix: int
+    prefix_keys: nn.ParameterList
+    prefix_values: nn.ParameterList
+
     def __init__(
         self,
         model: TransformerNN,
@@ -127,6 +132,7 @@ class PrefixTuner(nn.Module):
         # block. We store them as a ParameterList so they live in
         # state_dict and are visible to `self.parameters()`.
         n_heads = model.params.n_heads
+        assert n_heads is not None
         head_dim = model.params.d_model // n_heads
 
         self.prefix_keys = nn.ParameterList(
@@ -149,7 +155,7 @@ class PrefixTuner(nn.Module):
         # teardown in tests).
         self._original_attn_forwards: list = []
         for i in range(n_layers):
-            block = model.blocks[i]
+            block = cast(Any, model.blocks[i])
             mha = block.attn
             self._original_attn_forwards.append(mha.forward)
             # Deepcopy-safety: the patch is a MODULE-LEVEL function bound
@@ -163,8 +169,9 @@ class PrefixTuner(nn.Module):
             # silently reading the ORIGINAL weights/prefix (bit ptq,
             # born_again teachers, and surgery copies).
             object.__setattr__(mha, "_nnx_prefix_tuner", self)
-            mha._nnx_prefix_layer_idx = i
-            mha.forward = types.MethodType(_prefix_patched_forward, mha)
+            dynamic_mha = cast(Any, mha)
+            dynamic_mha._nnx_prefix_layer_idx = i
+            dynamic_mha.forward = types.MethodType(_prefix_patched_forward, mha)
 
     # ------------------------------------------------------------------
     # Forward + trainable params
@@ -252,8 +259,9 @@ def _prefix_patched_forward(
     learned prefix K/V slots and extends the causal mask so queries can
     attend back to the prefix unmasked.
     """
-    tuner = mha._nnx_prefix_tuner
-    layer_idx = mha._nnx_prefix_layer_idx
+    dynamic_mha = cast(Any, mha)
+    tuner = cast(PrefixTuner, dynamic_mha._nnx_prefix_tuner)
+    layer_idx = int(dynamic_mha._nnx_prefix_layer_idx)
 
     b, t, _ = x.shape
     qkv = mha.w_qkv(x)
@@ -324,4 +332,4 @@ def _prefix_patched_forward(
 # save/load of a prefix-tuned net round-trips with a self-consistent
 # (non-aliasing) reconstruction. Without it, the save succeeds but the
 # load dies with an AttributeError.
-MultiHeadCausalAttention._prefix_patched_forward = _prefix_patched_forward
+cast(Any, MultiHeadCausalAttention)._prefix_patched_forward = _prefix_patched_forward

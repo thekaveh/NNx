@@ -1,106 +1,106 @@
-# GGUF export & Ollama bundles
+# Experimental GGUF export
 
-NNx ships a writer for [GGUF](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) —
-the on-disk format consumed by llama.cpp, Ollama, LM Studio, and the
-broader llama.cpp-derived inference ecosystem. The handoff in one line:
+NNx can serialize `TransformerNN` weights and tokenizer metadata into a
+[GGUF](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) container.
+The writer is useful for inspecting the model with GGUF tooling, archiving a
+self-describing artifact, or handing it to a runtime explicitly patched for
+NNx.
 
-> **Train in NNx, serve via llama.cpp / Ollama** — export the
-> `TransformerNN` to a `.gguf`, optionally bundle it with a Modelfile,
-> and `ollama create` registers the model locally.
-
-This is intentionally a one-way handoff (NNx -> GGUF). The reverse
-direction (GGUF -> NNx) isn't covered here — every other Python tool
-also writes GGUF; nothing reads it back into a training-shaped framework.
+This support is experimental. NNx writes
+`general.architecture = "nnx_transformer"`, which stock llama.cpp, Ollama, and
+LM Studio do not implement. A structurally valid GGUF file is not automatically
+an executable model for every GGUF consumer.
 
 ## 1. Install
 
-The writer is opt-in — pull in the upstream `gguf` package via the
-`gguf-write` extra:
+Install the upstream Python GGUF writer with the optional extra:
 
 ```bash
-pip install "thekaveh-nnx[gguf-write]"   # adds gguf>=0.19.0
+pip install "thekaveh-nnx[gguf-write]"
 ```
 
-`gguf` is the same Python writer every other GGUF producer uses, so
-the artifact is byte-compatible with every GGUF reader in the ecosystem.
+The extra provides `gguf>=0.19.0`. Language-model examples also need the `lm`
+extra for the Hugging Face `tokenizers` package:
+
+```bash
+pip install "thekaveh-nnx[gguf-write,lm]"
+```
 
 ## 2. Public surface
 
 | Symbol | Notes |
 |---|---|
-| `nnx.interop.write_gguf` | Write a `.gguf` from a `TransformerNN` + tokenizer. F16 / F32 / BF16 directly; sub-F16 needs `llama-quantize`. |
-| `nnx.interop.export_ollama_modelfile` | Emit a directory containing `model.gguf` + `Modelfile` ready for `ollama create`. |
-| `nnx.interop.gguf.SUPPORTED_QUANTIZATIONS` | The pure-Python quantizations — `("F32", "F16", "BF16")`. |
+| `nnx.interop.write_gguf` | Write an NNx-tagged `.gguf` from a `TransformerNN` and tokenizer. F16, F32, and BF16 are written directly. |
+| `nnx.interop.export_ollama_modelfile` | Generate `model.gguf` plus a syntactically valid Modelfile. This does not add stock Ollama runtime support. |
+| `nnx.interop.gguf.SUPPORTED_QUANTIZATIONS` | Direct writer modes: `("F32", "F16", "BF16")`. |
 
-## 3. Quickstart — GGUF
+## 3. Write and inspect a GGUF
 
 ```python
-from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe  # noqa: F401
 from nnx.interop import write_gguf
 
-# Assume `net` is a trained TransformerNN and `tokenizer` is the matching
-# NNTokenizerParams. write_gguf packs both into a single .gguf.
+# `net` is a trained TransformerNN and `tokenizer` is its matching
+# NNTokenizerParams.
 write_gguf(net, tokenizer, "out/model.gguf")  # F16 by default
 ```
 
-That's the whole API. Tensor naming (`token_embd.weight`,
-`blk.{i}.attn_q.weight`, ...) and the GGUF metadata (`context_length`,
-`block_count`, `embedding_length`, `feed_forward_length`,
-`head_count`, `rope_freq_base`, ...) are emitted under llama.cpp's
-canonical key namespace.
+NNx records model dimensions, RoPE and normalization metadata, tokenizer
+metadata, and stable tensor names. The fused QKV projection is split into
+`attn_q`, `attn_k`, and `attn_v`; SwiGLU projections are similarly mapped to
+separate gate, up, and down tensors.
 
-The fused-QKV projection in NNx's `TransformerNN.attn.w_qkv` is split
-into three tensors (`attn_q`, `attn_k`, `attn_v`) on write so that
-llama.cpp's reader sees the layout it expects.
+The upstream Python reader can inspect the resulting container:
+
+```python
+import gguf
+
+reader = gguf.GGUFReader("out/model.gguf")
+print(reader.get_field("general.architecture").contents())
+print(len(reader.tensors))
+```
 
 ## 4. Quantization
 
 | Label | Path |
 |---|---|
-| `F32` / `F16` / `BF16` | Pure-Python via `gguf` directly. |
-| `Q8_0` / `Q6_K` / `Q5_K_M` / `Q4_K_M` / `Q4_0` / `IQ4_XS` / ... | Two-step: write F16 here, then run the C++ `llama-quantize` binary. |
+| `F32` / `F16` / `BF16` | Written directly with the Python `gguf` package. |
+| `Q8_0` / `Q6_K` / `Q5_K_M` / `Q4_K_M` / other llama.cpp modes | Write F16 first, then use a compatible `llama-quantize` binary. |
 
-NNx deliberately doesn't shell out to `llama-quantize` automatically —
-the binary's path varies by install layout (Homebrew, `pip install
-llama-cpp-python`, source build) and silently swallowing a quantization
-failure is worse than asking the user to run one command.
-
-The recipe:
+Build the official llama.cpp tools from source to obtain `llama-quantize`:
 
 ```bash
-# 1. NNx writes F16
-python -c "from nnx.interop import write_gguf; write_gguf(net, tok, 'out/model.gguf')"
+git clone https://github.com/ggml-org/llama.cpp.git
+cmake -B llama.cpp/build -S llama.cpp -DLLAMA_BUILD_TESTS=OFF
+cmake --build llama.cpp/build --config Release -j
 
-# 2. llama-quantize is shipped by llama-cpp-python
-pip install llama-cpp-python
-llama-quantize out/model.gguf out/model.Q4_K_M.gguf Q4_K_M
+llama.cpp/build/bin/llama-quantize \
+  out/model.gguf out/model.Q4_K_M.gguf Q4_K_M
 ```
 
-If you ask `write_gguf(..., quantization="Q4_K_M")` directly it raises
-`ImportError` with the recipe in the message.
+Quantization support for a custom architecture depends on the chosen
+llama.cpp revision or patch set. `write_gguf(..., quantization="Q4_K_M")`
+raises an `ImportError` containing the two-step guidance instead of invoking an
+external binary implicitly.
 
-## 5. Architecture tag
+## 5. Architecture compatibility
 
-By default the writer stamps `general.architecture = "nnx_transformer"`.
-This is readable by patched / forked llama.cpp builds and by any
-inference stack that reflects on metadata rather than hard-coding the
-arch name.
+Do not relabel an NNx artifact as `architecture="llama"` merely to get past a
+consumer's architecture check. `TransformerNN` uses an interleaved RoPE layout,
+while stock LLaMA loaders expect the LLaMA split-half convention; metadata and
+tensor-shape similarity do not make those computations equivalent. A relabeled
+file can load yet produce incorrect output.
 
-For stock llama.cpp readers, the NNx tensor layout (RMSNorm + RoPE +
-SwiGLU + tied embeddings + per-head RoPE rotation) matches the LLaMA
-family closely enough that you can pass `architecture="llama"`:
+Use the default `nnx_transformer` tag and one of these supported purposes:
 
-```python
-write_gguf(net, tok, "out/model.gguf", architecture="llama")
-```
+1. Inspect metadata and tensors with a generic GGUF parser.
+2. Archive or exchange a self-describing NNx model artifact.
+3. Load it with a runtime that explicitly implements the NNx architecture and
+   tensor layout.
 
-Verify against your target reader version before deploying — small
-divergences (e.g. RMS-norm epsilon) can show up as numerical drift
-even when the tensor shapes match.
+## 6. Modelfile bundle generation
 
-## 6. Ollama bundles
-
-`export_ollama_modelfile` produces a directory ready for `ollama create`:
+`export_ollama_modelfile` generates a GGUF and adjacent Modelfile for testing,
+inspection, or a patched Ollama/runtime integration:
 
 ```python
 from nnx.interop import export_ollama_modelfile
@@ -114,53 +114,27 @@ export_ollama_modelfile(
         "temperature": 0.8,
         "top_k": 40,
         "top_p": 0.95,
-        "stop": ["<eos>"],          # list -> repeated PARAMETER stop lines
+        "stop": ["<eos>"],
     },
-    template="{{ .Prompt }}",       # optional Go-template chat layout
+    template="{{ .Prompt }}",
 )
 ```
 
-Layout produced:
+The generated directory contains `model.gguf` and `Modelfile`; it may also
+contain `tokenizer.json` when the tokenizer was saved there. The helper
+validates Modelfile values and writes the standard `FROM`, `PARAMETER`,
+`TEMPLATE`, and `SYSTEM` directives. Stock `ollama create` still rejects or
+cannot execute the `nnx_transformer` architecture.
 
-```
-out/ollama_bundle/
-  model.gguf
-  Modelfile
-  tokenizer.json     # (only if you saved it there via NNTokenizerParams.of(path=...), as examples/18 does)
-```
-
-The `Modelfile` looks like:
-
-```
-FROM ./model.gguf
-PARAMETER temperature 0.8
-PARAMETER top_k 40
-PARAMETER top_p 0.95
-PARAMETER stop <eos>
-TEMPLATE """{{ .Prompt }}"""
-SYSTEM """You are a tiny storytelling model."""
-```
-
-Then:
-
-```bash
-cd out/ollama_bundle
-ollama create my-nnx-model -f Modelfile
-ollama run my-nnx-model
-```
-
-## 7. End-to-end examples
+## 7. Examples
 
 | Example | Demonstrates |
 |---|---|
-| [`examples/17_export_transformer_to_gguf.py`](https://github.com/thekaveh/NNx/blob/main/examples/17_export_transformer_to_gguf.py) | Build TransformerNN -> write F16 GGUF -> round-trip via `gguf.GGUFReader`. |
-| [`examples/18_publish_to_ollama.py`](https://github.com/thekaveh/NNx/blob/main/examples/18_publish_to_ollama.py) | Bundle GGUF + Modelfile + parameters for `ollama create`. |
+| [`examples/17_export_transformer_to_gguf.py`](https://github.com/thekaveh/NNx/blob/main/examples/17_export_transformer_to_gguf.py) | Write F16 GGUF and inspect it with `gguf.GGUFReader`. |
+| [`examples/18_publish_to_ollama.py`](https://github.com/thekaveh/NNx/blob/main/examples/18_publish_to_ollama.py) | Generate and inspect a GGUF + Modelfile bundle while documenting the stock-runtime limitation. |
 
 ## 8. Scope
 
-The writer covers `TransformerNN` (NNx's decoder-only LM). Other
-architectures (FeedFwd, the GNNs, diffusion nets) aren't applicable to
-GGUF — GGUF is a llama.cpp-family format. The TransformerNN scope is
-intentionally narrow: TinyStories-class single-GPU LM. Bigger models
-work as long as the tensor layout stays the same (multi-head causal
-attention, RMSNorm, SwiGLU, RoPE, tied embeddings).
+The writer covers NNx's decoder-only `TransformerNN`. Feed-forward, graph,
+convolutional, diffusion, and other NNx networks are outside its scope. GGUF
+import back into NNx is also not implemented.

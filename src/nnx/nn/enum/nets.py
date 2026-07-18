@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import cast
 
 from torch import nn
 
@@ -40,13 +41,31 @@ class Nets(Enum):
         if params is None:
             raise ValueError("params must not be None")
 
+        from ..params.nn_conv_params import NNConvParams
+        from ..params.nn_moe_params import NNMoEParams
+        from ..params.nn_transformer_params import NNTransformerParams
+
+        specialized = {
+            Nets.CONV: NNConvParams,
+            Nets.FEED_FWD_MOE: NNMoEParams,
+            Nets.TRANSFORMER: NNTransformerParams,
+        }
+        expected_type = specialized.get(self)
+        if expected_type is not None and not isinstance(params, expected_type):
+            raise ValueError(f"Nets.{self.name} requires {expected_type.__name__}; got {type(params).__name__}")
+        for matching_net, param_type in specialized.items():
+            if isinstance(params, param_type) and self is not matching_net:
+                raise ValueError(
+                    f"{param_type.__name__} is only compatible with Nets.{matching_net.name}; got Nets.{self.name}"
+                )
+
         match self:
             case Nets.CONV:
-                return ConvNN(params=params)
+                return ConvNN(params=cast(NNConvParams, params))
             case Nets.FEED_FWD:
                 return FeedFwdNN(params=params)
             case Nets.FEED_FWD_MOE:
-                return FeedFwdMoENN(params=params)
+                return FeedFwdMoENN(params=cast(NNMoEParams, params))
             case Nets.GRAPH_ATT:
                 return GraphAttNN(params=params)
             case Nets.GRAPH_CONV:
@@ -54,4 +73,4 @@ class Nets(Enum):
             case Nets.GRAPH_SAGE:
                 return GraphSageNN(params=params)
             case Nets.TRANSFORMER:
-                return TransformerNN(params=params)
+                return TransformerNN(params=cast(NNTransformerParams, params))

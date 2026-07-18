@@ -23,7 +23,7 @@ The function returns a tuple ``(new_emb, frozen_mask)``. The original
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 import torch
 from torch import nn
@@ -74,17 +74,20 @@ def expand_embedding(
     # skip_init: every row is overwritten below (originals copied, new
     # rows zeroed / mean-filled), so meta-device construction avoids
     # consuming global RNG on a discarded normal_ init.
-    new_emb = skip_init(
+    new_emb = cast(
         nn.Embedding,
-        num_embeddings=new_num_embeddings,
-        embedding_dim=dim,
-        padding_idx=emb.padding_idx,
-        max_norm=emb.max_norm,
-        norm_type=emb.norm_type,
-        scale_grad_by_freq=emb.scale_grad_by_freq,
-        sparse=emb.sparse,
-        dtype=emb.weight.dtype,
-        device=emb.weight.device,
+        skip_init(
+            nn.Embedding,
+            num_embeddings=new_num_embeddings,
+            embedding_dim=dim,
+            padding_idx=emb.padding_idx,
+            max_norm=emb.max_norm,
+            norm_type=emb.norm_type,
+            scale_grad_by_freq=emb.scale_grad_by_freq,
+            sparse=emb.sparse,
+            dtype=emb.weight.dtype,
+            device=emb.weight.device,
+        ),
     )
     with torch.no_grad():
         # Preserve the original rows exactly.

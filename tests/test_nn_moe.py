@@ -109,11 +109,11 @@ def test_moe_linear_aux_loss_non_negative():
         assert layer.last_aux_loss.item() >= 0.0
 
 
-def test_moe_linear_aux_loss_zero_at_uniform():
+def test_moe_linear_aux_loss_equals_one_at_uniform():
     """When routing is perfectly uniform — f_i = P_i = 1/N for every i —
-    the Switch penalty equals 1 (its minimum), NOT 0. With ``α · N · Σ f_i P_i``
-    at f_i = P_i = 1/N: ``N · N · (1/N²) = 1``. This test verifies the
-    minimum value is what the math predicts.
+    the Switch penalty equals 1. With ``α · N · Σ f_i P_i`` at
+    f_i = P_i = 1/N: ``N · N · (1/N²) = 1``. This is a reference point,
+    not a universal lower bound when f and P are anti-correlated.
 
     We force uniform routing by zeroing the router (so logits are all 0
     and probs are uniform). topk on equal values picks the first ``k``
@@ -131,13 +131,13 @@ def test_moe_linear_aux_loss_zero_at_uniform():
     x = torch.randn(7, 8)
     layer(x)
     assert layer.last_aux_loss is not None
-    # Expected minimum: 1.0.
+    # Expected uniform-routing reference value: 1.0.
     assert layer.last_aux_loss.item() == pytest.approx(1.0, abs=1e-6)
 
 
-def test_moe_linear_aux_loss_above_minimum_when_skewed():
+def test_moe_linear_aux_loss_above_uniform_reference_when_skewed():
     """If the router is biased toward a single expert, the aux loss
-    exceeds the uniform-routing minimum (1.0). This is the property
+    exceeds the uniform-routing reference value (1.0). This is the property
     optimization is meant to exploit — gradient descent on the aux loss
     pulls routing back toward uniform."""
     set_seed(0)
@@ -153,7 +153,7 @@ def test_moe_linear_aux_loss_above_minimum_when_skewed():
     layer(x)
     assert layer.last_aux_loss is not None
     # Skewed routing should yield aux_loss strictly greater than 1.0
-    # (the uniform minimum).
+    # for this deliberately skewed fixture.
     assert layer.last_aux_loss.item() > 1.0 + 1e-3
 
 

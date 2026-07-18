@@ -306,16 +306,14 @@ class Trainer:
             data=Utils.flatten_dict(data=run.state()),
         )
 
-        for cb in normalized_callbacks:
-            cb.on_train_begin(ctx)
-
         idx_iter = 0
         tqdm_disabled = os.environ.get("NNX_TQDM_DISABLE", "").lower() in {"1", "true", "yes"}
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
-            _CallbackFinalizer(normalized_callbacks, ctx),
+            _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
+            callback_lifecycle.start()
             for idx_epoch in range(params.n_epochs):
                 ctx.epoch = idx_epoch
                 for cb in normalized_callbacks:
@@ -355,14 +353,14 @@ class Trainer:
                         "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
                     )
 
-                val_edp = (
-                    self.model.evaluate(
+                if validate:
+                    assert params.val_loader is not None
+                    val_edp = self.model.evaluate(
                         loader=params.val_loader,
                         extra_metrics=params.extra_metrics,
                     )
-                    if validate
-                    else None
-                )
+                else:
+                    val_edp = None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
                 checkpoint = self._save_checkpoint(
@@ -399,6 +397,18 @@ class Trainer:
 
                 if ctx.should_stop:
                     break
+
+        # on_train_end callbacks run as the finalizer exits above and may
+        # mutate the net (for example, by converting modules). Refresh LAST
+        # from the live model so it matches the state returned to the caller.
+        # BEST remains the best state observed during training.
+        if idps:
+            NNCheckpoint(
+                idp=idps[-1],
+                model_params=self.model.params,
+                net_params=self.model.net_params,
+                net_state=self.model.net.state_dict(),
+            ).save(run=run.id, type=Checkpoints.LAST)
 
         saved = run.with_idps(idps).save()
         print()

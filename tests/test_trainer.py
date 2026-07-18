@@ -287,6 +287,40 @@ def test_trainer_invokes_callbacks(tmp_path, monkeypatch):
     ]
 
 
+def test_trainer_last_checkpoint_contains_on_train_end_mutation(tmp_path, monkeypatch):
+    """Trainer LAST must reflect net mutations made during on_train_end."""
+    from nnx import Callback
+    from nnx.nn.enum.checkpoints import Checkpoints
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    class _MutateNetOnTrainEnd(Callback):
+        def on_train_end(self, ctx):
+            ctx.model.net.register_buffer("post_train_end_marker", torch.tensor([42.0]))
+
+    monkeypatch.chdir(tmp_path)
+    model = _supervised_model()
+    run = Trainer(model=model).train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=_supervised_loader(n=8),
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
+        ),
+        trainer_step_fn=_supervised_step,
+        callbacks=[_MutateNetOnTrainEnd()],
+    )
+
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    assert torch.equal(checkpoint.net_state["post_train_end_marker"], torch.tensor([42.0]))
+
+
 def test_trainer_step_exception_still_dispatches_train_end(tmp_path, monkeypatch):
     """Trainer callbacks must clean up even when the step function aborts."""
     monkeypatch.chdir(tmp_path)

@@ -39,7 +39,7 @@ nav:
   - Embeddings: embeddings.md
   - Language modeling: lm.md
   - I-JEPA: jepa.md
-  - GGUF & Ollama: gguf.md
+  - Experimental GGUF export: gguf.md
   - DPO: dpo.md
   - API Reference: api.md
   - External dependency contracts: external-contracts.md

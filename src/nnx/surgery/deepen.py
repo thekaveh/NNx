@@ -35,6 +35,7 @@ Two insertion modes are supported:
 from __future__ import annotations
 
 import copy
+from typing import cast
 
 import torch
 from torch import nn
@@ -104,7 +105,7 @@ def _insert_after_relu_in_sequential(
     """Splice [Linear(I), ReLU] into a Sequential right after the
     named ReLU. The Linear's dim comes from the previous Linear's
     out_features (walked from earlier siblings)."""
-    parent: nn.Sequential = new_model if not parent_path else new_model.get_submodule(parent_path)
+    parent = cast(nn.Sequential, new_model if not parent_path else new_model.get_submodule(parent_path))
     idx = int(attr)
 
     # Find the most recent Linear earlier in the Sequential — its
@@ -119,6 +120,7 @@ def _insert_after_relu_in_sequential(
             "deepen: could not find an upstream nn.Linear before "
             f"the ReLU at position {idx} to source the hidden dim from."
         )
+    src_linear = cast(nn.Linear, src_linear)
 
     # dtype/device come from the SAME Linear that sourced the dim — the
     # old probe peeked at parent[idx-1], which is wrong whenever a
@@ -155,7 +157,7 @@ def _insert_after_linear_in_module_list(
     """Insert a fresh identity-init Linear into a ModuleList right
     after the named position. The grandparent's declared activation
     must be ReLU."""
-    parent: nn.ModuleList = new_model if not parent_path else new_model.get_submodule(parent_path)
+    parent = cast(nn.ModuleList, new_model if not parent_path else new_model.get_submodule(parent_path))
     idx = int(attr)
 
     # Inserting before the LAST layer (the output head) is fine, but
@@ -239,13 +241,19 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str) -> None:
         )
 
 
-def _identity_linear(dim: int, *, dtype=torch.float32, device="cpu") -> nn.Linear:
+def _identity_linear(
+    dim: int,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | str = "cpu",
+) -> nn.Linear:
     """A fresh ``nn.Linear(dim, dim)`` with weight = I and bias = 0."""
     # skip_init: both params are overwritten below — meta-device
     # construction keeps the surgery off the global RNG stream.
-    layer = skip_init(nn.Linear, dim, dim, bias=True, dtype=dtype, device=device)
+    layer = cast(nn.Linear, skip_init(nn.Linear, dim, dim, bias=True, dtype=dtype, device=device))
     with torch.no_grad():
         layer.weight.copy_(torch.eye(dim, dtype=dtype, device=layer.weight.device))
+        assert layer.bias is not None
         layer.bias.zero_()
     return layer
 

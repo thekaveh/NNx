@@ -106,6 +106,8 @@ def summary(
     finally:
         torch.set_rng_state(cpu_rng_state)
         if dev.type == "cuda":
+            assert device_rng_state is not None
             torch.cuda.set_rng_state(device_rng_state, dev)
         elif dev.type == "mps":
+            assert device_rng_state is not None
             torch.mps.set_rng_state(device_rng_state)
