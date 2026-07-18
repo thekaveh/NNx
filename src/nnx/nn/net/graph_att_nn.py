@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import torch_geometric as pyg
 from torch import nn
+from torch_geometric.nn import GATConv
 
 from .graph_nn_base import GraphNNBase
 
@@ -14,7 +14,7 @@ class GraphAttNN(GraphNNBase):
         dim_pairs = list(zip(self.params.dims, self.params.dims[1:], strict=False))
         return nn.ModuleList(
             [
-                pyg.nn.GATConv(
+                GATConv(
                     out_channels=out_dim,
                     heads=n_heads,
                     concat=(idx_dim != len(dim_pairs) - 1),

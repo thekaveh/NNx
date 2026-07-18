@@ -24,7 +24,7 @@ The remainder becomes train.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, cast
 
 import pandas as pd
 import torch
@@ -92,7 +92,7 @@ class NNTabularDataset(NNDatasetBase):
         # because pandas min/max/nunique skip NaN.
         # dict.fromkeys dedupes (order-preserving) duplicates WITHIN
         # feature_cols — target/feature overlap is rejected above.
-        modeled = self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))]
+        modeled = cast(pd.DataFrame, self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))])
         if modeled.isna().any().any():
             bad_cols = [c for c in modeled.columns if modeled[c].isna().any()]
             raise ValueError(

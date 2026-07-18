@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal, Optional, cast
 
 import torch
 from torch_geometric.data import Data as PyGData
@@ -28,6 +28,8 @@ def _full_batch_loader(data: PyGData, split_mask: torch.Tensor) -> list[PyGData]
     metrics.  GCN convolutions are permutation-invariant, so the output
     for each node is identical to the un-permuted graph.
     """
+    if data.num_nodes is None or data.x is None or data.edge_index is None or data.y is None:
+        raise ValueError("full-batch graph data requires num_nodes, x, edge_index, and y")
     num_nodes = int(data.num_nodes)
     idx = split_mask.nonzero(as_tuple=False).view(-1)
     rest = (~split_mask).nonzero(as_tuple=False).view(-1)
@@ -37,12 +39,12 @@ def _full_batch_loader(data: PyGData, split_mask: torch.Tensor) -> list[PyGData]
     inv = torch.empty(num_nodes, dtype=torch.long)
     inv[perm] = torch.arange(num_nodes, dtype=torch.long)
 
-    edge_index = inv[data.edge_index]
+    edge_index = inv[cast(torch.Tensor, data.edge_index)]
 
     batch = PyGData(
-        x=data.x[perm],
+        x=cast(torch.Tensor, data.x)[perm],
         edge_index=edge_index,
-        y=data.y[perm],
+        y=cast(torch.Tensor, data.y)[perm],
     )
     batch.input_id = idx
     batch.batch_size = int(idx.numel())
@@ -88,7 +90,7 @@ class NNGraphDataset(NNDatasetBase):
         # Single-graph datasets expose the underlying Data via dataset[0].
         # This replaces the historical private `dataset._data` access, which
         # was renamed/removed across PyG versions.
-        data = dataset[0]
+        data = cast(PyGData, dataset[0])
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 
@@ -104,6 +106,7 @@ class NNGraphDataset(NNDatasetBase):
             object.__setattr__(self, "val_loader", _full_batch_loader(data, data.val_mask))
             object.__setattr__(self, "test_loader", _full_batch_loader(data, data.test_mask))
         else:
+            assert self.n_neighbors is not None
             # seed=None must genuinely fall back to the global torch RNG (the
             # documented contract): a fresh torch.Generator() always carries the
             # same fixed default seed, which would make every unseeded run

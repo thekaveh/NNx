@@ -372,7 +372,7 @@ class VisUtils:
             Y_pred,
             target_names=target_names,
             output_dict=True,
-            zero_division=0,
+            zero_division=cast(Any, 0),
         )
         return pd.DataFrame(report).transpose()
 

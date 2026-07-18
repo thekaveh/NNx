@@ -21,7 +21,7 @@ correctness contract every test for this primitive should check first.
 from __future__ import annotations
 
 import copy
-from typing import Optional
+from typing import Optional, cast
 
 import torch
 from torch import nn
@@ -99,17 +99,21 @@ def widen(
     # skip_init: every param is fully overwritten below, so meta-device
     # construction avoids burning ambient RNG draws on a discarded init
     # (a seeded caller pipeline would otherwise silently diverge).
-    new_layer = skip_init(
+    new_layer = cast(
         nn.Linear,
-        layer.in_features,
-        new_width,
-        bias=layer.bias is not None,
-        device=layer.weight.device,
-        dtype=layer.weight.dtype,
+        skip_init(
+            nn.Linear,
+            layer.in_features,
+            new_width,
+            bias=layer.bias is not None,
+            device=layer.weight.device,
+            dtype=layer.weight.dtype,
+        ),
     )
     new_layer.weight.data.copy_(new_weight)
     if layer.bias is not None:
         new_bias = torch.cat([layer.bias.data, layer.bias.data[duplicates]], dim=0)
+        assert new_layer.bias is not None
         new_layer.bias.data.copy_(new_bias)
     set_module(new_model, layer_name, new_layer)
 
@@ -131,18 +135,22 @@ def widen(
     extended_rep = torch.cat([replication_count, replication_count[duplicates]])
     new_down_weight = new_down_weight / extended_rep.unsqueeze(0)
 
-    new_down_layer = skip_init(
+    new_down_layer = cast(
         nn.Linear,
-        new_width,
-        down_layer.out_features,
-        bias=down_layer.bias is not None,
-        device=down_layer.weight.device,
-        dtype=down_layer.weight.dtype,
+        skip_init(
+            nn.Linear,
+            new_width,
+            down_layer.out_features,
+            bias=down_layer.bias is not None,
+            device=down_layer.weight.device,
+            dtype=down_layer.weight.dtype,
+        ),
     )
     new_down_layer.weight.data.copy_(new_down_weight)
     if down_layer.bias is not None:
         # Bias is *additive after* W·x, so it doesn't change with the
         # column rescaling — copy as-is.
+        assert new_down_layer.bias is not None
         new_down_layer.bias.data.copy_(down_layer.bias.data)
     set_module(new_model, down_name, new_down_layer)
 

@@ -108,7 +108,12 @@ class NNOptimParams:
         return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"
 
     def state(self):
-        d = dict(max_lr=self.max_lr, momentum=str(self.momentum), name=str(self.name), weight_decay=self.weight_decay)
+        d: dict[str, object] = dict(
+            max_lr=self.max_lr,
+            momentum=str(self.momentum),
+            name=str(self.name),
+            weight_decay=self.weight_decay,
+        )
         # grad_clip_norm / accumulate_grad_batches / param_groups: only emit
         # when set to a non-default value, so a NNOptimParams with none of
         # them set hashes to the same run.id as before these fields existed.

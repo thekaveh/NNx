@@ -62,7 +62,7 @@ class NNSchedulerParams:
         return f"[{self.kind}, factor={self.factor:1.0e}, min_lr={self.min_lr:1.0e}]"
 
     def state(self) -> dict:
-        d = dict(
+        d: dict[str, object] = dict(
             min_lr=self.min_lr,
             factor=self.factor,
             cooldown=self.cooldown,

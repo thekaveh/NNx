@@ -147,7 +147,7 @@ def test_moe_train_step_produces_finite_loss_with_nonzero_aux(tmp_path, monkeypa
     last = run.idps[-1].train_edp
     assert last.loss is not None and torch.isfinite(torch.tensor(last.loss))
     # aux term contributed: at least one layer's last_aux_loss is non-zero
-    assert any(float(layer.last_aux_loss) != 0.0 for layer in model.net.layers[:-1])
+    assert any(float(layer.last_aux_loss.detach()) != 0.0 for layer in model.net.layers[:-1])
 
 
 def test_checkpoint_round_trip(tmp_path, monkeypatch):

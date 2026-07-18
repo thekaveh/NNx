@@ -24,7 +24,7 @@ class NNModelParams:
         return self.net is not None and self.device is not None and self.loss is not None
 
     def state(self) -> dict:
-        d = dict(
+        d: dict[str, object] = dict(
             net=str(self.net),
             loss=str(self.loss),
             device=str(self.device),

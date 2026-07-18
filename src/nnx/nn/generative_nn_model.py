@@ -8,7 +8,7 @@ on top.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional, cast
 
 import torch
 
@@ -221,6 +221,7 @@ class GenerativeNNModel(NNModel):
         """Full-recompute path: every step re-runs the model on the
         last ``max_seq_len`` tokens. O(T^2) attention cost; kept for
         regression-testing parity against the cached path."""
+        assert self.tokenizer is not None
         for _ in range(max_new_tokens):
             # Truncate context to max_seq_len from the right so the
             # most recent tokens stay in the window. Sliding window —
@@ -270,6 +271,7 @@ class GenerativeNNModel(NNModel):
         steps therefore cost one full window forward, same as the
         no-cache path; the O(T) win applies within the window.
         """
+        assert self.tokenizer is not None
         if max_new_tokens <= 0:
             # Hard cap honored on this path too: the prefill below
             # always samples one token, which would emit 1 instead of 0.
@@ -278,7 +280,8 @@ class GenerativeNNModel(NNModel):
         # ----- Prefill pass on the prompt (sliding window). -----
         context_ids = generated[-max_seq_len:]
         ctx = torch.tensor([context_ids], dtype=torch.long, device=self.device)
-        logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=None)
+        cached_net = cast(Any, self.net)
+        logits, past_kvs = cached_net.forward_with_cache(ctx, past_kvs=None)
         next_logits = logits[:, -1, :]
         adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
         next_id = sample_next_token(adjusted, generator=gen)
@@ -299,10 +302,10 @@ class GenerativeNNModel(NNModel):
                 # includes generated[-1], so this forward both refills
                 # the cache and yields the next token's logits.
                 ctx = torch.tensor([generated[-max_seq_len:]], dtype=torch.long, device=self.device)
-                logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=None)
+                logits, past_kvs = cached_net.forward_with_cache(ctx, past_kvs=None)
             else:
                 ctx = torch.tensor([[generated[-1]]], dtype=torch.long, device=self.device)
-                logits, past_kvs = self.net.forward_with_cache(ctx, past_kvs=past_kvs)
+                logits, past_kvs = cached_net.forward_with_cache(ctx, past_kvs=past_kvs)
             next_logits = logits[:, -1, :]
             adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
             next_id = sample_next_token(adjusted, generator=gen)

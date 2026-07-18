@@ -22,6 +22,8 @@ migrates the schedule once up-front.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import torch
 import torch.nn.functional as F
 
@@ -77,7 +79,7 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         # tensor; Y is unused by diffusion. Use unpack_batch when the net
         # supplies one, fall back to direct unpacking otherwise.
         if hasattr(m.net, "unpack_batch"):
-            (x_0,), _ = m.net.unpack_batch(ctx.batch)
+            (x_0,), _ = cast(Any, m.net).unpack_batch(ctx.batch)
         elif isinstance(ctx.batch, (list, tuple)):
             x_0 = ctx.batch[0]
         else:

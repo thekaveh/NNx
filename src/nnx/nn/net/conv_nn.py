@@ -56,9 +56,12 @@ class ConvNN(nn.Module):
         side = self.params.image_side()
         X = X.view(X.size(0), self.params.in_channels, side, side)
 
+        activation = self.params.activation
+        if activation is None:
+            raise ValueError("ConvNN requires a scalar activation for convolution blocks")
         for conv in self.convs:
             X = conv(X)
-            X = self.params.activation()(X)
+            X = activation()(X)
             X = F.max_pool2d(X, kernel_size=self.params.pool_size)
 
         X = X.view(X.size(0), -1)
