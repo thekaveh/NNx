@@ -134,7 +134,7 @@ def test_moe_step_factory_end_to_end(tmp_path, monkeypatch):
 
     model, net = _make_moe_model(num_experts=4, top_k=2)
     # Skew the router toward two experts so the aux loss starts well
-    # above its uniform-routing minimum (1.0).
+    # above its uniform-routing reference value (1.0).
     with torch.no_grad():
         net.layers[0].router.weight.zero_()
         net.layers[0].router.weight[0] += 2.0

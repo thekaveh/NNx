@@ -7,7 +7,7 @@ tiny (small tensors, 1–2 epochs) to keep the total suite runtime modest.
 Intentionally excluded workflows (not unit-testable):
   - TransformerNN / GenerativeNNModel.generate — requires `lm` extra and
     tokenizer downloads (HuggingFace hub, real vocab).
-  - GGUF / Ollama export — requires Ollama daemon and `gguf` extra.
+  - Experimental GGUF export — covered by the dedicated writer tests.
   - HuggingFace Hub push / `NNModel.push_to_hub` — requires valid HF token
     and network access.
   - Embeddings / FAISS index — requires `faiss-cpu` extra and real text data.

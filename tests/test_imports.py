@@ -235,7 +235,7 @@ def test_net_modules_import():
 
 
 def test_interop_subpackage_imports():
-    """``nnx.interop`` is the GGUF / Ollama export surface. The top-level
+    """``nnx.interop`` is the experimental GGUF export surface. The top-level
     package import must succeed even when the optional ``gguf`` dep is
     missing (the writer imports it lazily inside the function body)."""
     from nnx import interop

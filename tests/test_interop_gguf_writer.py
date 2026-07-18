@@ -157,10 +157,9 @@ def test_qkv_split_is_correct():
 
 def test_write_gguf_round_trip_f16(tmp_path):
     """Write a tiny TransformerNN at F16, read it back via GGUFReader,
-    verify shapes AND tensor values round-trip. The end-to-end pin: if
-    this passes, the format is consumable by every llama.cpp-derived
-    stack, and the bytes written are the model's actual weights (not just
-    correctly-shaped garbage)."""
+    verify shapes AND tensor values round-trip. This proves a generic
+    GGUF parser can inspect the container and that the bytes are the
+    model's actual weights, not runtime architecture compatibility."""
     import gguf
     import numpy as np
 
@@ -312,7 +311,8 @@ def test_export_ollama_modelfile_emits_gguf_and_modelfile(tmp_path):
     assert str(mf_path) == str(out_dir / "Modelfile")
 
     text = (out_dir / "Modelfile").read_text()
-    # The FROM line is load-bearing — Ollama refuses without it.
+    # The FROM line is required by Modelfile syntax. Runtime architecture
+    # support is explicitly outside this bundle-structure test.
     assert text.startswith("FROM ./model.gguf"), text
     assert "PARAMETER temperature 0.8" in text
     assert "PARAMETER top_k 40" in text
@@ -353,7 +353,7 @@ def test_export_ollama_modelfile_with_template(tmp_path):
 
 
 def test_export_ollama_modelfile_minimal_no_system_no_params(tmp_path):
-    """Even with no extras, the FROM line is sufficient for `ollama create`."""
+    """With no extras, the generated Modelfile contains only FROM."""
     from nnx.interop import export_ollama_modelfile
 
     net = _tiny_transformer()

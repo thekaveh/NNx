@@ -8,8 +8,8 @@ standard sampling knobs.
 
 This is intentionally **not** a production LLM stack — there's no
 FlashAttention v3, no tensor parallelism, no multi-GPU sharding. The path
-is sized to "train end-to-end on a laptop, end up with a model whose
-architecture matches what GGUF / HF Hub / Ollama expect." Production-scale
+is sized to "train end-to-end on a laptop and inspect or publish the resulting
+NNx model." It is not a stock LLaMA architecture. Production-scale
 training is out of scope.
 
 ## 1. Public surface
@@ -232,7 +232,7 @@ The decoder-only LM path covers:
 - Onward integrations shipped post-LM: `Prefix-Tuner` / `Prompt-Tuner`
   PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)),
   `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)),
-  and GGUF / Ollama export for the llama.cpp ecosystem (see
+  and experimental NNx-tagged GGUF export for inspection or patched runtimes (see
   [`docs/gguf.md`](gguf.md)).
 
 Out of scope:

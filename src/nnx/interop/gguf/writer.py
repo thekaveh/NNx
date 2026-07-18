@@ -1,8 +1,9 @@
 """GGUF writer for ``TransformerNN``.
 
 Single public entry point: :func:`write_gguf`. Writes a TransformerNN
-plus its tokenizer to a ``.gguf`` file consumable by every llama.cpp
-derivative (llama.cpp, ollama, LM Studio, GPT4All, ...).
+plus its tokenizer to a structurally readable ``.gguf`` tagged with the
+custom ``nnx_transformer`` architecture. Stock llama.cpp-derived
+runtimes do not implement that architecture.
 
 Quantization scope:
 
@@ -12,8 +13,8 @@ Quantization scope:
 * **Q8_0 and below** (Q4_K_M, Q5_K_M, Q6_K, Q8_0, IQ4_XS, ...) require
   the C++ ``llama-quantize`` binary because the k-quant codebook
   generation is not implemented in pure Python. We raise a clear
-  ImportError pointing at ``pip install llama-cpp-python`` (which
-  ships the binary) and the canonical shell-out path.
+  ImportError pointing at an official llama.cpp source build and the
+  two-step shell-out path.
 
 The writer is intentionally narrow: it knows how to emit one specific
 architecture (NNx's decoder-only TransformerNN) under one architecture
@@ -122,7 +123,7 @@ def _validate_quantization(quantization: str) -> None:
             f"Quantization {quantization!r} requires the C++ `llama-quantize` binary "
             "(NNx's GGUF writer is pure-Python and only supports F32 / F16 / BF16 "
             "directly). The canonical path is:\n"
-            "  1. `pip install llama-cpp-python` — ships the `llama-quantize` CLI\n"
+            "  1. Build or install the official llama.cpp `llama-quantize` executable\n"
             "  2. Write F16 first with `nnx.interop.gguf.write_gguf(..., quantization='F16')`\n"
             "  3. Shell out:\n"
             f"     `llama-quantize <input.gguf> <output.gguf> {quantization}`\n"
@@ -158,11 +159,11 @@ def write_gguf(
             the GGUF tokenizer keys.
         out_path: Destination ``.gguf`` path.
         architecture: ``general.architecture`` metadata value. Defaults
-            to ``"nnx_transformer"`` — readable by patched llama.cpp
-            forks. Pass ``"llama"`` to claim LLaMA-arch compatibility
-            for stock llama.cpp readers (works because we match the
-            LLaMA tensor naming + RMSNorm/SwiGLU/RoPE choices, but
-            users should verify their target reader version).
+            to ``"nnx_transformer"``. Stock llama.cpp/Ollama do not
+            implement this architecture; the artifact is intended for
+            GGUF inspection or a reader that explicitly supports NNx.
+            Do not relabel it ``"llama"``: NNx uses interleaved RoPE,
+            which is not LLaMA's split-half layout.
         quantization: One of ``"F32"``, ``"F16"``, ``"BF16"``. Sub-F16
             quantizations require the C++ ``llama-quantize`` binary —
             see the ``ImportError`` message for the shell-out recipe.

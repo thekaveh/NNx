@@ -16,8 +16,8 @@ Verify a clean baseline:
 
 ```bash
 pytest                          # full suite (~15s on CPU)
-ruff check src/ tests/ examples/  # lint
-ruff format --check src/ tests/ examples/  # format check (matches CI + pre-commit)
+ruff check src/ tests/ examples/ scripts/  # lint
+ruff format --check src/ tests/ examples/ scripts/  # format check (matches CI + pre-commit)
 mkdocs build --strict           # docs (gates CI)
 ```
 
@@ -28,7 +28,7 @@ Useful env vars:
 ## 2. Workflow
 
 1. **Open an issue first** for non-trivial changes — saves churn if the design is off. Tiny fixes can go straight to PR.
-2. **Branch from `main`.** Name branches descriptively (`fix/...`, `feat/...`, `docs/...`, `refactor/...`).
+2. **Branch from `develop`.** Name branches descriptively (`fix/...`, `feat/...`, `docs/...`, `refactor/...`).
 3. **Write tests.** Every PR that changes behavior should land with a focused test that fails on `main` and passes on the branch. The existing `tests/test_*_series.py` files (organized by audit pass) are good models.
 4. **Keep PRs small.** One coherent change per PR is much easier to review than a sweeping mix.
 
@@ -41,7 +41,7 @@ Useful env vars:
 
 ## 4. Style
 
-- **Ruff** enforces formatting and a curated lint rule set (`E F W B I UP`). Run `ruff check --fix src/ tests/ examples/` and `ruff format src/ tests/ examples/` before pushing. Pre-commit handles both automatically when installed.
+- **Ruff** enforces formatting and a curated lint rule set (`E F W B I UP`). Run `ruff check --fix src/ tests/ examples/ scripts/` and `ruff format src/ tests/ examples/ scripts/` before pushing. Pre-commit handles both automatically when installed.
 - **Type annotations** are encouraged on new code. We type-check with pyright (basic mode) in CI, with `--strict` planned over time.
 - **Docstrings** on public functions / classes explain the *why* (constraints, edge cases) — not just the *what*. Multi-paragraph is fine when warranted.
 - **Comments** explain non-obvious decisions, hidden constraints, or surprising behavior. Don't narrate code that's already self-documenting.
@@ -59,7 +59,7 @@ Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixt
 
 ## 6. Submitting a PR
 
-- Push to your fork and open a PR against `main`.
+- Push to your fork and open a PR against `develop`.
 - Fill in the PR template (Summary / Test plan).
 - Wait for CI to go green (lint + format + tests + mkdocs on 3.10 / 3.11 / 3.12).
 - Address review comments by pushing new commits — we squash on merge.
@@ -71,8 +71,8 @@ NNx uses [release-please](https://github.com/googleapis/release-please-action) f
 The end-to-end flow:
 
 1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Pre-1.0, `feat:` triggers a minor bump (`0.X.0`); `fix:` and most other types trigger a patch bump (`0.X.Y`).
-2. A maintainer reviews and merges the Release PR when ready to ship. That merge pushes a `v*` tag.
-3. The tag push fires `release.yml`: full test matrix → build → OIDC-trusted publish to PyPI (gated by the `pypi` GitHub Environment's approval rule) → `verify-published` confirms `pip install thekaveh-nnx==X.Y.Z` works from a clean venv.
+2. A maintainer reviews and merges the Release PR when ready to ship. The release-please workflow creates the release and invokes the reusable release workflow in the same run.
+3. `release.yml` runs the full test matrix, builds the package, publishes through PyPI trusted publishing (gated by the `pypi` GitHub Environment's approval rule), and verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment. Direct `v*` tag pushes remain supported.
 
 ## 8. Things we won't merge
 

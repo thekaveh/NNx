@@ -1,8 +1,12 @@
 """Warm-resume training from a prior run.
 
 Round 1 trains for 3 epochs; round 2 picks up from the LAST checkpoint
-of round 1 and trains another 3 epochs, with Adam momentum / first /
+of round 1 and trains another 4 epochs, with Adam momentum / first /
 second-moment buffers preserved across the boundary.
+
+The epoch counts intentionally differ because run identity is content-addressed
+from persisted parameters. Reusing the same state would reuse the same run ID
+and replace the first run's history.
 
 Run:
     python examples/02_resume_training.py
@@ -75,7 +79,7 @@ def main():
     model_a, loader = _make_model_and_loader()
     run_a = model_a.train(
         params=NNTrainParams(
-            n_epochs=3,
+            n_epochs=4,
             train_loader=loader,
             optim=base_optim,
             scheduler=base_sched,
@@ -100,6 +104,7 @@ def main():
             resume_from_checkpoint="last",
         )
     )
+    assert run_b.id != run_a.id
     print(f"Round 2 done. run.id = {run_b.id}, {len(run_b.idps)} iterations")
     print("Round 2 started from round 1's LAST weights + optimizer state.")
     print(f"Final round 2 train loss: {run_b.idps[-1].train_edp.loss:.4f}")

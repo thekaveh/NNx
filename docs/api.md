@@ -28,6 +28,10 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.nn_model.default_train_step
 
+::: nnx.nn.nn_model.EvalStepContext
+
+::: nnx.nn.nn_model.EvalStepFn
+
 ### 2.2. GenerativeNNModel — decoder-only LM orchestrator
 
 ::: nnx.nn.generative_nn_model.GenerativeNNModel
@@ -64,6 +68,10 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder
 
+::: nnx.nn.params.nn_conv_params.NNConvParams
+
+::: nnx.nn.params.nn_moe_params.NNMoEParams
+
 ::: nnx.nn.params.nn_tokenizer_params.NNTokenizerParams
 
 ::: nnx.nn.params.nn_tokenizer_params.train_bpe
@@ -79,6 +87,10 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 ## 4. Networks
 
 ::: nnx.nn.net.feed_fwd_nn.FeedFwdNN
+
+::: nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN
+
+::: nnx.nn.net.conv_nn.ConvNN
 
 ::: nnx.nn.net.graph_nn_base.GraphNNBase
 
@@ -316,9 +328,9 @@ End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "
 
 ## 16. Interop (`nnx.interop`)
 
-### 16.1. GGUF + Ollama
+### 16.1. Experimental GGUF export
 
-End-to-end walkthrough at [GGUF & Ollama](gguf.md). Opt-in via `pip install "thekaveh-nnx[gguf-write]"`.
+Walkthrough and stock-runtime limitations at [Experimental GGUF export](gguf.md). Opt-in via `pip install "thekaveh-nnx[gguf-write]"`.
 
 ::: nnx.interop.gguf.writer.write_gguf
 
