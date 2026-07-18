@@ -8,7 +8,13 @@
   "packages": {
     ".": {
       "package-name": "thekaveh-nnx",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "src/nnx/__init__.py"
+        }
+      ]
     }
   }
 }

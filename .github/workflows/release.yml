@@ -5,6 +5,14 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_ref:
+        required: true
+        type: string
+      tag_name:
+        required: true
+        type: string
 
 # Principle of least privilege, matching ci.yml: the workflow default is
 # read-only; jobs that need more (id-token for trusted publishing)
@@ -32,6 +40,8 @@ jobs:
       - name: Checkout
         # actions/checkout@v5
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
 
       - name: Set up Python ${{ matrix.python-version }}
         # actions/setup-python@v6
@@ -44,34 +54,35 @@ jobs:
             requirements-tools.txt
             uv.lock
 
-      - name: Verify dependency lock
+      - name: Install uv
         run: |
-          python -m pip install --upgrade pip
           python -m pip install -r requirements-tools.txt
-          uv lock --check
 
-      - name: Install package (editable + dev + every optional extra)
+      - name: Sync package from the frozen lock
         # Match ci.yml — every optional-dep extra is installed for the
         # release gate so the full test surface (including the optional
         # sub-projects that skip without their extras) runs before we
         # publish to PyPI. A poisoned release is permanent (PyPI versions
         # can be yanked but not deleted), so the gate must be thorough.
         run: |
-          pip install -e ".[dev,docs,hub,viz,viz-interactive,quantize,tensorboard,wandb,onnx,onnx-dynamo,embeddings,lm,gguf-write]"
+          uv sync --frozen --all-extras --python "${{ matrix.python-version }}"
 
       - name: Lint with ruff
-        run: ruff check src/ tests/ examples/
+        run: uv run --frozen ruff check src/ tests/ examples/ scripts/
 
       - name: Check formatting with ruff
-        run: ruff format --check src/ tests/ examples/
+        run: uv run --frozen ruff format --check src/ tests/ examples/ scripts/
+
+      - name: Type-check with pyright
+        run: uv run --frozen pyright --warnings
 
       - name: Run pytest
         env:
           NNX_TQDM_DISABLE: "1"
-        run: pytest
+        run: uv run --frozen pytest
 
       - name: Build docs with mkdocs --strict
-        run: mkdocs build --strict --site-dir _site
+        run: uv run --frozen mkdocs build --strict --site-dir _site
 
   build-and-publish:
     name: Build sdist + wheel and publish to PyPI
@@ -94,6 +105,8 @@ jobs:
       - name: Checkout
         # actions/checkout@v5
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
 
       - name: Set up Python
         # actions/setup-python@v6
@@ -104,22 +117,23 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install build tooling
-        run: |
-          python -m pip install --upgrade pip build twine
+        run: python -m pip install -r requirements-tools.txt
 
       - name: Assert tag matches pyproject version
         # PyPI uploads are permanent (yank-not-delete), so a typo'd tag
         # (v0.2.1 against a 0.2.0 pyproject) must abort BEFORE publish —
         # verify-published would only catch the mismatch after the
         # irreversible upload. workflow_dispatch dry-runs skip this.
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_call' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         run: |
-          tag_version="${GITHUB_REF#refs/tags/v}"
+          tag_version="${RELEASE_TAG#v}"
           py_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           if [ "$tag_version" != "$py_version" ]; then
             echo "::error::tag v$tag_version does not match pyproject version $py_version — aborting before publish."
             exit 1
           fi
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
 
       - name: Build sdist + wheel
         run: python -m build
@@ -133,7 +147,7 @@ jobs:
       - name: Publish to PyPI
         # Only runs on tag pushes; workflow_dispatch builds without publishing
         # so you can inspect the artifacts before cutting a real release.
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_call' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         # pypa/gh-action-pypi-publish@release/v1
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
 
@@ -151,7 +165,7 @@ jobs:
     needs: build-and-publish
     # Only runs on actual tag-push publishes, not workflow_dispatch dry runs
     # (since the dry-run path skips the pypi-publish step).
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_call' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Least-privilege: this job only fetches from PyPI + imports nnx.
@@ -162,9 +176,11 @@ jobs:
       - name: Extract version from tag
         id: ver
         run: |
-          version="${GITHUB_REF#refs/tags/v}"
+          version="${RELEASE_TAG#v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Verifying that thekaveh-nnx==$version is reachable on PyPI..."
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
 
       - name: Set up Python
         # No pip cache here — we want fresh resolution to catch PyPI
@@ -198,7 +214,7 @@ jobs:
             echo "Attempt $attempt failed (PyPI CDN propagation lag?); waiting 30s..."
             sleep 30
           done
-          exit $exit_code
+          exit "$exit_code"
 
       - name: Import + version check
         run: |
