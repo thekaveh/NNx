@@ -74,6 +74,8 @@ The end-to-end flow:
 2. A maintainer reviews and merges the Release PR when ready to ship. The release-please workflow creates the release and invokes the reusable release workflow in the same run.
 3. `release.yml` runs the full test matrix, builds the package, publishes through PyPI trusted publishing (gated by the `pypi` GitHub Environment's approval rule), and verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment. Direct `v*` tag pushes remain supported.
 
+The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit:** after development resumes, such an artifact can contain code newer than the release while still carrying the last release number. Use editable installs for local source work. Distributable artifacts must come from the tagged release workflow, which verifies tag/version agreement before publishing.
+
 ## 8. Things we won't merge
 
 - Changes that break on-disk format compatibility without a versioned reader.
