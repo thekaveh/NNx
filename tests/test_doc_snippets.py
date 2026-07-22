@@ -731,9 +731,11 @@ def test_quantize_qat_gated(tmp_path, monkeypatch):
 
     from nnx import (
         Activations,
+        Checkpoints,
         Devices,
         Losses,
         Nets,
+        NNCheckpoint,
         NNModel,
         NNModelParams,
         NNOptimParams,
@@ -765,7 +767,7 @@ def test_quantize_qat_gated(tmp_path, monkeypatch):
     callback = QATLifecycleCallback(qat_config="8da4w", groupsize=32)
     step_fn = qat_train_step_factory(qat_config="8da4w")
 
-    model.train(
+    run = model.train(
         params=NNTrainParams(
             n_epochs=2,
             train_loader=loader,
@@ -778,3 +780,7 @@ def test_quantize_qat_gated(tmp_path, monkeypatch):
 
     assert callback.is_prepared
     assert callback.is_converted
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    reloaded = NNModel.from_checkpoint(checkpoint)
+    assert reloaded.net(torch.randn(2, 32)).shape == (2, 2)
