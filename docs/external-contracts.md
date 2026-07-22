@@ -27,6 +27,13 @@ ranges remain defined by `pyproject.toml`.
 | LM data / tokenization | `tokenizers>=0.20` / `0.22.2`; `datasets>=2.20` / `5.0.0` | BPE train/encode/decode and optional remote dataset loading | Tokenizer and generative-model tests; network-backed dataset downloads are not required in core CI. |
 | Experiment logging | `tensorboard>=2.15` / `2.21.0`; `wandb>=0.16` / `0.28.0` | Writer/run lifecycle and finish semantics | Callback tests cover lifecycle and TensorBoard event output; real W&B service calls remain credential/network-gated. |
 | Package publishing | `setuptools==83.0.0`; `build==1.5.0`; `twine==6.2.0`; PyPI OIDC | Release version/tag agreement, artifact metadata, trusted publish, clean install | Reusable release workflow runs tests, builds, runs `twine check`, publishes, and verifies a fresh install. |
+
+NNx uses a release-please-managed static package version. Wheels and sdists from
+untagged commits are local test artifacts only and must not be distributed,
+because post-release source changes retain the preceding release number until
+the next release PR. The tagged release workflow is the sole distribution path;
+it checks tag/version agreement and verifies the published wheel's version plus
+the specialized APIs required by NNx Studio.
 | Maintenance tooling | `uv==0.11.29`; `pip-audit==2.10.1`; Pyright `1.1.411`; Ruff `0.9.10` | Frozen resolution, exact-graph security audit, type and style gates | CI uses `uv sync --frozen --all-extras`; security exports that lock before auditing; Pyright warnings are gating. |
 
 ## 3. Review Rules

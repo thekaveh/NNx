@@ -34,7 +34,9 @@ import pytest
 import nnx
 
 _PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
+_RELEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release.yml"
 _PYPI_TIMEOUT_SEC = 5.0
+_STUDIO_REQUIRED_APIS = ("NNMoEParams", "NNConvParams", "FeedFwdMoENN", "ConvNN")
 
 
 def _read_pyproject_field(field: str) -> str:
@@ -95,6 +97,17 @@ def test_importlib_metadata_lookup_uses_current_dist_name():
         f"The lookup is hitting a different distribution than pyproject "
         f"claims."
     )
+
+
+def test_post_publish_smoke_imports_studio_required_apis():
+    """The clean-environment PyPI smoke must cover Studio's minimum API set."""
+    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    for symbol in _STUDIO_REQUIRED_APIS:
+        assert f"from nnx import {symbol}" in workflow, (
+            f"release.yml post-publish smoke does not import {symbol}; "
+            "a release could satisfy the version check while missing Studio's required API"
+        )
 
 
 def test_pypi_lists_the_current_distribution_name():
