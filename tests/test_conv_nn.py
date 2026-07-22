@@ -76,6 +76,32 @@ def test_conv_params_validation():
         _conv_params(in_channels=0)
 
 
+def test_conv_params_requires_scalar_activation():
+    with pytest.raises(ValueError, match="scalar activation.*convolution blocks"):
+        _conv_params(activation=None, activations=[Activations.TANH])
+
+
+def test_conv_params_state_rejects_missing_scalar_activation():
+    state = _conv_params(activations=[Activations.TANH]).state()
+    state["activation"] = None
+
+    with pytest.raises(ValueError, match="scalar activation.*convolution blocks"):
+        NNParams.resolve_from_state(state)
+
+
+def test_plain_params_still_allow_per_layer_activations_without_scalar():
+    params = NNParams(
+        input_dim=4,
+        output_dim=2,
+        hidden_dims=[8],
+        dropout_prob=0.0,
+        activation=None,
+        activations=[Activations.TANH],
+    )
+
+    assert params.activation_for(0) is Activations.TANH
+
+
 def test_conv_params_requires_square_image():
     # input_dim / in_channels must be a perfect square (v1 square-image contract)
     with pytest.raises(ValueError, match="square"):
@@ -183,7 +209,15 @@ def test_conv_trains_end_to_end(tmp_path, monkeypatch):
     X = torch.randn(32, 1, 12, 12)
     y = torch.randint(0, 3, (32,))
     loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=False)
-    model = _model(_conv_params(input_dim=144, output_dim=3, hidden_dims=[16], conv_channels=[4]))
+    model = _model(
+        _conv_params(
+            input_dim=144,
+            output_dim=3,
+            hidden_dims=[16],
+            conv_channels=[4],
+            activations=[Activations.TANH],
+        )
+    )
 
     run = model.train(params=_tiny_train_params(loader))
     assert run.idps
@@ -197,12 +231,22 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     X = torch.randn(16, 1, 12, 12)
     y = torch.randint(0, 3, (16,))
     loader = DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
-    model = _model(_conv_params(input_dim=144, output_dim=3, hidden_dims=[16], conv_channels=[4]))
+    model = _model(
+        _conv_params(
+            input_dim=144,
+            output_dim=3,
+            hidden_dims=[16],
+            conv_channels=[4],
+            activations=[Activations.TANH],
+        )
+    )
     run = model.train(params=_tiny_train_params(loader))
 
     ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert ckpt is not None
     assert isinstance(ckpt.net_params, NNConvParams)  # resolve_from_state dispatch
+    assert ckpt.net_params.activation is Activations.RELU
+    assert ckpt.net_params.activations == [Activations.TANH]
     reloaded = NNModel.from_checkpoint(ckpt)
     assert isinstance(reloaded.net, ConvNN)
     assert set(reloaded.net.state_dict().keys()) == set(ckpt.net_state.keys())

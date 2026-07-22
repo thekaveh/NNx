@@ -16,6 +16,10 @@ knobs consumed by :class:`~nnx.nn.net.conv_nn.ConvNN`:
 transformer, ``num_experts`` → MoE), and hashing it is exactly what keeps a
 conv run's id distinct from its plain-FeedFwd twin.
 
+Unlike the base feed-forward params, convolutional params require a non-null
+scalar ``activation`` because every Conv→Pool block uses it. Optional
+``activations`` remain overrides for the fully connected hidden layers only.
+
 v1 targets small SQUARE images: the spatial side is derived as
 ``sqrt(input_dim / in_channels)`` (MNIST: 784/1 → 28), so the base
 ``input_dim`` keeps its meaning and no extra height/width fields are needed.
@@ -34,6 +38,8 @@ _LENET_DEFAULTS = {"in_channels": 1, "kernel_size": 5, "stride": 1, "padding": 0
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNConvParams(NNParams):
+    """Parameters for a ConvNN with a required conv-block activation."""
+
     # Required: out-channels per Conv→Pool block.
     conv_channels: list[int]
     # LeNet-5 defaults.
@@ -47,6 +53,8 @@ class NNConvParams(NNParams):
         # Explicit unbound call — same slotted-dataclass reasoning as
         # NNTransformerParams.__post_init__.
         NNParams.__post_init__(self)
+        if self.activation is None:
+            raise ValueError("NNConvParams requires a scalar activation for convolution blocks")
         if not self.conv_channels or not all(c > 0 for c in self.conv_channels):
             raise ValueError(f"NNConvParams requires non-empty conv_channels with all > 0, got {self.conv_channels}")
         if self.in_channels <= 0:
