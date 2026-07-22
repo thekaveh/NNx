@@ -15,7 +15,7 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
-from .params.nn_checkpoint import NNCheckpoint
+from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
 if TYPE_CHECKING:
@@ -36,6 +36,10 @@ class Callback:
 
     def on_train_end(self, ctx: _CallbackContext) -> None:
         pass
+
+    def checkpoint_transforms(self) -> tuple[NNCheckpointTransform, ...]:
+        """Completed topology transforms to persist on the final checkpoint."""
+        return ()
 
 
 class _LegacyCallback(Callback):

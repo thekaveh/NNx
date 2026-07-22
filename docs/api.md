@@ -78,6 +78,8 @@ Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io
 
 ::: nnx.nn.params.nn_run.NNRun
 
+::: nnx.nn.params.nn_checkpoint.NNCheckpointTransform
+
 ::: nnx.nn.params.nn_checkpoint.NNCheckpoint
 
 ::: nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint

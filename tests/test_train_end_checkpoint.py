@@ -15,6 +15,9 @@ state).
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -23,6 +26,8 @@ from nnx import (
     Devices,
     Losses,
     Nets,
+    NNEvaluationDataPoint,
+    NNIterationDataPoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -32,7 +37,7 @@ from nnx import (
 )
 from nnx.nn.callbacks import Callback
 from nnx.nn.enum.checkpoints import Checkpoints
-from nnx.nn.params.nn_checkpoint import NNCheckpoint
+from nnx.nn.params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
 from nnx.nn.params.nn_params import NNParams
 
 
@@ -88,6 +93,20 @@ class _MutateNetOnTrainEnd(Callback):
         ctx.model.net.register_buffer("post_train_end_marker", torch.tensor([42.0]))
 
 
+class _DescribeTransform(Callback):
+    def __init__(self, name: str):
+        self.name = name
+        self.completed = False
+
+    def on_train_end(self, ctx) -> None:  # noqa: ANN001 - Callback context
+        self.completed = True
+
+    def checkpoint_transforms(self) -> tuple[NNCheckpointTransform, ...]:
+        if not self.completed:
+            return ()
+        return (NNCheckpointTransform(name=self.name),)
+
+
 def test_last_checkpoint_contains_on_train_end_mutation(tmp_path, monkeypatch):
     """A net mutation made in ``on_train_end`` must be present in the persisted
     LAST checkpoint (previously the final save preceded the finalizer)."""
@@ -101,6 +120,7 @@ def test_last_checkpoint_contains_on_train_end_mutation(tmp_path, monkeypatch):
     # THE FIX: the on-disk LAST must carry it too.
     ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert ckpt is not None
+    assert ckpt.transforms == ()
     assert "post_train_end_marker" in ckpt.net_state, (
         "LAST checkpoint was saved before on_train_end fired — the callback's net mutation was lost on disk (#87)"
     )
@@ -144,12 +164,22 @@ def test_best_checkpoint_stays_pre_mutation(tmp_path, monkeypatch):
     assert "post_train_end_marker" not in best.net_state
 
 
+def test_checkpoint_transform_order_matches_train_end_order(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    first = _DescribeTransform("first")
+    second = _DescribeTransform("second")
+    model = _tiny_model()
+    run = model.train(params=_tiny_train_params(_loader()), callbacks=[first, second])
+
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    assert [transform.name for transform in checkpoint.transforms] == ["second", "first"]
+
+
 def test_qat_convert_state_persists_in_last(tmp_path, monkeypatch):
     """Flagship #87 case: QAT ``convert()`` (on_train_end) swaps Linear modules;
     the persisted LAST must carry the quantized keys, and reloading it into a
     prepared+converted net must round-trip. Skipped without the torchao extra."""
-    import pytest
-
     pytest.importorskip("torchao")
     from nnx import QATLifecycleCallback, qat_train_step_factory
 
@@ -187,11 +217,78 @@ def test_qat_convert_state_persists_in_last(tmp_path, monkeypatch):
     assert any(("scales" in k) or ("zeros" in k) for k in saved_keys), (
         f"no quantized keys persisted; saved keys: {sorted(saved_keys)[:8]}"
     )
+    assert ckpt.transforms == (
+        NNCheckpointTransform(
+            name="torchao_qat",
+            version=1,
+            options={"qat_config": "8da4w", "groupsize": 32},
+        ),
+    )
 
-    # Round-trip: a fresh net taken through the same prepare+convert shape
-    # absorbs the persisted state (mirrors a consumer's reload path).
-    fresh = NNModel(net_params=ckpt.net_params, params=ckpt.model_params)
-    cb2 = QATLifecycleCallback()
-    cb2.quantizer.prepare(fresh.net)
-    cb2.quantizer.convert(fresh.net)
-    fresh.net.load_state_dict(ckpt.net_state)
+    # Public round-trip: metadata rebuilds the converted topology before
+    # load_state_dict, with no consumer-side prepare/convert workaround.
+    fresh = NNModel.from_checkpoint(ckpt)
+    fresh.net.eval()
+    output = fresh.net(torch.randn(2, 32))
+    assert output.shape == (2, 3)
+    assert torch.isfinite(output).all()
+    assert any("Int8" in type(module).__name__ and "Int4" in type(module).__name__ for module in fresh.net.modules())
+
+
+def test_unknown_checkpoint_transform_fails_clearly():
+    model = _tiny_model()
+    checkpoint = NNCheckpoint(
+        idp=NNIterationDataPoint(
+            lr=0.0,
+            iter_idx=0,
+            epoch_idx=0,
+            batch_idx=0,
+            train_edp=NNEvaluationDataPoint(
+                f1=0.0,
+                recall=0.0,
+                accuracy=0.0,
+                precision=0.0,
+                loss=0.0,
+            ),
+        ),
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+        transforms=(NNCheckpointTransform(name="future_transform", version=1),),
+    )
+
+    with pytest.raises(ValueError, match="unsupported checkpoint transform.*future_transform"):
+        NNModel.from_checkpoint(checkpoint)
+
+
+def test_legacy_converted_qat_checkpoint_has_targeted_error(tmp_path, monkeypatch):
+    pytest.importorskip("torchao")
+    from nnx import QATLifecycleCallback, qat_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=32,
+            output_dim=3,
+            hidden_dims=[64],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    loader = DataLoader(
+        TensorDataset(torch.randn(16, 32), torch.randint(0, 3, (16,))),
+        batch_size=8,
+        shuffle=False,
+    )
+    run = model.train(
+        params=_tiny_train_params(loader, n_epochs=1),
+        train_step_fn=qat_train_step_factory(),
+        callbacks=[QATLifecycleCallback()],
+    )
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    legacy = replace(checkpoint, transforms=())
+
+    with pytest.raises(ValueError, match="converted QAT.*lacks reconstruction metadata"):
+        NNModel.from_checkpoint(legacy)
