@@ -221,13 +221,22 @@ jobs:
           .verify-venv/bin/python - <<'PY'
           import os
           import nnx
+          from nnx import ConvNN
+          from nnx import FeedFwdMoENN
+          from nnx import NNConvParams
+          from nnx import NNMoEParams
+
           expected = os.environ["EXPECTED_VERSION"]
           actual = nnx.__version__
           assert actual == expected, (
               f"version mismatch: nnx.__version__={actual!r} "
               f"but tag was {expected!r}"
           )
-          print(f"✓ thekaveh-nnx {actual} live on PyPI and importable as nnx")
+          required_apis = (NNMoEParams, NNConvParams, FeedFwdMoENN, ConvNN)
+          print(
+              f"✓ thekaveh-nnx {actual} live on PyPI with Studio APIs: "
+              + ", ".join(symbol.__name__ for symbol in required_apis)
+          )
           PY
         env:
           EXPECTED_VERSION: ${{ steps.ver.outputs.version }}
