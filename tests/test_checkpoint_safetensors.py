@@ -22,6 +22,7 @@ from nnx import (  # noqa: E402
     Losses,
     Nets,
     NNCheckpoint,
+    NNCheckpointTransform,
     NNEvaluationDataPoint,
     NNIterationDataPoint,
     NNModel,
@@ -100,6 +101,30 @@ def test_checkpoint_safetensors_round_trip_preserves_idp(tmp_path):
     assert rt.idp.state() == ckpt.idp.state()
 
 
+@pytest.mark.parametrize("format", ["pickle", "safetensors"])
+def test_checkpoint_formats_round_trip_transform_metadata(tmp_path, format):
+    model = _tiny_model()
+    transform = NNCheckpointTransform(
+        name="torchao_qat",
+        version=1,
+        options={"qat_config": "8da4w", "groupsize": 16},
+    )
+    checkpoint = NNCheckpoint(
+        idp=_tiny_idp(),
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+        transforms=(transform,),
+    )
+    path = tmp_path / f"checkpoint.{format}"
+
+    checkpoint.to_file(str(path), format=format)
+    loaded = NNCheckpoint.from_file(str(path))
+
+    assert loaded is not None
+    assert loaded.transforms == (transform,)
+
+
 def test_checkpoint_pickle_default_unchanged(tmp_path):
     """`format` defaults to "pickle" — no kwarg given keeps existing behavior
     (a plain torch.save file readable by `from_file` via the pickle path).
@@ -116,6 +141,26 @@ def test_checkpoint_pickle_default_unchanged(tmp_path):
     # Pickle preserves the OrderedDict + dataclass identity exactly.
     assert rt.model_params == m.params
     assert rt.net_params == m.net_params
+
+
+def test_legacy_pickle_without_transform_slot_loads_as_empty(tmp_path, monkeypatch):
+    """Pre-transform pickles serialized only the original four dataclass slots."""
+    model = _tiny_model()
+    checkpoint = _build_checkpoint(model)
+    original_getstate = NNCheckpoint.__getstate__
+
+    def legacy_getstate(self):
+        return original_getstate(self)[:-1]
+
+    monkeypatch.setattr(NNCheckpoint, "__getstate__", legacy_getstate)
+    path = tmp_path / "legacy.pt"
+    checkpoint.to_file(str(path))
+
+    loaded = NNCheckpoint.from_file(str(path))
+    assert loaded is not None
+    assert loaded.transforms == ()
+    reloaded_model = NNModel.from_checkpoint(loaded)
+    assert set(reloaded_model.net.state_dict()) == set(model.net.state_dict())
 
 
 def test_checkpoint_from_file_magic_byte_sniff(tmp_path):
@@ -229,3 +274,4 @@ def test_checkpoint_sniff_handles_0x80_header_length(tmp_path):
     loaded = NNCheckpoint.from_file(path)
     assert loaded is not None
     assert loaded.idp == _tiny_idp()
+    assert loaded.transforms == ()

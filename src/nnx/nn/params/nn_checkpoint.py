@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 import torch
@@ -18,6 +18,26 @@ from ..params.nn_params import NNParams
 # breaks older readers. Newer readers stay backwards-compatible by sniffing
 # this version off the metadata dict.
 _SAFETENSORS_FORMAT_VERSION = "1"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class NNCheckpointTransform:
+    """A versioned recipe for rebuilding a checkpoint's module topology."""
+
+    name: str
+    version: int = 1
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def state(self) -> dict[str, Any]:
+        return {"name": self.name, "version": self.version, "options": self.options}
+
+    @staticmethod
+    def from_state(state: dict[str, Any]) -> NNCheckpointTransform:
+        return NNCheckpointTransform(
+            name=state["name"],
+            version=state.get("version", 1),
+            options=state.get("options", {}),
+        )
 
 
 def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) -> str:
@@ -77,10 +97,19 @@ def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNCheckpoint:
+    """Model state plus the recipes needed to rebuild its module topology.
+
+    ``transforms`` is empty for ordinary and legacy checkpoints. Training
+    callbacks that replace modules at ``on_train_end`` can persist ordered,
+    versioned recipes here; :meth:`NNModel.from_checkpoint` replays recognized
+    recipes before loading ``net_state``.
+    """
+
     net_params: NNParams
     net_state: dict[str, Any]
     model_params: NNModelParams
     idp: NNIterationDataPoint
+    transforms: tuple[NNCheckpointTransform, ...] = ()
 
     def to_file(self, path: str, format: Literal["pickle", "safetensors"] = "pickle") -> None:
         """Atomically write this NNCheckpoint to ``path``.
@@ -96,7 +125,8 @@ class NNCheckpoint:
                   default for existing callers.
                 - ``"safetensors"``: a ``.safetensors`` file with the
                   net's tensors as the data section and
-                  NNParams + NNModelParams + NNIterationDataPoint
+                  NNParams + NNModelParams + NNIterationDataPoint + transform
+                  recipes
                   JSON-serialized into the metadata dict (str→str only,
                   per the safetensors spec). Safe to mmap, readable by
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
@@ -137,6 +167,7 @@ class NNCheckpoint:
             "model_params": json.dumps(self.model_params.state()),
             "net_params": json.dumps(self.net_params.state()),
             "idp": json.dumps(self.idp.state()),
+            "transforms": json.dumps([transform.state() for transform in self.transforms]),
         }
 
         # safetensors save_file doesn't accept OrderedDict (only dict). The
@@ -273,6 +304,11 @@ class NNCheckpoint:
         if not isinstance(ret, NNCheckpoint):
             return None
 
+        # Checkpoints pickled before transform metadata was introduced have
+        # no value for the new slot. Normalize them to the empty legacy form.
+        if not hasattr(ret, "transforms"):
+            object.__setattr__(ret, "transforms", ())
+
         return ret
 
     @staticmethod
@@ -303,6 +339,9 @@ class NNCheckpoint:
             # NNTransformerParams instead of degrading to base NNParams.
             net_params=NNParams.resolve_from_state(json.loads(meta["net_params"])),
             net_state=net_state,
+            transforms=tuple(
+                NNCheckpointTransform.from_state(state) for state in json.loads(meta.get("transforms", "[]"))
+            ),
         )
 
     @staticmethod

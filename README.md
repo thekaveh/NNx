@@ -228,6 +228,8 @@ ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 model = NNModel.from_checkpoint(checkpoint=ckpt)
 ```
 
+`from_checkpoint` also replays persisted topology transforms before loading weights. In particular, QAT-produced `LAST` checkpoints record their torchao recipe and reload as converted quantized models without downstream prepare/convert code.
+
 ## 5. Documentation
 
 The documentation below covers the public API, architecture, extension contracts, and runnable examples.

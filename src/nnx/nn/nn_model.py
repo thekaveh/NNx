@@ -17,7 +17,7 @@ from tqdm import tqdm
 from .._metrics import _resolve_metric, classification_edp
 from ..utils import Utils
 from .enum.checkpoints import Checkpoints, phase_tag
-from .params.nn_checkpoint import NNCheckpoint
+from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
 from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
@@ -74,6 +74,36 @@ _HUB_CONFIG_FILENAME = "config.json"
 # _LegacyCallback (in callbacks.py).
 LegacyCallback = Callable[[list[NNIterationDataPoint]], None]
 CallbackLike = Union["Callback", LegacyCallback]
+
+
+def _collect_checkpoint_transforms(callbacks: list[Callback]) -> tuple[NNCheckpointTransform, ...]:
+    # on_train_end runs in reverse callback order, so persist transforms in
+    # that same order for deterministic topology replay during reconstruction.
+    return tuple(transform for callback in reversed(callbacks) for transform in callback.checkpoint_transforms())
+
+
+def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform) -> None:
+    if transform.name == "torchao_qat" and transform.version == 1:
+        from ..quantize.qat import _build_quantizer
+
+        try:
+            qat_config = transform.options["qat_config"]
+            groupsize = transform.options["groupsize"]
+        except KeyError as error:
+            raise ValueError(f"invalid torchao_qat checkpoint transform: missing option {error.args[0]!r}") from error
+        quantizer = _build_quantizer(qat_config, groupsize=groupsize)
+        quantizer.prepare(model.net)
+        quantizer.convert(model.net)
+        return
+
+    raise ValueError(
+        f"unsupported checkpoint transform {transform.name!r} version {transform.version}; "
+        "upgrade NNx or load the checkpoint with the producer's compatible version"
+    )
+
+
+def _looks_like_converted_qat_state(net_state: Mapping[str, Any]) -> bool:
+    return any("scales" in key or "zeros" in key for key in net_state)
 
 
 class _CallbackFinalizer:
@@ -435,9 +465,28 @@ class NNModel(_HubMixinBase):
 
     @staticmethod
     def from_checkpoint(checkpoint: NNCheckpoint) -> NNModel:
+        """Rebuild a model, replay topology transforms, and load its weights.
+
+        Ordinary and legacy FP32 checkpoints have no transforms. Converted
+        QAT checkpoints replay their persisted torchao recipe before state
+        loading; unsupported recipes fail explicitly rather than constructing
+        a model with the wrong topology.
+        """
         model = NNModel(params=checkpoint.model_params, net_params=checkpoint.net_params)
 
-        model.net.load_state_dict(checkpoint.net_state)
+        transforms = getattr(checkpoint, "transforms", ())
+        for transform in transforms:
+            _apply_checkpoint_transform(model, transform)
+
+        try:
+            model.net.load_state_dict(checkpoint.net_state)
+        except RuntimeError as error:
+            if not transforms and _looks_like_converted_qat_state(checkpoint.net_state):
+                raise ValueError(
+                    "converted QAT checkpoint lacks reconstruction metadata; "
+                    "recreate its torchao topology with the original qat_config and groupsize"
+                ) from error
+            raise
 
         return model
 
@@ -890,6 +939,7 @@ class NNModel(_HubMixinBase):
                 model_params=self.params,
                 net_params=self.net_params,
                 net_state=self.net.state_dict(),
+                transforms=_collect_checkpoint_transforms(normalized_callbacks),
             ).save(run=run.id, type=Checkpoints.LAST, optimizer_state=optimizer.state_dict())
 
         saved = run.with_idps(idps).save()

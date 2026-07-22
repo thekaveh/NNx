@@ -45,6 +45,7 @@ from ..nn.nn_model import TrainStepFn, default_train_step
 
 if TYPE_CHECKING:  # pragma: no cover — type-checking-only imports.
     from ..nn.nn_model import _CallbackContext
+    from ..nn.params.nn_checkpoint import NNCheckpointTransform
 
 
 # Supported QAT recipe shortcuts. Keeping this as a small dict (rather
@@ -161,6 +162,11 @@ class QATLifecycleCallback(Callback):
     tracks the prepare/convert phase via ``self.is_prepared`` and
     ``self.is_converted`` for downstream inspection.
 
+    A completed conversion also contributes a versioned checkpoint transform
+    containing ``qat_config`` and ``groupsize``. The final ``LAST`` checkpoint
+    persists that recipe, so :meth:`NNModel.from_checkpoint` can rebuild the
+    converted torchao topology before loading its quantized tensors.
+
     Args:
         qat_config: torchao recipe shortcut. See
             :func:`qat_train_step_factory`.
@@ -210,3 +216,18 @@ class QATLifecycleCallback(Callback):
             return
         self.quantizer.convert(ctx.model.net)
         self.is_converted = True
+
+    def checkpoint_transforms(self) -> tuple[NNCheckpointTransform, ...]:
+        """Describe the completed conversion so checkpoint loaders can replay it."""
+        if not self.is_converted:
+            return ()
+
+        from ..nn.params.nn_checkpoint import NNCheckpointTransform
+
+        return (
+            NNCheckpointTransform(
+                name="torchao_qat",
+                version=1,
+                options={"qat_config": self.qat_config, "groupsize": self.groupsize},
+            ),
+        )
