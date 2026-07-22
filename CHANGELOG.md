@@ -4,6 +4,50 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [0.2.1](https://github.com/thekaveh/NNx/compare/v0.2.0...v0.2.1) (2026-07-22)
+
+
+### Features
+
+* ConvNN (LeNet-style) + NNConvParams + Nets.CONV ([#89](https://github.com/thekaveh/NNx/issues/89)) ([46fdfef](https://github.com/thekaveh/NNx/commit/46fdfef1e3aa73ba19a4373e7cd70320c6e0259d))
+* ConvNN (LeNet-style) + NNConvParams + Nets.CONV ([#89](https://github.com/thekaveh/NNx/issues/89)) ([a96c870](https://github.com/thekaveh/NNx/commit/a96c87093091b67b098339f95a388d779afae7b5))
+* **dataset:** full-batch node-classification loader (no pyg-lib) for NNGraphDataset ([2b8b163](https://github.com/thekaveh/NNx/commit/2b8b16357c626670ca93c179227d9aea07085a95))
+* FeedFwdMoENN net + Nets.FEED_FWD_MOE + NNMoEParams ([f78c921](https://github.com/thekaveh/NNx/commit/f78c921c3302c3e27d1f1bbbf034206cbded97dc))
+* FeedFwdMoENN net + Nets.FEED_FWD_MOE + NNMoEParams ([5d3956f](https://github.com/thekaveh/NNx/commit/5d3956febf364091cd335455b40d2a8cd0e2d248)), closes [#88](https://github.com/thekaveh/NNx/issues/88)
+* full-batch node-classification loader (train GNNs without pyg-lib) ([7b339df](https://github.com/thekaveh/NNx/commit/7b339df7f42acc8978dc46944f8c8be0cdf2cc7e))
+* per-layer activation & dropout on NNParams ([bab71a5](https://github.com/thekaveh/NNx/commit/bab71a5d425e1f2fb3307a2729fbe8dcbe8ce577))
+* per-layer activation & dropout on NNParams (net-wide → optional lists) ([4a5de0c](https://github.com/thekaveh/NNx/commit/4a5de0c2992b9e4b001fb930969247461f4314bf)), closes [#85](https://github.com/thekaveh/NNx/issues/85)
+* pluggable eval_step_fn on NNModel.train (mirror train_step_fn) ([88053ea](https://github.com/thekaveh/NNx/commit/88053ea846370a4516d3e81e0e61876d1af38569))
+* pluggable eval_step_fn on NNModel.train (mirror train_step_fn) ([822b6da](https://github.com/thekaveh/NNx/commit/822b6dadeb1c6a4ae8037da449d930a8c121fabf)), closes [#86](https://github.com/thekaveh/NNx/issues/86)
+
+
+### Bug Fixes
+
+* complete specialized network exports ([91ff6ef](https://github.com/thekaveh/NNx/commit/91ff6ef66ac1bd7aefe900a18b63848818946313))
+* harden training lifecycle and type contracts ([c6b322e](https://github.com/thekaveh/NNx/commit/c6b322e1f37ca289f17d7954ee26926733cced8d))
+* promote GitPython security refresh ([1c03f56](https://github.com/thekaveh/NNx/commit/1c03f56a4e066ca33017294152b5196e98cc3aaf))
+* re-save LAST checkpoint after on_train_end so callback net mutations persist ([960ae48](https://github.com/thekaveh/NNx/commit/960ae484f8ad053b0bcddfc575d2c964f121f0a7))
+* re-save LAST checkpoint after on_train_end so callback net mutations persist ([65e599c](https://github.com/thekaveh/NNx/commit/65e599c917b2c57929215859d5d23b5d418a40ef)), closes [#87](https://github.com/thekaveh/NNx/issues/87)
+* reconstruct converted QAT checkpoints ([90ee652](https://github.com/thekaveh/NNx/commit/90ee6520ec8ad5fb2211cf1d1b4776fe72b8055f))
+* reconstruct converted QAT checkpoints ([24d3262](https://github.com/thekaveh/NNx/commit/24d326260b0db2c3c19e16267efd5fd27724b3f2))
+* refresh vulnerable GitPython lock ([9e0e7ee](https://github.com/thekaveh/NNx/commit/9e0e7ee5137bbe047f230836e07351c3f555f1ea))
+* refresh vulnerable GitPython lock ([f54b675](https://github.com/thekaveh/NNx/commit/f54b675fde9e6199e16cb9b088b25e12ea6ff233))
+* reject missing ConvNN scalar activation ([3476d2e](https://github.com/thekaveh/NNx/commit/3476d2e82d6320d55de401fcbe74647f53430c8b))
+* reject single-expert MoE params ([#114](https://github.com/thekaveh/NNx/issues/114)) ([a395e2d](https://github.com/thekaveh/NNx/commit/a395e2d03fd44594b65256ad69bf78942d0be15f))
+* require ConvNN scalar activation ([babead8](https://github.com/thekaveh/NNx/commit/babead8f1ebc8d9c0f207b4d4bbe8e7cee7e1838))
+* require hidden layers for MoE params ([#116](https://github.com/thekaveh/NNx/issues/116)) ([70bf913](https://github.com/thekaveh/NNx/commit/70bf913c5371f099c9d1e019348764fe25531026))
+* support pandas 2 type contracts ([d9c523e](https://github.com/thekaveh/NNx/commit/d9c523e2f3a127252b9b997b6687b2401b15122b))
+
+
+### Documentation
+
+* **examples:** propagate the new primitives ([#85](https://github.com/thekaveh/NNx/issues/85)–[#89](https://github.com/thekaveh/NNx/issues/89)) to the examples ([16fa58b](https://github.com/thekaveh/NNx/commit/16fa58b92615b7d4a9e1ce2687c5e9044501b43c))
+* **examples:** propagate the new primitives ([#85](https://github.com/thekaveh/NNx/issues/85)–[#89](https://github.com/thekaveh/NNx/issues/89)) to the examples ([d3f9b65](https://github.com/thekaveh/NNx/commit/d3f9b65c1cda08ce5a65a4cbe42375d624fa120f))
+* link the rendered docs site from README ([#68](https://github.com/thekaveh/NNx/issues/68)) ([3cf1682](https://github.com/thekaveh/NNx/commit/3cf1682a51c45800a2ef3d687140b1bbf7183af2))
+* render architecture diagram in a themed page (fix bare-HTML nav break) ([#69](https://github.com/thekaveh/NNx/issues/69)) ([8940c3e](https://github.com/thekaveh/NNx/commit/8940c3ed6c1e24ff364d6a9644a0f93ffd238ad4))
+* Slate + Cobalt theme for the docs site ([#66](https://github.com/thekaveh/NNx/issues/66)) ([7520455](https://github.com/thekaveh/NNx/commit/7520455ed19f94650950deae8f3c52cb183d9701))
+* synchronize architecture and publishing surfaces ([14a4d2c](https://github.com/thekaveh/NNx/commit/14a4d2c03c122ca45f278ee47688efdc87d2d02e))
+
 ## [Unreleased]
 
 ### Changed
