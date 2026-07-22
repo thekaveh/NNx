@@ -4,6 +4,9 @@
 ``NNTransformerParams`` uses. It adds the two MoE routing knobs consumed by
 :class:`~nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN`'s ``MoELinear`` hidden layers:
 
+- ``hidden_dims`` — inherited from ``NNParams``, but specialized here to require
+  at least one entry so every ``FeedFwdMoENN`` contains an expert layer.
+
 - ``num_experts`` — experts per hidden layer (required, and must be at least 2;
   a single-expert network is not a mixture and is rejected by ``MoELinear``).
 - ``top_k`` — experts each token routes to (default 2, the Switch/Mixtral
@@ -26,6 +29,12 @@ from .nn_params import NNParams
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNMoEParams(NNParams):
+    """Serializable parameters for an expert-bearing feed-forward MoE.
+
+    Unlike base :class:`NNParams`, ``hidden_dims`` must contain at least one
+    layer because only hidden layers are replaced by ``MoELinear`` modules.
+    """
+
     # Required: experts per hidden MoELinear layer.
     num_experts: int
     # Routed experts per token; 2 is the Switch/Mixtral convention.
@@ -35,6 +44,8 @@ class NNMoEParams(NNParams):
         # Explicit unbound call — same slotted-dataclass reasoning as
         # NNTransformerParams.__post_init__.
         NNParams.__post_init__(self)
+        if not self.hidden_dims:
+            raise ValueError("NNMoEParams requires at least one hidden layer in hidden_dims")
         if self.num_experts < 2:
             raise ValueError(f"NNMoEParams requires num_experts >= 2, got {self.num_experts}")
         if self.top_k <= 0:

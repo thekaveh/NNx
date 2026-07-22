@@ -72,6 +72,24 @@ def test_moe_params_accepts_two_experts():
     assert params.top_k == 1
 
 
+@pytest.mark.parametrize("hidden_dims", [None, []])
+def test_moe_params_requires_at_least_one_hidden_layer(hidden_dims):
+    with pytest.raises(ValueError, match="at least one hidden layer"):
+        _moe_params(hidden_dims=hidden_dims)
+
+
+def test_moe_params_from_state_rejects_empty_hidden_layers():
+    state = _moe_params(hidden_dims=[8]).state()
+    state["hidden_dims"] = "[]"
+    with pytest.raises(ValueError, match="at least one hidden layer"):
+        NNParams.resolve_from_state(state)
+
+
+def test_plain_nn_params_still_accepts_no_hidden_layers():
+    assert NNParams(input_dim=8, output_dim=3, hidden_dims=[], dropout_prob=0.0).hidden_dims == []
+    assert NNParams(input_dim=8, output_dim=3, hidden_dims=None, dropout_prob=0.0).hidden_dims is None
+
+
 def test_moe_params_from_state_rejects_single_expert():
     state = _moe_params(num_experts=2, top_k=1).state()
     state["num_experts"] = 1
@@ -125,6 +143,11 @@ def test_net_contains_moe_linear_hidden_layers():
     assert all(isinstance(layer, MoELinear) for layer in hidden)
     # classifier head stays a plain Linear (routing the head is atypical)
     assert isinstance(model.net.layers[-1], torch.nn.Linear)
+
+
+def test_minimal_valid_moe_contains_an_expert_layer():
+    model = _model(_moe_params(hidden_dims=[4]))
+    assert any(isinstance(layer, MoELinear) for layer in model.net.modules())
 
 
 def test_forward_shape_and_aux_loss():
