@@ -18,6 +18,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Fixed
 
+- **`NNMoEParams` now rejects `num_experts < 2` at the parameter boundary.** The serialized params type previously accepted a single expert even though `MoELinear` correctly rejected it during model construction, forcing downstream consumers to duplicate the stronger invariant. Direct construction and `from_state()` now fail early with the same `num_experts >= 2` contract; valid MoE state and checkpoint formats are unchanged.
 - **Trainer LAST checkpoints include `on_train_end` mutations.** The final checkpoint is refreshed after callback finalization, matching the persisted model to the completed lifecycle.
 - **Empty aggregation and prediction fail clearly.** `NNEvaluationDataPoint.mean_of([])` and `NNModel.predict()` on an empty loader now raise targeted `ValueError`s instead of producing warnings, NaNs, or NumPy-internal failures.
 - **Network enum dispatch rejects incompatible specialized params.** Convolutional, MoE, and transformer network variants now require their matching params classes instead of constructing a mismatched network and failing later.

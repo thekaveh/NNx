@@ -4,7 +4,8 @@
 ``NNTransformerParams`` uses. It adds the two MoE routing knobs consumed by
 :class:`~nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN`'s ``MoELinear`` hidden layers:
 
-- ``num_experts`` — experts per hidden layer (required; no meaningful default).
+- ``num_experts`` — experts per hidden layer (required, and must be at least 2;
+  a single-expert network is not a mixture and is rejected by ``MoELinear``).
 - ``top_k`` — experts each token routes to (default 2, the Switch/Mixtral
   convention). Omitted from ``state()`` at its default — the omit-when-default
   invariant that keeps a "vanilla" MoE config hashing to a stable run.id as
@@ -34,8 +35,8 @@ class NNMoEParams(NNParams):
         # Explicit unbound call — same slotted-dataclass reasoning as
         # NNTransformerParams.__post_init__.
         NNParams.__post_init__(self)
-        if self.num_experts <= 0:
-            raise ValueError(f"NNMoEParams requires num_experts > 0, got {self.num_experts}")
+        if self.num_experts < 2:
+            raise ValueError(f"NNMoEParams requires num_experts >= 2, got {self.num_experts}")
         if self.top_k <= 0:
             raise ValueError(f"NNMoEParams requires top_k > 0, got {self.top_k}")
         if self.top_k > self.num_experts:

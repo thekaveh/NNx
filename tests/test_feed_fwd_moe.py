@@ -60,9 +60,26 @@ def _model(params: NNMoEParams) -> NNModel:
 # ---------------------------------------------------------------------------
 
 
-def test_moe_params_validation():
-    with pytest.raises(ValueError, match="num_experts"):
-        _moe_params(num_experts=0)
+@pytest.mark.parametrize("num_experts", [0, 1])
+def test_moe_params_rejects_fewer_than_two_experts(num_experts):
+    with pytest.raises(ValueError, match="num_experts >= 2"):
+        _moe_params(num_experts=num_experts, top_k=1)
+
+
+def test_moe_params_accepts_two_experts():
+    params = _moe_params(num_experts=2, top_k=1)
+    assert params.num_experts == 2
+    assert params.top_k == 1
+
+
+def test_moe_params_from_state_rejects_single_expert():
+    state = _moe_params(num_experts=2, top_k=1).state()
+    state["num_experts"] = 1
+    with pytest.raises(ValueError, match="num_experts >= 2"):
+        NNParams.resolve_from_state(state)
+
+
+def test_moe_params_top_k_validation():
     with pytest.raises(ValueError, match="top_k"):
         _moe_params(top_k=0)
     with pytest.raises(ValueError, match="top_k"):
