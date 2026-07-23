@@ -4,6 +4,23 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [0.2.2](https://github.com/thekaveh/NNx/compare/v0.2.1...v0.2.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* enable publishing from reusable release calls ([356d8ab](https://github.com/thekaveh/NNx/commit/356d8abedeaf254b4f4f1053a15991aea9fa7f62))
+* enable publishing from reusable release calls ([9d6c256](https://github.com/thekaveh/NNx/commit/9d6c256cf4548a2e8dad6096de91217daf9b871f))
+* harden training persistence and contracts ([d308bfb](https://github.com/thekaveh/NNx/commit/d308bfb9e059e6b19486a7153810c03619090817))
+* promote reusable release publication repair ([8b082e8](https://github.com/thekaveh/NNx/commit/8b082e855c6bf98f18e6467869e9a9083ea00ff5))
+* synchronize release version in uv lock ([a882137](https://github.com/thekaveh/NNx/commit/a882137232e5424d8c22e6928c6e826531ab9b16))
+* synchronize release version in uv lock ([96dfd9e](https://github.com/thekaveh/NNx/commit/96dfd9e257a090c31722c8ee5aaf699f63582309))
+
+
+### Documentation
+
+* synchronize project publication surfaces ([28101b3](https://github.com/thekaveh/NNx/commit/28101b3bb729a4e2a9e985f7c09241eb648e86be))
+
 ## [Unreleased]
 
 ### Added
