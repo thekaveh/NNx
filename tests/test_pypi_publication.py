@@ -110,6 +110,17 @@ def test_post_publish_smoke_imports_studio_required_apis():
         )
 
 
+def test_reusable_release_inputs_enable_the_publish_path():
+    """Release Please calls must publish even though their event remains ``push``."""
+    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "github.event_name == 'workflow_call'" not in workflow
+    assert workflow.count("inputs.tag_name != ''") == 3, (
+        "release.yml must use the supplied tag_name input to enable tag/version "
+        "validation, PyPI publication, and post-publish verification"
+    )
+
+
 def test_pypi_lists_the_current_distribution_name():
     """The distribution exists on PyPI under the current name.
 
