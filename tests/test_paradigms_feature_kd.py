@@ -131,7 +131,8 @@ def test_feature_kd_rejects_mismatched_layer_widths(tmp_path, monkeypatch):
         )
 
 
-def test_feature_kd_loss_combines_logit_and_feature_terms():
+def test_feature_kd_loss_combines_logit_and_feature_terms(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     """With alpha=0.5, beta=0.5: verify the reported loss matches
     `0.5*soft_kl + 0.5*feature_mse + (1-alpha)*hard_loss`. We
     reconstruct the components by hand and compare numerically."""

@@ -291,11 +291,19 @@ def test_trainer_last_checkpoint_contains_on_train_end_mutation(tmp_path, monkey
     """Trainer LAST must reflect net mutations made during on_train_end."""
     from nnx import Callback
     from nnx.nn.enum.checkpoints import Checkpoints
-    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
 
     class _MutateNetOnTrainEnd(Callback):
+        completed = False
+
         def on_train_end(self, ctx):
             ctx.model.net.register_buffer("post_train_end_marker", torch.tensor([42.0]))
+            self.completed = True
+
+        def checkpoint_transforms(self):
+            if not self.completed:
+                return ()
+            return (NNCheckpointTransform(name="test-marker"),)
 
     monkeypatch.chdir(tmp_path)
     model = _supervised_model()
@@ -319,6 +327,7 @@ def test_trainer_last_checkpoint_contains_on_train_end_mutation(tmp_path, monkey
     checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert checkpoint is not None
     assert torch.equal(checkpoint.net_state["post_train_end_marker"], torch.tensor([42.0]))
+    assert [transform.name for transform in checkpoint.transforms] == ["test-marker"]
 
 
 def test_trainer_step_exception_still_dispatches_train_end(tmp_path, monkeypatch):

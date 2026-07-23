@@ -234,6 +234,22 @@ def test_qat_convert_state_persists_in_last(tmp_path, monkeypatch):
     assert torch.isfinite(output).all()
     assert any("Int8" in type(module).__name__ and "Int4" in type(module).__name__ for module in fresh.net.modules())
 
+    # Warm resume uses the pre-conversion model state stored in the sidecar,
+    # then applies QAT afresh before producing another converted LAST.
+    resumed = NNModel(net_params=model.net_params, params=model.params)
+    resumed_callback = QATLifecycleCallback()
+    resumed_run = resumed.train(
+        params=replace(
+            _tiny_train_params(loader, n_epochs=1),
+            data_id="qat-resume",
+            resume_from_run_id=run.id,
+        ),
+        train_step_fn=qat_train_step_factory(),
+        callbacks=[resumed_callback],
+    )
+    assert resumed_callback.is_converted is True
+    assert NNCheckpoint.load(resumed_run.id, Checkpoints.LAST) is not None
+
 
 def test_unknown_checkpoint_transform_fails_clearly():
     model = _tiny_model()

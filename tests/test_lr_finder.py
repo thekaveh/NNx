@@ -341,6 +341,21 @@ def test_lr_finder_early_exits_on_divergence():
     assert len(result.lrs) >= 1
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"diverge_threshold": 1.0}, "diverge_threshold"),
+        ({"diverge_threshold": 0.0}, "diverge_threshold"),
+        ({"ema_alpha": 0.0}, "ema_alpha"),
+        ({"ema_alpha": 1.0}, "ema_alpha"),
+    ],
+)
+def test_lr_finder_rejects_invalid_algorithm_controls(kwargs, message):
+    model, loader = _tiny_model_and_loader()
+    with pytest.raises(ValueError, match=message):
+        lr_finder(model, loader, loss_fn=torch.nn.CrossEntropyLoss(), **kwargs)
+
+
 def test_lr_finder_sweep_reaches_end_lr():
     """The docstring promises a sweep "from start_lr to end_lr"; the old
     1/num_iter exponent stopped one multiplicative step short of

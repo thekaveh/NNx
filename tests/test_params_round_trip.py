@@ -7,17 +7,22 @@ keeping both sides of the contract in sync."""
 
 from __future__ import annotations
 
+import pytest
+
+from nnx.finetune.param_groups import NNParamGroupSpec
 from nnx.nn.enum.activations import Activations
 from nnx.nn.enum.devices import Devices
 from nnx.nn.enum.losses import Losses
 from nnx.nn.enum.nets import Nets
 from nnx.nn.enum.optims import Optims
 from nnx.nn.enum.schedulers import Schedulers
+from nnx.nn.params.nn_conv_params import NNConvParams
 from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
 from nnx.nn.params.nn_model_params import NNModelParams
 from nnx.nn.params.nn_optim_params import NNOptimParams
 from nnx.nn.params.nn_params import NNParams
+from nnx.nn.params.nn_run import NNRun
 from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
 from nnx.nn.params.nn_train_params import NNTrainParams
 from nnx.nn.params.nn_transformer_params import NNTransformerParams
@@ -33,6 +38,94 @@ def test_nn_params_round_trip():
         n_heads=None,
     )
     assert NNParams.from_state(obj.state()) == obj
+
+
+def test_nn_params_list_fields_are_immutable_after_construction():
+    hidden = [128, 64]
+    obj = NNParams(
+        input_dim=784,
+        output_dim=10,
+        dropout_prob=0.2,
+        activation=Activations.RELU,
+        hidden_dims=hidden,
+    )
+    hidden.append(32)
+    assert obj.hidden_dims == [128, 64]
+    assert obj.hidden_dims is not None
+    with pytest.raises(TypeError, match="immutable"):
+        obj.hidden_dims.append(32)
+
+
+def test_nested_conv_and_optimizer_collections_are_immutable():
+    channels = [4, 8]
+    conv = NNConvParams(
+        input_dim=28 * 28,
+        output_dim=10,
+        hidden_dims=[16],
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+        conv_channels=channels,
+    )
+    groups = [NNParamGroupSpec(name_pattern="*", lr=1e-3)]
+    optim = NNOptimParams(
+        name=Optims.ADAM,
+        max_lr=1e-3,
+        momentum=(0.9, 0.999),
+        weight_decay=0.0,
+        param_groups=groups,
+    )
+
+    channels.append(16)
+    groups.clear()
+    assert conv.conv_channels == [4, 8]
+    assert optim.param_groups == [NNParamGroupSpec(name_pattern="*", lr=1e-3)]
+    with pytest.raises(TypeError, match="immutable"):
+        conv.conv_channels.append(16)
+    with pytest.raises(TypeError, match="immutable"):
+        optim.param_groups.clear()
+
+
+def test_nn_run_state_returns_a_defensive_snapshot():
+    run = NNRun(
+        net=NNParams(
+            input_dim=4,
+            output_dim=2,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            hidden_dims=[8],
+        ),
+        model=NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY, device=Devices.CPU),
+        train=NNTrainParams(n_epochs=1),
+    )
+    snapshot = run.state()
+    snapshot["train"]["n_epochs"] = 99
+
+    assert run.state()["train"]["n_epochs"] == 1
+    assert run.id == run.state()["id"]
+
+
+def test_train_data_id_and_resume_lineage_participate_in_run_identity():
+    base = dict(n_epochs=1)
+    run_a = NNRun(
+        net=NNParams(
+            input_dim=4,
+            output_dim=2,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            hidden_dims=[8],
+        ),
+        model=NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY, device=Devices.CPU),
+        train=NNTrainParams(**base, data_id="dataset-a"),
+    )
+    run_b = NNRun(net=run_a.net, model=run_a.model, train=NNTrainParams(**base, data_id="dataset-b"))
+    resumed = NNRun(
+        net=run_a.net,
+        model=run_a.model,
+        train=NNTrainParams(**base, data_id="dataset-a", resume_from_run_id=run_a.id),
+    )
+
+    assert len({run_a.id, run_b.id, resumed.id}) == 3
+    assert resumed.state()["train"]["parent_run_id"] == run_a.id
 
 
 def test_nn_params_round_trip_with_n_heads():

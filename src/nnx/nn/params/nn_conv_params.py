@@ -31,7 +31,7 @@ import ast
 import math
 from dataclasses import dataclass
 
-from .nn_params import NNParams
+from .nn_params import NNParams, _ImmutableList
 
 _LENET_DEFAULTS = {"in_channels": 1, "kernel_size": 5, "stride": 1, "padding": 0, "pool_size": 2}
 
@@ -53,6 +53,7 @@ class NNConvParams(NNParams):
         # Explicit unbound call — same slotted-dataclass reasoning as
         # NNTransformerParams.__post_init__.
         NNParams.__post_init__(self)
+        object.__setattr__(self, "conv_channels", _ImmutableList(self.conv_channels))
         if self.activation is None:
             raise ValueError("NNConvParams requires a scalar activation for convolution blocks")
         if not self.conv_channels or not all(c > 0 for c in self.conv_channels):

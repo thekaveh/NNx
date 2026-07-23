@@ -12,6 +12,9 @@ assertion was tautological). The named-symbol check additionally
 catches a regression that empties `__all__` or drops a public export.
 """
 
+import subprocess
+import sys
+
 
 def test_top_level_imports():
     import nnx
@@ -30,6 +33,30 @@ def test_top_level_imports():
     assert hasattr(peft, "LoRALinear")
     assert hasattr(viz, "summary")
     assert hasattr(viz, "weight_histogram")
+
+
+def test_lm_exports_fail_clearly_without_tokenizers():
+    code = r"""
+import importlib.abc
+import sys
+
+class BlockTokenizers(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "tokenizers" or fullname.startswith("tokenizers."):
+            raise ModuleNotFoundError("blocked tokenizers for test")
+        return None
+
+sys.meta_path.insert(0, BlockTokenizers())
+import nnx
+assert "train_bpe" in nnx.__all__
+try:
+    nnx.train_bpe(vocab_size=32)
+except ImportError as exc:
+    assert "thekaveh-nnx[lm]" in str(exc)
+else:
+    raise AssertionError("missing optional LM dependency did not raise ImportError")
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_subpackages_attribute_accessible_after_plain_import():

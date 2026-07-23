@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from scripts.docs.build_wiki import rewrite_markdown
 
 
@@ -35,3 +37,13 @@ def test_rewrite_markdown_strips_unknown_repo_links_but_keeps_external(tmp_path:
 
     assert "Missing" in rendered and "missing.md" not in rendered
     assert "[PyTorch](https://pytorch.org)" in rendered
+
+
+def test_rewrite_markdown_rejects_existing_unmapped_document(tmp_path: Path):
+    source = tmp_path / "README.md"
+    target = tmp_path / "orphan.md"
+    source.write_text("", encoding="utf-8")
+    target.write_text("# Orphan\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unmapped local documentation link"):
+        rewrite_markdown(source, "[Orphan](orphan.md)\n", {})

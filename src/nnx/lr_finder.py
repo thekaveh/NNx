@@ -107,6 +107,10 @@ def lr_finder(
         raise ValueError(f"lr_finder start_lr must be > 0, got {start_lr}")
     if end_lr <= start_lr:
         raise ValueError(f"lr_finder requires end_lr > start_lr, got start={start_lr} end={end_lr}")
+    if diverge_threshold <= 1:
+        raise ValueError(f"lr_finder diverge_threshold must be > 1, got {diverge_threshold}")
+    if not 0 < ema_alpha < 1:
+        raise ValueError(f"lr_finder ema_alpha must be between 0 and 1, got {ema_alpha}")
 
     if device is None:
         device = next(model.parameters()).device

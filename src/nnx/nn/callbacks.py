@@ -12,6 +12,7 @@ notebooks keep working.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
@@ -60,7 +61,10 @@ class _LegacyCallback(Callback):
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         if self._clear_output is None:
-            from IPython.display import clear_output
+            try:
+                from IPython.display import clear_output
+            except ImportError:
+                clear_output = lambda **_kwargs: None
 
             self._clear_output = clear_output
 
@@ -88,6 +92,18 @@ class EarlyStopping(Callback):
     ):
         if mode not in ("min", "max"):
             raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
+        valid_monitors = {
+            "val_edp.error",
+            "val_edp.loss",
+            "train_edp.error",
+            "train_edp.loss",
+        }
+        if monitor not in valid_monitors:
+            raise ValueError(f"monitor must be one of {sorted(valid_monitors)}, got {monitor!r}")
+        if patience < 0:
+            raise ValueError(f"patience must be >= 0, got {patience}")
+        if min_delta < 0:
+            raise ValueError(f"min_delta must be >= 0, got {min_delta}")
         self.monitor = monitor
         self.patience = patience
         self.min_delta = min_delta
@@ -154,6 +170,11 @@ class ModelCheckpoint(Callback):
     """
 
     def __init__(self, epochs: Optional[list[int]] = None, tag: str = "custom"):
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", tag) is None:
+            raise ValueError(
+                f"ModelCheckpoint tag must be a non-empty filename-safe slug "
+                f"containing only letters, digits, '.', '_', or '-'; got {tag!r}"
+            )
         self.epochs = set(epochs or [])
         self.tag = tag
 

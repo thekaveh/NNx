@@ -10,9 +10,13 @@ a pytest temp dir and doesn't pollute the repo."""
 
 from __future__ import annotations
 
+import concurrent.futures
+import multiprocessing
 import os
+import threading
 
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -22,6 +26,7 @@ from nnx.nn.enum.devices import Devices
 from nnx.nn.enum.losses import Losses
 from nnx.nn.enum.nets import Nets
 from nnx.nn.enum.optims import Optims
+from nnx.nn.enum.schedulers import Schedulers
 from nnx.nn.nn_model import NNModel
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
 from nnx.nn.params.nn_model_params import NNModelParams
@@ -30,6 +35,30 @@ from nnx.nn.params.nn_params import NNParams
 from nnx.nn.params.nn_run import NNRun
 from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
 from nnx.nn.params.nn_train_params import NNTrainParams
+
+
+def _save_checkpoint_in_process(checkpoint, root: str, marker: int) -> None:
+    checkpoint.save(
+        run="concurrent-run",
+        type=Checkpoints.LAST,
+        root=root,
+        optimizer_state={"state": {}, "param_groups": [{"marker": marker}]},
+        completed_epoch=marker,
+    )
+
+
+def _reserve_run_in_process(root: str) -> str:
+    net_params, model_params = _make_params()
+    run = NNRun(
+        net=net_params,
+        model=model_params,
+        train=NNTrainParams(n_epochs=1, data_id="concurrent-admission"),
+    )
+    try:
+        run.ensure_writable(root=root)
+    except FileExistsError:
+        return "blocked"
+    return "reserved"
 
 
 def _make_tiny_loaders(n_train: int = 32, n_val: int = 16, input_dim: int = 8, n_classes: int = 3):
@@ -185,6 +214,254 @@ def test_train_skips_val_loop_when_no_val_loader(tmp_path, monkeypatch):
     assert (tmp_path / "runs" / run.id / "run.yaml").exists()
 
 
+def test_warm_resume_restores_scheduler_and_continues_epoch_progress(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.STEP,
+        step_size=1,
+        factor=0.5,
+        min_lr=0.0,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+    )
+
+    torch.manual_seed(7)
+    net_params, model_params = _make_params()
+    uninterrupted = NNModel(net_params=net_params, params=model_params)
+    full_run = uninterrupted.train(
+        params=NNTrainParams(
+            n_epochs=4,
+            data_id="full",
+            train_loader=train_loader,
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            scheduler=scheduler,
+        )
+    )
+
+    torch.manual_seed(7)
+    first_half = NNModel(net_params=net_params, params=model_params)
+    first_run = first_half.train(
+        params=NNTrainParams(
+            n_epochs=2,
+            data_id="split",
+            train_loader=train_loader,
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            scheduler=scheduler,
+        )
+    )
+    resumed = NNModel(net_params=net_params, params=model_params)
+    resumed_run = resumed.train(
+        params=NNTrainParams(
+            n_epochs=2,
+            data_id="split",
+            train_loader=train_loader,
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            scheduler=scheduler,
+            resume_from_run_id=first_run.id,
+        )
+    )
+
+    full_state = NNCheckpoint.load_training_state(full_run.id, Checkpoints.LAST)
+    resumed_state = NNCheckpoint.load_training_state(resumed_run.id, Checkpoints.LAST)
+    assert full_state is not None
+    assert resumed_state is not None
+    assert resumed_state["completed_epoch"] == 3
+    assert resumed_run.idps[0].epoch_idx == 2
+    assert resumed_state["optimizer"]["param_groups"][0]["lr"] == full_state["optimizer"]["param_groups"][0]["lr"]
+    assert resumed_state["scheduler"]["last_epoch"] == full_state["scheduler"]["last_epoch"]
+    for name, tensor in uninterrupted.net.state_dict().items():
+        assert torch.equal(resumed.net.state_dict()[name], tensor)
+
+
+def test_training_state_rejects_checkpoint_sidecar_generation_mismatch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=_train_params(train_loader, None, n_epochs=1))
+
+    sidecar = tmp_path / "runs" / run.id / "checkpoints" / "last.pt.opt.pt"
+    state = torch.load(sidecar, weights_only=True)
+    state["checkpoint_id"] = "different-generation"
+    torch.save(state, sidecar)
+
+    with pytest.raises(ValueError, match="checkpoint and training-state sidecar do not match"):
+        NNCheckpoint.load_training_state(run.id, Checkpoints.LAST)
+
+
+def test_phase_checkpoints_carry_complete_resume_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, None, n_epochs=8)
+    )
+
+    for checkpoint_type in (Checkpoints.FIRST, Checkpoints.Q1, Checkpoints.Q2, Checkpoints.Q3):
+        state = NNCheckpoint.load_training_state(run.id, checkpoint_type)
+        assert state is not None
+        assert state["optimizer"] is not None
+        assert state["scheduler"] is not None
+        assert state["rng"] is not None
+
+
+def test_finite_horizon_scheduler_resume_requires_explicit_total_steps(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=train_loader,
+        resume_from_run_id="prior-run",
+        optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+        scheduler=NNSchedulerParams(
+            kind=Schedulers.ONE_CYCLE,
+            max_lr=0.1,
+            total_steps=None,
+            min_lr=0.0,
+            factor=0.5,
+            patience=0,
+            cooldown=0,
+            threshold=0.0,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires scheduler.total_steps"):
+        NNModel(net_params=net_params, params=model_params).train(params=params)
+
+
+def test_finite_horizon_resume_rejects_insufficient_explicit_horizon(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=0.1,
+        total_steps=2,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+    )
+    first = NNModel(net_params=net_params, params=model_params).train(
+        params=NNTrainParams(
+            n_epochs=1,
+            data_id="finite-first",
+            train_loader=train_loader,
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            scheduler=scheduler,
+        )
+    )
+
+    with pytest.raises(ValueError, match="beyond scheduler.total_steps=2"):
+        NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=2,
+                data_id="finite-resume",
+                train_loader=train_loader,
+                resume_from_run_id=first.id,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+                scheduler=scheduler,
+            )
+        )
+
+
+def test_setup_failure_releases_empty_run_reservation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    params = NNTrainParams(
+        n_epochs=2,
+        data_id="invalid-scheduler",
+        train_loader=train_loader,
+        optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+        scheduler=NNSchedulerParams(
+            kind=Schedulers.ONE_CYCLE,
+            max_lr=0.1,
+            total_steps=1,
+            min_lr=0.0,
+            factor=0.5,
+            patience=0,
+            cooldown=0,
+            threshold=0.0,
+        ),
+    )
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="total_steps"):
+            NNModel(net_params=net_params, params=model_params).train(params=params)
+
+
+def test_concurrent_checkpoint_writers_commit_matching_state_pair(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=_train_params(train_loader, None, n_epochs=1))
+    checkpoint = NNCheckpoint.load(run.id, Checkpoints.LAST)
+    assert checkpoint is not None
+
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=2, mp_context=context) as pool:
+        futures = [pool.submit(_save_checkpoint_in_process, checkpoint, str(tmp_path), marker) for marker in (11, 22)]
+        for future in futures:
+            future.result(timeout=30)
+
+    saved = NNCheckpoint.load("concurrent-run", Checkpoints.LAST, root=str(tmp_path))
+    state = NNCheckpoint.load_training_state("concurrent-run", Checkpoints.LAST, root=str(tmp_path))
+    assert saved is not None
+    assert state is not None
+    assert saved.training_state_id == state["checkpoint_id"]
+    assert state["completed_epoch"] in {11, 22}
+    assert state["optimizer"]["param_groups"][0]["marker"] == state["completed_epoch"]
+
+
+def test_concurrent_identical_runs_have_single_admission_winner(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=2, mp_context=context) as pool:
+        results = list(pool.map(_reserve_run_in_process, [str(tmp_path), str(tmp_path)]))
+
+    assert sorted(results) == ["blocked", "reserved"]
+
+
+def test_overwrite_waits_for_active_run_lease(tmp_path):
+    net_params, model_params = _make_params()
+    params = NNTrainParams(n_epochs=1, data_id="active-overwrite")
+    active = NNRun(net=net_params, model=model_params, train=params)
+    replacement = NNRun(net=net_params, model=model_params, train=params)
+    active_entered = threading.Event()
+    allow_active_to_finish = threading.Event()
+    replacement_entered = threading.Event()
+
+    def hold_active_run() -> None:
+        with active.writable_lease(root=str(tmp_path)):
+            active_entered.set()
+            assert allow_active_to_finish.wait(timeout=5)
+
+    def overwrite_run() -> None:
+        assert active_entered.wait(timeout=5)
+        with replacement.writable_lease(root=str(tmp_path), overwrite=True):
+            replacement_entered.set()
+
+    active_thread = threading.Thread(target=hold_active_run)
+    replacement_thread = threading.Thread(target=overwrite_run)
+    active_thread.start()
+    replacement_thread.start()
+
+    assert active_entered.wait(timeout=5)
+    assert not replacement_entered.wait(timeout=0.1)
+    allow_active_to_finish.set()
+    active_thread.join(timeout=5)
+    replacement_thread.join(timeout=5)
+
+    assert not active_thread.is_alive()
+    assert not replacement_thread.is_alive()
+    assert replacement_entered.is_set()
+
+
 def test_train_rejects_none_or_invalid_params():
     """The first guard in NNModel.train() — params=None or an invalid
     optim config — must raise ValueError loudly rather than letting the
@@ -331,6 +608,36 @@ def test_nn_run_save_tolerates_default_none_idps(tmp_path):
     loaded = NNRun.load(run.id, root=str(tmp_path))
     assert loaded.idps == []
     assert loaded.id == run.id
+
+
+def test_train_refuses_accidental_run_overwrite(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    train_loader, val_loader = _make_tiny_loaders()
+    params = _train_params(train_loader, val_loader, n_epochs=1)
+    net_params, model_params = _make_params()
+    NNModel(net_params=net_params, params=model_params).train(params=params)
+
+    with pytest.raises(FileExistsError, match="overwrite_existing"):
+        NNModel(net_params=net_params, params=model_params).train(params=params)
+
+
+def test_train_overwrite_removes_stale_run_artifacts(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, val_loader = _make_tiny_loaders()
+    params = _train_params(train_loader, val_loader, n_epochs=1)
+    net_params, model_params = _make_params()
+    first = NNModel(net_params=net_params, params=model_params).train(params=params)
+    stale = tmp_path / "runs" / first.id / "checkpoints" / "stale.pt"
+    stale.write_bytes(b"old run")
+
+    replacement = NNModel(net_params=net_params, params=model_params).train(
+        params=replace(params, overwrite_existing=True)
+    )
+
+    assert replacement.id == first.id
+    assert not stale.exists()
 
 
 def test_train_rejects_fully_frozen_model():

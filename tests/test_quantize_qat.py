@@ -217,13 +217,14 @@ def test_qat_lifecycle_callback_convert_without_prepare_noop(tiny_model):
 # -------------------------------------------------------------------------
 
 
-def test_qat_end_to_end_training(monkeypatch):
+def test_qat_end_to_end_training(tmp_path, monkeypatch):
     """Full integration: build a tiny classifier, attach the
     QATLifecycleCallback + factory step, run a couple of epochs via
     NNModel.train(), confirm the model emerges converted and still
     produces sane outputs. This is the contract the user actually
     cares about."""
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
     model = _make_model(hidden_dims=[64, 64])
     train_loader = _make_loader(n=64, seed=0)
@@ -286,6 +287,7 @@ def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch, skip_on_dynamo_
     pytest.importorskip("onnxscript")
 
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
     model = _make_model(hidden_dims=[64, 64])
 

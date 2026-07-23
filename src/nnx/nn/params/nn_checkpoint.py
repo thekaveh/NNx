@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Optional
 
 import torch
+from filelock import FileLock
 
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -18,6 +21,7 @@ from ..params.nn_params import NNParams
 # breaks older readers. Newer readers stay backwards-compatible by sniffing
 # this version off the metadata dict.
 _SAFETENSORS_FORMAT_VERSION = "1"
+_TRAINING_STATE_FORMAT_VERSION = 1
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -66,9 +70,14 @@ def _atomic_torch_save(obj, path: str) -> None:
     """torch.save(obj, path) wrapped with tmp + rename so a
     KeyboardInterrupt during the pickle never leaves a half-written
     .pt file at the destination."""
-    tmp = path + ".tmp"
-    torch.save(obj, tmp)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or None)
+    os.close(fd)
+    try:
+        torch.save(obj, tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
@@ -110,6 +119,7 @@ class NNCheckpoint:
     model_params: NNModelParams
     idp: NNIterationDataPoint
     transforms: tuple[NNCheckpointTransform, ...] = ()
+    training_state_id: Optional[str] = None
 
     def to_file(self, path: str, format: Literal["pickle", "safetensors"] = "pickle") -> None:
         """Atomically write this NNCheckpoint to ``path``.
@@ -168,6 +178,7 @@ class NNCheckpoint:
             "net_params": json.dumps(self.net_params.state()),
             "idp": json.dumps(self.idp.state()),
             "transforms": json.dumps([transform.state() for transform in self.transforms]),
+            "training_state_id": self.training_state_id or "",
         }
 
         # safetensors save_file doesn't accept OrderedDict (only dict). The
@@ -180,9 +191,14 @@ class NNCheckpoint:
         # into the tied parameter, so the tie survives the round-trip.
         tensors = {k: v.detach().contiguous().clone() for k, v in self.net_state.items()}
 
-        tmp = path + ".tmp"
-        save_file(tensors, tmp, metadata=metadata)
-        os.replace(tmp, path)
+        fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or None)
+        os.close(fd)
+        try:
+            save_file(tensors, tmp, metadata=metadata)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
     def save(
         self,
@@ -190,6 +206,11 @@ class NNCheckpoint:
         type: Checkpoints,
         root: Optional[str] = None,
         optimizer_state: Optional[dict[str, Any]] = None,
+        scheduler_state: Optional[dict[str, Any]] = None,
+        scaler_state: Optional[dict[str, Any]] = None,
+        rng_state: Optional[dict[str, Any]] = None,
+        completed_epoch: Optional[int] = None,
+        resume_net_state: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -199,17 +220,108 @@ class NNCheckpoint:
         This sidecar is used by NNModel.train(resume_from=...) to warm-resume
         with the prior optimizer momentum / Adam state.
 
-        Each of the two writes is individually atomic, but the PAIR is
-        not: an interrupt between them leaves a fresh checkpoint beside
-        the previous epoch's sidecar, and a warm-resume then restores
-        one-epoch-stale optimizer state (weights stay correct; momentum
-        is briefly mismatched). Accepted: a validation stamp would
-        change the sidecar format for a one-epoch-soft failure mode.
+        The sidecar is committed first and the checkpoint second. A shared
+        generation stamp makes the checkpoint the commit marker: interruption
+        between the two replacements is detected on load rather than silently
+        mixing model weights with stale optimizer or scheduler state.
         """
         ckpt_path = _checkpoint_path(run, type, root=root)
-        self.to_file(path=ckpt_path)
-        if optimizer_state is not None:
-            _atomic_torch_save(optimizer_state, ckpt_path + ".opt.pt")
+        os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+        sidecar_path = ckpt_path + ".opt.pt"
+        with FileLock(ckpt_path + ".lock"):
+            if optimizer_state is None:
+                self.to_file(path=ckpt_path)
+                if os.path.exists(sidecar_path):
+                    os.remove(sidecar_path)
+                return
+
+            generation = uuid.uuid4().hex
+            stamped = replace(self, training_state_id=generation)
+            training_state = {
+                "nnx_training_state_version": _TRAINING_STATE_FORMAT_VERSION,
+                "checkpoint_id": generation,
+                "optimizer": optimizer_state,
+                "scheduler": scheduler_state,
+                "scaler": scaler_state,
+                "rng": rng_state,
+                "completed_epoch": self.idp.epoch_idx if completed_epoch is None else completed_epoch,
+                "model": resume_net_state,
+            }
+            fd, checkpoint_tmp = tempfile.mkstemp(
+                prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)
+            )
+            os.close(fd)
+            os.remove(checkpoint_tmp)
+            fd, sidecar_tmp = tempfile.mkstemp(
+                prefix=f".{os.path.basename(sidecar_path)}.", dir=os.path.dirname(sidecar_path)
+            )
+            os.close(fd)
+            os.remove(sidecar_tmp)
+            try:
+                stamped.to_file(checkpoint_tmp)
+                _atomic_torch_save(training_state, sidecar_tmp)
+                os.replace(sidecar_tmp, sidecar_path)
+                os.replace(checkpoint_tmp, ckpt_path)
+            finally:
+                for tmp in (checkpoint_tmp, sidecar_tmp):
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+
+    @staticmethod
+    def load_training_state(
+        run: str,
+        type: Checkpoints,
+        root: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Load and validate the resumable optimizer/scheduler/scaler bundle.
+
+        Legacy optimizer-only sidecars are normalized into the new mapping so
+        checkpoints written by older NNx versions remain resumable.
+        """
+        checkpoint_path = _checkpoint_path(run, type, root=root)
+        with FileLock(checkpoint_path + ".lock"):
+            checkpoint = NNCheckpoint.from_file(checkpoint_path)
+            return NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint)
+
+    @staticmethod
+    def load_with_training_state(
+        run: str,
+        type: Checkpoints,
+        root: Optional[str] = None,
+    ) -> tuple[Optional[NNCheckpoint], Optional[dict[str, Any]]]:
+        """Atomically load a checkpoint and its matching training-state bundle."""
+        checkpoint_path = _checkpoint_path(run, type, root=root)
+        with FileLock(checkpoint_path + ".lock"):
+            checkpoint = NNCheckpoint.from_file(checkpoint_path)
+            state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint)
+            return checkpoint, state
+
+    @staticmethod
+    def _load_training_state_unlocked(
+        checkpoint_path: str,
+        checkpoint: Optional[NNCheckpoint],
+    ) -> Optional[dict[str, Any]]:
+        sidecar_path = checkpoint_path + ".opt.pt"
+        if not os.path.exists(sidecar_path):
+            return None
+        state = torch.load(sidecar_path, weights_only=True)
+        if "nnx_training_state_version" not in state:
+            return {
+                "nnx_training_state_version": 0,
+                "checkpoint_id": None,
+                "optimizer": state,
+                "scheduler": None,
+                "scaler": None,
+                "rng": None,
+                "completed_epoch": checkpoint.idp.epoch_idx if checkpoint is not None else None,
+            }
+        checkpoint_id = getattr(checkpoint, "training_state_id", None) if checkpoint is not None else None
+        if checkpoint_id != state.get("checkpoint_id"):
+            raise ValueError(
+                "checkpoint and training-state sidecar do not match; "
+                "the previous save was interrupted, so resume from another checkpoint"
+            )
+        return state
 
     @staticmethod
     def load_optimizer_state(
@@ -225,10 +337,8 @@ class NNCheckpoint:
         contains only tensors and standard scalar/dict/list types, so the
         strict loader works AND it removes the arbitrary-code-execution
         risk that the main NNCheckpoint.from_file documents."""
-        path = _checkpoint_path(run, type, root=root) + ".opt.pt"
-        if not os.path.exists(path):
-            return None
-        return torch.load(path, weights_only=True)
+        state = NNCheckpoint.load_training_state(run, type, root=root)
+        return None if state is None else state["optimizer"]
 
     @staticmethod
     def from_file(path: str) -> Optional[NNCheckpoint]:
@@ -308,6 +418,8 @@ class NNCheckpoint:
         # no value for the new slot. Normalize them to the empty legacy form.
         if not hasattr(ret, "transforms"):
             object.__setattr__(ret, "transforms", ())
+        if not hasattr(ret, "training_state_id"):
+            object.__setattr__(ret, "training_state_id", None)
 
         return ret
 
@@ -342,6 +454,7 @@ class NNCheckpoint:
             transforms=tuple(
                 NNCheckpointTransform.from_state(state) for state in json.loads(meta.get("transforms", "[]"))
             ),
+            training_state_id=meta.get("training_state_id") or None,
         )
 
     @staticmethod

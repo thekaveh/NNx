@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, cast
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
@@ -101,6 +102,16 @@ class NNTabularDataset(NNDatasetBase):
 
         # Coerce features + target → tensors. Trust `dtype=` on torch.tensor
         # rather than going through an extra np.float32 intermediate copy.
+        target_series = cast(pd.Series, pd.to_numeric(self.df[self.target_col], errors="coerce"))
+        target_values = target_series.to_numpy()
+        if not bool(np.isfinite(target_values).all()) or not bool(
+            np.equal(target_values, np.floor(target_values)).all()
+        ):
+            raise ValueError(
+                f"target_col {self.target_col!r} labels must be finite integers; "
+                "factorize categorical labels before constructing the dataset."
+            )
+
         X = torch.tensor(
             self.df[self.feature_cols].to_numpy(),
             dtype=self.feature_dtype,

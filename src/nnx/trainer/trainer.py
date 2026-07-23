@@ -41,7 +41,13 @@ from tqdm import tqdm
 
 from .._metrics import _resolve_metric
 from ..nn.enum.checkpoints import Checkpoints
-from ..nn.nn_model import CallbackLike, NNModel, _CallbackContext, _CallbackFinalizer
+from ..nn.nn_model import (
+    CallbackLike,
+    NNModel,
+    _CallbackContext,
+    _CallbackFinalizer,
+    _collect_checkpoint_transforms,
+)
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
@@ -115,6 +121,7 @@ def _representative_train_params(params: NNTrainerParams) -> NNTrainParams:
         optim=params.optims[primary],
         scheduler=sched,
         seed=params.seed,
+        data_id=params.data_id,
         save_phase_checkpoints=params.save_phase_checkpoints,
     )
 
@@ -224,8 +231,6 @@ class Trainer:
 
             set_seed(params.seed)
 
-        validate = params.val_loader is not None
-
         run = NNRun(
             train=_representative_train_params(params),
             trainer=params,
@@ -235,6 +240,25 @@ class Trainer:
             # (the GAN composite idiom) still produce a saveable run.
             net=self.model.net_params,
         )
+        with run.writable_lease(overwrite=params.overwrite_existing):
+            return self._train_impl(
+                params=params,
+                run=run,
+                trainer_step_fn=trainer_step_fn,
+                callbacks=callbacks,
+            )
+
+    def _train_impl(
+        self,
+        *,
+        params: NNTrainerParams,
+        run: NNRun,
+        trainer_step_fn: TrainerStepFn,
+        callbacks: Optional[list[CallbackLike]],
+    ) -> NNRun:
+        """Execute a validated multi-optimizer training session."""
+        assert params.train_loader is not None
+        validate = params.val_loader is not None
 
         # `strict_param_groups=True` is the multi-optim contract: each
         # optimizer owns only the parameters its specs explicitly match,
@@ -408,6 +432,7 @@ class Trainer:
                 model_params=self.model.params,
                 net_params=self.model.net_params,
                 net_state=self.model.net.state_dict(),
+                transforms=_collect_checkpoint_transforms(normalized_callbacks),
             ).save(run=run.id, type=Checkpoints.LAST)
 
         saved = run.with_idps(idps).save()

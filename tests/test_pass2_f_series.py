@@ -187,6 +187,47 @@ def test_f2_accumulate_grad_batches_only_steps_at_cycle_end(tmp_path, monkeypatc
     assert moved
 
 
+def test_f2_accumulate_grad_batches_steps_trailing_partial_cycle(tmp_path, monkeypatch):
+    """A final short accumulation cycle must update weights instead of being dropped."""
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    loader = DataLoader(
+        TensorDataset(torch.randn(12, 4), torch.randint(0, 2, (12,))),
+        batch_size=4,
+    )
+    step_count = 0
+    original_step = torch.optim.Adam.step
+
+    def counted_step(optimizer, *args, **kwargs):
+        nonlocal step_count
+        step_count += 1
+        return original_step(optimizer, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.Adam, "step", counted_step)
+    _model().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+                accumulate_grad_batches=2,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        )
+    )
+
+    assert step_count == 2
+
+
 def test_f2_accumulate_grad_batches_state_round_trip():
     p = NNOptimParams(
         name=Optims.ADAM,
@@ -472,3 +513,10 @@ def test_f8_tabular_dataset_rejects_target_in_feature_cols():
     df = pd.DataFrame({"f1": [1.0, 2.0, 3.0], "label": [0, 1, 0]})
     with pytest.raises(ValueError, match="must not appear in feature_cols"):
         NNTabularDataset(df=df, feature_cols=["f1", "label"], target_col="label")
+
+
+@pytest.mark.parametrize("labels", [[0.2, 1.2], [0.0, float("inf")]])
+def test_f8_tabular_dataset_rejects_non_integral_or_non_finite_labels(labels):
+    df = pd.DataFrame({"f1": [1.0, 2.0], "label": labels})
+    with pytest.raises(ValueError, match="finite integers"):
+        NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")
