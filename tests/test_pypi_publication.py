@@ -1,13 +1,14 @@
 """Tests that the installed package + PyPI publication are in sync.
 
-Three layers:
+Four layers:
 
 1. Local version consistency: pyproject.toml [project] version equals
    nnx.__version__.
-2. importlib.metadata lookup uses the current distribution name (catches
+2. The editable root package in uv.lock carries that same version.
+3. importlib.metadata lookup uses the current distribution name (catches
    the rename regression where src/nnx/__init__.py's _version() argument
    stops matching pyproject's [project] name).
-3. PyPI availability (network-gated, skip-on-404): the distribution exists
+4. PyPI availability (network-gated, skip-on-404): the distribution exists
    on PyPI under the current name.
 
 The post-publish CI smoke job in .github/workflows/release.yml asserts a
@@ -33,7 +34,13 @@ import pytest
 
 import nnx
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
+
 _PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
+_LOCKFILE = _PYPROJECT.parent / "uv.lock"
 _RELEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release.yml"
 _PYPI_TIMEOUT_SEC = 5.0
 _STUDIO_REQUIRED_APIS = ("NNMoEParams", "NNConvParams", "FeedFwdMoENN", "ConvNN")
@@ -69,6 +76,20 @@ def test_pyproject_version_matches_dunder_version():
         f"has stale egg-info (re-run `pip install -e .`) or "
         f"src/nnx/__init__.py is looking up the wrong distribution name."
     )
+
+
+def test_uv_lock_root_package_version_matches_pyproject():
+    """Release version bumps must refresh the editable root lock entry."""
+    locked = tomllib.loads(_LOCKFILE.read_text(encoding="utf-8"))
+    dist_name = _read_pyproject_field("name")
+    root_packages = [
+        package
+        for package in locked["package"]
+        if package["name"] == dist_name and package["source"] == {"editable": "."}
+    ]
+
+    assert len(root_packages) == 1
+    assert root_packages[0]["version"] == _read_pyproject_field("version")
 
 
 def test_importlib_metadata_lookup_uses_current_dist_name():
