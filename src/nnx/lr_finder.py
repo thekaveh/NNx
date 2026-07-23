@@ -17,14 +17,19 @@ carry — e.g. a numpy ``Generator`` — is skipped: it stays caller-owned.)
 from __future__ import annotations
 
 import math
+import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional, cast
 
+import numpy as np
 import plotly.graph_objects as go
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+
+from .nn.params.nn_checkpoint import _snapshot_state_dict
+from .utils import _capture_training_modes, _restore_training_modes
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -111,6 +116,11 @@ def lr_finder(
         raise ValueError(f"lr_finder diverge_threshold must be > 1, got {diverge_threshold}")
     if not 0 < ema_alpha < 1:
         raise ValueError(f"lr_finder ema_alpha must be between 0 and 1, got {ema_alpha}")
+    if train_loader.persistent_workers and getattr(train_loader, "_iterator", None) is not None:
+        raise ValueError(
+            "lr_finder cannot use a train_loader with a live persistent-worker iterator; "
+            "create a fresh loader or shut down and clear its cached iterator first"
+        )
 
     if device is None:
         device = next(model.parameters()).device
@@ -120,8 +130,14 @@ def lr_finder(
     # base-seed draw) — without the RNG restore, a seeded pipeline that
     # ran lr_finder as a pre-flight diverged from the same pipeline
     # without it, breaking the module docstring's reproducibility claim.
-    was_training = model.training
-    initial_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    training_modes = _capture_training_modes(model)
+    initial_state = _snapshot_state_dict(model.state_dict())
+    initial_gradients = [
+        (parameter, None if parameter.grad is None else parameter.grad.detach().clone())
+        for parameter in model.parameters()
+    ]
+    python_rng_state = random.getstate()
+    numpy_rng_state = np.random.get_state()
     cpu_rng_state = torch.get_rng_state()
     device_rng_state: Optional[torch.Tensor] = None
     if device.type == "cuda":
@@ -186,7 +202,10 @@ def lr_finder(
                 batch = next(iter_loader)
             except StopIteration:
                 iter_loader = iter(train_loader)
-                batch = next(iter_loader)
+                try:
+                    batch = next(iter_loader)
+                except StopIteration as exc:
+                    raise ValueError("lr_finder train_loader produced zero batches") from exc
 
             X, Y = batch[0].to(device), batch[1].to(device)
             for g in optimizer.param_groups:
@@ -221,7 +240,11 @@ def lr_finder(
         # non-destructive regardless of whether the loop completed,
         # early-exited on divergence, or raised mid-iter.
         model.load_state_dict(initial_state)
-        model.train(was_training)
+        for parameter, gradient in initial_gradients:
+            parameter.grad = None if gradient is None else gradient.clone()
+        _restore_training_modes(training_modes)
+        random.setstate(python_rng_state)
+        np.random.set_state(numpy_rng_state)
         torch.set_rng_state(cpu_rng_state)
         if device.type == "cuda":
             assert device_rng_state is not None

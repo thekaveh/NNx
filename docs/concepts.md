@@ -6,7 +6,7 @@ Sections are ordered from most fundamental to most specialized. Read top-to-bott
 
 ## 1. Architecture
 
-NNx's public surface, internal orchestration, callback bus, and on-disk persistence are summarized in the architecture diagram. A standalone interactive copy lives at [`architecture.html`](architecture.html); the same SVG appears in the [main README](https://github.com/thekaveh/NNx/blob/main/README.md#11-architecture).
+NNx's public surface, internal orchestration, callback bus, and on-disk persistence are summarized in the architecture diagram. The same local asset is embedded in the main README.
 
 The diagram has eight layers, top-to-bottom:
 
@@ -116,10 +116,11 @@ runs/<id>/
 ├── checkpoints/
 │   ├── first.pt      # NNCheckpoint at epoch 0
 │   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs
-│   ├── last.pt       # most recent epoch
-│   ├── last.pt.opt.pt    # optimizer/scheduler/scaler/RNG state bundle
+│   ├── last.pt       # most recent committed epoch
+│   ├── last.pt.opt.<generation>.pt  # immutable matching training state
+│   ├── last.pt.opt.pt    # compatibility copy of the current bundle
 │   ├── best.pt       # lowest-error checkpoint so far
-│   └── best.pt.opt.pt
+│   └── best.pt.opt.<generation>.pt
 ```
 
 ### 4.1. The `runs/best` pointer
@@ -128,7 +129,11 @@ The `runs/best` symlink points at the lowest-error run across all runs in the di
 
 ### 4.2. Atomicity + incremental writes
 
-Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a tmp-then-rename atomic helper. A `KeyboardInterrupt` during a save leaves either the previous file or the new file at the destination — never a half-written file. Checkpoint and training-state sidecar files carry the same generation stamp, with the checkpoint committed last. Resume rejects a mismatched pair after an interrupted save instead of combining weights with stale optimizer state. The versioned sidecar restores optimizer, scheduler, mixed-precision scaler, completed epoch, and Python/NumPy/Torch RNG state; legacy optimizer-only sidecars remain readable.
+Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a destination-local tmp-then-rename helper. A `KeyboardInterrupt` leaves either the previous file or the new file at a destination, never a half-written file. Each checkpoint names an immutable generation-addressed training-state sidecar, with the sidecar committed first and checkpoint committed last; an interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
+
+The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history.
+
+The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, mixed-precision scaler, completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary.
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
@@ -537,7 +542,7 @@ NNTrainParams(seed=42, ...)                  # pins again inside train()
 
 ### 13.1. LR finder
 
-Before a long training run, run `nnx.lr_finder` to pick a defensible `max_lr` for a one-cycle scheduler. The sweep is non-destructive — model weights are snapshotted and restored on exit — so you can call it as a pre-flight check inside the same script that trains for real.
+Before a long training run, run `nnx.lr_finder` to pick a defensible `max_lr` for a one-cycle scheduler. The sweep is non-destructive: model state, every submodule's train/eval mode, loader generators, and Python/NumPy/PyTorch RNG streams are restored on exit, so the real run starts as though the sweep never happened.
 
 ```python
 from nnx import lr_finder
@@ -556,7 +561,7 @@ result.figure.show()
 
 ### 13.2. Non-destructive contract for inference and inspection helpers
 
-`lr_finder` isn't the only helper that snapshots and restores caller state. Ten NNx call sites share the same non-destructive contract — nine put the underlying `nn.Module` into `eval()` mode (needed for correct BatchNorm / Dropout semantics) for the duration of the call, while `lr_finder` forces `train()` for its sweep; all ten restore `model.training` to whatever it was on entry. The restore runs inside a `try/finally`, so the contract holds even when the body raises mid-call:
+`lr_finder` isn't the only helper that snapshots and restores caller state. Ten NNx call sites share the same non-destructive contract: nine put the underlying `nn.Module` into `eval()` mode for the duration of the call, while `lr_finder` forces `train()` for its sweep. All ten restore each module's original mode rather than flattening a mixed-mode tree to the root flag. Restoration runs inside `try/finally`, so the contract holds even when the body raises mid-call:
 
 - `nnx.lr_finder`
 - `NNModel.predict`, `NNModel.evaluate`
@@ -583,7 +588,7 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ))
 ```
 
-Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. Their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning.
+Current checkpoints resume only when their generation-addressed sidecar matches the checkpoint's recorded generation and optimizer topology. Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle; their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 

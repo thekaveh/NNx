@@ -49,6 +49,7 @@ from nnx import (
     NNModelParams,
     NNParams,
 )
+from nnx.utils import _capture_training_modes, _restore_training_modes
 
 
 def _tiny_nnmodel() -> NNModel:
@@ -251,3 +252,192 @@ def test_embed_texts_preserves_eval_mode_caller():
     _ = embed_texts(backbone, texts=["a", "b"], normalize=False)
 
     assert backbone.training is False, "embed_texts flipped eval() caller into train()"
+
+
+@pytest.mark.parametrize("helper", ["predict", "evaluate", "sample", "embed_texts"])
+def test_inference_helpers_restore_mixed_submodule_training_modes(helper: str):
+    if helper == "sample":
+        model, schedule = _make_diffusion_model_with_schedule()
+        module = model.net
+        child = next(child for child in module.modules() if child is not module)
+        module.train()
+        child.eval()
+        before = [part.training for part in module.modules()]
+        from nnx.diffusion import sample
+
+        sample(model, schedule, shape=(2, 2))
+    elif helper == "embed_texts":
+        module = _FakeBackbone()
+        module.train()
+        module.proj.eval()
+        before = [part.training for part in module.modules()]
+        from nnx.embeddings import embed_texts
+
+        embed_texts(module, texts=["a", "b"], normalize=False)
+    else:
+        model = _tiny_nnmodel()
+        module = model.net
+        child = next(child for child in module.modules() if child is not module)
+        module.train()
+        child.eval()
+        before = [part.training for part in module.modules()]
+        if helper == "predict":
+            model.predict(torch.randn(8, 4))
+        else:
+            model.evaluate(_tiny_loader())
+
+    assert [part.training for part in module.modules()] == before
+
+
+def test_training_mode_restore_invokes_overridden_train_hooks():
+    class TrackingModule(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_requested_mode = self.training
+
+        def train(self, mode: bool = True):
+            self.last_requested_mode = mode
+            return super().train(mode)
+
+    module = TrackingModule()
+    child = TrackingModule()
+    module.add_module("child", child)
+    module.train()
+    child.eval()
+    modes = _capture_training_modes(module)
+
+    module.eval()
+    _restore_training_modes(modes)
+
+    assert module.last_requested_mode is True
+    assert child.last_requested_mode is False
+
+
+def test_training_mode_restore_uses_only_mode_boundary_calls():
+    class CountingModule(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.restore_calls = 0
+
+        def train(self, mode: bool = True):
+            self.restore_calls += 1
+            return super().train(mode)
+
+    root = CountingModule()
+    child = CountingModule()
+    leaf = CountingModule()
+    root.add_module("child", child)
+    child.add_module("leaf", leaf)
+    modes = _capture_training_modes(root)
+    root.eval()
+    for module in root.modules():
+        module.restore_calls = 0
+
+    _restore_training_modes(modes)
+
+    assert [module.restore_calls for module in root.modules()] == [1, 1, 1]
+
+
+def test_training_mode_restore_invokes_each_hook_once_for_nested_mixed_modes():
+    class CountingModule(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.restore_calls = 0
+
+        def train(self, mode: bool = True):
+            self.restore_calls += 1
+            return super().train(mode)
+
+    root = CountingModule()
+    child = CountingModule()
+    leaf = CountingModule()
+    root.add_module("child", child)
+    child.add_module("leaf", leaf)
+    root.train()
+    child.eval()
+    leaf.train()
+    modes = _capture_training_modes(root)
+    root.eval()
+    for module in root.modules():
+        module.restore_calls = 0
+
+    _restore_training_modes(modes)
+
+    assert [module.training for module in root.modules()] == [True, False, True]
+    assert [module.restore_calls for module in root.modules()] == [1, 1, 1]
+
+
+def test_training_mode_restore_invokes_hooks_bottom_up():
+    observations = []
+
+    class TrackingModule(nn.Module):
+        def __init__(self, name: str) -> None:
+            super().__init__()
+            self.name = name
+            self.hook_state = self.training
+
+        def train(self, mode: bool = True):
+            child_states = [child.hook_state for child in self.children()]
+            observations.append((self.name, child_states))
+            self.hook_state = mode
+            return super().train(mode)
+
+    root = TrackingModule("root")
+    child = TrackingModule("child")
+    root.add_module("child", child)
+    root.train()
+    modes = _capture_training_modes(root)
+    root.eval()
+    observations.clear()
+
+    _restore_training_modes(modes)
+
+    assert observations == [("child", []), ("root", [True])]
+
+
+def test_training_mode_restore_keeps_children_visible_to_custom_hooks():
+    class ChildAware(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child = nn.Linear(1, 1)
+            self.observed_child = False
+
+        def train(self, mode: bool = True):
+            self.observed_child = isinstance(self.child, nn.Module)
+            return super().train(mode)
+
+    module = ChildAware()
+    modes = _capture_training_modes(module)
+    module.eval()
+    module.observed_child = False
+
+    _restore_training_modes(modes)
+
+    assert module.observed_child is True
+
+
+def test_training_mode_restore_suppresses_direct_grandchild_hook_calls():
+    class Root(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child = nn.Sequential(nn.Linear(1, 1))
+
+        def train(self, mode: bool = True):
+            self.child[0].train(mode)
+            return super().train(mode)
+
+    module = Root()
+    modes = _capture_training_modes(module)
+    module.eval()
+    calls = 0
+    original = module.child[0].train
+
+    def counting_train(mode=True):
+        nonlocal calls
+        calls += 1
+        return original(mode)
+
+    module.child[0].train = counting_train
+    _restore_training_modes(modes)
+
+    assert calls == 1

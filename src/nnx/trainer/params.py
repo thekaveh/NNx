@@ -46,8 +46,9 @@ class NNTrainerParams:
     the optims they want to customize.
 
     `seed`, `save_phase_checkpoints`, `extra_metrics`, `train_loader`,
-    `val_loader` mirror NNTrainParams exactly — the orchestration around
-    a single user-supplied `trainer_step_fn` is otherwise identical.
+    `val_loader` mirror NNTrainParams. By default Trainer steps every
+    scheduler once after each epoch; set `auto_step_schedulers=False` when
+    the custom step function owns scheduler timing.
     """
 
     n_epochs: int
@@ -57,6 +58,7 @@ class NNTrainerParams:
     seed: Optional[int] = None
     data_id: Optional[str] = None
     save_phase_checkpoints: bool = True
+    auto_step_schedulers: bool = True
     overwrite_existing: bool = field(repr=False, default=False)
 
     train_loader: Optional[DataLoader] = field(repr=False, default=None)
@@ -110,6 +112,8 @@ class NNTrainerParams:
             d["data_id"] = self.data_id
         if self.save_phase_checkpoints is not True:
             d["save_phase_checkpoints"] = self.save_phase_checkpoints
+        if self.auto_step_schedulers is not True:
+            d["auto_step_schedulers"] = self.auto_step_schedulers
         return d
 
     @staticmethod
@@ -121,6 +125,7 @@ class NNTrainerParams:
             seed=state.get("seed"),
             data_id=state.get("data_id"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
+            auto_step_schedulers=state.get("auto_step_schedulers", True),
         )
 
     @classmethod

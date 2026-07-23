@@ -1,6 +1,7 @@
 {
   "include": [
-    "src"
+    "src",
+    "scripts/docs"
   ],
   "exclude": [
     "**/__pycache__",

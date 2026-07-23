@@ -16,7 +16,10 @@ import torch
 from nnx.nn.enum.devices import Devices
 from nnx.nn.enum.losses import Losses
 from nnx.nn.enum.nets import Nets
+from nnx.nn.generative_nn_model import GenerativeNNModel
 from nnx.nn.net.transformer_nn import TransformerNN
+from nnx.nn.nn_model import NNModel
+from nnx.nn.params.nn_checkpoint import NNCheckpoint
 from nnx.nn.params.nn_model_params import NNModelParams
 from nnx.nn.params.nn_transformer_params import NNTransformerParams
 
@@ -35,6 +38,102 @@ def _params(**overrides) -> NNTransformerParams:
     )
     defaults.update(overrides)
     return NNTransformerParams(**defaults)
+
+
+def test_standard_forward_flattens_token_logits_for_cross_entropy():
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    tokens = torch.randint(0, 32, (2, 4))
+    targets = torch.randint(0, 32, (2, 4))
+
+    _inputs, flattened_targets, logits, predictions = model._fwd_pass((tokens, targets))
+
+    assert logits.shape == (8, 32)
+    assert flattened_targets.shape == (8,)
+    assert predictions.shape == (8,)
+
+
+def test_standard_forward_flattens_probability_targets_for_cross_entropy():
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    tokens = torch.randint(0, 32, (2, 4))
+    class_targets = torch.randint(0, 32, (2, 4))
+    targets = torch.nn.functional.one_hot(class_targets, num_classes=32).float()
+
+    _inputs, flattened_targets, logits, predictions = model._fwd_pass((tokens, targets))
+
+    assert logits.shape == (8, 32)
+    assert flattened_targets.shape == (8, 32)
+    assert predictions.shape == (8,)
+    assert torch.equal(flattened_targets.argmax(dim=-1), class_targets.reshape(-1))
+
+
+@pytest.mark.parametrize("use_loader", [False, True])
+def test_transformer_predict_uses_last_dimension_as_class_axis(use_loader):
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    tokens = torch.randint(0, 32, (2, 4))
+    source = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tokens), batch_size=1) if use_loader else tokens
+
+    result = model.predict(source)
+
+    assert result.logits.shape == (2, 4, 32)
+    assert result.classes.shape == (2, 4)
+    assert torch.equal(torch.from_numpy(result.classes), torch.from_numpy(result.logits).argmax(dim=-1))
+
+
+@pytest.mark.parametrize("use_loader", [False, True])
+def test_non_transformer_predict_keeps_class_first_axis(use_loader):
+    class ClassFirstNet(torch.nn.Module):
+        def forward(self, logits):
+            return logits
+
+        def unpack_batch(self, batch):
+            return (batch[0],), batch[1]
+
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model.net = ClassFirstNet()
+    logits = torch.randn(2, 3, 4, 5)
+    source = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(logits), batch_size=1) if use_loader else logits
+
+    result = model.predict(source)
+
+    assert result.classes.shape == (2, 4, 5)
+    assert torch.equal(torch.from_numpy(result.classes), logits.argmax(dim=1))
+
+
+def test_non_transformer_soft_targets_keep_class_first_layout():
+    class ClassFirstNet(torch.nn.Module):
+        def forward(self, logits):
+            return logits
+
+        def unpack_batch(self, batch):
+            return (batch[0],), batch[1]
+
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model.net = ClassFirstNet()
+    logits = torch.randn(2, 3, 4, 5)
+    targets = torch.softmax(torch.randn_like(logits), dim=1)
+
+    _inputs, returned_targets, returned_logits, predictions = model._fwd_pass((logits, targets))
+
+    assert returned_logits.shape == (2, 3, 4, 5)
+    assert returned_targets.shape == (2, 3, 4, 5)
+    assert predictions.shape == (2, 4, 5)
 
 
 # ---------------- NNTransformerParams round-trip ----------------
@@ -278,6 +377,110 @@ def test_transformer_nn_forward_with_cache_rejects_overflow():
         # past is full to max_seq_len; one more token overflows.
         with pytest.raises(ValueError, match="max_seq_len"):
             net.forward_with_cache(torch.randint(0, 20, (1, 1)), past_kvs=past)
+
+
+def test_transformer_nn_forward_with_cache_rejects_empty_cache_clearly():
+    net = TransformerNN(_params())
+
+    with pytest.raises(ValueError, match="past_kvs has 0 entries"):
+        net.forward_with_cache(torch.randint(0, 32, (1, 1)), past_kvs=[])
+
+
+def test_transformer_nn_forward_with_cache_rejects_inconsistent_layer_lengths():
+    net = TransformerNN(_params())
+    tokens = torch.randint(0, 32, (1, 2))
+    with torch.no_grad():
+        _, past = net.forward_with_cache(tokens)
+    key, value = past[1]
+    malformed = [past[0], (key[..., :-1, :], value[..., :-1, :])]
+
+    with pytest.raises(ValueError, match="same cached sequence length"):
+        net.forward_with_cache(torch.randint(0, 32, (1, 1)), past_kvs=malformed)
+
+
+@pytest.mark.parametrize("defect", ["rank", "batch", "heads", "head_dim", "dtype"])
+def test_transformer_nn_forward_with_cache_validates_tensor_contract(defect):
+    net = TransformerNN(_params())
+    tokens = torch.randint(0, 32, (2, 2))
+    with torch.no_grad():
+        _, past = net.forward_with_cache(tokens)
+    key, value = past[0]
+    if defect == "rank":
+        key = key[0]
+    elif defect == "batch":
+        key = key[:1]
+        value = value[:1]
+    elif defect == "heads":
+        key = key[:, :-1]
+        value = value[:, :-1]
+    elif defect == "head_dim":
+        key = key[..., :-1]
+        value = value[..., :-1]
+    else:
+        key = key.double()
+        value = value.double()
+    malformed = [(key, value), past[1]]
+
+    with pytest.raises(ValueError, match="past_kvs layer 0"):
+        net.forward_with_cache(torch.randint(0, 32, (2, 1)), past_kvs=malformed)
+
+
+def test_transformer_nn_forward_with_cache_accepts_autocast_cache():
+    net = TransformerNN(_params())
+    tokens = torch.randint(0, 32, (1, 2))
+
+    with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+        _, past = net.forward_with_cache(tokens)
+        logits, _ = net.forward_with_cache(torch.randint(0, 32, (1, 1)), past_kvs=past)
+
+    assert logits.dtype == torch.bfloat16
+
+
+def test_transformer_nn_forward_with_cache_rejects_malformed_entry_arity():
+    net = TransformerNN(_params())
+    with pytest.raises(ValueError, match="past_kvs layer 0 must be a key/value pair"):
+        net.forward_with_cache(torch.randint(0, 32, (1, 1)), past_kvs=[(torch.zeros(1),), None])
+
+
+def test_transformer_nn_forward_with_cache_rejects_mismatched_value_dtype():
+    net = TransformerNN(_params())
+    tokens = torch.randint(0, 32, (1, 2))
+    with torch.no_grad():
+        _, past = net.forward_with_cache(tokens)
+    key, value = past[0]
+
+    with pytest.raises(ValueError, match="past_kvs layer 0 key/value tensors must have identical dtypes"):
+        net.forward_with_cache(
+            torch.randint(0, 32, (1, 1)),
+            past_kvs=[(key, value.double()), past[1]],
+        )
+
+
+def test_generative_model_from_checkpoint_preserves_subclass(tmp_path):
+    pytest.importorskip("tokenizers")
+    from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
+
+    tokenizer = NNTokenizerParams.of(
+        train_bpe(texts=["checkpoint tokenizer"], vocab_size=32),
+        str(tmp_path / "tokenizer.json"),
+    )
+    model = GenerativeNNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        tokenizer=tokenizer,
+    )
+    checkpoint = NNCheckpoint(
+        idp=None,
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+    )
+
+    restored: GenerativeNNModel = GenerativeNNModel.from_checkpoint(checkpoint, tokenizer=tokenizer)
+
+    assert isinstance(restored, GenerativeNNModel)
+    assert hasattr(restored, "generate")
+    assert restored.tokenizer is tokenizer
 
 
 def test_transformer_nn_unpack_batch_handles_xy_tuple():

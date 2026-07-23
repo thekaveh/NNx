@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
-from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
+from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
 if TYPE_CHECKING:
@@ -188,7 +188,7 @@ class ModelCheckpoint(Callback):
             idp=ctx.idp,
             model_params=ctx.model.params,
             net_params=ctx.model.net_params,
-            net_state=ctx.model.net.state_dict(),
+            net_state=_snapshot_state_dict(ctx.model.net.state_dict()),
         )
         # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
         # uses through _checkpoint_path; we hand-build the path here because
@@ -199,7 +199,9 @@ class ModelCheckpoint(Callback):
             "checkpoints",
             f"{self.tag}_e{ctx.epoch}.pt",
         )
-        ckpt.to_file(path)
+        # The training loop flushes this only after history and LAST have
+        # committed, so callback artifacts cannot advertise a partial epoch.
+        ctx.deferred_checkpoint_writes.append(lambda: ckpt.to_file(path))
 
 
 class LRMonitor(Callback):

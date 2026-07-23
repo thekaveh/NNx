@@ -51,12 +51,9 @@ class NNTrainParams:
     # Resume control. When `resume_from_run_id` is set, train() loads that
     # run's checkpoint of the named type and warm-restarts training from
     # its model weights and complete stateful training bundle when available.
-    # Runtime-only (knowing the prior run id isn't part of *this* run's
-    # configuration identity). Consequence: a resumed run with otherwise
-    # identical params hashes to the SAME run.id as the original, so its
-    # incremental saves overwrite the original run's run.yaml/idps.csv
-    # with this session's history only. Vary a state()-bearing field
-    # (e.g. n_epochs, seed) if the original history must be kept.
+    # The source run and checkpoint are serialized as parent lineage, so a
+    # resumed session receives a distinct run id and cannot silently replace
+    # the source run's history.
     resume_from_run_id: Optional[str] = field(repr=False, default=None)
     resume_from_checkpoint: Optional[str] = field(repr=False, default="last")
     parent_run_id: Optional[str] = field(repr=False, default=None)

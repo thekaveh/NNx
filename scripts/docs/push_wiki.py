@@ -26,7 +26,21 @@ def push(source: Path, repository: str) -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         checkout = Path(tmp) / "wiki"
-        _run("git", "clone", "--branch", "master", "--single-branch", repository, str(checkout))
+        _run("git", "clone", repository, str(checkout))
+        if _run("git", "branch", "--show-current", cwd=checkout).stdout.strip() != "master":
+            has_head = (
+                subprocess.run(
+                    ("git", "rev-parse", "--verify", "HEAD"),
+                    cwd=checkout,
+                    text=True,
+                    capture_output=True,
+                ).returncode
+                == 0
+            )
+            if has_head:
+                _run("git", "checkout", "master", cwd=checkout)
+            else:
+                _run("git", "checkout", "--orphan", "master", cwd=checkout)
         for path in checkout.iterdir():
             if path.name == ".git":
                 continue

@@ -1,6 +1,7 @@
 name: docs
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, develop]
     paths:
@@ -9,10 +10,13 @@ on:
       - "SECURITY.md"
       - "CONTRIBUTING.md"
       - "CHANGELOG.md"
+      - "LICENSE"
       - "examples/README.md"
       - "tests/README.md"
       - "scripts/docs/**"
-      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "requirements-tools.txt"
+      - "uv.lock"
       - "src/**"
       - ".github/workflows/docs.yml"
   pull_request:
@@ -23,13 +27,15 @@ on:
       - "SECURITY.md"
       - "CONTRIBUTING.md"
       - "CHANGELOG.md"
+      - "LICENSE"
       - "examples/README.md"
       - "tests/README.md"
       - "scripts/docs/**"
-      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "requirements-tools.txt"
+      - "uv.lock"
       - "src/**"
       - ".github/workflows/docs.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,12 +61,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install docs + feature extras
-        run: |
-          python -m pip install -r requirements-tools.txt
-          uv sync --frozen --all-extras --python "3.12"
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+      - name: Sync docs + feature extras from the frozen lock
+        run: uv sync --frozen --all-extras --python "3.12"
       - name: Build site (strict)
         run: |
           uv run --frozen python -m scripts.docs.extract_architecture_svg --check
+          uv run --frozen python -m scripts.docs.build_docs
           uv run --frozen mkdocs build --strict
 
       - name: Verify deterministic wiki projection
@@ -115,15 +126,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install documentation tooling
-        run: |
-          python -m pip install -r requirements-tools.txt
-          uv sync --frozen --all-extras --python "3.12"
+      - name: Install uv
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+
+      - name: Sync documentation tooling from the frozen lock
+        run: uv sync --frozen --only-group docs-publish --no-install-project --no-build --python "3.12"
 
       - name: Build wiki
-        run: uv run --frozen python -m scripts.docs.build_wiki
+        run: uv run --frozen --no-sync python -m scripts.docs.build_wiki
 
       - name: Publish wiki master branch
         env:
           WIKI_REPOSITORY: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
-        run: uv run --frozen python -m scripts.docs.push_wiki generated/wiki "$WIKI_REPOSITORY"
+        run: uv run --frozen --no-sync python -m scripts.docs.push_wiki generated/wiki "$WIKI_REPOSITORY"

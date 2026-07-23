@@ -23,10 +23,10 @@ def test_mean_squared_error_returns_mse_loss():
     assert isinstance(loss, nn.MSELoss)
 
 
-def test_binary_cross_entropy_returns_bce_loss():
+def test_binary_cross_entropy_returns_logits_loss():
     """Regression: was returning nn.MSELoss() in a swap with MSE."""
     loss = Losses.BINARY_CROSS_ENTROPY()
-    assert isinstance(loss, nn.BCELoss)
+    assert isinstance(loss, nn.BCEWithLogitsLoss)
 
 
 def test_negative_log_likelihood_returns_nll_loss():

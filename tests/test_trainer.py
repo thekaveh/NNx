@@ -61,6 +61,27 @@ def _supervised_loader(n: int = 32) -> DataLoader:
     return DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
 
 
+def test_trainer_records_completed_topology_transforms_on_live_model(tmp_path, monkeypatch):
+    from nnx import Callback
+    from nnx.nn.params.nn_checkpoint import NNCheckpointTransform
+
+    class TransformCallback(Callback):
+        def checkpoint_transforms(self):
+            return (NNCheckpointTransform(name="test-transform"),)
+
+    monkeypatch.chdir(tmp_path)
+    model = _supervised_model()
+    model._topology_transforms = (NNCheckpointTransform(name="preexisting"),)
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_supervised_loader(8),
+        optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)},
+    )
+    Trainer(model).train(params=params, trainer_step_fn=_supervised_step, callbacks=[TransformCallback()])
+
+    assert [item.name for item in model._topology_transforms] == ["preexisting", "test-transform"]
+
+
 _supervised_step: TrainerStepFn  # name-binding annotation — exercises the public type alias
 
 
@@ -368,6 +389,123 @@ def test_trainer_step_exception_still_dispatches_train_end(tmp_path, monkeypatch
     assert cb.ended is True
 
 
+def test_trainer_flushes_deferred_model_checkpoint(tmp_path, monkeypatch):
+    from nnx import ModelCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    run = Trainer(model=_supervised_model()).train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=_supervised_loader(n=8),
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
+        ),
+        trainer_step_fn=_supervised_step,
+        callbacks=[ModelCheckpoint(epochs=[0], tag="trainer")],
+    )
+
+    assert (tmp_path / "runs" / run.id / "checkpoints" / "trainer_e0.pt").is_file()
+
+
+def test_trainer_does_not_flush_deferred_checkpoint_when_later_callback_fails(tmp_path, monkeypatch):
+    from nnx import Callback, ModelCheckpoint
+
+    class FailAfterQueue(Callback):
+        def on_epoch_end(self, ctx):
+            raise RuntimeError("later callback failed")
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RuntimeError, match="later callback failed"):
+        Trainer(model=_supervised_model()).train(
+            params=NNTrainerParams(
+                n_epochs=1,
+                train_loader=_supervised_loader(n=8),
+                optims={
+                    "main": NNOptimParams(
+                        name=Optims.ADAM,
+                        max_lr=1e-3,
+                        momentum=(0.9, 0.999),
+                        weight_decay=0.0,
+                    )
+                },
+            ),
+            trainer_step_fn=_supervised_step,
+            callbacks=[ModelCheckpoint(epochs=[0], tag="queued"), FailAfterQueue()],
+        )
+
+    assert not list(tmp_path.glob("runs/*/checkpoints/queued_e0.pt"))
+
+
+def test_trainer_checkpoint_failure_rolls_history_back(tmp_path, monkeypatch):
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+
+    def fail_checkpoint(*args, **kwargs):
+        raise OSError("trainer checkpoint failure")
+
+    monkeypatch.setattr(Trainer, "_save_checkpoint", fail_checkpoint)
+    with pytest.raises(OSError, match="trainer checkpoint failure"):
+        Trainer(model=_supervised_model()).train(
+            params=NNTrainerParams(
+                n_epochs=1,
+                train_loader=_supervised_loader(n=8),
+                optims={
+                    "main": NNOptimParams(
+                        name=Optims.ADAM,
+                        max_lr=1e-3,
+                        momentum=(0.9, 0.999),
+                        weight_decay=0.0,
+                    )
+                },
+            ),
+            trainer_step_fn=_supervised_step,
+        )
+
+    run_dirs = [
+        path for path in (tmp_path / "runs").iterdir() if path.is_dir() and path.name not in {"best", ".leases"}
+    ]
+    assert len(run_dirs) == 1
+    loaded = NNRun.load(run_dirs[0].name)
+    assert loaded.idps == []
+    assert NNCheckpoint.from_file(str(run_dirs[0] / "checkpoints" / "last.pt")) is None
+
+
+def test_trainer_deferred_failure_does_not_update_global_best(tmp_path, monkeypatch):
+    from nnx import Callback
+
+    class DeferredFailure(Callback):
+        def on_epoch_end(self, ctx):
+            ctx.deferred_checkpoint_writes.append(lambda: (_ for _ in ()).throw(OSError("trainer deferred failure")))
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(OSError, match="trainer deferred failure"):
+        Trainer(model=_supervised_model()).train(
+            params=NNTrainerParams(
+                n_epochs=1,
+                train_loader=_supervised_loader(n=8),
+                optims={
+                    "main": NNOptimParams(
+                        name=Optims.ADAM,
+                        max_lr=1e-3,
+                        momentum=(0.9, 0.999),
+                        weight_decay=0.0,
+                    )
+                },
+            ),
+            trainer_step_fn=_supervised_step,
+            callbacks=[DeferredFailure()],
+        )
+
+    assert not (tmp_path / "runs" / "best").exists()
+
+
 def test_trainer_early_stop_via_callback(tmp_path, monkeypatch):
     """A callback setting ctx.should_stop = True must terminate the
     Trainer loop early — same contract as NNModel.train."""
@@ -494,6 +632,88 @@ def test_trainer_dispatches_non_plateau_scheduler(tmp_path, monkeypatch):
         f"trainer.py:_build_scheduler's `kind` dispatch."
     )
     assert not isinstance(sched, ReduceLROnPlateau)
+
+
+def test_trainer_does_not_double_step_user_owned_scheduler(tmp_path, monkeypatch):
+    from nnx import NNSchedulerParams, Schedulers
+
+    monkeypatch.chdir(tmp_path)
+    captured: dict = {}
+
+    def _manual_scheduler_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        result = _supervised_step(ctx)
+        if ctx.batch_idx == 0:
+            ctx.schedulers["main"].step()
+        captured["scheduler"] = ctx.schedulers["main"]
+        return result
+
+    Trainer(model=_supervised_model()).train(
+        params=NNTrainerParams(
+            n_epochs=2,
+            train_loader=_supervised_loader(),
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
+            schedulers={
+                "main": NNSchedulerParams(
+                    kind=Schedulers.COSINE_ANNEALING,
+                    T_max=10,
+                    min_lr=1e-7,
+                    factor=0.5,
+                    patience=1,
+                    cooldown=1,
+                    threshold=1e-3,
+                )
+            },
+            auto_step_schedulers=False,
+        ),
+        trainer_step_fn=_manual_scheduler_step,
+    )
+    assert captured["scheduler"].last_epoch == 2
+
+
+def test_trainer_steps_default_owned_scheduler_once_per_epoch(tmp_path, monkeypatch):
+    from nnx import NNSchedulerParams, Schedulers
+
+    monkeypatch.chdir(tmp_path)
+    captured: dict = {}
+
+    def _capture(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        captured["scheduler"] = ctx.schedulers["main"]
+        return _supervised_step(ctx)
+
+    Trainer(model=_supervised_model()).train(
+        params=NNTrainerParams(
+            n_epochs=2,
+            train_loader=_supervised_loader(),
+            optims={
+                "main": NNOptimParams(
+                    name=Optims.ADAM,
+                    max_lr=1e-3,
+                    momentum=(0.9, 0.999),
+                    weight_decay=0.0,
+                )
+            },
+            schedulers={
+                "main": NNSchedulerParams(
+                    kind=Schedulers.COSINE_ANNEALING,
+                    T_max=10,
+                    min_lr=1e-7,
+                    factor=0.5,
+                    patience=1,
+                    cooldown=1,
+                    threshold=1e-3,
+                )
+            },
+        ),
+        trainer_step_fn=_capture,
+    )
+    assert captured["scheduler"].last_epoch == 2
 
 
 # -------------------------------------------------------------------------

@@ -8,7 +8,7 @@ NNx owns the boilerplate around supervised training so you can focus on the mode
 
 ### 1.1. Architecture
 
-![NNx architecture](docs/assets/architecture.svg)
+![NNx architecture](https://raw.githubusercontent.com/thekaveh/NNx/main/docs/assets/architecture.svg)
 
 The architecture separates user-facing orchestration, per-batch extension hooks, callback lifecycle, and persisted run artifacts.
 
@@ -20,7 +20,7 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.
 
-See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer breakdown.
+See [docs/concepts.md §1](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#1-architecture) for the full 8-layer breakdown.
 
 ### 1.2. Capabilities at a glance
 
@@ -37,9 +37,9 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **Model surgery — Net2Net + drop + low-rank + embedding** — `nnx.surgery.{widen, deepen, drop_layer, low_rank_factorize, expand_embedding}`. `widen` and `deepen` are function-preserving Net2Net edits (Chen/Goodfellow/Shlens, ICLR 2016) — the surged module's forward output matches the original's *before* refinement, so `NNModel.train()` can resume immediately without an accuracy cliff. `low_rank_factorize` is SVD truncation on a Linear (exact at max rank, Eckart-Young-bounded below it). `drop_layer` replaces a named layer with `nn.Identity`; `expand_embedding` grows an Embedding's row count and returns a frozen-mask for the original rows. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "refine after surgery" loop.
 - **Embeddings — contrastive trainer + FAISS export** — `nnx.embeddings.{ContrastiveTextDataset, train_contrastive, embed_texts, text_contrastive_train_step_factory, export_to_faiss, export_to_safetensors}`. Train a domain-specific text embedder from `(anchor, positive)` pairs via the existing NT-Xent machinery, then export to a FAISS index file that any RAG framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. NNx's job ends at the FAISS index — chunking / reranking / prompt orchestration live downstream. Optional dep: `pip install "thekaveh-nnx[embeddings]"` for `faiss-cpu` + `sentence-transformers`.
 - **Networks** — `FeedFwdNN`, `FeedFwdMoENN`, `ConvNN`, `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase`), `TransformerNN` (decoder-only LM: RMSNorm + RoPE + SwiGLU + tied embeddings + KV-cache), and `ViTNN` (small ViT encoder used as the I-JEPA backbone).
-- **Language modeling (opt-in via `thekaveh-nnx[lm]`)** — `TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` (HF Rust BPE wrapper) + `GenerativeNNModel.generate(prompt, ...)` with **KV-cache acceleration** for autoregressive decoding (1.9× speedup on CPU at 128 tokens, larger on GPU / longer contexts within `max_seq_len`; past the window the cache rebuilds per step and converges to full-recompute cost) and greedy / top-k / top-p / repetition-penalty sampling via a `LogitsProcessor` chain. See [docs/lm.md](docs/lm.md) for the full walkthrough; `examples/11_tinystories_lm.py` ships an end-to-end TinyStories-class training run.
-- **Experimental GGUF export (opt-in via `thekaveh-nnx[gguf-write]`)** — `nnx.interop.write_gguf(model, tokenizer, path)` writes a structurally valid GGUF artifact with NNx tensor names and `general.architecture=nnx_transformer`. Stock llama.cpp, Ollama, and LM Studio do not implement that architecture; use the output for inspection or a reader explicitly patched for NNx. See [docs/gguf.md](docs/gguf.md).
-- **HuggingFace Hub (opt-in via `thekaveh-nnx[hub]`)** — `NNModel` mixes in `PyTorchModelHubMixin`: `save_pretrained` / `push_to_hub` / `from_pretrained`, with safetensors as an opt-in checkpoint format via `NNCheckpoint.to_file(format="safetensors")`. See [docs/hub.md](docs/hub.md).
+- **Language modeling (opt-in via `thekaveh-nnx[lm]`)** — `TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` (HF Rust BPE wrapper) + `GenerativeNNModel.generate(prompt, ...)` with **KV-cache acceleration** for autoregressive decoding (1.9× speedup on CPU at 128 tokens, larger on GPU / longer contexts within `max_seq_len`; past the window the cache rebuilds per step and converges to full-recompute cost) and greedy / top-k / top-p / repetition-penalty sampling via a `LogitsProcessor` chain. See [docs/lm.md](https://github.com/thekaveh/NNx/blob/main/docs/lm.md) for the full walkthrough; `examples/11_tinystories_lm.py` ships an end-to-end TinyStories-class training run.
+- **Experimental GGUF export (opt-in via `thekaveh-nnx[gguf-write]`)** — `nnx.interop.write_gguf(model, tokenizer, path)` writes a structurally valid GGUF artifact with NNx tensor names and `general.architecture=nnx_transformer`. Stock llama.cpp, Ollama, and LM Studio do not implement that architecture; use the output for inspection or a reader explicitly patched for NNx. See [docs/gguf.md](https://github.com/thekaveh/NNx/blob/main/docs/gguf.md).
+- **HuggingFace Hub (opt-in via `thekaveh-nnx[hub]`)** — `NNModel` mixes in `PyTorchModelHubMixin`: `save_pretrained` / `push_to_hub` / `from_pretrained`, with safetensors as an opt-in checkpoint format via `NNCheckpoint.to_file(format="safetensors")`. See [docs/hub.md](https://github.com/thekaveh/NNx/blob/main/docs/hub.md).
 - **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders), `NNPreferenceDataset` (tokenized `(prompt, chosen, rejected)` preference triples for DPO).
 - **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
 - **Fluent params construction** — `NNSchedulerParams.builder()`, `NNOptimParams.builder()`, `NNTransformerParams.builder()`, and `NNTrainerParams.builder()` (the composite, wraps the prior two for the multi-optim Trainer) expose variant-gated `.adam(...)` / `.sgd(...)` / `.one_cycle(...)` / etc. methods so the user can't construct an invalid kind/field combination. `LogitsChain.builder()` extends the pattern to the LM-decoding path — chain custom logit processors in any order; the Builder sorts them into NNx's canonical order (matching `generate()`'s inline-kwargs chain) before decoding runs. All Builders are purely additive; the existing direct-kwarg ctors keep working.
@@ -59,7 +59,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 pip install thekaveh-nnx                        # latest release from PyPI
 ```
 
-Python 3.10+. Tested on 3.10 through 3.14. Examples in [examples/](examples/) are runnable on CPU.
+Python 3.10+. Tested on 3.10 through 3.14. Examples in [examples/](https://github.com/thekaveh/NNx/tree/main/examples) are runnable on CPU.
 
 ### 2.2. Optional extras
 
@@ -85,7 +85,7 @@ python -m pip install -r requirements-tools.txt
 uv sync --all-extras --frozen
 ```
 
-For local development (editable install from a git checkout, including the test/lint toolchain), see [CONTRIBUTING.md §1](CONTRIBUTING.md#1-getting-set-up).
+For local development (editable install from a git checkout, including the test/lint toolchain), see [CONTRIBUTING.md §1](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md#1-getting-set-up).
 
 ## 3. Quickstart
 
@@ -146,7 +146,7 @@ NNModelParams(net=Nets.GRAPH_ATT,   device=Devices.CPU, loss=Losses.CROSS_ENTROP
 # Use NNGraphDataset (PyG NeighborLoader-backed) to feed batches.
 ```
 
-See [examples/](examples/) for runnable end-to-end scripts.
+See [examples/](https://github.com/thekaveh/NNx/tree/main/examples) for runnable end-to-end scripts.
 
 ### 4.2. Reproducibility
 
@@ -237,38 +237,38 @@ The documentation below covers the public API, architecture, extension contracts
 
 ### 5.1. Conceptual + reference
 
-- [Concepts](docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
-- [Quickstart](docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
-- [Language modeling](docs/lm.md) — the decoder-only Transformer path: `TransformerNN` + HF tokenizer + `GenerativeNNModel.generate()` with KV-cache. Read this when you want to train a tiny LM end-to-end on CPU.
-- [Direct Preference Optimization](docs/dpo.md) — `dpo_train_step_factory` for fine-tuning a TransformerNN against `(prompt, chosen, rejected)` preference pairs via the Rafailov et al. 2023 chosen-vs-rejected log-ratio objective against a frozen reference policy. Read this when you have preference data and want to steer LM behavior post-SFT without reward modeling or RL.
-- [I-JEPA](docs/jepa.md) — Joint Embedding Predictive Architecture: masked-patch → latent-prediction self-supervised pretraining against an EMA target encoder. Read this when you want to pretrain a vision encoder without pixel-reconstruction or strong augmentations.
-- [Experimental GGUF export](docs/gguf.md) — `nnx.interop.write_gguf` for producing and inspecting an NNx-tagged GGUF artifact; includes the official llama.cpp `llama-quantize` build path and the current stock-runtime limitation.
-- [HuggingFace Hub](docs/hub.md) — safetensors checkpoints + `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`. Read this when you want to publish a trained model to the Hub, load from it, or write checkpoints in a format outside-of-Python tools (ComfyUI, vLLM, AutoGPTQ) can read.
-- [Embeddings + FAISS export](docs/embeddings.md) — walkthrough for training a domain-specific text embedder via contrastive learning and exporting it to a FAISS index for any RAG stack to consume.
-- [Model surgery](docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
-- [API reference](docs/api.md) — signatures and docstrings for public symbols.
-- [Comparison vs Lightning / HF / fastai / Composer](docs/comparison.md) — honest scope-explicit comparison: when to use NNx vs Lightning vs HF Transformers vs fastai vs MosaicML Composer, axis by axis. Read this when you're picking a PyTorch training toolkit and want a real decision matrix instead of a marketing page.
-- [Architecture](docs/architecture.md) — the system overview and exact training lifecycle, including callback, scheduler, history, and checkpoint ordering.
-- [External dependency contracts](docs/external-contracts.md) — ledger of optional integrations, version sources, verification coverage, and intentionally gated real-service checks. Read this before changing dependency ranges, external CLI commands, or publish workflows.
+- [Concepts](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
+- [Quickstart](https://github.com/thekaveh/NNx/blob/main/docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
+- [Language modeling](https://github.com/thekaveh/NNx/blob/main/docs/lm.md) — the decoder-only Transformer path: `TransformerNN` + HF tokenizer + `GenerativeNNModel.generate()` with KV-cache. Read this when you want to train a tiny LM end-to-end on CPU.
+- [Direct Preference Optimization](https://github.com/thekaveh/NNx/blob/main/docs/dpo.md) — `dpo_train_step_factory` for fine-tuning a TransformerNN against `(prompt, chosen, rejected)` preference pairs via the Rafailov et al. 2023 chosen-vs-rejected log-ratio objective against a frozen reference policy. Read this when you have preference data and want to steer LM behavior post-SFT without reward modeling or RL.
+- [I-JEPA](https://github.com/thekaveh/NNx/blob/main/docs/jepa.md) — Joint Embedding Predictive Architecture: masked-patch → latent-prediction self-supervised pretraining against an EMA target encoder. Read this when you want to pretrain a vision encoder without pixel-reconstruction or strong augmentations.
+- [Experimental GGUF export](https://github.com/thekaveh/NNx/blob/main/docs/gguf.md) — `nnx.interop.write_gguf` for producing and inspecting an NNx-tagged GGUF artifact; includes the official llama.cpp `llama-quantize` build path and the current stock-runtime limitation.
+- [HuggingFace Hub](https://github.com/thekaveh/NNx/blob/main/docs/hub.md) — safetensors checkpoints + `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`. Read this when you want to publish a trained model to the Hub, load from it, or write checkpoints in a format outside-of-Python tools (ComfyUI, vLLM, AutoGPTQ) can read.
+- [Embeddings + FAISS export](https://github.com/thekaveh/NNx/blob/main/docs/embeddings.md) — walkthrough for training a domain-specific text embedder via contrastive learning and exporting it to a FAISS index for any RAG stack to consume.
+- [Model surgery](https://github.com/thekaveh/NNx/blob/main/docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
+- [API reference](https://github.com/thekaveh/NNx/blob/main/docs/api.md) — signatures and docstrings for public symbols.
+- [Comparison vs Lightning / HF / fastai / Composer](https://github.com/thekaveh/NNx/blob/main/docs/comparison.md) — honest scope-explicit comparison: when to use NNx vs Lightning vs HF Transformers vs fastai vs MosaicML Composer, axis by axis. Read this when you're picking a PyTorch training toolkit and want a real decision matrix instead of a marketing page.
+- [Architecture](https://github.com/thekaveh/NNx/blob/main/docs/architecture.md) — the system overview and exact training lifecycle, including callback, scheduler, history, and checkpoint ordering.
+- [External dependency contracts](https://github.com/thekaveh/NNx/blob/main/docs/external-contracts.md) — ledger of optional integrations, version sources, verification coverage, and intentionally gated real-service checks. Read this before changing dependency ranges, external CLI commands, or publish workflows.
 
 ### 5.2. Workflow + history
 
-- [Examples catalog](examples/README.md) — ordered tour of the 26 runnable scripts under `examples/`, grouped foundational to specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF inspection, self-supervised learning, pruning, surgery, explainability, DPO, and distillation variants).
-- [Test import boundaries](tests/README.md) — when tests should use the public facade and when a deep implementation import is intentional.
-- [Contributing](CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
-- [Security policy](SECURITY.md) — supported versions, private vulnerability reporting, and the checkpoint trust boundary.
-- [Changelog](CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
+- [Examples catalog](https://github.com/thekaveh/NNx/blob/main/examples/README.md) — ordered tour of the 26 runnable scripts under `examples/`, grouped foundational to specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF inspection, self-supervised learning, pruning, surgery, explainability, DPO, and distillation variants).
+- [Test import boundaries](https://github.com/thekaveh/NNx/blob/main/tests/README.md) — when tests should use the public facade and when a deep implementation import is intentional.
+- [Contributing](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
+- [Security policy](https://github.com/thekaveh/NNx/blob/main/SECURITY.md) — supported versions, private vulnerability reporting, and the checkpoint trust boundary.
+- [Changelog](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
 
 ## 6. Project
 
 ### 6.1. Status
 
-Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix obvious bugs (see [CHANGELOG](CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
+Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix obvious bugs (see [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
 
 ### 6.2. Contributing
 
-Bug reports and PRs are welcome via GitHub issues. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verification, and the complete style guide.
+Bug reports and PRs are welcome via GitHub issues. See [CONTRIBUTING.md](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md) for setup, verification, and the complete style guide.
 
 ### 6.3. License
 
-Apache License 2.0. Copyright 2026 Kaveh Razavi. See [LICENSE](LICENSE).
+Apache License 2.0. Copyright 2026 Kaveh Razavi. See [LICENSE](https://github.com/thekaveh/NNx/blob/main/LICENSE).

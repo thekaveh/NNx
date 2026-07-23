@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch import nn
 
-from nnx import low_rank_factorize
+from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams, low_rank_factorize
 
 # ---------- Function-preservation: exact at max rank ------------------
 
@@ -63,6 +63,16 @@ def test_low_rank_factorize_reduces_parameter_count():
     expected = 8 * (64 + 32) + 32  # k*(in+out) + bias
     assert new_params == expected
     assert new_params < orig_params
+
+
+def test_surgery_without_recipe_is_rejected_before_persistent_training():
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.net.layers[1] = low_rank_factorize(model.net.layers[1], rank=2)
+    with pytest.raises(ValueError, match="no reconstruction recipe"):
+        model._assert_reconstructible_topology()
 
 
 def test_low_rank_factorize_approx_error_bounded_by_dropped_singular_values():

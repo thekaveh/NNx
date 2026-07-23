@@ -8,27 +8,81 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Added
 
-- Versioned warm-resume bundles now persist optimizer, scheduler, scaler, completed epoch, and Python/NumPy/PyTorch RNG state alongside each checkpoint, with generation stamps that reject mismatched checkpoint/sidecar pairs.
+- Versioned warm-resume bundles now persist optimizer, scheduler, scaler, completed epoch, and Python/NumPy/PyTorch RNG state in generation-addressed sidecars, preserving the previous resumable generation across interrupted commits.
 - Smoke coverage imports every numbered example and executes representative basic, callback, and custom-evaluation examples; release tests also verify normalized source distributions are reproducible.
 - A project security policy documents supported versions, private vulnerability reporting, and responsible disclosure expectations.
+- Trainer scheduler ownership is explicit through `auto_step_schedulers`, with loop-owned once-per-epoch stepping as the default.
+- A manifest now deterministically projects canonical documentation into self-contained MkDocs and GitHub wiki trees.
 
 ### Changed
 
-- GitHub workflows use current SHA-pinned actions, least-privilege permissions, frozen dependency resolution, and a double-build artifact comparison before publishing.
+- GitHub workflows use current SHA-pinned actions, least-privilege permissions, frozen dependency and tooling resolution, a double-build artifact comparison, and one Release Please-only publication path; managed release PRs refresh the lockfile and dispatch required checks, while exact PyPI/GitHub hashes and immutable-release attestations are verified before completion.
+- Release builds use the locked virtual-environment interpreter, dependency audits include locked tool groups, and the release toolchain tracks wheel 0.47.0.
+- Package metadata uses a deterministic PyPI README projection whose repository links and images resolve outside GitHub.
 - Optional notebook display support moved out of the core dependency set, while process-safe persistence locking is now an explicit runtime dependency.
 - Examples and public documentation now describe experimental GGUF/Ollama export, whole-loader evaluation hooks, partial gradient accumulation, and complete resume semantics accurately.
+- Warm resume restores loader and sampler generators by stable identity and validates optimizer type, parameter topology, and scheduler identity before applying state.
 
 ### Fixed
 
 - Final partial accumulation windows now perform an optimizer step, and custom evaluation runs once per epoch over the complete validation loader.
+- Gradient accumulation now identifies the observed final batch and weights uneven batches by sample count, matching one combined effective-batch update.
+- Accumulation and evaluation use the effective CE/NLL denominator for class weights and ignored targets, preserving combined-batch loss semantics.
+- Accumulation and evaluation honor configured loss hooks and mean/sum reductions; fully ignored cycles fail before optimizer updates.
+- Ignored CE/NLL targets are excluded from classification metrics, custom subclasses keep their own normalization contract, and LR finding rejects live persistent-worker iterators it cannot rewind.
 - Dataset, sampler, callback, learning-rate finder, trainer, and Ollama option boundaries reject invalid, non-finite, fractional, unsafe, or unknown inputs before execution.
 - Run identity includes data lineage, mutable parameter defaults are isolated, callback-finalized trainer checkpoints preserve transforms, and born-again generations receive distinct lineage-aware runs.
-- Checkpoint and run writes use process-safe locks plus unique atomic temporary files; concurrent checkpoint writers cannot publish a mixed model/training-state pair.
+- Checkpoint and run writes use process-safe locks plus unique atomic temporary files; LAST commits an epoch only after history persists, callback checkpoints flush after that boundary, and failed commits roll history back.
+- Model snapshots preserve PyTorch state-dict metadata and non-tensor extra state; tensor-only safetensors and Hub exports now reject incompatible extra state with a targeted error.
+- Learning-rate finding restores Python and NumPy global RNG state, and warm-resume bundles now preserve Apple MPS RNG state alongside CPU and CUDA state.
+- Inference and inspection helpers restore mixed per-module train/eval modes exactly instead of flattening every child to the root mode.
+- Mode restoration invokes recursive `Module.train()` only at actual mode boundaries, avoiding redundant custom-hook side effects in homogeneous subtrees.
+- Mixed-mode restoration invokes each custom `Module.train()` hook exactly once, and checkpoint cleanup enumerates literal directories so metacharacters in root paths cannot affect siblings.
+- Child-aware mode hooks retain access to registered modules, probability-target cross entropy reports class-index metrics, and pickle checkpoints/sidecars load portably onto CPU by default.
+- Mode restoration suppresses direct calls to any descendant hook, and legacy feed-forward/transformer file loaders also default to CPU with an override.
+- Transformer token logits now flatten correctly for standard cross-entropy training, mode hooks restore bottom-up, high-level checkpoint reconstruction accepts a device override, and safetensors honors load placement.
+- Transformer probability targets flatten along the class-last layout, predictions select the final class axis, malformed KV caches fail clearly, Hub loads override serialized device metadata, and safetensors rejects unsupported location mappings.
+- Transformer-only class-last handling no longer changes class-first segmentation outputs, and Hub loading rejects indexed devices that the serialized device contract cannot preserve.
+- Checkpoint reconstruction preserves subclasses, Transformer KV caches validate their full tensor contract, and Hub safetensors loading normalizes `torch.device` locations.
+- Transformer cache validation supports active autocast, checks key/value symmetry and tuple shape, and subclass-preserving reconstruction is reflected in static `Self` typing.
+- Multidimensional probability-target metrics flatten consistently, generative checkpoint reconstruction accepts its tokenizer, and Hub artifacts package tokenizer and topology-transform metadata for loadable generative and converted-QAT round trips.
+- Classification error follows subset accuracy for multidimensional labels, cross-entropy subclasses retain metric preprocessing, built-in binary classification uses logits with a zero threshold, Trainer exports retain completed topology transforms, and remote Hub artifacts load from one immutable snapshot.
+- Soft binary targets are thresholded only for classification metrics, preventing valid BCE training from failing after an optimizer update.
+- Persistent NNModel training rejects low-rank surgery without a reconstruction recipe before mutating state; the surgery example uses manual refinement and state-dict export semantics.
+- Explicit custom training steps remain available for reconstructibility-aware custom topologies such as diffusion, and frozen evaluation records store custom metrics in an immutable hashable mapping.
+- Inherited native CE/NLL losses retain class-weight normalization, and repeated NNModel or Trainer transformations compose reconstruction recipes instead of replacing them.
+- Optimizerless checkpoints explicitly reject stale legacy sidecars after interrupted cleanup, warm resume rejects GradScaler presence changes, and mode restoration honors custom `Module.train()` hooks.
+- Run identifiers reject glob metacharacters before sidecar cleanup, and subclasses of built-in elementwise losses retain the custom-loss normalization contract.
+- Documentation projection rejects missing local links, malformed nested manifests, unsafe output slugs and collisions, source paths outside the repository, symlink destinations, repository ancestors, and nonempty unmanaged outputs.
+- Documentation projection checks are non-mutating, fenced examples are ignored during link processing, and cleanup rejects symlinks in every output path component.
+- Documentation projection preserves inline code and link titles, handles nested fence-like examples correctly, and rejects unmapped repository-file links instead of erasing them.
+- Documentation projection rewrites reference-style links, rejects nonportable root-relative URLs, and validates setext headings and explicit anchor IDs.
+- Documentation projection uses balanced escape-aware link scanning, decoded local-path lookup, HTML-comment exclusion, and Python-Markdown anchor slugs.
+- Documentation projection tokenizes multiline links/references, indented code, contextual comments, and blockquoted headings correctly.
+- Documentation projection rejects image traversal and unknown manifest keys, suppresses blockquoted fences and raw `<pre>` blocks, and derives wiki anchors from rendered GitHub-style heading text.
+- Documentation projection respects blockquote and raw-HTML containers, rewrites and validates HTML links/images, rejects unpublished image sources, and allocates globally unique wiki anchors.
+- Documentation projection handles quoted and unquoted HTML targets, list-contained fences/headings, site superfence anchors, and nested wiki asset paths without flattening collisions.
+- Documentation projection uses offset-preserving HTML attribute scanning, excludes literal blocks from HTML processing and anchor discovery, preserves nested assets on both surfaces, and rejects duplicate manifest keys.
+- Documentation projection enforces output containment, depth-aware raw/list containers, MkDocs extension parity, complete HTML resource attributes, contained assets, unique attributes, and HTML-entity lookup.
+- Documentation projection rejects asset-directory symlinks, distinguishes list prose from code, covers literal HTML forms and standard resources, preserves data-URL `srcset`, and derives wiki anchors from rendered structure.
+- Documentation projection handles mixed `srcset`, complete URL-bearing attributes, blockquoted raw HTML, list references/explicit IDs, independent heading suffixes, and copied HTML/CSS validation.
+- Documentation projection separates descriptorless data-URI `srcset` candidates, honors blank-line raw-HTML termination, projects nested-list IDs, parses CSS comments/imports, accepts the standard macOS `/tmp` alias, and type-checks its scripts.
+- Documentation projection preserves GFM raw-HTML blocks through the following blank line, recognizes nested-list HTML, validates embedded CSS and copied SVG resources, and rejects incomplete projected assets.
+- Documentation projection closes raw/comment blocks at list boundaries, enforces declaration case, projects nested Setext IDs, tokenizes CSS functions and strings, validates additional SVG references, and rejects empty manifest groups.
+- Documentation projection handles list-contained literal HTML, CSS escapes and image sets, literal-code wiki headings, broader SVG references, and balanced nested SVG diagram extraction.
+- Documentation projection closes processing-instruction and declaration literals at list boundaries, consumes CSS escapes while scanning nested functions, and validates SVG stylesheet processing instructions.
+- Documentation projection measures tab indentation in Markdown columns, handles escaped CSS imports and line continuations plus nested `image()`, and ignores SVG stylesheet text inside comments and CDATA.
+- Documentation projection applies tab columns to fences and reference definitions, covers directional CSS `image()`, tokenizes stylesheet PI attributes, accepts standard macOS temporary aliases, and wiki publication can initialize an empty remote.
+- Documentation projection preserves partial tab-stop indentation, normalizes invalid CSS escapes to U+FFFD, and rejects duplicate or malformed XML stylesheet pseudo-attributes.
+- Documentation projection recognizes a dedented closing marker for a list-contained fence instead of reopening suppression across following prose.
+- Safetensors checkpoints reject missing or unsupported format versions instead of attempting an incompatible load.
 - The architecture diagram now renders completely on desktop while retaining a contained, readable horizontal scroller on small screens.
 
 ### Security
 
 - Dependency alerts, Dependabot security updates, private vulnerability reporting, secret scanning with push protection, CodeQL default setup, immutable releases, and protected merge-only Gitflow rules are enabled at the repository level.
+- Required gitflow checks are bound to the GitHub Actions integration rather than accepting same-named statuses from arbitrary writers.
+- The v0.2.1 GitHub release now carries the exact wheel and source distribution published to PyPI; repository immutable releases are enabled for subsequent publications.
 
 ## [0.2.1](https://github.com/thekaveh/NNx/compare/v0.2.0...v0.2.1) (2026-07-22)
 

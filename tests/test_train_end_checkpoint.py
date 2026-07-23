@@ -176,6 +176,40 @@ def test_checkpoint_transform_order_matches_train_end_order(tmp_path, monkeypatc
     assert [transform.name for transform in checkpoint.transforms] == ["second", "first"]
 
 
+def test_transformed_last_sidecar_keeps_pre_transform_model_and_rng(tmp_path, monkeypatch):
+    class MutateModelAndRng(Callback):
+        completed = False
+        rng_before = None
+        model_before = None
+
+        def on_train_end(self, ctx):
+            self.rng_before = torch.get_rng_state().clone()
+            self.model_before = {name: tensor.detach().clone() for name, tensor in ctx.model.net.state_dict().items()}
+            torch.rand(1)
+            with torch.no_grad():
+                next(ctx.model.net.parameters()).add_(5.0)
+            self.completed = True
+
+        def checkpoint_transforms(self):
+            return (NNCheckpointTransform(name="test-transform"),) if self.completed else ()
+
+    monkeypatch.chdir(tmp_path)
+    callback = MutateModelAndRng()
+    model = _tiny_model()
+    run = model.train(params=_tiny_train_params(_loader(), n_epochs=1), callbacks=[callback])
+
+    checkpoint = NNCheckpoint.load(run.id, Checkpoints.LAST)
+    state = NNCheckpoint.load_training_state(run.id, Checkpoints.LAST)
+    assert checkpoint is not None and state is not None
+    assert callback.rng_before is not None and callback.model_before is not None
+    assert torch.equal(state["rng"]["torch"], callback.rng_before)
+    for name, tensor in callback.model_before.items():
+        assert torch.equal(state["model"][name], tensor)
+    assert any(
+        not torch.equal(checkpoint.net_state[name], callback.model_before[name]) for name in callback.model_before
+    )
+
+
 def test_qat_convert_state_persists_in_last(tmp_path, monkeypatch):
     """Flagship #87 case: QAT ``convert()`` (on_train_end) swaps Linear modules;
     the persisted LAST must carry the quantized keys, and reloading it into a

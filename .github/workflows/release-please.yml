@@ -5,7 +5,7 @@ name: Release Please
 # according to what's accumulated since the last tag. Merging that PR
 # creates a vX.Y.Z release. The publish job below calls the reusable
 # release workflow in the same run because events created by GITHUB_TOKEN
-# do not trigger a second workflow. Direct tag pushes remain supported.
+# do not trigger ordinary push workflows.
 on:
   push:
     branches: [main]
@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 5
     # release-please pushes its release branch and opens or updates a PR.
     permissions:
+      actions: write # Dispatch required checks for the managed release PR.
       contents: write # Push the managed release branch and tag.
       pull-requests: write # Open or update the managed release PR.
     steps:
@@ -34,6 +35,47 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Checkout repository for release lock refresh
+        if: steps.release.outputs.prs_created == 'true'
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv for release lock refresh
+        if: steps.release.outputs.prs_created == 'true'
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+
+      - name: Dispatch required checks for managed release PRs
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --author app/github-actions \
+            --json headRefName --jq '.[].headRefName | select(startswith("release-please--"))' |
+          while IFS= read -r branch; do
+            [ -n "$branch" ] || continue
+            git fetch origin "$branch"
+            git checkout --detach "origin/$branch"
+            uv lock
+            if ! git diff --quiet -- uv.lock; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add uv.lock
+              git commit -m "chore: refresh release lockfile"
+              git push origin "HEAD:$branch"
+            fi
+            gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+            gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+          done
 
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -48,5 +90,5 @@ jobs:
       release_ref: ${{ needs.release-please.outputs.release_ref }}
       tag_name: ${{ needs.release-please.outputs.tag_name }}
     permissions:
-      contents: read
+      contents: write # Publish the verified draft GitHub release.
       id-token: write # Forwarded to the reusable trusted-publishing job.

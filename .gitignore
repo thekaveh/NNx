@@ -52,7 +52,8 @@ coverage.xml
 # materializes in `git status` after a local --strict build.
 site/
 _site/
-generated/wiki/
+generated/
+/mkdocs.yml
 
 # Local-only working specs / design docs (per repo convention,
 # planning artifacts are not committed — only the implementation is).

@@ -26,6 +26,9 @@ if TYPE_CHECKING:
     from ...trainer.params import NNTrainerParams
 
 
+_HISTORY_PROTOCOL_FILE = ".history-committed-by-last"
+
+
 def _runs_root(root: Optional[str] = None) -> str:
     """Resolve the on-disk root for `runs/`. Defaults to `<cwd>/runs` so
     existing notebook callers (which pass nothing) keep their layout."""
@@ -57,6 +60,8 @@ def _validate_run_id(run_id: str) -> str:
     # basename happens to leave alone (e.g., `..` itself is its own basename).
     if "/" in run_id or "\\" in run_id or "\x00" in run_id or run_id in (".", ".."):
         raise ValueError(f"run id must not contain path separators or `..`; got {run_id!r}")
+    if any(character in run_id for character in "*?["):
+        raise ValueError(f"run id must not contain glob metacharacters; got {run_id!r}")
     if os.path.basename(run_id) != run_id:
         raise ValueError(f"run id must be a single path component; got {run_id!r}")
     return run_id
@@ -368,10 +373,15 @@ class NNRun:
         # unlink the lock file whose ownership it is waiting to acquire.
         with FileLock(os.path.join(lease_root, f"{self.id}.lock")):
             self.ensure_writable(root=root, overwrite=overwrite)
+            run_path = os.path.join(runs_root, self.id)
+            _atomic_write_text(os.path.join(run_path, _HISTORY_PROTOCOL_FILE), "1\n")
             try:
                 yield
             except BaseException:
                 run_path = os.path.join(runs_root, self.id)
+                protocol_path = os.path.join(run_path, _HISTORY_PROTOCOL_FILE)
+                if os.path.isdir(run_path) and os.listdir(run_path) == [_HISTORY_PROTOCOL_FILE]:
+                    os.remove(protocol_path)
                 if os.path.isdir(run_path) and not os.listdir(run_path):
                     os.rmdir(run_path)
                 raise
@@ -395,13 +405,13 @@ class NNRun:
             NNCheckpoint.load(run=self.id, type=Checkpoints.LAST, root=root),
         ]
 
-    def save(self, root: Optional[str] = None) -> NNRun:
+    def save(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
         run_path = os.path.join(_runs_root(root), self.id)
         os.makedirs(run_path, exist_ok=True)
         with FileLock(os.path.join(run_path, ".run.lock")):
-            return self._save_locked(root)
+            return self._save_locked(root, update_best=update_best)
 
-    def _save_locked(self, root: Optional[str] = None) -> NNRun:
+    def _save_locked(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
         runs_root = _runs_root(root)
         run_path = os.path.join(runs_root, self.id)
         best_run_path = os.path.join(runs_root, "best")
@@ -447,6 +457,12 @@ class NNRun:
             pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
         )
 
+        if update_best:
+            self._update_best_pointer(runs_root, run_path, best_run_path, root)
+
+        return self
+
+    def _update_best_pointer(self, runs_root: str, run_path: str, best_run_path: str, root: Optional[str]) -> None:
         with FileLock(os.path.join(runs_root, ".best.lock")):
             if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
                 # Either no symlink yet, or one dangling after a repo move — repoint.
@@ -464,8 +480,6 @@ class NNRun:
 
                 if curr_err < best_err:
                     _point_best(best_run_path, run_path)
-
-        return self
 
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
@@ -509,6 +523,14 @@ class NNRun:
             idps = [NNIterationDataPoint.from_state(idp) for idp in raw_idps]
         except KeyError as e:
             raise ValueError(f"malformed idps.csv at {csv_path}: missing column/key {e}") from e
+
+        if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
+            last = NNCheckpoint.load(run=id, type=Checkpoints.LAST, root=root)
+            last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
+            if os.path.isfile(last_path) and last is None:
+                raise ValueError(f"malformed LAST checkpoint at {last_path}")
+            committed_epoch = -1 if last is None else last.idp.epoch_idx
+            idps = [idp for idp in idps if idp.epoch_idx <= committed_epoch]
 
         try:
             # Lazy import for trainer params — keeps `nnx.nn.params`

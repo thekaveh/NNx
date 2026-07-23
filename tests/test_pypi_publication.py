@@ -42,8 +42,67 @@ except ModuleNotFoundError:  # Python 3.10
 _PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
 _LOCKFILE = _PYPROJECT.parent / "uv.lock"
 _RELEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release.yml"
+_WORKFLOW_DIRECTORY = _RELEASE_WORKFLOW.parent
+_RELEASE_PLEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release-please.yml"
+_RELEASE_PLEASE_CONFIG = _PYPROJECT.parent / "release-please-config.json"
+_PYPI_README = _PYPROJECT.parent / "PYPI_README.md"
 _PYPI_TIMEOUT_SEC = 5.0
 _STUDIO_REQUIRED_APIS = ("NNMoEParams", "NNConvParams", "FeedFwdMoENN", "ConvNN")
+
+
+def test_draft_release_please_forces_tag_creation():
+    config = json.loads(_RELEASE_PLEASE_CONFIG.read_text(encoding="utf-8"))
+    assert config["draft"] is True
+    assert config["force-tag-creation"] is True
+
+
+def test_privileged_release_please_job_installs_only_pinned_uv_action():
+    workflow = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78" in workflow
+    assert "pip install -r requirements-tools.txt" not in workflow
+
+
+def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
+    workflows = list(_WORKFLOW_DIRECTORY.glob("*.yml"))
+    assert workflows
+    for path in workflows:
+        workflow = path.read_text(encoding="utf-8")
+        assert "pip install -r requirements-tools.txt" not in workflow, path
+        if "uv " in workflow:
+            assert "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78" in workflow, path
+
+
+def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
+    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    pyproject = _PYPROJECT.read_text(encoding="utf-8")
+
+    assert "uv run --frozen --no-sync twine check" in workflow
+    assert "uv run --frozen python -m pip_audit" in workflow
+    assert '"pip-audit==2.10.1"' in pyproject
+    assert '"twine==6.2.0"' in pyproject
+    assert workflow.count("uv build --no-build-isolation --python .venv/bin/python") == 2
+    assert "uv export --frozen --all-extras --all-groups" in workflow
+    assert "uv sync --frozen --only-group release --no-install-project --no-build" in workflow
+    assert "uv pip sync --python" in workflow and "--require-hashes smoke-requirements.txt" in workflow
+    assert "uv pip install --python" in workflow and "--no-deps --no-build-isolation" in workflow
+
+
+def test_package_uses_fresh_absolute_link_pypi_readme():
+    from scripts.docs.build_pypi_readme import render
+
+    pyproject = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    assert pyproject["project"]["readme"] == "PYPI_README.md"
+    text = _PYPI_README.read_text(encoding="utf-8")
+    assert text == render()
+    assert "https://raw.githubusercontent.com/thekaveh/NNx/main/" in text
+    assert "https://github.com/thekaveh/NNx/blob/main/" in text
+
+
+def test_privileged_wiki_publication_uses_locked_nonbuilding_tool_group():
+    workflow = (_WORKFLOW_DIRECTORY / "docs.yml").read_text(encoding="utf-8")
+
+    assert "uv sync --frozen --only-group docs-publish --no-install-project --no-build" in workflow
+    assert workflow.count("uv run --frozen --no-sync python -m scripts.docs") >= 2
 
 
 def _read_pyproject_field(field: str) -> str:
@@ -136,10 +195,35 @@ def test_reusable_release_inputs_enable_the_publish_path():
     workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "github.event_name == 'workflow_call'" not in workflow
-    assert workflow.count("inputs.tag_name != ''") == 3, (
+    assert workflow.count("inputs.tag_name != ''") == 4, (
         "release.yml must use the supplied tag_name input to enable tag/version "
-        "validation, PyPI publication, and post-publish verification"
+        "validation, PyPI publication, post-publish verification, and GitHub release publication"
     )
+
+
+def test_release_publication_has_one_managed_entry_point():
+    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    release_please = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "tags:" not in workflow
+    assert "startsWith(github.ref, 'refs/tags/v')" not in workflow
+    assert "actions: write" in release_please
+    assert "gh workflow run ci.yml" in release_please
+    assert "gh workflow run security.yml" in release_please
+    assert "Verify tag still identifies the release commit" in workflow
+    assert "gh release upload" in workflow
+    assert "actions/download-artifact@" in workflow
+    assert "overwrite: true" in workflow
+    assert "skip-existing: true" in workflow
+    assert "Verify PyPI artifact hashes" in workflow
+    assert "published == local" in workflow
+    assert "gh release verify" in workflow
+    assert "already_published=true" in workflow
+    assert "Verify exact GitHub release asset hashes" in workflow
+    assert "remote == local" in workflow
+    assert "Verify new immutable release attestation" in workflow
+    assert "uv lock" in release_please
+    assert "chore: refresh release lockfile" in release_please
 
 
 def test_pypi_lists_the_current_distribution_name():

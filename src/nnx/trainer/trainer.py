@@ -64,8 +64,8 @@ class TrainerStepContext:
 
     Mirrors TrainStepContext from NNModel.train() but with `optimizer`
     (singular) replaced by `optimizers` (name-keyed dict) and `schedulers`
-    threaded through alongside — multi-optim hooks may want to reach
-    into either at any point during a step (e.g., for warmup logic).
+    threaded through alongside for inspection. Step functions should only
+    call schedulers directly when ``auto_step_schedulers=False``.
 
     `model` is the single NNModel the Trainer was constructed with;
     `model.net` carries the actual nn.Module (which may itself be a
@@ -187,7 +187,9 @@ class Trainer:
         Args:
             params: NNTrainerParams — train_loader + n_epochs + optims dict +
                 (optional) schedulers dict + (optional) val_loader, seed,
-                save_phase_checkpoints, extra_metrics.
+                save_phase_checkpoints, extra_metrics. Schedulers step once
+                per epoch by default; set auto_step_schedulers=False when the
+                custom step function owns scheduler timing.
             trainer_step_fn: required. `Callable[[TrainerStepContext],
                 NNEvaluationDataPoint]`. The function owns the entire per-batch
                 update — including which optimizers to step, in what order, and
@@ -387,37 +389,49 @@ class Trainer:
                     val_edp = None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
-                checkpoint = self._save_checkpoint(
-                    idp=idps[-1],
-                    run_id=run.id,
-                    idx_epoch=idx_epoch,
-                    n_epochs=params.n_epochs,
-                    best_checkpoint=best_checkpoint,
-                    save_phase_checkpoints=params.save_phase_checkpoints,
-                )
-                if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
-                    best_checkpoint = checkpoint
-
                 # Each scheduler steps on its own optimizer's signal.
                 # We feed the SAME (val_edp, train_edp) pair to all of
                 # them because IDPs aggregate over all optims — separating
                 # per-optim metrics would require the step fn to return
                 # multiple EDPs, which complicates the contract without
-                # clear benefit. Users who need per-optim scheduler
-                # signals can step their scheduler directly in the step fn.
-                for sched in schedulers.values():
-                    _step_scheduler(sched, val_edp, train_edp)
+                # clear benefit. Custom hooks can own scheduler timing by
+                # setting auto_step_schedulers=False.
+                if params.auto_step_schedulers:
+                    for sched in schedulers.values():
+                        _step_scheduler(sched, val_edp, train_edp)
+
+                ctx.idp = idps[-1]
+                ctx.idps = idps
+                ctx.deferred_checkpoint_writes.clear()
+                for cb in normalized_callbacks:
+                    cb.on_epoch_end(ctx)
+
+                # Prepare history before the checkpoint commit marker so a
+                # completed checkpoint can never outrun idps.csv.
+                run.with_idps(idps).save(update_best=False)
+
+                try:
+                    checkpoint = self._save_checkpoint(
+                        idp=idps[-1],
+                        run_id=run.id,
+                        idx_epoch=idx_epoch,
+                        n_epochs=params.n_epochs,
+                        best_checkpoint=best_checkpoint,
+                        save_phase_checkpoints=params.save_phase_checkpoints,
+                    )
+                except BaseException:
+                    committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+                    if committed is None or committed.idp.epoch_idx != idx_epoch:
+                        run.with_idps(idps[:n_idps_before_epoch]).save(update_best=False)
+                    raise
+                for deferred_checkpoint in ctx.deferred_checkpoint_writes:
+                    deferred_checkpoint()
+                if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
+                    best_checkpoint = checkpoint
 
                 # Verbatim-shared with the NNModel.train loop — one
                 # implementation, so the postfix format can't drift.
                 self.model._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp)
-
-                run.with_idps(idps).save()
-
-                ctx.idp = idps[-1]
-                ctx.idps = idps
-                for cb in normalized_callbacks:
-                    cb.on_epoch_end(ctx)
 
                 if ctx.should_stop:
                     break
@@ -427,12 +441,14 @@ class Trainer:
         # from the live model so it matches the state returned to the caller.
         # BEST remains the best state observed during training.
         if idps:
+            final_transforms = (*self.model._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
+            self.model._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=idps[-1],
                 model_params=self.model.params,
                 net_params=self.model.net_params,
                 net_state=self.model.net.state_dict(),
-                transforms=_collect_checkpoint_transforms(normalized_callbacks),
+                transforms=final_transforms,
             ).save(run=run.id, type=Checkpoints.LAST)
 
         saved = run.with_idps(idps).save()

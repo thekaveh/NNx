@@ -57,7 +57,7 @@ def _validate_modelfile_inputs(system: str, template: Optional[str], parameters:
         if not isinstance(key, str) or any(character.isspace() or character == "\0" for character in str(key)):
             raise ValueError(f"parameter key {key!r} must not contain whitespace or NUL bytes")
         if key not in _SUPPORTED_PARAMETERS:
-            raise ValueError(f"parameter {key!r} is not supported by the Ollama 0.32.1 Modelfile contract")
+            raise ValueError(f"parameter {key!r} is not supported by the Ollama v0.32.2 tag snapshot contract")
         if key in _INTEGER_PARAMETERS:
             if type(value) is not int:
                 raise TypeError(f"parameter {key!r} requires an integer, got {type(value).__name__}")
@@ -100,7 +100,7 @@ def export_ollama_modelfile(
             delimiters — validated, raises ``ValueError``); same
             constraint applies to ``template``.
         parameters: Optional dict of Ollama runtime parameters
-            from the documented 0.32.1 set. Each entry becomes a
+            from the documented 0.32.2 set. Each entry becomes a
             ``PARAMETER <key> <value>`` line; only ``stop`` accepts a
             list or tuple, rendered as repeated lines. String values use
             an injection-safe subset without quotes or control characters.

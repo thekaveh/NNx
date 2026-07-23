@@ -18,3 +18,12 @@ updates:
         patterns:
           - "*"
     target-branch: develop
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      pre-commit-hooks:
+        patterns:
+          - "*"
+    target-branch: develop

@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -27,7 +24,7 @@ concurrency:
 
 jobs:
   # Gate: run the full test matrix before letting the publish job run.
-  # Without this, a tag push on a red branch would still publish to PyPI
+  # Without this, a release request for a red commit would still publish to PyPI
   # (versions can be yanked but not deleted — a poisoned release is
   # permanent).
   test:
@@ -39,14 +36,23 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         # actions/checkout@v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.release_ref || github.ref }}
+          ref: ${{ inputs.release_ref || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Require release commit on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "::error::release commit must be reachable from protected main"
+            exit 1
+          }
 
       - name: Set up Python ${{ matrix.python-version }}
         # actions/setup-python@v7.0.0
@@ -55,8 +61,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        run: |
-          python -m pip install -r requirements-tools.txt
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
 
       - name: Sync package from the frozen lock
         # Match ci.yml — every optional-dep extra is installed for the
@@ -78,37 +87,37 @@ jobs:
       - name: Type-check with pyright
         run: uv run --frozen pyright --warnings
 
+      - name: Audit frozen dependency graph
+        run: |
+          uv export --frozen --all-extras --all-groups --python "$PYTHON_VERSION" --no-emit-project --no-hashes --output-file frozen-requirements.txt
+          uv run --frozen python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+
       - name: Run pytest
         env:
           NNX_TQDM_DISABLE: "1"
         run: uv run --frozen pytest
 
       - name: Build docs with mkdocs --strict
-        run: uv run --frozen mkdocs build --strict --site-dir _site
+        run: |
+          uv run --frozen python -m scripts.docs.extract_architecture_svg --check
+          uv run --frozen python -m scripts.docs.build_docs
+          uv run --frozen mkdocs build --strict --site-dir _site
 
-  build-and-publish:
-    name: Build sdist + wheel and publish to PyPI
+  build-distributions:
+    name: Build and verify sdist + wheel
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Scopes OIDC credentials to a configured GitHub deployment
-    # environment named `pypi`. Configure required approvals + branch
-    # protection on that environment via repo settings so a misconfigured
-    # workflow on a fork or branch can't publish.
-    environment:
-      name: pypi
-      url: https://pypi.org/p/thekaveh-nnx
     permissions:
-      # OIDC-based PyPI trusted publishing (no API token in secrets needed).
-      # Configure the project on PyPI > Manage > Publishing to opt in.
-      id-token: write # Request the PyPI trusted-publishing credential.
       contents: read
     steps:
       - name: Checkout
         # actions/checkout@v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.release_ref || github.ref }}
+          ref: ${{ inputs.release_ref || github.sha }}
           persist-credentials: false
 
       - name: Set up Python
@@ -117,8 +126,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install build tooling
-        run: python -m pip install -r requirements-tools.txt
+      - name: Install uv
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+
+      - name: Sync build tooling from the frozen lock
+        run: uv sync --frozen --only-group release --no-install-project --no-build --python "3.11"
 
       - name: Assert tag matches pyproject version
         # PyPI uploads are permanent (yank-not-delete), so a typo'd tag
@@ -127,7 +143,7 @@ jobs:
         # irreversible upload. workflow_dispatch dry-runs skip this.
         # Reusable workflows retain the caller's event name, so Release Please
         # calls are identified by their required tag_name input.
-        if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        if: inputs.tag_name != ''
         run: |
           tag_version="${RELEASE_TAG#v}"
           py_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
@@ -136,15 +152,15 @@ jobs:
             exit 1
           fi
         env:
-          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
 
       - name: Build reproducible sdist + wheel
         run: |
           set -euo pipefail
           epoch="$(git log -1 --pretty=%ct)"
           export SOURCE_DATE_EPOCH="$epoch"
-          uv build --out-dir dist-a
-          uv build --out-dir dist-b
+          uv build --no-build-isolation --python .venv/bin/python --out-dir dist-a
+          uv build --no-build-isolation --python .venv/bin/python --out-dir dist-b
           python scripts/normalize_sdist.py dist-a/*.tar.gz --epoch "$epoch"
           python scripts/normalize_sdist.py dist-b/*.tar.gz --epoch "$epoch"
           for artifact in dist-a/*; do
@@ -158,30 +174,69 @@ jobs:
         # twine check catches the most common metadata issues (missing
         # long_description, invalid RST/MD, malformed classifiers) before
         # uploading. Cheap pre-flight; failure here aborts the publish.
-        run: twine check dist/*
+        run: uv run --frozen --no-sync twine check dist/*
 
-      - name: Publish to PyPI
-        # Only runs on tag pushes; workflow_dispatch builds without publishing
-        # so you can inspect the artifacts before cutting a real release.
-        if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-        # pypa/gh-action-pypi-publish@v1.14.1
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
+      - name: Smoke-test wheel and sdist in clean environments
+        run: |
+          uv export --frozen --group release --no-emit-project --output-file smoke-requirements.txt
+          index=0
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            index=$((index + 1))
+            venv="/tmp/nnx-artifact-smoke-$index"
+            python -m venv "$venv"
+            uv pip sync --python "$venv/bin/python" --require-hashes smoke-requirements.txt
+            uv pip install --python "$venv/bin/python" --no-deps --no-build-isolation "$artifact"
+            "$venv/bin/python" - <<'PY'
+          import importlib.metadata
+          import nnx
 
-      - name: Upload build artifacts (workflow_dispatch dry-run)
-        if: github.event_name == 'workflow_dispatch'
+          assert importlib.metadata.version("thekaveh-nnx") == nnx.__version__
+          files = importlib.metadata.files("thekaveh-nnx") or []
+          assert any(str(path) == "nnx/py.typed" for path in files)
+          PY
+          done
+
+      - name: Upload verified distributions
         # actions/upload-artifact@v7.0.1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: dist
+          name: release-distributions
           path: dist/
           retention-days: 7
+          overwrite: true
+
+  publish-pypi:
+    name: Publish verified distributions to PyPI
+    needs: build-distributions
+    if: inputs.tag_name != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/thekaveh-nnx
+    permissions:
+      id-token: write # Authenticate the trusted PyPI publisher; no long-lived token is stored.
+      contents: read
+    steps:
+      - name: Download verified distributions
+        # actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Publish to PyPI
+        # pypa/gh-action-pypi-publish@v1.14.1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
+        with:
+          skip-existing: true
 
   verify-published:
     name: Verify the new version is reachable on PyPI
-    needs: build-and-publish
-    # Only runs on actual tag-push publishes, not workflow_dispatch dry runs
+    needs: publish-pypi
+    # Only runs on Release Please publishes, not workflow_dispatch dry runs
     # (since the dry-run path skips the pypi-publish step).
-    if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: inputs.tag_name != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Least-privilege: this job only fetches from PyPI + imports nnx.
@@ -189,6 +244,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Download verified distributions
+        # actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-distributions
+          path: dist
+
       - name: Extract version from tag
         id: ver
         run: |
@@ -196,7 +258,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Verifying that thekaveh-nnx==$version is reachable on PyPI..."
         env:
-          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
 
       - name: Set up Python
         # No pip cache here — we want fresh resolution to catch PyPI
@@ -258,3 +320,145 @@ jobs:
           PY
         env:
           EXPECTED_VERSION: ${{ steps.ver.outputs.version }}
+
+      - name: Verify PyPI artifact hashes
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import urllib.request
+
+          version = os.environ["RELEASE_VERSION"]
+          with urllib.request.urlopen(f"https://pypi.org/pypi/thekaveh-nnx/{version}/json") as response:
+              published = {
+                  item["filename"]: item["digests"]["sha256"]
+                  for item in json.load(response)["urls"]
+              }
+          local = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in pathlib.Path("dist").iterdir()
+              if path.is_file()
+          }
+          assert local
+          assert published == local, (
+              f"PyPI artifact hashes differ: local={local}, published={published}"
+          )
+          PY
+
+  publish-github-release:
+    name: Publish verified GitHub release
+    needs: [build-distributions, verify-published]
+    if: inputs.tag_name != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Upload verified artifacts and publish the draft GitHub release.
+    steps:
+      - name: Checkout release commit
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.release_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag still identifies the release commit
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          expected="$(git rev-parse "$RELEASE_REF^{commit}")"
+          actual="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::tag $RELEASE_TAG resolves to $actual, expected release commit $expected"
+            exit 1
+          fi
+
+      - name: Download verified distributions
+        # actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Attach distributions or verify an already-published release
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ]; then
+            expected="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
+            actual="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::published release assets differ from verified distributions"
+              exit 1
+            fi
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "already_published=false" >> "$GITHUB_OUTPUT"
+          gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Verify exact GitHub release asset hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          payload = json.loads(
+              subprocess.check_output(
+                  ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{os.environ['RELEASE_TAG']}"]
+              )
+          )
+          remote = {
+              asset["name"]: (asset.get("digest") or "").removeprefix("sha256:")
+              for asset in payload["assets"]
+          }
+          local = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in pathlib.Path("dist").iterdir()
+              if path.is_file()
+          }
+          assert remote == local, f"GitHub release asset hashes differ: local={local}, remote={remote}"
+          PY
+
+      - name: Verify existing immutable release attestation
+        if: steps.release_state.outputs.already_published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish Release Please draft
+        if: steps.release_state.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Verify new immutable release attestation
+        if: steps.release_state.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"; then
+              exit 0
+            fi
+            [ "$attempt" -eq 6 ] && exit 1
+            sleep 10
+          done

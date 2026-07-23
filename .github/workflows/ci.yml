@@ -1,11 +1,11 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
-  workflow_dispatch:
 
 # Cancel in-flight matrix runs when a new commit lands on the same PR
 # (push to main always finishes). Saves runner minutes without
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         # actions/checkout@v7.0.1
@@ -41,15 +41,13 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements-tools.txt
-            uv.lock
 
       - name: Install uv
-        run: |
-          python -m pip install -r requirements-tools.txt
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
 
       - name: Sync package from the frozen lock
         # Every optional-dep extra is installed so the tests that gate on
@@ -92,7 +90,10 @@ jobs:
       - name: Build docs with mkdocs --strict
         # Surfaces broken cross-doc links and missing nav entries that
         # would otherwise ship to the published site.
-        run: uv run --frozen mkdocs build --strict --site-dir _site
+        run: |
+          uv run --frozen python -m scripts.docs.extract_architecture_svg --check
+          uv run --frozen python -m scripts.docs.build_docs
+          uv run --frozen mkdocs build --strict --site-dir _site
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'

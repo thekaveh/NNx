@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from nnx._metrics import _resolve_metric
 
 
@@ -81,3 +83,25 @@ def test_classification_edp_arithmetic():
     assert edp.error == 0.25
     assert edp.accuracy == 0.75
     assert edp.extra["n_samples"] == 4.0
+
+
+def test_classification_edp_multilabel_error_matches_subset_accuracy():
+    import torch
+
+    from nnx._metrics import classification_edp
+
+    y = torch.tensor([[1, 0, 1], [0, 1, 0]])
+    prediction = torch.tensor([[1, 0, 1], [1, 1, 0]])
+    edp = classification_edp(Y=y, Y_hat=prediction, loss=0.5)
+
+    assert edp.accuracy == 0.5
+    assert edp.error == 0.5
+
+
+def test_evaluation_data_point_extra_is_immutable_and_hashable():
+    from nnx import NNEvaluationDataPoint
+
+    edp = NNEvaluationDataPoint(f1=1.0, recall=1.0, accuracy=1.0, precision=1.0, extra={"score": 1.0})
+    with pytest.raises(TypeError):
+        edp.extra["score"] = 2.0  # type: ignore[index]
+    assert isinstance(hash(edp), int)

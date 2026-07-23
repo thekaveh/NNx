@@ -5,6 +5,7 @@ import os
 import tempfile
 import uuid
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Optional
 
@@ -21,7 +22,7 @@ from ..params.nn_params import NNParams
 # breaks older readers. Newer readers stay backwards-compatible by sniffing
 # this version off the metadata dict.
 _SAFETENSORS_FORMAT_VERSION = "1"
-_TRAINING_STATE_FORMAT_VERSION = 1
+_TRAINING_STATE_FORMAT_VERSION = 3
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -66,11 +67,45 @@ def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) ->
     return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
 
 
+def _generation_sidecar_path(checkpoint_path: str, generation: str) -> str:
+    return f"{checkpoint_path}.opt.{generation}.pt"
+
+
+def _generation_sidecar_paths(checkpoint_path: str) -> list[str]:
+    """Enumerate generation sidecars without interpreting path metacharacters."""
+    directory = os.path.dirname(checkpoint_path)
+    prefix = f"{os.path.basename(checkpoint_path)}.opt."
+    if not os.path.isdir(directory):
+        return []
+    paths = []
+    for entry in os.scandir(directory):
+        remainder = entry.name[len(prefix) :] if entry.name.startswith(prefix) else ""
+        if entry.is_file() and remainder.endswith(".pt") and remainder != "pt":
+            paths.append(entry.path)
+    return paths
+
+
+def _snapshot_state_dict(state: Any) -> Any:
+    """Copy tensor and extra state while preserving OrderedDict metadata."""
+    return deepcopy(state)
+
+
+def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]:
+    """Clone a tensor-only state dict or explain the export limitation."""
+    non_tensor_keys = [key for key, value in state.items() if not isinstance(value, torch.Tensor)]
+    if non_tensor_keys:
+        raise TypeError(
+            f"{operation} does not support non-tensor state_dict entries {non_tensor_keys}; "
+            "use NNCheckpoint pickle format to preserve module extra state"
+        )
+    return {key: value.detach().contiguous().clone() for key, value in state.items()}
+
+
 def _atomic_torch_save(obj, path: str) -> None:
     """torch.save(obj, path) wrapped with tmp + rename so a
     KeyboardInterrupt during the pickle never leaves a half-written
     .pt file at the destination."""
-    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or None)
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
     os.close(fd)
     try:
         torch.save(obj, tmp)
@@ -120,6 +155,7 @@ class NNCheckpoint:
     idp: NNIterationDataPoint
     transforms: tuple[NNCheckpointTransform, ...] = ()
     training_state_id: Optional[str] = None
+    training_state_present: Optional[bool] = None
 
     def to_file(self, path: str, format: Literal["pickle", "safetensors"] = "pickle") -> None:
         """Atomically write this NNCheckpoint to ``path``.
@@ -179,6 +215,7 @@ class NNCheckpoint:
             "idp": json.dumps(self.idp.state()),
             "transforms": json.dumps([transform.state() for transform in self.transforms]),
             "training_state_id": self.training_state_id or "",
+            "training_state_present": json.dumps(self.training_state_present),
         }
 
         # safetensors save_file doesn't accept OrderedDict (only dict). The
@@ -189,9 +226,9 @@ class NNCheckpoint:
         # and .contiguous() is a no-op on already-contiguous views).
         # On reload, load_state_dict assigns both identical copies back
         # into the tied parameter, so the tie survives the round-trip.
-        tensors = {k: v.detach().contiguous().clone() for k, v in self.net_state.items()}
+        tensors = _tensor_state_dict(self.net_state, operation="safetensors checkpoint export")
 
-        fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or None)
+        fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
         os.close(fd)
         try:
             save_file(tensors, tmp, metadata=metadata)
@@ -211,37 +248,43 @@ class NNCheckpoint:
         rng_state: Optional[dict[str, Any]] = None,
         completed_epoch: Optional[int] = None,
         resume_net_state: Optional[dict[str, Any]] = None,
+        optimizer_type: Optional[str] = None,
+        scheduler_type: Optional[str] = None,
+        optimizer_topology: Optional[list[list[dict[str, Any]]]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
-        When `optimizer_state` is supplied, a sibling file is written at
-        ``<id>/checkpoints/<type>.pt.opt.pt`` (the checkpoint path plus
-        an ``.opt.pt`` suffix) holding the optimizer state dict.
+        When `optimizer_state` is supplied, a generation-addressed sibling
+        file holds the training state, plus a fixed-name compatibility copy.
         This sidecar is used by NNModel.train(resume_from=...) to warm-resume
         with the prior optimizer momentum / Adam state.
 
-        The sidecar is committed first and the checkpoint second. A shared
-        generation stamp makes the checkpoint the commit marker: interruption
-        between the two replacements is detected on load rather than silently
-        mixing model weights with stale optimizer or scheduler state.
+        The immutable generation sidecar is committed first and the checkpoint
+        second. The checkpoint names the sidecar it owns, so interruption
+        between replacements leaves the previous generation resumable.
         """
         ckpt_path = _checkpoint_path(run, type, root=root)
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
         sidecar_path = ckpt_path + ".opt.pt"
         with FileLock(ckpt_path + ".lock"):
             if optimizer_state is None:
-                self.to_file(path=ckpt_path)
+                replace(self, training_state_id=None, training_state_present=False).to_file(path=ckpt_path)
                 if os.path.exists(sidecar_path):
                     os.remove(sidecar_path)
+                for generation_sidecar in _generation_sidecar_paths(ckpt_path):
+                    os.remove(generation_sidecar)
                 return
 
             generation = uuid.uuid4().hex
-            stamped = replace(self, training_state_id=generation)
+            stamped = replace(self, training_state_id=generation, training_state_present=True)
             training_state = {
                 "nnx_training_state_version": _TRAINING_STATE_FORMAT_VERSION,
                 "checkpoint_id": generation,
                 "optimizer": optimizer_state,
+                "optimizer_type": optimizer_type,
+                "optimizer_topology": optimizer_topology,
                 "scheduler": scheduler_state,
+                "scheduler_type": scheduler_type,
                 "scaler": scaler_state,
                 "rng": rng_state,
                 "completed_epoch": self.idp.epoch_idx if completed_epoch is None else completed_epoch,
@@ -252,26 +295,25 @@ class NNCheckpoint:
             )
             os.close(fd)
             os.remove(checkpoint_tmp)
-            fd, sidecar_tmp = tempfile.mkstemp(
-                prefix=f".{os.path.basename(sidecar_path)}.", dir=os.path.dirname(sidecar_path)
-            )
-            os.close(fd)
-            os.remove(sidecar_tmp)
+            generation_sidecar_path = _generation_sidecar_path(ckpt_path, generation)
             try:
                 stamped.to_file(checkpoint_tmp)
-                _atomic_torch_save(training_state, sidecar_tmp)
-                os.replace(sidecar_tmp, sidecar_path)
+                _atomic_torch_save(training_state, generation_sidecar_path)
                 os.replace(checkpoint_tmp, ckpt_path)
+                _atomic_torch_save(training_state, sidecar_path)
+                for old_sidecar in _generation_sidecar_paths(ckpt_path):
+                    if old_sidecar != generation_sidecar_path:
+                        os.remove(old_sidecar)
             finally:
-                for tmp in (checkpoint_tmp, sidecar_tmp):
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
+                if os.path.exists(checkpoint_tmp):
+                    os.remove(checkpoint_tmp)
 
     @staticmethod
     def load_training_state(
         run: str,
         type: Checkpoints,
         root: Optional[str] = None,
+        map_location: Any = "cpu",
     ) -> Optional[dict[str, Any]]:
         """Load and validate the resumable optimizer/scheduler/scaler bundle.
 
@@ -280,42 +322,75 @@ class NNCheckpoint:
         """
         checkpoint_path = _checkpoint_path(run, type, root=root)
         with FileLock(checkpoint_path + ".lock"):
-            checkpoint = NNCheckpoint.from_file(checkpoint_path)
-            return NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint)
+            checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
+            return NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
 
     @staticmethod
     def load_with_training_state(
         run: str,
         type: Checkpoints,
         root: Optional[str] = None,
+        map_location: Any = "cpu",
     ) -> tuple[Optional[NNCheckpoint], Optional[dict[str, Any]]]:
         """Atomically load a checkpoint and its matching training-state bundle."""
         checkpoint_path = _checkpoint_path(run, type, root=root)
         with FileLock(checkpoint_path + ".lock"):
-            checkpoint = NNCheckpoint.from_file(checkpoint_path)
-            state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint)
+            checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
+            state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
             return checkpoint, state
 
     @staticmethod
     def _load_training_state_unlocked(
         checkpoint_path: str,
         checkpoint: Optional[NNCheckpoint],
+        map_location: Any = "cpu",
     ) -> Optional[dict[str, Any]]:
         sidecar_path = checkpoint_path + ".opt.pt"
-        if not os.path.exists(sidecar_path):
+        if checkpoint is not None and getattr(checkpoint, "training_state_present", None) is False:
             return None
-        state = torch.load(sidecar_path, weights_only=True)
+        checkpoint_id = getattr(checkpoint, "training_state_id", None) if checkpoint is not None else None
+        if checkpoint_id is not None:
+            generation_path = _generation_sidecar_path(checkpoint_path, checkpoint_id)
+            if os.path.exists(generation_path):
+                sidecar_path = generation_path
+        if not os.path.exists(sidecar_path):
+            if checkpoint_id is not None:
+                raise ValueError(
+                    "checkpoint references a missing training-state sidecar; "
+                    "resume from another checkpoint or restore the owned sidecar"
+                )
+            return None
+        state = torch.load(sidecar_path, weights_only=True, map_location=map_location)
+        if not isinstance(state, dict):
+            raise ValueError(f"malformed training-state sidecar: expected a mapping, got {type(state).__name__}")
         if "nnx_training_state_version" not in state:
+            if checkpoint_id is not None:
+                raise ValueError(
+                    "versioned checkpoint cannot use a legacy optimizer-only sidecar; "
+                    "restore its matching generation-addressed training state"
+                )
             return {
                 "nnx_training_state_version": 0,
                 "checkpoint_id": None,
                 "optimizer": state,
+                "optimizer_type": None,
+                "optimizer_topology": None,
                 "scheduler": None,
+                "scheduler_type": None,
                 "scaler": None,
                 "rng": None,
                 "completed_epoch": checkpoint.idp.epoch_idx if checkpoint is not None else None,
             }
-        checkpoint_id = getattr(checkpoint, "training_state_id", None) if checkpoint is not None else None
+        if checkpoint_id is None:
+            # Cleanup can be interrupted after an optimizerless checkpoint
+            # commits. Any remaining versioned sidecars are stale and unowned.
+            return None
+        version = state["nnx_training_state_version"]
+        if type(version) is not int or not 1 <= version <= _TRAINING_STATE_FORMAT_VERSION:
+            raise ValueError(
+                f"unsupported training-state sidecar version {version!r}; "
+                f"this NNx version supports 1..{_TRAINING_STATE_FORMAT_VERSION}"
+            )
         if checkpoint_id != state.get("checkpoint_id"):
             raise ValueError(
                 "checkpoint and training-state sidecar do not match; "
@@ -341,7 +416,7 @@ class NNCheckpoint:
         return None if state is None else state["optimizer"]
 
     @staticmethod
-    def from_file(path: str) -> Optional[NNCheckpoint]:
+    def from_file(path: str, map_location: Any = "cpu") -> Optional[NNCheckpoint]:
         """Load an NNCheckpoint from disk, auto-detecting pickle vs safetensors.
 
         Returns ``None`` if the path doesn't exist or the loaded pickle
@@ -392,24 +467,24 @@ class NNCheckpoint:
 
         # Modern torch-save ZIP container.
         if head[:4] == b"PK\x03\x04":
-            return NNCheckpoint._from_pickle_file(path)
+            return NNCheckpoint._from_pickle_file(path, map_location=map_location)
         # safetensors: byte 8 is the opening brace of the JSON header.
         # Checked BEFORE the \x80 pickle sniff — see the docstring.
         if len(head) == 9 and head[8:9] == b"{":
-            return NNCheckpoint._from_safetensors_file(path)
+            return NNCheckpoint._from_safetensors_file(path, map_location=map_location)
         # Legacy / bare-pickle protocol prefix.
         if head[:1] == b"\x80":
-            return NNCheckpoint._from_pickle_file(path)
-        return NNCheckpoint._from_safetensors_file(path)
+            return NNCheckpoint._from_pickle_file(path, map_location=map_location)
+        return NNCheckpoint._from_safetensors_file(path, map_location=map_location)
 
     @staticmethod
-    def _from_pickle_file(path: str) -> Optional[NNCheckpoint]:
+    def _from_pickle_file(path: str, map_location: Any = "cpu") -> Optional[NNCheckpoint]:
         """Load the legacy pickle format (a torch.save'd NNCheckpoint)."""
         # NNCheckpoint files are pickled Python objects (not bare state dicts),
         # so the weights_only=True default introduced in torch>=2.6 would raise
         # UnpicklingError. See the security note in `from_file` before
         # widening this to externally-sourced files.
-        ret = torch.load(path, weights_only=False)
+        ret = torch.load(path, weights_only=False, map_location=map_location)
 
         if not isinstance(ret, NNCheckpoint):
             return None
@@ -420,11 +495,13 @@ class NNCheckpoint:
             object.__setattr__(ret, "transforms", ())
         if not hasattr(ret, "training_state_id"):
             object.__setattr__(ret, "training_state_id", None)
+        if not hasattr(ret, "training_state_present"):
+            object.__setattr__(ret, "training_state_present", None)
 
         return ret
 
     @staticmethod
-    def _from_safetensors_file(path: str) -> NNCheckpoint:
+    def _from_safetensors_file(path: str, map_location: Any = "cpu") -> NNCheckpoint:
         """Load a safetensors-format NNCheckpoint. Requires `thekaveh-nnx[hub]`."""
         try:
             from safetensors import safe_open
@@ -434,7 +511,13 @@ class NNCheckpoint:
             ) from e
 
         net_state: OrderedDict[str, torch.Tensor] = OrderedDict()
-        with safe_open(path, framework="pt") as f:
+        if not isinstance(map_location, (str, torch.device)):
+            raise TypeError(
+                "safetensors checkpoint map_location must be a device string or torch.device; "
+                f"got {type(map_location).__name__}"
+            )
+        device = str(map_location)
+        with safe_open(path, framework="pt", device=device) as f:
             meta = f.metadata() or {}
             # Preserve key order — safetensors guarantees insertion-order on
             # iteration in v0.5+; we rebuild the OrderedDict for parity with
@@ -442,8 +525,12 @@ class NNCheckpoint:
             for k in f.keys():
                 net_state[k] = f.get_tensor(k)
 
-        # Future-proof: today only version "1" exists. If a future writer
-        # bumps the version, we'd add a dispatch here on `meta["nnx_format_version"]`.
+        version = meta.get("nnx_format_version")
+        if version != _SAFETENSORS_FORMAT_VERSION:
+            raise ValueError(
+                f"unsupported safetensors checkpoint format version {version!r}; "
+                f"expected {_SAFETENSORS_FORMAT_VERSION!r}"
+            )
         return NNCheckpoint(
             idp=_idp_from_nested_state(json.loads(meta["idp"])),
             model_params=NNModelParams.from_state(json.loads(meta["model_params"])),
@@ -455,8 +542,14 @@ class NNCheckpoint:
                 NNCheckpointTransform.from_state(state) for state in json.loads(meta.get("transforms", "[]"))
             ),
             training_state_id=meta.get("training_state_id") or None,
+            training_state_present=json.loads(meta.get("training_state_present", "null")),
         )
 
     @staticmethod
-    def load(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[NNCheckpoint]:
-        return NNCheckpoint.from_file(path=_checkpoint_path(run, type, root=root))
+    def load(
+        run: str,
+        type: Checkpoints,
+        root: Optional[str] = None,
+        map_location: Any = "cpu",
+    ) -> Optional[NNCheckpoint]:
+        return NNCheckpoint.from_file(path=_checkpoint_path(run, type, root=root), map_location=map_location)

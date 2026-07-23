@@ -122,7 +122,7 @@ export_ollama_modelfile(
 
 The generated directory contains `model.gguf` and `Modelfile`; it may also
 contain `tokenizer.json` when the tokenizer was saved there. The helper
-validates the Ollama 0.32.1 parameter set: integer `num_ctx`, `repeat_last_n`,
+validates the Ollama `v0.32.2` tagged-source parameter set: integer `num_ctx`, `repeat_last_n`,
 `seed`, `num_predict`, `draft_num_predict`, and `top_k`; finite numeric
 `repeat_penalty`, `temperature`, `top_p`, and `min_p`; and scalar or repeated
 string `stop`. Unknown names and mismatched types fail before GGUF generation.

@@ -1,0 +1,30 @@
+surfaces: [repo, site, wiki]
+numbering: navigation
+sections:
+  - {number: "1", title: Home, source: docs/index.md, slug: Home}
+  - {number: "2", title: Quickstart, source: docs/quickstart.md}
+  - title: Core guides
+    children:
+      - {number: "3", title: Concepts, source: docs/concepts.md}
+      - {number: "4", title: Model surgery, source: docs/surgery.md}
+      - {number: "5", title: HuggingFace Hub, source: docs/hub.md}
+      - {number: "6", title: Embeddings, source: docs/embeddings.md}
+      - {number: "7", title: Language modeling, source: docs/lm.md}
+      - {number: "8", title: I-JEPA, source: docs/jepa.md}
+      - {number: "9", title: Experimental GGUF export, source: docs/gguf.md}
+      - {number: "10", title: DPO, source: docs/dpo.md}
+  - title: Reference
+    children:
+      - {number: "11", title: API reference, source: docs/api.md}
+      - {number: "12", title: External dependency contracts, source: docs/external-contracts.md}
+      - {number: "13", title: Framework comparison, source: docs/comparison.md}
+      - {number: "14", title: Architecture, source: docs/architecture.md}
+  - title: Project
+    children:
+      - {number: "15", title: Repository overview, source: README.md, slug: Repository-Overview}
+      - {number: "16", title: Examples, source: examples/README.md}
+      - {number: "17", title: Contributing, source: CONTRIBUTING.md}
+      - {number: "18", title: Security policy, source: SECURITY.md, slug: Security-Policy}
+      - {number: "19", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
+      - {number: "20", title: Changelog, source: CHANGELOG.md}
+      - {number: "21", title: License, source: LICENSE}
