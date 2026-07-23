@@ -26,6 +26,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from ..utils import _capture_training_modes, _restore_training_modes
+
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
 
@@ -92,7 +94,7 @@ def netron_export(
     out_names = ["output"]
     dynamic_axes = {n: {0: "batch"} for n in in_names + out_names} if dynamic_batch else None
 
-    was_training = net.training
+    training_modes = _capture_training_modes(net)
     net.eval()
     try:
         # Mirror NNModel.to_onnx — pin to the legacy TorchScript path so
@@ -121,8 +123,7 @@ def netron_export(
                 opset_version=opset_version,
             )
     finally:
-        if was_training:
-            net.train()
+        _restore_training_modes(training_modes)
 
     if launch:
         # Lazy import — keeps `netron` out of required deps. Only users

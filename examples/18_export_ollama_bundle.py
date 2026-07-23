@@ -22,7 +22,7 @@ Requires the ``gguf-write`` optional extra (for
     pip install 'thekaveh-nnx[gguf-write,lm]'
 
 Run:
-    python examples/18_publish_to_ollama.py
+    python examples/18_export_ollama_bundle.py
 """
 
 from __future__ import annotations

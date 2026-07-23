@@ -25,7 +25,7 @@ Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
     pip install 'thekaveh-nnx[lm]'
 
 Run:
-    python examples/22_dpo_tinystories.py
+    python examples/22_dpo_synthetic_preferences.py
 """
 
 from __future__ import annotations

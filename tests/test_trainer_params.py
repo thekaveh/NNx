@@ -60,10 +60,12 @@ def test_trainer_params_round_trip_with_schedulers_and_seed():
         schedulers={"G": _sched(), "D": _sched()},
         seed=42,
         save_phase_checkpoints=False,
+        auto_step_schedulers=False,
     )
     p2 = NNTrainerParams.from_state(p.state())
     assert p2.seed == 42
     assert p2.save_phase_checkpoints is False
+    assert p2.auto_step_schedulers is False
     assert set(p2.schedulers.keys()) == {"G", "D"}
     assert p2.schedulers["G"].patience == 2
 
@@ -108,6 +110,7 @@ def test_trainer_params_seed_omitted_from_state_when_none():
     p = NNTrainerParams(n_epochs=1, optims={"G": _g_optim()})
     assert "seed" not in p.state()
     assert "save_phase_checkpoints" not in p.state()
+    assert "auto_step_schedulers" not in p.state()
 
 
 def test_trainer_params_schedulers_omitted_from_state_when_empty():

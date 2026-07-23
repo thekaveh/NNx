@@ -122,20 +122,61 @@ class TransformerNN(nn.Module):
                 tuples; pass this back in for the next step.
         """
         b, t = tokens.shape
+        layer_kvs: list[LayerKV] = [None for _ in self.blocks] if past_kvs is None else past_kvs
+        if len(layer_kvs) != len(self.blocks):
+            raise ValueError(f"past_kvs has {len(layer_kvs)} entries but model has {len(self.blocks)} layers")
+
+        cached_lengths: list[int] = []
+        expected_heads = self.params.n_heads
+        if expected_heads is None:  # Constructor validation makes this unreachable.
+            raise RuntimeError("Transformer cache validation requires n_heads")
+        expected_head_dim = self.params.d_model // expected_heads
+        expected_dtype = (
+            torch.get_autocast_dtype(tokens.device.type)
+            if torch.is_autocast_enabled(tokens.device.type)
+            else self.tok_embed.weight.dtype
+        )
+        for index, layer_past in enumerate(layer_kvs):
+            if layer_past is None:
+                cached_lengths.append(0)
+                continue
+            if not isinstance(layer_past, (tuple, list)) or len(layer_past) != 2:
+                raise ValueError(f"past_kvs layer {index} must be a key/value pair")
+            key, value = layer_past
+            if key.ndim != 4 or value.ndim != 4:
+                raise ValueError(f"past_kvs layer {index} key/value tensors must be rank 4")
+            if key.shape != value.shape:
+                raise ValueError(f"past_kvs layer {index} key/value tensors must have identical shapes")
+            if key.dtype != value.dtype:
+                raise ValueError(f"past_kvs layer {index} key/value tensors must have identical dtypes")
+            if key.device != value.device:
+                raise ValueError(f"past_kvs layer {index} key/value tensors must be on the same device")
+            if key.size(0) != b:
+                raise ValueError(f"past_kvs layer {index} batch size must be {b}, got {key.size(0)}")
+            if key.size(1) != expected_heads:
+                raise ValueError(f"past_kvs layer {index} head count must be {expected_heads}, got {key.size(1)}")
+            if key.size(3) != expected_head_dim:
+                raise ValueError(
+                    f"past_kvs layer {index} head dimension must be {expected_head_dim}, got {key.size(3)}"
+                )
+            if key.dtype != expected_dtype:
+                raise ValueError(f"past_kvs layer {index} dtype must be {expected_dtype}, got {key.dtype}")
+            if key.device != tokens.device:
+                raise ValueError(f"past_kvs layer {index} device must be {tokens.device}, got {key.device}")
+            if key.size(-2) != value.size(-2):
+                raise ValueError(f"past_kvs layer {index} has different key/value sequence lengths")
+            cached_lengths.append(key.size(-2))
+        if len(set(cached_lengths)) > 1:
+            raise ValueError("all past_kvs layers must have the same cached sequence length")
+
         # Length already cached, taken from layer 0 (all layers share length).
-        cached_len = 0
-        if past_kvs is not None and past_kvs[0] is not None:
-            cached_len = past_kvs[0][0].size(-2)
+        cached_len = cached_lengths[0] if cached_lengths else 0
         total_len = cached_len + t
         if total_len > self.params.max_seq_len:
             raise ValueError(
                 f"cached_len ({cached_len}) + new tokens ({t}) = {total_len} "
                 f"exceeds max_seq_len={self.params.max_seq_len}"
             )
-
-        layer_kvs: list[LayerKV] = [None for _ in self.blocks] if past_kvs is None else past_kvs
-        if len(layer_kvs) != len(self.blocks):
-            raise ValueError(f"past_kvs has {len(layer_kvs)} entries but model has {len(self.blocks)} layers")
 
         x = self.tok_embed(tokens)  # (B, T, d_model)
         new_kvs: list[LayerKV] = []
@@ -174,9 +215,9 @@ class TransformerNN(nn.Module):
         torch.save(self.state_dict(), path)
 
     @staticmethod
-    def from_file(path: str, params: NNTransformerParams) -> TransformerNN:
+    def from_file(path: str, params: NNTransformerParams, map_location="cpu") -> TransformerNN:
         net = TransformerNN(params)
-        net.load_state_dict(torch.load(path, weights_only=True))
+        net.load_state_dict(torch.load(path, weights_only=True, map_location=map_location))
         return net
 
     @staticmethod

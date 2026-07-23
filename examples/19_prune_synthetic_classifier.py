@@ -25,7 +25,7 @@ drop while keeping the final network genuinely 50% sparse.
 
 Run:
     pip install thekaveh-nnx
-    python examples/19_prune_mnist.py
+    python examples/19_prune_synthetic_classifier.py
 """
 
 from __future__ import annotations

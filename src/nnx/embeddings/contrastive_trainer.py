@@ -44,6 +44,7 @@ from .._step_helpers import finalize_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..paradigms.contrastive import nt_xent_loss
+from ..utils import _capture_training_modes, _restore_training_modes
 
 
 class ContrastiveTextDataset(Dataset):
@@ -223,7 +224,7 @@ def embed_texts(
     # convention used by NNModel.predict / evaluate,
     # GenerativeNNModel.generate, diffusion.sample,
     # nnx.viz.activation_map, and nnx.lr_finder).
-    was_training = backbone.training
+    training_modes = _capture_training_modes(backbone)
     backbone.eval()
     chunks: list[torch.Tensor] = []
     try:
@@ -235,8 +236,7 @@ def embed_texts(
                     emb = F.normalize(emb, dim=-1)
                 chunks.append(emb.detach())
     finally:
-        if was_training:
-            backbone.train()
+        _restore_training_modes(training_modes)
     return torch.cat(chunks, dim=0)
 
 

@@ -97,6 +97,15 @@ def test_o1_predict_accepts_dataloader():
     assert result.classes.shape == (10,)
 
 
+def test_o1_predict_accepts_unlabeled_dataloader():
+    model = _model()
+    X = torch.randn(10, 4)
+    loader = DataLoader(TensorDataset(X), batch_size=4, shuffle=False)
+    result = model.predict(loader)
+    assert result.logits.shape == (10, 3)
+    assert result.classes.shape == (10,)
+
+
 # --- O3: custom metrics injection ---------------------------------------
 
 

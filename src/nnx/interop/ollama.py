@@ -13,6 +13,7 @@ thin Modelfile-emission layer on top.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -20,6 +21,18 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from nnx.nn.net.transformer_nn import TransformerNN
     from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams
+
+
+_INTEGER_PARAMETERS = {"num_ctx", "repeat_last_n", "seed", "num_predict", "draft_num_predict", "top_k"}
+_FLOAT_PARAMETERS = {"repeat_penalty", "temperature", "top_p", "min_p"}
+_SUPPORTED_PARAMETERS = _INTEGER_PARAMETERS | _FLOAT_PARAMETERS | {"stop"}
+
+
+def _validate_parameter_string(key: str, value: str) -> None:
+    if any(character in value for character in ('"', "\r", "\n", "\0")):
+        raise ValueError(
+            f"parameter {key!r} value {value!r} must not contain quotes, newlines, carriage returns, or NUL bytes"
+        )
 
 
 def _validate_modelfile_inputs(system: str, template: Optional[str], parameters: Optional[dict]) -> None:
@@ -38,14 +51,25 @@ def _validate_modelfile_inputs(system: str, template: Optional[str], parameters:
                 f"{label} must not contain a triple-quote or end with a double-quote — "
                 "it would terminate the Modelfile block early."
             )
-    if parameters:
-        for key, val in parameters.items():
-            if any(ch.isspace() for ch in str(key)):
-                raise ValueError(f"parameter key {key!r} must not contain whitespace.")
-            vals = val if isinstance(val, (list, tuple)) else [val]
-            for item in vals:
-                if isinstance(item, str) and ("\n" in item or '"' in item):
-                    raise ValueError(f"parameter {key!r} value {item!r} must not contain newlines or double quotes.")
+    if not parameters:
+        return
+    for key, value in parameters.items():
+        if not isinstance(key, str) or any(character.isspace() or character == "\0" for character in str(key)):
+            raise ValueError(f"parameter key {key!r} must not contain whitespace or NUL bytes")
+        if key not in _SUPPORTED_PARAMETERS:
+            raise ValueError(f"parameter {key!r} is not supported by the Ollama v0.32.2 tag snapshot contract")
+        if key in _INTEGER_PARAMETERS:
+            if type(value) is not int:
+                raise TypeError(f"parameter {key!r} requires an integer, got {type(value).__name__}")
+        elif key in _FLOAT_PARAMETERS:
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise TypeError(f"parameter {key!r} requires a finite number, got {value!r}")
+        else:
+            values = value if isinstance(value, (list, tuple)) else [value]
+            if not isinstance(value, (str, list, tuple)) or any(not isinstance(item, str) for item in values):
+                raise TypeError(f"parameter 'stop' requires a string or sequence of strings, got {value!r}")
+            for item in values:
+                _validate_parameter_string(key, item)
 
 
 def export_ollama_modelfile(
@@ -76,10 +100,10 @@ def export_ollama_modelfile(
             delimiters — validated, raises ``ValueError``); same
             constraint applies to ``template``.
         parameters: Optional dict of Ollama runtime parameters
-            (``{"temperature": 0.8, "top_k": 40}`` etc.). Each entry
-            becomes a ``PARAMETER <key> <value>`` line. Lists become
-            multiple ``PARAMETER <key> <item>`` lines (Ollama's
-            convention for things like ``stop``).
+            from the documented 0.32.2 set. Each entry becomes a
+            ``PARAMETER <key> <value>`` line; only ``stop`` accepts a
+            list or tuple, rendered as repeated lines. String values use
+            an injection-safe subset without quotes or control characters.
         template: Optional chat template. Emitted as a
             ``TEMPLATE ...`` block (triple-quoted) when set.
         quantization: Forwarded to :func:`write_gguf`. Defaults to F16.

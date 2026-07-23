@@ -59,13 +59,13 @@ class FeedFwdNN(nn.Module):
         torch.save(self.state_dict(), path)
 
     @staticmethod
-    def from_file(path: str, params: NNParams) -> FeedFwdNN:
+    def from_file(path: str, params: NNParams, map_location="cpu") -> FeedFwdNN:
         # weights_only=True: a state-dict is plain tensors + standard
         # scalar/dict types — the strict loader works and removes the
         # arbitrary-code-execution risk on user-supplied paths. Matches
         # NNCheckpoint.load_optimizer_state and load_pretrained.
         net = FeedFwdNN(params)
-        net.load_state_dict(torch.load(path, weights_only=True))
+        net.load_state_dict(torch.load(path, weights_only=True, map_location=map_location))
 
         return net
 

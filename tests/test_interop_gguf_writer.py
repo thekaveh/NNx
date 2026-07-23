@@ -410,6 +410,57 @@ def test_export_ollama_modelfile_rejects_injection_shaped_inputs(tmp_path):
         export_ollama_modelfile(None, None, str(tmp_path / "c"), parameters={"stop": "a\nFROM /etc/x"})
 
 
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"unknown": 1},
+        {"top_k": 1.5},
+        {"top_k": True},
+        {"temperature": True},
+        {"temperature": float("nan")},
+        {"top_p": float("inf")},
+        {"num_ctx": [4096]},
+        {"stop": 42},
+        {"stop": ["valid", 42]},
+        {"stop": "nul\0byte"},
+        {"stop": "carriage\rreturn"},
+    ],
+)
+def test_export_ollama_modelfile_rejects_invalid_parameter_contracts(tmp_path, parameters):
+    from nnx.interop import export_ollama_modelfile
+
+    with pytest.raises((TypeError, ValueError), match="parameter"):
+        export_ollama_modelfile(None, None, str(tmp_path / "invalid"), parameters=parameters)
+
+
+def test_export_ollama_modelfile_accepts_every_documented_parameter(tmp_path):
+    from nnx.interop import export_ollama_modelfile
+
+    net = _tiny_transformer()
+    tok = _tiny_tokenizer(tmp_path)
+    out_dir = tmp_path / "bundle"
+    parameters = {
+        "num_ctx": 4096,
+        "repeat_last_n": 64,
+        "seed": 7,
+        "num_predict": 128,
+        "draft_num_predict": 16,
+        "top_k": 40,
+        "repeat_penalty": 1.1,
+        "temperature": 0.8,
+        "top_p": 0.9,
+        "min_p": 0.05,
+        "stop": ["<eos>", "<end>"],
+    }
+
+    export_ollama_modelfile(net, tok, out_dir, parameters=parameters)
+    text = (out_dir / "Modelfile").read_text(encoding="utf-8")
+    for name, value in parameters.items():
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            assert f"PARAMETER {name} {item}" in text
+
+
 def test_write_gguf_creates_parent_directories(tmp_path):
     """write_gguf("out/model.gguf") from a fresh cwd previously raised
     FileNotFoundError — the ollama exporter mkdirs, the raw writer

@@ -8,6 +8,9 @@ These tests exercise the opt-in `format="safetensors"` path on
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -29,6 +32,32 @@ from nnx import (  # noqa: E402
     NNModelParams,
     NNParams,
 )
+
+
+def test_pickle_checkpoint_load_defaults_to_cpu_map_location(tmp_path, monkeypatch):
+    path = tmp_path / "checkpoint.pt"
+    path.write_bytes(b"PK\x03\x04" + b"0" * 8)
+    observed = {}
+
+    def fake_load(load_path, **kwargs):
+        observed.update(kwargs)
+        return None
+
+    monkeypatch.setattr(torch, "load", fake_load)
+
+    NNCheckpoint.from_file(str(path))
+
+    assert observed["map_location"] == "cpu"
+
+
+def test_from_checkpoint_device_override_rebuilds_cuda_metadata_on_cpu():
+    model = _tiny_model()
+    checkpoint = _build_checkpoint(model)
+    cuda_checkpoint = replace(checkpoint, model_params=replace(checkpoint.model_params, device=Devices.CUDA))
+
+    restored = NNModel.from_checkpoint(cuda_checkpoint, device=Devices.CPU)
+
+    assert restored.device.type == "cpu"
 
 
 def _tiny_model() -> NNModel:
@@ -86,6 +115,16 @@ def test_checkpoint_safetensors_round_trip(tmp_path):
         assert torch.equal(m.net.state_dict()[k], rt.net_state[k])
 
 
+@pytest.mark.parametrize("map_location", [{"cuda:0": "cpu"}, lambda storage, location: storage])
+def test_checkpoint_safetensors_rejects_unsupported_map_location(tmp_path, map_location):
+    checkpoint = _build_checkpoint(_tiny_model())
+    path = tmp_path / "checkpoint.safetensors"
+    checkpoint.to_file(str(path), format="safetensors")
+
+    with pytest.raises(TypeError, match="safetensors.*map_location"):
+        NNCheckpoint.from_file(str(path), map_location=map_location)
+
+
 def test_checkpoint_safetensors_round_trip_preserves_idp(tmp_path):
     """The NNIterationDataPoint is JSON-serialized into the safetensors metadata
     and reconstructed on load — its `.state()` must round-trip bit-exact.
@@ -141,6 +180,51 @@ def test_checkpoint_pickle_default_unchanged(tmp_path):
     # Pickle preserves the OrderedDict + dataclass identity exactly.
     assert rt.model_params == m.params
     assert rt.net_params == m.net_params
+
+
+def test_checkpoint_pickle_bare_filename_uses_destination_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    checkpoint = _build_checkpoint(_tiny_model())
+
+    checkpoint.to_file("checkpoint.pt")
+
+    assert (tmp_path / "checkpoint.pt").is_file()
+
+
+def test_snapshot_state_dict_deep_copies_extra_state_and_metadata():
+    from nnx.nn.params.nn_checkpoint import _snapshot_state_dict
+
+    state = OrderedDict(
+        [
+            ("weight", torch.tensor([1.0])),
+            ("_extra_state", {"labels": ["before"]}),
+        ]
+    )
+    state._metadata = OrderedDict({"": {"version": 1}})  # type: ignore[attr-defined]
+
+    snapshot = _snapshot_state_dict(state)
+    state["weight"].add_(1)
+    state["_extra_state"]["labels"].append("after")
+    state._metadata[""]["version"] = 2  # type: ignore[attr-defined]
+
+    assert torch.equal(snapshot["weight"], torch.tensor([1.0]))
+    assert snapshot["_extra_state"] == {"labels": ["before"]}
+    assert snapshot._metadata[""]["version"] == 1
+
+
+def test_safetensors_checkpoint_rejects_non_tensor_extra_state_clearly(tmp_path):
+    model = _tiny_model()
+    state = model.net.state_dict()
+    state["_extra_state"] = {"labels": ["class-a"]}
+    checkpoint = NNCheckpoint(
+        idp=_tiny_idp(),
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=state,
+    )
+
+    with pytest.raises(TypeError, match="safetensors checkpoint export.*non-tensor state_dict"):
+        checkpoint.to_file(str(tmp_path / "extra.safetensors"), format="safetensors")
 
 
 def test_legacy_pickle_without_transform_slot_loads_as_empty(tmp_path, monkeypatch):
@@ -275,3 +359,26 @@ def test_checkpoint_sniff_handles_0x80_header_length(tmp_path):
     assert loaded is not None
     assert loaded.idp == _tiny_idp()
     assert loaded.transforms == ()
+
+
+def test_checkpoint_rejects_unsupported_safetensors_format_version(tmp_path):
+    pytest.importorskip("safetensors")
+    import json
+
+    from safetensors.torch import save_file
+
+    model = _tiny_model()
+    path = str(tmp_path / "future.safetensors")
+    save_file(
+        {key: value.detach().clone() for key, value in model.net.state_dict().items()},
+        path,
+        metadata={
+            "nnx_format_version": "999",
+            "model_params": json.dumps(model.params.state()),
+            "net_params": json.dumps(model.net_params.state()),
+            "idp": json.dumps(_tiny_idp().state()),
+        },
+    )
+
+    with pytest.raises(ValueError, match="unsupported safetensors checkpoint format version"):
+        NNCheckpoint.from_file(path)

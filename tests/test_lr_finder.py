@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+
+import numpy as np
 import plotly.graph_objects as go
 import pytest
 import torch
@@ -100,6 +103,57 @@ def test_lr_finder_restores_model_weights():
         assert torch.equal(v, initial[k]), f"weight {k} was not restored after lr_finder"
 
 
+def test_lr_finder_restores_non_tensor_extra_state():
+    class ExtraStateLinear(nn.Linear):
+        def get_extra_state(self):
+            return {"labels": ["before"]}
+
+        def set_extra_state(self, state):
+            self.extra_state = state
+
+    model = ExtraStateLinear(4, 3)
+    _, loader = _tiny_model_and_loader()
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+    assert model.extra_state == {"labels": ["before"]}
+
+
+def test_lr_finder_restores_python_and_numpy_rng():
+    model, loader = _tiny_model_and_loader()
+    random.seed(17)
+    np.random.seed(23)
+    expected_python = random.random()
+    expected_numpy = np.random.random()
+
+    random.seed(17)
+    np.random.seed(23)
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+
+    assert random.random() == expected_python
+    assert np.random.random() == expected_numpy
+
+
+def test_lr_finder_restores_existing_parameter_gradients():
+    model, loader = _tiny_model_and_loader()
+    parameters = list(model.parameters())
+    parameters[0].grad = torch.full_like(parameters[0], 7.0)
+    parameters[1].grad = None
+    expected = parameters[0].grad.clone()
+
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+
+    assert parameters[0].grad is not None
+    assert torch.equal(parameters[0].grad, expected)
+    assert parameters[1].grad is None
+
+
+def test_lr_finder_rejects_empty_loader_clearly():
+    model, _ = _tiny_model_and_loader()
+    empty = DataLoader(TensorDataset(torch.empty(0, 4), torch.empty(0, dtype=torch.long)), batch_size=8)
+
+    with pytest.raises(ValueError, match="train_loader produced zero batches"):
+        lr_finder(model, empty, loss_fn=nn.functional.cross_entropy, num_iter=2)
+
+
 def test_lr_finder_rejects_invalid_num_iter():
     """num_iter < 2 raises ValueError."""
     model, loader = _tiny_model_and_loader()
@@ -195,6 +249,17 @@ def test_lr_finder_restores_training_mode():
     )
 
     assert model.training is True
+
+
+def test_lr_finder_restores_mixed_submodule_training_modes():
+    model, loader = _tiny_model_and_loader()
+    model.train()
+    model[1].eval()
+    before = [module.training for module in model.modules()]
+
+    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+
+    assert [module.training for module in model.modules()] == before
 
 
 def _run_lr_finder_exception_path_restore_check(initial_mode: str) -> None:
@@ -341,6 +406,21 @@ def test_lr_finder_early_exits_on_divergence():
     assert len(result.lrs) >= 1
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"diverge_threshold": 1.0}, "diverge_threshold"),
+        ({"diverge_threshold": 0.0}, "diverge_threshold"),
+        ({"ema_alpha": 0.0}, "ema_alpha"),
+        ({"ema_alpha": 1.0}, "ema_alpha"),
+    ],
+)
+def test_lr_finder_rejects_invalid_algorithm_controls(kwargs, message):
+    model, loader = _tiny_model_and_loader()
+    with pytest.raises(ValueError, match=message):
+        lr_finder(model, loader, loss_fn=torch.nn.CrossEntropyLoss(), **kwargs)
+
+
 def test_lr_finder_sweep_reaches_end_lr():
     """The docstring promises a sweep "from start_lr to end_lr"; the old
     1/num_iter exponent stopped one multiplicative step short of
@@ -482,3 +562,22 @@ def test_lr_finder_discards_persistent_workers_iterator_it_created():
     loader = make_loader()
     lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
     assert torch.equal(next(iter(loader))[0], reference_first_batch)
+
+
+def test_lr_finder_rejects_live_persistent_worker_iterator_before_mutation():
+    ds = TensorDataset(torch.randn(16, 4), torch.zeros(16, dtype=torch.long))
+    loader = DataLoader(ds, batch_size=4, num_workers=1, persistent_workers=True)
+    iterator = iter(loader)
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3))
+    model.eval()
+    before = {name: value.detach().clone() for name, value in model.state_dict().items()}
+
+    try:
+        with pytest.raises(ValueError, match="live persistent-worker iterator"):
+            lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+    finally:
+        iterator._shutdown_workers()
+
+    assert model.training is False
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, before[name])

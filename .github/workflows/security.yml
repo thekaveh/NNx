@@ -1,16 +1,11 @@
 name: security
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main, develop]
-    paths:
-      - "pyproject.toml"
-      - "requirements-tools.txt"
-      - "uv.lock"
-      - ".github/workflows/security.yml"
   schedule:
     - cron: "23 9 * * 1"
-  workflow_dispatch:
 
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
@@ -21,33 +16,41 @@ permissions:
 
 jobs:
   pip-audit:
+    name: pip-audit (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements-tools.txt
-            uv.lock
 
-      - name: Install pip-audit
-        run: |
-          python -m pip install -r requirements-tools.txt
+      - name: Install uv
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+
+      - name: Sync audit tooling from the frozen lock
+        run: uv sync --frozen --all-extras --python "$PYTHON_VERSION"
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
 
       - name: Audit frozen dependency graph
         run: |
-          uv export --frozen --all-extras --python "${{ matrix.python-version }}" --no-emit-project --no-hashes --output-file frozen-requirements.txt
-          python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off
+          uv export --frozen --all-extras --all-groups --python "$PYTHON_VERSION" --no-emit-project --no-hashes --output-file frozen-requirements.txt
+          uv run --frozen python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}

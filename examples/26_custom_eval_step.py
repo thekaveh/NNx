@@ -73,17 +73,37 @@ def regression_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     the crash point for continuous targets."""
     model = ctx.model
     model.net.train()
-    if (ctx.batch_idx % ctx.accumulate_grad_batches) == 0:
+    accumulation = ctx.accumulate_grad_batches
+    cycle_size = (ctx.batch_idx % accumulation) + 1
+    should_step = cycle_size == accumulation or ctx.is_last_batch
+    if cycle_size == 1:
         model.net.zero_grad()
     X, Y = ctx.batch
     X, Y = X.to(model.device), Y.to(model.device)
-    pred = model.net(X)
-    mse = F.mse_loss(pred, Y)
-    (mse / ctx.accumulate_grad_batches).backward()
-    if ((ctx.batch_idx + 1) % ctx.accumulate_grad_batches) == 0:
+    amp_enabled = ctx.scaler is not None and model.device.type == "cuda"
+    with torch.amp.autocast(device_type=model.device.type, enabled=amp_enabled):
+        pred = model.net(X)
+        mse = F.mse_loss(pred, Y)
+    if not torch.isfinite(mse):
+        raise FloatingPointError(f"non-finite regression loss: {float(mse.detach())!r}")
+    if ctx.scaler is not None:
+        ctx.scaler.scale(mse / accumulation).backward()
+    else:
+        (mse / accumulation).backward()
+    if should_step:
+        if ctx.scaler is not None:
+            ctx.scaler.unscale_(ctx.optimizer)
+        if cycle_size < accumulation:
+            for parameter in model.net.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.mul_(accumulation / cycle_size)
         if ctx.grad_clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
-        ctx.optimizer.step()
+        if ctx.scaler is not None:
+            ctx.scaler.step(ctx.optimizer)
+            ctx.scaler.update()
+        else:
+            ctx.optimizer.step()
     mse_val = float(mse.detach())
     with torch.no_grad():
         mae = float(F.l1_loss(pred.detach(), Y))

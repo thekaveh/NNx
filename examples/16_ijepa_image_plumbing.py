@@ -24,8 +24,8 @@ decrease, but don't expect linear-probe accuracy on the order
 of the I-JEPA paper.
 
 Run:
-    python examples/16_ijepa_cifar10.py
-    python examples/16_ijepa_cifar10.py --cifar  # download + use CIFAR-10
+    python examples/16_ijepa_image_plumbing.py
+    python examples/16_ijepa_image_plumbing.py --cifar  # download + use CIFAR-10
 """
 
 from __future__ import annotations

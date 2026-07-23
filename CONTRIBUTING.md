@@ -7,19 +7,29 @@ Thanks for being interested in contributing. NNx is a small library; the goal is
 ```bash
 git clone https://github.com/thekaveh/NNx.git
 cd NNx
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pre-commit install              # optional but recommended
+python -m pip install -r requirements-tools.txt
+uv sync --all-extras --frozen
+uv run pre-commit install       # optional but recommended
 ```
 
 Verify a clean baseline:
 
 ```bash
-pytest                          # full suite (~15s on CPU)
-ruff check src/ tests/ examples/ scripts/  # lint
-ruff format --check src/ tests/ examples/ scripts/  # format check (matches CI + pre-commit)
-mkdocs build --strict           # docs (gates CI)
+uv run pytest                          # full suite
+uv run ruff check src/ tests/ examples/ scripts/  # lint
+uv run ruff format --check src/ tests/ examples/ scripts/  # format check
+uv run pyright --warnings              # type check
+uv run python -m scripts.docs.extract_architecture_svg --check
+uv run python -m scripts.docs.build_docs --check
+uv run python -m scripts.docs.build_docs
+uv run mkdocs build --strict           # generated docs (gates CI)
 ```
+
+Repository Markdown is canonical. `docs/manifest.yaml` is the single page
+inventory; `scripts.docs.build_docs` generates ignored `mkdocs.yml`,
+`generated/site`, and `generated/wiki` projections. Do not edit generated
+outputs. A successful push to `main` publishes the same canonical content to
+GitHub Pages and the repository wiki.
 
 Useful env vars:
 
@@ -34,7 +44,7 @@ Useful env vars:
 
 ## 3. What we care about
 
-- **Strict back-compat for the existing notebook consumer.** Don't rename, remove, or restructure public APIs without a migration path. Don't change the on-disk `runs/<id>/` format. New fields on params dataclasses must omit themselves from `.state()` when set to their defaults (preserves `run.id` hashes). See the omit-when-default regression tests in `tests/test_params_round_trip.py` (search for `test_nn_*_state_omits_*_when_*`) for the canonical pattern.
+- **Strict back-compat for the existing notebook consumer.** Don't rename, remove, or restructure public APIs without a migration path. Preserve existing `runs/<id>/` artifacts; on-disk evolution requires a versioned, backward-compatible reader. New fields on params dataclasses must omit themselves from `.state()` when set to their defaults (preserves `run.id` hashes). See the omit-when-default regression tests in `tests/test_params_round_trip.py` (search for `test_nn_*_state_omits_*_when_*`) for the canonical pattern.
 - **State / from_state round-trip.** Every params dataclass with a `state()` method must round-trip cleanly through `from_state(state())`. The contract is enforced by `tests/test_params_round_trip.py`.
 - **Tests run on CPU and finish fast.** Keep new tests under a few seconds; use small TensorDataset fixtures from `tests/conftest.py`.
 - **One-line update to `CHANGELOG.md` under `[Unreleased]`** for any user-visible change.
@@ -49,10 +59,10 @@ Useful env vars:
 ## 5. Testing
 
 ```bash
-pytest                          # full suite
-pytest tests/test_pass2_n_series.py::test_n7_evaluate_aggregates_across_batches
-pytest -k "graph"               # name filter
-pytest --cov=nnx --cov-report=term-missing  # with coverage
+uv run pytest                          # full suite
+uv run pytest tests/test_pass2_n_series.py::test_n7_evaluate_aggregates_across_batches
+uv run pytest -k "graph"               # name filter
+uv run pytest --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
 Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixtures (session-wide NNX_TQDM_DISABLE, a per-test env_snapshot cache reset, and a dynamo-dispatch skip guard); otherwise it's intentionally minimal. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
@@ -61,20 +71,20 @@ Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixt
 
 - Push to your fork and open a PR against `develop`.
 - Fill in the PR template (Summary / Test plan).
-- Wait for CI to go green (lint + format + tests + mkdocs on 3.10 / 3.11 / 3.12).
+- Wait for CI to go green (lint + format + tests + mkdocs on Python 3.10 through 3.14).
 - Address review comments by pushing new commits — we squash on merge.
 
 ## 7. Releases
 
-NNx uses [release-please](https://github.com/googleapis/release-please-action) for automated version bumps, changelog updates, and tagging. Contributors don't touch versions or tags — just write a [Conventional Commit](https://www.conventionalcommits.org/)-style PR title (`feat:`, `fix:`, `chore:`, `docs:`, etc.) and (optionally) add a one-line entry under `[Unreleased]` in `CHANGELOG.md` for any user-visible change.
+NNx uses [release-please](https://github.com/googleapis/release-please-action) for automated version bumps, changelog updates, and tagging. Contributors don't touch versions or tags — just write a [Conventional Commit](https://www.conventionalcommits.org/)-style PR title (`feat:`, `fix:`, `chore:`, `docs:`, etc.) and add a one-line entry under `[Unreleased]` in `CHANGELOG.md` for any user-visible change.
 
 The end-to-end flow:
 
 1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Pre-1.0, `feat:` triggers a minor bump (`0.X.0`); `fix:` and most other types trigger a patch bump (`0.X.Y`).
-2. A maintainer reviews and merges the Release PR when ready to ship. The release-please workflow creates the release and invokes the reusable release workflow in the same run.
-3. `release.yml` runs the full test matrix, builds the package, publishes through PyPI trusted publishing (gated by the `pypi` GitHub Environment's approval rule), and verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment. Direct `v*` tag pushes remain supported.
+2. A maintainer reviews and merges the Release PR when ready to ship. Release Please explicitly dispatches the required CI and security checks for its managed branch, then creates the release and invokes the reusable release workflow in the same run after merge.
+3. `release.yml` verifies the Release Please commit belongs to `main`, runs the full test matrix, builds the package, publishes through PyPI trusted publishing (gated by the `pypi` GitHub Environment's approval rule), and verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
 
-The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit:** after development resumes, such an artifact can contain code newer than the release while still carrying the last release number. Use editable installs for local source work. Distributable artifacts must come from the tagged release workflow, which verifies tag/version agreement before publishing.
+The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit:** after development resumes, such an artifact can contain code newer than the release while still carrying the last release number. Use editable installs for local source work. Distributable artifacts must come from Release Please's reusable release workflow, which verifies tag/version agreement before publishing; direct tag pushes do not publish packages.
 
 ## 8. Things we won't merge
 

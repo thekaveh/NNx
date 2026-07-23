@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Optional, cast
 
 import pandas as pd
 import yaml
+from filelock import FileLock
 
 from ..._metrics import _resolve_metric
 from ..enum.checkpoints import Checkpoints
@@ -18,6 +24,9 @@ from ..params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
     from ...trainer.params import NNTrainerParams
+
+
+_HISTORY_PROTOCOL_FILE = ".history-committed-by-last"
 
 
 def _runs_root(root: Optional[str] = None) -> str:
@@ -51,6 +60,8 @@ def _validate_run_id(run_id: str) -> str:
     # basename happens to leave alone (e.g., `..` itself is its own basename).
     if "/" in run_id or "\\" in run_id or "\x00" in run_id or run_id in (".", ".."):
         raise ValueError(f"run id must not contain path separators or `..`; got {run_id!r}")
+    if any(character in run_id for character in "*?["):
+        raise ValueError(f"run id must not contain glob metacharacters; got {run_id!r}")
     if os.path.basename(run_id) != run_id:
         raise ValueError(f"run id must be a single path component; got {run_id!r}")
     return run_id
@@ -60,13 +71,18 @@ def _atomic_write_text(path: str, content: str) -> None:
     """Write `content` to `path` atomically — fsync, rename. A
     KeyboardInterrupt during the rename either leaves the prior file
     intact OR the new file fully written; never a half-written file."""
-    tmp = path + ".tmp"
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or None)
     # Explicit utf-8 — the default text encoding varies by platform
     # locale (cp1252 on Windows pre-3.15 / PEP 686). yaml.safe_dump
     # output is ASCII-safe today, but pinning utf-8 here makes the
     # contract platform-independent if a future state() ever emits
     # non-ASCII (e.g., a user-supplied tokenizer path with unicode).
-    with open(tmp, "w", encoding="utf-8") as f:
+    try:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+    with f:
         f.write(content)
         f.flush()
         try:
@@ -76,7 +92,11 @@ def _atomic_write_text(path: str, content: str) -> None:
             # network mounts). Atomic rename is still useful even
             # without the fsync guarantee.
             pass
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def _point_best(best_run_path: str, run_path: str) -> None:
@@ -221,7 +241,7 @@ class NNRun:
         object.__setattr__(self, "_state", {"id": id, **state})
 
     def state(self) -> dict:
-        return self._state
+        return deepcopy(self._state)
 
     def _repr_html_(self) -> str:
         """Jupyter rich-display: config table + per-epoch metric chart.
@@ -328,6 +348,44 @@ class NNRun:
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
+    def ensure_writable(self, root: Optional[str] = None, *, overwrite: bool = False) -> None:
+        runs_root = _runs_root(root)
+        run_path = os.path.join(runs_root, self.id)
+        os.makedirs(runs_root, exist_ok=True)
+        with FileLock(os.path.join(runs_root, ".admission.lock")):
+            if os.path.exists(run_path) and not overwrite:
+                raise FileExistsError(
+                    f"run {self.id} already exists; set overwrite_existing=True or "
+                    "provide a distinct data_id to preserve the existing history"
+                )
+            if overwrite and os.path.exists(run_path):
+                shutil.rmtree(run_path)
+            # Reserve the run identity before any trainer can pass admission.
+            os.makedirs(run_path, exist_ok=False)
+
+    @contextmanager
+    def writable_lease(self, root: Optional[str] = None, *, overwrite: bool = False) -> Iterator[None]:
+        """Reserve this run ID and hold exclusive ownership until training ends."""
+        runs_root = _runs_root(root)
+        lease_root = os.path.join(runs_root, ".leases")
+        os.makedirs(lease_root, exist_ok=True)
+        # Keep the lease outside runs/<id>/ so an admitted overwrite cannot
+        # unlink the lock file whose ownership it is waiting to acquire.
+        with FileLock(os.path.join(lease_root, f"{self.id}.lock")):
+            self.ensure_writable(root=root, overwrite=overwrite)
+            run_path = os.path.join(runs_root, self.id)
+            _atomic_write_text(os.path.join(run_path, _HISTORY_PROTOCOL_FILE), "1\n")
+            try:
+                yield
+            except BaseException:
+                run_path = os.path.join(runs_root, self.id)
+                protocol_path = os.path.join(run_path, _HISTORY_PROTOCOL_FILE)
+                if os.path.isdir(run_path) and os.listdir(run_path) == [_HISTORY_PROTOCOL_FILE]:
+                    os.remove(protocol_path)
+                if os.path.isdir(run_path) and not os.listdir(run_path):
+                    os.rmdir(run_path)
+                raise
+
     def checkpoints(self, root: Optional[str] = None) -> list[Optional[NNCheckpoint]]:
         """Load this run's five phase checkpoints, in cadence order
         (FIRST, Q1, Q2, Q3, LAST). Entries are None when the tag was
@@ -347,7 +405,13 @@ class NNRun:
             NNCheckpoint.load(run=self.id, type=Checkpoints.LAST, root=root),
         ]
 
-    def save(self, root: Optional[str] = None) -> NNRun:
+    def save(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
+        run_path = os.path.join(_runs_root(root), self.id)
+        os.makedirs(run_path, exist_ok=True)
+        with FileLock(os.path.join(run_path, ".run.lock")):
+            return self._save_locked(root, update_best=update_best)
+
+    def _save_locked(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
         runs_root = _runs_root(root)
         run_path = os.path.join(runs_root, self.id)
         best_run_path = os.path.join(runs_root, "best")
@@ -393,27 +457,29 @@ class NNRun:
             pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
         )
 
-        if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
-            # Either no symlink yet, or one dangling after a repo move — repoint.
-            _point_best(best_run_path, run_path)
-        else:
-            # Resolve the current best target via the symlink OR pointer file —
-            # `NNCheckpoint.load(run="best", ...)` only works under a symlink
-            # layout, so on the Windows pointer-file fallback we go through
-            # the run id explicitly to make a fair comparison.
-            best_run_id = _read_best_pointer(best_run_path)
-            best_ckpt = (
-                NNCheckpoint.load(run=best_run_id, type=Checkpoints.BEST, root=root)
-                if best_run_id is not None
-                else None
-            )
-            best_err = _best_err(best_ckpt)
-            curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST, root=root))
-
-            if curr_err < best_err:
-                _point_best(best_run_path, run_path)
+        if update_best:
+            self._update_best_pointer(runs_root, run_path, best_run_path, root)
 
         return self
+
+    def _update_best_pointer(self, runs_root: str, run_path: str, best_run_path: str, root: Optional[str]) -> None:
+        with FileLock(os.path.join(runs_root, ".best.lock")):
+            if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
+                # Either no symlink yet, or one dangling after a repo move — repoint.
+                _point_best(best_run_path, run_path)
+            else:
+                # Resolve the current best target via the symlink OR pointer file.
+                best_run_id = _read_best_pointer(best_run_path)
+                best_ckpt = (
+                    NNCheckpoint.load(run=best_run_id, type=Checkpoints.BEST, root=root)
+                    if best_run_id is not None
+                    else None
+                )
+                best_err = _best_err(best_ckpt)
+                curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST, root=root))
+
+                if curr_err < best_err:
+                    _point_best(best_run_path, run_path)
 
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
@@ -457,6 +523,14 @@ class NNRun:
             idps = [NNIterationDataPoint.from_state(idp) for idp in raw_idps]
         except KeyError as e:
             raise ValueError(f"malformed idps.csv at {csv_path}: missing column/key {e}") from e
+
+        if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
+            last = NNCheckpoint.load(run=id, type=Checkpoints.LAST, root=root)
+            last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
+            if os.path.isfile(last_path) and last is None:
+                raise ValueError(f"malformed LAST checkpoint at {last_path}")
+            committed_epoch = -1 if last is None else last.idp.epoch_idx
+            idps = [idp for idp in idps if idp.epoch_idx <= committed_epoch]
 
         try:
             # Lazy import for trainer params — keeps `nnx.nn.params`

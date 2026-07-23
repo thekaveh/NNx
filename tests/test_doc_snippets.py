@@ -392,18 +392,15 @@ def test_callbacks_early_stopping_lr_monitor_model_checkpoint(tmp_path, monkeypa
 
     lr_cb = LRMonitor()
     ckpt_cb = ModelCheckpoint(epochs=[0], tag="milestone")
-    model.train(
+    run = model.train(
         params=train_params,
         callbacks=[EarlyStopping(patience=3), lr_cb, ckpt_cb],
     )
 
     assert len(lr_cb.history) == 2  # one per epoch
 
-    run_dirs = list((tmp_path / "runs").iterdir())
-    assert run_dirs, "Expected at least one run directory"
-    ckpt_dir = run_dirs[0] / "checkpoints"
-    milestone_files = list(ckpt_dir.glob("milestone_e*.pt"))
-    assert milestone_files, "ModelCheckpoint did not write milestone file"
+    milestone = tmp_path / "runs" / run.id / "checkpoints" / "milestone_e0.pt"
+    assert milestone.is_file(), "ModelCheckpoint did not write milestone file"
 
 
 # ---------------------------------------------------------------------------

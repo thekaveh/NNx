@@ -20,6 +20,8 @@ import plotly.graph_objects as go
 import torch
 from torch import nn
 
+from ..utils import _capture_training_modes, _restore_training_modes
+
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
 
@@ -159,15 +161,14 @@ def attribute(
     if isinstance(model, NNModel):
         model = model.net
 
-    was_training = model.training
+    training_modes = _capture_training_modes(model)
     model.eval()
     try:
         attributor = _build_attributor(method, model)
         kwargs = {**_default_kwargs(method, x), **method_kwargs}
         attr_tensor = attributor.attribute(x, target=target, **kwargs)
     finally:
-        if was_training:
-            model.train()
+        _restore_training_modes(training_modes)
 
     figure = _attribution_to_figure(attr_tensor, x)
     return attr_tensor, figure

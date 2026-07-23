@@ -349,3 +349,11 @@ def test_r3_nnrun_load_accepts_normal_md5_id(tmp_path, monkeypatch):
     md5_shaped = "deadbeef" * 4  # 32 hex chars, valid run-id shape.
     # The validator should pass through without raising.
     assert _validate_run_id(md5_shaped) == md5_shaped
+
+
+@pytest.mark.parametrize("run_id", ["*", "run?", "run[1]"])
+def test_r3_run_id_rejects_glob_metacharacters(run_id):
+    from nnx.nn.params.nn_run import _validate_run_id
+
+    with pytest.raises(ValueError, match="glob metacharacters"):
+        _validate_run_id(run_id)
