@@ -124,7 +124,9 @@ jobs:
         # (v0.2.1 against a 0.2.0 pyproject) must abort BEFORE publish —
         # verify-published would only catch the mismatch after the
         # irreversible upload. workflow_dispatch dry-runs skip this.
-        if: github.event_name == 'workflow_call' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        # Reusable workflows retain the caller's event name, so Release Please
+        # calls are identified by their required tag_name input.
+        if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         run: |
           tag_version="${RELEASE_TAG#v}"
           py_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
@@ -147,7 +149,7 @@ jobs:
       - name: Publish to PyPI
         # Only runs on tag pushes; workflow_dispatch builds without publishing
         # so you can inspect the artifacts before cutting a real release.
-        if: github.event_name == 'workflow_call' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         # pypa/gh-action-pypi-publish@release/v1
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
 
@@ -165,7 +167,7 @@ jobs:
     needs: build-and-publish
     # Only runs on actual tag-push publishes, not workflow_dispatch dry runs
     # (since the dry-run path skips the pypi-publish step).
-    if: github.event_name == 'workflow_call' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Least-privilege: this job only fetches from PyPI + imports nnx.
