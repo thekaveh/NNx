@@ -23,6 +23,7 @@ touch ``NNModel`` internals, and returns the per-generation
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from typing import Any
 
 from ..nn.nn_model import NNModel
@@ -45,32 +46,23 @@ def born_again_train(
     snapshot of the model *after* the prior generation completed as the
     teacher for a Hinton-style KD step (via :func:`kd_train_step_factory`).
 
-    The same in-place ``model`` is reused across generations; only the
-    teacher snapshot is duplicated. This matches the original paper's
-    setup and keeps memory usage to two copies of the network at any
-    one time (the live student + the frozen teacher snapshot).
+    The same ``NNModel`` wrapper is reused, but its network weights are reset
+    to the caller-provided initialization before every student generation.
+    This follows the original Born-Again Networks procedure while keeping
+    memory usage to the live student, one frozen teacher, and one initial
+    state dictionary.
 
     Args:
-        model: the :class:`NNModel` to train. Mutated in place across
-            generations; the final state corresponds to the LAST
-            generation. Restore from a checkpoint if you need an
-            intermediate generation's weights.
+        model: the :class:`NNModel` to train. Its initial weights seed every
+            fresh student; its final state corresponds to the LAST generation.
         generations: how many generations to run. ``generations=1`` is
             a plain supervised run (no KD) — kept as a degenerate case
             so callers can sweep generations including the baseline.
             Must be ``≥ 1``.
-        train_params: passed unchanged to every :meth:`NNModel.train`
-            call. The same ``run.id`` would be computed every generation
-            if nothing else changed, but in practice each generation
-            mutates the model's weights between calls, so the underlying
-            artifacts (idps / phase checkpoints) diverge generation to
-            generation even with the same id. Caveat: the shared id
-            also means each generation's BEST tracking seeds from the
-            previous generation's on-disk BEST — a generation that
-            never beats its predecessor leaves BEST pointing at the
-            EARLIER generation's weights. Run each generation from a
-            fresh ``runs/`` root (fresh cwd) if you need per-generation
-            artifacts or independent BEST tracking.
+        train_params: base configuration for every :meth:`NNModel.train`
+            call. Generation zero uses it unchanged. Each later generation
+            records the preceding run as its parent, producing a distinct
+            content-addressed run with independent history and BEST tracking.
         **kd_kwargs: forwarded to :func:`kd_train_step_factory` for
             generations ≥ 1 (``alpha``, ``temperature``). Ignored on
             generation 0 (no teacher).
@@ -88,12 +80,16 @@ def born_again_train(
 
     runs: list[NNRun] = []
     teacher: NNModel | None = None
+    initial_state = copy.deepcopy(model.net.state_dict())
+    generation_params = train_params
     for g in range(generations):
+        if g > 0:
+            model.net.load_state_dict(initial_state)
         if teacher is None:
-            run = model.train(params=train_params)
+            run = model.train(params=generation_params)
         else:
             step_fn = kd_train_step_factory(teacher=teacher, **kd_kwargs)
-            run = model.train(params=train_params, train_step_fn=step_fn)
+            run = model.train(params=generation_params, train_step_fn=step_fn)
         runs.append(run)
 
         if g == generations - 1:
@@ -109,5 +105,11 @@ def born_again_train(
         teacher.net.eval()
         for p in teacher.net.parameters():
             p.requires_grad = False
+        generation_params = replace(
+            train_params,
+            resume_from_run_id=None,
+            parent_run_id=run.id,
+            resume_from_checkpoint="last",
+        )
 
     return runs

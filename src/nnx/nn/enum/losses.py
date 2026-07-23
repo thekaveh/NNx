@@ -24,6 +24,6 @@ class Losses(Enum):
             case Losses.MEAN_SQUARED_ERROR:
                 return nn.MSELoss()
             case Losses.BINARY_CROSS_ENTROPY:
-                return nn.BCELoss()
+                return nn.BCEWithLogitsLoss()
             case Losses.NEGATIVE_LOG_LIKELIHOOD:
                 return nn.NLLLoss()

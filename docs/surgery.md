@@ -137,9 +137,9 @@ If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) e
 
 ## 6. See it in practice
 
-Worked end-to-end in [ml-lab](https://github.com/thekaveh/ml-lab):
+Worked end-to-end in [ml-eng-lab](https://github.com/thekaveh/ml-eng-lab):
 
-- [model_surgery-mnist-ffnn-pytorch](https://github.com/thekaveh/ml-lab/blob/main/model_surgery-mnist-ffnn-pytorch/notebook.ipynb) — applies `nnx.surgery.widen` and `nnx.surgery.deepen` for function-preserving architectural edits on a trained MNIST `FeedFwdNN`.
+- [model_surgery-mnist-ffnn-pytorch](https://github.com/thekaveh/ml-eng-lab/blob/main/notebooks/model_surgery-mnist-ffnn-pytorch/notebook.ipynb) — applies `nnx.surgery.widen` and `nnx.surgery.deepen` for function-preserving architectural edits on a trained MNIST `FeedFwdNN`.
 
 ## 7. Combining with `nnx.finetune` for the "freeze old, train new" pattern
 

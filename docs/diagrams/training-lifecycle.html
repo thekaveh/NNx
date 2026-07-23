@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NNx training lifecycle</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#020617;color:#e2e8f0;font-family:"JetBrains Mono",ui-monospace,monospace}.wrap{max-width:1200px;margin:auto;padding:28px}h1{font-size:22px;margin:0 0 8px}p{color:#94a3b8;font-size:12px;margin:0 0 20px}.frame{border:1px solid #334155;border-radius:8px;overflow:hidden}svg{display:block;width:100%;height:auto}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}.card{border:1px solid #334155;border-radius:6px;padding:12px;background:#0f172a}.card h2{font-size:12px;margin:0 0 6px}.card p{font-size:10px;margin:0}@media(max-width:700px){.cards{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><div class="wrap"><header><h1>NNx Training Lifecycle</h1><p>Successful epoch execution, durable state, and callback finalization.</p></header><main><div class="frame">
+<svg viewBox="0 0 1200 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="training-title training-desc">
+<title id="training-title">NNx training lifecycle sequence</title><desc id="training-desc">NNModel or Trainer admits a run, dispatches callbacks and batches, validates, steps schedulers, persists history, commits checkpoints, then finalizes callbacks.</desc>
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".5"/></pattern><marker id="a" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker></defs>
+<rect width="1200" height="620" fill="#020617"/><rect width="1200" height="620" fill="url(#grid)"/>
+<g stroke="#334155"><path d="M135 125V545M365 125V545M600 125V545M835 125V545M1065 125V545" stroke-dasharray="5 5"/></g>
+<g font-family="ui-monospace,monospace" text-anchor="middle"><g fill="#0f172a" stroke="#22d3ee"><rect x="45" y="55" width="180" height="70" rx="6"/><rect x="275" y="55" width="180" height="70" rx="6"/></g><g fill="#0f172a" stroke="#34d399"><rect x="510" y="55" width="180" height="70" rx="6"/><rect x="745" y="55" width="180" height="70" rx="6"/></g><rect x="975" y="55" width="180" height="70" rx="6" fill="#0f172a" stroke="#a78bfa"/>
+<g fill="#fff" font-size="12" font-weight="600"><text x="135" y="84">Caller</text><text x="365" y="84">NNModel / Trainer</text><text x="600" y="84">Step + validation</text><text x="835" y="84">Callbacks</text><text x="1065" y="84">Run storage</text></g><g fill="#94a3b8" font-size="9"><text x="135" y="103">params + loaders</text><text x="365" y="103">writable lease</text><text x="600" y="103">model + optimizer</text><text x="835" y="103">ordered lifecycle</text><text x="1065" y="103">atomic artifacts</text></g></g>
+<g stroke="#64748b" marker-end="url(#a)" fill="none"><path d="M135 165H350"/><path d="M365 205H820"/><path d="M365 255H585"/><path d="M600 305H820"/><path d="M365 355H1050"/><path d="M365 405H1050"/><path d="M365 455H820"/><path d="M835 505H350"/></g>
+<g font-family="ui-monospace,monospace" font-size="10" fill="#cbd5e1"><text x="185" y="157">train(params)</text><text x="535" y="197">on_train_begin / on_epoch_begin</text><text x="430" y="247">batch + context</text><text x="665" y="297">metrics / validation</text><text x="675" y="347">scheduler step when loop-owned</text><text x="690" y="397">on_epoch_end callbacks</text><text x="520" y="447">history → LAST → phase/BEST → callback checkpoints</text><text x="500" y="497">reverse on_train_end; refresh LAST</text></g>
+<rect x="315" y="525" width="570" height="50" rx="6" fill="rgba(136,19,55,.4)" stroke="#fb7185" stroke-dasharray="4 4"/><text x="600" y="555" fill="#fb7185" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10">Failure: finalize every callback whose begin hook completed; preserve original exception</text>
+</svg></div><section class="cards"><div class="card"><h2>NNModel resume boundary</h2><p>Checkpoint and versioned training-state sidecar are loaded under one lock.</p></div><div class="card"><h2>Epoch boundary</h2><p>Callbacks complete before history, LAST, ancillary, and callback artifacts commit in order.</p></div><div class="card"><h2>Finalization</h2><p>Post-transform LAST reflects the model returned to the caller.</p></div></section></main></div></body></html>

@@ -8,6 +8,8 @@ on top.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Optional, cast
 
 import torch
@@ -22,6 +24,7 @@ from ..generation.logits_processors import (
     apply_chain,
 )
 from ..generation.sampling import sample_next_token
+from ..utils import _capture_training_modes, _restore_training_modes
 from .nn_model import NNModel
 from .params.nn_model_params import NNModelParams
 from .params.nn_params import NNParams
@@ -46,6 +49,21 @@ class GenerativeNNModel(NNModel):
     ):
         super().__init__(net_params=net_params, params=params)
         self.tokenizer = tokenizer
+
+    def _hub_reconstruction_config(self, save_directory) -> dict[str, Any]:
+        if self.tokenizer is None:
+            return {}
+        filename = "tokenizer.json"
+        self.tokenizer.tokenizer.save(str(Path(save_directory) / filename))  # type: ignore[union-attr]
+        return {"tokenizer": {"filename": filename}}
+
+    @classmethod
+    def _hub_reconstruction_kwargs(cls, config: Mapping[str, Any], config_directory) -> dict[str, Any]:
+        tokenizer_config = config.get("tokenizer")
+        if not isinstance(tokenizer_config, Mapping) or not isinstance(tokenizer_config.get("filename"), str):
+            return {}
+        filename = cast(str, tokenizer_config["filename"])
+        return {"tokenizer": NNTokenizerParams.from_state({"path": str(Path(config_directory) / filename)})}
 
     # ---------- generate ----------
 
@@ -175,7 +193,7 @@ class GenerativeNNModel(NNModel):
         # try/finally: an exception in the validation / chain-building
         # code above would otherwise strand the net in eval() with no
         # finally to restore it.
-        was_training = self.net.training
+        training_modes = _capture_training_modes(self.net)
         self.net.eval()
         try:
             with torch.no_grad():
@@ -200,8 +218,7 @@ class GenerativeNNModel(NNModel):
                         stop=stop,
                     )
         finally:
-            if was_training:
-                self.net.train()
+            _restore_training_modes(training_modes)
 
         return self.tokenizer.decode(generated)
 

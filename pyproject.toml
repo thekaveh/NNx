@@ -3,6 +3,17 @@
 requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+release = [
+    "setuptools==83.0.0",
+    "wheel==0.47.0",
+    "twine==6.2.0",
+]
+docs-publish = [
+    "markdown==3.10.2",
+    "pyyaml==6.0.3",
+]
+
 [project]
 name = "thekaveh-nnx"
 # 0.2.0: the dated CHANGELOG [0.1.0] section (2026-05-18 baseline, never
@@ -10,7 +21,7 @@ name = "thekaveh-nnx"
 # ship the [Unreleased] content under a fresh number.
 version = "0.2.1"
 description = "Lightweight PyTorch training/eval/visualization toolkit"
-readme = "README.md"
+readme = "PYPI_README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
@@ -50,6 +61,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -63,7 +76,7 @@ dependencies = [
     "prettytable>=3.9",
     "pyyaml>=6.0",
     "tqdm>=4.66",
-    "ipython>=8.0",
+    "filelock>=3.13",
 ]
 # Removed from `dependencies`:
 #   * `scipy` — not imported anywhere in src/tests/examples; still
@@ -71,9 +84,6 @@ dependencies = [
 #   * `kaleido` — plotly's static-image export backend. We never call
 #     `fig.write_image` / `fig.to_image`; only `fig.show()` which needs
 #     no kaleido. Users who want static export can `pip install kaleido`.
-# `ipython` is kept as a core dep for now (used lazily by the legacy
-# callback path); revisit if anyone wants a smaller minimal install.
-
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
@@ -84,10 +94,13 @@ dev = [
     # exist when the codebase was written.
     "ruff>=0.6,<0.16",
     "pyright>=1.1.380",    # CI runs `pyright --warnings`; pin here so locals match
+    "pre-commit>=3.7,<5",
+    "pip-audit==2.10.1",
     "tensorboard>=2.15",   # exercises TensorBoardCallback path in tests
     "onnx>=1.15",          # exercises NNModel.to_onnx in tests
 ]
 tensorboard = ["tensorboard>=2.15"]
+notebook = ["ipython>=8.0"]
 wandb = ["wandb>=0.16"]
 onnx = ["onnx>=1.15"]
 # `onnx-dynamo` pulls `onnxscript`, required only when calling
@@ -137,7 +150,7 @@ gguf-write = [
     "gguf>=0.19.0",
 ]
 docs = [
-    "mkdocs>=1.5",
+    "mkdocs>=1.5,<2",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.24",
     # Keep a ceiling so docs rendering remains reproducible across
@@ -180,11 +193,7 @@ ignore = [
     "B024",  # ABC with no abstract methods — NNDatasetBase is a structural base
     "UP007", # Optional[X] vs X | None — keep Optional for readability
     "UP045", # Optional[X] vs X | None in annotations (same as UP007)
-    "UP038", # isinstance(x, (A, B)) vs isinstance(x, A | B) — the tuple form
-             # reuses a static tuple at runtime; the union form constructs a
-             # new types.UnionType each call. ruff itself deprecated this
-             # rule in 0.11 for that reason — opt out explicitly so the
-             # 0.6-0.10 pin range doesn't trip on it.
+    "UP038", # Preserve tuple-based isinstance checks across the supported Python range.
 ]
 
 [tool.pytest.ini_options]

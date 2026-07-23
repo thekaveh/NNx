@@ -32,6 +32,14 @@ from .diffusion import (
     diffusion_train_step_factory,
     sample,
 )
+
+# Lower-level NNModel.train compatible factory for the embeddings path,
+# promoted alongside the other 10 *_train_step_factory functions for
+# uniform `nnx.<TAB>` discoverability. High-level `train_contrastive`
+# and FAISS export stay under `nnx.embeddings.*` to keep the top-level
+# surface focused on the train-step entry points users will most often
+# reach for.
+from .embeddings import text_contrastive_train_step_factory
 from .finetune import (
     LoadPretrainedResult,
     NNParamGroupSpec,
@@ -40,6 +48,20 @@ from .finetune import (
     load_pretrained,
     unfreeze,
 )
+
+# LogitsProcessor chain — pure-torch, no optional deps; always available.
+from .generation import (
+    LogitsChain,
+    LogitsChainBuilder,
+    LogitsProcessor,
+    RepetitionPenalty,
+    TemperatureScaling,
+    TopKFilter,
+    TopPFilter,
+    apply_chain,
+    sample_next_token,
+)
+from .lr_finder import LRFinderResult, lr_finder
 from .nn.callbacks import (
     Callback,
     EarlyStopping,
@@ -92,41 +114,14 @@ from .nn.params.nn_params import NNParams
 from .nn.params.nn_run import NNRun
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_scheduler_params_builder import NNSchedulerParamsBuilder
+
+# The tokenizer module guards its optional dependency internally, so these
+# exports remain callable and raise a targeted installation error when used
+# without the `lm` extra.
+from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
 from .nn.params.nn_train_params import NNTrainParams
 from .nn.params.nn_transformer_params import NNTransformerParams
 from .nn.params.nn_transformer_params_builder import NNTransformerParamsBuilder
-
-# NNTokenizerParams + train_bpe depend on the optional `tokenizers`
-# extra (the `lm` extra in pyproject.toml). Re-exported only when the
-# dep is available so non-LM users importing `nnx` don't hit an
-# ImportError at top-level.
-try:
-    from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
-except ImportError:  # pragma: no cover — exercised in CI without the lm extra
-    NNTokenizerParams = None  # type: ignore[assignment,misc]
-    train_bpe = None  # type: ignore[assignment]
-
-# Lower-level NNModel.train compatible factory for the embeddings path,
-# promoted alongside the other 10 *_train_step_factory functions for
-# uniform `nnx.<TAB>` discoverability. High-level `train_contrastive`
-# and FAISS export stay under `nnx.embeddings.*` to keep the top-level
-# surface focused on the train-step entry points users will most often
-# reach for.
-from .embeddings import text_contrastive_train_step_factory
-
-# LogitsProcessor chain — pure-torch, no optional deps; always available.
-from .generation import (
-    LogitsChain,
-    LogitsChainBuilder,
-    LogitsProcessor,
-    RepetitionPenalty,
-    TemperatureScaling,
-    TopKFilter,
-    TopPFilter,
-    apply_chain,
-    sample_next_token,
-)
-from .lr_finder import LRFinderResult, lr_finder
 from .paradigms import (
     JEPAPredictor,
     born_again_train,

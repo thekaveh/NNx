@@ -4,20 +4,95 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [Unreleased]
+
+### Added
+
+- Versioned warm-resume bundles now persist optimizer, scheduler, scaler, completed epoch, and Python/NumPy/PyTorch RNG state in generation-addressed sidecars, preserving the previous resumable generation across interrupted commits.
+- Smoke coverage imports every numbered example and executes representative basic, callback, and custom-evaluation examples; release tests also verify normalized source distributions are reproducible.
+- A project security policy documents supported versions, private vulnerability reporting, and responsible disclosure expectations.
+- Trainer scheduler ownership is explicit through `auto_step_schedulers`, with loop-owned once-per-epoch stepping as the default.
+- A manifest now deterministically projects canonical documentation into self-contained MkDocs and GitHub wiki trees.
+
+### Changed
+
+- GitHub workflows use current SHA-pinned actions, least-privilege permissions, frozen dependency and tooling resolution, a double-build artifact comparison, and one Release Please-only publication path; managed release PRs refresh the lockfile and dispatch required checks, while exact PyPI/GitHub hashes and immutable-release attestations are verified before completion.
+- Release builds use the locked virtual-environment interpreter, dependency audits include locked tool groups, and the release toolchain tracks wheel 0.47.0.
+- Package metadata uses a deterministic PyPI README projection whose repository links and images resolve outside GitHub.
+- Optional notebook display support moved out of the core dependency set, while process-safe persistence locking is now an explicit runtime dependency.
+- Examples and public documentation now describe experimental GGUF/Ollama export, whole-loader evaluation hooks, partial gradient accumulation, and complete resume semantics accurately.
+- Warm resume restores loader and sampler generators by stable identity and validates optimizer type, parameter topology, and scheduler identity before applying state.
+
+### Fixed
+
+- Final partial accumulation windows now perform an optimizer step, and custom evaluation runs once per epoch over the complete validation loader.
+- Gradient accumulation now identifies the observed final batch and weights uneven batches by sample count, matching one combined effective-batch update.
+- Accumulation and evaluation use the effective CE/NLL denominator for class weights and ignored targets, preserving combined-batch loss semantics.
+- Accumulation and evaluation honor configured loss hooks and mean/sum reductions; fully ignored cycles fail before optimizer updates.
+- Ignored CE/NLL targets are excluded from classification metrics, custom subclasses keep their own normalization contract, and LR finding rejects live persistent-worker iterators it cannot rewind.
+- Dataset, sampler, callback, learning-rate finder, trainer, and Ollama option boundaries reject invalid, non-finite, fractional, unsafe, or unknown inputs before execution.
+- Run identity includes data lineage, mutable parameter defaults are isolated, callback-finalized trainer checkpoints preserve transforms, and born-again generations receive distinct lineage-aware runs.
+- Checkpoint and run writes use process-safe locks plus unique atomic temporary files; LAST commits an epoch only after history persists, callback checkpoints flush after that boundary, and failed commits roll history back.
+- Model snapshots preserve PyTorch state-dict metadata and non-tensor extra state; tensor-only safetensors and Hub exports now reject incompatible extra state with a targeted error.
+- Learning-rate finding restores Python and NumPy global RNG state, and warm-resume bundles now preserve Apple MPS RNG state alongside CPU and CUDA state.
+- Inference and inspection helpers restore mixed per-module train/eval modes exactly instead of flattening every child to the root mode.
+- Mode restoration invokes recursive `Module.train()` only at actual mode boundaries, avoiding redundant custom-hook side effects in homogeneous subtrees.
+- Mixed-mode restoration invokes each custom `Module.train()` hook exactly once, and checkpoint cleanup enumerates literal directories so metacharacters in root paths cannot affect siblings.
+- Child-aware mode hooks retain access to registered modules, probability-target cross entropy reports class-index metrics, and pickle checkpoints/sidecars load portably onto CPU by default.
+- Mode restoration suppresses direct calls to any descendant hook, and legacy feed-forward/transformer file loaders also default to CPU with an override.
+- Transformer token logits now flatten correctly for standard cross-entropy training, mode hooks restore bottom-up, high-level checkpoint reconstruction accepts a device override, and safetensors honors load placement.
+- Transformer probability targets flatten along the class-last layout, predictions select the final class axis, malformed KV caches fail clearly, Hub loads override serialized device metadata, and safetensors rejects unsupported location mappings.
+- Transformer-only class-last handling no longer changes class-first segmentation outputs, and Hub loading rejects indexed devices that the serialized device contract cannot preserve.
+- Checkpoint reconstruction preserves subclasses, Transformer KV caches validate their full tensor contract, and Hub safetensors loading normalizes `torch.device` locations.
+- Transformer cache validation supports active autocast, checks key/value symmetry and tuple shape, and subclass-preserving reconstruction is reflected in static `Self` typing.
+- Multidimensional probability-target metrics flatten consistently, generative checkpoint reconstruction accepts its tokenizer, and Hub artifacts package tokenizer and topology-transform metadata for loadable generative and converted-QAT round trips.
+- Classification error follows subset accuracy for multidimensional labels, cross-entropy subclasses retain metric preprocessing, built-in binary classification uses logits with a zero threshold, Trainer exports retain completed topology transforms, and remote Hub artifacts load from one immutable snapshot.
+- Soft binary targets are thresholded only for classification metrics, preventing valid BCE training from failing after an optimizer update.
+- Persistent NNModel training rejects low-rank surgery without a reconstruction recipe before mutating state; the surgery example uses manual refinement and state-dict export semantics.
+- Explicit custom training steps remain available for reconstructibility-aware custom topologies such as diffusion, and frozen evaluation records store custom metrics in an immutable hashable mapping.
+- Inherited native CE/NLL losses retain class-weight normalization, and repeated NNModel or Trainer transformations compose reconstruction recipes instead of replacing them.
+- Optimizerless checkpoints explicitly reject stale legacy sidecars after interrupted cleanup, warm resume rejects GradScaler presence changes, and mode restoration honors custom `Module.train()` hooks.
+- Run identifiers reject glob metacharacters before sidecar cleanup, and subclasses of built-in elementwise losses retain the custom-loss normalization contract.
+- Documentation projection rejects missing local links, malformed nested manifests, unsafe output slugs and collisions, source paths outside the repository, symlink destinations, repository ancestors, and nonempty unmanaged outputs.
+- Documentation projection checks are non-mutating, fenced examples are ignored during link processing, and cleanup rejects symlinks in every output path component.
+- Documentation projection preserves inline code and link titles, handles nested fence-like examples correctly, and rejects unmapped repository-file links instead of erasing them.
+- Documentation projection rewrites reference-style links, rejects nonportable root-relative URLs, and validates setext headings and explicit anchor IDs.
+- Documentation projection uses balanced escape-aware link scanning, decoded local-path lookup, HTML-comment exclusion, and Python-Markdown anchor slugs.
+- Documentation projection tokenizes multiline links/references, indented code, contextual comments, and blockquoted headings correctly.
+- Documentation projection rejects image traversal and unknown manifest keys, suppresses blockquoted fences and raw `<pre>` blocks, and derives wiki anchors from rendered GitHub-style heading text.
+- Documentation projection respects blockquote and raw-HTML containers, rewrites and validates HTML links/images, rejects unpublished image sources, and allocates globally unique wiki anchors.
+- Documentation projection handles quoted and unquoted HTML targets, list-contained fences/headings, site superfence anchors, and nested wiki asset paths without flattening collisions.
+- Documentation projection uses offset-preserving HTML attribute scanning, excludes literal blocks from HTML processing and anchor discovery, preserves nested assets on both surfaces, and rejects duplicate manifest keys.
+- Documentation projection enforces output containment, depth-aware raw/list containers, MkDocs extension parity, complete HTML resource attributes, contained assets, unique attributes, and HTML-entity lookup.
+- Documentation projection rejects asset-directory symlinks, distinguishes list prose from code, covers literal HTML forms and standard resources, preserves data-URL `srcset`, and derives wiki anchors from rendered structure.
+- Documentation projection handles mixed `srcset`, complete URL-bearing attributes, blockquoted raw HTML, list references/explicit IDs, independent heading suffixes, and copied HTML/CSS validation.
+- Documentation projection separates descriptorless data-URI `srcset` candidates, honors blank-line raw-HTML termination, projects nested-list IDs, parses CSS comments/imports, accepts the standard macOS `/tmp` alias, and type-checks its scripts.
+- Documentation projection preserves GFM raw-HTML blocks through the following blank line, recognizes nested-list HTML, validates embedded CSS and copied SVG resources, and rejects incomplete projected assets.
+- Documentation projection closes raw/comment blocks at list boundaries, enforces declaration case, projects nested Setext IDs, tokenizes CSS functions and strings, validates additional SVG references, and rejects empty manifest groups.
+- Documentation projection handles list-contained literal HTML, CSS escapes and image sets, literal-code wiki headings, broader SVG references, and balanced nested SVG diagram extraction.
+- Documentation projection closes processing-instruction and declaration literals at list boundaries, consumes CSS escapes while scanning nested functions, and validates SVG stylesheet processing instructions.
+- Documentation projection measures tab indentation in Markdown columns, handles escaped CSS imports and line continuations plus nested `image()`, and ignores SVG stylesheet text inside comments and CDATA.
+- Documentation projection applies tab columns to fences and reference definitions, covers directional CSS `image()`, tokenizes stylesheet PI attributes, accepts standard macOS temporary aliases, and wiki publication can initialize an empty remote.
+- Documentation projection preserves partial tab-stop indentation, normalizes invalid CSS escapes to U+FFFD, and rejects duplicate or malformed XML stylesheet pseudo-attributes.
+- Documentation projection recognizes a dedented closing marker for a list-contained fence instead of reopening suppression across following prose.
+- Safetensors checkpoints reject missing or unsupported format versions instead of attempting an incompatible load.
+- The architecture diagram now renders completely on desktop while retaining a contained, readable horizontal scroller on small screens.
+
+### Security
+
+- Dependency alerts, Dependabot security updates, private vulnerability reporting, secret scanning with push protection, CodeQL default setup, immutable releases, and protected merge-only Gitflow rules are enabled at the repository level.
+- Required gitflow checks are bound to the GitHub Actions integration rather than accepting same-named statuses from arbitrary writers.
+- The v0.2.1 GitHub release now carries the exact wheel and source distribution published to PyPI; repository immutable releases are enabled for subsequent publications.
+
 ## [0.2.1](https://github.com/thekaveh/NNx/compare/v0.2.0...v0.2.1) (2026-07-22)
 
 
 ### Features
 
 * ConvNN (LeNet-style) + NNConvParams + Nets.CONV ([#89](https://github.com/thekaveh/NNx/issues/89)) ([46fdfef](https://github.com/thekaveh/NNx/commit/46fdfef1e3aa73ba19a4373e7cd70320c6e0259d))
-* ConvNN (LeNet-style) + NNConvParams + Nets.CONV ([#89](https://github.com/thekaveh/NNx/issues/89)) ([a96c870](https://github.com/thekaveh/NNx/commit/a96c87093091b67b098339f95a388d779afae7b5))
 * **dataset:** full-batch node-classification loader (no pyg-lib) for NNGraphDataset ([2b8b163](https://github.com/thekaveh/NNx/commit/2b8b16357c626670ca93c179227d9aea07085a95))
-* FeedFwdMoENN net + Nets.FEED_FWD_MOE + NNMoEParams ([f78c921](https://github.com/thekaveh/NNx/commit/f78c921c3302c3e27d1f1bbbf034206cbded97dc))
 * FeedFwdMoENN net + Nets.FEED_FWD_MOE + NNMoEParams ([5d3956f](https://github.com/thekaveh/NNx/commit/5d3956febf364091cd335455b40d2a8cd0e2d248)), closes [#88](https://github.com/thekaveh/NNx/issues/88)
-* full-batch node-classification loader (train GNNs without pyg-lib) ([7b339df](https://github.com/thekaveh/NNx/commit/7b339df7f42acc8978dc46944f8c8be0cdf2cc7e))
-* per-layer activation & dropout on NNParams ([bab71a5](https://github.com/thekaveh/NNx/commit/bab71a5d425e1f2fb3307a2729fbe8dcbe8ce577))
 * per-layer activation & dropout on NNParams (net-wide → optional lists) ([4a5de0c](https://github.com/thekaveh/NNx/commit/4a5de0c2992b9e4b001fb930969247461f4314bf)), closes [#85](https://github.com/thekaveh/NNx/issues/85)
-* pluggable eval_step_fn on NNModel.train (mirror train_step_fn) ([88053ea](https://github.com/thekaveh/NNx/commit/88053ea846370a4516d3e81e0e61876d1af38569))
 * pluggable eval_step_fn on NNModel.train (mirror train_step_fn) ([822b6da](https://github.com/thekaveh/NNx/commit/822b6dadeb1c6a4ae8037da449d930a8c121fabf)), closes [#86](https://github.com/thekaveh/NNx/issues/86)
 
 
@@ -26,15 +101,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 * complete specialized network exports ([91ff6ef](https://github.com/thekaveh/NNx/commit/91ff6ef66ac1bd7aefe900a18b63848818946313))
 * harden training lifecycle and type contracts ([c6b322e](https://github.com/thekaveh/NNx/commit/c6b322e1f37ca289f17d7954ee26926733cced8d))
 * promote GitPython security refresh ([1c03f56](https://github.com/thekaveh/NNx/commit/1c03f56a4e066ca33017294152b5196e98cc3aaf))
-* re-save LAST checkpoint after on_train_end so callback net mutations persist ([960ae48](https://github.com/thekaveh/NNx/commit/960ae484f8ad053b0bcddfc575d2c964f121f0a7))
 * re-save LAST checkpoint after on_train_end so callback net mutations persist ([65e599c](https://github.com/thekaveh/NNx/commit/65e599c917b2c57929215859d5d23b5d418a40ef)), closes [#87](https://github.com/thekaveh/NNx/issues/87)
-* reconstruct converted QAT checkpoints ([90ee652](https://github.com/thekaveh/NNx/commit/90ee6520ec8ad5fb2211cf1d1b4776fe72b8055f))
 * reconstruct converted QAT checkpoints ([24d3262](https://github.com/thekaveh/NNx/commit/24d326260b0db2c3c19e16267efd5fd27724b3f2))
-* refresh vulnerable GitPython lock ([9e0e7ee](https://github.com/thekaveh/NNx/commit/9e0e7ee5137bbe047f230836e07351c3f555f1ea))
-* refresh vulnerable GitPython lock ([f54b675](https://github.com/thekaveh/NNx/commit/f54b675fde9e6199e16cb9b088b25e12ea6ff233))
 * reject missing ConvNN scalar activation ([3476d2e](https://github.com/thekaveh/NNx/commit/3476d2e82d6320d55de401fcbe74647f53430c8b))
 * reject single-expert MoE params ([#114](https://github.com/thekaveh/NNx/issues/114)) ([a395e2d](https://github.com/thekaveh/NNx/commit/a395e2d03fd44594b65256ad69bf78942d0be15f))
-* require ConvNN scalar activation ([babead8](https://github.com/thekaveh/NNx/commit/babead8f1ebc8d9c0f207b4d4bbe8e7cee7e1838))
 * require hidden layers for MoE params ([#116](https://github.com/thekaveh/NNx/issues/116)) ([70bf913](https://github.com/thekaveh/NNx/commit/70bf913c5371f099c9d1e019348764fe25531026))
 * support pandas 2 type contracts ([d9c523e](https://github.com/thekaveh/NNx/commit/d9c523e2f3a127252b9b997b6687b2401b15122b))
 
@@ -42,13 +112,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 ### Documentation
 
 * **examples:** propagate the new primitives ([#85](https://github.com/thekaveh/NNx/issues/85)–[#89](https://github.com/thekaveh/NNx/issues/89)) to the examples ([16fa58b](https://github.com/thekaveh/NNx/commit/16fa58b92615b7d4a9e1ce2687c5e9044501b43c))
-* **examples:** propagate the new primitives ([#85](https://github.com/thekaveh/NNx/issues/85)–[#89](https://github.com/thekaveh/NNx/issues/89)) to the examples ([d3f9b65](https://github.com/thekaveh/NNx/commit/d3f9b65c1cda08ce5a65a4cbe42375d624fa120f))
 * link the rendered docs site from README ([#68](https://github.com/thekaveh/NNx/issues/68)) ([3cf1682](https://github.com/thekaveh/NNx/commit/3cf1682a51c45800a2ef3d687140b1bbf7183af2))
 * render architecture diagram in a themed page (fix bare-HTML nav break) ([#69](https://github.com/thekaveh/NNx/issues/69)) ([8940c3e](https://github.com/thekaveh/NNx/commit/8940c3ed6c1e24ff364d6a9644a0f93ffd238ad4))
 * Slate + Cobalt theme for the docs site ([#66](https://github.com/thekaveh/NNx/issues/66)) ([7520455](https://github.com/thekaveh/NNx/commit/7520455ed19f94650950deae8f3c52cb183d9701))
 * synchronize architecture and publishing surfaces ([14a4d2c](https://github.com/thekaveh/NNx/commit/14a4d2c03c122ca45f278ee47688efdc87d2d02e))
-
-## [Unreleased]
 
 ### Changed
 

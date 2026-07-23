@@ -7,6 +7,32 @@ from typing import Optional
 from ..enum.activations import Activations
 
 
+class _ImmutableList(list):
+    def _reject_mutation(self, *_args, **_kwargs):
+        raise TypeError("NNParams list fields are immutable")
+
+    append = _reject_mutation
+    clear = _reject_mutation
+    extend = _reject_mutation
+    insert = _reject_mutation
+    pop = _reject_mutation
+    remove = _reject_mutation
+    reverse = _reject_mutation
+    __delitem__ = _reject_mutation
+    __iadd__ = _reject_mutation
+    __imul__ = _reject_mutation
+    __setitem__ = _reject_mutation
+
+    def sort(self, *, key=None, reverse: bool = False):
+        self._reject_mutation(key=key, reverse=reverse)
+
+    def __deepcopy__(self, _memo):
+        return self
+
+    def __reduce_ex__(self, _protocol):
+        return (_ImmutableList, (list(self),))
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNParams:
     dropout_prob: float
@@ -64,11 +90,18 @@ class NNParams:
             if not all(0.0 <= q <= 1.0 for q in self.dropout_probs):
                 raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
 
+        if self.hidden_dims is not None:
+            object.__setattr__(self, "hidden_dims", _ImmutableList(self.hidden_dims))
+        if self.activations is not None:
+            object.__setattr__(self, "activations", _ImmutableList(self.activations))
+        if self.dropout_probs is not None:
+            object.__setattr__(self, "dropout_probs", _ImmutableList(self.dropout_probs))
+
         dims = [self.input_dim]
         dims += self.hidden_dims if self.hidden_dims is not None else []
         dims += [self.output_dim]
 
-        object.__setattr__(self, "_dims", dims)
+        object.__setattr__(self, "_dims", _ImmutableList(dims))
 
     def activation_for(self, layer_idx: int) -> Activations:
         """The activation for hidden layer ``layer_idx`` — the per-layer entry

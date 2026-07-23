@@ -1,17 +1,22 @@
 name: docs
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, develop]
     paths:
       - "docs/**"
       - "README.md"
+      - "SECURITY.md"
       - "CONTRIBUTING.md"
       - "CHANGELOG.md"
+      - "LICENSE"
       - "examples/README.md"
       - "tests/README.md"
       - "scripts/docs/**"
-      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "requirements-tools.txt"
+      - "uv.lock"
       - "src/**"
       - ".github/workflows/docs.yml"
   pull_request:
@@ -19,20 +24,21 @@ on:
     paths:
       - "docs/**"
       - "README.md"
+      - "SECURITY.md"
       - "CONTRIBUTING.md"
       - "CHANGELOG.md"
+      - "LICENSE"
       - "examples/README.md"
       - "tests/README.md"
       - "scripts/docs/**"
-      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "requirements-tools.txt"
+      - "uv.lock"
       - "src/**"
       - ".github/workflows/docs.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -40,80 +46,100 @@ concurrency:
 
 jobs:
   build:
+    name: Build documentation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - name: Install docs + feature extras
-        run: |
-          python -m pip install -r requirements-tools.txt
-          uv sync --frozen --all-extras --python "3.12"
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+      - name: Sync docs + feature extras from the frozen lock
+        run: uv sync --frozen --all-extras --python "3.12"
       - name: Build site (strict)
-        run: uv run --frozen mkdocs build --strict
+        run: |
+          uv run --frozen python -m scripts.docs.extract_architecture_svg --check
+          uv run --frozen python -m scripts.docs.build_docs
+          uv run --frozen mkdocs build --strict
 
       - name: Verify deterministic wiki projection
         run: uv run --frozen python -m scripts.docs.build_wiki --check
 
       - name: Configure Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        # actions/configure-pages@v5
+        # actions/configure-pages@v6.0.0
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
-        with:
-          enablement: true
 
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        # actions/upload-pages-artifact@v3
+        # actions/upload-pages-artifact@v5.0.0
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         with:
           path: site
 
   deploy:
+    name: Deploy GitHub Pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write # Publish the uploaded artifact to GitHub Pages.
+      id-token: write # Authenticate the Pages deployment.
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         name: Deploy Pages
-        # actions/deploy-pages@v4
+        # actions/deploy-pages@v5.0.0
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
 
   wiki:
+    name: Publish GitHub wiki
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Push the generated wiki through GITHUB_TOKEN.
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
 
-      - name: Install documentation tooling
-        run: |
-          python -m pip install -r requirements-tools.txt
-          uv sync --frozen --all-extras --python "3.12"
+      - name: Install uv
+        # astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+          version: "0.11.31"
+
+      - name: Sync documentation tooling from the frozen lock
+        run: uv sync --frozen --only-group docs-publish --no-install-project --no-build --python "3.12"
 
       - name: Build wiki
-        run: uv run --frozen python -m scripts.docs.build_wiki
+        run: uv run --frozen --no-sync python -m scripts.docs.build_wiki
 
       - name: Publish wiki master branch
         env:
           WIKI_REPOSITORY: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
-        run: uv run --frozen python -m scripts.docs.push_wiki generated/wiki "$WIKI_REPOSITORY"
+        run: uv run --frozen --no-sync python -m scripts.docs.push_wiki generated/wiki "$WIKI_REPOSITORY"

@@ -102,6 +102,36 @@ def test_hub_from_pretrained_round_trip(tmp_path):
     assert torch.equal(out_m, out_rt)
 
 
+def test_hub_from_pretrained_map_location_overrides_serialized_device(tmp_path):
+    model = _tiny_model()
+    model.save_pretrained(str(tmp_path))
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["params"]["device"] = Devices.CUDA.value
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    restored = NNModel.from_pretrained(str(tmp_path), map_location="cpu")
+
+    assert restored.device.type == "cpu"
+
+
+def test_hub_from_pretrained_rejects_indexed_map_location(tmp_path):
+    model = _tiny_model()
+    model.save_pretrained(str(tmp_path))
+
+    with pytest.raises(ValueError, match="indexed Hub map_location"):
+        NNModel.from_pretrained(str(tmp_path), map_location="cuda:1")
+
+
+def test_hub_from_pretrained_accepts_torch_device_map_location(tmp_path):
+    model = _tiny_model()
+    model.save_pretrained(str(tmp_path))
+
+    restored = NNModel.from_pretrained(str(tmp_path), map_location=torch.device("cpu"))
+
+    assert restored.device.type == "cpu"
+
+
 def test_hub_save_pretrained_overwrite(tmp_path):
     """A second save_pretrained into the same directory must rewrite,
     not error. Round-trip after overwrite still works.
@@ -115,6 +145,28 @@ def test_hub_save_pretrained_overwrite(tmp_path):
     # Round-trip recovers the *second* save's weights, not the first.
     for k in m2.net.state_dict():
         assert torch.equal(m2.net.state_dict()[k], rt.net.state_dict()[k])
+
+
+def test_hub_export_rejects_non_tensor_extra_state_clearly(tmp_path):
+    class ExtraStateNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(4, 2)
+
+        def forward(self, x):
+            return self.linear(x)
+
+        def get_extra_state(self):
+            return {"labels": ["class-a"]}
+
+        def set_extra_state(self, state):
+            self.extra_state = state
+
+    model = _tiny_model()
+    model.net = ExtraStateNet()
+
+    with pytest.raises(TypeError, match="Hugging Face Hub export.*non-tensor state_dict"):
+        model.save_pretrained(str(tmp_path))
 
 
 def test_hub_mixin_inheritance_is_visible():
@@ -202,10 +254,42 @@ def test_hub_round_trip_tied_transformer(tmp_path):
     m.save_pretrained(str(out_dir))  # pre-fix: RuntimeError (shared memory)
 
     rt = GenerativeNNModel.from_pretrained(str(out_dir))
-    rt.tokenizer = tokenizer
+    assert rt.tokenizer is not None
     for k in m.net.state_dict():
         assert torch.equal(m.net.state_dict()[k], rt.net.state_dict()[k])
     assert rt.net.lm_head.weight is rt.net.tok_embed.weight, "tie not reassembled"
     a = m.generate(prompt="the", max_new_tokens=6, temperature=0.0)
     b = rt.generate(prompt="the", max_new_tokens=6, temperature=0.0)
     assert a == b
+
+
+def test_hub_config_persists_and_replays_topology_transforms(tmp_path, monkeypatch):
+    from nnx.nn import nn_model as nn_model_module
+    from nnx.nn.params.nn_checkpoint import NNCheckpointTransform
+
+    model = _tiny_model()
+    transform = NNCheckpointTransform(name="test-transform", options={"value": 1})
+    model._topology_transforms = (transform,)
+    model.save_pretrained(str(tmp_path))
+    applied = []
+    monkeypatch.setattr(nn_model_module, "_apply_checkpoint_transform", lambda restored, item: applied.append(item))
+
+    NNModel.from_pretrained(str(tmp_path))
+
+    assert applied == [transform]
+
+
+def test_remote_hub_load_uses_one_atomic_snapshot(tmp_path, monkeypatch):
+    model = _tiny_model()
+    model.save_pretrained(str(tmp_path))
+    calls = []
+
+    def snapshot_download(**kwargs):
+        calls.append(kwargs)
+        return str(tmp_path)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+    restored = NNModel._from_pretrained(model_id="owner/repo")
+
+    assert isinstance(restored, NNModel)
+    assert len(calls) == 1

@@ -18,7 +18,7 @@ from nnx.nn.enum.devices import Devices
 from nnx.nn.enum.losses import Losses
 from nnx.nn.enum.nets import Nets
 from nnx.nn.enum.optims import Optims
-from nnx.nn.nn_model import NNModel
+from nnx.nn.nn_model import NNModel, _classification_metric_tensors, _loss_normalization_weight
 from nnx.nn.params.nn_model_params import NNModelParams
 from nnx.nn.params.nn_optim_params import NNOptimParams
 from nnx.nn.params.nn_params import NNParams
@@ -39,6 +39,86 @@ def _model() -> NNModel:
             loss=Losses.CROSS_ENTROPY,
         ),
     )
+
+
+def test_custom_elementwise_loss_subclass_keeps_batch_normalization_contract():
+    class CustomMSE(torch.nn.MSELoss):
+        pass
+
+    logits = torch.zeros(2, 3)
+    target = torch.zeros(2, 3)
+
+    assert _loss_normalization_weight(CustomMSE(), logits, target) == 2.0
+
+
+def test_cross_entropy_probability_targets_use_class_indices_for_metrics():
+    loss_fn = torch.nn.CrossEntropyLoss()
+    target = torch.tensor([[0.1, 0.9], [0.8, 0.2]])
+    prediction = torch.tensor([1, 0])
+
+    metric_target, metric_prediction = _classification_metric_tensors(loss_fn, target, prediction)
+
+    assert torch.equal(metric_target, torch.tensor([1, 0]))
+    assert torch.equal(metric_prediction, prediction)
+
+
+def test_multidimensional_probability_targets_are_flattened_for_metrics():
+    loss_fn = torch.nn.CrossEntropyLoss()
+    target = torch.softmax(torch.randn(2, 3, 4, 5), dim=1)
+    prediction = target.argmax(dim=1)
+
+    metric_target, metric_prediction = _classification_metric_tensors(loss_fn, target, prediction)
+
+    assert metric_target.shape == (40,)
+    assert metric_prediction.shape == (40,)
+
+
+def test_cross_entropy_subclass_keeps_metric_preprocessing():
+    class CustomCrossEntropy(torch.nn.CrossEntropyLoss):
+        pass
+
+    target = torch.tensor([0, -100, 1])
+    prediction = torch.tensor([0, 1, 1])
+    metric_target, metric_prediction = _classification_metric_tensors(CustomCrossEntropy(), target, prediction)
+
+    assert torch.equal(metric_target, torch.tensor([0, 1]))
+    assert torch.equal(metric_prediction, torch.tensor([0, 1]))
+
+
+def test_weighted_cross_entropy_subclass_keeps_native_denominator():
+    class CustomCrossEntropy(torch.nn.CrossEntropyLoss):
+        pass
+
+    loss = CustomCrossEntropy(weight=torch.tensor([1.0, 3.0]))
+    target = torch.tensor([0, 1, 1])
+    assert _loss_normalization_weight(loss, torch.randn(3, 2), target) == 7.0
+
+
+def test_binary_logits_use_zero_threshold_for_predictions():
+    class BinaryNet(torch.nn.Linear):
+        def unpack_batch(self, batch):
+            return (batch[0],), batch[1]
+
+    model = _model()
+    model.params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY)
+    model.loss_fn = model.params.loss()
+    model.net = BinaryNet(4, 1)
+    with torch.no_grad():
+        model.net.weight.zero_()
+        model.net.bias.fill_(1.0)
+
+    _x, _y, logits, prediction = model._fwd_pass((torch.zeros(2, 4), torch.ones(2, 1)))
+
+    assert logits.shape == (2, 1)
+    assert torch.equal(prediction, torch.ones(2, 1, dtype=torch.long))
+
+
+def test_soft_binary_targets_are_thresholded_for_metrics():
+    target = torch.tensor([[0.8], [0.2]])
+    prediction = torch.tensor([[1], [0]])
+    metric_target, metric_prediction = _classification_metric_tensors(torch.nn.BCEWithLogitsLoss(), target, prediction)
+    assert torch.equal(metric_target, torch.tensor([[1], [0]]))
+    assert torch.equal(metric_prediction, prediction)
 
 
 def test_n1_optim_is_valid_always_returns_bool():
@@ -71,6 +151,150 @@ def test_n7_evaluate_aggregates_across_batches():
     edp_full = model.evaluate(loader=big_loader)
     assert abs(edp.accuracy - edp_full.accuracy) < 1e-9
     assert abs(edp.error - edp_full.error) < 1e-9
+
+
+@pytest.mark.parametrize("loss_type", [torch.nn.CrossEntropyLoss, torch.nn.NLLLoss])
+def test_n7_evaluate_loss_matches_weighted_ignored_combined_batch(loss_type):
+    torch.manual_seed(0)
+    model = _model()
+    model.loss_fn = loss_type(weight=torch.tensor([1.0, 7.0]), ignore_index=-100)
+
+    X = torch.randn(5, 4)
+    y = torch.tensor([-100, -100, 0, 0, 1])
+    split = model.evaluate(loader=DataLoader(TensorDataset(X, y), batch_size=2, shuffle=False))
+    combined = model.evaluate(loader=DataLoader(TensorDataset(X, y), batch_size=5, shuffle=False))
+
+    assert split.loss == pytest.approx(combined.loss)
+
+
+@pytest.mark.parametrize("loss_type", [torch.nn.CrossEntropyLoss, torch.nn.NLLLoss])
+def test_n7_evaluate_loss_preserves_classification_sum_reduction(loss_type):
+    torch.manual_seed(0)
+    model = _model()
+    model.loss_fn = loss_type(weight=torch.tensor([1.0, 7.0]), ignore_index=-100, reduction="sum")
+
+    X = torch.randn(5, 4)
+    y = torch.tensor([-100, -100, 0, 0, 1])
+    split = model.evaluate(loader=DataLoader(TensorDataset(X, y), batch_size=2, shuffle=False))
+    combined = model.evaluate(loader=DataLoader(TensorDataset(X, y), batch_size=5, shuffle=False))
+
+    assert split.loss == pytest.approx(combined.loss)
+
+
+@pytest.mark.parametrize(
+    "loss_fn",
+    [
+        pytest.param(torch.nn.MSELoss(reduction="sum"), id="mse"),
+        pytest.param(torch.nn.BCEWithLogitsLoss(reduction="sum"), id="bce"),
+        pytest.param(torch.nn.MSELoss(), id="mse-mean"),
+        pytest.param(torch.nn.BCEWithLogitsLoss(), id="bce-mean"),
+    ],
+)
+def test_n7_evaluate_elementwise_loss_matches_combined_call(loss_fn):
+    class BinaryModel:
+        evaluate = NNModel.evaluate
+
+        def __init__(self):
+            self.net = torch.nn.Linear(1, 1, bias=False)
+            self.net.weight.data.fill_(0.25)
+            self.loss_fn = loss_fn
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X).squeeze(-1)
+            return X, Y, logits, (logits >= 0).to(Y.dtype)
+
+    X = torch.tensor([[1.0], [2.0], [3.0]])
+    Y = torch.tensor([0.0, 1.0, 1.0])
+    model = BinaryModel()
+
+    split = model.evaluate(DataLoader(TensorDataset(X, Y), batch_size=2))
+    combined = loss_fn(model.net(X).squeeze(-1), Y)
+
+    assert split.loss == pytest.approx(float(combined.detach()))
+
+
+def test_n7_evaluate_calls_cross_entropy_subclass_and_hooks():
+    class TrackingCrossEntropy(torch.nn.CrossEntropyLoss):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, logits, target):
+            self.calls += 1
+            return super().forward(logits, target) + 2.0
+
+    model = _model()
+    loss_fn = TrackingCrossEntropy()
+    hook_calls = []
+    loss_fn.register_forward_hook(lambda *_args: hook_calls.append(True))
+    model.loss_fn = loss_fn
+    X = torch.randn(5, 4)
+    Y = torch.tensor([0, 1, 0, 1, 0])
+
+    split = model.evaluate(DataLoader(TensorDataset(X, Y), batch_size=2))
+    with torch.no_grad():
+        combined = loss_fn(model.net(X), Y)
+
+    assert split.loss == pytest.approx(float(combined))
+    assert loss_fn.calls == 4
+    assert len(hook_calls) == 4
+
+
+def test_n7_evaluate_uses_batch_weighting_for_cross_entropy_subclasses():
+    class RemappingCrossEntropy(torch.nn.CrossEntropyLoss):
+        def forward(self, logits, target):
+            remapped = torch.where(target == 0, torch.ones_like(target), target)
+            return super().forward(logits, remapped)
+
+    model = _model()
+    model.loss_fn = RemappingCrossEntropy(weight=torch.tensor([1.0, 7.0]))
+    X = torch.randn(3, 4)
+    Y = torch.tensor([0, 0, 1])
+
+    split = model.evaluate(DataLoader(TensorDataset(X, Y), batch_size=2))
+    with torch.no_grad():
+        combined = model.loss_fn(model.net(X), Y)
+
+    assert split.loss == pytest.approx(float(combined))
+
+
+def test_n7_evaluate_filters_exact_cross_entropy_ignore_index_from_metrics():
+    class EvaluationModel:
+        evaluate = NNModel.evaluate
+
+        def __init__(self):
+            self.net = torch.nn.Identity()
+            self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            return X, Y, X, X.argmax(dim=1)
+
+    model = EvaluationModel()
+    X = torch.tensor([[0.0, 4.0], [4.0, 0.0], [0.0, 4.0]])
+    Y = torch.tensor([-100, 0, 1])
+
+    edp = model.evaluate(
+        DataLoader(TensorDataset(X, Y), batch_size=2),
+        extra_metrics={"count": lambda y, _y_hat: len(y)},
+    )
+
+    assert edp.accuracy == 1.0
+    assert edp.error == 0.0
+    assert edp.extra == {"count": 2.0}
+
+
+def test_n7_evaluate_rejects_loader_with_only_ignored_targets():
+    model = _model()
+    model.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+    X = torch.randn(3, 4)
+    Y = torch.full((3,), -100)
+
+    with pytest.raises(ValueError, match="zero non-ignored samples"):
+        model.evaluate(DataLoader(TensorDataset(X, Y), batch_size=2))
 
 
 def test_n8_evaluate_raises_on_empty_loader():

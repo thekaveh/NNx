@@ -20,7 +20,7 @@ the layer back into the network's ModuleList.
 
 Run:
     pip install thekaveh-nnx
-    python examples/20_surgery_resnet.py
+    python examples/20_low_rank_surgery_ffn.py
 """
 
 from __future__ import annotations
@@ -131,25 +131,16 @@ def main() -> None:
     print(f"Post-surgery val acc:    {_val_acc(model.net, val_loader):.3f}  # expect drop before refinement")
 
     print("─── Phase 3: refine to recover accuracy ───")
-    refine_params = NNTrainParams(
-        n_epochs=3,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        optim=NNOptimParams(
-            name=Optims.ADAM,
-            max_lr=5e-3,
-            momentum=(0.9, 0.999),
-            weight_decay=0.0,
-        ),
-        scheduler=NNSchedulerParams(
-            min_lr=1e-6,
-            factor=0.5,
-            patience=2,
-            cooldown=1,
-            threshold=1e-3,
-        ),
-    )
-    model.train(params=refine_params)
+    # Topology-changing surgery no longer matches net_params, so use a
+    # manual refinement loop and export_state_dict() for persistence.
+    optimizer = torch.optim.Adam(model.net.parameters(), lr=5e-3)
+    loss_fn = torch.nn.CrossEntropyLoss()
+    model.net.train()
+    for _ in range(3):
+        for features, labels in train_loader:
+            optimizer.zero_grad()
+            loss_fn(model.net(features), labels).backward()
+            optimizer.step()
     print(f"Refined val accuracy:   {_val_acc(model.net, val_loader):.3f}")
 
 

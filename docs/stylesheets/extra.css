@@ -67,7 +67,7 @@
 .md-nav__title {
   font-family: "Space Grotesk", var(--md-text-font, "Inter"), -apple-system, sans-serif;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 .md-typeset h1 { color: var(--md-default-fg-color); }
 
@@ -128,3 +128,13 @@
 
 /* tighten body measure a touch for readability */
 .md-grid { max-width: 62rem; }
+
+/* Keep architecture labels legible on narrow screens. */
+@media screen and (max-width: 50rem) {
+  .md-typeset p:has(> img[alt="NNx architecture"]) {
+    overflow-x: auto;
+  }
+  .md-typeset img[alt="NNx architecture"] {
+    min-width: 44rem;
+  }
+}

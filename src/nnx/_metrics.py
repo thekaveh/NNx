@@ -67,12 +67,5 @@ def classification_edp(
     or ``_fwd_pass``'s predictions on the default path) so each step
     keeps its own prediction rule.
     """
-    return (
-        NNEvaluationDataPoint.of(
-            Y=Y.cpu().numpy(),
-            Y_hat=Y_hat.cpu().numpy(),
-            extra_metrics=extra_metrics,
-        )
-        .with_loss(value=loss)
-        .with_error(value=float(1 - (Y_hat == Y).sum().item() / Y.size(0)))
-    )
+    edp = NNEvaluationDataPoint.of(Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(), extra_metrics=extra_metrics)
+    return edp.with_loss(value=loss).with_error(value=float(1 - edp.accuracy))

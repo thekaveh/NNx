@@ -177,6 +177,34 @@ def test_legacy_callable_adapter_fires_on_epoch_end():
     assert seen == [3]
 
 
+def test_legacy_callable_adapter_works_without_ipython(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "IPython", None)
+    monkeypatch.setitem(sys.modules, "IPython.display", None)
+    seen = []
+    legacy = _LegacyCallback(lambda idps: seen.append(len(idps)))
+    ctx = _make_ctx(epoch=0)
+    ctx.idps = ["idp0"]
+
+    legacy.on_epoch_end(ctx)
+
+    assert seen == [1]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"monitor": "validation.loss"}, "monitor"),
+        ({"patience": -1}, "patience"),
+        ({"min_delta": -0.1}, "min_delta"),
+    ],
+)
+def test_early_stopping_rejects_invalid_controls(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        EarlyStopping(**kwargs)
+
+
 def test_model_checkpoint_writes_at_matched_epochs(tmp_path, monkeypatch):
     """ModelCheckpoint must actually save a checkpoint at matched epochs.
     Previously this callback was a no-op stub; the audit caught it and
@@ -262,6 +290,14 @@ def test_model_checkpoint_ignores_epoch_without_completed_idp(tmp_path, monkeypa
     ModelCheckpoint(epochs=[0]).on_epoch_end(ctx)
 
     assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("tag", ["", ".", "..", "../escaped", "nested/tag", "bad tag"])
+def test_model_checkpoint_rejects_unsafe_tags(tag):
+    from nnx.nn.callbacks import ModelCheckpoint
+
+    with pytest.raises(ValueError, match="tag"):
+        ModelCheckpoint(epochs=[0], tag=tag)
 
 
 def test_model_checkpoint_no_matching_epochs_is_noop(tmp_path, monkeypatch):

@@ -2,11 +2,9 @@
 
 Round 1 trains for 3 epochs; round 2 picks up from the LAST checkpoint
 of round 1 and trains another 4 epochs, with Adam momentum / first /
-second-moment buffers preserved across the boundary.
-
-The epoch counts intentionally differ because run identity is content-addressed
-from persisted parameters. Reusing the same state would reuse the same run ID
-and replace the first run's history.
+second-moment buffers, scheduler, scaler, epoch progress, and RNG state
+preserved across the boundary. Resume lineage participates in the new run's
+content-addressed identity, so the original run remains intact.
 
 Run:
     python examples/02_resume_training.py
@@ -88,10 +86,8 @@ def main():
     print(f"\nRound 1 done. run.id = {run_a.id}, {len(run_a.idps)} iterations")
 
     # Round 2: build a NEW model (random weights) and resume from round 1's LAST.
-    # Re-seed so the model has the same initial weights as Round 1 (which
-    # get overwritten by load_state_dict on resume anyway); the same seed
-    # also pins the DataLoader shuffle order for an apples-to-apples
-    # continuation of the training trajectory.
+    # Re-seeding is harmless but not required for continuity: loading the
+    # training-state bundle restores the RNG after model construction.
     set_seed(7)
     model_b, loader2 = _make_model_and_loader()
     run_b = model_b.train(
@@ -106,7 +102,7 @@ def main():
     )
     assert run_b.id != run_a.id
     print(f"Round 2 done. run.id = {run_b.id}, {len(run_b.idps)} iterations")
-    print("Round 2 started from round 1's LAST weights + optimizer state.")
+    print("Round 2 continued from round 1's complete LAST training state.")
     print(f"Final round 2 train loss: {run_b.idps[-1].train_edp.loss:.4f}")
 
 

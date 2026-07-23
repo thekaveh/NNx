@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Union
 
 from ..enum.optims import Optims
+from .nn_params import _ImmutableList
 
 if TYPE_CHECKING:
     from ...finetune.param_groups import NNParamGroupSpec
@@ -103,6 +104,7 @@ class NNOptimParams:
                         f"param_groups[{i}] must be an NNParamGroupSpec, got {type(g).__name__} — "
                         "wrap it: NNParamGroupSpec(name_pattern=..., lr=...)."
                     )
+            object.__setattr__(self, "param_groups", _ImmutableList(self.param_groups))
 
     def __str__(self):
         return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"

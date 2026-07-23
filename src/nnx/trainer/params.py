@@ -46,8 +46,9 @@ class NNTrainerParams:
     the optims they want to customize.
 
     `seed`, `save_phase_checkpoints`, `extra_metrics`, `train_loader`,
-    `val_loader` mirror NNTrainParams exactly — the orchestration around
-    a single user-supplied `trainer_step_fn` is otherwise identical.
+    `val_loader` mirror NNTrainParams. By default Trainer steps every
+    scheduler once after each epoch; set `auto_step_schedulers=False` when
+    the custom step function owns scheduler timing.
     """
 
     n_epochs: int
@@ -55,7 +56,10 @@ class NNTrainerParams:
     schedulers: Mapping[str, NNSchedulerParams] = field(default_factory=dict)
 
     seed: Optional[int] = None
+    data_id: Optional[str] = None
     save_phase_checkpoints: bool = True
+    auto_step_schedulers: bool = True
+    overwrite_existing: bool = field(repr=False, default=False)
 
     train_loader: Optional[DataLoader] = field(repr=False, default=None)
     val_loader: Optional[DataLoader] = field(repr=False, default=None)
@@ -68,6 +72,8 @@ class NNTrainerParams:
         # NNTrainParams.__post_init__.
         if self.n_epochs < 1:
             raise ValueError(f"NNTrainerParams requires n_epochs >= 1, got {self.n_epochs}")
+        if self.data_id is not None and not self.data_id.strip():
+            raise ValueError("NNTrainerParams.data_id must be non-empty when provided")
         if not self.optims:
             raise ValueError(
                 "NNTrainerParams.optims must have at least one entry — the Trainer constructs one Optimizer per name."
@@ -90,7 +96,7 @@ class NNTrainerParams:
 
     def state(self):
         # Keys are sorted so dict insertion order doesn't affect run.id.
-        d = dict(
+        d: dict[str, object] = dict(
             n_epochs=self.n_epochs,
             optims={k: self.optims[k].state() for k in sorted(self.optims.keys())},
         )
@@ -102,8 +108,12 @@ class NNTrainerParams:
             d["schedulers"] = {k: self.schedulers[k].state() for k in sorted(self.schedulers.keys())}
         if self.seed is not None:
             d["seed"] = self.seed
+        if self.data_id is not None:
+            d["data_id"] = self.data_id
         if self.save_phase_checkpoints is not True:
             d["save_phase_checkpoints"] = self.save_phase_checkpoints
+        if self.auto_step_schedulers is not True:
+            d["auto_step_schedulers"] = self.auto_step_schedulers
         return d
 
     @staticmethod
@@ -113,7 +123,9 @@ class NNTrainerParams:
             optims={k: NNOptimParams.from_state(v) for k, v in state["optims"].items()},
             schedulers={k: NNSchedulerParams.from_state(v) for k, v in state.get("schedulers", {}).items()},
             seed=state.get("seed"),
+            data_id=state.get("data_id"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
+            auto_step_schedulers=state.get("auto_step_schedulers", True),
         )
 
     @classmethod

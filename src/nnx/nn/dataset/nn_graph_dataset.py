@@ -80,6 +80,10 @@ class NNGraphDataset(NNDatasetBase):
     sampler: Literal["neighbor", "full"] = "neighbor"
 
     def __post_init__(self):
+        if self.sampler not in ("neighbor", "full"):
+            raise ValueError(f"sampler must be 'neighbor' or 'full', got {self.sampler!r}")
+        if self.sampler == "full" and any(size is not None for size in self.batch_sizes):
+            raise ValueError("batch_sizes are not supported when sampler='full'; the complete split is one batch")
         if self.sampler == "neighbor" and self.n_neighbors is None:
             raise ValueError(
                 "n_neighbors is required when sampler='neighbor'. "

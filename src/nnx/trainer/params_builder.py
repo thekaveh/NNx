@@ -73,6 +73,14 @@ class NNTrainerParamsBuilder:
         self._fields["save_phase_checkpoints"] = value
         return self
 
+    def auto_step_schedulers(self, value: bool) -> NNTrainerParamsBuilder:
+        """Choose whether Trainer steps every scheduler after each epoch.
+
+        Disable this when the custom step function owns scheduler timing.
+        """
+        self._fields["auto_step_schedulers"] = value
+        return self
+
     def train_loader(self, loader: DataLoader) -> NNTrainerParamsBuilder:
         """Training DataLoader. Optional at Builder time (can be wired
         later via NNTrainerParams.with_train_loader)."""

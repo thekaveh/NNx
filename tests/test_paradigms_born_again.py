@@ -166,6 +166,26 @@ def test_born_again_each_generation_uses_previous_as_teacher(tmp_path, monkeypat
         )
 
 
+def test_born_again_resets_each_student_to_initial_weights(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = _make_classifier()
+    initial = {name: value.clone() for name, value in model.net.state_dict().items()}
+    starts: list[dict[str, torch.Tensor]] = []
+    original_train = NNModel.train
+
+    def spy_train(self, *args, **kwargs):
+        starts.append({name: value.clone() for name, value in self.net.state_dict().items()})
+        return original_train(self, *args, **kwargs)
+
+    monkeypatch.setattr(NNModel, "train", spy_train)
+    born_again_train(model, generations=3, train_params=_train_params())
+
+    assert len(starts) == 3
+    for student_start in starts:
+        assert all(torch.equal(student_start[name], value) for name, value in initial.items())
+
+
 def test_born_again_teacher_frozen_and_eval_mode(tmp_path, monkeypatch):
     """At every generation k > 0, the teacher passed into the KD factory
     must already have requires_grad=False on every parameter AND be in

@@ -14,13 +14,14 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 
 from nnx.nn.callbacks import TensorBoardCallback, WandbCallback
 from nnx.nn.dataset.nn_tabular_dataset import NNTabularDataset
@@ -29,7 +30,13 @@ from nnx.nn.enum.devices import Devices
 from nnx.nn.enum.losses import Losses
 from nnx.nn.enum.nets import Nets
 from nnx.nn.enum.optims import Optims
-from nnx.nn.nn_model import NNModel
+from nnx.nn.nn_model import (
+    GradientAccumulationState,
+    NNModel,
+    TrainStepContext,
+    _enumerate_with_last,
+    default_train_step,
+)
 from nnx.nn.params.nn_model_params import NNModelParams
 from nnx.nn.params.nn_optim_params import NNOptimParams
 from nnx.nn.params.nn_params import NNParams
@@ -185,6 +192,654 @@ def test_f2_accumulate_grad_batches_only_steps_at_cycle_end(tmp_path, monkeypatc
     # Sanity: at least *some* weights moved during the 2 optimizer steps.
     moved = any(not torch.equal(initial_w[k], model.net.state_dict()[k]) for k in initial_w)
     assert moved
+
+
+def test_f2_accumulate_grad_batches_steps_trailing_partial_cycle(tmp_path, monkeypatch):
+    """A final short accumulation cycle must update weights instead of being dropped."""
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    loader = DataLoader(
+        TensorDataset(torch.randn(12, 4), torch.randint(0, 2, (12,))),
+        batch_size=4,
+    )
+    step_count = 0
+    original_step = torch.optim.Adam.step
+
+    def counted_step(optimizer, *args, **kwargs):
+        nonlocal step_count
+        step_count += 1
+        return original_step(optimizer, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.Adam, "step", counted_step)
+    _model().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-2,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+                accumulate_grad_batches=2,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=1,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        )
+    )
+
+    assert step_count == 2
+
+
+def test_f2_enumerate_with_last_uses_observed_final_batch():
+    class EstimatedLengthDataset(IterableDataset):
+        def __len__(self):
+            return 4
+
+        def __iter__(self):
+            yield from range(3)
+
+    loader = DataLoader(EstimatedLengthDataset(), batch_size=1)
+
+    observed = [(index, int(batch[0]), is_last) for index, batch, is_last in _enumerate_with_last(loader)]
+
+    assert observed == [(0, 0, False), (1, 1, False), (2, 2, True)]
+
+
+@pytest.mark.parametrize("accumulate_grad_batches", [2, 4])
+@pytest.mark.parametrize("amp_control_flow", [False, True])
+def test_f2_accumulation_matches_combined_uneven_batch_update(amp_control_flow, accumulate_grad_batches, monkeypatch):
+    class LinearNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 2, bias=False)
+
+        def forward(self, X):
+            return self.linear(X)
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = LinearNet()
+            self.net.load_state_dict(state)
+            self.loss_fn = torch.nn.CrossEntropyLoss()
+            self.device = torch.device("cuda" if amp_control_flow else "cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    initial = LinearNet()
+    initial.linear.weight.data.copy_(torch.tensor([[0.25], [-0.25]]))
+    initial_state = initial.state_dict()
+    batches = (
+        (torch.tensor([[1.0], [2.0]]), torch.tensor([0, 1])),
+        (torch.tensor([[4.0]]), torch.tensor([1])),
+    )
+
+    accumulated = StepModel(initial_state)
+    accumulated_optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    accumulation_state = GradientAccumulationState()
+    if amp_control_flow:
+        monkeypatch.setattr(torch.amp, "autocast", lambda **_kwargs: nullcontext())
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
+    else:
+        scaler = None
+    for batch_idx, batch in enumerate(batches):
+        default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=accumulated_optimizer,
+                scaler=scaler,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=accumulate_grad_batches,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == len(batches) - 1,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    combined = StepModel(initial_state)
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    combined_optimizer.zero_grad()
+    X = torch.cat([batch[0] for batch in batches])
+    Y = torch.cat([batch[1] for batch in batches])
+    loss = combined.loss_fn(combined.net(X), Y)
+    loss.backward()
+    combined_optimizer.step()
+
+    assert torch.allclose(accumulated.net.linear.weight, combined.net.linear.weight)
+
+
+@pytest.mark.parametrize("loss_kind", ["cross_entropy", "nll"])
+@pytest.mark.parametrize("amp_control_flow", [False, True])
+def test_f2_accumulation_matches_weighted_ignored_combined_batch(loss_kind, amp_control_flow, monkeypatch):
+    class LinearNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 2, bias=False)
+
+        def forward(self, X):
+            return self.linear(X)
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = LinearNet()
+            self.net.load_state_dict(state)
+            loss_type = torch.nn.CrossEntropyLoss if loss_kind == "cross_entropy" else torch.nn.NLLLoss
+            self.loss_fn = loss_type(weight=torch.tensor([1.0, 7.0]), ignore_index=-100)
+            self.device = torch.device("cuda" if amp_control_flow else "cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            raw = self.net(X)
+            logits = raw if loss_kind == "cross_entropy" else torch.log_softmax(raw, dim=1)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    initial = LinearNet()
+    initial.linear.weight.data.copy_(torch.tensor([[0.25], [-0.25]]))
+    initial_state = initial.state_dict()
+    batches = (
+        (torch.tensor([[1.0], [2.0]]), torch.tensor([-100, -100])),
+        (torch.tensor([[3.0], [4.0]]), torch.tensor([0, 0])),
+        (torch.tensor([[5.0]]), torch.tensor([1])),
+    )
+
+    accumulated = StepModel(initial_state)
+    accumulated_optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    accumulation_state = GradientAccumulationState()
+    if amp_control_flow:
+        monkeypatch.setattr(torch.amp, "autocast", lambda **_kwargs: nullcontext())
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
+    else:
+        scaler = None
+    for batch_idx, batch in enumerate(batches):
+        default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=accumulated_optimizer,
+                scaler=scaler,
+                grad_clip_norm=0.25,
+                extra_metrics=None,
+                accumulate_grad_batches=len(batches),
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == len(batches) - 1,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    combined = StepModel(initial_state)
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    X = torch.cat([batch[0] for batch in batches])
+    Y = torch.cat([batch[1] for batch in batches])
+    raw = combined.net(X)
+    logits = raw if loss_kind == "cross_entropy" else torch.log_softmax(raw, dim=1)
+    combined.loss_fn(logits, Y).backward()
+    torch.nn.utils.clip_grad_norm_(combined.net.parameters(), 0.25)
+    combined_optimizer.step()
+
+    assert torch.allclose(accumulated.net.linear.weight, combined.net.linear.weight)
+
+
+@pytest.mark.parametrize("loss_kind", ["cross_entropy", "nll"])
+def test_f2_accumulation_preserves_classification_sum_reduction(loss_kind):
+    class LinearNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 2, bias=False)
+
+        def forward(self, X):
+            return self.linear(X)
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = LinearNet()
+            self.net.load_state_dict(state)
+            loss_type = torch.nn.CrossEntropyLoss if loss_kind == "cross_entropy" else torch.nn.NLLLoss
+            self.loss_fn = loss_type(weight=torch.tensor([1.0, 7.0]), ignore_index=-100, reduction="sum")
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            raw = self.net(X)
+            logits = raw if loss_kind == "cross_entropy" else torch.log_softmax(raw, dim=1)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    initial = LinearNet()
+    initial.linear.weight.data.copy_(torch.tensor([[0.25], [-0.25]]))
+    initial_state = initial.state_dict()
+    batches = (
+        (torch.tensor([[1.0], [2.0]]), torch.tensor([0, -100])),
+        (torch.tensor([[3.0]]), torch.tensor([1])),
+    )
+
+    accumulated = StepModel(initial_state)
+    accumulated_optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    accumulation_state = GradientAccumulationState()
+    for batch_idx, batch in enumerate(batches):
+        default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=accumulated_optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=4,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == len(batches) - 1,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    combined = StepModel(initial_state)
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    X = torch.cat([batch[0] for batch in batches])
+    Y = torch.cat([batch[1] for batch in batches])
+    raw = combined.net(X)
+    logits = raw if loss_kind == "cross_entropy" else torch.log_softmax(raw, dim=1)
+    combined.loss_fn(logits, Y).backward()
+    combined_optimizer.step()
+
+    assert torch.allclose(accumulated.net.linear.weight, combined.net.linear.weight)
+
+
+@pytest.mark.parametrize(
+    "loss_fn",
+    [
+        pytest.param(torch.nn.MSELoss(reduction="sum"), id="mse"),
+        pytest.param(torch.nn.BCEWithLogitsLoss(reduction="sum"), id="bce"),
+    ],
+)
+def test_f2_accumulation_preserves_elementwise_sum_reduction(loss_fn):
+    class BinaryNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 1, bias=False)
+
+        def forward(self, X):
+            return self.linear(X).squeeze(-1)
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = BinaryNet()
+            self.net.load_state_dict(state)
+            self.loss_fn = loss_fn
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, (logits >= 0).to(Y.dtype)
+
+    initial = BinaryNet()
+    initial.linear.weight.data.fill_(0.25)
+    initial_state = initial.state_dict()
+    batches = (
+        (torch.tensor([[1.0], [2.0]]), torch.tensor([0.0, 1.0])),
+        (torch.tensor([[3.0]]), torch.tensor([1.0])),
+    )
+
+    accumulated = StepModel(initial_state)
+    accumulated_optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    accumulation_state = GradientAccumulationState()
+    for batch_idx, batch in enumerate(batches):
+        default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=accumulated_optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=4,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == len(batches) - 1,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    combined = StepModel(initial_state)
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    X = torch.cat([batch[0] for batch in batches])
+    Y = torch.cat([batch[1] for batch in batches])
+    combined.loss_fn(combined.net(X), Y).backward()
+    combined_optimizer.step()
+
+    assert torch.allclose(accumulated.net.linear.weight, combined.net.linear.weight)
+
+
+@pytest.mark.parametrize(
+    "loss_fn",
+    [
+        pytest.param(torch.nn.MSELoss(), id="mse"),
+        pytest.param(torch.nn.BCEWithLogitsLoss(), id="bce"),
+    ],
+)
+def test_f2_accumulation_uses_element_count_for_elementwise_means(loss_fn):
+    class MatrixNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 2, bias=False)
+
+        def forward(self, X):
+            return self.linear(X)
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = MatrixNet()
+            self.net.load_state_dict(state)
+            self.loss_fn = loss_fn
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, (logits >= 0).to(Y.dtype)
+
+    initial = MatrixNet()
+    initial.linear.weight.data.copy_(torch.tensor([[0.25], [-0.25]]))
+    initial_state = initial.state_dict()
+    batches = (
+        (torch.tensor([[1.0], [2.0]]), torch.tensor([[0.0, 1.0], [1.0, 0.0]])),
+        (torch.tensor([[3.0]]), torch.tensor([[1.0, 1.0]])),
+    )
+
+    accumulated = StepModel(initial_state)
+    accumulated_optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    accumulation_state = GradientAccumulationState()
+    for batch_idx, batch in enumerate(batches):
+        default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=accumulated_optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=4,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == len(batches) - 1,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    combined = StepModel(initial_state)
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    X = torch.cat([batch[0] for batch in batches])
+    Y = torch.cat([batch[1] for batch in batches])
+    combined.loss_fn(combined.net(X), Y).backward()
+    combined_optimizer.step()
+
+    assert torch.allclose(accumulated.net.linear.weight, combined.net.linear.weight)
+
+
+def test_f2_accumulation_calls_cross_entropy_subclass_and_hooks():
+    class TrackingCrossEntropy(torch.nn.CrossEntropyLoss):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, logits, target):
+            self.calls += 1
+            return super().forward(logits, target) + 2.0
+
+    model = _model()
+    loss_fn = TrackingCrossEntropy()
+    hook_calls = []
+    loss_fn.register_forward_hook(lambda *_args: hook_calls.append(True))
+    model.loss_fn = loss_fn
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=0.0)
+    batch = (torch.randn(3, 4), torch.tensor([0, 1, 0]))
+
+    edp = default_train_step(
+        TrainStepContext(
+            model=model,
+            batch=batch,
+            optimizer=optimizer,
+            scaler=None,
+            grad_clip_norm=None,
+            extra_metrics=None,
+            accumulate_grad_batches=1,
+            batch_idx=0,
+            epoch_idx=0,
+            is_last_batch=True,
+            accumulation_state=GradientAccumulationState(),
+        )
+    )
+
+    with torch.no_grad():
+        _, Y, logits, _ = model._fwd_pass(batch)
+        expected = torch.nn.functional.cross_entropy(logits, Y) + 2.0
+    assert edp.loss == pytest.approx(float(expected))
+    assert loss_fn.calls == 1
+    assert hook_calls == [True]
+
+
+def test_f2_accumulation_uses_batch_weighting_for_cross_entropy_subclasses():
+    class RemappingCrossEntropy(torch.nn.CrossEntropyLoss):
+        def forward(self, logits, target):
+            remapped = torch.where(target == 0, torch.ones_like(target), target)
+            return super().forward(logits, remapped)
+
+    class LinearNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 2, bias=False)
+
+        def forward(self, X):
+            return self.linear(X)
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = LinearNet()
+            self.net.load_state_dict(state)
+            self.loss_fn = RemappingCrossEntropy(weight=torch.tensor([1.0, 7.0]))
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    initial = LinearNet()
+    initial.linear.weight.data.copy_(torch.tensor([[0.25], [-0.25]]))
+    batches = (
+        (torch.tensor([[1.0], [2.0]]), torch.tensor([0, 0])),
+        (torch.tensor([[3.0]]), torch.tensor([1])),
+    )
+
+    accumulated = StepModel(initial.state_dict())
+    accumulated_optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    accumulation_state = GradientAccumulationState()
+    for batch_idx, batch in enumerate(batches):
+        default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=accumulated_optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=len(batches),
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == len(batches) - 1,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    combined = StepModel(initial.state_dict())
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    X = torch.cat([batch[0] for batch in batches])
+    Y = torch.cat([batch[1] for batch in batches])
+    combined.loss_fn(combined.net(X), Y).backward()
+    combined_optimizer.step()
+
+    assert torch.allclose(accumulated.net.linear.weight, combined.net.linear.weight)
+
+
+def test_f2_partially_ignored_cycle_records_finite_aggregate_loss_and_metrics():
+    class IdentityLogits(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.offset = torch.nn.Parameter(torch.zeros(2))
+
+        def forward(self, X):
+            return X + self.offset
+
+    class StepModel:
+        def __init__(self, state):
+            self.net = IdentityLogits()
+            self.net.load_state_dict(state)
+            self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    initial = IdentityLogits()
+    batches = (
+        (torch.tensor([[4.0, 0.0], [0.0, 4.0]]), torch.tensor([0, 1])),
+        (torch.tensor([[1.0, 0.0]]), torch.tensor([-100])),
+    )
+    accumulated = StepModel(initial.state_dict())
+    optimizer = torch.optim.SGD(accumulated.net.parameters(), lr=0.1)
+    state = GradientAccumulationState()
+    final_edp = None
+    for batch_idx, batch in enumerate(batches):
+        final_edp = default_train_step(
+            TrainStepContext(
+                model=accumulated,
+                batch=batch,
+                optimizer=optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics={"count": lambda y, _y_hat: len(y)},
+                accumulate_grad_batches=2,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                is_last_batch=batch_idx == 1,
+                accumulation_state=state,
+            )
+        )
+
+    combined = StepModel(initial.state_dict())
+    combined_optimizer = torch.optim.SGD(combined.net.parameters(), lr=0.1)
+    expected_loss = combined.loss_fn(combined.net(batches[0][0]), batches[0][1])
+    expected_loss.backward()
+    combined_optimizer.step()
+
+    assert final_edp is not None
+    assert final_edp.loss == pytest.approx(float(expected_loss.detach()))
+    assert final_edp.error is None
+    assert final_edp.extra == {}
+    assert torch.allclose(accumulated.net.offset, combined.net.offset)
+
+
+def test_f2_exact_cross_entropy_filters_ignored_targets_from_metrics():
+    class IdentityLogits(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.offset = torch.nn.Parameter(torch.zeros(2))
+
+        def forward(self, X):
+            return X + self.offset
+
+    class StepModel:
+        def __init__(self):
+            self.net = IdentityLogits()
+            self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    model = StepModel()
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=0.0)
+    edp = default_train_step(
+        TrainStepContext(
+            model=model,
+            batch=(
+                torch.tensor([[0.0, 4.0], [4.0, 0.0], [0.0, 4.0]]),
+                torch.tensor([-100, 0, 1]),
+            ),
+            optimizer=optimizer,
+            scaler=None,
+            grad_clip_norm=None,
+            extra_metrics={"count": lambda y, _y_hat: len(y)},
+            accumulate_grad_batches=1,
+            batch_idx=0,
+            epoch_idx=0,
+            is_last_batch=True,
+            accumulation_state=GradientAccumulationState(),
+        )
+    )
+
+    assert edp.accuracy == 1.0
+    assert edp.error == 0.0
+    assert edp.extra == {"count": 2.0}
+
+
+@pytest.mark.parametrize("accumulate_grad_batches", [1, 2])
+def test_f2_all_ignored_accumulation_cycle_rejects_before_optimizer_step(accumulate_grad_batches):
+    model = _model()
+    model.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+    optimizer = torch.optim.AdamW(model.net.parameters(), lr=0.1, weight_decay=0.1)
+    before = {name: value.detach().clone() for name, value in model.net.state_dict().items()}
+    accumulation_state = GradientAccumulationState()
+
+    for batch_idx in range(accumulate_grad_batches - 1):
+        default_train_step(
+            TrainStepContext(
+                model=model,
+                batch=(torch.randn(2, 4), torch.full((2,), -100)),
+                optimizer=optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=accumulate_grad_batches,
+                batch_idx=batch_idx,
+                epoch_idx=0,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    with pytest.raises(FloatingPointError, match="non-finite training loss"):
+        default_train_step(
+            TrainStepContext(
+                model=model,
+                batch=(torch.randn(2, 4), torch.full((2,), -100)),
+                optimizer=optimizer,
+                scaler=None,
+                grad_clip_norm=None,
+                extra_metrics=None,
+                accumulate_grad_batches=accumulate_grad_batches,
+                batch_idx=accumulate_grad_batches - 1,
+                epoch_idx=0,
+                is_last_batch=True,
+                accumulation_state=accumulation_state,
+            )
+        )
+
+    for name, value in model.net.state_dict().items():
+        assert torch.equal(value, before[name])
 
 
 def test_f2_accumulate_grad_batches_state_round_trip():
@@ -472,3 +1127,10 @@ def test_f8_tabular_dataset_rejects_target_in_feature_cols():
     df = pd.DataFrame({"f1": [1.0, 2.0, 3.0], "label": [0, 1, 0]})
     with pytest.raises(ValueError, match="must not appear in feature_cols"):
         NNTabularDataset(df=df, feature_cols=["f1", "label"], target_col="label")
+
+
+@pytest.mark.parametrize("labels", [[0.2, 1.2], [0.0, float("inf")]])
+def test_f8_tabular_dataset_rejects_non_integral_or_non_finite_labels(labels):
+    df = pd.DataFrame({"f1": [1.0, 2.0], "label": labels})
+    with pytest.raises(ValueError, match="finite integers"):
+        NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")

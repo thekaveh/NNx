@@ -101,3 +101,13 @@ def test_nn_graph_dataset_seed_not_serialized_into_state():
     state() (mirrors the sibling datasets, which omit it too)."""
     ds = NNGraphDataset(ds_class=_TinyGraph, n_neighbors=[2], seed=42)
     assert "seed" not in ds.state()
+
+
+def test_nn_graph_dataset_rejects_unknown_sampler():
+    with pytest.raises(ValueError, match="sampler"):
+        NNGraphDataset(ds_class=_TinyGraph, sampler="typo")  # type: ignore[arg-type]
+
+
+def test_nn_graph_dataset_rejects_batch_sizes_in_full_mode():
+    with pytest.raises(ValueError, match="batch_sizes"):
+        NNGraphDataset(ds_class=_TinyGraph, sampler="full", batch_sizes=(2, 2, 2))

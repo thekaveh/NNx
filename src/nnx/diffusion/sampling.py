@@ -15,6 +15,7 @@ from typing import Optional
 import torch
 
 from ..nn.nn_model import NNModel
+from ..utils import _capture_training_modes, _restore_training_modes
 from .schedules import NoiseSchedule
 
 
@@ -54,7 +55,7 @@ def sample(
     # Snapshot training-mode for non-destructive restore (matches
     # NNModel.predict / evaluate, GenerativeNNModel.generate,
     # nnx.viz.activation_map, and nnx.lr_finder).
-    was_training = model.net.training
+    training_modes = _capture_training_modes(model.net)
     model.net.eval()
 
     try:
@@ -97,5 +98,4 @@ def sample(
 
         return x
     finally:
-        if was_training:
-            model.net.train()
+        _restore_training_modes(training_modes)

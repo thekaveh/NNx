@@ -8,6 +8,29 @@ import numpy as np
 from sklearn import metrics
 
 
+class _FrozenMetrics(Mapping[str, float]):
+    __slots__ = ("_items", "_values")
+
+    def __init__(self, values: Mapping[str, float] | None = None) -> None:
+        self._items = tuple(sorted((values or {}).items()))
+        self._values = dict(self._items)
+
+    def __getitem__(self, key: str) -> float:
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __hash__(self) -> int:
+        return hash(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Mapping) and dict(self.items()) == dict(other.items())
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNEvaluationDataPoint:
     """Per-batch / per-epoch evaluation metrics.
@@ -32,7 +55,11 @@ class NNEvaluationDataPoint:
     # Custom metrics injected by the caller. Keys are metric names; values
     # are floats. Default factory keeps the dataclass hashable-by-value via
     # the dict default.
-    extra: dict[str, float] = field(default_factory=dict)
+    extra: Mapping[str, float] = field(default_factory=_FrozenMetrics)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.extra, _FrozenMetrics):
+            object.__setattr__(self, "extra", _FrozenMetrics(self.extra))
 
     def with_loss(self, value: float):
         return replace(self, loss=value)

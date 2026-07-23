@@ -128,6 +128,12 @@ def test_builder_save_phase_checkpoints_false_appears_in_state():
     assert tp.state().get("save_phase_checkpoints") is False
 
 
+def test_builder_can_delegate_scheduler_stepping_to_custom_step():
+    tp = NNTrainerParams.builder().n_epochs(2).optimizer("main", _make_adam()).auto_step_schedulers(False).build()
+    assert tp.auto_step_schedulers is False
+    assert tp.state()["auto_step_schedulers"] is False
+
+
 def test_builder_save_phase_checkpoints_true_after_false_overrides_to_true():
     """Regression: a prior `.save_phase_checkpoints(False)` followed
     by `.save_phase_checkpoints(True)` must reach the dataclass default

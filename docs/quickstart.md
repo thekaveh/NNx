@@ -79,6 +79,11 @@ model.train(params=NNTrainParams(
 ))
 ```
 
+Resume validates the checkpoint's optimizer topology and matching immutable
+training-state generation before applying it. It restores scheduler/scaler,
+completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG
+state; use `num_workers=0` when exact continuation matters.
+
 ### 2.4. Loading a finished run
 
 ```python
@@ -126,7 +131,7 @@ model.train(params=..., callbacks=[TensorBoardCallback(log_dir="tb_logs")])
 
 ### 2.8. LR finder pre-flight
 
-Before a long training run, sweep learning rates exponentially and let the Smith-2017 steepest-descent heuristic pick a defensible `max_lr` for the real run. The sweep is non-destructive — model weights and the training-mode flag are snapshotted and restored on exit.
+Before a long training run, sweep learning rates exponentially and let the Smith-2017 steepest-descent heuristic pick a defensible `max_lr` for the real run. The sweep is non-destructive: model state, mixed per-module modes, loader generators, and Python/NumPy/PyTorch RNG streams are restored on exit.
 
 ```python
 import torch.nn.functional as F

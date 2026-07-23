@@ -9,9 +9,40 @@ existing notebooks keep working.
 from __future__ import annotations
 
 import sys
+from types import MethodType
 from typing import Optional
 
+import torch
 from prettytable import PrettyTable
+
+
+def _capture_training_modes(module: torch.nn.Module) -> list[tuple[torch.nn.Module, bool]]:
+    """Snapshot every module flag so mixed train/eval trees round-trip."""
+    return [(child, child.training) for child in module.modules()]
+
+
+def _restore_training_modes(modes: list[tuple[torch.nn.Module, bool]]) -> None:
+    """Restore exact flags while honoring custom ``Module.train`` hooks."""
+    for module, training in reversed(modes):
+        module.training = training
+
+    def preserve_mode(child: torch.nn.Module, _mode: bool = True):
+        return child
+
+    for module, training in reversed(modes):
+        child_train_overrides = []
+        for child in list(module.modules())[1:]:
+            previous = child.__dict__.get("train")
+            child.__dict__["train"] = MethodType(preserve_mode, child)
+            child_train_overrides.append((child, previous))
+        try:
+            module.train(training)
+        finally:
+            for child, previous in child_train_overrides:
+                if previous is None:
+                    child.__dict__.pop("train", None)
+                else:
+                    child.__dict__["train"] = previous
 
 
 def print_tree(tree, level: int = 0, *, file=None) -> None:

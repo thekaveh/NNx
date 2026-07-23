@@ -29,6 +29,9 @@ class NNTrainParams:
     optim: NNOptimParams = NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=5e-5)
 
     seed: Optional[int] = None
+    # Stable caller-supplied identity for the dataset or split. DataLoader
+    # objects are runtime-only and cannot be serialized safely.
+    data_id: Optional[str] = None
 
     # When True (default, back-compat), train() saves FIRST + Q1 + Q2 + Q3
     # phase checkpoints in addition to LAST + BEST. Set False to skip the
@@ -47,15 +50,14 @@ class NNTrainParams:
 
     # Resume control. When `resume_from_run_id` is set, train() loads that
     # run's checkpoint of the named type and warm-restarts training from
-    # its model weights AND optimizer state (when an .opt.pt sidecar exists).
-    # Runtime-only (knowing the prior run id isn't part of *this* run's
-    # configuration identity). Consequence: a resumed run with otherwise
-    # identical params hashes to the SAME run.id as the original, so its
-    # incremental saves overwrite the original run's run.yaml/idps.csv
-    # with this session's history only. Vary a state()-bearing field
-    # (e.g. n_epochs, seed) if the original history must be kept.
+    # its model weights and complete stateful training bundle when available.
+    # The source run and checkpoint are serialized as parent lineage, so a
+    # resumed session receives a distinct run id and cannot silently replace
+    # the source run's history.
     resume_from_run_id: Optional[str] = field(repr=False, default=None)
     resume_from_checkpoint: Optional[str] = field(repr=False, default="last")
+    parent_run_id: Optional[str] = field(repr=False, default=None)
+    overwrite_existing: bool = field(repr=False, default=False)
 
     def __post_init__(self):
         # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in the train
@@ -65,6 +67,10 @@ class NNTrainParams:
         # run.id for any valid config.
         if self.n_epochs < 1:
             raise ValueError(f"NNTrainParams requires n_epochs >= 1, got {self.n_epochs}")
+        if self.data_id is not None and not self.data_id.strip():
+            raise ValueError("NNTrainParams.data_id must be non-empty when provided")
+        if self.parent_run_id is not None and self.resume_from_run_id is not None:
+            raise ValueError("set resume_from_run_id or parent_run_id, not both")
 
     def with_train_loader(self, value: DataLoader) -> NNTrainParams:
         return replace(self, train_loader=value)
@@ -76,7 +82,11 @@ class NNTrainParams:
         return f"Train={{n_epochs={self.n_epochs}, seed={self.seed}, Optim={self.optim}, Scheduler={self.scheduler}}}"
 
     def state(self):
-        d = dict(n_epochs=self.n_epochs, optim=self.optim.state(), scheduler=self.scheduler.state())
+        d: dict[str, object] = dict(
+            n_epochs=self.n_epochs,
+            optim=self.optim.state(),
+            scheduler=self.scheduler.state(),
+        )
         # Only emit `seed` / `save_phase_checkpoints` into state() when they
         # diverge from their defaults so a NNTrainParams created without
         # them hashes to the same run.id as before these fields existed.
@@ -84,6 +94,12 @@ class NNTrainParams:
         # defaults in from_state below.
         if self.seed is not None:
             d["seed"] = self.seed
+        if self.data_id is not None:
+            d["data_id"] = self.data_id
+        lineage = self.parent_run_id or self.resume_from_run_id
+        if lineage is not None:
+            d["parent_run_id"] = lineage
+            d["parent_checkpoint"] = self.resume_from_checkpoint
         if self.save_phase_checkpoints is not True:
             d["save_phase_checkpoints"] = self.save_phase_checkpoints
         return d
@@ -95,5 +111,8 @@ class NNTrainParams:
             optim=NNOptimParams.from_state(state["optim"]),
             scheduler=NNSchedulerParams.from_state(state["scheduler"]),
             seed=state.get("seed"),
+            data_id=state.get("data_id"),
+            parent_run_id=state.get("parent_run_id"),
+            resume_from_checkpoint=state.get("parent_checkpoint", "last"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
         )

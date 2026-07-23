@@ -9,8 +9,8 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 1.1. Core capabilities
 
 - **Generic training loop** — callbacks, early stopping, schedulers, AMP, gradient clipping, gradient accumulation, and seeded reproducibility.
-- **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags and a `runs/best` symlink that always points at your lowest-error run (lowest-loss for paradigm runs without a supervised error).
-- **Warm-resume training** — load weights AND optimizer state from any saved checkpoint.
+- **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags, ordered history → LAST → ancillary commits, and a `runs/best` pointer that advances only after the final durable save.
+- **Warm-resume training** — restore model, validated optimizer topology, scheduler, scaler, completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG state from a matching generation-addressed sidecar.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** — opt-in via extras.
 - **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `thekaveh-nnx[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter.
@@ -27,10 +27,10 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Training paradigms** — knowledge distillation (Hinton + FitNets-style feature-KD), contrastive (SimCLR / NT-Xent), Mixup, CutMix, sparse top-k Mixture-of-Experts (`MoELinear` + Switch-style aux loss), I-JEPA self-supervised pretraining, DPO preference fine-tuning, Born-Again iterated self-distillation.
 - **Language modeling** — `TransformerNN` (decoder-only: RMSNorm + RoPE + SwiGLU + KV-cache) + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with greedy / top-k / top-p / repetition-penalty sampling.
 - **Embeddings + FAISS** — contrastive text-embedder training + FAISS index export for downstream RAG.
-- **Experimental GGUF export** — write and inspect an NNx-tagged `.gguf`, or prepare a bundle for a runtime patched to support the NNx architecture. Stock llama.cpp-derived runtimes do not load it.
+- **Experimental GGUF export** — write and inspect an NNx-tagged `.gguf`, or prepare a bundle for a runtime patched to support the NNx architecture. Stock llama.cpp, Ollama, and LM Studio do not implement `nnx_transformer`.
 - **HuggingFace Hub** — `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel` via the `PyTorchModelHubMixin`, plus safetensors checkpoint format.
 - **Model-internals visualization** — `nnx.viz.summary` (torchinfo) + `weight_histogram` + `activation_map` + `attribute` (Captum) + `gradient_flow` (per-layer gradient-norm diagnostic) + `netron_export`.
-- **Training-loop diagnostics** — `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure; non-destructive (model state + training-mode restored on exit).
+- **Training-loop diagnostics** — `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure while restoring model state, mixed per-module modes, loader generators, and all global RNG streams.
 - **Type-checked downstream** — PEP 561 `py.typed` marker so consumers' `pyright` / `mypy` honor the public-surface annotations.
 
 ## 2. Where to next
@@ -53,14 +53,17 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - [HuggingFace Hub](hub.md) — safetensors + Hub publish/load.
 - [Experimental GGUF export](gguf.md) — container inspection, quantization notes, and runtime limits.
 - [Comparison vs Lightning / HF / fastai / Composer](comparison.md) — scope-explicit decision matrix for picking the right PyTorch training toolkit.
+- [Architecture](architecture.md) — package relationships plus exact callback and durable-commit ordering.
+- [External dependency contracts](external-contracts.md) — frozen integrations, release publication, and intentionally gated external checks.
 
 ### 2.4. Look things up
 
 - [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
-- [Examples catalog](https://github.com/thekaveh/NNx/blob/main/examples/README.md) — annotated index of the runnable scripts under `examples/`.
-- [CONTRIBUTING](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
-- [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md) — user-visible changes per PR.
+- [Examples catalog](_project/Examples.md) — annotated index of the runnable scripts under `examples/`.
+- [CONTRIBUTING](_project/Contributing.md) — editable install, dev toolchain, PR workflow.
+- [Security policy](_project/Security-Policy.md) — supported versions and private reporting instructions.
+- [CHANGELOG](_project/Changelog.md) — user-visible changes per PR.
 
 ## 3. Status
 
-Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
+Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](_project/Changelog.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
