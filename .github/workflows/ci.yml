@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   lint-and-test:
+    name: lint-and-test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # Caps a hung pytest run; default is 6 hours on GitHub-hosted runners.
     timeout-minutes: 20
@@ -30,12 +31,14 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -58,7 +61,9 @@ jobs:
         # sync with pyproject.toml [project.optional-dependencies] and
         # with release.yml's install line.
         run: |
-          uv sync --frozen --all-extras --python "${{ matrix.python-version }}"
+          uv sync --frozen --all-extras --python "$PYTHON_VERSION"
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
 
       - name: Lint with ruff
         run: uv run --frozen ruff check src/ tests/ examples/ scripts/
@@ -76,8 +81,9 @@ jobs:
       - name: Run pytest
         env:
           NNX_TQDM_DISABLE: "1"
+          PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
-          if [[ "${{ matrix.python-version }}" == "3.11" ]]; then
+          if [[ "$PYTHON_VERSION" == "3.11" ]]; then
             uv run --frozen pytest --cov=nnx --cov-report=term-missing --cov-report=xml
           else
             uv run --frozen pytest
@@ -90,7 +96,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'
-        # actions/upload-artifact@v5
+        # actions/upload-artifact@v7.0.1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: coverage-xml

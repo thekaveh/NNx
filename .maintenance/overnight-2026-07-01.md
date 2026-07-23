@@ -1,5 +1,9 @@
 # 1. Overnight Maintenance Ledger: 2026-07-01
 
+**Status:** Superseded and incomplete. The run stopped after pass 4 of 75
+without reaching its required 25 consecutive zero-issue passes. Its findings
+remain historical evidence, not a completed maintenance certification.
+
 ## 1.1. Run Parameters
 
 - Branch: `codex/overnight-maintenance`

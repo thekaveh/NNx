@@ -10,21 +10,27 @@ on:
   push:
     branches: [main]
 
-# release-please needs to push commits to its release branch and open
-# PRs against main. Everything else stays read-only.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release-please:
+    name: Prepare release
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # release-please pushes its release branch and opens or updates a PR.
+    permissions:
+      contents: write # Push the managed release branch and tag.
+      pull-requests: write # Open or update the managed release PR.
     steps:
       - name: Release Please
         id: release
-        # googleapis/release-please-action@v4
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
+        # googleapis/release-please-action@v5.0.0
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -43,4 +49,4 @@ jobs:
       tag_name: ${{ needs.release-please.outputs.tag_name }}
     permissions:
       contents: read
-      id-token: write
+      id-token: write # Forwarded to the reusable trusted-publishing job.

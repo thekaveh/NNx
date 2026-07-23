@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag_name || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Gate: run the full test matrix before letting the publish job run.
   # Without this, a tag push on a red branch would still publish to PyPI
@@ -38,21 +42,17 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.release_ref || github.ref }}
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements-tools.txt
-            uv.lock
 
       - name: Install uv
         run: |
@@ -65,7 +65,9 @@ jobs:
         # publish to PyPI. A poisoned release is permanent (PyPI versions
         # can be yanked but not deleted), so the gate must be thorough.
         run: |
-          uv sync --frozen --all-extras --python "${{ matrix.python-version }}"
+          uv sync --frozen --all-extras --python "$PYTHON_VERSION"
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
 
       - name: Lint with ruff
         run: uv run --frozen ruff check src/ tests/ examples/ scripts/
@@ -99,22 +101,21 @@ jobs:
     permissions:
       # OIDC-based PyPI trusted publishing (no API token in secrets needed).
       # Configure the project on PyPI > Manage > Publishing to opt in.
-      id-token: write
+      id-token: write # Request the PyPI trusted-publishing credential.
       contents: read
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.release_ref || github.ref }}
+          persist-credentials: false
 
       - name: Set up Python
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install build tooling
         run: python -m pip install -r requirements-tools.txt
@@ -137,8 +138,21 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
 
-      - name: Build sdist + wheel
-        run: python -m build
+      - name: Build reproducible sdist + wheel
+        run: |
+          set -euo pipefail
+          epoch="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH="$epoch"
+          uv build --out-dir dist-a
+          uv build --out-dir dist-b
+          python scripts/normalize_sdist.py dist-a/*.tar.gz --epoch "$epoch"
+          python scripts/normalize_sdist.py dist-b/*.tar.gz --epoch "$epoch"
+          for artifact in dist-a/*; do
+            name="$(basename "$artifact")"
+            cmp "$artifact" "dist-b/$name"
+          done
+          mv dist-a dist
+          rm -rf dist-b
 
       - name: Verify built distributions
         # twine check catches the most common metadata issues (missing
@@ -150,12 +164,12 @@ jobs:
         # Only runs on tag pushes; workflow_dispatch builds without publishing
         # so you can inspect the artifacts before cutting a real release.
         if: inputs.tag_name != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-        # pypa/gh-action-pypi-publish@release/v1
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        # pypa/gh-action-pypi-publish@v1.14.1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
 
       - name: Upload build artifacts (workflow_dispatch dry-run)
         if: github.event_name == 'workflow_dispatch'
-        # actions/upload-artifact@v5
+        # actions/upload-artifact@v7.0.1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist
@@ -187,8 +201,8 @@ jobs:
       - name: Set up Python
         # No pip cache here — we want fresh resolution to catch PyPI
         # propagation lag honestly. Cache would defeat the purpose.
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.11'
 
@@ -199,7 +213,7 @@ jobs:
         # install on attempt N can't mask the regression on attempt N+1.
         run: |
           set -e
-          version="${{ steps.ver.outputs.version }}"
+          version="$RELEASE_VERSION"
           for attempt in 1 2 3 4 5; do
             rm -rf .verify-venv
             python -m venv .verify-venv
@@ -217,6 +231,8 @@ jobs:
             sleep 30
           done
           exit "$exit_code"
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
 
       - name: Import + version check
         run: |

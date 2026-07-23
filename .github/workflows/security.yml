@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   pip-audit:
+    name: Audit dependencies (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -29,12 +30,14 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout
-        # actions/checkout@v5
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        # actions/setup-python@v6
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -49,5 +52,7 @@ jobs:
 
       - name: Audit frozen dependency graph
         run: |
-          uv export --frozen --all-extras --python "${{ matrix.python-version }}" --no-emit-project --no-hashes --output-file frozen-requirements.txt
+          uv export --frozen --all-extras --python "$PYTHON_VERSION" --no-emit-project --no-hashes --output-file frozen-requirements.txt
           python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}

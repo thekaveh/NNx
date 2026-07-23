@@ -30,7 +30,7 @@ env/
 runs/
 tb_logs/
 *.onnx
-# Dataset download cache. examples/16_ijepa_cifar10.py --cifar pulls
+# Dataset download cache. examples/16_ijepa_image_plumbing.py --cifar pulls
 # CIFAR-10 (~170 MB) into data/cifar10/, and NNDataset's default
 # root_dir is "./data". Same `git add -A` hazard as artifacts/ below.
 data/
@@ -38,11 +38,12 @@ data/
 # Example-script output directories. Three examples write here:
 #   examples/11_tinystories_lm.py        → artifacts/tinystories_lm/
 #   examples/17_export_transformer_to_gguf.py → artifacts/lm_export/
-#   examples/18_publish_to_ollama.py     → artifacts/ollama_bundle/
+#   examples/18_export_ollama_bundle.py  → artifacts/ollama_bundle/
 # Without ignoring the dir, a casual `git add -A` after running an
 # example would sweep the .gguf binaries / tokenizer.json / Modelfile
 # into the repo. Matches the runs/ pattern above.
 artifacts/
+docs/_project/
 
 # Coverage / docs build output
 coverage.xml
