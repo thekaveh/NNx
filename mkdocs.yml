@@ -45,6 +45,14 @@ nav:
   - External dependency contracts: external-contracts.md
   - vs Lightning / HF / fastai: comparison.md
   - Architecture diagram: architecture.md
+  - Project:
+      - Repository overview: _project/Repository-Overview.md
+      - Examples: _project/Examples.md
+      - Contributing: _project/Contributing.md
+      - Security policy: _project/Security-Policy.md
+      - Test import boundaries: _project/Test-Import-Boundaries.md
+      - Changelog: _project/Changelog.md
+      - License: _project/License.md
 
 # Working design docs aren't user-facing — exclude them from the
 # published site. Local-only spec files under docs/specs/ shouldn't break
@@ -63,6 +71,9 @@ plugins:
             show_source: true
             show_root_heading: true
             show_signature_annotations: true
+
+hooks:
+  - scripts/docs/mkdocs_hooks.py
 
 markdown_extensions:
   - admonition

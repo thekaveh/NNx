@@ -20,7 +20,7 @@ the layer back into the network's ModuleList.
 
 Run:
     pip install thekaveh-nnx
-    python examples/20_surgery_resnet.py
+    python examples/20_low_rank_surgery_ffn.py
 """
 
 from __future__ import annotations

@@ -122,16 +122,22 @@ export_ollama_modelfile(
 
 The generated directory contains `model.gguf` and `Modelfile`; it may also
 contain `tokenizer.json` when the tokenizer was saved there. The helper
-validates Modelfile values and writes the standard `FROM`, `PARAMETER`,
-`TEMPLATE`, and `SYSTEM` directives. Stock `ollama create` still rejects or
-cannot execute the `nnx_transformer` architecture.
+validates the Ollama 0.32.1 parameter set: integer `num_ctx`, `repeat_last_n`,
+`seed`, `num_predict`, `draft_num_predict`, and `top_k`; finite numeric
+`repeat_penalty`, `temperature`, `top_p`, and `min_p`; and scalar or repeated
+string `stop`. Unknown names and mismatched types fail before GGUF generation.
+Parameter strings intentionally use a restricted safe subset that rejects
+quotes and control characters rather than attempting broader Modelfile
+escaping. The helper writes the standard `FROM`, `PARAMETER`, `TEMPLATE`, and
+`SYSTEM` directives. Stock `ollama create` still rejects or cannot execute the
+`nnx_transformer` architecture.
 
 ## 7. Examples
 
 | Example | Demonstrates |
 |---|---|
 | [`examples/17_export_transformer_to_gguf.py`](https://github.com/thekaveh/NNx/blob/main/examples/17_export_transformer_to_gguf.py) | Write F16 GGUF and inspect it with `gguf.GGUFReader`. |
-| [`examples/18_publish_to_ollama.py`](https://github.com/thekaveh/NNx/blob/main/examples/18_publish_to_ollama.py) | Generate and inspect a GGUF + Modelfile bundle while documenting the stock-runtime limitation. |
+| [`examples/18_export_ollama_bundle.py`](https://github.com/thekaveh/NNx/blob/main/examples/18_export_ollama_bundle.py) | Generate and inspect a GGUF + Modelfile bundle while documenting the stock-runtime limitation. |
 
 ## 8. Scope
 

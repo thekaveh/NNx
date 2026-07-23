@@ -10,7 +10,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 - **Generic training loop** — callbacks, early stopping, schedulers, AMP, gradient clipping, gradient accumulation, and seeded reproducibility.
 - **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags and a `runs/best` symlink that always points at your lowest-error run (lowest-loss for paradigm runs without a supervised error).
-- **Warm-resume training** — load weights AND optimizer state from any saved checkpoint.
+- **Warm-resume training** — restore model, optimizer, scheduler, scaler, completed epoch, and RNG state from any current checkpoint.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** — opt-in via extras.
 - **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `thekaveh-nnx[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter.
@@ -57,10 +57,11 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 2.4. Look things up
 
 - [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
-- [Examples catalog](https://github.com/thekaveh/NNx/blob/main/examples/README.md) — annotated index of the runnable scripts under `examples/`.
-- [CONTRIBUTING](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
-- [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md) — user-visible changes per PR.
+- [Examples catalog](_project/Examples.md) — annotated index of the runnable scripts under `examples/`.
+- [CONTRIBUTING](_project/Contributing.md) — editable install, dev toolchain, PR workflow.
+- [Security policy](_project/Security-Policy.md) — supported versions and private reporting instructions.
+- [CHANGELOG](_project/Changelog.md) — user-visible changes per PR.
 
 ## 3. Status
 
-Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
+Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](_project/Changelog.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.

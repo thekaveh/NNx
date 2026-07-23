@@ -12,8 +12,8 @@ The diagram has eight layers, top-to-bottom:
 
 1. **User code + PyTorch** (slate) — the consumer surface.
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
-3. **`train_step_fn` / `trainer_step_fn`** (orange bus) — the optional hook every specialization plugs into.
-4. **Specialization subpackages** (amber) — model-side: `nnx.finetune`, `nnx.peft` (LoRA / DoRA / IA3 / Prefix / Prompt / Adapters), `nnx.prune`, `nnx.surgery`, `nnx.quantize`; data + paradigm side: `nnx.diffusion`, `nnx.paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), `nnx.trainer`; interop + downstream: `nnx.embeddings` (contrastive + FAISS), `nnx.interop` (safetensors + experimental GGUF), `nnx.generation` (LogitsProcessor chain), `nnx.viz` (model-internals viz). Hook-producing packages plug into the orange `train_step_fn` / `eval_step_fn` / `trainer_step_fn` surface from Layer 3, with shared finalization in `nnx._step_helpers`.
+3. **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** (orange bus) — the training-loop extension hooks.
+4. **Specialization subpackages** (amber) — `nnx.diffusion`, `nnx.paradigms`, `nnx.quantize`, and `nnx.embeddings` provide hook-compatible factories, with shared finalization in `nnx._step_helpers`. Model transforms (`nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.surgery`), exchange formats (`nnx.interop`), inference utilities (`nnx.generation`), and diagnostics (`nnx.viz`) compose around the loop without claiming a hook relationship.
 5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
@@ -117,7 +117,7 @@ runs/<id>/
 │   ├── first.pt      # NNCheckpoint at epoch 0
 │   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs
 │   ├── last.pt       # most recent epoch
-│   ├── last.pt.opt.pt    # optimizer state sidecar (warm-resume)
+│   ├── last.pt.opt.pt    # optimizer/scheduler/scaler/RNG state bundle
 │   ├── best.pt       # lowest-error checkpoint so far
 │   └── best.pt.opt.pt
 ```
@@ -128,7 +128,7 @@ The `runs/best` symlink points at the lowest-error run across all runs in the di
 
 ### 4.2. Atomicity + incremental writes
 
-Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a tmp-then-rename atomic helper. A `KeyboardInterrupt` during a save leaves either the previous file or the new file at the destination — never a half-written file. Combined with the per-epoch save cadence, this means an interrupted run remains loadable: the last completed epoch's state is intact.
+Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a tmp-then-rename atomic helper. A `KeyboardInterrupt` during a save leaves either the previous file or the new file at the destination — never a half-written file. Checkpoint and training-state sidecar files carry the same generation stamp, with the checkpoint committed last. Resume rejects a mismatched pair after an interrupted save instead of combining weights with stale optimizer state. The versioned sidecar restores optimizer, scheduler, mixed-precision scaler, completed epoch, and Python/NumPy/Torch RNG state; legacy optimizer-only sidecars remain readable.
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
@@ -191,10 +191,11 @@ See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh
 ### 6.2. Custom evaluation
 
 `NNModel.train(..., eval_step_fn=...)` accepts the validation-side equivalent of
-`train_step_fn`. The hook receives an `EvalStepContext` containing the model,
-batch, loss function, and epoch/batch indices, and returns one
-`NNEvaluationDataPoint` per validation batch. NNx aggregates those points and
-persists the result in `idp.val_edp`, including custom values in `extra`.
+`train_step_fn`. NNx calls it once per epoch under `torch.no_grad()`. The hook
+receives an `EvalStepContext` containing the model, complete `val_loader`,
+`extra_metrics`, and `epoch_idx`; it owns iteration and aggregation across the
+loader and returns one `NNEvaluationDataPoint` for the epoch. NNx persists that
+result in `idp.val_edp`, including custom values in `extra`.
 
 This supports regression and other non-classification validation without
 replacing the training loop. See
@@ -573,7 +574,7 @@ This means a common train → evaluate → train-more (or train → predict → 
 # First run
 run = model.train(params=NNTrainParams(n_epochs=10, ...))
 
-# Continue from LAST (preserves Adam momentum / SGD velocity via .opt.pt sidecar)
+# Continue from LAST (restores optimizer, scheduler, scaler, epoch, and RNG state)
 NNModel(net_params=..., params=...).train(params=NNTrainParams(
     n_epochs=10,
     resume_from_run_id=run.id,
@@ -582,7 +583,7 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ))
 ```
 
-Checkpoints written before resume support (i.e., from runs that predate this feature) don't carry an `.opt.pt` sidecar — weights still load, but the optimizer starts fresh.
+Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. Their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 
@@ -642,8 +643,8 @@ Downstream of the LM path, four follow-ons compose on top of it:
 Four Tier-2 subpackages are large enough to warrant a dedicated section but small enough that the canonical write-up lives elsewhere. This catalog is the pointer index — open the linked page for the full walkthrough.
 
 - **`nnx.quantize`** — PTQ INT8 weight-only (`quantize_int8(model)`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`), both built on `torchao`. The PTQ path is one call, no calibration data, no retraining; the QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit. A converted `LAST` checkpoint records its `qat_config` and `groupsize`, so the ordinary `NNModel.from_checkpoint()` path reconstructs quantized inference without consumer-side prepare/convert calls. Legacy converted checkpoints without that recipe fail with a targeted migration error. Opt-in via `pip install thekaveh-nnx[quantize]`. See [API §12](api.md) for the full surface; `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
-- **`nnx.prune`** — `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md); `examples/19_prune_mnist.py` ships an end-to-end magnitude-prune-and-fine-tune demo on MNIST.
+- **`nnx.prune`** — `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md); `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
 - **`nnx.surgery`** — `widen` / `deepen` (function-preserving Net2Net edits — Chen/Goodfellow/Shlens, ICLR 2016), `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 - **`nnx.embeddings`** — the one RAG-adjacent surface NNx ships. `train_contrastive` reuses the existing NT-Xent machinery for domain-specific text embedders; `export_to_faiss` writes the trained model's outputs to a FAISS index (Flat / HNSW) that any retrieval framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. The chunker, reranker, and vector-DB client are deliberately out of scope. See [`docs/embeddings.md`](embeddings.md) for the full when-to-use guide; `examples/13_train_domain_embedder.py` is the runnable demo.
 
-`nnx.generation` (LogitsProcessor chain) is documented inline in §15 since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` (safetensors + experimental NNx-tagged GGUF) is documented under §15 and on [`docs/gguf.md`](gguf.md) / [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.
+`nnx.generation` (LogitsProcessor chain) is documented inline in §15 since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` owns experimental NNx-tagged GGUF and Ollama bundle generation; safetensors belongs to `NNCheckpoint`, embeddings export, and Hub integration. See [`docs/gguf.md`](gguf.md) and [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.

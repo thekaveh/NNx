@@ -16,8 +16,8 @@ pip install "thekaveh-nnx[onnx]"             # 04_onnx_export.py, 12_quantize_in
 pip install "thekaveh-nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
 pip install "thekaveh-nnx[onnx-dynamo]"      # 15_qat_classifier.py (Phase-6 dynamo export)
 pip install "thekaveh-nnx[embeddings]"       # 13_train_domain_embedder.py
-pip install "thekaveh-nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py, 22_dpo_tinystories.py
-pip install "thekaveh-nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_publish_to_ollama.py
+pip install "thekaveh-nnx[lm]"               # 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 18_export_ollama_bundle.py, 22_dpo_synthetic_preferences.py
+pip install "thekaveh-nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_export_ollama_bundle.py
 pip install "thekaveh-nnx[viz]"              # 21_viz_attribute_xai.py
 ```
 
@@ -32,7 +32,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | Example | What it demonstrates |
 |---|---|
 | `01_synthetic_classification.py` | Train a feed-forward classifier on random data; `EarlyStopping`, `LRMonitor`; load BEST checkpoint and predict. |
-| `02_resume_training.py` | Warm-resume training from a prior run's LAST checkpoint with optimizer state preserved. |
+| `02_resume_training.py` | Warm-resume training from a prior run's LAST checkpoint with optimizer, scheduler, scaler, epoch, and RNG state preserved. |
 | `03_custom_metrics.py` | Plug a custom `metric_fn(Y, Y_hat)` into `NNTrainParams.extra_metrics`; inspect `idp.train_edp.extra` and `idp.val_edp.extra`. |
 | `04_onnx_export.py` | Export a trained model to ONNX, validate via `onnx.checker`. |
 | `25_conv_classifier.py` | LeNet-style conv classifier via `NNConvParams` + `Nets.CONV`: conv-stack arithmetic helpers (`spatial_sizes()`/`flatten_dim()`), per-layer FC `activations`/`dropout_probs` overrides, image-vs-flat input equivalence, and a checkpoint round-trip through `resolve_from_state`. Synthetic stripes/checkerboard imagery — no download. |
@@ -83,21 +83,21 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `16_ijepa_cifar10.py` | I-JEPA on CIFAR-10: a small `ViTNN` context encoder predicts the latent of masked patches against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `random_block_mask` (EMA updates happen inside the step factory). No pixel reconstruction, no strong augmentations. |
+| `16_ijepa_image_plumbing.py` | I-JEPA image-path plumbing on synthetic images by default (`--cifar` opts into CIFAR-10): a small `ViTNN` context encoder predicts masked-patch latents against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `random_block_mask`. |
 
 ### 2.9. Experimental GGUF export
 
 | Example | What it demonstrates |
 |---|---|
 | `17_export_transformer_to_gguf.py` | Build a tiny `TransformerNN` + BPE tokenizer, write an NNx-tagged `.gguf`, and inspect it with `gguf.GGUFReader`. Includes the official llama.cpp source-build path for `llama-quantize`. Stock llama.cpp-derived runtimes do not implement the NNx architecture. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
-| `18_publish_to_ollama.py` | Generate `model.gguf` + a Modelfile (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) as an experimental bundle fixture. Stock Ollama cannot run `nnx_transformer`; use only with a compatible patched runtime. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
+| `18_export_ollama_bundle.py` | Generate `model.gguf` + a Modelfile (`FROM` / `PARAMETER` / `SYSTEM` / `TEMPLATE`) as an experimental bundle fixture. Stock Ollama cannot run `nnx_transformer`; use only with a compatible patched runtime. Requires `pip install "thekaveh-nnx[gguf-write,lm]"`. |
 
 ### 2.10. Pruning + surgery
 
 | Example | What it demonstrates |
 |---|---|
-| `19_prune_mnist.py` | Magnitude prune a small classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then briefly fine-tune to recover. Demonstrates `nnx.prune.magnitude_prune`. |
-| `20_surgery_resnet.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. |
+| `19_prune_synthetic_classifier.py` | Magnitude prune a small synthetic-data classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then briefly fine-tune to recover. Demonstrates `nnx.prune.magnitude_prune`. |
+| `20_low_rank_surgery_ffn.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. |
 
 ### 2.11. Explainability
 
@@ -109,7 +109,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `22_dpo_tinystories.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. Requires `pip install "thekaveh-nnx[lm]"`. |
+| `22_dpo_synthetic_preferences.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. Requires `pip install "thekaveh-nnx[lm]"`. |
 
 ### 2.13. Distillation variants
 

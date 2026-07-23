@@ -15,7 +15,7 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 **Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the extension bus through which the **Specialization subpackages** plug into the loop: `finetune`, `peft` (LoRA / DoRA / IA3 / prefix / prompt / adapters), `quantize` (PTQ-INT8 + QAT-8da4w via torchao), `prune` (magnitude + 2:4), `surgery` (Net2Net widen / deepen / drop / low-rank / embedding), `embeddings` (contrastive + FAISS export), `interop` (safetensors + experimental GGUF), `generation` (LogitsProcessor chain + KV-cache), `viz` (model-internals viz: summary / weight histogram / activation map / Captum attribution / Netron), `diffusion`, `paradigms` (KD / feature-KD / SimCLR / Mixup / CutMix / MoE / I-JEPA / DPO / Born-Again), and `trainer`, plus the shared `_step_helpers`.
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The remaining specialization packages provide model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`), and diagnostics (`viz`) that compose around the loop rather than injecting hooks.
 3. The **Training-loop internals** run `_step_scheduler` and `_save_checkpoints` each batch / epoch; paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. **`NNRun`** and **`NNCheckpoint`** write to **`runs/<id>/`** atomically after every epoch.
@@ -25,7 +25,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 ### 1.2. Capabilities at a glance
 
 - **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
-- **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`); incremental writes after every epoch survive `KeyboardInterrupt`. `NNCheckpoint` saves at six tags (FIRST / Q1 / Q2 / Q3 / LAST / BEST) with optimizer-state `.opt.pt` sidecars for warm-resume.
+- **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`); incremental writes after every epoch survive `KeyboardInterrupt`. `NNCheckpoint` saves at six tags (FIRST / Q1 / Q2 / Q3 / LAST / BEST) with versioned `.opt.pt` training-state bundles for warm resume.
 - **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms without modifying NNx internals.
 - **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec, build_param_groups}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`.
 - **Multi-optimizer `Trainer`** — `nnx.trainer.Trainer` parallels `NNModel.train()` for scenarios that need disjoint optimizers (GAN G/D, actor-critic). Accepts a name-keyed dict of `NNOptimParams`; each entry's `NNParamGroupSpec` scopes the optimizer under strict-partition semantics.
@@ -163,7 +163,7 @@ NNTrainParams(seed=42, ...)                         # pins again at train() entr
 run = model.train(params=NNTrainParams(n_epochs=10, ...))
 
 # Build a fresh NNModel and continue from run's LAST checkpoint
-# (optimizer state preserved via .opt.pt sidecar):
+# (optimizer, scheduler, scaler, epoch, and RNG state preserved):
 NNModel(net_params=..., params=...).train(params=NNTrainParams(
     n_epochs=10,
     resume_from_run_id=run.id,
@@ -255,6 +255,7 @@ The documentation below covers the public API, architecture, extension contracts
 - [Examples catalog](examples/README.md) — ordered tour of the 26 runnable scripts under `examples/`, grouped foundational to specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF inspection, self-supervised learning, pruning, surgery, explainability, DPO, and distillation variants).
 - [Test import boundaries](tests/README.md) — when tests should use the public facade and when a deep implementation import is intentional.
 - [Contributing](CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
+- [Security policy](SECURITY.md) — supported versions, private vulnerability reporting, and the checkpoint trust boundary.
 - [Changelog](CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
 
 ## 6. Project

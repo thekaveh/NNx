@@ -99,7 +99,7 @@ run = model.train(
 ```
 
 The full example with an optional CIFAR-10 download lives in
-[`examples/16_ijepa_cifar10.py`](https://github.com/thekaveh/NNx/blob/main/examples/16_ijepa_cifar10.py).
+[`examples/16_ijepa_image_plumbing.py`](https://github.com/thekaveh/NNx/blob/main/examples/16_ijepa_image_plumbing.py).
 
 ## 4. Design notes
 

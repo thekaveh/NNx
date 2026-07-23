@@ -21,6 +21,8 @@ EXTRA_PAGES = (
     ("Contributing", ROOT / "CONTRIBUTING.md", "Contributing"),
     ("Changelog", ROOT / "CHANGELOG.md", "Changelog"),
     ("Test Import Boundaries", ROOT / "tests" / "README.md", "Test-Import-Boundaries"),
+    ("Security Policy", ROOT / "SECURITY.md", "Security-Policy"),
+    ("License", ROOT / "LICENSE", "License"),
 )
 
 LINK_RE = re.compile(r"(?P<image>!)?\[(?P<label>[^]]*)\]\((?P<target>[^)]+)\)")
@@ -43,6 +45,8 @@ def _nav_pages() -> list[tuple[str, Path, str]]:
                 if isinstance(value, list):
                     visit(value)
                 elif isinstance(value, str):
+                    if value.startswith("_project/"):
+                        continue
                     slug = "Home" if value == "index.md" else _slug(str(title))
                     pages.append((str(title), ROOT / "docs" / value, slug))
 
@@ -88,6 +92,9 @@ def rewrite_markdown(source: Path, text: str, source_map: dict[Path, str]) -> st
         if path_part == "" and fragment:
             return f"[{label}]({fragment})"
 
+        if resolved is not None and resolved.exists() and (resolved.suffix == ".md" or resolved.is_dir()):
+            raise ValueError(f"unmapped local documentation link in {source}: {target}")
+
         return label
 
     lines: list[str] = []
@@ -102,13 +109,24 @@ def rewrite_markdown(source: Path, text: str, source_map: dict[Path, str]) -> st
 def build(output: Path = DEFAULT_OUTPUT) -> None:
     pages = _nav_pages() + list(EXTRA_PAGES)
     source_map = {source.resolve(): f"{slug}.md" for _, source, slug in pages}
+    for _, _, slug in EXTRA_PAGES:
+        source_map[(ROOT / "docs" / "_project" / f"{slug}.md").resolve()] = f"{slug}.md"
+    source_map[(ROOT / "docs" / "architecture.html").resolve()] = "Architecture-diagram.md"
+    source_map[(ROOT / "examples").resolve()] = "Examples.md"
+    source_map[(ROOT / "tests").resolve()] = "Test-Import-Boundaries.md"
+    for example in (ROOT / "examples").glob("*.py"):
+        source_map[example.resolve()] = "Examples.md"
+    source_map[(ROOT / "src" / "nnx" / "_step_helpers.py").resolve()] = "API-Reference.md"
 
     if output.exists():
         shutil.rmtree(output)
     (output / "images").mkdir(parents=True)
 
     for _, source, slug in pages:
-        rendered = rewrite_markdown(source, source.read_text(encoding="utf-8"), source_map)
+        text = source.read_text(encoding="utf-8")
+        if source.name == "LICENSE":
+            text = f"# License\n\n```text\n{text.rstrip()}\n```\n"
+        rendered = rewrite_markdown(source, text, source_map)
         (output / f"{slug}.md").write_text(rendered, encoding="utf-8")
 
     shutil.copy2(ROOT / "docs" / "assets" / "architecture.svg", output / "images" / "architecture.svg")
