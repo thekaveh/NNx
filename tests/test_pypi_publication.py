@@ -96,6 +96,13 @@ def test_package_uses_fresh_absolute_link_pypi_readme():
     assert text == render()
     assert "https://raw.githubusercontent.com/thekaveh/NNx/main/" in text
     assert "https://github.com/thekaveh/NNx/blob/main/" in text
+    banner = (
+        '<img src="https://raw.githubusercontent.com/thekaveh/NNx/main/docs/assets/nnx-poster.png" '
+        'alt="NNx neural training banner" width="100%">'
+    )
+    assert banner in text
+    assert text.index(banner) < text.index('<h1 align="center">NNx</h1>')
+    assert "# 15. NNx" not in text
 
 
 def test_privileged_wiki_publication_uses_locked_nonbuilding_tool_group():

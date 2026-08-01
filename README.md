@@ -1,10 +1,43 @@
-# 15. NNx
+<p align="center" class="nnx-banner">
+  <img src="docs/assets/nnx-poster.png" alt="NNx neural training banner" width="100%">
+</p>
 
-Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support.
+<h1 align="center">NNx</h1>
 
-[![CI](https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thekaveh/NNx/actions/workflows/ci.yml) [![Docs](https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/thekaveh/NNx/actions/workflows/docs.yml) [![PyPI](https://img.shields.io/pypi/v/thekaveh-nnx)](https://pypi.org/project/thekaveh-nnx/) [![Python](https://img.shields.io/badge/python-3.10--3.14-3776AB)](https://pypi.org/project/thekaveh-nnx/) [![License](https://img.shields.io/badge/license-Apache--2.0-2E7D32)](https://spdx.org/licenses/Apache-2.0.html)
+<p align="center">
+  <strong>Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support.</strong>
+</p>
 
-![NNx product overview](docs/assets/nnx-poster.png)
+<p align="center">
+  Transparent orchestration for durable experiments, with your models and step logic left in your hands.
+</p>
+
+<p align="center" class="nnx-status-badges">
+  <a href="https://github.com/thekaveh/NNx/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/thekaveh/NNx/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main"></a>
+  <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/thekaveh-nnx"></a>
+  <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="Python" src="https://img.shields.io/badge/python-3.10--3.14-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://spdx.org/licenses/Apache-2.0.html"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2E7D32"></a>
+</p>
+
+<p align="center" class="nnx-core-stack">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="PyTorch Geometric" src="https://img.shields.io/badge/PyTorch_Geometric-2.4%2B-3C2179">
+  <img alt="NumPy" src="https://img.shields.io/badge/NumPy-1.24%2B-013243?logo=numpy&logoColor=white">
+  <img alt="pandas" src="https://img.shields.io/badge/pandas-2.0%2B-150458?logo=pandas&logoColor=white">
+  <img alt="scikit-learn" src="https://img.shields.io/badge/scikit--learn-1.3%2B-F7931E?logo=scikitlearn&logoColor=white">
+  <img alt="Plotly" src="https://img.shields.io/badge/Plotly-5.18%2B-3F4F75?logo=plotly&logoColor=white">
+</p>
+
+<p align="center" class="nnx-optional-stack">
+  <img alt="TensorBoard" src="https://img.shields.io/badge/TensorBoard-optional-FF6F00?logo=tensorflow&logoColor=white">
+  <img alt="Weights & Biases" src="https://img.shields.io/badge/Weights_%26_Biases-optional-FFBE00?logo=weightsandbiases&logoColor=black">
+  <img alt="ONNX" src="https://img.shields.io/badge/ONNX-optional-005CED?logo=onnx&logoColor=white">
+  <img alt="torchao" src="https://img.shields.io/badge/torchao-optional-EE4C2C">
+  <img alt="Hugging Face" src="https://img.shields.io/badge/Hugging_Face-optional-FFD21E">
+  <img alt="safetensors" src="https://img.shields.io/badge/safetensors-optional-4B5563">
+  <img alt="FAISS" src="https://img.shields.io/badge/FAISS-optional-0467DF">
+</p>
 
 <!-- executive-summary:start -->
 NNx is a lightweight PyTorch toolkit for repeatable training, evaluation, and visualization. It owns the routine experiment infrastructure: frozen configuration objects, supervised train/eval/predict orchestration, callbacks, schedulers, metrics, and content-addressed checkpoints that support reliable resume and inspection. Models and per-step logic remain replaceable, so the same loop can serve standard networks, graph neural networks, transformers, diffusion, representation learning, fine-tuning, and multi-optimizer workflows. Focused modules add PEFT, quantization, pruning, model surgery, embeddings, export, and diagnostics without forcing those concerns into the core loop. NNx is aimed at researchers and engineers who want transparent PyTorch code and durable experiments without adopting a larger training platform.
