@@ -37,10 +37,51 @@ def test_manifest_sources_exist_and_numbered_labels_are_unique():
 
 def test_manifest_numbers_are_baked_into_canonical_h1s():
     for page in (page for _, group in load_sections() for page in group):
-        if page.source.name == "LICENSE":
+        if page.source.name == "LICENSE" or not page.numbered_h1:
             continue
         first_line = page.source.read_text(encoding="utf-8").splitlines()[0]
         assert first_line.startswith(f"# {page.number}. "), f"{page.source} must begin with document {page.number}"
+
+
+def test_manifest_allows_brand_pages_to_opt_out_of_numbered_h1(tmp_path: Path, monkeypatch):
+    source = tmp_path / "home.md"
+    source.write_text('<h1 align="center">NNx</h1>\n', encoding="utf-8")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "surfaces": ["repo", "site", "wiki"],
+                "numbering": "navigation",
+                "sections": [
+                    {
+                        "number": "1",
+                        "title": "Home",
+                        "source": source.name,
+                        "slug": "Home",
+                        "numbered_h1": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(build_docs, "ROOT", tmp_path)
+    monkeypatch.setattr(build_docs, "MANIFEST", manifest)
+
+    page = build_docs.load_sections()[0][1][0]
+
+    assert page.numbered_h1 is False
+
+
+def test_manifest_rejects_non_boolean_numbered_h1(tmp_path: Path, monkeypatch):
+    manifest = yaml.safe_load(build_docs.MANIFEST.read_text(encoding="utf-8"))
+    manifest["sections"][0]["numbered_h1"] = "false"
+    invalid = tmp_path / "manifest.yaml"
+    invalid.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(build_docs, "MANIFEST", invalid)
+
+    with pytest.raises(ValueError, match="numbered_h1 must be a boolean"):
+        build_docs.load_sections()
 
 
 def test_primary_openers_share_tagline_badges_and_executive_summary():

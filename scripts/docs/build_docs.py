@@ -70,6 +70,7 @@ class Page:
     title: str
     source: Path
     slug: str
+    numbered_h1: bool = True
 
 
 def _slug(value: str) -> str:
@@ -108,7 +109,11 @@ def load_sections() -> list[tuple[str | None, list[Page]]]:
             if not isinstance(item, dict):
                 raise ValueError(f"section {section_index} must be a mapping")
             grouped = "children" in item
-            allowed_section_keys = {"title", "children"} if grouped else {"number", "title", "source", "slug"}
+            allowed_section_keys = (
+                {"title", "children"}
+                if grouped
+                else {"number", "title", "source", "slug", "numbered_h1"}
+            )
             unknown_section = item.keys() - allowed_section_keys
             if unknown_section:
                 raise ValueError(f"section {section_index} has unknown keys: {', '.join(sorted(unknown_section))}")
@@ -125,7 +130,7 @@ def load_sections() -> list[tuple[str | None, list[Page]]]:
             for leaf_index, leaf in enumerate(leaves, start=1):
                 if not isinstance(leaf, dict):
                     raise ValueError(f"section {section_index} page {leaf_index} must be a mapping")
-                unknown_page = leaf.keys() - {"number", "title", "source", "slug"}
+                unknown_page = leaf.keys() - {"number", "title", "source", "slug", "numbered_h1"}
                 if unknown_page:
                     raise ValueError(
                         f"section {section_index} page {leaf_index} has unknown keys: {', '.join(sorted(unknown_page))}"
@@ -147,7 +152,18 @@ def load_sections() -> list[tuple[str | None, list[Page]]]:
                 slug = leaf.get("slug", _slug(title))
                 if not isinstance(slug, str) or re.fullmatch(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", slug) is None:
                     raise ValueError(f"section {section_index} page {leaf_index} must have a filename-safe slug")
-                pages.append(Page(number=str(leaf["number"]), title=title, source=source, slug=slug))
+                numbered_h1 = leaf.get("numbered_h1", True)
+                if not isinstance(numbered_h1, bool):
+                    raise ValueError(f"section {section_index} page {leaf_index} numbered_h1 must be a boolean")
+                pages.append(
+                    Page(
+                        number=str(leaf["number"]),
+                        title=title,
+                        source=source,
+                        slug=slug,
+                        numbered_h1=numbered_h1,
+                    )
+                )
             sections.append((group, pages))
     except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
         raise ValueError(f"invalid documentation manifest: {exc}") from exc
@@ -164,7 +180,7 @@ def load_sections() -> list[tuple[str | None, list[Page]]]:
     if actual_numbers != expected_numbers:
         raise ValueError(f"manifest page numbers must be the ordered sequence 1..{len(all_pages)}")
     for page in all_pages:
-        if page.source.name == "LICENSE":
+        if page.source.name == "LICENSE" or not page.numbered_h1:
             continue
         source_lines = page.source.read_text(encoding="utf-8").splitlines()
         if not source_lines or not source_lines[0].startswith(f"# {page.number}. "):
