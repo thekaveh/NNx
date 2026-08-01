@@ -1,4 +1,4 @@
-# External Dependency Contracts
+# 12. External Dependency Contracts
 
 This ledger records NNx integration points that depend on third-party packages,
 services, CLIs, or registries. It complements tests by naming the supported

@@ -1,4 +1,4 @@
-# Contributing to NNx
+# 17. Contributing to NNx
 
 Thanks for being interested in contributing. NNx is a small library; the goal is to keep it small, tested, and useful for the existing notebook consumers while inviting new ones.
 
@@ -11,6 +11,10 @@ python -m pip install -r requirements-tools.txt
 uv sync --all-extras --frozen
 uv run pre-commit install       # optional but recommended
 ```
+
+Diagram fallback generation also needs the native Cairo library: install it
+with `brew install cairo` on macOS or `sudo apt-get install libcairo2` on
+Debian/Ubuntu. CairoSVG itself is pinned in the `docs-publish` dependency group.
 
 Verify a clean baseline:
 
@@ -26,7 +30,8 @@ uv run mkdocs build --strict           # generated docs (gates CI)
 ```
 
 Repository Markdown is canonical. `docs/manifest.yaml` is the single page
-inventory; `scripts.docs.build_docs` generates ignored `mkdocs.yml`,
+inventory and each source H1 begins with its manifest number;
+`scripts.docs.build_docs` generates ignored `mkdocs.yml`,
 `generated/site`, and `generated/wiki` projections. Do not edit generated
 outputs. A successful push to `main` publishes the same canonical content to
 GitHub Pages and the repository wiki.

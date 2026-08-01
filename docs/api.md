@@ -1,4 +1,4 @@
-# API Reference
+# 11. API Reference
 
 Auto-generated from docstrings via [mkdocstrings](https://mkdocstrings.github.io/). Sections are ordered from most foundational to most specialized; within each section, classes precede free functions and type aliases.
 

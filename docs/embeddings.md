@@ -1,4 +1,4 @@
-# Embeddings — Contrastive Trainer + FAISS Export
+# 6. Embeddings — Contrastive Trainer + FAISS Export
 
 `nnx.embeddings` is NNx's one RAG-adjacent surface: train a domain-specific text embedder via the existing SimCLR / NT-Xent contrastive machinery, then export the trained model to a FAISS index for downstream retrieval.
 

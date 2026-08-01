@@ -1,4 +1,4 @@
-# Model surgery — `nnx.surgery`
+# 4. Model surgery — `nnx.surgery`
 
 The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Module` and return a fresh module with a structural change applied. Four are **function-preserving** in some sense — `widen` and `deepen` unconditionally preserve the forward output (before any training step); `low_rank_factorize` is function-preserving at max rank and approximate below; `expand_embedding` preserves the forward output on original token IDs. Only `drop_layer` is purely chain-preserving — it changes the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality. See the table in §1 for the per-primitive breakdown.
 
