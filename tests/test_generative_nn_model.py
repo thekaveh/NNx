@@ -629,3 +629,180 @@ def test_generate_stop_string_in_prompt_does_not_halt_immediately(tmp_path):
     for use_cache in (True, False):
         out = model.generate(prompt=prompt, max_new_tokens=8, temperature=0.0, stop=[stop_word], use_cache=use_cache)
         assert out == base, f"prompt-only stop {stop_word!r} halted generation (use_cache={use_cache})"
+
+
+# ---------------- on_token callback ----------------
+
+
+def test_generate_on_token_callback_invoked_per_token(tmp_path):
+    """``on_token`` fires once per newly generated token, in order,
+    with the token id — letting callers stream output without re-
+    driving decode. We collect ids via ``list.append`` and verify the
+    captured sequence is exactly the continuation generate() produced
+    (i.e. ``decode(prompt_ids + seen) == output``)."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+    prompt = "the"
+    prompt_ids = tokenizer.encode(prompt)
+    seen: list[int] = []
+    out = model.generate(prompt=prompt, max_new_tokens=5, temperature=0.0, on_token=seen.append)
+    assert len(seen) == 5
+    assert all(isinstance(t, int) for t in seen)
+    # The callback observed exactly the continuation tokens: prepending
+    # the prompt ids and decoding must reproduce generate()'s output.
+    assert tokenizer.decode(prompt_ids + seen) == out
+
+
+@pytest.mark.parametrize("use_cache", [True, False])
+def test_generate_on_token_callback_works_on_both_decode_paths(tmp_path, use_cache):
+    """The callback fires on BOTH the KV-cache and full-recompute
+    decode paths — same per-token contract either way."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+    prompt = "the"
+    prompt_ids = tokenizer.encode(prompt)
+    seen: list[int] = []
+    out = model.generate(
+        prompt=prompt,
+        max_new_tokens=5,
+        temperature=0.0,
+        use_cache=use_cache,
+        on_token=seen.append,
+    )
+    assert len(seen) == 5
+    assert tokenizer.decode(prompt_ids + seen) == out
+
+
+def test_generate_on_token_callback_default_none_is_noop(tmp_path):
+    """``on_token`` defaults to ``None`` (no-op): omitting the kwarg
+    and passing ``on_token=None`` must produce identical output, so
+    existing callers are unaffected by the additive parameter."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(1)
+    model = _make_model(tokenizer)
+    out_default = model.generate(prompt="the", max_new_tokens=6, temperature=0.0)
+    out_none = model.generate(prompt="the", max_new_tokens=6, temperature=0.0, on_token=None)
+    assert out_default == out_none
+
+
+@pytest.mark.parametrize("use_cache", [True, False])
+def test_generate_on_token_callback_not_invoked_when_max_new_tokens_zero(tmp_path, use_cache):
+    """With ``max_new_tokens=0`` no tokens are emitted on either path,
+    so the callback must never fire — the collected list stays empty."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(2)
+    model = _make_model(tokenizer)
+    seen: list[int] = []
+    model.generate(
+        prompt="the",
+        max_new_tokens=0,
+        temperature=0.0,
+        use_cache=use_cache,
+        on_token=seen.append,
+    )
+    assert seen == []
+
+
+def test_generate_on_token_callback_fires_before_stop_halts(tmp_path):
+    """The callback fires BEFORE the ``stop`` string check, so it
+    observes every emitted token — including the one whose append
+    makes the stop string appear in the continuation. We learn a stop
+    string from an unconstrained greedy run, then re-run with ``stop=``
+    and a callback and confirm the stop string is decodable from the
+    captured tokens (i.e. the triggering token was delivered)."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+
+    free_run = model.generate(prompt="the", max_new_tokens=16, temperature=0.0)
+    continuation = free_run[len("the") :].strip()
+    assert continuation, "model emitted nothing; fixture is broken"
+    stop_str = continuation.split()[0] if continuation.split() else continuation[:2]
+
+    seen: list[int] = []
+    model.generate(
+        prompt="the",
+        max_new_tokens=16,
+        temperature=0.0,
+        stop=[stop_str],
+        on_token=seen.append,
+    )
+    # The callback saw at least one token, and decoding the captured
+    # tokens yields the continuation — which must contain the stop
+    # string, proving the triggering token was delivered to the
+    # callback before the stop check halted decoding.
+    assert seen, "callback never fired"
+    assert stop_str in tokenizer.decode(seen), (
+        f"stop string {stop_str!r} not in decoded callback tokens; the triggering token was not delivered to on_token"
+    )
+
+
+def test_generate_on_token_callback_fires_across_window_overflow(tmp_path):
+    """``on_token`` fires exactly once per generated token even when
+    the KV-cache path rebuilds its sliding window mid-generation. The
+    rebuild branch (``cached_len + 1 > max_seq_len``) re-runs a full
+    window forward AND samples a token, so a buggy integration could
+    easily double-fire or skip the callback across that transition —
+    this pins the per-token contract on the overflow path the codebase
+    explicitly flags as bug-prone."""
+    tokenizer = _make_tokenizer(tmp_path)
+    # Small window so prompt + new tokens overflow and force a rebuild.
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=8,
+    )
+    model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    torch.manual_seed(11)
+    model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+
+    prompt = "the cat sat on the mat"
+    prompt_ids = tokenizer.encode(prompt)
+    max_new_tokens = 12
+    seen: list[int] = []
+    out = model.generate(
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=0.0,
+        use_cache=True,
+        on_token=seen.append,
+    )
+    # Callback fired exactly once per token — no double-fire or skip
+    # across the cache rebuild.
+    assert len(seen) == max_new_tokens
+    # The streamed tokens reconstruct the full output.
+    assert tokenizer.decode(prompt_ids + seen) == out
+
+
+def test_generate_on_token_callback_raises_restores_training_mode(tmp_path):
+    """If ``on_token`` raises, generate()'s try/finally must still
+    restore ``net.training`` — mirroring
+    ``test_generate_restores_training_mode_on_early_validation_error``
+    but for a raise originating INSIDE the decode loop (after eval()
+    was switched on) rather than in pre-loop validation."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+    model.net.train()
+
+    def raising_callback(_token_id: int) -> None:
+        raise RuntimeError("boom")
+
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            model.generate(
+                prompt="the",
+                max_new_tokens=5,
+                temperature=0.0,
+                on_token=raising_callback,
+            )
+    finally:
+        assert model.net.training is True, "on_token raise stranded the net in eval()"

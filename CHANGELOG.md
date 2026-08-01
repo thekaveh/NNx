@@ -13,6 +13,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 - A project security policy documents supported versions, private vulnerability reporting, and responsible disclosure expectations.
 - Trainer scheduler ownership is explicit through `auto_step_schedulers`, with loop-owned once-per-epoch stepping as the default.
 - A manifest now deterministically projects canonical documentation into self-contained MkDocs and GitHub wiki trees.
+- `GenerativeNNModel.generate()` accepts an optional `on_token` callback invoked after each generated token, enabling streaming output, progress bars, and custom early-stop heuristics without re-running decode.
 
 ### Changed
 
