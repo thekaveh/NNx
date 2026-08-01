@@ -39,9 +39,15 @@ class NNTabularDataset(NNDatasetBase):
     """Wrap a pandas DataFrame as train/val/test DataLoaders.
 
     `feature_cols` columns are stacked into the input tensor; `target_col`
-    is the integer label column. Targets are coerced to int64 (long), so
-    use this for classification. For regression, prefer to construct the
-    DataLoaders yourself and pass them through NNTrainParams.
+    is the target column. By default, targets are coerced to int64 (long)
+    and validated as contiguous integer classes 0..K-1 (classification);
+    the loaders yield 1-D class-index targets `(batch,)` (the
+    `CrossEntropyLoss` convention). Set `target_dtype` to a floating-point
+    dtype (e.g. `torch.float32`) to skip the integer cast and contiguity
+    check and fix `output_dim=1` for regression; the loaders then yield
+    targets of shape `(batch, 1)` so they line up with a model whose
+    final linear layer has one output. Integer dtypes are rejected —
+    leave `target_dtype` unset (`None`) for classification.
     """
 
     df: pd.DataFrame
@@ -55,6 +61,17 @@ class NNTabularDataset(NNDatasetBase):
     test_proportion: float = 0.15
     name_override: Optional[str] = None
     feature_dtype: torch.dtype = field(default=torch.float32)
+    # None (default) = classification: target cast to int64 and validated
+    # as contiguous 0..K-1 classes (the existing contract). When set to a
+    # floating-point dtype (e.g. torch.float32) = regression: target cast
+    # to this dtype, the integer and contiguity checks are skipped, and
+    # output_dim is fixed at 1. Integer dtypes are rejected in
+    # __post_init__ (torch.long is what classification already casts to
+    # internally, so passing it explicitly would silently switch modes).
+    # Replaces the previous "build the DataLoaders yourself" workaround
+    # for regression. Not part of _state (matches feature_dtype / seed
+    # precedent — the dataset is not part of run.id).
+    target_dtype: Optional[torch.dtype] = None
     # Deterministic split when set — same `seed` + same `val_proportion` /
     # `test_proportion` round-trips to the same train/val/test ids across
     # runs. Default None falls back to the global torch RNG (the pre-fix
@@ -69,6 +86,19 @@ class NNTabularDataset(NNDatasetBase):
         if self.val_proportion + self.test_proportion >= 1.0:
             raise ValueError(
                 f"val_proportion + test_proportion must be < 1, got {self.val_proportion + self.test_proportion}"
+            )
+        # target_dtype is a tri-state: None = classification (the existing
+        # contract), a floating-point dtype = regression. An integer dtype
+        # is rejected because it's an unambiguous footgun: torch.long is
+        # what classification already casts to internally, so passing it
+        # explicitly would silently switch modes (skip the contiguity
+        # check, force output_dim=1) — the exact opposite of what the
+        # caller asked for. Fail fast with a fixable message.
+        if self.target_dtype is not None and not self.target_dtype.is_floating_point:
+            raise ValueError(
+                f"target_dtype must be a floating-point dtype for regression "
+                f"(e.g. torch.float32); got {self.target_dtype}. "
+                "For classification, leave target_dtype unset (None)."
             )
 
         # Validate columns up-front so missing-column errors point at user
@@ -104,12 +134,19 @@ class NNTabularDataset(NNDatasetBase):
         # rather than going through an extra np.float32 intermediate copy.
         target_series = cast(pd.Series, pd.to_numeric(self.df[self.target_col], errors="coerce"))
         target_values = target_series.to_numpy()
-        if not bool(np.isfinite(target_values).all()) or not bool(
-            np.equal(target_values, np.floor(target_values)).all()
-        ):
+        # Finiteness is required for both classification and regression —
+        # NaN/Inf targets are poison either way. The integer check is
+        # classification-only: a regression target (float) is expected to
+        # have non-integral values.
+        if not bool(np.isfinite(target_values).all()):
             raise ValueError(
-                f"target_col {self.target_col!r} labels must be finite integers; "
-                "factorize categorical labels before constructing the dataset."
+                f"target_col {self.target_col!r} contains non-finite values (NaN/Inf); "
+                "drop or impute rows before constructing the dataset."
+            )
+        if self.target_dtype is None and not bool(np.equal(target_values, np.floor(target_values)).all()):
+            raise ValueError(
+                f"target_col {self.target_col!r} labels must be finite integers for classification; "
+                "factorize categorical labels, or set target_dtype for regression."
             )
 
         X = torch.tensor(
@@ -118,8 +155,18 @@ class NNTabularDataset(NNDatasetBase):
         )
         y = torch.tensor(
             self.df[self.target_col].to_numpy(),
-            dtype=torch.long,
+            dtype=self.target_dtype if self.target_dtype is not None else torch.long,
         )
+        # Regression: promote the 1-D target `(n,)` to `(n, 1)` so it lines
+        # up with `output_dim=1` (a model whose final linear layer has one
+        # output emits `(batch, 1)` predictions). Leaving `y` 1-D would
+        # silently trigger right-aligned broadcasting inside MSELoss:
+        # `(batch, 1)` vs `(batch,)` → `(batch, batch)` pairwise diffs
+        # averaged into a scalar — a meaningless loss with no error.
+        # Classification stays 1-D `(n,)` because that's the CrossEntropyLoss
+        # convention (class indices, not one-hot).
+        if self.target_dtype is not None:
+            y = y.unsqueeze(-1)
         n_total = len(X)
         if n_total == 0:
             raise ValueError("NNTabularDataset requires a non-empty DataFrame")
@@ -166,21 +213,25 @@ class NNTabularDataset(NNDatasetBase):
         )
 
         object.__setattr__(self, "input_dim", len(self.feature_cols))
-        # Classification target dim = number of unique classes in the DF.
-        # Labels must be contiguous 0..K-1: nunique() on e.g. {0, 5}
-        # would size the model at 2 outputs and the mismatch only
-        # surfaces much later inside cross-entropy as an opaque index /
-        # device-side assert error. Fail fast with a fixable message.
-        n_classes = int(self.df[self.target_col].nunique())
-        target_min = int(self.df[self.target_col].min())
-        target_max = int(self.df[self.target_col].max())
-        if target_min != 0 or target_max != n_classes - 1:
-            raise ValueError(
-                f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
-                f"got min={target_min}, max={target_max}, n_unique={n_classes}. "
-                "Remap labels (e.g. pd.factorize) before constructing the dataset."
-            )
-        object.__setattr__(self, "output_dim", n_classes)
+        if self.target_dtype is None:
+            # Classification: labels must be contiguous 0..K-1.
+            # nunique() on e.g. {0, 5} would size the model at 2 outputs
+            # and the mismatch only surfaces much later inside
+            # cross-entropy as an opaque index / device-side assert.
+            # Fail fast with a fixable message.
+            n_classes = int(self.df[self.target_col].nunique())
+            target_min = int(self.df[self.target_col].min())
+            target_max = int(self.df[self.target_col].max())
+            if target_min != 0 or target_max != n_classes - 1:
+                raise ValueError(
+                    f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
+                    f"got min={target_min}, max={target_max}, n_unique={n_classes}. "
+                    "Remap labels (e.g. pd.factorize) before constructing the dataset."
+                )
+            object.__setattr__(self, "output_dim", n_classes)
+        else:
+            # Regression: single continuous output.
+            object.__setattr__(self, "output_dim", 1)
 
         object.__setattr__(
             self,
