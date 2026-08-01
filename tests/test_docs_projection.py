@@ -1,3 +1,4 @@
+import struct
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,18 @@ def test_primary_openers_place_product_poster_before_first_section():
         banner = f'<img src="{target}" alt="NNx neural training banner" width="100%">'
         assert banner in opener
         assert opener.index(banner) < opener.index('<h1 align="center">NNx</h1>')
+
+
+def test_product_banner_is_a_raster_only_brand_asset():
+    banner = build_docs.ROOT / "docs" / "assets" / "nnx-poster.png"
+    payload = banner.read_bytes()
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", payload[16:24])
+    assert width >= 1200
+    assert width / height >= 2
+    assert b"nnx-svg-sha256" not in payload
+    assert not banner.with_suffix(".svg").exists()
+    assert not (build_docs.ROOT / "docs" / "diagrams" / "nnx-poster.html").exists()
 
 
 def test_audited_copy_does_not_reintroduce_unsupported_claims():
@@ -406,7 +419,7 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
     assert (site / "assets" / "training-lifecycle.png").is_file()
     assert (wiki / "images" / "docs-projection.svg").is_file()
     assert (wiki / "images" / "docs-projection.png").is_file()
-    assert "assets/nnx-poster.svg" in (site / "index.md").read_text(encoding="utf-8")
+    assert "assets/nnx-poster.png" in (site / "index.md").read_text(encoding="utf-8")
     assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
     assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")
