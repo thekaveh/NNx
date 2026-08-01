@@ -1,7 +1,7 @@
 surfaces: [repo, site, wiki]
 numbering: navigation
 sections:
-  - {number: "1", title: Home, source: docs/index.md, slug: Home}
+  - {number: "1", title: Home, source: docs/index.md, slug: Home, numbered_h1: false}
   - {number: "2", title: Quickstart, source: docs/quickstart.md}
   - title: Core guides
     children:
@@ -21,7 +21,7 @@ sections:
       - {number: "14", title: Architecture, source: docs/architecture.md}
   - title: Project
     children:
-      - {number: "15", title: Repository overview, source: README.md, slug: Repository-Overview}
+      - {number: "15", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
       - {number: "16", title: Examples, source: examples/README.md}
       - {number: "17", title: Contributing, source: CONTRIBUTING.md}
       - {number: "18", title: Security policy, source: SECURITY.md, slug: Security-Policy}

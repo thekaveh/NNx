@@ -17,7 +17,6 @@ DIAGRAMS = {
     ROOT / "docs" / "architecture.html": ROOT / "docs" / "assets" / "architecture.svg",
     ROOT / "docs" / "diagrams" / "training-lifecycle.html": ROOT / "docs" / "assets" / "training-lifecycle.svg",
     ROOT / "docs" / "diagrams" / "docs-projection.html": ROOT / "docs" / "assets" / "docs-projection.svg",
-    ROOT / "docs" / "diagrams" / "nnx-poster.html": ROOT / "docs" / "assets" / "nnx-poster.svg",
 }
 
 

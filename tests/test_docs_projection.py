@@ -1,3 +1,4 @@
+import struct
 from pathlib import Path
 
 import pytest
@@ -7,16 +8,17 @@ import scripts.docs.build_docs as build_docs
 from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links
 
 TAGLINE = "Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support."
-BADGES = (
-    "[![CI](https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main)]"
-    "(https://github.com/thekaveh/NNx/actions/workflows/ci.yml) "
-    "[![Docs](https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main)]"
-    "(https://github.com/thekaveh/NNx/actions/workflows/docs.yml) "
-    "[![PyPI](https://img.shields.io/pypi/v/thekaveh-nnx)](https://pypi.org/project/thekaveh-nnx/) "
-    "[![Python](https://img.shields.io/badge/python-3.10--3.14-3776AB)]"
-    "(https://pypi.org/project/thekaveh-nnx/) "
-    "[![License](https://img.shields.io/badge/license-Apache--2.0-2E7D32)]"
-    "(https://spdx.org/licenses/Apache-2.0.html)"
+SUPPORT_LINE = "Transparent orchestration for durable experiments, with your models and step logic left in your hands."
+STATUS_BADGES = ("CI", "Docs", "PyPI", "Python", "License")
+CORE_STACK_BADGES = ("PyTorch", "PyTorch Geometric", "NumPy", "pandas", "scikit-learn", "Plotly")
+OPTIONAL_STACK_BADGES = (
+    "TensorBoard",
+    "Weights & Biases",
+    "ONNX",
+    "torchao",
+    "Hugging Face",
+    "safetensors",
+    "FAISS",
 )
 
 
@@ -37,18 +39,65 @@ def test_manifest_sources_exist_and_numbered_labels_are_unique():
 
 def test_manifest_numbers_are_baked_into_canonical_h1s():
     for page in (page for _, group in load_sections() for page in group):
-        if page.source.name == "LICENSE":
+        if page.source.name == "LICENSE" or not page.numbered_h1:
             continue
         first_line = page.source.read_text(encoding="utf-8").splitlines()[0]
         assert first_line.startswith(f"# {page.number}. "), f"{page.source} must begin with document {page.number}"
 
 
-def test_primary_openers_share_tagline_badges_and_executive_summary():
+def test_manifest_allows_brand_pages_to_opt_out_of_numbered_h1(tmp_path: Path, monkeypatch):
+    source = tmp_path / "home.md"
+    source.write_text('<h1 align="center">NNx</h1>\n', encoding="utf-8")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "surfaces": ["repo", "site", "wiki"],
+                "numbering": "navigation",
+                "sections": [
+                    {
+                        "number": "1",
+                        "title": "Home",
+                        "source": source.name,
+                        "slug": "Home",
+                        "numbered_h1": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(build_docs, "ROOT", tmp_path)
+    monkeypatch.setattr(build_docs, "MANIFEST", manifest)
+
+    page = build_docs.load_sections()[0][1][0]
+
+    assert page.numbered_h1 is False
+
+
+def test_manifest_rejects_non_boolean_numbered_h1(tmp_path: Path, monkeypatch):
+    manifest = yaml.safe_load(build_docs.MANIFEST.read_text(encoding="utf-8"))
+    manifest["sections"][0]["numbered_h1"] = "false"
+    invalid = tmp_path / "manifest.yaml"
+    invalid.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(build_docs, "MANIFEST", invalid)
+
+    with pytest.raises(ValueError, match="numbered_h1 must be a boolean"):
+        build_docs.load_sections()
+
+
+def test_primary_openers_share_centered_brand_contract_and_executive_summary():
     readme = (build_docs.ROOT / "README.md").read_text(encoding="utf-8")
     home = (build_docs.ROOT / "docs" / "index.md").read_text(encoding="utf-8")
 
-    assert TAGLINE in readme and TAGLINE in home
-    assert BADGES in readme and BADGES in home
+    for text in (readme, home):
+        assert '<h1 align="center">NNx</h1>' in text
+        assert "# 1. NNx" not in text[: text.index("\n## ")]
+        assert "# 15. NNx" not in text[: text.index("\n## ")]
+        assert f"<strong>{TAGLINE}</strong>" in text
+        assert SUPPORT_LINE in text
+        for badge in (*STATUS_BADGES, *CORE_STACK_BADGES, *OPTIONAL_STACK_BADGES):
+            assert f'alt="{badge}"' in text
     assert _lead_summary(readme) == _lead_summary(home)
     assert 100 <= len(_lead_summary(readme).split()) <= 150
 
@@ -60,7 +109,21 @@ def test_primary_openers_place_product_poster_before_first_section():
     ):
         text = path.read_text(encoding="utf-8")
         opener = text[: text.index("\n## ")]
-        assert f"![NNx product overview]({target})" in opener
+        banner = f'<img src="{target}" alt="NNx neural training banner" width="100%">'
+        assert banner in opener
+        assert opener.index(banner) < opener.index('<h1 align="center">NNx</h1>')
+
+
+def test_product_banner_is_a_raster_only_brand_asset():
+    banner = build_docs.ROOT / "docs" / "assets" / "nnx-poster.png"
+    payload = banner.read_bytes()
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", payload[16:24])
+    assert width >= 1200
+    assert width / height >= 2
+    assert b"nnx-svg-sha256" not in payload
+    assert not banner.with_suffix(".svg").exists()
+    assert not (build_docs.ROOT / "docs" / "diagrams" / "nnx-poster.html").exists()
 
 
 def test_audited_copy_does_not_reintroduce_unsupported_claims():
@@ -356,7 +419,7 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
     assert (site / "assets" / "training-lifecycle.png").is_file()
     assert (wiki / "images" / "docs-projection.svg").is_file()
     assert (wiki / "images" / "docs-projection.png").is_file()
-    assert "assets/nnx-poster.svg" in (site / "index.md").read_text(encoding="utf-8")
+    assert "assets/nnx-poster.png" in (site / "index.md").read_text(encoding="utf-8")
     assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
     assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")

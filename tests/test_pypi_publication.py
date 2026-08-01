@@ -72,6 +72,13 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
             assert "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78" in workflow, path
 
 
+def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
+    workflow = (_WORKFLOW_DIRECTORY / "security.yml").read_text(encoding="utf-8")
+
+    assert "  push:\n    branches: [main, develop]\n" in workflow
+    assert "  pull_request:\n    branches: [main, develop]\n" in workflow
+
+
 def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
     workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
     pyproject = _PYPROJECT.read_text(encoding="utf-8")
@@ -96,6 +103,13 @@ def test_package_uses_fresh_absolute_link_pypi_readme():
     assert text == render()
     assert "https://raw.githubusercontent.com/thekaveh/NNx/main/" in text
     assert "https://github.com/thekaveh/NNx/blob/main/" in text
+    banner = (
+        '<img src="https://raw.githubusercontent.com/thekaveh/NNx/main/docs/assets/nnx-poster.png" '
+        'alt="NNx neural training banner" width="100%">'
+    )
+    assert banner in text
+    assert text.index(banner) < text.index('<h1 align="center">NNx</h1>')
+    assert "# 15. NNx" not in text
 
 
 def test_privileged_wiki_publication_uses_locked_nonbuilding_tool_group():
