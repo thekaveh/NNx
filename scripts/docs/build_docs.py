@@ -110,9 +110,7 @@ def load_sections() -> list[tuple[str | None, list[Page]]]:
                 raise ValueError(f"section {section_index} must be a mapping")
             grouped = "children" in item
             allowed_section_keys = (
-                {"title", "children"}
-                if grouped
-                else {"number", "title", "source", "slug", "numbered_h1"}
+                {"title", "children"} if grouped else {"number", "title", "source", "slug", "numbered_h1"}
             )
             unknown_section = item.keys() - allowed_section_keys
             if unknown_section:
