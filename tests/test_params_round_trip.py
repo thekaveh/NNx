@@ -490,6 +490,138 @@ def test_nn_run_state_omits_trainer_when_none():
     )
 
 
+def test_nn_run_state_omits_salt_when_none():
+    """CRITICAL back-compat invariant: NNRun built without a salt field
+    must emit the same state() — and therefore the same run.id — as before
+    this field existed. Mirrors the trainer omit-when-default pattern."""
+    from nnx.nn.params.nn_run import NNRun
+
+    run = NNRun(
+        net=NNParams(
+            input_dim=4,
+            output_dim=2,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            hidden_dims=[8],
+        ),
+        train=NNTrainParams(n_epochs=1),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    state = run.state()
+    assert "salt" not in state, (
+        f"NNRun with salt=None must omit the key to preserve existing run.id hashes; got keys {sorted(state.keys())}"
+    )
+
+
+def test_nn_run_state_emits_salt_when_set():
+    """Companion to the omit-when-default test: when `salt` IS set, the
+    field MUST appear in `state()` so the run.id correctly distinguishes
+    otherwise-identical configs."""
+    from nnx.nn.params.nn_run import NNRun
+
+    run = NNRun(
+        net=NNParams(
+            input_dim=4,
+            output_dim=2,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            hidden_dims=[8],
+        ),
+        train=NNTrainParams(n_epochs=1),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        salt="exp-42",
+    )
+    assert run.state().get("salt") == "exp-42"
+
+
+def test_nn_run_salt_distinguishes_identical_configs():
+    """Same (net, train, model) but distinct salts must hash to distinct
+    run.ids. The None-salt case must equal the no-field baseline so
+    existing run.id hashes are preserved exactly."""
+    from nnx.nn.params.nn_run import NNRun
+
+    base = dict(
+        net=NNParams(
+            input_dim=4,
+            output_dim=2,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            hidden_dims=[8],
+        ),
+        train=NNTrainParams(n_epochs=1),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    a = NNRun(**base)
+    b = NNRun(**base, salt="b")
+    c = NNRun(**base, salt="c")
+
+    assert len({a.id, b.id, c.id}) == 3
+    # Determinism sanity check: constructing the same NNRun(**base) twice
+    # yields the same id. The back-compat invariant (None-salt produces the
+    # same id as before this field existed) is enforced by
+    # test_nn_run_state_omits_salt_when_none, since id = md5(str(state))
+    # and state() provably omits salt when None.
+    assert a.id == NNRun(**base).id
+
+
+def test_nn_run_salt_round_trips(tmp_path):
+    """A salted run saved and reloaded keeps its salt — and therefore
+    re-hashes to the same run.id as the directory it was loaded from."""
+    from nnx.nn.params.nn_run import NNRun
+
+    run = NNRun(
+        net=NNParams(
+            input_dim=4,
+            output_dim=2,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            hidden_dims=[8],
+        ),
+        train=NNTrainParams(n_epochs=1),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        salt="exp-42",
+        idps=[
+            NNIterationDataPoint(
+                lr=1e-3,
+                iter_idx=0,
+                epoch_idx=0,
+                batch_idx=0,
+                train_edp=NNEvaluationDataPoint(loss=1.0, error=0.5, accuracy=0.5, f1=0.5, recall=0.5, precision=0.5),
+            )
+        ],
+    )
+    run.save(root=str(tmp_path))
+    loaded = NNRun.load(run.id, root=str(tmp_path))
+    assert loaded.id == run.id
+    assert loaded.salt == run.salt
+
+
+@pytest.mark.parametrize("bad_salt", ["", "   ", "\t\n"])
+def test_nn_run_salt_rejects_empty_or_whitespace(bad_salt):
+    """`salt` mirrors NNTrainParams.data_id's contract: optional, but
+    when provided it must be a non-empty, non-whitespace string. An
+    empty/whitespace salt is semantically meaningless (defeats the only
+    reason to set salt) and is a likely caller bug (`""` instead of
+    `None`). Fail fast with a clear error. Non-string values are caught
+    statically by pyright (the field is typed `Optional[str]`), matching
+    the data_id precedent."""
+    from nnx.nn.params.nn_run import NNRun
+
+    with pytest.raises(ValueError, match="non-empty"):
+        NNRun(
+            net=NNParams(
+                input_dim=4,
+                output_dim=2,
+                dropout_prob=0.0,
+                activation=Activations.RELU,
+                hidden_dims=[8],
+            ),
+            train=NNTrainParams(n_epochs=1),
+            model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+            salt=bad_salt,
+        )
+
+
 def test_resolve_from_state_dispatches_transformer():
     """NNParams.resolve_from_state must reconstruct an NNTransformerParams
     (not silently downgrade to base NNParams) when the state carries the
