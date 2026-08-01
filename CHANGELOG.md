@@ -13,6 +13,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 - A project security policy documents supported versions, private vulnerability reporting, and responsible disclosure expectations.
 - Trainer scheduler ownership is explicit through `auto_step_schedulers`, with loop-owned once-per-epoch stepping as the default.
 - A manifest now deterministically projects canonical documentation into self-contained MkDocs and GitHub wiki trees.
+- `dpo_train_step_factory` now surfaces `reward_chosen`, `reward_rejected`, and `reward_accuracy` (the fraction of the batch where the implicit chosen reward exceeds the rejected reward) in each `NNEvaluationDataPoint.extra`, giving DPO training runs a ranking-quality diagnostic alongside the existing log-prob gap.
 
 ### Changed
 
