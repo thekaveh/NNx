@@ -58,8 +58,8 @@ Run:
 
 ```bash
 DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/opt/cairo/lib .venv/bin/pytest -q \
-  tests/test_docs_projection.py::test_brand_banner_is_raster_and_readme_scale \
-  tests/test_docs_projection.py::test_canonical_openers_share_centered_product_identity
+  tests/test_docs_projection.py::test_product_banner_is_a_raster_only_brand_asset \
+  tests/test_docs_projection.py::test_primary_openers_share_centered_brand_contract_and_executive_summary
 ```
 
 Expected: both tests pass.
