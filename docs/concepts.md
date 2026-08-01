@@ -1,4 +1,4 @@
-# Concepts
+# 3. Concepts
 
 This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the twelve specialization subpackages — Tier-1 (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`) and Tier-2 (`quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`) — plus the decoder-only LM path on top.
 
@@ -434,7 +434,7 @@ See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/bl
 
 When a pretrained model is too large to fine-tune in full, PEFT keeps the original weights frozen and trains a small set of new parameters instead. `nnx.peft` ships six adapters covering the full spectrum from rank-decomposed residuals (LoRA) down to a single per-output scaling vector (IA3). §§11.1–11.2 walk through LoRA and `AdapterLayer` in detail; the others share the same wrap-and-freeze idiom — see [API §9](api.md) for full signatures.
 
-- **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector and recomposing the layer's weight as `W = magnitude · V / ||V||_c`. Often outperforms LoRA at the same rank with only `out_features` extra params. Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices; the `magnitude` parameter rides along via the full `state_dict()` round-trip.
+- **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector and recomposing the layer's weight as `W = magnitude · V / ||V||_c`, following [Liu et al. (2024)](https://arxiv.org/abs/2402.09353). It adds only `out_features` parameters per wrapped layer. Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices; the `magnitude` parameter rides along via the full `state_dict()` round-trip.
 - **IA3** (`IA3Linear` / `apply_ia3_to`) — the smallest adapter in the family: a single learned per-output-dim scaling vector applied to a frozen `nn.Linear`'s output. Dedicated `save_ia3_weights` / `load_ia3_weights` persist only the scaling tensor.
 - **PrefixTuner** (`PrefixTuner` / `save_prefix_weights` / `load_prefix_weights`) — prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`. The wrapped model is mutated in place: every parameter is frozen and each targeted block's attention forward is monkey-patched to inject the prefix (a forward hook fires on outputs, too late to reach the intermediate K/V). Wrapping an already-tuned net raises — `copy.deepcopy` the tuner to fork it.
 - **PromptTuner** (`PromptTuner` / `save_prompt_weights` / `load_prompt_weights`) — prepends learned soft-prompt embeddings ahead of the input tokens of a frozen `TransformerNN`. Cheapest of the LM-targeted PEFT methods; useful when even the rank-decomposed LoRA budget is too large.
@@ -610,8 +610,9 @@ alongside `NNModel` rather than replacing it:
   repetition_penalty, stop, seed, use_cache, logits_chain)`. The
   generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
-  the returned KV-cache (measured ≈1.9× speedup at 128 tokens on CPU; the
-  gap widens on longer contexts and GPU, within `max_seq_len`). Greedy decoding
+  the returned KV-cache. The fixed 128-token CPU regression test requires at
+  least a 1.2× improvement over full recomputation; other workloads and hardware
+  vary. Greedy decoding
   is available via `temperature=0` (the default `temperature=1.0`
   samples the full softmax); the scalar kwargs build the standard
   processor chain, and `logits_chain=LogitsChain.builder()...` is the

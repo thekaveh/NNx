@@ -1,4 +1,4 @@
-# Quickstart
+# 2. Quickstart
 
 An end-to-end CPU example you can paste into a Python REPL. Trains a tiny feed-forward classifier on random data so you can verify the install in under five seconds.
 

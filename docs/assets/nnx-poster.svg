@@ -1,0 +1,68 @@
+<svg viewBox="0 0 1200 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="poster-title poster-desc">
+  <title id="poster-title">NNx: transparent training, durable experiments</title>
+  <desc id="poster-desc">Model and graph inputs flow through a configurable PyTorch training loop into callbacks, metrics, and content-addressed checkpoints.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1d2733" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#7c8b9b"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="480" fill="#090d12"/>
+  <rect width="1200" height="480" fill="url(#grid)"/>
+  <rect x="24" y="24" width="1152" height="432" rx="8" fill="none" stroke="#344252"/>
+
+  <g transform="translate(76 74)">
+    <text x="0" y="68" fill="#f8fafc" font-size="72" font-weight="750" letter-spacing="0">NNx</text>
+    <text x="2" y="108" fill="#91a0af" font-size="20" letter-spacing="0">TRANSPARENT TRAINING. DURABLE EXPERIMENTS.</text>
+    <rect x="2" y="138" width="470" height="2" fill="#3478f6"/>
+    <text x="2" y="181" fill="#cbd5df" font-size="17" letter-spacing="0">PyTorch orchestration that owns the routine work</text>
+    <text x="2" y="209" fill="#cbd5df" font-size="17" letter-spacing="0">while model and step logic stay replaceable.</text>
+  </g>
+
+  <g transform="translate(654 62)" font-family="Inter,system-ui,sans-serif">
+    <g stroke="#7c8b9b" stroke-width="2" fill="none" marker-end="url(#arrow)">
+      <path d="M136 82H224"/>
+      <path d="M336 82H424"/>
+      <path d="M280 138V208"/>
+    </g>
+
+    <g transform="translate(0 22)">
+      <rect width="136" height="120" rx="7" fill="#111922" stroke="#49a078"/>
+      <circle cx="34" cy="42" r="7" fill="#49a078"/>
+      <circle cx="68" cy="27" r="7" fill="#3478f6"/>
+      <circle cx="100" cy="48" r="7" fill="#d4667a"/>
+      <circle cx="66" cy="72" r="7" fill="#e0a93b"/>
+      <path d="M39 39L62 30M74 30L94 44M94 53L72 68M60 68L39 47" stroke="#8291a2" fill="none"/>
+      <text x="68" y="104" text-anchor="middle" fill="#dce4ec" font-size="13">MODEL + DATA</text>
+    </g>
+
+    <g transform="translate(224 22)">
+      <rect width="112" height="120" rx="7" fill="#13233e" stroke="#3478f6"/>
+      <path d="M30 39H82M30 58H70M30 77H78" stroke="#8db7ff" stroke-width="6"/>
+      <text x="56" y="104" text-anchor="middle" fill="#f8fafc" font-size="13">NNx LOOP</text>
+    </g>
+
+    <g transform="translate(424 22)">
+      <rect width="122" height="120" rx="7" fill="#111922" stroke="#d4667a"/>
+      <path d="M31 67L51 50L68 61L92 34" stroke="#d4667a" stroke-width="4" fill="none"/>
+      <circle cx="31" cy="67" r="4" fill="#d4667a"/><circle cx="51" cy="50" r="4" fill="#d4667a"/>
+      <circle cx="68" cy="61" r="4" fill="#d4667a"/><circle cx="92" cy="34" r="4" fill="#d4667a"/>
+      <text x="61" y="104" text-anchor="middle" fill="#dce4ec" font-size="13">METRICS</text>
+    </g>
+
+    <g transform="translate(193 230)">
+      <rect width="174" height="102" rx="7" fill="#111922" stroke="#e0a93b"/>
+      <path d="M38 31H136V66H38Z" fill="#1c2835" stroke="#e0a93b"/>
+      <path d="M55 47H119M55 57H99" stroke="#f1cb73" stroke-width="3"/>
+      <text x="87" y="88" text-anchor="middle" fill="#dce4ec" font-size="12">RUNS/&lt;ID&gt;</text>
+    </g>
+  </g>
+
+  <g transform="translate(76 382)" font-family="Inter,system-ui,sans-serif" font-size="13" letter-spacing="0">
+    <rect width="130" height="34" rx="5" fill="#14273a" stroke="#3478f6"/><text x="65" y="22" text-anchor="middle" fill="#cfe0ff">CALLBACKS</text>
+    <rect x="144" width="130" height="34" rx="5" fill="#14261f" stroke="#49a078"/><text x="209" y="22" text-anchor="middle" fill="#cce8d8">CHECKPOINTS</text>
+    <rect x="288" width="130" height="34" rx="5" fill="#2a2020" stroke="#e0a93b"/><text x="353" y="22" text-anchor="middle" fill="#f2ddb0">SPECIALIZATIONS</text>
+  </g>
+</svg>

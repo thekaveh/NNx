@@ -1,4 +1,4 @@
-# HuggingFace Hub integration
+# 5. HuggingFace Hub integration
 
 NNx ships first-class interop with the HuggingFace ecosystem:
 

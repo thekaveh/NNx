@@ -10,6 +10,7 @@ release = [
     "twine==6.2.0",
 ]
 docs-publish = [
+    "cairosvg==2.9.0",
     "markdown==3.10.2",
     "pyyaml==6.0.3",
 ]
@@ -150,6 +151,7 @@ gguf-write = [
     "gguf>=0.19.0",
 ]
 docs = [
+    "cairosvg==2.9.0",
     "mkdocs>=1.5,<2",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.24",

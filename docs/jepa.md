@@ -1,4 +1,4 @@
-# I-JEPA — Joint Embedding Predictive Architecture
+# 8. I-JEPA — Joint Embedding Predictive Architecture
 
 NNx ships I-JEPA (Assran et al., CVPR 2023) as a `TrainStepFn` factory
 alongside the other self-supervised paradigms. JEPA predicts in

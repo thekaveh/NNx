@@ -1,6 +1,14 @@
-# NNx
+# 1. NNx
 
-Lightweight PyTorch training / eval / visualization toolkit, with first-class support for graph neural networks (GCN / GraphSAGE / GAT). Originally extracted from `thekaveh/ml` to underpin training loops, checkpointing, and result visualization across notebook-based experiments; now standalone.
+Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support.
+
+[![CI](https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thekaveh/NNx/actions/workflows/ci.yml) [![Docs](https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/thekaveh/NNx/actions/workflows/docs.yml) [![PyPI](https://img.shields.io/pypi/v/thekaveh-nnx)](https://pypi.org/project/thekaveh-nnx/) [![Python](https://img.shields.io/badge/python-3.10--3.14-3776AB)](https://pypi.org/project/thekaveh-nnx/) [![License](https://img.shields.io/badge/license-Apache--2.0-2E7D32)](https://spdx.org/licenses/Apache-2.0.html)
+
+![NNx product overview](assets/nnx-poster.png)
+
+<!-- executive-summary:start -->
+NNx is a lightweight PyTorch toolkit for repeatable training, evaluation, and visualization. It owns the routine experiment infrastructure: frozen configuration objects, supervised train/eval/predict orchestration, callbacks, schedulers, metrics, and content-addressed checkpoints that support reliable resume and inspection. Models and per-step logic remain replaceable, so the same loop can serve standard networks, graph neural networks, transformers, diffusion, representation learning, fine-tuning, and multi-optimizer workflows. Focused modules add PEFT, quantization, pruning, model surgery, embeddings, export, and diagnostics without forcing those concerns into the core loop. NNx is aimed at researchers and engineers who want transparent PyTorch code and durable experiments without adopting a larger training platform.
+<!-- executive-summary:end -->
 
 ## 1. Why NNx
 

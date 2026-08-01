@@ -60,6 +60,8 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
+      - name: Install diagram rendering runtime
+        run: sudo apt-get update && sudo apt-get install --yes libcairo2
       - name: Install docs + feature extras
         # astral-sh/setup-uv@v7.6.0
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
