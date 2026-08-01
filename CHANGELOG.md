@@ -9,6 +9,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 ### Added
 
 - `NNTabularDataset` accepts an optional `target_dtype` (a floating-point dtype, e.g. `torch.float32`) to skip the integer-label cast and contiguity check and fix `output_dim=1`, adding first-class regression-target support without the previous "build the DataLoaders yourself" workaround; regression loaders yield targets shaped `(batch, 1)` to match `output_dim=1`; integer dtypes are rejected with a clear error; the default (`None`) preserves the existing classification contract.
+- `NNRun` accepts an optional `salt` string folded into the run.id hash, letting identical (model, net, train) configurations run as distinct experiments without modifying modeled params; `salt=None` (the default) preserves existing run.id hashes exactly; empty/whitespace salts are rejected with a clear error (mirrors `NNTrainParams.data_id`).
 - Versioned warm-resume bundles now persist optimizer, scheduler, scaler, completed epoch, and Python/NumPy/PyTorch RNG state in generation-addressed sidecars, preserving the previous resumable generation across interrupted commits.
 - Smoke coverage imports every numbered example and executes representative basic, callback, and custom-evaluation examples; release tests also verify normalized source distributions are reproducible.
 - A project security policy documents supported versions, private vulnerability reporting, and responsible disclosure expectations.
