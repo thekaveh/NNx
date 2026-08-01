@@ -8,7 +8,7 @@ on top.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -80,6 +80,7 @@ class GenerativeNNModel(NNModel):
         seed: Optional[int] = None,
         use_cache: bool = True,
         logits_chain: Optional[LogitsChain] = None,
+        on_token: Optional[Callable[[int], None]] = None,
     ) -> str:
         """Autoregressive decode from ``prompt``.
 
@@ -118,6 +119,18 @@ class GenerativeNNModel(NNModel):
                 Power-user path for custom logit processors (e.g.,
                 logit-bias for forbidden tokens). When ``None`` (the
                 default), behavior is unchanged.
+            on_token: optional callback invoked with each newly
+                generated token id immediately after it is appended.
+                Lets callers stream partial output, drive progress
+                bars, or implement custom early-stop heuristics
+                without re-running decode over the public forward /
+                apply_chain / sample_next_token primitives. ``None``
+                (default) is a no-op so existing callers are
+                unaffected. Fires only for newly generated tokens
+                (not prompt tokens) and on both the cached and
+                no-cache decode paths. Fires before any ``stop``
+                string check so the callback observes every emitted
+                token including the one that triggers a stop.
 
         Returns:
             The full decoded string (prompt + generated continuation).
@@ -206,6 +219,7 @@ class GenerativeNNModel(NNModel):
                         processors=processors,
                         gen=gen,
                         stop=stop,
+                        on_token=on_token,
                     )
                 else:
                     self._generate_no_cache(
@@ -216,6 +230,7 @@ class GenerativeNNModel(NNModel):
                         processors=processors,
                         gen=gen,
                         stop=stop,
+                        on_token=on_token,
                     )
         finally:
             _restore_training_modes(training_modes)
@@ -234,6 +249,7 @@ class GenerativeNNModel(NNModel):
         processors: list[LogitsProcessor],
         gen: Optional[torch.Generator],
         stop: Optional[list[str]],
+        on_token: Optional[Callable[[int], None]],
     ) -> None:
         """Full-recompute path: every step re-runs the model on the
         last ``max_seq_len`` tokens. O(T^2) attention cost; kept for
@@ -250,6 +266,8 @@ class GenerativeNNModel(NNModel):
             adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
             next_id = sample_next_token(adjusted, generator=gen)
             generated.append(next_id)
+            if on_token is not None:
+                on_token(next_id)
 
             # Optional stop-string check, scoped to the CONTINUATION —
             # a stop string already present in the prompt must not halt
@@ -270,6 +288,7 @@ class GenerativeNNModel(NNModel):
         processors: list[LogitsProcessor],
         gen: Optional[torch.Generator],
         stop: Optional[list[str]],
+        on_token: Optional[Callable[[int], None]],
     ) -> None:
         """KV-cache path. Runs one prefill pass on the
         truncated prompt, then per new token re-runs only the last
@@ -303,6 +322,8 @@ class GenerativeNNModel(NNModel):
         adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
         next_id = sample_next_token(adjusted, generator=gen)
         generated.append(next_id)
+        if on_token is not None:
+            on_token(next_id)
         if stop:
             # Continuation-scoped, like the loop check below.
             continuation = self.tokenizer.decode(generated[n_prompt:])
@@ -327,6 +348,8 @@ class GenerativeNNModel(NNModel):
             adjusted = apply_chain(next_logits, token_history=generated, processors=processors)
             next_id = sample_next_token(adjusted, generator=gen)
             generated.append(next_id)
+            if on_token is not None:
+                on_token(next_id)
 
             if stop:
                 # Continuation-scoped — see _generate_no_cache.
