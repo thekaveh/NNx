@@ -16,8 +16,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Changed
 
-- Documentation now opens with synchronized project health signals, a product overview, and an executive summary; manifest-numbered H1s and deterministic SVG/PNG diagram projections keep the repository, Pages, and wiki aligned.
-- GitHub workflows use current SHA-pinned actions, least-privilege permissions, frozen dependency and tooling resolution, a double-build artifact comparison, and one Release Please-only publication path; managed release PRs refresh the lockfile and dispatch required checks, while exact PyPI/GitHub hashes and immutable-release attestations are verified before completion.
+- Documentation now opens with a centered product identity, synchronized health and technology badges, a wide brand banner, and an executive summary; navigation numbering remains independent from the unnumbered product H1 across the repository, Pages, wiki, and PyPI projection.
+- GitHub workflows use current SHA-pinned actions, least-privilege permissions, frozen dependency and tooling resolution, a double-build artifact comparison, and one Release Please-only publication path; managed release PRs refresh the lockfile and dispatch required checks, security audits cover pushes and pull requests on both Gitflow branches, and exact PyPI/GitHub hashes and immutable-release attestations are verified before completion.
 - Release builds use the locked virtual-environment interpreter, dependency audits include locked tool groups, and the release toolchain tracks wheel 0.47.0.
 - Package metadata uses a deterministic PyPI README projection whose repository links and images resolve outside GitHub.
 - Optional notebook display support moved out of the core dependency set, while process-safe persistence locking is now an explicit runtime dependency.
