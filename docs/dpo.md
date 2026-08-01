@@ -1,4 +1,4 @@
-# DPO — Direct Preference Optimization
+# 10. DPO — Direct Preference Optimization
 
 `nnx.dpo_train_step_factory` implements the Direct Preference
 Optimization objective from Rafailov et al. (2023) — a simpler

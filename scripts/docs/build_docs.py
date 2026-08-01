@@ -163,6 +163,12 @@ def load_sections() -> list[tuple[str | None, list[Page]]]:
     actual_numbers = [page.number for page in all_pages]
     if actual_numbers != expected_numbers:
         raise ValueError(f"manifest page numbers must be the ordered sequence 1..{len(all_pages)}")
+    for page in all_pages:
+        if page.source.name == "LICENSE":
+            continue
+        source_lines = page.source.read_text(encoding="utf-8").splitlines()
+        if not source_lines or not source_lines[0].startswith(f"# {page.number}. "):
+            raise ValueError(f"manifest page {page.number} must be baked into the first H1 in {page.source}")
     canonical_docs = {path.resolve() for path in (ROOT / "docs").glob("*.md")}
     manifested_docs = {page.source.resolve() for page in all_pages if page.source.parent == ROOT / "docs"}
     if manifested_docs != canonical_docs:
@@ -197,6 +203,8 @@ def _source_map(surface: str) -> dict[Path, str]:
             if not asset.resolve().is_relative_to((ROOT / "docs" / "assets").resolve()):
                 raise ValueError(f"asset symlink must not escape docs/assets: {asset}")
             relative = asset.relative_to(ROOT / "docs" / "assets").as_posix()
+            if surface == "site" and asset.suffix == ".png" and asset.with_suffix(".svg").is_file():
+                relative = asset.with_suffix(".svg").relative_to(ROOT / "docs" / "assets").as_posix()
             mapping[asset.resolve()] = f"assets/{relative}" if surface == "site" else f"images/{relative}"
     mapping[(ROOT / "examples").resolve()] = "Examples.md" if surface == "site" else "Examples"
     mapping[(ROOT / "tests").resolve()] = "Test-Import-Boundaries.md" if surface == "site" else "Test-Import-Boundaries"
@@ -211,7 +219,7 @@ def _source_map(surface: str) -> dict[Path, str]:
 def _render_page(page: Page, surface: str, source_map: dict[Path, str]) -> str:
     text = page.source.read_text(encoding="utf-8")
     if page.source.name == "LICENSE":
-        text = f"# License\n\n```text\n{text.rstrip()}\n```\n"
+        text = f"# {page.number}. License\n\n```text\n{text.rstrip()}\n```\n"
     return rewrite_markdown(page.source, text, source_map, surface=surface)
 
 

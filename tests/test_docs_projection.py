@@ -6,6 +6,25 @@ import yaml
 import scripts.docs.build_docs as build_docs
 from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links
 
+TAGLINE = "Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support."
+BADGES = (
+    "[![CI](https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main)]"
+    "(https://github.com/thekaveh/NNx/actions/workflows/ci.yml) "
+    "[![Docs](https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main)]"
+    "(https://github.com/thekaveh/NNx/actions/workflows/docs.yml) "
+    "[![PyPI](https://img.shields.io/pypi/v/thekaveh-nnx)](https://pypi.org/project/thekaveh-nnx/) "
+    "[![Python](https://img.shields.io/badge/python-3.10--3.14-3776AB)]"
+    "(https://pypi.org/project/thekaveh-nnx/) "
+    "[![License](https://img.shields.io/badge/license-Apache--2.0-2E7D32)]"
+    "(https://spdx.org/licenses/Apache-2.0.html)"
+)
+
+
+def _lead_summary(text: str) -> str:
+    start = text.index("<!-- executive-summary:start -->") + len("<!-- executive-summary:start -->")
+    end = text.index("<!-- executive-summary:end -->")
+    return " ".join(text[start:end].split())
+
 
 def test_manifest_sources_exist_and_numbered_labels_are_unique():
     pages = [page for _, group in load_sections() for page in group]
@@ -14,6 +33,50 @@ def test_manifest_sources_exist_and_numbered_labels_are_unique():
     assert len({page.number for page in pages}) == len(pages)
     assert len({page.slug for page in pages}) == len(pages)
     assert len({page.source.resolve() for page in pages}) == len(pages)
+
+
+def test_manifest_numbers_are_baked_into_canonical_h1s():
+    for page in (page for _, group in load_sections() for page in group):
+        if page.source.name == "LICENSE":
+            continue
+        first_line = page.source.read_text(encoding="utf-8").splitlines()[0]
+        assert first_line.startswith(f"# {page.number}. "), f"{page.source} must begin with document {page.number}"
+
+
+def test_primary_openers_share_tagline_badges_and_executive_summary():
+    readme = (build_docs.ROOT / "README.md").read_text(encoding="utf-8")
+    home = (build_docs.ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+
+    assert TAGLINE in readme and TAGLINE in home
+    assert BADGES in readme and BADGES in home
+    assert _lead_summary(readme) == _lead_summary(home)
+    assert 100 <= len(_lead_summary(readme).split()) <= 150
+
+
+def test_primary_openers_place_product_poster_before_first_section():
+    for path, target in (
+        (build_docs.ROOT / "README.md", "docs/assets/nnx-poster.png"),
+        (build_docs.ROOT / "docs" / "index.md", "assets/nnx-poster.png"),
+    ):
+        text = path.read_text(encoding="utf-8")
+        opener = text[: text.index("\n## ")]
+        assert f"![NNx product overview]({target})" in opener
+
+
+def test_audited_copy_does_not_reintroduce_unsupported_claims():
+    sources = [build_docs.ROOT / "README.md", *(build_docs.ROOT / "docs").glob("*.md")]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in sources)
+    for unsupported in (
+        "each batch / epoch",
+        "often beats LoRA",
+        "Often outperforms LoRA",
+        "1.9× speedup",
+        "≈1.9× speedup",
+        "the only toolkit treating GNNs as first-class",
+        "No mainstream alternative",
+        "no mainstream alternative",
+    ):
+        assert unsupported not in text
 
 
 def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
@@ -290,7 +353,15 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
         markdown = "\n".join(path.read_text(encoding="utf-8") for path in root.glob("*.md"))
         assert "](https://github.com/thekaveh/NNx/blob/" not in markdown
     assert (site / "assets" / "training-lifecycle.svg").is_file()
+    assert (site / "assets" / "training-lifecycle.png").is_file()
     assert (wiki / "images" / "docs-projection.svg").is_file()
+    assert (wiki / "images" / "docs-projection.png").is_file()
+    assert "assets/nnx-poster.svg" in (site / "index.md").read_text(encoding="utf-8")
+    assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
+    assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
+    assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")
+    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 21. License\n")
+    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 21. License\n")
     assert "(Concepts)" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "(Concepts.md)" not in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "security/advisories/new" in (wiki / "Security-Policy.md").read_text(encoding="utf-8")
@@ -535,7 +606,7 @@ def test_source_map_rejects_asset_symlinks(tmp_path: Path, monkeypatch):
     outside = tmp_path / "outside.svg"
     outside.write_text("<svg/>", encoding="utf-8")
     (assets / "escape.svg").symlink_to(outside)
-    (repository / "README.md").write_text("# Home\n", encoding="utf-8")
+    (repository / "README.md").write_text("# 1. Home\n", encoding="utf-8")
     (repository / "docs" / "manifest.yaml").write_text(
         "surfaces: [repo, site, wiki]\nnumbering: navigation\nsections:\n"
         "  - number: '1'\n    title: Home\n    source: README.md\n    slug: Home\n",
@@ -555,7 +626,7 @@ def test_source_map_rejects_asset_directory_symlinks(tmp_path: Path, monkeypatch
     outside.mkdir()
     (outside / "escape.svg").write_text("<svg/>", encoding="utf-8")
     (assets / "escape").symlink_to(outside, target_is_directory=True)
-    (repository / "README.md").write_text("# Home\n", encoding="utf-8")
+    (repository / "README.md").write_text("# 1. Home\n", encoding="utf-8")
     manifest = repository / "docs" / "manifest.yaml"
     manifest.write_text(
         "surfaces: [repo, site, wiki]\nnumbering: navigation\nsections:\n"
@@ -864,6 +935,18 @@ def test_diagram_extraction_balances_nested_svg(tmp_path: Path):
     master.write_text('<html><svg id="outer"><svg id="inner"></svg><text>after</text></svg></html>', encoding="utf-8")
 
     assert render(master) == '<svg id="outer"><svg id="inner"></svg><text>after</text></svg>\n'
+
+
+def test_png_fallback_records_its_svg_source():
+    from scripts.docs.extract_architecture_svg import png_matches_source, render_png
+
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 6"><rect width="12" height="6"/></svg>\n'
+    first = render_png(svg)
+    second = render_png(svg)
+
+    assert first == second
+    assert png_matches_source(first, svg)
+    assert not png_matches_source(first, svg.replace("rect", "circle"))
 
 
 def test_local_link_lookup_decodes_path_and_ignores_query(tmp_path: Path):

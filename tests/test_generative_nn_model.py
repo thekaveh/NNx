@@ -521,12 +521,10 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
 
     We use a small Transformer (4 layers, 64 d_model) generating 128
     new tokens so the O(T^2) vs O(T) cost gap is clearly visible. The
-    threshold is set conservatively (≥1.2x) — CPU timing on shared CI
-    is noisy (we've seen the same code measure 1.9x on a quiet laptop
-    and 1.46x on a busy GitHub Actions Linux runner in the same minute),
-    and the real-world win is much larger on GPU at longer contexts.
-    The point is to prove the cache is doing useful work, not to land
-    a tight benchmark target.
+    threshold is set conservatively (≥1.2x) because CPU timing on shared
+    CI is noisy. This test makes no performance claim for other processors,
+    context lengths, or workloads; it only guards against losing the useful
+    work performed by the cache path.
     """
     import time
 

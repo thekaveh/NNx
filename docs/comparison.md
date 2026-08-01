@@ -1,4 +1,4 @@
-# NNx vs Lightning / HF / fastai / Composer
+# 13. NNx vs Lightning / HF / fastai / Composer
 
 An honest, scope-explicit comparison of NNx against the four closest PyTorch training/specialization toolkits, organized so users can pick the right tool for their actual need.
 
@@ -11,10 +11,10 @@ An honest, scope-explicit comparison of NNx against the four closest PyTorch tra
 | Production-scale diffusion (SD, SDXL, ControlNet) | **HF diffusers** |
 | Algorithmic-methods benchmarking (SAM / BlurPool / SqueezeExcite) | **MosaicML Composer** |
 | Opinionated high-level API + tabular / vision / collab stacks | **fastai** |
-| GNN training/checkpoint integration | **NNx** (PyG-backed but NNx is the only toolkit treating GNNs as first-class) |
+| GNN training/checkpoint integration | **NNx** when a PyG-backed model should share the same NNx training and checkpoint contracts |
 | Single-package breadth (graph + LM + diffusion + PEFT + surgery in one install) | **NNx** |
 | Content-addressed run reproducibility (`run.id` = md5 of config) | **NNx** |
-| Model surgery (Net2Net widen/deepen, low-rank, drop, embedding expansion) | **NNx** (no mainstream alternative) |
+| Model surgery (Net2Net widen/deepen, low-rank, drop, embedding expansion) | **NNx** when these operations should compose directly with the NNx training loop |
 | Tight notebook research loop on a single GPU | **NNx** or **fastai** |
 
 ## 2. Landscape map
@@ -70,7 +70,7 @@ If you need any of these, NNx is the wrong tool today.
 | Aspect | NNx | HF `generate` |
 |---|---|---|
 | Greedy / top-k / top-p / temperature / repetition penalty | Yes | Yes |
-| KV cache | Yes (default-on; typically ≥1.2× CPU @ 128 tokens, up to ≈1.9× on unloaded CPU) | Yes |
+| KV cache | Yes (default-on; regression-tested at ≥1.2× CPU for the fixed 128-token workload) | Yes |
 | Beam search | Not shipped | Yes |
 | Contrastive search | Not shipped | Yes |
 | Constrained generation (vocab / regex / grammar) | Not shipped | Yes |
@@ -107,7 +107,7 @@ NNx's GNN value is the training-loop + checkpoint integration on top of PyG's pr
 | `low_rank_factorize` (SVD truncation) | Yes | None |
 | `expand_embedding` | Yes | None |
 
-No mainstream alternative — NNx's `nnx.surgery` is unique.
+NNx keeps these surgery operations in one namespace and makes their results immediately composable with `NNModel.train()`.
 
 ### 3.8. Observability
 

@@ -1,4 +1,4 @@
-# Examples
+# 16. Examples
 
 Runnable scripts demonstrating common NNx patterns. Each is self-contained — no external data dependencies. CPU is sufficient for everything in here.
 

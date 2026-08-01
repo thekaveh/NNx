@@ -1,4 +1,4 @@
-# Language modeling (decoder-only)
+# 7. Language modeling (decoder-only)
 
 NNx ships a TinyStories-class decoder-only Transformer alongside the GNN and
 FeedFwd architectures. Use it for small autoregressive experiments: byte-pair
@@ -212,10 +212,10 @@ purely opt-in.
   off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
   defaults `use_cache=True` and runs a single prefill pass through
   `forward_with_cache` followed by incremental token-by-token decoding,
-  for ≈1.9× speedup at 128 tokens on CPU (gap widens on longer contexts
-  and on GPU — up to `max_seq_len`; once generation slides past the
-  window, the cache is rebuilt each step for RoPE-position correctness
-  and the cost converges to the full-recompute path).
+  with a fixed 128-token CPU regression threshold of at least 1.2× over
+  full recomputation. Results on other workloads and hardware vary. Once
+  generation slides past the window, the cache is rebuilt each step for
+  RoPE-position correctness and the cost converges to the full-recompute path.
 
 ## 7. Scope explicit
 
@@ -226,8 +226,8 @@ The decoder-only LM path covers:
 - HF tokenizer integration via the `tokenizers` Rust library.
 - Autoregressive `generate()` with greedy + sampling (`LogitsProcessor`
   chain: temperature / top-k / top-p / repetition-penalty).
-- KV-cache acceleration on by default (≈1.9× speedup at 128 tokens on
-  CPU; wider on longer contexts and GPU, within `max_seq_len`).
+- KV-cache acceleration on by default, with a fixed 128-token CPU regression
+  test requiring at least a 1.2× speedup over full recomputation.
 - CPU-friendly TinyStories-class training (sub-30-min runs).
 - Onward integrations shipped post-LM: `Prefix-Tuner` / `Prompt-Tuner`
   PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)),
