@@ -1129,8 +1129,297 @@ def test_f8_tabular_dataset_rejects_target_in_feature_cols():
         NNTabularDataset(df=df, feature_cols=["f1", "label"], target_col="label")
 
 
-@pytest.mark.parametrize("labels", [[0.2, 1.2], [0.0, float("inf")]])
-def test_f8_tabular_dataset_rejects_non_integral_or_non_finite_labels(labels):
+@pytest.mark.parametrize(
+    "labels, match",
+    [
+        ([0.2, 1.2], "finite integers"),
+        ([0.0, float("inf")], "non-finite"),
+    ],
+)
+def test_f8_tabular_dataset_rejects_non_integral_or_non_finite_labels(labels, match):
     df = pd.DataFrame({"f1": [1.0, 2.0], "label": labels})
-    with pytest.raises(ValueError, match="finite integers"):
+    with pytest.raises(ValueError, match=match):
         NNTabularDataset(df=df, feature_cols=["f1"], target_col="label")
+
+
+# --- F8: NNTabularDataset regression-target support (target_dtype) ---------
+
+
+def test_tabular_regression_accepts_float_targets():
+    """Non-integral float targets that classification rejects now succeed
+    when `target_dtype` is set to a float dtype (regression contract)."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": [0.5, 1.2, 2.7, 3.1, 0.4] * 4,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float32,
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    assert ds.train_loader is not None
+
+
+def test_tabular_regression_skips_contiguity_check():
+    """Non-contiguous float targets (e.g. {0.5, 2.3, 7.8}) succeed — the
+    classification contiguity check is skipped under `target_dtype`."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(24, dtype=float),
+            "label": [0.5, 2.3, 7.8] * 8,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float32,
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    assert ds.output_dim == 1
+
+
+def test_tabular_regression_output_dim_is_one():
+    """Regression fixes `output_dim=1` regardless of the number of unique
+    target values (classification would size it at n_unique)."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": [0.1, 0.2, 0.3, 0.4, 0.5] * 4,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float32,
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    assert ds.output_dim == 1
+
+
+def test_tabular_regression_target_dtype_preserved():
+    """The target tensor carried by the loaders is cast to `target_dtype`
+    (torch.float32), not the default int64 classification cast, and is
+    shaped `(batch, 1)` to line up with a model whose final linear layer
+    has one output (avoids the silent `(batch, 1)` vs `(batch,)` MSELoss
+    broadcast trap)."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": [0.5, 1.2, 2.7, 3.1, 0.4] * 4,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float32,
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    _X, y = next(iter(ds.train_loader))
+    assert y.dtype == torch.float32
+    assert y.dim() == 2 and y.shape[1] == 1
+
+
+def test_tabular_regression_still_rejects_nan():
+    """Finiteness is still required under `target_dtype` — NaN/Inf targets
+    are poison for regression too."""
+    df = pd.DataFrame(
+        {
+            "f1": [1.0, 2.0, 3.0],
+            "label": [0.5, float("nan"), 2.5],
+        }
+    )
+    with pytest.raises(ValueError, match="NaN"):
+        NNTabularDataset(
+            df=df,
+            feature_cols=["f1"],
+            target_col="label",
+            target_dtype=torch.float32,
+        )
+
+
+def test_tabular_regression_rejects_inf_targets():
+    """Inf targets slip past the earlier `isna()` check (pandas treats Inf
+    as not-NaN) but must still be rejected by the unconditional
+    `np.isfinite` guard — proving the finiteness check is reached in
+    regression mode, not just classification."""
+    df = pd.DataFrame(
+        {
+            "f1": [1.0, 2.0, 3.0],
+            "label": [0.5, 1.0, float("inf")],
+        }
+    )
+    with pytest.raises(ValueError, match="non-finite"):
+        NNTabularDataset(
+            df=df,
+            feature_cols=["f1"],
+            target_col="label",
+            target_dtype=torch.float32,
+        )
+
+
+def test_tabular_classification_default_unchanged():
+    """Back-compat: with `target_dtype` unset (None), the target is cast
+    to int64 (long) and the contiguity check is still enforced."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": np.arange(20) % 3,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    assert ds.output_dim == 3
+    _X, y = next(iter(ds.train_loader))
+    assert y.dtype == torch.long
+    # Classification targets stay 1-D `(batch,)` (CrossEntropyLoss convention).
+    assert y.dim() == 1
+
+    # Non-contiguous integer labels still raise under the default.
+    bad_df = pd.DataFrame({"f1": [1.0, 2.0, 3.0, 4.0], "label": [0, 5, 0, 5]})
+    with pytest.raises(ValueError, match="contiguous"):
+        NNTabularDataset(df=bad_df, feature_cols=["f1"], target_col="label")
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.long, torch.bool])
+def test_tabular_regression_rejects_integer_dtype(dtype):
+    """`target_dtype` must be a floating-point dtype. Passing an integer
+    dtype is rejected because it's a footgun: `torch.long` is what
+    classification already casts to internally, so passing it explicitly
+    would silently switch to regression mode (skip the contiguity check,
+    force `output_dim=1`) — the opposite of what the caller asked for."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": np.arange(20) % 3,
+        }
+    )
+    with pytest.raises(ValueError, match="floating-point dtype"):
+        NNTabularDataset(
+            df=df,
+            feature_cols=["f1"],
+            target_col="label",
+            target_dtype=dtype,
+        )
+
+
+def test_tabular_regression_state_excludes_target_dtype():
+    """`target_dtype` must NOT appear in `state()` — the dataset is not
+    part of `run.id`, so a regression run and a classification run on
+    the same config hash to the same id (matches `feature_dtype` / `seed`
+    precedent). Locks the back-compat invariant the F2 omit-when-default
+    tests already guard for params dataclasses."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": [0.5, 1.2, 2.7, 3.1, 0.4] * 4,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float32,
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    state = ds.state()
+    assert "target_dtype" not in state, state
+    # `output_dim` IS in state — it's the model-shape contract.
+    assert state["output_dim"] == 1
+
+
+def test_tabular_regression_val_test_loaders_preserve_dtype_and_shape():
+    """The val/test loaders share the same target tensor as train, so
+    they must also yield the regression dtype and `(batch, 1)` shape.
+    Exercises the `n_val > 0` / `n_test > 0` branches under regression."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(40, dtype=float),
+            "label": [0.5, 1.2, 2.7, 3.1, 0.4, 0.9, 1.1, 2.0] * 5,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float32,
+        val_proportion=0.2,
+        test_proportion=0.2,
+    )
+    for loader in (ds.train_loader, ds.val_loader, ds.test_loader):
+        assert loader is not None
+        _X, y = next(iter(loader))
+        assert y.dtype == torch.float32
+        assert y.dim() == 2 and y.shape[1] == 1
+
+
+def test_tabular_regression_accepts_float64():
+    """`torch.float64` is a legitimate regression dtype (double-precision)
+    and must pass the `is_floating_point` guard — exercises that the
+    validation accepts more than just `torch.float32`."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(20, dtype=float),
+            "label": [0.5, 1.2, 2.7, 3.1, 0.4] * 4,
+        }
+    )
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=torch.float64,
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+    assert ds.output_dim == 1
+    _X, y = next(iter(ds.train_loader))
+    assert y.dtype == torch.float64
+    assert y.dim() == 2 and y.shape[1] == 1
+
+
+@pytest.mark.parametrize(
+    ("target_dtype", "expected_dtype", "expected_shape"),
+    [
+        (None, torch.long, (4,)),
+        (torch.float32, torch.float32, (4, 1)),
+    ],
+)
+def test_tabular_numeric_string_targets_use_validated_values(target_dtype, expected_dtype, expected_shape):
+    """Numeric strings accepted by validation must also reach the target tensor."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(4, dtype=float),
+            "label": ["0", "1", "0", "1"],
+        }
+    )
+
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=target_dtype,
+        batch_sizes=(4, None, None),
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+
+    _X, y = next(iter(ds.train_loader))
+    assert y.dtype == expected_dtype
+    assert tuple(y.shape) == expected_shape
+    assert sorted(y.flatten().tolist()) == [0, 0, 1, 1]
