@@ -58,7 +58,7 @@ def test_draft_release_please_forces_tag_creation():
 
 def test_privileged_release_please_job_installs_only_pinned_uv_action():
     workflow = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
-    assert "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78" in workflow
+    assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in workflow
     assert "pip install -r requirements-tools.txt" not in workflow
 
 
@@ -69,7 +69,7 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
         workflow = path.read_text(encoding="utf-8")
         assert "pip install -r requirements-tools.txt" not in workflow, path
         if "uv " in workflow:
-            assert "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78" in workflow, path
+            assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in workflow, path
 
 
 def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
