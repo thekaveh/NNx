@@ -1071,6 +1071,7 @@ class NNModel(_HubMixinBase):
         callbacks: Optional[list[CallbackLike]] = None,
         train_step_fn: Optional[TrainStepFn] = None,
         eval_step_fn: Optional[EvalStepFn] = None,
+        salt: Optional[str] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -1082,6 +1083,10 @@ class NNModel(_HubMixinBase):
                 supervised forward, loss, backward, and optimizer stepping.
             eval_step_fn: Optional once-per-epoch validation override that
                 receives the complete validation loader.
+            salt: Optional string folded into the run.id hash so identical
+                (model, net, train) configs run as distinct experiments
+                without altering modeled params. ``None`` (the default)
+                preserves existing run.id hashes exactly.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -1117,7 +1122,7 @@ class NNModel(_HubMixinBase):
 
             set_seed(params.seed)
 
-        run = NNRun(train=params, model=self.params, net=self.net_params)
+        run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
         with run.writable_lease(overwrite=params.overwrite_existing):
             return self._train_impl(
                 params=params,

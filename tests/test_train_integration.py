@@ -1370,3 +1370,31 @@ def test_nn_run_load_rejects_empty_last_checkpoint(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="malformed LAST checkpoint"):
         NNRun.load(run.id)
+
+
+def test_train_salt_wires_into_run_identity(tmp_path, monkeypatch):
+    """End-to-end wiring for NNModel.train(salt=...): the salt surfaces on
+    the returned NNRun, distinct salts hash otherwise-identical (model, net,
+    train) configs to distinct run.ids, and the default (no salt) leaves
+    run.salt is None. Companion to the NNRun-constructor-level
+    test_nn_run_salt_distinguishes_identical_configs in test_params_round_trip.py,
+    exercising the full train() path instead."""
+    monkeypatch.chdir(tmp_path)
+
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    params = _train_params(train_loader, None, n_epochs=1)
+
+    # salt="exp-42" is folded into the run and surfaces on the returned NNRun.
+    run_a = NNModel(net_params=net_params, params=model_params).train(params=params, salt="exp-42")
+    assert run_a.salt == "exp-42"
+
+    # Same (net, model, train) but a different salt hashes to a different run.id.
+    run_b = NNModel(net_params=net_params, params=model_params).train(params=params, salt="exp-99")
+    assert run_b.salt == "exp-99"
+    assert run_a.id != run_b.id
+
+    # No salt kwarg → run.salt is None (the omit-when-default baseline).
+    run_c = NNModel(net_params=net_params, params=model_params).train(params=params)
+    assert run_c.salt is None
+    assert run_c.id not in {run_a.id, run_b.id}

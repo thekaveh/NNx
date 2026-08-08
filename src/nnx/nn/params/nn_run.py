@@ -196,6 +196,13 @@ class NNRun:
     # run.id hashes for NNModel runs are preserved exactly.
     trainer: Optional[NNTrainerParams] = field(default=None)
 
+    # Optional salt folded into the run.id hash so identical
+    # (model, net, train) configs can run as distinct experiments
+    # without altering any of the modeled params. None (default) is
+    # omitted from state() so existing run.id hashes are preserved
+    # byte-for-byte — same omit-when-default contract as `trainer`.
+    salt: Optional[str] = field(default=None)
+
     _id: str = field(init=False, repr=False)
     _state: dict[str, object] = field(init=False, repr=False)
     idps: Optional[list[NNIterationDataPoint]] = field(repr=False, default=None)
@@ -227,6 +234,16 @@ class NNRun:
         return self._id
 
     def __post_init__(self):
+        # `salt` is optional, but when provided it must be a non-empty,
+        # non-whitespace string.
+        # An empty/whitespace salt is semantically meaningless (defeats
+        # the only reason to set salt), is a likely caller bug (`""`
+        # instead of `None`), and produces a confusing, hard-to-debug
+        # identity (it IS folded into state() and hashes to a distinct
+        # run.id — just a meaningless one). Validate the runtime type too,
+        # since callers can reach this API without a static type checker.
+        if self.salt is not None and (not isinstance(self.salt, str) or not self.salt.strip()):
+            raise ValueError("NNRun.salt must be a non-empty string when provided")
         state: dict[str, object] = dict(model=self.model.state(), net=self.net.state(), train=self.train.state())
         # `trainer` is omitted when None so existing NNModel runs hash to
         # the same run.id as before this field existed. Same omit-when-
@@ -234,6 +251,12 @@ class NNRun:
         # and NNOptimParams.param_groups.
         if self.trainer is not None:
             state["trainer"] = self.trainer.state()
+        # `salt` mirrors the trainer omit-when-default contract: None (the
+        # default) is left out of state() so existing run.id hashes are
+        # preserved byte-for-byte. A non-None salt is folded into the hash
+        # to distinguish otherwise-identical configs.
+        if self.salt is not None:
+            state["salt"] = self.salt
 
         id = hashlib.md5(str(state).encode("utf-8")).hexdigest()
 
@@ -553,6 +576,7 @@ class NNRun:
                 train=NNTrainParams.from_state(rep["train"]),
                 model=NNModelParams.from_state(rep["model"]),
                 trainer=trainer,
+                salt=rep.get("salt"),
                 idps=idps,
             )
         except KeyError as e:
