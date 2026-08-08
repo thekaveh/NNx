@@ -195,7 +195,6 @@ ignore = [
     "B024",  # ABC with no abstract methods — NNDatasetBase is a structural base
     "UP007", # Optional[X] vs X | None — keep Optional for readability
     "UP045", # Optional[X] vs X | None in annotations (same as UP007)
-    "UP038", # Preserve tuple-based isinstance checks across the supported Python range.
 ]
 
 [tool.pytest.ini_options]

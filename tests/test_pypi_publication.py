@@ -86,7 +86,7 @@ def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
     assert "uv run --frozen --no-sync twine check" in workflow
     assert "uv run --frozen python -m pip_audit" in workflow
     assert '"pip-audit==2.10.1"' in pyproject
-    assert '"twine==6.2.0"' in pyproject
+    assert '"twine==7.0.0"' in pyproject
     assert workflow.count("uv build --no-build-isolation --python .venv/bin/python") == 2
     assert "uv export --frozen --all-extras --all-groups" in workflow
     assert "uv sync --frozen --only-group release --no-install-project --no-build" in workflow
