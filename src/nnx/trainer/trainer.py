@@ -181,6 +181,7 @@ class Trainer:
         params: NNTrainerParams,
         trainer_step_fn: TrainerStepFn,
         callbacks: Optional[list[CallbackLike]] = None,
+        salt: Optional[str] = None,
     ) -> NNRun:
         """Run the multi-optimizer training loop and return the resulting NNRun.
 
@@ -198,6 +199,11 @@ class Trainer:
                 context exposes `ctx.optimizer` (primary, sorted-first), plus
                 a `ctx.optimizers` dict and `ctx.trainer` reference for
                 trainer-aware callbacks.
+            salt: mirrors ``NNModel.train()``'s ``salt`` parameter — an
+                optional string folded into the run.id hash so identical
+                (model, net, train) configs run as distinct experiments
+                without altering modeled params. ``None`` (the default)
+                preserves existing run.id hashes exactly.
 
         Returns:
             NNRun with per-iteration idps, persisted under runs/<run.id>/
@@ -241,6 +247,7 @@ class Trainer:
             # so callers who substitute a custom nn.Module post-construction
             # (the GAN composite idiom) still produce a saveable run.
             net=self.model.net_params,
+            salt=salt,
         )
         with run.writable_lease(overwrite=params.overwrite_existing):
             return self._train_impl(
