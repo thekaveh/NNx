@@ -147,6 +147,15 @@ def dpo_train_step_factory(
         # Track the chosen-minus-rejected log-prob gap as a side metric
         # via `error`: more negative = bigger preference margin learned.
         gap = float((policy_chosen_logp - policy_rejected_logp).detach().mean())
+        # Implicit DPO rewards r(x,y) = β·(logπ_θ(y|x) − logπ_ref(y|x)).
+        # reward_accuracy is the fraction of the batch where the chosen
+        # response's implicit reward exceeds the rejected one — the
+        # headline DPO ranking-quality diagnostic (Rafailov et al., 2023).
+        # Detach policy logps so the metrics carry no gradient; ref logps
+        # were already computed under torch.no_grad().
+        reward_chosen = beta * (policy_chosen_logp.detach() - ref_chosen_logp)
+        reward_rejected = beta * (policy_rejected_logp.detach() - ref_rejected_logp)
+        reward_accuracy = float((reward_chosen > reward_rejected).float().mean())
         return NNEvaluationDataPoint(
             f1=0.0,
             recall=0.0,
@@ -154,6 +163,11 @@ def dpo_train_step_factory(
             precision=0.0,
             loss=loss_val,
             error=-gap,
+            extra={
+                "reward_chosen": float(reward_chosen.mean()),
+                "reward_rejected": float(reward_rejected.mean()),
+                "reward_accuracy": reward_accuracy,
+            },
         )
 
     return step
