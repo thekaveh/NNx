@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 release = [
     "setuptools==83.0.0",
     "wheel==0.47.0",
-    "twine==6.2.0",
+    "twine==7.0.0",
 ]
 docs-publish = [
     "cairosvg==2.9.0",
@@ -93,7 +93,7 @@ dev = [
     # between minor versions; without a ceiling, a fresh `pip install -e
     # .[dev]` six months from now can fail CI on rules that didn't
     # exist when the codebase was written.
-    "ruff>=0.6,<0.16",
+    "ruff>=0.6,<0.17",
     "pyright>=1.1.380",    # CI runs `pyright --warnings`; pin here so locals match
     "pre-commit>=3.7,<5",
     "pip-audit==2.10.1",
@@ -195,7 +195,6 @@ ignore = [
     "B024",  # ABC with no abstract methods — NNDatasetBase is a structural base
     "UP007", # Optional[X] vs X | None — keep Optional for readability
     "UP045", # Optional[X] vs X | None in annotations (same as UP007)
-    "UP038", # Preserve tuple-based isinstance checks across the supported Python range.
 ]
 
 [tool.pytest.ini_options]
