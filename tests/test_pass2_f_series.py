@@ -1391,3 +1391,35 @@ def test_tabular_regression_accepts_float64():
     _X, y = next(iter(ds.train_loader))
     assert y.dtype == torch.float64
     assert y.dim() == 2 and y.shape[1] == 1
+
+
+@pytest.mark.parametrize(
+    ("target_dtype", "expected_dtype", "expected_shape"),
+    [
+        (None, torch.long, (4,)),
+        (torch.float32, torch.float32, (4, 1)),
+    ],
+)
+def test_tabular_numeric_string_targets_use_validated_values(target_dtype, expected_dtype, expected_shape):
+    """Numeric strings accepted by validation must also reach the target tensor."""
+    df = pd.DataFrame(
+        {
+            "f1": np.arange(4, dtype=float),
+            "label": ["0", "1", "0", "1"],
+        }
+    )
+
+    ds = NNTabularDataset(
+        df=df,
+        feature_cols=["f1"],
+        target_col="label",
+        target_dtype=target_dtype,
+        batch_sizes=(4, None, None),
+        val_proportion=0.0,
+        test_proportion=0.0,
+    )
+
+    _X, y = next(iter(ds.train_loader))
+    assert y.dtype == expected_dtype
+    assert tuple(y.shape) == expected_shape
+    assert sorted(y.flatten().tolist()) == [0, 0, 1, 1]

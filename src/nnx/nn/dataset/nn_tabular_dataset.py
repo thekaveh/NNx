@@ -130,8 +130,10 @@ class NNTabularDataset(NNDatasetBase):
                 f"NaN values in columns {bad_cols} — drop or impute rows before constructing NNTabularDataset."
             )
 
-        # Coerce features + target → tensors. Trust `dtype=` on torch.tensor
-        # rather than going through an extra np.float32 intermediate copy.
+        # Coerce the target once, then use the same numeric values for
+        # validation, tensor construction, and classification metadata.
+        # Reading the raw column again after pd.to_numeric would accept
+        # numeric strings here but fail later inside torch.tensor.
         target_series = cast(pd.Series, pd.to_numeric(self.df[self.target_col], errors="coerce"))
         target_values = target_series.to_numpy()
         # Finiteness is required for both classification and regression —
@@ -154,7 +156,7 @@ class NNTabularDataset(NNDatasetBase):
             dtype=self.feature_dtype,
         )
         y = torch.tensor(
-            self.df[self.target_col].to_numpy(),
+            target_values,
             dtype=self.target_dtype if self.target_dtype is not None else torch.long,
         )
         # Regression: promote the 1-D target `(n,)` to `(n, 1)` so it lines
@@ -219,9 +221,9 @@ class NNTabularDataset(NNDatasetBase):
             # and the mismatch only surfaces much later inside
             # cross-entropy as an opaque index / device-side assert.
             # Fail fast with a fixable message.
-            n_classes = int(self.df[self.target_col].nunique())
-            target_min = int(self.df[self.target_col].min())
-            target_max = int(self.df[self.target_col].max())
+            n_classes = int(np.unique(target_values).size)
+            target_min = int(target_values.min())
+            target_max = int(target_values.max())
             if target_min != 0 or target_max != n_classes - 1:
                 raise ValueError(
                     f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
