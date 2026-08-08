@@ -323,3 +323,226 @@ def test_response_logprob_excludes_pad_positions():
     # Without the mask, the pads ARE scored and the totals differ.
     lp_unmasked = _response_logprob(net, padded, 2)
     assert not torch.allclose(lp_short, lp_unmasked, atol=1e-4)
+
+
+# ---------- reward-accuracy extras ----------
+
+
+def test_dpo_step_emits_reward_metrics_in_extra(tmp_path, monkeypatch):
+    """Every emitted NNEvaluationDataPoint.extra must carry the three
+    implicit DPO reward diagnostics — reward_chosen, reward_rejected,
+    and reward_accuracy — with reward_accuracy a valid fraction in
+    [0, 1]."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    policy.net.load_state_dict(ref_model.net.state_dict())
+
+    loader = _preference_loader(tokenizer, n_pairs=8, batch_size=2)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    run = policy.train(
+        params=NNTrainParams(
+            n_epochs=3,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=5e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=10,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        ),
+        train_step_fn=step_fn,
+    )
+
+    assert len(run.idps) > 0
+    for idp in run.idps:
+        extra = idp.train_edp.extra
+        assert "reward_chosen" in extra
+        assert "reward_rejected" in extra
+        assert "reward_accuracy" in extra
+        assert isinstance(extra["reward_chosen"], float)
+        assert isinstance(extra["reward_rejected"], float)
+        assert isinstance(extra["reward_accuracy"], float)
+        assert 0.0 <= extra["reward_accuracy"] <= 1.0
+
+
+def test_dpo_reward_accuracy_increases_with_training(tmp_path, monkeypatch):
+    """DPO should learn to rank chosen above rejected: the mean
+    reward_accuracy (fraction of the batch whose implicit chosen reward
+    exceeds the rejected reward) of the last epoch must exceed that of
+    the first epoch. reward_accuracy starts at 0.0 on the very first
+    batch (policy==ref -> all implicit rewards are 0 -> strict > yields
+    0.0), then climbs as DPO learns to rank chosen above rejected — so
+    the first-EPOCH mean is already non-zero by the time epoch 0 ends.
+    We assert the last-epoch mean exceeds the first-epoch mean."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    policy.net.load_state_dict(ref_model.net.state_dict())
+
+    # Larger pair count + finer batch granularity keeps the per-epoch
+    # reward_accuracy mean stable enough for the increase assertion.
+    loader = _preference_loader(tokenizer, n_pairs=16, batch_size=4)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    run = policy.train(
+        params=NNTrainParams(
+            n_epochs=12,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=5e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=10,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        ),
+        train_step_fn=step_fn,
+    )
+
+    by_epoch: dict[int, list[float]] = {}
+    for idp in run.idps:
+        by_epoch.setdefault(idp.epoch_idx, []).append(idp.train_edp.extra["reward_accuracy"])
+
+    first_epoch = min(by_epoch)
+    last_epoch = max(by_epoch)
+    first_mean = sum(by_epoch[first_epoch]) / len(by_epoch[first_epoch])
+    last_mean = sum(by_epoch[last_epoch]) / len(by_epoch[last_epoch])
+    assert last_mean > first_mean, (
+        f"DPO reward_accuracy did not increase: epoch {first_epoch} mean {first_mean:.4f} "
+        f"vs epoch {last_epoch} mean {last_mean:.4f}"
+    )
+
+
+def test_dpo_reward_chosen_exceeds_rejected_after_training(tmp_path, monkeypatch):
+    """The core DPO semantic: after training, the policy assigns a
+    higher mean implicit reward to chosen responses than to rejected
+    ones. We train long enough for the chosen-minus-rejected margin to
+    open up, then assert the mean reward_chosen across the last
+    epoch's idps exceeds the mean reward_rejected."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    policy.net.load_state_dict(ref_model.net.state_dict())
+
+    loader = _preference_loader(tokenizer, n_pairs=16, batch_size=4)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    run = policy.train(
+        params=NNTrainParams(
+            n_epochs=12,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=5e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+            ),
+            scheduler=NNSchedulerParams(
+                min_lr=1e-7,
+                factor=0.5,
+                patience=10,
+                cooldown=1,
+                threshold=1e-3,
+            ),
+        ),
+        train_step_fn=step_fn,
+    )
+
+    by_epoch: dict[int, list[tuple[float, float]]] = {}
+    for idp in run.idps:
+        extra = idp.train_edp.extra
+        by_epoch.setdefault(idp.epoch_idx, []).append((extra["reward_chosen"], extra["reward_rejected"]))
+
+    last_epoch = max(by_epoch)
+    last_pairs = by_epoch[last_epoch]
+    mean_chosen = sum(rc for rc, _ in last_pairs) / len(last_pairs)
+    mean_rejected = sum(rr for _, rr in last_pairs) / len(last_pairs)
+    assert mean_chosen > mean_rejected, (
+        f"DPO did not learn to prefer chosen over rejected: last-epoch mean reward_chosen "
+        f"{mean_chosen:.4f} vs mean reward_rejected {mean_rejected:.4f}"
+    )
+
+
+def test_dpo_reward_accuracy_matches_manual_computation(tmp_path, monkeypatch):
+    """The reward_accuracy emitted in extra must equal a manual
+    computation of β·(logπ_θ − logπ_ref) ranked chosen vs rejected,
+    using the policy's PRE-step weights — the step computes its policy
+    log-probs before finalize_step mutates the weights, so the emitted
+    metric reflects the same pre-step state."""
+    from nnx.nn.nn_model import TrainStepContext
+    from nnx.paradigms.dpo import _response_logprob
+
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    policy.net.load_state_dict(ref_model.net.state_dict())
+
+    beta = 0.1
+    pad_token_id = 1
+    loader = _preference_loader(tokenizer, n_pairs=4, batch_size=4)
+    prompt_ids, chosen_ids, rejected_ids = next(iter(loader))
+
+    prompt_len = prompt_ids.shape[1]
+    chosen_seq = torch.cat([prompt_ids, chosen_ids], dim=1)
+    rejected_seq = torch.cat([prompt_ids, rejected_ids], dim=1)
+
+    # The factory freezes the reference and pins it to eval — call it
+    # first so the manual ref log-probs are computed under the same
+    # (eval, no-grad) state the step uses.
+    step_fn = dpo_train_step_factory(ref_model, beta=beta, pad_token_id=pad_token_id)
+
+    # Mirror the step's exact log-prob computation under the PRE-step
+    # policy weights (policy.net.train() + zero_grad, matching step()).
+    policy.net.train()
+    policy.net.zero_grad()
+    policy_chosen_logp = _response_logprob(policy.net, chosen_seq, prompt_len, pad_token_id=pad_token_id)
+    policy_rejected_logp = _response_logprob(policy.net, rejected_seq, prompt_len, pad_token_id=pad_token_id)
+    with torch.no_grad():
+        ref_chosen_logp = _response_logprob(ref_model.net, chosen_seq, prompt_len, pad_token_id=pad_token_id)
+        ref_rejected_logp = _response_logprob(ref_model.net, rejected_seq, prompt_len, pad_token_id=pad_token_id)
+
+    reward_chosen = beta * (policy_chosen_logp.detach() - ref_chosen_logp)
+    reward_rejected = beta * (policy_rejected_logp.detach() - ref_rejected_logp)
+    expected_reward_accuracy = float((reward_chosen > reward_rejected).float().mean())
+
+    # Run the actual step on the same batch. The step mutates the policy
+    # via optimizer.step, but its emitted reward_accuracy was computed
+    # from the PRE-step policy log-probs above.
+    optimizer = torch.optim.Adam(policy.net.parameters(), lr=5e-3)
+    ctx = TrainStepContext(
+        model=policy,
+        batch=(prompt_ids, chosen_ids, rejected_ids),
+        optimizer=optimizer,
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+    )
+    edp = step_fn(ctx)
+
+    assert edp.extra["reward_accuracy"] == pytest.approx(expected_reward_accuracy)
+    # reward_chosen/rejected are batch means of the same manual tensors.
+    assert edp.extra["reward_chosen"] == pytest.approx(float(reward_chosen.mean()))
+    assert edp.extra["reward_rejected"] == pytest.approx(float(reward_rejected.mean()))
