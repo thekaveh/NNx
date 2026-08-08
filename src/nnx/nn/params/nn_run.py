@@ -234,17 +234,16 @@ class NNRun:
         return self._id
 
     def __post_init__(self):
-        # `salt` mirrors NNTrainParams.data_id's contract: optional, but
-        # when provided it must be a non-empty, non-whitespace string.
+        # `salt` is optional, but when provided it must be a non-empty,
+        # non-whitespace string.
         # An empty/whitespace salt is semantically meaningless (defeats
         # the only reason to set salt), is a likely caller bug (`""`
         # instead of `None`), and produces a confusing, hard-to-debug
         # identity (it IS folded into state() and hashes to a distinct
-        # run.id — just a meaningless one). Non-string values are caught
-        # statically by pyright (the field is typed `Optional[str]`),
-        # matching the data_id precedent.
-        if self.salt is not None and not self.salt.strip():
-            raise ValueError("NNRun.salt must be non-empty when provided")
+        # run.id — just a meaningless one). Validate the runtime type too,
+        # since callers can reach this API without a static type checker.
+        if self.salt is not None and (not isinstance(self.salt, str) or not self.salt.strip()):
+            raise ValueError("NNRun.salt must be a non-empty string when provided")
         state: dict[str, object] = dict(model=self.model.state(), net=self.net.state(), train=self.train.state())
         # `trainer` is omitted when None so existing NNModel runs hash to
         # the same run.id as before this field existed. Same omit-when-

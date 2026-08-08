@@ -7,6 +7,8 @@ keeping both sides of the contract in sync."""
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from nnx.finetune.param_groups import NNParamGroupSpec
@@ -602,9 +604,7 @@ def test_nn_run_salt_rejects_empty_or_whitespace(bad_salt):
     when provided it must be a non-empty, non-whitespace string. An
     empty/whitespace salt is semantically meaningless (defeats the only
     reason to set salt) and is a likely caller bug (`""` instead of
-    `None`). Fail fast with a clear error. Non-string values are caught
-    statically by pyright (the field is typed `Optional[str]`), matching
-    the data_id precedent."""
+    `None`). Fail fast with a clear error."""
     from nnx.nn.params.nn_run import NNRun
 
     with pytest.raises(ValueError, match="non-empty"):
@@ -619,6 +619,26 @@ def test_nn_run_salt_rejects_empty_or_whitespace(bad_salt):
             train=NNTrainParams(n_epochs=1),
             model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
             salt=bad_salt,
+        )
+
+
+@pytest.mark.parametrize("bad_salt", [0, False, object()])
+def test_nn_run_salt_rejects_non_strings(bad_salt):
+    """Runtime callers get a clear boundary error for non-string salts."""
+    from nnx.nn.params.nn_run import NNRun
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        NNRun(
+            net=NNParams(
+                input_dim=4,
+                output_dim=2,
+                dropout_prob=0.0,
+                activation=Activations.RELU,
+                hidden_dims=[8],
+            ),
+            train=NNTrainParams(n_epochs=1),
+            model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+            salt=cast(str, bad_salt),
         )
 
 
