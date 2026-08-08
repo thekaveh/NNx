@@ -121,9 +121,8 @@ class GenerativeNNModel(NNModel):
                 default), behavior is unchanged.
             on_token: optional callback invoked with each newly
                 generated token id immediately after it is appended.
-                Lets callers stream partial output, drive progress
-                bars, or implement custom early-stop heuristics
-                without re-running decode over the public forward /
+                Lets callers stream partial output or drive progress
+                reporting without re-running decode over the public forward /
                 apply_chain / sample_next_token primitives. ``None``
                 (default) is a no-op so existing callers are
                 unaffected. Fires only for newly generated tokens
