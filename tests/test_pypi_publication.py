@@ -257,6 +257,9 @@ def test_release_publication_has_one_managed_entry_point():
     assert "already_published=true" in workflow
     assert "Verify exact GitHub release asset hashes" in workflow
     assert "remote == local" in workflow
+    assert "release_id=$release_id" in workflow
+    assert "releases/{os.environ['RELEASE_ID']}" in workflow
+    assert "releases/tags/{os.environ['RELEASE_TAG']}" not in workflow
     assert "Verify new immutable release attestation" in workflow
     assert "uv lock" in release_please
     assert "chore: refresh release lockfile" in release_please
