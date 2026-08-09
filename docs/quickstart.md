@@ -94,7 +94,42 @@ ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 model = NNModel.from_checkpoint(checkpoint=ckpt)
 ```
 
-### 2.5. Custom metrics
+### 2.5. Tabular regression targets
+
+`NNTabularDataset` treats targets as class labels by default. For regression,
+request a floating target dtype and use a one-output network with a regression
+loss:
+
+```python
+import pandas as pd
+import torch
+from nnx import Devices, Losses, Nets, NNModelParams, NNParams, NNTabularDataset
+
+frame = pd.DataFrame({"rooms": [1, 2, 3], "price": [95.0, 150.0, 220.0]})
+dataset = NNTabularDataset(
+    df=frame,
+    feature_cols=["rooms"],
+    target_col="price",
+    target_dtype=torch.float32,
+    batch_sizes=(2, 1, 1),
+)
+net_params = NNParams(
+    input_dim=dataset.input_dim,
+    output_dim=dataset.output_dim,
+    hidden_dims=[16],
+    dropout_prob=0.1,
+)
+model_params = NNModelParams(
+    net=Nets.FEED_FWD,
+    device=Devices.CPU,
+    loss=Losses.MEAN_SQUARED_ERROR,
+)
+```
+
+Leave `target_dtype=None` for classification, where targets remain `torch.long`
+and `output_dim` is the number of classes.
+
+### 2.6. Custom metrics
 
 ```python
 from sklearn.metrics import roc_auc_score
@@ -108,7 +143,7 @@ NNTrainParams(
 # Every NNEvaluationDataPoint gets `.extra["roc_auc"]` populated.
 ```
 
-### 2.6. Silencing the progress bar (CI / non-TTY)
+### 2.7. Silencing the progress bar (CI / non-TTY)
 
 The training loop draws a tqdm progress bar by default. Set `NNX_TQDM_DISABLE=1` in the environment to silence it — useful in CI, in non-TTY contexts, and in test suites:
 
@@ -118,7 +153,7 @@ NNX_TQDM_DISABLE=1 python your_train_script.py
 
 `NNX_TQDM_DISABLE` is read by both `NNModel.train()` and `Trainer.train()`. Any value of `1` / `true` / `yes` (case-insensitive) disables the bar; anything else leaves it enabled.
 
-### 2.7. TensorBoard
+### 2.8. TensorBoard
 
 ```bash
 pip install thekaveh-nnx[tensorboard]
@@ -129,7 +164,7 @@ from nnx import TensorBoardCallback
 model.train(params=..., callbacks=[TensorBoardCallback(log_dir="tb_logs")])
 ```
 
-### 2.8. LR finder pre-flight
+### 2.9. LR finder pre-flight
 
 Before a long training run, sweep learning rates exponentially and let the Smith-2017 steepest-descent heuristic pick a defensible `max_lr` for the real run. The sweep is non-destructive: model state, mixed per-module modes, loader generators, and Python/NumPy/PyTorch RNG streams are restored on exit.
 
