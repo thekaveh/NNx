@@ -219,11 +219,17 @@ def test_post_publish_smoke_imports_studio_required_apis():
         )
 
 
-def test_reusable_release_inputs_enable_the_publish_path():
-    """Release Please calls must publish even though their event remains ``push``."""
+def test_trusted_publishing_runs_in_the_top_level_release_workflow():
+    """PyPI OIDC and attestation identities must name the same workflow."""
     workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    release_please = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "github.event_name == 'workflow_call'" not in workflow
+    assert "workflow_call:" not in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "gh workflow run release.yml" in release_please
+    assert "uses: ./.github/workflows/release.yml" not in release_please
+    assert '-f "release_ref=$RELEASE_REF"' in release_please
+    assert '-f "tag_name=$RELEASE_TAG"' in release_please
     assert workflow.count("inputs.tag_name != ''") == 4, (
         "release.yml must use the supplied tag_name input to enable tag/version "
         "validation, PyPI publication, post-publish verification, and GitHub release publication"
@@ -239,6 +245,7 @@ def test_release_publication_has_one_managed_entry_point():
     assert "actions: write" in release_please
     assert "gh workflow run ci.yml" in release_please
     assert "gh workflow run security.yml" in release_please
+    assert "gh workflow run release.yml" in release_please
     assert "Verify tag still identifies the release commit" in workflow
     assert "gh release upload" in workflow
     assert "actions/download-artifact@" in workflow
