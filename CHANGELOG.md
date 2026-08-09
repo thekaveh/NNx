@@ -4,60 +4,9 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
-## [0.2.2](https://github.com/thekaveh/NNx/compare/v0.2.1...v0.2.2) (2026-08-09)
-
-
-### Features
-
-* **dataset:** add regression targets to NNTabularDataset ([4380b03](https://github.com/thekaveh/NNx/commit/4380b030fe9a3c750143c66928db877623a5e043))
-* **dataset:** add regression-target support to NNTabularDataset via target_dtype ([2ee37a6](https://github.com/thekaveh/NNx/commit/2ee37a6cad0ce450bd87c4c8efd224f5d297c439))
-* **dpo:** emit implicit reward metrics ([4e9c6d8](https://github.com/thekaveh/NNx/commit/4e9c6d8e8b0e3f87c0b63d5b5ec7874b6c98b34a))
-* **dpo:** surface reward_accuracy in dpo_train_step_factory evaluation extras ([d7b1bb7](https://github.com/thekaveh/NNx/commit/d7b1bb7def778c714e8f3c3bd795f20d66a2de2a))
-* **generation:** add on_token streaming callback to GenerativeNNModel.generate() ([660b06b](https://github.com/thekaveh/NNx/commit/660b06b161c3da67421e302ee4158194b39d2bf8))
-* **generation:** add per-token streaming callback ([48bea6d](https://github.com/thekaveh/NNx/commit/48bea6d60607ce295eef6fe2f246f63455ef2a69))
-* promote DPO implicit reward metrics ([a8ca47b](https://github.com/thekaveh/NNx/commit/a8ca47b948cb15347e25e613c780bfedff28e2a9))
-* promote generation streaming callback ([1450ce5](https://github.com/thekaveh/NNx/commit/1450ce574c2341997a0b5a66c5a414b31bcf37e3))
-* promote optional run identity salt ([6aea935](https://github.com/thekaveh/NNx/commit/6aea935d9b3576dacdfe665cd0325ea18b662221))
-* promote tabular regression support ([a339107](https://github.com/thekaveh/NNx/commit/a3391071d70ecc96899f7af92511996c6f04f382))
-* **run:** add optional run identity salt ([52989c9](https://github.com/thekaveh/NNx/commit/52989c923b98b2c8fecf9a68682a14331d0b89f1))
-* **run:** add optional salt to NNRun identity for distinct identical-config runs ([bc19cbf](https://github.com/thekaveh/NNx/commit/bc19cbf5dc800c8327d3e5a898035ebf27970c43))
-
-
-### Bug Fixes
-
-* **dataset:** build targets from validated numeric values ([634da5b](https://github.com/thekaveh/NNx/commit/634da5b32bb4d3ad4c6c8febac726e8d4dd47406))
-* enable publishing from reusable release calls ([356d8ab](https://github.com/thekaveh/NNx/commit/356d8abedeaf254b4f4f1053a15991aea9fa7f62))
-* enable publishing from reusable release calls ([9d6c256](https://github.com/thekaveh/NNx/commit/9d6c256cf4548a2e8dad6096de91217daf9b871f))
-* harden training persistence and contracts ([d308bfb](https://github.com/thekaveh/NNx/commit/d308bfb9e059e6b19486a7153810c03619090817))
-* promote reusable release publication repair ([8b082e8](https://github.com/thekaveh/NNx/commit/8b082e855c6bf98f18e6467869e9a9083ea00ff5))
-* **run:** validate salt runtime type ([59d561c](https://github.com/thekaveh/NNx/commit/59d561cdb1a08ed1c3ed16ff67ddee1058b6afc2))
-* synchronize release version in uv lock ([a882137](https://github.com/thekaveh/NNx/commit/a882137232e5424d8c22e6928c6e826531ab9b16))
-* synchronize release version in uv lock ([96dfd9e](https://github.com/thekaveh/NNx/commit/96dfd9e257a090c31722c8ee5aaf699f63582309))
-
-
-### Documentation
-
-* center the shared product opener ([e88322d](https://github.com/thekaveh/NNx/commit/e88322d3efaf89f9481832bb8b2d76a72abd5464))
-* correct poster verification plan ([2c3f595](https://github.com/thekaveh/NNx/commit/2c3f5956f457774dab5745be1bbf90fc48fd88d7))
-* design audit remediation ([fe2a548](https://github.com/thekaveh/NNx/commit/fe2a5482114ceaae9720b0f77ea8063ff6b241d6))
-* design NNx poster wordmark ([8cee8cb](https://github.com/thekaveh/NNx/commit/8cee8cb49511528238c5150bfdf5355412cb93c1))
-* design opener remediation ([51ad504](https://github.com/thekaveh/NNx/commit/51ad5042a45fd7785d31b58a454fc4c22d3f61d8))
-* **generation:** describe callback contract precisely ([7ebce00](https://github.com/thekaveh/NNx/commit/7ebce00c49bec7a788e845b1f4a5ff40c19dfff8))
-* integrate NNx wordmark into poster ([5d79519](https://github.com/thekaveh/NNx/commit/5d79519fb3a8efaa691f1b10dd5e8e7130df5515))
-* integrate NNx wordmark into poster ([5c55fe0](https://github.com/thekaveh/NNx/commit/5c55fe09df56fa5685122ea6bba32cd27fc5ae3f))
-* plan NNx poster wordmark ([c6c197b](https://github.com/thekaveh/NNx/commit/c6c197b8cd582c881ba1c96c069781d461e7990d))
-* plan opener remediation ([8422466](https://github.com/thekaveh/NNx/commit/84224662c5994101033f051ebd0696e302f53678))
-* promote the NNx opener remediation ([6f2e288](https://github.com/thekaveh/NNx/commit/6f2e288c3af61a28101d7103670239fcddbe7130))
-* promote the NNx poster wordmark ([9e51199](https://github.com/thekaveh/NNx/commit/9e5119914a81790dc8b6eb4ef85015c17b13aa00))
-* rebuild the NNx project opener ([096cd35](https://github.com/thekaveh/NNx/commit/096cd356c963b40726217a7a965b9ca8f7e9738e))
-* replace poster with brand banner ([4e20ea4](https://github.com/thekaveh/NNx/commit/4e20ea47af8bdb544837ddfa59915bad1b55e0c9))
-* resolve three-surface audit findings ([dc203d5](https://github.com/thekaveh/NNx/commit/dc203d5d68242ffba215e46f3facf82829b13e43))
-* resolve three-surface audit findings ([a1ffa3b](https://github.com/thekaveh/NNx/commit/a1ffa3b108f689cc272b6c0613abf5db7bdc7016))
-* resolve three-surface audit findings ([8032cab](https://github.com/thekaveh/NNx/commit/8032cabe21d1a833ea8b09a6c523b4fb9d15a0ba))
-* separate navigation and brand headings ([9301944](https://github.com/thekaveh/NNx/commit/930194449301ef8ab998bb43c4e2b35a04ec8fff))
-* synchronize project publication surfaces ([28101b3](https://github.com/thekaveh/NNx/commit/28101b3bb729a4e2a9e985f7c09241eb648e86be))
-
 ## [Unreleased]
+
+## [0.2.2](https://github.com/thekaveh/NNx/compare/v0.2.1...v0.2.2) (2026-08-09)
 
 ### Added
 
