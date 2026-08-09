@@ -45,6 +45,7 @@ _RELEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release.yml"
 _WORKFLOW_DIRECTORY = _RELEASE_WORKFLOW.parent
 _RELEASE_PLEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release-please.yml"
 _RELEASE_PLEASE_CONFIG = _PYPROJECT.parent / "release-please-config.json"
+_PRE_COMMIT_CONFIG = _PYPROJECT.parent / ".pre-commit-config.yaml"
 _PYPI_README = _PYPROJECT.parent / "PYPI_README.md"
 _PYPI_TIMEOUT_SEC = 5.0
 _STUDIO_REQUIRED_APIS = ("NNMoEParams", "NNConvParams", "FeedFwdMoENN", "ConvNN")
@@ -92,6 +93,20 @@ def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
     assert "uv sync --frozen --only-group release --no-install-project --no-build" in workflow
     assert "uv pip sync --python" in workflow and "--require-hashes smoke-requirements.txt" in workflow
     assert "uv pip install --python" in workflow and "--no-deps --no-build-isolation" in workflow
+
+
+def test_pre_commit_ruff_version_matches_frozen_ci_version():
+    locked = tomllib.loads(_LOCKFILE.read_text(encoding="utf-8"))
+    ruff_packages = [package for package in locked["package"] if package["name"] == "ruff"]
+    assert len(ruff_packages) == 1
+
+    config = _PRE_COMMIT_CONFIG.read_text(encoding="utf-8")
+    match = re.search(
+        r"repo: https://github.com/astral-sh/ruff-pre-commit\s+rev: v([^\s]+)",
+        config,
+    )
+    assert match is not None
+    assert match.group(1) == ruff_packages[0]["version"]
 
 
 def test_package_uses_fresh_absolute_link_pypi_readme():
