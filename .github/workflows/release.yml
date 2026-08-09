@@ -397,6 +397,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
+          release_id="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
           if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ]; then
             expected="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
             actual="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
@@ -413,7 +415,7 @@ jobs:
       - name: Verify exact GitHub release asset hashes
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag_name }}
+          RELEASE_ID: ${{ steps.release_state.outputs.release_id }}
         run: |
           python - <<'PY'
           import hashlib
@@ -424,7 +426,7 @@ jobs:
 
           payload = json.loads(
               subprocess.check_output(
-                  ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{os.environ['RELEASE_TAG']}"]
+                  ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/{os.environ['RELEASE_ID']}"]
               )
           )
           remote = {
