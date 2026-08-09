@@ -100,11 +100,11 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 ### 2.4. Look things up
 
 - [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
-- [Examples catalog](_project/Examples.md) — annotated index of the runnable scripts under `examples/`.
-- [CONTRIBUTING](_project/Contributing.md) — editable install, dev toolchain, PR workflow.
-- [Security policy](_project/Security-Policy.md) — supported versions and private reporting instructions.
-- [CHANGELOG](_project/Changelog.md) — user-visible changes per PR.
+- [Examples catalog](../examples/README.md) — annotated index of the runnable scripts under `examples/`.
+- [CONTRIBUTING](../CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
+- [Security policy](../SECURITY.md) — supported versions and private reporting instructions.
+- [CHANGELOG](../CHANGELOG.md) — user-visible changes per PR.
 
 ## 3. Status
 
-Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](_project/Changelog.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
+Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](../CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.

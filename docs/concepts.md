@@ -106,7 +106,7 @@ Adding a new option is a one-place change: extend the enum + the `match` block. 
 
 ## 4. What lands on disk
 
-Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer]}` partial dict):
+Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer][, salt]}` partial dict):
 
 ```
 runs/<id>/
@@ -137,9 +137,33 @@ The versioned sidecar restores optimizer type and parameter topology/state, sche
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
+Checkpoint readers default to CPU placement and accept an explicit device for
+cross-device restores:
+
+```python
+checkpoint = NNCheckpoint.from_file("runs/<id>/checkpoints/best.pt", map_location="cpu")
+checkpoint = NNCheckpoint.load(run="<id>", type=Checkpoints.BEST, map_location="cuda:0")
+```
+
+Pickle checkpoints forward any `torch.load`-compatible `map_location` value.
+Safetensors checkpoints accept a device string or `torch.device`; callable or
+mapping forms are rejected because safetensors exposes device placement rather
+than PyTorch's storage-remapping callback contract.
+
 ### 4.3. Config vs environment
 
-`run.yaml` is the configuration; `metadata.yaml` is the environment. Two runs with identical config but different env both write to the same directory — by design, since they're the same experiment. To distinguish them, use different seeds or different data; both flow into `run.yaml` and so into the id.
+`run.yaml` is the configuration; `metadata.yaml` is the environment. Two runs
+with identical config but different environments share an ID by design. Use an
+explicit salt when identical modeled inputs should produce separate experiment
+records without changing the seed or data:
+
+```python
+replicate = model.train(params=train_params, salt="replicate-2")
+```
+
+`salt=None` preserves every historical run ID exactly. A non-empty string is
+stored with the run configuration and included in the ID hash, so save/load and
+resume retain the distinction. Non-string salt values are rejected.
 
 ## 5. Callbacks
 

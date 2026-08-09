@@ -154,7 +154,6 @@ docs = [
     "cairosvg==2.9.0",
     "mkdocs>=1.5,<2",
     "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.24",
     # Keep a ceiling so docs rendering remains reproducible across
     # Pygments formatter changes; 2.20.0 includes the current security fix.
     "Pygments<2.21",

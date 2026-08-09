@@ -8,6 +8,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Fixed
 
+- Documentation now renders a portable API catalog on all three surfaces, validates canonical GitHub links and tracked-file ownership, documents recent public APIs, and corrects stale DPO, comparison, tooling, and release-contract guidance.
 - PyPI trusted publishing now runs directly in the top-level `release.yml` workflow dispatched by Release Please, keeping the OIDC publisher and Sigstore attestation identities aligned instead of publishing from an unsupported reusable-workflow context.
 - Draft GitHub release assets are verified through the release database ID because GitHub's tag lookup endpoint does not expose draft releases.
 

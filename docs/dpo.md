@@ -28,9 +28,11 @@ RL loop; the standard `NNModel.train()` machinery just runs.
 SFT (supervised fine-tuning on `(prompt, good_response)` pairs)
 maximises the likelihood of "good" responses but says nothing about
 what's *worse*. When you have explicit preference data —
-`A > B` for the same prompt — DPO almost always outperforms SFT on the
-target preference metric, because it directly optimises the *gap*
-between chosen and rejected.
+`A > B` for the same prompt — DPO can improve the target preference
+metric beyond an SFT baseline because it directly optimises the *gap*
+between chosen and rejected. The result depends on preference-label
+quality, reference-policy quality, hyperparameters, and evaluation design;
+it is not a universal improvement guarantee.
 
 Pick DPO over SFT when:
 
@@ -124,19 +126,20 @@ policy.train(
 
 ## 4. The `beta` knob
 
-`beta` controls how sharply the policy is allowed to diverge from the
-reference. The original paper recommends `0.1` as the default; values
-in `[0.01, 0.5]` are common in practice.
+`beta` controls the strength of the reference-policy constraint. NNx defaults
+to `0.1`, matching the common starting point used by TRL. Tune it against both
+preference accuracy and held-out generation quality.
 
-- **Higher β** (e.g. 0.5): the implicit reward is steeper. The policy
-  can drift further from the reference per gradient step. Risk: the
-  policy stops being a *language model* and starts gaming the
-  preference function.
-- **Lower β** (e.g. 0.01): the policy stays close to the reference.
-  Slower convergence but safer.
+- **Higher β** (e.g. 0.5): stronger reference adherence and less policy
+  deviation. This can make preference learning more conservative.
+- **Lower β** (e.g. 0.01): weaker reference adherence and more aggressive
+  preference learning. This can increase drift or collapse risk.
 
 If training diverges or the model collapses (output goes to gibberish
-or to a single fixed answer), lower `beta` first.
+or to a single fixed answer), increase `beta` and reduce the learning rate,
+then inspect the preference pairs and reward metrics. See the
+[TRL DPO parameter reference](https://huggingface.co/docs/trl/dpo_trainer)
+for the same higher-beta/less-deviation convention.
 
 ## 5. Pair with HF Hub preference datasets
 
@@ -164,9 +167,10 @@ or one isomorphic to it.
 
 ## 6. Honest scope
 
-NNx's DPO is built for **small-LM experimentation** — the same
-TinyStories-class sub-30-minute-on-a-laptop scope as the LM path's
-`GenerativeNNModel`. It is **not** a production RLHF replacement.
+NNx's DPO is built for **small-LM experimentation** using the
+`GenerativeNNModel` path. Runtime depends on model size, sequence length,
+batching, and hardware; NNx does not publish a hardware-independent duration
+claim. It is **not** a production RLHF replacement.
 Specifically:
 
 - The training step does two forward passes through the policy and
@@ -186,9 +190,10 @@ Specifically:
 For production-scale preference tuning, use a dedicated stack
 (`trl`, `axolotl`, `OpenRLHF`, etc.) and treat NNx's DPO as the
 "how does this objective behave on my small LM?" experimentation
-path. The implementation is intentionally short and readable — the
-whole training step is ~30 lines — so you can also use it as a
-reference for understanding the DPO loss before scaling up.
+path. The implementation is intentionally direct and readable, so it can also
+serve as a reference for understanding the DPO loss before scaling up. The
+[original DPO paper](https://arxiv.org/abs/2305.18290) provides the derivation
+and experimental context.
 
 ## 7. How it composes with the rest of NNx
 
@@ -203,7 +208,12 @@ reference for understanding the DPO loss before scaling up.
   `TensorBoardCallback`, `WandbCallback` all work unchanged on the
   policy. The DPO step reports `loss` (the DPO loss) and `error`
   (negated chosen−rejected log-prob gap, so lower is better — same
-  monotone direction as `loss`).
+  monotone direction as `loss`). It also stores three values in
+  `idp.train_edp.extra`: `reward_chosen` and `reward_rejected` are the
+  batch-mean implicit rewards `beta * (policy_logp - reference_logp)`, and
+  `reward_accuracy` is the fraction of pairs where the chosen reward exceeds
+  the rejected reward (range 0–1, higher is better). Track the reward margin
+  alongside accuracy; accuracy alone can hide collapsing reward magnitudes.
 - **Generation** — after training, `policy.generate(prompt=..., ...)`
   produces text from the tuned policy with the standard sampling
   knobs (top-k, top-p, repetition penalty, seed).

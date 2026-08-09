@@ -7,6 +7,7 @@ import hashlib
 import io
 import re
 import shutil
+import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from urllib.parse import unquote
 import yaml
 from markdown import Markdown
 
+from .build_api_reference import build as build_api_reference
 from .build_wiki import (
     _is_absolute_web_path,
     _lookup_path,
@@ -45,6 +47,7 @@ MKDOCS_MARKDOWN_EXTENSIONS = [
     "pymdownx.inlinehilite",
     {"toc": {"permalink": True}},
 ]
+PLACEHOLDER_MARKER = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b")
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -317,23 +320,7 @@ def render_mkdocs(output: Path = ROOT / "mkdocs.yml") -> None:
             ],
         },
         "extra_css": ["stylesheets/extra.css"],
-        "plugins": [
-            "search",
-            {
-                "mkdocstrings": {
-                    "handlers": {
-                        "python": {
-                            "options": {
-                                "docstring_style": "google",
-                                "show_source": True,
-                                "show_root_heading": True,
-                                "show_signature_annotations": True,
-                            }
-                        }
-                    }
-                }
-            },
-        ],
+        "plugins": ["search"],
         "markdown_extensions": MKDOCS_MARKDOWN_EXTENSIONS,
         "nav": nav,
     }
@@ -432,6 +419,99 @@ def validate_links(root: Path, surface: str) -> None:
     for source in root.rglob("*.css"):
         for destination in _css_destinations(source.read_text(encoding="utf-8")):
             validate_destination(source, destination)
+
+
+def validate_repository_sources(root: Path, sources: list[Path], tracked_paths: set[Path]) -> None:
+    """Validate links and publication markers in GitHub-rendered source files."""
+    repository = root.resolve()
+    tracked = {path.resolve() for path in tracked_paths}
+
+    def is_tracked(candidate: Path) -> bool:
+        resolved = candidate.resolve()
+        return resolved in tracked or (resolved.is_dir() and any(path.is_relative_to(resolved) for path in tracked))
+
+    def validate_destination(source: Path, destination: str) -> None:
+        _, _, raw_fragment = _split_destination(destination)
+        path = _lookup_path(destination)
+        fragment = _markdown_unescape(raw_fragment.removeprefix("#"))
+        if path.startswith("/") and not path.startswith("//"):
+            raise ValueError(f"root-relative repo link in {source}: {destination}")
+        if _is_absolute_web_path(path):
+            return
+        candidate = source.resolve() if not path else (source.parent / path).resolve()
+        if not candidate.is_relative_to(repository):
+            raise ValueError(f"repo link points outside the repository in {source}: {destination}")
+        if not candidate.exists():
+            raise ValueError(f"broken repo link in {source}: {destination}")
+        if not is_tracked(candidate):
+            raise ValueError(f"untracked repo link in {source}: {destination}")
+        if fragment and candidate.suffix == ".md" and unquote(fragment) not in _anchors(candidate, "repo"):
+            raise ValueError(f"broken repo anchor in {source}: {destination}")
+
+    for source in sources:
+        if source.resolve() not in tracked:
+            raise ValueError(f"untracked repo source: {source}")
+        text = source.read_text(encoding="utf-8")
+        marker = PLACEHOLDER_MARKER.search(text)
+        if marker:
+            raise ValueError(f"placeholder marker {marker.group(0)} in published documentation: {source}")
+        if re.search(r"(?m)^:::\s+nnx(?:\.|\s|$)", text):
+            raise ValueError(f"unresolved mkdocstrings directive in repository documentation: {source}")
+
+        blocks = markdown_blocks(text)
+        definitions: set[str] = set()
+        definitions_by_block: dict[int, list] = {}
+        for block_index, block in enumerate(blocks):
+            if block.html_processable:
+                for target in iter_html_targets(block.text):
+                    for destination in html_target_destinations(target):
+                        validate_destination(source, destination)
+            if block.suppressed:
+                continue
+            block_definitions = list(iter_reference_definitions(block.text))
+            definitions_by_block[block_index] = block_definitions
+            for definition in block_definitions:
+                if definition.target:
+                    definitions.add(_normalize_reference_label(definition.label))
+                    destination, _ = _parse_target(definition.target)
+                    validate_destination(source, destination)
+
+        for block_index, block in enumerate(blocks):
+            if block.suppressed:
+                continue
+            block_definitions = definitions_by_block.get(block_index, [])
+            chunks: list[str] = []
+            cursor = 0
+            for definition in block_definitions:
+                chunks.append(block.text[cursor : definition.start])
+                cursor = definition.end
+            chunks.append(block.text[cursor:])
+            prose = "".join(chunks)
+            for usage in iter_reference_usages(prose):
+                label = usage.reference or usage.label
+                if _normalize_reference_label(label) not in definitions:
+                    raise ValueError(f"undefined repo reference in {source}: {label}")
+            for link in iter_inline_links(prose):
+                destination, _ = _parse_target(link.target)
+                validate_destination(source, destination)
+
+
+def validate_repository_docs() -> None:
+    """Validate canonical pages against the paths actually committed to Git."""
+    tracked_result = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True)
+    tracked = {ROOT / path for path in tracked_result.stdout.split("\0") if path}
+    ignored_result = subprocess.run(
+        ["git", "ls-files", "-ci", "--exclude-standard", "-z", "--", "docs"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tracked_ignored = [path for path in ignored_result.stdout.split("\0") if path]
+    if tracked_ignored:
+        raise ValueError(f"tracked files in ignored documentation paths: {', '.join(sorted(tracked_ignored))}")
+    sources = [page.source for page in _pages() if page.source.suffix == ".md" or page.source.name == "LICENSE"]
+    validate_repository_sources(ROOT, sources, tracked)
 
 
 class _EmbeddedCssParser(HTMLParser):
@@ -760,6 +840,11 @@ def _render_bundle(site: Path, wiki: Path, config: Path) -> None:
     render_mkdocs(config)
     validate_links(site, "site")
     validate_links(wiki, "wiki")
+    for root in (site, wiki):
+        for source in root.glob("*.md"):
+            marker = PLACEHOLDER_MARKER.search(source.read_text(encoding="utf-8"))
+            if marker:
+                raise ValueError(f"placeholder marker {marker.group(0)} in generated documentation: {source}")
 
 
 def _assert_bundles_match(first: Path, second: Path) -> None:
@@ -772,6 +857,8 @@ def _assert_bundles_match(first: Path, second: Path) -> None:
 
 
 def build(*, check: bool = False) -> None:
+    build_api_reference(check=True)
+    validate_repository_docs()
     with tempfile.TemporaryDirectory() as temp:
         reference = Path(temp).resolve()
         _render_bundle(reference / "site", reference / "wiki", reference / "mkdocs.yml")

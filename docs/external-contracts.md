@@ -10,7 +10,7 @@ Most integrations are optional extras. A mocked or skipped test does not prove
 that an external boundary still matches its upstream contract, so changes to an
 extra, CLI command, or published format must update this page.
 
-Exact package versions below come from `uv.lock` as checked on **2026-07-22**.
+Exact package versions below come from `uv.lock` as checked on **2026-08-08**.
 CLI versions are labeled as an audited local snapshot. Supported package ranges
 remain defined by `pyproject.toml`.
 
@@ -27,15 +27,17 @@ remain defined by `pyproject.toml`.
 | Embeddings / FAISS | `faiss-cpu>=1.7` / `1.14.3`; `sentence-transformers>=2.7` / `5.6.0` | FAISS index/search and SentenceTransformer-like `forward(list[str]) -> Tensor[B, D]` | Embedding contrastive and FAISS export tests; downstream RAG adapters are out of scope. |
 | LM data / tokenization | `tokenizers>=0.20` / `0.22.2`; `datasets>=2.20` / `5.0.0` | BPE train/encode/decode and optional remote dataset loading | Tokenizer and generative-model tests; network-backed dataset downloads are not required in core CI. |
 | Experiment logging | `tensorboard>=2.15` / `2.21.0`; `wandb>=0.16` / `0.28.1` | Writer/run lifecycle and finish semantics | Callback tests cover lifecycle and TensorBoard event output; real W&B service calls remain credential/network-gated. |
-| Maintenance tooling | `uv==0.11.31`; `pip-audit==2.10.1`; Pyright `1.1.411`; Ruff `0.15.22` | Frozen resolution, exact-graph security audit, type and style gates | CI uses `uv sync --frozen --all-extras`; security exports that lock before auditing; Pyright warnings are gating. |
-| Package publishing | `setuptools==83.0.0`; `uv==0.11.31`; `twine==6.2.0`; PyPI OIDC | Release version/tag agreement, reproducible artifact bytes, exact registry hashes, trusted publish, immutable GitHub release | Reusable release workflow builds once for dry runs and publication, verifies local/PyPI filename and SHA-256 sets, attaches the same artifacts to the GitHub release, verifies API digests and immutable attestations, then installs from PyPI. |
+| Maintenance tooling | `uv==0.12.0`; `pip-audit==2.10.1`; Pyright `1.1.411`; Ruff `0.16.2` | Frozen resolution, exact-graph security audit, type and style gates | Automation installs the same uv version declared in `requirements-tools.txt`; CI uses `uv sync --frozen --all-extras`; security exports that lock before auditing; Pyright warnings are gating. |
+| Package publishing | `setuptools==83.0.0`; `uv==0.12.0`; `twine==7.0.0`; PyPI OIDC | Release version/tag agreement, reproducible artifact bytes, exact registry hashes, trusted publish, immutable GitHub release | The top-level dispatch-only release workflow builds once for publication, verifies local/PyPI filename and SHA-256 sets, attaches the same artifacts to the GitHub release, verifies API digests and immutable attestations, then installs from PyPI. |
 
 NNx uses a release-please-managed static package version. Wheels and sdists from
 untagged commits are local test artifacts only and must not be distributed,
 because post-release source changes retain the preceding release number until
-the next release PR. The Release Please reusable workflow is the sole
-distribution path; direct tag pushes do not publish. It revalidates the tag SHA,
-checks tag/version agreement, and verifies exact artifacts on PyPI and GitHub.
+the next release PR. Release Please dispatches the top-level `release.yml`
+workflow, which is the sole distribution path; direct tag pushes do not
+publish. Keeping trusted publishing in that workflow preserves the PyPI OIDC
+identity while it revalidates the tag SHA, checks tag/version agreement, and
+verifies exact artifacts on PyPI and GitHub.
 Repository release immutability and protected `v*` tags apply to releases
 created after the 2026-07-22 hardening. The historical `v0.2.1` GitHub release
 predates that control, remains mutable, and has no attached distribution

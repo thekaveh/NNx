@@ -158,6 +158,28 @@ assert out1 == out2
 The `seed` kwarg constructs a `torch.Generator` pinned to the model's
 device — same seed + same prompt + same model = same output.
 
+### 4.6. Stream generated token IDs
+
+Pass `on_token=` to observe each newly generated token without changing the
+returned text:
+
+```python
+token_ids: list[int] = []
+text = model.generate(
+    prompt="Once upon",
+    max_new_tokens=64,
+    on_token=token_ids.append,
+)
+```
+
+The callback receives integer token IDs, not decoded text. Prompt tokens are
+excluded, and cached and full-recompute decoding invoke the callback at the same
+point. It fires immediately after a generated token is appended and before stop
+string detection, so it also observes the token that completes a stop string.
+Exceptions raised by the callback propagate to the caller; model training mode
+is still restored by `generate()`'s cleanup path. Decode accumulated IDs with
+the configured tokenizer when a text stream is required.
+
 ## 5. Power-user decoding: `LogitsChain`
 
 For decoding setups that need custom logit processors — e.g., a
