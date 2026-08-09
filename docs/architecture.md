@@ -33,16 +33,3 @@ truncated, while an empty or corrupt LAST is rejected rather than treated as a
 request to erase history.
 
 ![NNx training lifecycle](assets/training-lifecycle.png)
-
-## 3. Documentation publication
-
-![NNx documentation projection](assets/docs-projection.png)
-
-Canonical Markdown and generated SVG/PNG asset pairs are inputs to
-`scripts.docs.build_docs`; diagram HTML masters first flow through
-`scripts.docs.extract_architecture_svg`. `docs/manifest.yaml` is the sole page
-inventory. The builder then emits `mkdocs.yml`, `generated/site`, and
-`generated/wiki`. The site selects SVG while repository and wiki pages select
-PNG fallbacks. CI rejects stale diagrams, broken local links,
-non-deterministic projections, or a strict MkDocs failure before Pages or the
-wiki can publish from `main`.

@@ -36,6 +36,15 @@ inventory and each source H1 begins with its manifest number;
 outputs. A successful push to `main` publishes the same canonical content to
 GitHub Pages and the repository wiki.
 
+![NNx documentation projection](docs/assets/docs-projection.png)
+
+Diagram HTML masters first flow through
+`scripts.docs.extract_architecture_svg`. The site selects SVG assets while the
+repository and wiki select PNG fallbacks. CI checks canonical GitHub links,
+tracked-file ownership, placeholder markers, stale API signatures and diagrams,
+projection determinism, generated links, and a strict MkDocs build before
+publication.
+
 Useful env vars:
 
 - `NNX_TQDM_DISABLE=1` silences the training progress bar. Set this in CI / non-TTY contexts, and in any test that drives `NNModel.train()` or `Trainer.train()` (the test suite's `conftest.py` already does this session-wide). Accepts `1` / `true` / `yes`, case-insensitive.

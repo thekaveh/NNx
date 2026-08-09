@@ -1,6 +1,9 @@
 # 13. NNx vs Lightning / HF / fastai / Composer
 
-An honest, scope-explicit comparison of NNx against the four closest PyTorch training/specialization toolkits, organized so users can pick the right tool for their actual need.
+An evidence-oriented, scope-explicit comparison of NNx against nearby PyTorch
+training and specialization toolkits. Competitor behavior was last checked
+against official documentation on **2026-08-08**; follow the linked sources
+before making a version-sensitive platform decision.
 
 ## 1. Quick decision matrix
 
@@ -21,10 +24,10 @@ An honest, scope-explicit comparison of NNx against the four closest PyTorch tra
 
 | Competitor | Overlap axis with NNx | Where they're stronger | Where NNx is stronger |
 |---|---|---|---|
-| **PyTorch Lightning + Fabric** | Generic training-loop toolkit | Distributed (DDP / FSDP / DeepSpeed), accelerator/strategy abstraction, callback integrations ecosystem, `LightningCLI`, community scale | Functional `train_step_fn` hook (vs class-method override), single-package breadth, content-addressed runs, GNN as first-class, tight core |
-| **HF Transformers + Accelerate + PEFT + TRL** | LM / PEFT / preference fine-tuning | Model zoo + HF Hub, distributed + DeepSpeed integration, 12+ PEFT methods (QLoRA / AdaLoRA / LoHA / OFT / VeRA), beam search + constrained gen, production-scale RLHF / PPO | Single-package install (vs four), no Hub-flow lock-in, cleaner training-loop API, graph + diffusion + surgery in the same package, lower entry mass |
-| **fastai** | High-level opinionated training, notebook UX | Built-in tabular + vision + collab-filtering stacks, learn-rate finder, progressive resizing, nbdev integration, large teaching community | PyTorch-native (no fastai abstraction layer), graph + LM + diffusion + PEFT in one package, content-addressed runs |
-| **MosaicML Composer** | Algorithmic training methods + efficient training | BlurPool, SAM, SqueezeExcite, MixUp variants, more algorithmic recipes; production-scale benchmarks; distributed/sharded | Single-GPU notebook UX, broader specialization (PEFT + surgery + GNN + embeddings + LM in one), no Mosaic-cloud coupling |
+| [**PyTorch Lightning + Fabric**](https://lightning.ai/docs/pytorch/stable/) | Generic training-loop toolkit | Distributed strategies, accelerator abstraction, callback integrations, and `LightningCLI` | Functional `train_step_fn` hook, content-addressed runs, and NNx's combined specialization modules |
+| [**HF Transformers + Accelerate + PEFT + TRL**](https://huggingface.co/docs) | LM / PEFT / preference fine-tuning | Model and dataset ecosystem, distributed integrations, broad PEFT coverage, generation strategies, and production-oriented preference tooling | One NNx package combines its smaller LM surface with graph, diffusion, surgery, and experiment persistence |
+| [**fastai**](https://docs.fast.ai/) | High-level opinionated training and notebook UX | Built-in application stacks, learning-rate finder, data blocks, and teaching ecosystem | Direct NNx/PyTorch configuration, graph/LM/diffusion/PEFT modules, and content-addressed runs |
+| [**MosaicML Composer**](https://docs.mosaicml.com/projects/composer/en/stable/) | Algorithmic training methods and efficient training | A larger algorithm catalog, distributed training, and benchmark-oriented workflows | A smaller notebook-oriented core plus NNx-specific PEFT, surgery, GNN, embeddings, and LM modules |
 
 ## 3. Capability-axis comparison
 
@@ -36,7 +39,7 @@ Each row: what NNx ships today, the credible competitor on that axis, and the sc
 |---|---|---|
 | Loop abstraction | `NNModel.train(params, train_step_fn=...)` — functional injection hook | `LightningModule.training_step(self, batch, batch_idx)` — class method override |
 | Callback bus | `Callback.on_{train,epoch}_{begin,end}` — 4 hooks | `Callback.on_*` — ~30 hooks |
-| Auto-resume | Content-addressed: `resume_from_run_id=run.id` + `resume_from_checkpoint="last"` | Manual checkpoint-by-epoch-number |
+| Auto-resume | Content-addressed: `resume_from_run_id=run.id` + `resume_from_checkpoint="last"` | `Trainer.fit(..., ckpt_path=path_or_last)` restores full training state |
 | Custom step | `train_step_fn=...` kwarg | Subclass override |
 
 ### 3.2. Distributed / scale
@@ -74,7 +77,7 @@ If you need any of these, NNx is the wrong tool today.
 | Beam search | Not shipped | Yes |
 | Contrastive search | Not shipped | Yes |
 | Constrained generation (vocab / regex / grammar) | Not shipped | Yes |
-| Streaming | Not shipped | Yes (`TextStreamer`) |
+| Streaming | Token-ID callback via `generate(on_token=...)` | Text-oriented streamer objects such as `TextStreamer` |
 
 ### 3.5. Diffusion
 
@@ -92,20 +95,20 @@ NNx's `nnx.diffusion` is teaching/research-scoped. For production, use HF diffus
 | Aspect | NNx | PyG (raw) |
 |---|---|---|
 | GCN / GraphSAGE / GAT | Yes | Yes |
-| HGT / GraphTransformer / RGCN | Not shipped (planned) | Yes |
-| Training-loop integration | Yes (via `NNModel`) | Not shipped (manual loops) |
+| HGT / GraphTransformer / RGCN | Not shipped | Yes |
+| Training-loop integration | Yes (via `NNModel`) | User-owned loop around PyG modules/loaders |
 | `NeighborLoader` batching | Yes (via `NNGraphDataset`) | Yes |
 
 NNx's GNN value is the training-loop + checkpoint integration on top of PyG's primitives.
 
 ### 3.7. Model surgery
 
-| Aspect | NNx | Anything else |
+| Aspect | NNx | Broader ecosystem |
 |---|---|---|
-| Net2Net widen / deepen | Yes | None |
-| `drop_layer` | Yes | None |
-| `low_rank_factorize` (SVD truncation) | Yes | None |
-| `expand_embedding` | Yes | None |
+| Net2Net widen / deepen | Yes | Available in research implementations and focused libraries; APIs vary |
+| `drop_layer` | Yes | Can be implemented directly against PyTorch modules; no single comparison target |
+| `low_rank_factorize` (SVD truncation) | Yes | Available through PyTorch linear algebra and compression libraries |
+| `expand_embedding` | Yes | Can be implemented directly or through model-specific ecosystem helpers |
 
 NNx keeps these surgery operations in one namespace and makes their results immediately composable with `NNModel.train()`.
 
@@ -132,10 +135,10 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 
 | Aspect | NNx | fastai | Lightning |
 |---|---|---|---|
-| LR finder | Yes (`nnx.lr_finder`, Smith 2017) | Yes (`Learner.lr_find`) | Not shipped (`tuner.lr_find` removed in 2.0) |
-| Per-layer gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart) | Hook-based recipes | `track_grad_norm` callback |
-| `_repr_html_` for runs in Jupyter | Yes (`NNRun._repr_html_`) | Notebook-native | Not shipped |
-| PEP 561 `py.typed` marker | Yes (PR #32) | Not shipped | Yes |
+| LR finder | Yes (`nnx.lr_finder`, Smith 2017) | Yes (`Learner.lr_find`) | Yes (`Tuner.lr_find`) |
+| Per-layer gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart) | Hook-based recipes | `grad_norm` utility from `on_before_optimizer_step` |
+| `_repr_html_` for runs in Jupyter | Yes (`NNRun._repr_html_`) | Notebook-native displays | Rich notebook/logging integrations; no `NNRun` equivalent |
+| PEP 561 `py.typed` marker | Yes | Check the installed fastai distribution/version | Yes |
 
 NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's notebook ergonomics.
 
@@ -158,6 +161,23 @@ NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's not
 
 ## 5. Scope explicit
 
-This page documents NNx's *current* coverage as of `main`. The roadmap explicitly defers distributed training, `torch.compile` integration, Lightning-style strategy abstraction, and a Lightning-CLI equivalent. If you need any of those, NNx today is the wrong tool.
+This page documents NNx's current coverage as of `main`. Distributed training,
+`torch.compile` integration, Lightning-style strategy abstraction, and a CLI
+equivalent are not shipped. If you need those capabilities, NNx today is the
+wrong tool.
 
-NNx's planned near-term additions (QLoRA, beam search, more GNN nets, SWA / EMA / SAM, `merge_lora`) close the most visible gaps in §3.3 / §3.4 / §3.6 but do not address distributed. `nnx.lr_finder` and `nnx.viz.gradient_flow` already shipped — see §3.10.
+This page does not promise untracked roadmap work. Future capabilities should
+appear here only after they ship or when they have a linked, approved public
+issue.
+
+## 6. Primary comparison sources
+
+- [Lightning checkpoint resume](https://lightning.ai/docs/pytorch/stable/common/checkpointing_basic.html)
+  [Lightning `Tuner.lr_find`](https://lightning.ai/docs/pytorch/stable/api/pytorch_lightning.tuner.tuning.Tuner.html),
+  and [Lightning gradient inspection](https://lightning.ai/docs/pytorch/stable/debug/debugging_intermediate.html)
+- [Hugging Face generation](https://huggingface.co/docs/transformers/main_classes/text_generation),
+  [streamers](https://huggingface.co/docs/transformers/internal/generation_utils),
+  [PEFT](https://huggingface.co/docs/peft), and [TRL](https://huggingface.co/docs/trl)
+- [PyTorch Geometric documentation](https://pytorch-geometric.readthedocs.io/en/latest/)
+- [fastai documentation](https://docs.fast.ai/)
+- [Composer documentation](https://docs.mosaicml.com/projects/composer/en/stable/)

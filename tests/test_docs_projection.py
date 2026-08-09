@@ -1,3 +1,4 @@
+import re
 import struct
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 import yaml
 
 import scripts.docs.build_docs as build_docs
+from scripts.docs.build_api_reference import render as render_api_reference
 from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links
 
 TAGLINE = "Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support."
@@ -138,8 +140,99 @@ def test_audited_copy_does_not_reintroduce_unsupported_claims():
         "the only toolkit treating GNNs as first-class",
         "No mainstream alternative",
         "no mainstream alternative",
+        "track_grad_norm",
     ):
         assert unsupported not in text
+
+
+def test_canonical_api_reference_is_portable_and_covers_recent_public_signatures():
+    api = (build_docs.ROOT / "docs" / "api.md").read_text(encoding="utf-8")
+
+    assert api == render_api_reference()
+    assert "::: nnx" not in api
+    assert "type alias nnx.nn.nn_model.TrainStepFn" in api
+    assert "class nnx.nn.enum.activations.Activations(Enum)" in api
+    assert "Enum values: `ELU`, `SELU`, `TANH`, `RELU`" in api
+    for signature in (
+        "NNTabularDataset",
+        "target_dtype",
+        "NNModel.train",
+        "salt",
+        "GenerativeNNModel.generate",
+        "on_token",
+        "NNCheckpoint.from_file",
+        "map_location",
+        "nnx.vis_utils.confusion_matrix",
+        "nnx.vis_utils.classification_report",
+        "nnx.utils.print_tree",
+        "nnx.nn.nn_model.NNModel.predict",
+        "nnx.trainer.trainer.Trainer.train",
+        "nnx.nn.params.nn_run.NNRun.load",
+    ):
+        assert signature in api
+
+
+def test_recent_public_features_are_covered_by_user_guides():
+    concepts = (build_docs.ROOT / "docs" / "concepts.md").read_text(encoding="utf-8")
+    quickstart = (build_docs.ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+    dpo = (build_docs.ROOT / "docs" / "dpo.md").read_text(encoding="utf-8")
+    lm = (build_docs.ROOT / "docs" / "lm.md").read_text(encoding="utf-8")
+
+    assert "target_dtype=torch.float32" in quickstart
+    assert 'salt="replicate-2"' in concepts
+    assert all(metric in dpo for metric in ("reward_chosen", "reward_rejected", "reward_accuracy"))
+    assert "on_token=" in lm
+    assert "map_location=" in concepts
+
+
+def test_repository_docs_validation_rejects_untracked_targets(tmp_path: Path):
+    source = tmp_path / "README.md"
+    target = tmp_path / "ignored.md"
+    source.write_text("[Ignored](ignored.md)\n", encoding="utf-8")
+    target.write_text("# Ignored\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="untracked repo link"):
+        build_docs.validate_repository_sources(tmp_path, [source], {source.resolve()})
+
+
+def test_repository_docs_validation_rejects_untracked_sources(tmp_path: Path):
+    source = tmp_path / "README.md"
+    source.write_text("# Untracked source\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="untracked repo source"):
+        build_docs.validate_repository_sources(tmp_path, [source], set())
+
+
+def test_repository_docs_have_no_placeholder_markers_or_tracked_ignored_files():
+    build_docs.validate_repository_docs()
+
+
+def test_external_contract_tool_versions_match_automation_sources():
+    contracts = (build_docs.ROOT / "docs" / "external-contracts.md").read_text(encoding="utf-8")
+    requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")
+    requirement_versions = {
+        name: version
+        for line in requirements.splitlines()
+        if "==" in line and not line.startswith("#")
+        for name, version in [line.split("==", 1)]
+    }
+    lock = (build_docs.ROOT / "uv.lock").read_text(encoding="utf-8")
+
+    def locked_version(name: str) -> str:
+        match = re.search(rf'\[\[package\]\]\nname = "{re.escape(name)}"\nversion = "([^"]+)"', lock)
+        assert match is not None, name
+        return match.group(1)
+
+    for tool in ("uv", "pip-audit", "twine"):
+        assert f"`{tool}=={requirement_versions[tool]}`" in contracts
+    assert f"Pyright `{locked_version('pyright')}`" in contracts
+    assert f"Ruff `{locked_version('ruff')}`" in contracts
+    assert f"`setuptools=={locked_version('setuptools')}`" in contracts
+    assert "Reusable release workflow" not in contracts
+    for workflow in (build_docs.ROOT / ".github" / "workflows").glob("*.yml"):
+        text = workflow.read_text(encoding="utf-8")
+        if "astral-sh/setup-uv" in text:
+            assert f'version: "{requirement_versions["uv"]}"' in text, workflow
 
 
 def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
@@ -169,23 +262,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
         ],
     }
     assert config["extra_css"] == ["stylesheets/extra.css"]
-    assert config["plugins"] == [
-        "search",
-        {
-            "mkdocstrings": {
-                "handlers": {
-                    "python": {
-                        "options": {
-                            "docstring_style": "google",
-                            "show_source": True,
-                            "show_root_heading": True,
-                            "show_signature_annotations": True,
-                        }
-                    }
-                }
-            }
-        },
-    ]
+    assert config["plugins"] == ["search"]
     assert config["markdown_extensions"] == [
         "admonition",
         "attr_list",

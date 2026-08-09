@@ -69,7 +69,7 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
         with:
           enable-cache: false
-          version: "0.11.31"
+          version: "0.12.0"
 
       - name: Sync package from the frozen lock
         # Match ci.yml — every optional-dep extra is installed for the
@@ -135,7 +135,7 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
         with:
           enable-cache: false
-          version: "0.11.31"
+          version: "0.12.0"
 
       - name: Sync build tooling from the frozen lock
         run: uv sync --frozen --only-group release --no-install-project --no-build --python "3.11"
