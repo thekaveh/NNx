@@ -20,9 +20,9 @@ try:
         # Editable install before metadata exists, or run from the source
         # tree without installation. Keep in sync with pyproject.toml
         # [project] version on every bump.
-        __version__ = "0.2.1"  # x-release-please-version
+        __version__ = "0.2.2"  # x-release-please-version
 except ImportError:  # pragma: no cover — Python <3.8.
-    __version__ = "0.2.1"  # x-release-please-version
+    __version__ = "0.2.2"  # x-release-please-version
 
 from . import embeddings, interop, prune, viz
 from .diffusion import (

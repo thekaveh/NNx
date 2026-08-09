@@ -6,6 +6,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/thekaveh/NNx/compare/v0.2.1...v0.2.2) (2026-08-09)
+
 ### Added
 
 - `NNTabularDataset` accepts an optional `target_dtype` (a floating-point dtype, e.g. `torch.float32`) to skip the integer-label cast and contiguity check and fix `output_dim=1`, adding first-class regression-target support without the previous "build the DataLoaders yourself" workaround; regression loaders yield targets shaped `(batch, 1)` to match `output_dim=1`; integer dtypes are rejected with a clear error; the default (`None`) preserves the existing classification contract.
