@@ -6,6 +6,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Fixed
+
+- PyPI trusted publishing now runs directly in the top-level `release.yml` workflow dispatched by Release Please, keeping the OIDC publisher and Sigstore attestation identities aligned instead of publishing from an unsupported reusable-workflow context.
+
 ## [0.2.2](https://github.com/thekaveh/NNx/compare/v0.2.1...v0.2.2) (2026-08-09)
 
 ### Added

@@ -3,9 +3,9 @@ name: Release Please
 # release-please watches main for Conventional Commits and maintains a
 # long-lived "release PR" that bumps the version + updates CHANGELOG.md
 # according to what's accumulated since the last tag. Merging that PR
-# creates a vX.Y.Z release. The publish job below calls the reusable
-# release workflow in the same run because events created by GITHUB_TOKEN
-# do not trigger ordinary push workflows.
+# creates a vX.Y.Z release, then explicitly dispatches the top-level release
+# workflow. Trusted PyPI publishing cannot run from a reusable workflow because
+# its OIDC and attestation identities would name different workflow files.
 on:
   push:
     branches: [main]
@@ -77,18 +77,13 @@ jobs:
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
           done
 
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      release_ref: ${{ steps.release.outputs.sha }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-
-  publish:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      release_ref: ${{ needs.release-please.outputs.release_ref }}
-      tag_name: ${{ needs.release-please.outputs.tag_name }}
-    permissions:
-      contents: write # Publish the verified draft GitHub release.
-      id-token: write # Forwarded to the reusable trusted-publishing job.
+      - name: Dispatch verified release workflow
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f "release_ref=$RELEASE_REF" \
+            -f "tag_name=$RELEASE_TAG"
