@@ -24,7 +24,7 @@ without forbidding the deep paths existing notebook code relies on.
 ##### `nnx.__version__`
 
 ```python
-nnx.__version__ = '0.2.2'
+nnx.__version__ = '0.2.3'
 ```
 
 Exported value.
