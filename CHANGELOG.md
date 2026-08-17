@@ -6,6 +6,12 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/thekaveh/NNx/compare/v0.2.2...v0.2.3) (2026-08-17)
+
+### Changed
+
+- Maintenance and publishing tooling now use Setuptools 84.0.0, Markdown 3.10.3, and uv 0.12.3 consistently across requirements, workflows, documentation, and the frozen lockfile.
+
 ### Fixed
 
 - Documentation now renders a portable API catalog on all three surfaces, validates canonical GitHub links and tracked-file ownership, documents recent public APIs, and corrects stale DPO, comparison, tooling, and release-contract guidance.
