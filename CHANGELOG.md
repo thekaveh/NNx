@@ -4,6 +4,25 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [0.2.3](https://github.com/thekaveh/NNx/compare/v0.2.2...v0.2.3) (2026-08-17)
+
+
+### Bug Fixes
+
+* align PyPI trusted publishing identity ([1f5483b](https://github.com/thekaveh/NNx/commit/1f5483be6eadd5973dc80b41ecb9e018541a72eb))
+* align PyPI trusted publishing identity ([29a7116](https://github.com/thekaveh/NNx/commit/29a7116417bbbb5929fe4518d404ef5af43305b2))
+* align PyPI trusted publishing identity ([bf4127f](https://github.com/thekaveh/NNx/commit/bf4127f41c3482d3e60eb08db4e3e4518fea4337))
+* verify draft release assets by id ([f231604](https://github.com/thekaveh/NNx/commit/f23160402920b42b2ae9c4fe8a25b2a9d23d442b))
+* verify draft release assets by id ([48c5d36](https://github.com/thekaveh/NNx/commit/48c5d36ca9e5257a09d07b9cd339ef04cff030ad))
+* verify draft release assets by id ([201b97e](https://github.com/thekaveh/NNx/commit/201b97ef727e7fcca88c075756b824abaeaba7c8))
+
+
+### Documentation
+
+* fix three-surface portability and accuracy ([370b50c](https://github.com/thekaveh/NNx/commit/370b50c7ae98ab55a3b1bbb1b62b00f0b8788325))
+* fix three-surface portability and accuracy ([04e6f15](https://github.com/thekaveh/NNx/commit/04e6f155c276397dc2deea5444a6520c80bee3b9))
+* promote documentation audit remediation ([d26f4c1](https://github.com/thekaveh/NNx/commit/d26f4c1e462e2867b370edbbae2b13473a940611))
+
 ## [Unreleased]
 
 ### Fixed
