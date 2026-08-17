@@ -1,17 +1,17 @@
 [build-system]
 # >=77: PEP 639 SPDX license metadata below. "wheel" is auto-provided.
-requires = ["setuptools==83.0.0"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 release = [
-    "setuptools==83.0.0",
+    "setuptools==84.0.0",
     "wheel==0.47.0",
     "twine==7.0.0",
 ]
 docs-publish = [
     "cairosvg==2.9.0",
-    "markdown==3.10.2",
+    "markdown==3.10.3",
     "pyyaml==6.0.3",
 ]
 
