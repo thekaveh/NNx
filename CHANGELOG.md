@@ -4,6 +4,13 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [0.2.4](https://github.com/thekaveh/NNx/compare/v0.2.3...v0.2.4) (2026-09-10)
+
+
+### Dependencies
+
+* clear the pip-audit advisories — datasets 5.0.1 (PYSEC-2026-3716), pip 26.2.1 (PYSEC-2026-3721); frozen graph audits clean ([d7e0f78](https://github.com/thekaveh/NNx/commit/d7e0f7850768d222426eb915f50062425c689749))
+
 ## [Unreleased]
 
 ## [0.2.3](https://github.com/thekaveh/NNx/compare/v0.2.2...v0.2.3) (2026-08-17)
