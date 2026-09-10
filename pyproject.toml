@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 [dependency-groups]
 release = [
     "setuptools==84.0.0",
-    "wheel==0.47.0",
+    "wheel==0.48.0",
     "twine==7.0.0",
 ]
 docs-publish = [
-    "cairosvg==2.9.0",
+    "cairosvg==2.9.1",
     "markdown==3.10.3",
     "pyyaml==6.0.3",
 ]
@@ -151,12 +151,12 @@ gguf-write = [
     "gguf>=0.19.0",
 ]
 docs = [
-    "cairosvg==2.9.0",
+    "cairosvg==2.9.1",
     "mkdocs>=1.5,<2",
     "mkdocs-material>=9.5",
     # Keep a ceiling so docs rendering remains reproducible across
     # Pygments formatter changes; 2.20.0 includes the current security fix.
-    "Pygments<2.21",
+    "Pygments<2.22",
 ]
 
 [project.urls]
