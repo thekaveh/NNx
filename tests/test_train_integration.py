@@ -1505,3 +1505,202 @@ def test_missing_probe_then_first_train_keeps_overwrite_protection(tmp_path, mon
         )
     assert not (tmp_path / "runs" / missing).exists()
     assert _read_best_pointer(str(tmp_path / "runs" / "best")) == best_before == run.id
+
+
+# --- FIX-008: best-pointer re-election ------------------------------------
+
+
+def _completed_run(
+    model, salt: str, error, *, save_best: bool = True, save_last: bool = True, update_best: bool = True
+):
+    """A committed tiny run (history + LAST + BEST) scored by `error`.
+    Writes under the current working directory's runs/."""
+    from nnx import NNEvaluationDataPoint, NNIterationDataPoint
+
+    edp = NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=1.0, error=error)
+    idp = NNIterationDataPoint(lr=0.01, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=edp)
+    run = NNRun(net=model.net_params, model=model.params, train=NNTrainParams(n_epochs=1), salt=salt, idps=[idp])
+    checkpoint = NNCheckpoint(
+        net_params=model.net_params, model_params=model.params, net_state=model.net.state_dict(), idp=idp
+    )
+    if save_last:
+        checkpoint.save(run=run.id, type=Checkpoints.LAST)
+    if save_best:
+        checkpoint.save(run=run.id, type=Checkpoints.BEST)
+    return run.save(update_best=update_best)
+
+
+@pytest.fixture(params=["symlink", "pointer_file"])
+def best_pointer_mode(request, monkeypatch):
+    if request.param == "pointer_file":
+        from nnx.nn.params import nn_run as nn_run_mod
+
+        def _raise(*a, **kw):
+            raise OSError("symlink not supported (simulated)")
+
+        monkeypatch.setattr(nn_run_mod.os, "symlink", _raise)
+    return request.param
+
+
+def test_best_re_elected_after_best_overwrite(tmp_path, monkeypatch, best_pointer_mode):
+    """FIX-008: overwriting the current best must re-elect the best
+    surviving committed run instead of comparing the replacement with
+    itself. A better replacement keeps the slot; overwriting a non-best
+    run leaves the pointer alone."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    best = str(tmp_path / "runs" / "best")
+
+    a = _completed_run(model, "A", 0.1)
+    b = _completed_run(model, "B", 0.2)
+    assert _read_best_pointer(best) == a.id
+
+    with a.writable_lease(overwrite=True):
+        _completed_run(model, "A", 0.9)
+    assert _read_best_pointer(best) == b.id
+
+    with a.writable_lease(overwrite=True):
+        _completed_run(model, "A", 0.05)
+    assert _read_best_pointer(best) == a.id
+
+    with b.writable_lease(overwrite=True):
+        _completed_run(model, "B", 0.3)
+    assert _read_best_pointer(best) == a.id
+
+
+def test_failed_best_overwrite_leaves_valid_survivor(tmp_path, monkeypatch):
+    """A failed overwrite of the winner (before any replacement commit)
+    must leave the best surviving run selected, never the emptied
+    reservation."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    best = str(tmp_path / "runs" / "best")
+
+    a = _completed_run(model, "A", 0.1)
+    b = _completed_run(model, "B", 0.2)
+    with pytest.raises(RuntimeError, match="replacement crashed"):
+        with a.writable_lease(overwrite=True):
+            assert _read_best_pointer(best) == b.id  # re-elected before the replacement is exposed
+            raise RuntimeError("replacement crashed")
+    assert _read_best_pointer(best) == b.id
+    assert not (tmp_path / "runs" / a.id).exists()
+
+
+def test_incomplete_replacement_save_cannot_recreate_best(tmp_path, monkeypatch):
+    """Overwrite the sole winner, let re-election leave no pointer, save
+    the replacement's history BEFORE its BEST exists, then fail: no best
+    pointer may appear. With a valid survivor, the survivor stays."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    best = str(tmp_path / "runs" / "best")
+
+    a = _completed_run(model, "A", 0.1)
+    assert _read_best_pointer(best) == a.id
+    with pytest.raises(RuntimeError):
+        with a.writable_lease(overwrite=True):
+            assert _read_best_pointer(best) is None
+            a.with_idps([]).save()  # history only — no BEST checkpoint yet
+            assert _read_best_pointer(best) is None
+            raise RuntimeError("fit failed before BEST")
+    assert _read_best_pointer(best) is None
+
+    b = _completed_run(model, "B", 0.2)
+    assert _read_best_pointer(best) == b.id
+    with pytest.raises(RuntimeError):
+        with b.writable_lease(overwrite=True):
+            b.with_idps([]).save()
+            raise RuntimeError("fit failed before BEST")
+    assert _read_best_pointer(best) is None
+    c = _completed_run(model, "C", 0.4)
+    assert _read_best_pointer(best) == c.id
+    with pytest.raises(RuntimeError):
+        with c.writable_lease(overwrite=True):
+            c.with_idps([]).save()
+            raise RuntimeError("fit failed before BEST")
+    # A stale-but-valid earlier survivor would win here; none exists, so no pointer.
+    assert _read_best_pointer(best) is None
+
+
+def test_re_election_ignores_uncommitted_candidates(tmp_path, monkeypatch):
+    """Only valid committed artifacts participate: skip `best`, `.leases`,
+    bare reservations, malformed run.yaml, missing BEST, and a BEST that
+    lies beyond the committed LAST under the history protocol."""
+    from nnx.nn.params.nn_run import _HISTORY_PROTOCOL_FILE, _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    runs = tmp_path / "runs"
+    best = str(runs / "best")
+
+    # Decoys score BETTER than every legitimate run but are ineligible.
+    # They are saved without touching the pointer so the test exercises
+    # the election's own filtering rather than incidental ordering.
+    (runs / ".leases").mkdir(parents=True, exist_ok=True)
+    (runs / "reservation-only").mkdir()
+    malformed = _completed_run(model, "malformed", 0.01, update_best=False)
+    (runs / malformed.id / "run.yaml").write_text("- not a mapping\n", encoding="utf-8")
+    _completed_run(model, "no-best", 0.02, save_best=False, update_best=False)
+    speculative = _completed_run(model, "speculative", 0.03, save_last=False, update_best=False)
+    (runs / speculative.id / _HISTORY_PROTOCOL_FILE).write_text("1\n", encoding="utf-8")
+
+    winner = _completed_run(model, "winner", 0.1)
+    valid = _completed_run(model, "valid", 0.5)
+    assert _read_best_pointer(best) == winner.id
+
+    with winner.writable_lease(overwrite=True):
+        assert _read_best_pointer(best) == valid.id
+        _completed_run(model, "winner", 0.9)
+    assert _read_best_pointer(best) == valid.id
+
+
+def test_train_overwrite_failure_before_commit_re_elects_survivor(tmp_path, monkeypatch):
+    """Through the real training entry point: the old winner is deleted
+    before the replacement fit, the replacement fails before its first
+    committed checkpoint, and the surviving run becomes best — loadable
+    for inference with matching predictions."""
+    from dataclasses import replace
+
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    best = str(tmp_path / "runs" / "best")
+
+    params_a = _train_params(train_loader, None, n_epochs=1)
+    params_b = replace(params_a, data_id="survivor")
+    run_a = NNModel(net_params=net_params, params=model_params).train(params=params_a)
+    run_b = NNModel(net_params=net_params, params=model_params).train(params=params_b)
+    winner_before = _read_best_pointer(best)
+    assert winner_before in {run_a.id, run_b.id}
+    victim, survivor = (params_a, run_b) if winner_before == run_a.id else (params_b, run_a)
+
+    class FailBeforeCommit(Callback):
+        def on_train_begin(self, ctx):
+            raise RuntimeError("fail before first commit")
+
+    with pytest.raises(RuntimeError, match="fail before first commit"):
+        NNModel(net_params=net_params, params=model_params).train(
+            params=replace(victim, overwrite_existing=True), callbacks=[FailBeforeCommit()]
+        )
+    assert _read_best_pointer(best) == survivor.id
+
+    checkpoint = NNCheckpoint.load(run=_read_best_pointer(best), type=Checkpoints.BEST)
+    assert checkpoint is not None
+    reconstructed = NNModel.from_checkpoint(checkpoint=checkpoint)
+    X = torch.randn(4, 8)
+    survivor_best = NNCheckpoint.load(run=survivor.id, type=Checkpoints.BEST)
+    assert survivor_best is not None
+    expected = NNModel.from_checkpoint(checkpoint=survivor_best).predict(X).logits
+    assert np.array_equal(np.asarray(reconstructed.predict(X).logits), np.asarray(expected))

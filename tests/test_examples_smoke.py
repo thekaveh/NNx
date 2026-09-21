@@ -41,6 +41,7 @@ def test_representative_examples_run_end_to_end(name, tmp_path):
 
 BOUNDED_EXAMPLE_HELPERS = [
     ("02_resume_training.py", "checkpoint_probe_first_fit"),
+    ("02_resume_training.py", "overwrite_best_recovery"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
 ]

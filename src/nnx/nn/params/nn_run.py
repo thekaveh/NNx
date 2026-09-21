@@ -187,6 +187,76 @@ def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
     return float("inf") if metric is None else metric
 
 
+def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str]) -> Optional[NNCheckpoint]:
+    """Return the BEST checkpoint of `run_id` if it is an eligible
+    `runs/best` candidate, else None (FIX-008).
+
+    Eligible means: a real run directory carrying `run.yaml` (so `best`,
+    `.leases`, bare reservations and stray files are skipped), whose
+    metadata/history load through :meth:`NNRun.load` (malformed artifacts
+    are excluded, not fatal), whose BEST checkpoint parses, and — when the
+    history protocol marker is present — whose BEST epoch is not beyond
+    the committed LAST epoch (speculative history after a kill is not a
+    winner). Legacy runs without the marker stay on their compatibility
+    path. Reads are lockless snapshots, so this can run while holding
+    `.best.lock` without touching any other run's lease or run lock.
+    """
+    run_path = os.path.join(runs_root, run_id)
+    if run_id == "best" or not os.path.isdir(run_path) or not os.path.isfile(os.path.join(run_path, "run.yaml")):
+        return None
+    try:
+        NNRun.load(id=run_id, root=root)
+        best = NNCheckpoint.load(run=run_id, type=Checkpoints.BEST, root=root)
+        if best is None:
+            return None
+        if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
+            last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
+            committed_epoch = -1 if last is None else last.idp.epoch_idx
+            if best.idp.epoch_idx > committed_epoch:
+                return None
+        return best
+    except Exception:  # noqa: BLE001 — a scan over untrusted directories must skip, not abort
+        return None
+
+
+def _elect_best(
+    runs_root: str,
+    root: Optional[str],
+    *,
+    exclude: Optional[str] = None,
+    prefer: Optional[str] = None,
+) -> Optional[str]:
+    """Pick the run id with the lowest `_best_err` among eligible
+    committed candidates (see `_committed_best_checkpoint`), or None when
+    no candidate is eligible. Deterministic ties: `prefer` (the incumbent)
+    wins when it is eligible, otherwise the lexicographically smallest
+    run id. `exclude` drops a run that is being destroyed."""
+    winner: Optional[str] = None
+    winner_score = float("inf")
+    for entry in sorted(os.listdir(runs_root)):
+        if entry == exclude or entry == "best" or entry.startswith("."):
+            continue
+        checkpoint = _committed_best_checkpoint(runs_root, entry, root)
+        if checkpoint is None:
+            continue
+        score = _best_err(checkpoint)
+        if winner is None or score < winner_score or (score == winner_score and entry == prefer):
+            winner, winner_score = entry, score
+    return winner
+
+
+def _publish_best(runs_root: str, best_run_path: str, winner: Optional[str]) -> None:
+    """Point `runs/best` at `winner`, or remove the pointer when there is
+    no eligible winner (a missing pointer is the documented "no best"
+    state during recovery; readers must not be handed an emptied run)."""
+    if winner is not None:
+        _point_best(best_run_path, os.path.join(runs_root, winner))
+    elif os.path.islink(best_run_path):
+        os.remove(best_run_path)
+    elif os.path.isdir(best_run_path):
+        shutil.rmtree(best_run_path)
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
     net: NNParams
@@ -384,6 +454,16 @@ class NNRun:
                     "provide a distinct data_id to preserve the existing history"
                 )
             if overwrite and os.path.exists(run_path):
+                # If this run currently owns `runs/best`, re-elect the best
+                # surviving committed run BEFORE the artifacts disappear so
+                # the pointer never dangles and the emptied replacement is
+                # never advertised (FIX-008). Lock order: lease → admission
+                # → best; election only takes lockless snapshots of other
+                # runs, so it cannot block on a live run's lease/run lock.
+                best_run_path = os.path.join(runs_root, "best")
+                with FileLock(os.path.join(runs_root, ".best.lock")):
+                    if _read_best_pointer(best_run_path) == self.id:
+                        _publish_best(runs_root, best_run_path, _elect_best(runs_root, root, exclude=self.id))
                 shutil.rmtree(run_path)
             # Reserve the run identity before any trainer can pass admission.
             os.makedirs(run_path, exist_ok=False)
@@ -488,23 +568,35 @@ class NNRun:
         return self
 
     def _update_best_pointer(self, runs_root: str, run_path: str, best_run_path: str, root: Optional[str]) -> None:
-        with FileLock(os.path.join(runs_root, ".best.lock")):
-            if not os.path.lexists(best_run_path) or not os.path.exists(best_run_path):
-                # Either no symlink yet, or one dangling after a repo move — repoint.
-                _point_best(best_run_path, run_path)
-            else:
-                # Resolve the current best target via the symlink OR pointer file.
-                best_run_id = _read_best_pointer(best_run_path)
-                best_ckpt = (
-                    NNCheckpoint.load(run=best_run_id, type=Checkpoints.BEST, root=root)
-                    if best_run_id is not None
-                    else None
-                )
-                best_err = _best_err(best_ckpt)
-                curr_err = _best_err(NNCheckpoint.load(run=self.id, type=Checkpoints.BEST, root=root))
+        """Cross-run `runs/best` maintenance, serialized by `.best.lock`
+        (always the innermost lock: lease → admission → best on overwrite,
+        lease → run → best on save; checkpoint locks are never held here).
 
-                if curr_err < best_err:
-                    _point_best(best_run_path, run_path)
+        Only a run with an eligible committed BEST checkpoint can claim the
+        pointer — saving history for an incomplete run is allowed but
+        cannot advertise it. When the pointer is absent, dangling, or owned
+        by this run, a full election runs (incumbent wins ties); otherwise
+        the existing strict lower-is-better comparison against the current
+        winner applies, so an equal score keeps the incumbent.
+        """
+        with FileLock(os.path.join(runs_root, ".best.lock")):
+            dangling = os.path.lexists(best_run_path) and not os.path.exists(best_run_path)
+            current = None if dangling else _read_best_pointer(best_run_path)
+            mine = _committed_best_checkpoint(runs_root, self.id, root)
+            if mine is None:
+                # Incomplete or malformed — never publish it. If it somehow
+                # still owns the pointer, hand the slot to a valid survivor.
+                if current == self.id:
+                    _publish_best(runs_root, best_run_path, _elect_best(runs_root, root, exclude=self.id))
+                return
+            if current is None or current == self.id:
+                winner = _elect_best(runs_root, root, prefer=self.id)
+                if winner != current:
+                    _publish_best(runs_root, best_run_path, winner)
+                return
+            best_ckpt = NNCheckpoint.load(run=current, type=Checkpoints.BEST, root=root)
+            if _best_err(mine) < _best_err(best_ckpt):
+                _point_best(best_run_path, run_path)
 
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
