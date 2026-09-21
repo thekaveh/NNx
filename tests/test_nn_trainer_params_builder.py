@@ -247,3 +247,42 @@ def test_builder_round_trips_through_state():
         .build()
     )
     assert NNTrainerParams.from_state(built.state()) == built
+
+
+def test_built_trainer_params_snapshot_mappings():
+    """FIX-010: build() hands over an owned snapshot, so reusing the
+    builder afterwards never changes an already-built configuration's
+    optims, schedulers, extra_metrics or state()."""
+    from dataclasses import replace
+
+    def metric_a(y, y_hat):
+        return 1.0
+
+    def metric_b(y, y_hat):
+        return 2.0
+
+    metrics = {"a": metric_a}
+    builder = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .optimizer("first", _make_adam())
+        .scheduler("first", _make_plateau())
+        .extra_metrics(metrics)
+    )
+    first = builder.build()
+    saved = first.state()
+
+    builder.optimizer("second", _make_adam(2e-3)).scheduler("second", _make_plateau())
+    metrics["b"] = metric_b
+
+    assert set(first.optims) == {"first"}
+    assert set(first.schedulers) == {"first"}
+    assert first.extra_metrics is not None and set(first.extra_metrics) == {"a"}
+    assert first.extra_metrics["a"] is metric_a and first.extra_metrics["a"](None, None) == 1.0
+    assert first.state() == saved
+    assert replace(first, n_epochs=3).optims == first.optims
+
+    second = builder.build()
+    assert set(second.optims) == {"first", "second"}
+    assert set(second.schedulers) == {"first", "second"}
+    assert second.extra_metrics is not None and set(second.extra_metrics) == {"a", "b"}

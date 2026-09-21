@@ -56,7 +56,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | Example | What it demonstrates |
 |---|---|
 | `08_diffusion_2d_mixture.py` | DDPM-style diffusion on a 2D mixture of 4 Gaussians: `NoiseSchedulers.LINEAR` + `DiffusionMLP` + `diffusion_train_step_factory` + reverse-diffusion `sample()`. |
-| `09_gan_with_trainer.py` | Multi-optimizer training via `nnx.trainer.Trainer` — a tiny GAN on a 1D mixture of Gaussians, with disjoint optimizers for `G` and `D` scoped via `NNParamGroupSpec`. |
+| `09_gan_with_trainer.py` | Multi-optimizer training via `nnx.trainer.Trainer` — a tiny GAN on a 1D mixture of Gaussians, with disjoint optimizers for `G` and `D` scoped via `NNParamGroupSpec`. Its bounded `trainer_builder_snapshot()` helper (executed by `tests/test_examples_smoke.py -k trainer_builder_snapshot`, CPU, temporary working directory) builds a G/D config, mutates the builder afterwards, runs the captured config for two minibatches and checks optimizer names, scoped updates and the saved descriptor. |
 | `10_knowledge_distillation.py` | Hinton-style KD: pretrain a wider teacher, then distill into a much smaller student (~4% of the teacher's parameters) via `kd_train_step_factory`. Verifies the teacher's weights are frozen across the student's training. |
 | `14_moe_classifier.py` | Sparse top-k Mixture-of-Experts as a first-class model type: `NNMoEParams(num_experts=4, top_k=2)` + `Nets.FEED_FWD_MOE` builds a `FeedFwdMoENN` (every hidden layer an `MoELinear`), trained via `moe_train_step_factory` (supervised loss + Switch-style load-balancing aux). Reports the param-count breakdown, verifies the aux loss decreases as routing balances out, and round-trips the MoE params through a checkpoint. |
 

@@ -992,3 +992,78 @@ def test_trainer_plateau_never_receives_nonfinite_metric(tmp_path, monkeypatch):
     assert any("epoch 0" in m and "val_edp.error=nan" in m for m in rejected), messages
     assert any("epoch 1" in m and "val_edp.loss=-inf" in m for m in rejected), messages
     assert len(absent) == 1 and "epoch 2" in absent[0] and "non-finite" not in absent[0], messages
+
+
+def test_trainer_runs_captured_config_after_builder_mutation(tmp_path, monkeypatch):
+    """FIX-010 end to end: a configuration built before the builder is
+    reused must create only its own optimizers/schedulers, keep scoped
+    parameter ownership, expose the original sorted-first primary to
+    callbacks, and persist a descriptor that matches what executed."""
+    from nnx import Callback, NNSchedulerParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def _adam(pattern: str) -> NNOptimParams:
+        return NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-3,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+            param_groups=[NNParamGroupSpec(name_pattern=pattern, lr=1e-3)],
+        )
+
+    plateau = NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3)
+    builder = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(_supervised_loader(16))
+        .optimizer("body", _adam("layers.0.*"))
+        .optimizer("head", _adam("layers.1.*"))
+        .scheduler("head", plateau)
+    )
+    captured = builder.build()
+    builder.optimizer("aaa_extra", _adam("layers.*")).scheduler("aaa_extra", plateau)
+
+    seen: dict = {}
+
+    class Probe(Callback):
+        def on_train_begin(self, ctx):
+            seen["primary"] = ctx.optimizer
+            seen["names"] = sorted(ctx.optimizers)
+
+    def step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        seen.setdefault("optimizers", ctx.optimizers)
+        seen.setdefault("schedulers", sorted(ctx.schedulers))
+        m = ctx.model
+        for opt in ctx.optimizers.values():
+            opt.zero_grad()
+        X, Y = m.net.unpack_batch(ctx.batch)
+        loss = m.loss_fn(m.net(*X), Y)
+        loss.backward()
+        for opt in ctx.optimizers.values():
+            opt.step()
+        return NNEvaluationDataPoint(
+            f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=float(loss.detach()), error=0.5
+        )
+
+    model = _supervised_model()
+    run = Trainer(model=model).train(params=captured, trainer_step_fn=step, callbacks=[Probe()])
+
+    assert seen["names"] == ["body", "head"]
+    assert seen["schedulers"] == ["body", "head"]  # missing entries default to plateau
+    assert seen["primary"] is seen["optimizers"]["body"]
+    owned = {
+        name: {id(p) for group in opt.param_groups for p in group["params"]} for name, opt in seen["optimizers"].items()
+    }
+    named = dict(model.net.named_parameters())
+    assert owned["body"] == {id(p) for n, p in named.items() if n.startswith("layers.0.")}
+    assert owned["head"] == {id(p) for n, p in named.items() if n.startswith("layers.1.")}
+
+    assert run.trainer is not None and sorted(run.trainer.optims) == ["body", "head"]
+    reloaded = NNRun.load(run.id)
+    assert reloaded.trainer is not None
+    assert sorted(reloaded.trainer.optims) == ["body", "head"]
+    assert sorted(reloaded.trainer.schedulers) == ["head"]
+    assert reloaded.id == run.id
+    assert reloaded.state()["trainer"] == captured.state()

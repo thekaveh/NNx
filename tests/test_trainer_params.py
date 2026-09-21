@@ -143,3 +143,84 @@ def test_trainer_params_state_picks_up_non_plateau_scheduler():
     p2 = NNTrainerParams.from_state(p.state())
     assert p2.schedulers["G"].kind == Schedulers.COSINE_ANNEALING
     assert p2.schedulers["G"].T_max == 10
+
+
+def _metric_identity(y, y_hat):
+    """Module-level so the pickle round-trip below can serialize it."""
+    return 0.5
+
+
+def test_direct_trainer_params_reject_mapping_mutation():
+    """FIX-010: direct construction snapshots caller-owned dicts, and the
+    exposed mappings reject item assignment/deletion. `extra_metrics=None`
+    stays None; an explicit empty mapping stays an (empty) mapping."""
+    optims = {"g": _g_optim()}
+    schedulers = {"g": _sched()}
+    metrics = {"m": _metric_identity}
+    params = NNTrainerParams(n_epochs=1, optims=optims, schedulers=schedulers, extra_metrics=metrics)
+
+    optims["d"] = _d_optim()
+    schedulers.clear()
+    metrics.clear()
+    assert set(params.optims) == {"g"}
+    assert set(params.schedulers) == {"g"}
+    assert params.extra_metrics is not None and set(params.extra_metrics) == {"m"}
+    assert params.extra_metrics["m"] is _metric_identity
+
+    for mapping in (params.optims, params.schedulers, params.extra_metrics):
+        with pytest.raises(TypeError):
+            mapping["x"] = _g_optim()  # type: ignore[index]
+        with pytest.raises(TypeError):
+            del mapping["g" if mapping is not params.extra_metrics else "m"]  # type: ignore[attr-defined]
+
+    assert NNTrainerParams(n_epochs=1, optims={"g": _g_optim()}).extra_metrics is None
+    explicit_empty = NNTrainerParams(n_epochs=1, optims={"g": _g_optim()}, extra_metrics={})
+    assert explicit_empty.extra_metrics is not None and len(explicit_empty.extra_metrics) == 0
+    assert len(NNTrainerParams(n_epochs=1, optims={"g": _g_optim()}).schedulers) == 0
+
+
+def test_trainer_params_key_validation_uses_snapshot():
+    """Orphan-scheduler validation must see the captured mapping — it
+    cannot be satisfied by an optim the caller adds after construction."""
+    optims = {"g": _g_optim()}
+    with pytest.raises(ValueError, match="not present in optims"):
+        NNTrainerParams(n_epochs=1, optims=optims, schedulers={"d": _sched()})
+
+
+def test_trainer_mapping_copy_and_roundtrip():
+    """FIX-010: the read-only mappings survive shallow/deep copy, pickle,
+    dataclasses.replace and state()/from_state() — insertion order is
+    kept at runtime while state() stays sorted / default-omitted."""
+    import copy
+    import pickle
+    from dataclasses import replace
+
+    params = NNTrainerParams(
+        n_epochs=2,
+        optims={"z": _g_optim(), "a": _d_optim()},
+        schedulers={"z": _sched()},
+        extra_metrics={"m": _metric_identity},
+    )
+    assert list(params.optims) == ["z", "a"]
+    assert list(params.state()["optims"]) == ["a", "z"]
+    assert params.optims == {"z": _g_optim(), "a": _d_optim()}
+
+    for clone in (copy.copy(params), copy.deepcopy(params), pickle.loads(pickle.dumps(params))):
+        assert list(clone.optims) == ["z", "a"]
+        assert clone.optims == params.optims
+        assert clone.schedulers == params.schedulers
+        assert clone.extra_metrics is not None and clone.extra_metrics["m"](None, None) == 0.5
+        assert clone.state() == params.state()
+        with pytest.raises(TypeError):
+            clone.optims["q"] = _g_optim()  # type: ignore[index]
+
+    replaced = replace(params, n_epochs=5)
+    assert replaced.optims == params.optims and list(replaced.optims) == ["z", "a"]
+    assert replaced.extra_metrics is params.extra_metrics
+
+    restored = NNTrainerParams.from_state(params.state())
+    assert restored.optims == params.optims
+    assert restored.schedulers == params.schedulers
+    assert "extra_metrics" not in params.state()
+    with pytest.raises(TypeError):
+        restored.optims["q"] = _g_optim()  # type: ignore[index]
