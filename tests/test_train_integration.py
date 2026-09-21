@@ -1453,3 +1453,55 @@ def test_legacy_nan_scored_best_recovers_when_finite_candidate_saved(tmp_path):
         net_state=model.net.state_dict(),
     )
     assert _best_err(no_signal) == float("inf")
+
+
+def test_missing_probe_then_first_train_keeps_overwrite_protection(tmp_path, monkeypatch):
+    """FIX-007 end to end: probing a prospective run ID for training state
+    before the first fit must not reserve the run, so the first train()
+    succeeds with `overwrite_existing=False`; the real run directory is
+    then protected as before, and a missing resume source is rejected
+    without acquiring a run directory or moving the best pointer."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X = torch.randn(16, 8)
+    y = torch.randint(0, 3, (16,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
+    net_params, model_params = _make_params()
+    params = _train_params(loader, None, n_epochs=1)
+    prospective_id = NNRun(net=net_params, train=params, model=model_params).id
+
+    assert NNCheckpoint.load_training_state(run=prospective_id, type=Checkpoints.LAST) is None
+    assert NNCheckpoint.load_optimizer_state(run=prospective_id, type=Checkpoints.LAST) is None
+    assert NNCheckpoint.load_with_training_state(run=prospective_id, type=Checkpoints.LAST) == (None, None)
+    assert not (tmp_path / "runs" / prospective_id).exists()
+
+    model = NNModel(net_params=net_params, params=model_params)
+    run = model.train(params=params)
+    assert run.id == prospective_id
+    last, state = NNCheckpoint.load_with_training_state(run=run.id, type=Checkpoints.LAST)
+    assert last is not None and state is not None and last.idp.epoch_idx == 0
+
+    # The real run directory stays protected from accidental overwrite.
+    with pytest.raises(FileExistsError, match="already exists"):
+        NNModel(net_params=net_params, params=model_params).train(params=params)
+
+    # A missing resume source is rejected without reserving its directory
+    # or touching the best pointer.
+    best_before = _read_best_pointer(str(tmp_path / "runs" / "best"))
+    missing = "0" * 32
+    with pytest.raises(ValueError):
+        NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=loader,
+                val_loader=None,
+                optim=params.optim,
+                scheduler=params.scheduler,
+                resume_from_run_id=missing,
+                resume_from_checkpoint="last",
+            )
+        )
+    assert not (tmp_path / "runs" / missing).exists()
+    assert _read_best_pointer(str(tmp_path / "runs" / "best")) == best_before == run.id

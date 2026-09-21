@@ -67,6 +67,24 @@ def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) ->
     return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
 
 
+def _run_directory_exists(checkpoint_path: str) -> bool:
+    """Absence fast path for the training-state readers (FIX-007).
+
+    ``checkpoint_path`` is ``<root>/runs/<id>/checkpoints/<type>.pt``; the
+    run directory is two levels up. Readers used to take the in-tree
+    ``FileLock`` before checking anything, and the lock implementation
+    creates ``runs/<id>/checkpoints/`` as a side effect — so merely
+    *probing* a prospective run ID reserved it and the first ``train()``
+    then refused to start. Probing is observational: an absent run tree
+    returns the absent result without touching the filesystem. A probe
+    may race a concurrent first creation and legitimately observe
+    absence; callers may retry. Existing run directories keep the
+    original lock and generation validation (a missing or malformed
+    sidecar inside an existing run is still an integrity error).
+    """
+    return os.path.isdir(os.path.dirname(os.path.dirname(checkpoint_path)))
+
+
 def _generation_sidecar_path(checkpoint_path: str, generation: str) -> str:
     return f"{checkpoint_path}.opt.{generation}.pt"
 
@@ -319,8 +337,13 @@ class NNCheckpoint:
 
         Legacy optimizer-only sidecars are normalized into the new mapping so
         checkpoints written by older NNx versions remain resumable.
+
+        Returns ``None`` — without creating ``runs/<run>/`` — when the run
+        directory does not exist; the run ID is still validated first.
         """
         checkpoint_path = _checkpoint_path(run, type, root=root)
+        if not _run_directory_exists(checkpoint_path):
+            return None
         with FileLock(checkpoint_path + ".lock"):
             checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
             return NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
@@ -332,8 +355,14 @@ class NNCheckpoint:
         root: Optional[str] = None,
         map_location: Any = "cpu",
     ) -> tuple[Optional[NNCheckpoint], Optional[dict[str, Any]]]:
-        """Atomically load a checkpoint and its matching training-state bundle."""
+        """Atomically load a checkpoint and its matching training-state bundle.
+
+        Returns ``(None, None)`` — without creating ``runs/<run>/`` — when
+        the run directory does not exist; the run ID is still validated.
+        """
         checkpoint_path = _checkpoint_path(run, type, root=root)
+        if not _run_directory_exists(checkpoint_path):
+            return None, None
         with FileLock(checkpoint_path + ".lock"):
             checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
             state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)

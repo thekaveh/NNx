@@ -1868,6 +1868,9 @@ Load and validate the resumable optimizer/scheduler/scaler bundle.
 ```text
 Legacy optimizer-only sidecars are normalized into the new mapping so
 checkpoints written by older NNx versions remain resumable.
+
+Returns ``None`` — without creating ``runs/<run>/`` — when the run
+directory does not exist; the run ID is still validated first.
 ```
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_with_training_state`
@@ -1877,6 +1880,13 @@ nnx.nn.params.nn_checkpoint.NNCheckpoint.load_with_training_state(run: 'str', ty
 ```
 
 Atomically load a checkpoint and its matching training-state bundle.
+
+**Details**
+
+```text
+Returns ``(None, None)`` — without creating ``runs/<run>/`` — when
+the run directory does not exist; the run ID is still validated.
+```
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_optimizer_state`
 
