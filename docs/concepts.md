@@ -347,6 +347,20 @@ trainer_params = (
 )
 ```
 
+Builders are deliberately mutable and reusable — `.optimizer(name, ...)` /
+`.scheduler(name, ...)` overwrite in place and the last call wins — but every
+`build()` (and every direct `NNTrainerParams(...)`, `from_state`,
+`dataclasses.replace`, `with_train_loader` / `with_val_loader`) captures its
+own read-only snapshot of `optims`, `schedulers` and `extra_metrics`. Reusing
+the builder or mutating the dict you passed in afterwards does not change an
+already-built configuration, its `state()`, or the `run.id` derived from it;
+item assignment or deletion through the built mappings raises `TypeError`.
+Only the containers are copied: the `NNOptimParams` / `NNSchedulerParams`
+values are already immutable, and metric callables and `DataLoader`s are
+shared by identity (never deep-copied). Runtime insertion order is kept for
+optimizer construction while `state()` still emits sorted keys and omits
+defaults, so serialized descriptors and historical run IDs are unchanged.
+
 ### 8.1. Strict param-groups semantics
 
 The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from `nnx.finetune` apply, just with unmatched params dropped instead of bucketed.
