@@ -84,6 +84,10 @@ training-state generation before applying it. It restores scheduler/scaler,
 completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG
 state; use `num_workers=0` when exact continuation matters.
 
+Probing for state is side-effect free: `NNCheckpoint.load_with_training_state(run=..., type=Checkpoints.LAST)`
+returns `(None, None)` for a run that was never written and does not create
+its directory, so a preflight check never blocks the first fit.
+
 ### 2.4. Loading a finished run
 
 ```python
