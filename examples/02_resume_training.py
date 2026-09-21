@@ -12,6 +12,14 @@ result for a run that has never been written without creating ``runs/<id>/``,
 so a preflight probe never blocks the first fit. ``checkpoint_probe_first_fit``
 below is a bounded, self-checking demonstration of that contract.
 
+Overwriting a run (``overwrite_existing=True``) deletes its artifacts and reuses
+its content-addressed ID. If that run owned ``runs/best``, NNx re-elects the best
+surviving committed run before the old artifacts disappear; the replacement only
+becomes a candidate again once it has committed its own BEST checkpoint. While no
+committed winner exists, ``runs/best`` is absent. ``overwrite_best_recovery``
+below demonstrates this in a fresh temporary root — it is a teaching fixture,
+not a recommendation to enable overwrite in ordinary workflows.
+
 Run:
     python examples/02_resume_training.py
 """
@@ -30,6 +38,8 @@ from nnx import (
     Losses,
     Nets,
     NNCheckpoint,
+    NNEvaluationDataPoint,
+    NNIterationDataPoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -40,6 +50,7 @@ from nnx import (
     Optims,
     set_seed,
 )
+from nnx.nn.params.nn_run import _read_best_pointer
 
 
 def _base_optim() -> NNOptimParams:
@@ -116,6 +127,58 @@ def checkpoint_probe_first_fit() -> dict:
 
     summary = {"run_id": run.id, "probe_reserved_run": False, "last_epoch": last.idp.epoch_idx}
     print(f"probe-then-first-fit workflow: {summary}")
+    return summary
+
+
+def _commit_scored_run(model: NNModel, salt: str, error: float) -> NNRun:
+    """Persist a tiny *committed* run (history + LAST + BEST) whose BEST
+    scores `error`, using the model's current weights."""
+    edp = NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=1.0, error=error)
+    idp = NNIterationDataPoint(lr=0.01, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=edp)
+    run = NNRun(net=model.net_params, model=model.params, train=NNTrainParams(n_epochs=1), salt=salt, idps=[idp])
+    checkpoint = NNCheckpoint(
+        net_params=model.net_params, model_params=model.params, net_state=model.net.state_dict(), idp=idp
+    )
+    checkpoint.save(run=run.id, type=Checkpoints.LAST)
+    checkpoint.save(run=run.id, type=Checkpoints.BEST)
+    return run.save()
+
+
+def overwrite_best_recovery() -> dict:
+    """Bounded demonstration of `runs/best` re-election after the winner is
+    overwritten (writes ``runs/`` under the current working directory; the
+    smoke test runs it in a temporary one — keep it out of real roots).
+
+    Commits run A (error 0.1, the winner) and run B (error 0.2) from two
+    differently initialised models, then overwrites A with a *worse*
+    result (0.9). The pointer must move to B — the best surviving
+    committed run — and B's BEST must load for inference with the same
+    predictions as the model that produced it.
+    """
+    set_seed(7)
+    model_a, _ = _make_model_and_loader()
+    model_b, _ = _make_model_and_loader()
+    run_a = _commit_scored_run(model_a, "A", 0.1)
+    run_b = _commit_scored_run(model_b, "B", 0.2)
+    best = os.path.join("runs", "best")
+    assert _read_best_pointer(best) == run_a.id
+
+    with run_a.writable_lease(overwrite=True):
+        # The winner's artifacts are gone; B was elected before they went.
+        assert _read_best_pointer(best) == run_b.id
+        _commit_scored_run(model_a, "A", 0.9)
+    assert _read_best_pointer(best) == run_b.id, "worse replacement must not reclaim best"
+
+    winner_id = _read_best_pointer(best)
+    assert winner_id is not None
+    checkpoint = NNCheckpoint.load(run=winner_id, type=Checkpoints.BEST)
+    assert checkpoint is not None
+    X = torch.randn(4, 8)
+    restored = NNModel.from_checkpoint(checkpoint=checkpoint).predict(X).logits
+    assert (restored == model_b.predict(X).logits).all()
+
+    summary = {"winner": winner_id, "winner_is_survivor": winner_id == run_b.id}
+    print(f"overwrite-best recovery workflow: {summary}")
     return summary
 
 
