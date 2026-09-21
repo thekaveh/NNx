@@ -22,27 +22,44 @@ continuous targets, so a non-classification paradigm needs the pair:
 The task is 1-D synthetic regression (y = sin(3x) + noise) on a small
 feed-forward net trained with MSE.
 
+A custom evaluator also owns the *control signal* NNx derives from its
+result: BEST-checkpoint selection, ``runs/best`` and ``ReduceLROnPlateau``
+all read the first **finite** value in the order validation error →
+validation loss → training error → training loss. NaN and ±inf are
+skipped (with a per-epoch warning), ``None`` means "absent", and an epoch
+with no finite signal at all skips the plateau step and compares as an
+unavailable BEST baseline. ``nonfinite_metric_workflow`` below is a
+bounded, self-checking demonstration of that contract.
+
 Run:
     python examples/26_custom_eval_step.py
 """
 
 from __future__ import annotations
 
+import math
+import warnings
+from dataclasses import replace
+
 import torch
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Checkpoints,
     Devices,
     EvalStepContext,
     Losses,
     Nets,
+    NNCheckpoint,
     NNEvaluationDataPoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
     NNParams,
+    NNRun,
     NNSchedulerParams,
     NNTrainParams,
     Optims,
@@ -150,11 +167,8 @@ def regression_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     )
 
 
-def main() -> None:
-    set_seed(0)
-    train_loader, val_loader = _make_loaders(seed=0)
-
-    model = NNModel(
+def _make_model() -> NNModel:
+    return NNModel(
         net_params=NNParams(
             input_dim=1,
             output_dim=1,
@@ -164,6 +178,106 @@ def main() -> None:
         ),
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
     )
+
+
+def nonfinite_metric_workflow() -> dict:
+    """Bounded demonstration of the finite-metric fallback (writes ``runs/``
+    under the current working directory; the smoke test runs it in a
+    temporary one).
+
+    Four scripted epochs on the regression task:
+
+    0. validation ``error=NaN, loss=0.9`` → the plateau scheduler steps on
+       the finite validation *loss*; BEST is provisionally epoch 0.
+    1. validation ``error=inf, loss=-inf`` → both rejected; the finite
+       *training* error is the fallback.
+    2. validation and training ``error=loss=None`` (the update still
+       happened — only the reported signal is unavailable) → the plateau
+       step is skipped and the epoch compares as an unavailable baseline.
+    3. validation ``error=loss=1e-3`` → finite improvement; BEST moves here.
+
+    Raw observations are kept as diagnostics: the live history and the
+    FIRST checkpoint carry the NaN, while CSV readback keeps its existing
+    NaN → ``None`` normalization. Returns a small summary dict.
+    """
+    scripted_val = {
+        0: (float("nan"), 0.9),
+        1: (float("inf"), float("-inf")),
+        2: (None, None),
+        3: (1e-3, 1e-3),
+    }
+
+    def scripted_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
+        error, loss = scripted_val[ctx.epoch_idx]
+        return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=loss, error=error)
+
+    train_signal: dict[int, float] = {}
+
+    def scripted_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+        edp = regression_train_step(ctx)
+        if ctx.epoch_idx == 2:
+            return replace(edp, loss=None, error=None)
+        assert edp.error is not None
+        train_signal[ctx.epoch_idx] = edp.error  # last batch of the epoch wins
+        return edp
+
+    # Instrument the scheduler so the exact plateau inputs are observable.
+    plateau_inputs: list[float] = []
+    original_step = ReduceLROnPlateau.step
+
+    def recording_step(self, metrics, epoch=None):
+        plateau_inputs.append(float(metrics))
+        return original_step(self, metrics, epoch)
+
+    set_seed(0)
+    train_loader, val_loader = _make_loaders(seed=0)
+    ReduceLROnPlateau.step = recording_step  # type: ignore[method-assign]
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run = _make_model().train(
+                params=NNTrainParams(
+                    n_epochs=4,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+                    scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=0, threshold=1e-3),
+                ),
+                train_step_fn=scripted_train_step,
+                eval_step_fn=scripted_eval_step,
+            )
+    finally:
+        ReduceLROnPlateau.step = original_step  # type: ignore[method-assign]
+
+    # Control signal: finite fallback per epoch, skipped when nothing is finite.
+    assert plateau_inputs == [0.9, train_signal[1], 1e-3], plateau_inputs
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None and best.idp.epoch_idx == 3, best
+    plateau_warnings = [str(w.message) for w in caught if "ReduceLROnPlateau" in str(w.message)]
+    assert len(plateau_warnings) == 3, plateau_warnings  # one bounded warning per affected epoch
+    assert "no metric available" in plateau_warnings[2], plateau_warnings
+
+    # Diagnostics: raw observations retained live and in the checkpoint payload …
+    epoch_end = {idp.epoch_idx: idp for idp in run.idps if idp.val_edp is not None}
+    assert epoch_end[0].val_edp is not None and math.isnan(epoch_end[0].val_edp.error)
+    assert epoch_end[2].val_edp is not None and epoch_end[2].val_edp.loss is None
+    first = NNCheckpoint.load(run=run.id, type=Checkpoints.FIRST)
+    assert first is not None and first.idp.val_edp is not None and math.isnan(first.idp.val_edp.error)
+    # … while CSV readback keeps its existing NaN → None normalization.
+    reloaded = {idp.epoch_idx: idp for idp in NNRun.load(run.id).idps if idp.val_edp is not None}
+    assert reloaded[0].val_edp is not None and reloaded[0].val_edp.error is None
+    assert reloaded[0].val_edp.loss == 0.9
+
+    summary = {"best_epoch": best.idp.epoch_idx, "plateau_inputs": plateau_inputs, "n_warnings": len(plateau_warnings)}
+    print(f"finite-fallback workflow: {summary}")
+    return summary
+
+
+def main() -> None:
+    set_seed(0)
+    train_loader, val_loader = _make_loaders(seed=0)
+
+    model = _make_model()
 
     run = model.train(
         params=NNTrainParams(

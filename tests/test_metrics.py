@@ -105,3 +105,40 @@ def test_evaluation_data_point_extra_is_immutable_and_hashable():
     with pytest.raises(TypeError):
         edp.extra["score"] = 2.0  # type: ignore[index]
     assert isinstance(hash(edp), int)
+
+
+def test_resolve_metric_skips_nonfinite_in_priority_order():
+    """FIX-009: NaN / +inf / -inf are not signals. A non-finite `.error`
+    must still let the SAME edp's finite `.loss` win before falling
+    through to train, and an entirely non-finite walk yields None —
+    never a fabricated zero."""
+    train = _edp(error=0.2, loss=0.5)
+    for invalid in (float("nan"), float("inf"), float("-inf")):
+        val = _edp(error=invalid, loss=1.0)
+        assert _resolve_metric(val, train) == 1.0
+        val.loss = invalid
+        assert _resolve_metric(val, train) == 0.2
+    assert _resolve_metric(_edp(error=None, loss=None), None) is None
+    every_candidate_invalid = _resolve_metric(
+        _edp(error=float("nan"), loss=float("inf")),
+        _edp(error=float("-inf"), loss=float("nan")),
+    )
+    assert every_candidate_invalid is None
+
+
+def test_resolve_metric_with_provenance_reports_rejected_fields():
+    """Callers that warn need to say WHICH field/split was rejected and
+    which one was selected; absent (None) fields are not rejections."""
+    from nnx._metrics import _resolve_metric_with_provenance
+
+    val = _edp(error=float("nan"), loss=1.0)
+    train = _edp(error=0.2, loss=0.5)
+    assert _resolve_metric_with_provenance(val, train) == (1.0, "val_edp.loss", ("val_edp.error=nan",))
+
+    value, source, rejected = _resolve_metric_with_provenance(_edp(error=float("inf"), loss=float("-inf")), _edp())
+    assert value is None
+    assert source is None
+    assert rejected == ("val_edp.error=inf", "val_edp.loss=-inf")
+
+    assert _resolve_metric_with_provenance(_edp(), _edp()) == (None, None, ())
+    assert _resolve_metric_with_provenance(None, _edp(error=None, loss=0.3)) == (0.3, "train_edp.loss", ())

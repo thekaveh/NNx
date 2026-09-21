@@ -36,7 +36,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | `03_custom_metrics.py` | Plug a custom `metric_fn(Y, Y_hat)` into `NNTrainParams.extra_metrics`; inspect `idp.train_edp.extra` and `idp.val_edp.extra`. |
 | `04_onnx_export.py` | Export a trained model to ONNX, validate via `onnx.checker`. |
 | `25_conv_classifier.py` | LeNet-style conv classifier via `NNConvParams` + `Nets.CONV`: conv-stack arithmetic helpers (`spatial_sizes()`/`flatten_dim()`), per-layer FC `activations`/`dropout_probs` overrides, image-vs-flat input equivalence, and a checkpoint round-trip through `resolve_from_state`. Synthetic stripes/checkerboard imagery — no download. |
-| `26_custom_eval_step.py` | Train a non-classification paradigm end-to-end: a regression `train_step_fn` (the default step's argmax metrics crash on continuous targets) paired with `eval_step_fn(EvalStepContext) -> NNEvaluationDataPoint` — a custom MSE/MAE val pass whose metrics persist per-epoch in the run history (`idp.val_edp`, MAE riding in `extra`). |
+| `26_custom_eval_step.py` | Train a non-classification paradigm end-to-end: a regression `train_step_fn` (the default step's argmax metrics crash on continuous targets) paired with `eval_step_fn(EvalStepContext) -> NNEvaluationDataPoint` — a custom MSE/MAE val pass whose metrics persist per-epoch in the run history (`idp.val_edp`, MAE riding in `extra`). Its bounded `nonfinite_metric_workflow()` helper (executed by `tests/test_examples_smoke.py -k nonfinite_metric_workflow`, CPU, temporary working directory) scripts NaN/inf/absent validation metrics and asserts the finite fallback: plateau inputs, the selected BEST, raw diagnostics, and CSV NaN→`None` readback. |
 
 ### 2.2. `train_step_fn` hook
 

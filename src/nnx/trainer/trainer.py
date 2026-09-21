@@ -39,7 +39,7 @@ import torch
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
-from .._metrics import _resolve_metric
+from .._metrics import _resolve_scheduler_metric
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
     CallbackLike,
@@ -144,18 +144,24 @@ def _build_scheduler(opt, sched_params, n_epochs):
     return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs)
 
 
-def _step_scheduler(sched, val_edp, train_edp) -> None:
+def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int) -> None:
     """ReduceLROnPlateau wants a metric; other schedulers step on epoch.
-    Uses the shared val→train, error→loss fallback resolver in
-    nnx._metrics so the four call sites (NNModel + Trainer × scheduler
-    + tqdm) can't drift."""
-    if isinstance(sched, lr_scheduler.ReduceLROnPlateau):
-        metric = _resolve_metric(val_edp, train_edp)
-        if metric is None:
-            return
-        sched.step(metric)
-    else:
-        sched.step()
+    Uses the shared finite-only val→train, error→loss resolver in
+    nnx._metrics so the NNModel and Trainer paths can't drift. The
+    metric is resolved once per epoch, not once per scheduler, so a
+    multi-optimizer run emits at most one rejection/skip warning per
+    epoch; a None resolution skips every plateau scheduler."""
+    plateau_metric: Optional[float] = None
+    resolved = False
+    for sched in scheds:
+        if isinstance(sched, lr_scheduler.ReduceLROnPlateau):
+            if not resolved:
+                plateau_metric = _resolve_scheduler_metric(val_edp, train_edp, epoch_idx=epoch_idx)
+                resolved = True
+            if plateau_metric is not None:
+                sched.step(plateau_metric)
+        else:
+            sched.step()
 
 
 class Trainer:
@@ -404,8 +410,7 @@ class Trainer:
                 # clear benefit. Custom hooks can own scheduler timing by
                 # setting auto_step_schedulers=False.
                 if params.auto_step_schedulers:
-                    for sched in schedulers.values():
-                        _step_scheduler(sched, val_edp, train_edp)
+                    _step_schedulers(schedulers.values(), val_edp, train_edp, epoch_idx=idx_epoch)
 
                 ctx.idp = idps[-1]
                 ctx.idps = idps
