@@ -15,9 +15,9 @@ same run.id.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Generic, Optional, TypeVar
 
 from torch.utils.data import DataLoader
 
@@ -26,6 +26,53 @@ from ..nn.params.nn_scheduler_params import NNSchedulerParams
 
 if TYPE_CHECKING:
     from .params_builder import NNTrainerParamsBuilder
+
+_V = TypeVar("_V")
+
+
+class _FrozenMapping(Mapping[str, _V], Generic[_V]):
+    """Insertion-ordered, read-only snapshot of a name-keyed mapping.
+
+    `NNTrainerParams.__post_init__` wraps `optims`, `schedulers` and
+    `extra_metrics` in this so a caller (or a reused builder) mutating
+    the dict it passed in can no longer change an already-constructed
+    configuration — its `state()` and the `run.id` derived from it must
+    describe the optimizers that actually execute. Only the *container*
+    is copied: values are the existing immutable params dataclasses or
+    intentionally shared runtime callables, never deep-copied.
+
+    Item assignment / deletion raise `TypeError` (the `Mapping` ABC
+    defines neither). Runtime insertion order is preserved for
+    deterministic optimizer construction; `state()` still sorts keys.
+    Shallow/deep copy and pickle rebuild an equivalent snapshot via
+    `__reduce__` (pickling requires pickleable values, as before).
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Optional[Mapping[str, _V]] = None) -> None:
+        self._items: dict[str, _V] = dict(values or {})
+
+    def __getitem__(self, key: str) -> _V:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Mapping) and dict(self.items()) == dict(other.items())
+
+    def __hash__(self) -> int:
+        return hash(tuple(self._items.items()))
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._items!r})"
+
+    def __reduce__(self):
+        return (_FrozenMapping, (self._items,))
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -49,6 +96,15 @@ class NNTrainerParams:
     `val_loader` mirror NNTrainParams. By default Trainer steps every
     scheduler once after each epoch; set `auto_step_schedulers=False` when
     the custom step function owns scheduler timing.
+
+    `optims`, `schedulers` and `extra_metrics` are captured as read-only,
+    insertion-ordered snapshots at construction (also via `from_state`,
+    `dataclasses.replace` and the `with_*_loader` helpers): mutating the
+    mapping you passed in — or reusing the builder that produced this
+    configuration — never changes it, and item assignment / deletion on
+    the exposed mappings raises `TypeError`. Values are shared by
+    identity (immutable params dataclasses; runtime-only metric callables
+    and loaders are never copied).
     """
 
     n_epochs: int
@@ -67,6 +123,16 @@ class NNTrainerParams:
     extra_metrics: Optional[Mapping[str, Callable]] = field(repr=False, default=None)
 
     def __post_init__(self):
+        # Snapshot the configuration containers FIRST so every later check
+        # (and every later reader) sees the captured mapping, not the
+        # caller's live dict — a reused builder or a mutated source dict
+        # must never change this frozen configuration (FIX-010). Values
+        # are shared by reference on purpose: params dataclasses are
+        # immutable and metric callables are runtime-only objects.
+        for name in ("optims", "schedulers", "extra_metrics"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, _FrozenMapping):
+                object.__setattr__(self, name, _FrozenMapping(value))
         # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in Trainer.train,
         # so a value < 1 silently makes training a no-op. Symmetric with
         # NNTrainParams.__post_init__.

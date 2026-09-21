@@ -688,6 +688,15 @@ the optims they want to customize.
 `val_loader` mirror NNTrainParams. By default Trainer steps every
 scheduler once after each epoch; set `auto_step_schedulers=False` when
 the custom step function owns scheduler timing.
+
+`optims`, `schedulers` and `extra_metrics` are captured as read-only,
+insertion-ordered snapshots at construction (also via `from_state`,
+`dataclasses.replace` and the `with_*_loader` helpers): mutating the
+mapping you passed in — or reusing the builder that produced this
+configuration — never changes it, and item assignment / deletion on
+the exposed mappings raises `TypeError`. Values are shared by
+identity (immutable params dataclasses; runtime-only metric callables
+and loaders are never copied).
 ```
 
 ##### `nnx.trainer.params.NNTrainerParams.with_train_loader`
