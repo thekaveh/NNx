@@ -357,3 +357,23 @@ def test_r3_run_id_rejects_glob_metacharacters(run_id):
 
     with pytest.raises(ValueError, match="glob metacharacters"):
         _validate_run_id(run_id)
+
+
+@pytest.mark.parametrize("reader", ["load_training_state", "load_optimizer_state", "load_with_training_state"])
+def test_missing_state_read_does_not_reserve_run(tmp_path, reader):
+    """FIX-007: probing training state for a run that does not exist must
+    return the existing absent result WITHOUT creating `runs/<id>/` (the
+    reader's FileLock used to create the tree, so the next train() saw a
+    pre-existing run and refused to start). Run-ID validation still runs
+    before the absence fast path."""
+    from nnx import Checkpoints, NNCheckpoint
+
+    load = getattr(NNCheckpoint, reader)
+    result = load(run="unstarted-run", type=Checkpoints.LAST, root=str(tmp_path))
+    assert result == ((None, None) if reader == "load_with_training_state" else None)
+    assert not (tmp_path / "runs" / "unstarted-run").exists()
+    assert not (tmp_path / "runs").exists()
+
+    with pytest.raises(ValueError):
+        load(run="../escape", type=Checkpoints.LAST, root=str(tmp_path))
+    assert not (tmp_path / "escape").exists()
