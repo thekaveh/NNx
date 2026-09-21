@@ -17,6 +17,12 @@ This is a *teaching* GAN — small, CPU-fast, intentionally minimal —
 not a production setup. Spectral norm, EMA, R1 regularization, larger
 nets, and longer schedules are all things you'd add for a real run.
 
+``NNTrainerParams.builder()`` is mutable and reusable; every ``build()``
+captures a read-only snapshot of ``optims`` / ``schedulers``, so a
+configuration built earlier is unaffected by later builder calls.
+``trainer_builder_snapshot`` below is a bounded, self-checking
+demonstration of that contract (two minibatches, temporary ``runs/``).
+
 Run:
     python examples/09_gan_with_trainer.py
 """
@@ -30,6 +36,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Callback,
     Devices,
     Losses,
     Nets,
@@ -39,6 +46,7 @@ from nnx import (
     NNOptimParams,
     NNParamGroupSpec,
     NNParams,
+    NNRun,
     NNTrainerParams,
     Optims,
     Trainer,
@@ -93,18 +101,18 @@ def sample_real(n: int) -> torch.Tensor:
     return means + 0.5 * torch.randn(n, 1)
 
 
-def main():
-    set_seed(0)
-
-    real = sample_real(2048)
+def _make_loader(n: int, batch_size: int = 64) -> DataLoader:
+    real = sample_real(n)
     # The y labels are unused — Trainer's step fn ignores them. We
     # include them only so the DataLoader's (X, Y) tuple contract holds.
-    loader = DataLoader(
+    return DataLoader(
         TensorDataset(real, torch.zeros(real.size(0), dtype=torch.long)),
-        batch_size=64,
+        batch_size=batch_size,
         shuffle=True,
     )
 
+
+def _make_gan_model() -> NNModel:
     # NNModel is happy with a placeholder NNParams here; the real net is
     # swapped in after construction. The placeholder dims (LATENT_DIM→1)
     # echo G's surface shape so the run.yaml stays interpretable.
@@ -128,76 +136,138 @@ def main():
     # only thing this substitution affects is the optimizer's view of
     # the parameters.
     model.net = MiniGAN().to(model.device)
+    return model
 
+
+def gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+    net: MiniGAN = ctx.model.net  # type: ignore[assignment]
+    opt_G = ctx.optimizers["G"]
+    opt_D = ctx.optimizers["D"]
+    device = ctx.model.device
+
+    X_real, _ = ctx.batch
+    X_real = X_real.to(device)
+    n = X_real.size(0)
+
+    # --- Discriminator step (real vs fake).
+    # detach() the fake samples here so the D step's backward()
+    # doesn't accumulate gradients into G's params — only opt_D's
+    # parameters move on this step.
+    opt_D.zero_grad()
+    z = torch.randn(n, LATENT_DIM, device=device)
+    X_fake = net.G(z).detach()
+    d_real_logits = net.D(X_real)
+    d_fake_logits = net.D(X_fake)
+    d_loss = F.binary_cross_entropy_with_logits(
+        d_real_logits, torch.ones_like(d_real_logits)
+    ) + F.binary_cross_entropy_with_logits(d_fake_logits, torch.zeros_like(d_fake_logits))
+    d_loss.backward()
+    opt_D.step()
+
+    # --- Generator step (fool D into calling fakes "real").
+    # No detach() here: gradients flow from D's logits back into G's
+    # parameters. opt_D doesn't step on this pass, so D's params
+    # don't move even though its gradients are populated.
+    opt_G.zero_grad()
+    z = torch.randn(n, LATENT_DIM, device=device)
+    g_fake_logits = net.D(net.G(z))
+    g_loss = F.binary_cross_entropy_with_logits(g_fake_logits, torch.ones_like(g_fake_logits))
+    g_loss.backward()
+    opt_G.step()
+
+    avg = float((d_loss + g_loss).detach()) / 2
+    return NNEvaluationDataPoint(
+        f1=0.0,
+        recall=0.0,
+        accuracy=0.0,
+        precision=0.0,
+        loss=avg,
+        # Use g_loss as the "error" so BEST tracking favors checkpoints
+        # where G is fooling D well.
+        error=float(g_loss.detach()),
+    )
+
+
+def _scoped_adam(pattern: str) -> NNOptimParams:
+    """Per-optim param scoping: NNParamGroupSpec with strict semantics
+    (enforced by Trainer) means opt_G owns ONLY G.* params and opt_D
+    owns ONLY D.* params. Without the strict contract, opt_G would
+    also carry D's params in a default bucket and the two optimizers
+    would silently update the same weights."""
+    return NNOptimParams(
+        name=Optims.ADAM,
+        max_lr=2e-4,
+        momentum=(0.5, 0.999),
+        weight_decay=0.0,
+        param_groups=[NNParamGroupSpec(name_pattern=pattern, lr=2e-4)],
+    )
+
+
+def trainer_builder_snapshot() -> dict:
+    """Bounded demonstration that a built ``NNTrainerParams`` is isolated
+    from later builder reuse (writes ``runs/`` under the current working
+    directory; the smoke test runs it in a temporary one).
+
+    Builds the G/D configuration, then mutates the *same* builder into a
+    second configuration (an extra optimizer plus a different epoch
+    count) before running the first one for two minibatches. Asserts
+    that the run created exactly the captured optimizers, that each
+    scoped optimizer updated only its own sub-net, that callbacks saw the
+    original sorted-first primary, and that the persisted descriptor
+    equals the captured ``state()``.
+    """
+    set_seed(0)
+    loader = _make_loader(128)  # 2 minibatches of 64
+    model = _make_gan_model()
+
+    builder = NNTrainerParams.builder().n_epochs(1).train_loader(loader)
+    builder.optimizer("G", _scoped_adam("G.*")).optimizer("D", _scoped_adam("D.*"))
+    captured = builder.build()
+    descriptor = captured.state()
+
+    # Reuse the builder for an unrelated second configuration.
+    builder.n_epochs(3).optimizer("A_extra", _scoped_adam("G.*"))
+    assert sorted(captured.optims) == ["D", "G"] and captured.n_epochs == 1
+    assert captured.state() == descriptor
+
+    seen: dict = {}
+
+    class _Probe(Callback):
+        def on_train_begin(self, ctx):
+            seen["names"] = sorted(ctx.optimizers)
+            seen["primary_is_D"] = ctx.optimizer is ctx.optimizers["D"]  # sorted-first
+            seen["optimizers"] = ctx.optimizers
+
+    net: MiniGAN = model.net  # type: ignore[assignment]
+    before = {name: p.detach().clone() for name, p in net.named_parameters()}
+    run = Trainer(model=model).train(params=captured, trainer_step_fn=gan_step, callbacks=[_Probe()])
+
+    assert seen["names"] == ["D", "G"], seen["names"]
+    assert seen["primary_is_D"]
+    owned = {name: {id(p) for g in opt.param_groups for p in g["params"]} for name, opt in seen["optimizers"].items()}
+    params = dict(net.named_parameters())
+    assert owned["G"] == {id(p) for n, p in params.items() if n.startswith("G.")}
+    assert owned["D"] == {id(p) for n, p in params.items() if n.startswith("D.")}
+    moved = {name: not torch.equal(before[name], p.detach()) for name, p in params.items()}
+    assert all(v for n, v in moved.items() if n.startswith("G.")), moved
+    assert all(v for n, v in moved.items() if n.startswith("D.")), moved
+
+    reloaded = NNRun.load(run.id)
+    assert reloaded.trainer is not None and reloaded.trainer.state() == descriptor
+    assert len(run.idps) == 2
+
+    summary = {"run_id": run.id, "optimizers": seen["names"], "iterations": len(run.idps)}
+    print(f"builder-snapshot workflow: {summary}")
+    return summary
+
+
+def main():
+    set_seed(0)
+    loader = _make_loader(2048)
+    model = _make_gan_model()
     trainer = Trainer(model=model)
-
-    def gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
-        net: MiniGAN = ctx.model.net  # type: ignore[assignment]
-        opt_G = ctx.optimizers["G"]
-        opt_D = ctx.optimizers["D"]
-        device = ctx.model.device
-
-        X_real, _ = ctx.batch
-        X_real = X_real.to(device)
-        n = X_real.size(0)
-
-        # --- Discriminator step (real vs fake).
-        # detach() the fake samples here so the D step's backward()
-        # doesn't accumulate gradients into G's params — only opt_D's
-        # parameters move on this step.
-        opt_D.zero_grad()
-        z = torch.randn(n, LATENT_DIM, device=device)
-        X_fake = net.G(z).detach()
-        d_real_logits = net.D(X_real)
-        d_fake_logits = net.D(X_fake)
-        d_loss = F.binary_cross_entropy_with_logits(
-            d_real_logits, torch.ones_like(d_real_logits)
-        ) + F.binary_cross_entropy_with_logits(d_fake_logits, torch.zeros_like(d_fake_logits))
-        d_loss.backward()
-        opt_D.step()
-
-        # --- Generator step (fool D into calling fakes "real").
-        # No detach() here: gradients flow from D's logits back into G's
-        # parameters. opt_D doesn't step on this pass, so D's params
-        # don't move even though its gradients are populated.
-        opt_G.zero_grad()
-        z = torch.randn(n, LATENT_DIM, device=device)
-        g_fake_logits = net.D(net.G(z))
-        g_loss = F.binary_cross_entropy_with_logits(g_fake_logits, torch.ones_like(g_fake_logits))
-        g_loss.backward()
-        opt_G.step()
-
-        avg = float((d_loss + g_loss).detach()) / 2
-        return NNEvaluationDataPoint(
-            f1=0.0,
-            recall=0.0,
-            accuracy=0.0,
-            precision=0.0,
-            loss=avg,
-            # Use g_loss as the "error" so BEST tracking favors checkpoints
-            # where G is fooling D well.
-            error=float(g_loss.detach()),
-        )
-
-    # Per-optim param scoping: NNParamGroupSpec with strict semantics
-    # (enforced by Trainer) means opt_G owns ONLY G.* params and opt_D
-    # owns ONLY D.* params. Without the strict contract, opt_G would
-    # also carry D's params in a default bucket and the two optimizers
-    # would silently update the same weights.
-    g_optim = NNOptimParams(
-        name=Optims.ADAM,
-        max_lr=2e-4,
-        momentum=(0.5, 0.999),
-        weight_decay=0.0,
-        param_groups=[NNParamGroupSpec(name_pattern="G.*", lr=2e-4)],
-    )
-    d_optim = NNOptimParams(
-        name=Optims.ADAM,
-        max_lr=2e-4,
-        momentum=(0.5, 0.999),
-        weight_decay=0.0,
-        param_groups=[NNParamGroupSpec(name_pattern="D.*", lr=2e-4)],
-    )
+    g_optim = _scoped_adam("G.*")
+    d_optim = _scoped_adam("D.*")
 
     run = trainer.train(
         params=NNTrainerParams(
