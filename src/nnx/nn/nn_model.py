@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing_extensions import Self
 
-from .._metrics import _resolve_metric, classification_edp
+from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -1396,7 +1396,7 @@ class NNModel(_HubMixinBase):
                     val_edp = None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
 
-                self._step_scheduler(scheduler, val_edp, train_edp)
+                self._step_scheduler(scheduler, val_edp, train_edp, epoch_idx=idx_epoch)
 
                 ctx.idp = idps[-1]
                 ctx.idps = idps
@@ -1839,18 +1839,19 @@ class NNModel(_HubMixinBase):
         scheduler,
         val_edp: Optional[NNEvaluationDataPoint],
         train_edp: NNEvaluationDataPoint,
+        *,
+        epoch_idx: int,
     ) -> None:
         # ReduceLROnPlateau wants a metric; other schedulers step on epoch index.
         if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-            # Custom train_step_fn hooks may leave .error unset;
-            # ReduceLROnPlateau.step(None) crashes inside float(). Use the
-            # shared val→train, error→loss fallback resolver so the four
-            # call sites (NNModel + Trainer × scheduler + tqdm) can't drift.
-            metric = _resolve_metric(val_edp, train_edp)
+            # Custom train_step_fn hooks may leave .error unset, and a
+            # diverged epoch may report NaN/inf; ReduceLROnPlateau.step(None)
+            # crashes inside float() and a non-finite value poisons its
+            # running best. The shared finite-only val→train, error→loss
+            # resolver picks the signal (and warns about rejected
+            # candidates with epoch context); None means "skip this step".
+            metric = _resolve_scheduler_metric(val_edp, train_edp, epoch_idx=epoch_idx)
             if metric is None:
-                # No signal to feed the scheduler — skip the step. The user
-                # picked a metric-driven scheduler without producing a metric;
-                # better to no-op than to crash mid-train.
                 return
             scheduler.step(metric)
         else:

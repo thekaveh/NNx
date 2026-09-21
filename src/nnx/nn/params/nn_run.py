@@ -165,10 +165,12 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
 
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
     """Pull the comparable metric from a checkpoint via the shared
-    val→train, error→loss fallback resolver (the same walk the
-    schedulers and tqdm postfix use). Returns +inf for missing
-    checkpoints or fully missing metrics so caller comparisons always
-    prefer the *new* run when there's no prior signal.
+    finite-only val→train, error→loss fallback resolver (the same walk
+    the schedulers and tqdm postfix use). Returns +inf for missing
+    checkpoints, fully missing metrics, or metrics that are all NaN/±inf,
+    so caller comparisons always prefer the *new* run when there's no
+    prior finite signal — a legacy NaN-ranked BEST is therefore
+    replaceable instead of frozen (`x < nan` is always False).
 
     The loss fallback keeps BEST tracking alive for runs whose steps
     leave `.error` unset (custom trainer/GAN step functions — the

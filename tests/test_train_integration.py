@@ -1398,3 +1398,58 @@ def test_train_salt_wires_into_run_identity(tmp_path, monkeypatch):
     run_c = NNModel(net_params=net_params, params=model_params).train(params=params)
     assert run_c.salt is None
     assert run_c.id not in {run_a.id, run_b.id}
+
+
+def test_legacy_nan_scored_best_recovers_when_finite_candidate_saved(tmp_path):
+    """FIX-009: a BEST checkpoint written before the finite-only resolver
+    may carry a NaN error and had frozen `runs/best` forever (`x < nan`
+    is always False). It must now compare as *unavailable* (+inf) so a
+    later finite run takes the pointer, while its own payload keeps the
+    raw NaN observation. All-None compatibility checkpoints stay
+    unavailable baselines too."""
+    import math
+
+    from nnx import NNEvaluationDataPoint, NNIterationDataPoint
+    from nnx.nn.params.nn_run import _best_err, _read_best_pointer
+
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    root = str(tmp_path)
+
+    def _run_with_best(salt: str, error, loss=None) -> NNRun:
+        edp = NNEvaluationDataPoint(accuracy=0.0, f1=0.0, recall=0.0, precision=0.0, loss=loss, error=error)
+        idp = NNIterationDataPoint(lr=1e-3, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=edp)
+        run = NNRun(net=net_params, train=_train_params(None, None, n_epochs=1), model=model_params, salt=salt)
+        run = run.with_idps([idp])
+        NNCheckpoint(idp=idp, model_params=model_params, net_params=net_params, net_state=model.net.state_dict()).save(
+            run=run.id, type=Checkpoints.BEST, root=root
+        )
+        run.save(root=root)
+        return run
+
+    best_pointer = os.path.join(root, "runs", "best")
+    legacy = _run_with_best("legacy", error=float("nan"))
+    assert _read_best_pointer(best_pointer) == legacy.id
+    legacy_best = NNCheckpoint.load(run=legacy.id, type=Checkpoints.BEST, root=root)
+    assert legacy_best is not None
+    assert _best_err(legacy_best) == float("inf")
+
+    finite = _run_with_best("finite", error=0.3)
+    assert _read_best_pointer(best_pointer) == finite.id
+
+    legacy_best_after = NNCheckpoint.load(run=legacy.id, type=Checkpoints.BEST, root=root)
+    assert legacy_best_after is not None and math.isnan(legacy_best_after.idp.train_edp.error)
+
+    no_signal = NNCheckpoint(
+        idp=NNIterationDataPoint(
+            lr=1e-3,
+            iter_idx=0,
+            epoch_idx=0,
+            batch_idx=0,
+            train_edp=NNEvaluationDataPoint(accuracy=0.0, f1=0.0, recall=0.0, precision=0.0),
+        ),
+        model_params=model_params,
+        net_params=net_params,
+        net_state=model.net.state_dict(),
+    )
+    assert _best_err(no_signal) == float("inf")

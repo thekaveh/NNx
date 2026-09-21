@@ -127,6 +127,8 @@ runs/<id>/
 
 The `runs/best` symlink points at the lowest-error run across all runs in the directory — lowest-loss for paradigm runs whose steps don't produce a supervised error; in a runs root mixing both kinds, the comparison is between unlike metrics (accepted trade-off vs. a `best` pointer paradigm runs could never claim). On Windows without developer mode it's a `POINTER.txt` file instead.
 
+Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by the first **finite** value in the order validation error → validation loss → training error → training loss. NaN and ±inf are never used as a comparison baseline — a non-finite validation error falls through to that same epoch's finite validation loss before training data is consulted — and a checkpoint with no finite signal at all scores as unavailable (`+inf`), so it is replaced by the next finite candidate. That also recovers legacy artifacts whose BEST was ranked on a NaN before this rule existed: the stale checkpoint payload is left untouched, and the next finite save takes the pointer.
+
 ### 4.2. Atomicity + incremental writes
 
 Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a destination-local tmp-then-rename helper. A `KeyboardInterrupt` leaves either the previous file or the new file at a destination, never a half-written file. Each checkpoint names an immutable generation-addressed training-state sidecar, with the sidecar committed first and checkpoint committed last; an interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
@@ -225,6 +227,21 @@ receives an `EvalStepContext` containing the model, complete `val_loader`,
 `extra_metrics`, and `epoch_idx`; it owns iteration and aggregation across the
 loader and returns one `NNEvaluationDataPoint` for the epoch. NNx persists that
 result in `idp.val_edp`, including custom values in `extra`.
+
+The returned data point is also the epoch's *control signal*. BEST selection,
+`runs/best` and `ReduceLROnPlateau` read the first finite value in the order
+validation error → validation loss → training error → training loss; `None`
+fields are simply absent, while NaN and ±inf are rejected with one
+`RuntimeWarning` per epoch that names the rejected field/split and the
+value actually used. An epoch with no finite signal anywhere skips the
+plateau step (a distinct "no metric available" warning) and compares as an
+unavailable BEST baseline. The raw observations are retained unchanged in
+the live history and checkpoint payloads; CSV readback keeps mapping NaN
+cells to `None`. `EarlyStopping` is separate: it reads exactly the field
+named by its `monitor` argument and does not apply this fallback. To expose
+a loss-only control signal from a regression evaluator, set `loss` and leave
+`error` as `None` (or mirror the loss into `error`, as example 26 does) —
+never report a regression error as a classification accuracy.
 
 This supports regression and other non-classification validation without
 replacing the training loop. See

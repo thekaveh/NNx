@@ -13,6 +13,7 @@ their inject-via-callback workaround, whose values never persisted.
 
 from __future__ import annotations
 
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -138,3 +139,101 @@ def test_eval_step_fn_without_val_loader_is_never_called(tmp_path, monkeypatch):
     run = model.train(params=_params(train, None), eval_step_fn=spy)
     assert calls == []
     assert all(idp.val_edp is None for idp in run.idps)
+
+
+def test_nonfinite_first_epoch_best_recovers(tmp_path, monkeypatch):
+    """FIX-009: a NaN validation error at epoch 0 must not freeze BEST there.
+    Under the finite fallback the epoch-0 signal is its finite loss (1.0),
+    so epoch 1's finite error (0.2) replaces it. The raw NaN observation is
+    retained in the live run history; CSV readback keeps mapping NaN → None."""
+    import math
+
+    from nnx import Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    train, val = _loaders()
+    scripted_error = {0: float("nan"), 1: 0.2}
+
+    def eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
+        return NNEvaluationDataPoint(
+            loss=1.0, error=scripted_error[ctx.epoch_idx], accuracy=0.5, f1=0.5, precision=0.5, recall=0.5
+        )
+
+    with pytest.warns(RuntimeWarning, match="epoch 0: ignoring non-finite metric"):
+        run = _tiny_model().train(params=_params(train, val, n_epochs=2), eval_step_fn=eval_step)
+
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert best is not None and last is not None
+    assert (best.idp.epoch_idx, last.idp.epoch_idx) == (1, 1)
+    assert best.idp.val_edp is not None and best.idp.val_edp.error == 0.2
+
+    epoch0 = [idp for idp in run.idps if idp.epoch_idx == 0 and idp.val_edp is not None][-1]
+    assert epoch0.val_edp is not None
+    assert math.isnan(epoch0.val_edp.error) and epoch0.val_edp.loss == 1.0
+    reloaded = [idp for idp in NNRun.load(run.id).idps if idp.epoch_idx == 0 and idp.val_edp is not None][-1]
+    assert reloaded.val_edp is not None
+    assert reloaded.val_edp.error is None and reloaded.val_edp.loss == 1.0
+
+
+def test_plateau_never_receives_nonfinite_metric(tmp_path, monkeypatch):
+    """FIX-009: ReduceLROnPlateau only ever sees finite values. Scripted
+    epochs: (nan, 1.0) → steps on val loss; (inf, -inf) → steps on the
+    finite train error; everything unavailable → no step at all, with a
+    warning that says *absent* rather than *non-finite*; then a finite
+    improvement steps on val error."""
+    import warnings
+    from dataclasses import replace
+
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+    from nnx import TrainStepContext, default_train_step
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    steps: list[float] = []
+    original_step = ReduceLROnPlateau.step
+
+    def spy_step(self, metrics, epoch=None):
+        steps.append(metrics)
+        return original_step(self, metrics, epoch)
+
+    monkeypatch.setattr(ReduceLROnPlateau, "step", spy_step)
+
+    val_script = {
+        0: (float("nan"), 1.0),
+        1: (float("inf"), float("-inf")),
+        2: (None, None),
+        3: (0.1, 0.5),
+    }
+
+    def eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
+        error, loss = val_script[ctx.epoch_idx]
+        return NNEvaluationDataPoint(loss=loss, error=error, accuracy=0.5, f1=0.5, precision=0.5, recall=0.5)
+
+    last_train_error: dict[int, float] = {}
+
+    def train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+        edp = default_train_step(ctx)
+        if ctx.epoch_idx == 2:
+            # The update happened; the *reported* signal is simply unavailable.
+            return replace(edp, loss=None, error=None)
+        assert edp.error is not None
+        last_train_error[ctx.epoch_idx] = edp.error
+        return edp
+
+    train, val = _loaders()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _tiny_model().train(params=_params(train, val, n_epochs=4), train_step_fn=train_step, eval_step_fn=eval_step)
+
+    assert steps == [1.0, last_train_error[1], 0.1]
+
+    messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+    rejected = [m for m in messages if "non-finite" in m]
+    absent = [m for m in messages if "no metric available" in m]
+    assert any("epoch 0" in m and "val_edp.error=nan" in m and "val_edp.loss" in m for m in rejected), messages
+    assert any("epoch 1" in m and "val_edp.error=inf" in m and "val_edp.loss=-inf" in m for m in rejected), messages
+    assert len(absent) == 1 and "epoch 2" in absent[0] and "non-finite" not in absent[0], messages
+    assert not any("epoch 3" in m for m in messages), messages
