@@ -77,7 +77,9 @@ class EarlyStopping(Callback):
 
     Args:
         monitor: which IDP field to track. "val_edp.error" (default), "val_edp.loss",
-                 "train_edp.error", or "train_edp.loss".
+                 "train_edp.error", or "train_edp.loss". Exactly that field is read —
+                 the finite val→train / error→loss fallback that BEST selection and
+                 ReduceLROnPlateau use does not apply here.
         patience: epochs with no improvement before stopping.
         min_delta: minimum change to qualify as improvement.
         mode: "min" (default) for loss/error; "max" for accuracy/f1.
