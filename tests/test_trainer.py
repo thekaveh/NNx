@@ -920,3 +920,75 @@ def test_trainer_multi_optim_without_param_groups_raises(tmp_path, monkeypatch):
     )  # constructs fine — the guard lives at train(), not __post_init__
     with pytest.raises(ValueError, match="scope its parameters via"):
         Trainer(model=model).train(params=params, trainer_step_fn=lambda ctx: None)
+
+
+def test_trainer_plateau_never_receives_nonfinite_metric(tmp_path, monkeypatch):
+    """FIX-009 on the Trainer path: Trainer has no eval_step_fn, so the
+    validation signal is scripted through ``model.evaluate`` and the
+    training signal through the step fn. Plateau schedulers only ever
+    receive finite values, skip entirely when nothing finite exists, and
+    the warnings distinguish rejected non-finite metrics from absent ones."""
+    import warnings
+    from dataclasses import replace
+
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+    from nnx import NNSchedulerParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    steps: list[float] = []
+    original_step = ReduceLROnPlateau.step
+
+    def spy_step(self, metrics, epoch=None):
+        steps.append(metrics)
+        return original_step(self, metrics, epoch)
+
+    monkeypatch.setattr(ReduceLROnPlateau, "step", spy_step)
+
+    model = _supervised_model()
+    val_script = iter(
+        [
+            (float("nan"), 1.0),
+            (float("inf"), float("-inf")),
+            (None, None),
+            (0.1, 0.5),
+        ]
+    )
+
+    def scripted_evaluate(loader, extra_metrics=None):
+        error, loss = next(val_script)
+        return NNEvaluationDataPoint(loss=loss, error=error, accuracy=0.5, f1=0.5, precision=0.5, recall=0.5)
+
+    monkeypatch.setattr(model, "evaluate", scripted_evaluate)
+
+    last_train_error: dict[int, float] = {}
+
+    def step_fn(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        edp = _supervised_step(ctx)
+        if ctx.epoch_idx == 2:
+            return replace(edp, loss=None, error=None)
+        assert edp.error is not None
+        last_train_error[ctx.epoch_idx] = edp.error
+        return edp
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        Trainer(model=model).train(
+            params=NNTrainerParams(
+                n_epochs=4,
+                train_loader=_supervised_loader(),
+                val_loader=_supervised_loader(8),
+                optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)},
+                schedulers={"main": NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3)},
+            ),
+            trainer_step_fn=step_fn,
+        )
+
+    assert steps == [1.0, last_train_error[1], 0.1]
+    messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+    rejected = [m for m in messages if "non-finite" in m]
+    absent = [m for m in messages if "no metric available" in m]
+    assert any("epoch 0" in m and "val_edp.error=nan" in m for m in rejected), messages
+    assert any("epoch 1" in m and "val_edp.loss=-inf" in m for m in rejected), messages
+    assert len(absent) == 1 and "epoch 2" in absent[0] and "non-finite" not in absent[0], messages

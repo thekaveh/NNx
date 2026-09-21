@@ -186,6 +186,18 @@ NNTrainParams(..., optim=NNOptimParams(name=Optims.ADAM, max_lr=result.suggested
 
 See [Concepts → LR finder](concepts.md#131-lr-finder) for the algorithm details and divergence early-exit behavior.
 
+### 2.10. Non-finite metrics, BEST and plateau scheduling
+
+BEST checkpoints, `runs/best` and `ReduceLROnPlateau` all track the first
+*finite* value in the order validation error → validation loss → training
+error → training loss (lower is better). A custom `eval_step_fn` that reports
+`error=nan` with a finite `loss` therefore still drives scheduling and BEST
+through its loss; the rejection is reported once per epoch as a
+`RuntimeWarning`. An epoch with no finite signal at all skips the plateau
+step instead of feeding it NaN, and its checkpoint counts as an unavailable
+baseline that the next finite epoch (or run) replaces. Raw NaN/inf
+observations stay in the run history as diagnostics.
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

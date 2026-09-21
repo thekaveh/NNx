@@ -37,3 +37,20 @@ def test_representative_examples_run_end_to_end(name, tmp_path):
         text=True,
         timeout=90,
     )
+
+
+BOUNDED_EXAMPLE_HELPERS = [
+    ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
+]
+
+
+@pytest.mark.parametrize(("name", "helper"), BOUNDED_EXAMPLE_HELPERS, ids=lambda value: value)
+def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
+    """Execution coverage for bounded example helpers: import the script
+    without running ``main`` and call the named helper in a temporary
+    working directory. Import success alone is insufficient — the
+    helper's own assertions are the contract under test."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    namespace = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")
+    namespace[helper]()

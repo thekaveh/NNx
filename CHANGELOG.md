@@ -6,6 +6,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Fixed
+
+- BEST-checkpoint selection, the `runs/best` pointer and `ReduceLROnPlateau` stepping now use the first *finite* metric in the validation-error → validation-loss → training-error → training-loss order: NaN/±inf values are skipped with a per-epoch `RuntimeWarning` naming the rejected field, a non-finite validation error no longer hides the same epoch's finite loss, an epoch without any finite signal skips the plateau step and compares as an unavailable baseline, and legacy NaN-ranked BEST artifacts are replaced by the next finite candidate. Raw observations in run history and checkpoints are unchanged.
+
 ## [0.2.3](https://github.com/thekaveh/NNx/compare/v0.2.2...v0.2.3) (2026-08-17)
 
 ### Changed
