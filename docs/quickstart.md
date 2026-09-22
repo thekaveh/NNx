@@ -82,7 +82,10 @@ model.train(params=NNTrainParams(
 Resume validates the checkpoint's optimizer topology and matching immutable
 training-state generation before applying it. It restores scheduler/scaler,
 completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG
-state; use `num_workers=0` when exact continuation matters.
+state; use `num_workers=0` when exact continuation matters. Any re-iterable batch
+source works — a `DataLoader`, a list of `(X, Y)` batches, or the graph
+full-batch list — and the worker warning only appears for a real loader with
+`num_workers > 0`.
 
 Probing for state is side-effect free: `NNCheckpoint.load_with_training_state(run=..., type=Checkpoints.LAST)`
 returns `(None, None)` for a run that was never written and does not create
