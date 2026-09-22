@@ -366,6 +366,34 @@ _ELEMENTWISE_MEAN_LOSS_TYPES = (
 )
 
 
+def _is_native_nll(loss_fn: torch.nn.Module) -> bool:
+    """True for a `torch.nn.NLLLoss` whose forward is the stock one.
+
+    A subclass that overrides `forward` keeps its own supplied-input
+    contract (it may already expect raw logits), so it is deliberately
+    *not* treated as native here — see `_loss_input`.
+    """
+    return isinstance(loss_fn, torch.nn.NLLLoss) and type(loss_fn).forward is torch.nn.NLLLoss.forward
+
+
+def _loss_input(loss_fn: torch.nn.Module, logits: torch.Tensor) -> torch.Tensor:
+    """Adapt the network's raw output to what `loss_fn` expects (FIX-001).
+
+    Built-in nets emit unrestricted logits, but native `torch.nn.NLLLoss`
+    requires *log probabilities*: feeding it raw logits optimizes an
+    unnormalized objective (loss can go negative, the gradient lacks the
+    competing-class term). For the exact native type this returns
+    `log_softmax(logits, dim=1)` — callers pass logits already reshaped
+    to `(rows, classes)` by `_fwd_pass`, so dim 1 is always the class
+    axis. Every other loss (CE, BCE, MSE, custom modules and NLLLoss
+    subclasses with their own forward) receives the raw output unchanged.
+    Prediction paths never call this: `predict().logits` stays raw.
+    """
+    if _is_native_nll(loss_fn):
+        return torch.nn.functional.log_softmax(logits, dim=1)
+    return logits
+
+
 def _loss_normalization_weight(
     loss_fn: torch.nn.Module,
     logits: torch.Tensor,
@@ -381,7 +409,7 @@ def _loss_normalization_weight(
     native_ce = (
         isinstance(loss_fn, torch.nn.CrossEntropyLoss) and type(loss_fn).forward is torch.nn.CrossEntropyLoss.forward
     )
-    native_nll = isinstance(loss_fn, torch.nn.NLLLoss) and type(loss_fn).forward is torch.nn.NLLLoss.forward
+    native_nll = _is_native_nll(loss_fn)
     if native_ce or native_nll:
         classification_loss = cast(Union[torch.nn.CrossEntropyLoss, torch.nn.NLLLoss], loss_fn)
         if native_ce and target.is_floating_point():
@@ -406,7 +434,7 @@ def _loss_terms(
     target: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, Optional[float]]:
     """Return display loss, additive numerator, and its normalization weight."""
-    loss = loss_fn(logits, target)
+    loss = loss_fn(_loss_input(loss_fn, logits), target)
     normalization_weight = _loss_normalization_weight(loss_fn, logits, target)
     if normalization_weight is None:
         return loss, loss, None
@@ -560,7 +588,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         with torch.amp.autocast(device_type="cuda"):
             X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
             if accumulation_state is None:
-                train_loss = model.loss_fn(Y_hat_logits, Y)
+                train_loss = model.loss_fn(_loss_input(model.loss_fn, Y_hat_logits), Y)
                 backward_loss = train_loss / accumulate_grad_batches
                 normalization_weight = None
             else:
@@ -595,7 +623,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     else:
         X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
         if accumulation_state is None:
-            train_loss = model.loss_fn(Y_hat_logits, Y)
+            train_loss = model.loss_fn(_loss_input(model.loss_fn, Y_hat_logits), Y)
             backward_loss = train_loss / accumulate_grad_batches
             normalization_weight = None
         else:

@@ -80,7 +80,11 @@ def lr_finder(
             the loader is re-iterated from the start.
         loss_fn: callable ``(y_hat, Y) -> scalar Tensor`` for the
             per-batch loss. Same shape contract as torch loss
-            functions.
+            functions. It receives the model's raw output: unlike
+            ``NNModel.train`` / ``evaluate``, no log-softmax is inserted
+            for ``torch.nn.NLLLoss``, so pass
+            ``lambda y_hat, Y: F.nll_loss(F.log_softmax(y_hat, dim=1), Y)``
+            (or simply ``F.cross_entropy``) when sweeping an NLL model.
         optimizer_cls: optimizer class. Adam by default; SGD also
             works for the sweep.
         start_lr: low end of the sweep range. Must be > 0.

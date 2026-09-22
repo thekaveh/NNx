@@ -190,7 +190,19 @@ NNTrainParams(..., optim=NNOptimParams(name=Optims.ADAM, max_lr=result.suggested
 
 See [Concepts → LR finder](concepts.md#131-lr-finder) for the algorithm details and divergence early-exit behavior.
 
-### 2.10. Non-finite metrics, BEST and plateau scheduling
+### 2.10. Native NLL instead of cross-entropy
+
+```python
+NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.NEGATIVE_LOG_LIKELIHOOD)
+```
+
+The network still emits raw logits and `predict().logits` stays raw. NNx applies
+`log_softmax` internally before the native `torch.nn.NLLLoss` during training
+and evaluation, so the reported loss equals cross-entropy from the same weights
+and checkpoints saved with this descriptor evaluate under the same rule when
+reloaded. A custom loss module or `train_step_fn` receives the raw logits.
+
+### 2.11. Non-finite metrics, BEST and plateau scheduling
 
 BEST checkpoints, `runs/best` and `ReduceLROnPlateau` all track the first
 *finite* value in the order validation error → validation loss → training

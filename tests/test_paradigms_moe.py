@@ -453,3 +453,46 @@ def test_moe_step_clears_stale_aux_loss_of_unexercised_layers():
     edp = step(ctx)  # pre-fix: RuntimeError (backward through freed graph)
     assert edp.loss is not None
     assert model.net.unused_moe.last_aux_loss is None
+
+
+def test_moe_supervised_term_uses_normalized_nll():
+    """FIX-001: the MoE supervised term under native NLL equals the CE
+    run from identical state (aux_loss_weight=0 isolates it) and the
+    explicit log-softmax reference."""
+    import torch.nn.functional as F
+
+    from nnx import Optims, TrainStepContext
+
+    torch.manual_seed(0)
+    model_ce, _ = _make_moe_model()
+    model_nll, _ = _make_moe_model()
+    model_nll.net.load_state_dict(model_ce.net.state_dict())
+    model_nll.loss_fn = torch.nn.NLLLoss()
+    X, Y = next(iter(_loader()))
+    with torch.no_grad():
+        raw = model_nll.net(X)
+    expected = float(F.nll_loss(F.log_softmax(raw, dim=1), Y))
+
+    losses = []
+    for model in (model_ce, model_nll):
+        optimizer = Optims.ADAM(net=model.net, lr_start=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)
+        ctx = TrainStepContext(
+            model=model,
+            batch=(X, Y),
+            optimizer=optimizer,
+            scaler=None,
+            grad_clip_norm=None,
+            extra_metrics=None,
+            accumulate_grad_batches=1,
+            batch_idx=0,
+            epoch_idx=0,
+            is_last_batch=True,
+        )
+        losses.append(moe_train_step_factory(aux_loss_weight=0.0)(ctx).loss)
+    assert losses[0] is not None and losses[1] is not None
+    assert losses[1] == pytest.approx(losses[0], rel=1e-6)
+    assert losses[1] == pytest.approx(expected, rel=1e-6)
+    for (name, p_ce), (_, p_nll) in zip(
+        model_ce.net.named_parameters(), model_nll.net.named_parameters(), strict=False
+    ):
+        assert torch.allclose(p_ce, p_nll, atol=1e-6), name
