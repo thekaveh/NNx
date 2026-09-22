@@ -322,3 +322,43 @@ def test_prefix_state_dict_excludes_nested_name_collisions(tmp_path):
     assert load_prefix_weights(tuner, source) == 4
     for k, v in tuner.state_dict().items():
         assert torch.equal(v, before[k]), k
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=str)
+def test_prefix_attention_dropout_half_forward(dtype):
+    """FIX-004 on the prefix path: the rectangular prefix mask feeds the
+    same primitive. The complete tuner is built first and converted as
+    a whole (allocation placement is FIX-003, not under test here); a
+    train-mode forward with nonzero attention dropout is finite in the
+    layer dtype, and a cached decode step with dropout active still
+    keeps real-token K/V only in the cache."""
+    set_seed(0)
+    params = NNTransformerParams(
+        input_dim=100,
+        output_dim=100,
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+        n_heads=4,
+        vocab_size=100,
+        n_layers=2,
+        d_model=32,
+        max_seq_len=64,
+        attn_dropout=0.1,
+    )
+    model = TransformerNN(params)
+    tuner = PrefixTuner(model, n_prefix=3).to(dtype)
+    ids = torch.randint(0, 100, (2, 5))
+
+    tuner.train()
+    out = tuner(ids)
+    assert out.dtype == dtype and out.shape == (2, 5, 100) and torch.isfinite(out).all()
+    out.float().sum().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in tuner.trainable_parameters())
+
+    attn = model.blocks[0].attn
+    x = torch.randn(2, 4, 32).to(dtype)
+    _, kv = attn(x, use_cache=True)
+    assert kv is not None and kv[0].shape[-2] == 4  # prefix slots are not cached
+    step, kv2 = attn(torch.randn(2, 1, 32).to(dtype), past_kv=kv, use_cache=True)
+    assert step.dtype == dtype and torch.isfinite(step).all()
+    assert kv2 is not None and kv2[0].shape[-2] == 5

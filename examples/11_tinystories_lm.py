@@ -22,6 +22,14 @@ Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
 
     pip install 'thekaveh-nnx[lm]'
 
+``manual_attention_lm_example`` below is a bounded companion: a one-layer,
+``d_model=16`` model with nonzero attention dropout takes one training
+update on a four-token local batch in a reduced-precision dtype and then
+greedily generates two tokens. Attention dropout selects the manual
+(non-SDPA) path, which accumulates scores/softmax/dropout in FP32 for
+FP16/BF16 inputs (FP64 stays FP64) and returns the layer dtype; with
+``attn_dropout=0`` (or in eval mode) the fused SDPA kernel is used.
+
 Run:
     python examples/11_tinystories_lm.py
     # or pass --use-hf to download TinyStories from HuggingFace:
@@ -159,6 +167,75 @@ def _lm_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         recall=0.0,
         precision=0.0,
     )
+
+
+def manual_attention_lm_example(dtype: torch.dtype = torch.bfloat16) -> dict:
+    """Bounded attention-dropout training + generation demonstration.
+
+    Trains a tiny local BPE tokenizer, builds a one-layer ``d_model=16``
+    :class:`GenerativeNNModel` with ``attn_dropout=0.1`` converted to
+    ``dtype`` after construction, runs ONE next-token update on a
+    four-token batch (train mode, so the manual dropout path is
+    exercised), then greedily generates at most two tokens on both the
+    cached and full-recompute paths. Asserts finite logits/loss/grads in
+    the layer dtype, unchanged training mode after ``generate``, and
+    identical cached/full greedy output. No downloads, no full ``main``.
+    Raises ``ImportError`` naming the ``lm`` extra when ``tokenizers``
+    is missing (an explicit skip for the smoke harness, never a pass).
+    """
+    try:
+        import tokenizers  # noqa: F401
+    except ImportError as e:
+        raise ImportError("manual_attention_lm_example needs `pip install 'thekaveh-nnx[lm]'` (tokenizers)") from e
+
+    import tempfile
+
+    set_seed(0)
+    corpus = ["the cat sat on the mat", "the dog ran in the park", "hello world hello there"]
+    with tempfile.TemporaryDirectory() as tmp:
+        bpe = train_bpe(files=None, texts=corpus, vocab_size=64, special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"])
+        tokenizer = NNTokenizerParams.of(tokenizer=bpe, path=str(Path(tmp) / "tok.json"))
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=16,
+        attn_dropout=0.1,
+    )
+    model = GenerativeNNModel(
+        net_params=net_params,
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        tokenizer=tokenizer,
+    )
+    model.net.to(dtype)
+
+    ids = torch.tensor([tokenizer.encode("the cat sat on")[:4]], dtype=torch.long)
+    assert ids.shape[1] == 4, ids.shape
+    x, y = ids[:, :-1], ids[:, 1:]
+    optimizer = torch.optim.SGD([p for p in model.net.parameters() if p.requires_grad], lr=0.01)
+    model.net.train()
+    logits = model.net(x)
+    assert logits.dtype == dtype and torch.isfinite(logits).all(), "train-mode forward with dropout must be finite"
+    loss = torch.nn.functional.cross_entropy(logits.float().reshape(-1, logits.size(-1)), y.reshape(-1))
+    loss.backward()
+    assert torch.isfinite(loss) and all(
+        torch.isfinite(p.grad).all() for p in model.net.parameters() if p.grad is not None
+    )
+    optimizer.step()
+
+    cached = model.generate(prompt="the", max_new_tokens=2, temperature=0.0)
+    full = model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=False)
+    assert model.net.training, "generate must restore the training mode it found"
+    assert cached == full, (cached, full)
+
+    summary = {"dtype": str(dtype), "loss": float(loss.detach()), "generated": cached}
+    print(f"manual-attention LM workflow: {summary}")
+    return summary
 
 
 def main() -> None:
