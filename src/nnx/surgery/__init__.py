@@ -4,9 +4,12 @@ This subpackage ships primitives that take a trained :class:`nn.Module`
 and return a fresh module with a structural change applied:
 
   - :func:`widen` — Net2WiderNet: grow a Linear's ``out_features`` by
-    duplicating randomly chosen output units, dividing the next layer's
+    duplicating randomly chosen output units, dividing the consumer's
     corresponding incoming weights by each unit's replication count so
-    the forward output is preserved exactly.
+    the forward output is preserved exactly. The consumer is inferred
+    only inside ``nn.Sequential`` or ``FeedFwdNN.layers`` and only
+    through elementwise ops; width-dependent ops (Softmax, LayerNorm,
+    BatchNorm), other containers and aliased modules are rejected.
   - :func:`deepen` — Net2DeeperNet: insert an identity-initialized
     Linear (+ ReLU) after the named layer. ReLU-only; other activations
     break function-preservation.

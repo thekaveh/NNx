@@ -8,7 +8,7 @@ This is the unique compositional payoff of pairing surgery primitives with a tra
 
 | Primitive | Op | Function-preserving? | Returns |
 |---|---|---|---|
-| `widen(model, *, layer_name, new_width)` | Net2WiderNet — grow `out_features`, halve downstream weights | yes | fresh `nn.Module` |
+| `widen(model, *, layer_name, new_width)` | Net2WiderNet — grow `out_features`, rescale the consumer's incoming columns | yes — for a Linear inside `nn.Sequential` or `FeedFwdNN.layers` whose path to the next Linear holds only elementwise ops (activations, `Dropout`, `Identity`); eval-mode parity when dropout > 0; Softmax / LayerNorm / BatchNorm boundaries, other containers and aliased modules are rejected | fresh `nn.Module` |
 | `deepen(model, *, after_layer_name)` | Net2DeeperNet — identity-init Linear after a ReLU | yes (ReLU only) | fresh `nn.Module` |
 | `drop_layer(model, *, layer_name, importance=None)` | Replace named layer with `nn.Identity` | no — chain-preserving only | fresh `nn.Module` |
 | `low_rank_factorize(linear, *, rank, method='svd')` | SVD truncation: Linear → `Sequential(Linear, Linear)` | yes at max rank, approximate below | fresh `nn.Sequential` |
@@ -44,17 +44,17 @@ x = torch.randn(8, model.net.params.input_dim)
 with torch.no_grad():
     assert torch.allclose(model.net(x), new_net(x), atol=1e-5)
 
-# 3. Rewire NNModel around the wider net. The simplest path is to
-#    construct a new NNModel with the wider NNParams and load the
-#    surged state_dict; this preserves all of NNModel's training-loop
-#    machinery (callbacks, schedulers, NNRun bookkeeping).
-new_params = NNParams(
-    input_dim=model.net.params.input_dim,
-    output_dim=model.net.params.output_dim,
-    hidden_dims=[64, *model.net.params.hidden_dims[1:]],
-    dropout_prob=model.net.params.dropout_prob,
-    activation=model.net.params.activation,
-)
+# 3. Rewire NNModel around the wider net: build a NEW, correctly
+#    described model and load the surged state_dict. Rebuild the
+#    immutable params with `dataclasses.replace` so the new width and
+#    every per-layer `activations` / `dropout_probs` override stay
+#    aligned (a hand-built NNParams from scalar fields would silently
+#    drop those overrides). Never assign the widened net beneath the
+#    old `net_params`: ordinary checkpoint reconstruction reads the
+#    descriptor, and a stale one no longer describes the network.
+from dataclasses import replace
+
+new_params = replace(model.net.params, hidden_dims=[64, *model.net.params.hidden_dims[1:]])
 refined = NNModel(
     net_params=new_params,
     params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
@@ -130,6 +130,7 @@ If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) e
 
 ## 5. When function-preservation doesn't hold
 
+- `widen` infers the consumer only where the execution order is proven: a target inside an `nn.Sequential` (walking the following siblings) or inside `FeedFwdNN.layers` (resolving the *effective* `activation_for(i)` / `dropout_for(i)`, not the scalar defaults). Every op between the target and the next Linear must be elementwise — the built-in activations except Softmax, `Dropout`, `Identity` — because duplicating units through a width-dependent op (Softmax's denominator, LayerNorm / BatchNorm statistics) changes the output. Width-dependent ops, other containers (registration order is not data flow), missing consumers and modules registered under more than one path (aliases) raise a `ValueError` naming the boundary *before* anything is allocated; the source model, its module identities and the RNG are untouched. With dropout configured the parity promise is for eval mode — a stochastic training forward is not identical by construction.
 - `deepen` rejects any activation other than ReLU with an explicit `ValueError`. The identity-Linear trick only function-preserves through ReLU; for sigmoid / tanh / GELU networks, structurally similar insertions silently produce a drifted forward output.
 - `drop_layer` is never function-preserving (with one degenerate exception: if the dropped layer was already the identity on its inputs — e.g. a ReLU fed strictly positive activations). The function is chain-preserving: dotted-name lookup, downstream shapes, and the forward pass still work.
 - `low_rank_factorize` at `rank < min(out, in)` is an *approximation*. The Frobenius error of the truncation is bounded by the L2 norm of the discarded singular values (Eckart-Young) — that bound is asserted as a regression test in `tests/test_surgery_low_rank.py`.
