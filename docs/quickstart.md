@@ -64,6 +64,36 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 NNModelParams(..., mixed_precision=True)   # silently no-op on CPU/MPS
 ```
 
+`mixed_precision=True` activates only when the model runs on CUDA: the
+default training step wraps the forward in `torch.amp.autocast("cuda")` and
+the loop owns one `torch.amp.GradScaler("cuda")` — scale → backward →
+`unscale_` (so `grad_clip_norm` clips true gradients) → `step` → `update`. On
+CPU / MPS no scaler is built (`TrainStepContext.scaler is None`) and training
+is plain FP32. A custom `train_step_fn` sees the scaler through the standard
+`scale` / `unscale_` / `step` / `update` / `state_dict` protocol and never
+needs to branch on its concrete class. The scaler's state dictionary travels
+with every checkpoint's training-state sidecar, so a warm resume continues from
+the saved scale factor and growth tracker, and a resume whose configuration
+turns AMP on or off relative to the checkpoint is rejected
+(`resume GradScaler presence mismatch`) rather than silently continuing:
+
+```python
+amp = NNModelParams(net=Nets.FEED_FWD, device=Devices.CUDA, loss=Losses.CROSS_ENTROPY, mixed_precision=True)
+first = NNModel(net_params=net_params, params=amp).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
+state = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)
+print(state["scaler"]["scale"])       # None on CPU/MPS; the current scale factor on CUDA
+resumed = NNModel(net_params=net_params, params=amp).train(
+    params=NNTrainParams(n_epochs=1, train_loader=train_loader, resume_from_run_id=first.id),
+)
+```
+
+The scaler factory is why NNx declares the PyTorch floor it does — see the
+[support matrix](external-contracts.md#21-pytorch-support-matrix) for the
+tested torch / torchvision / Python combinations and which of them carry real
+CUDA evidence. [`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
+`amp_resume_compatibility()` runs the CPU no-scaler cycle everywhere and the
+enabled-AMP cycle only on a CUDA host.
+
 ### 2.3. Warm-resume training
 
 ```python

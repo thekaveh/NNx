@@ -67,8 +67,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "torch>=2.0",
-    "torchvision>=0.15",
+    # Floor = the oldest torch the full core test suite passes on (FIX-011,
+    # verified 2026-09-22 on CPU): 2.3 lacks `torch.is_autocast_enabled(
+    # device_type)`, rejects float SDPA masks whose dtype differs from a
+    # half/bf16/double query, and its `torch.load(weights_only=True)`
+    # allowlist cannot read the training-state sidecar. torchvision pairs
+    # one minor per torch minor (2.4 <-> 0.19). See
+    # docs/external-contracts.md "PyTorch support matrix" and the CI
+    # `floor-deps` lane, which installs exactly this pair.
+    "torch>=2.4",
+    "torchvision>=0.19",
     "torch_geometric>=2.4",
     "numpy>=1.24",
     "pandas>=2.0",

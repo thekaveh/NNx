@@ -100,7 +100,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 pip install thekaveh-nnx                        # latest release from PyPI
 ```
 
-Python 3.10+. Tested on 3.10 through 3.14. Examples in [examples/](examples/) are runnable on CPU.
+Python 3.10+ with PyTorch 2.4+ / torchvision 0.19+ — the oldest pair the full test suite passes on; see the [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) for every tested torch / torchvision / Python combination and which carry real CUDA evidence. Tested on 3.10 through 3.14. Examples in [examples/](examples/) are runnable on CPU. Optional extras keep their own version constraints (`torchao` for `[quantize]` is validated only against the frozen lock, not the floor).
 
 ### 2.2. Optional extras
 

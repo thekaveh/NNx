@@ -26,6 +26,12 @@ one-element full-batch list ``NNGraphDataset(sampler="full")`` produces.
 ``iterable_graph_resume`` below demonstrates both (the graph branch needs
 the optional ``thekaveh-nnx[graph]`` extra and is skipped without it).
 
+Mixed precision (``NNModelParams(mixed_precision=True)``) only activates on
+CUDA, where the loop owns a ``torch.amp.GradScaler("cuda")`` whose state
+rides along in the training-state sidecar. ``amp_resume_compatibility``
+below fits and resumes with AMP requested on CPU (no scaler is built or
+saved) and, only on a CUDA host, with AMP actually enabled.
+
 Run:
     python examples/02_resume_training.py
 """
@@ -285,6 +291,74 @@ def iterable_graph_resume() -> dict:
     summary["graph_resumed_epoch"] = graph_resumed.idps[0].epoch_idx
     summary["graph_val_accuracy"] = val_edp.accuracy
     print(f"iterable/graph resume workflow: {summary}")
+    return summary
+
+
+def amp_resume_compatibility() -> dict:
+    """Bounded demonstration of mixed-precision warm resume (writes ``runs/``
+    under the current working directory; the smoke test runs it in a
+    temporary one).
+
+    ``NNModelParams(mixed_precision=True)`` only activates autocast + a
+    ``torch.amp.GradScaler("cuda")`` on CUDA — the scaler factory needs
+    PyTorch >= 2.3, NNx's declared floor. Everywhere else the same
+    configuration trains scaler-free: the training-state sidecar records
+    ``scaler=None`` and a resume restores nothing for it. On a CUDA host
+    the helper additionally fits one epoch with AMP enabled, resumes for
+    one more, and checks the restored scaler state (scale factor and
+    growth tracker) — reported as skipped otherwise, never faked.
+    """
+    set_seed(11)
+    summary: dict = {}
+
+    def _fit_and_resume(device: Devices, tag: str) -> tuple[NNRun, NNRun, dict, dict]:
+        X = torch.randn(64, 8)
+        y = torch.randint(0, 3, (64,))
+        loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=True)
+        net_params = NNParams(
+            input_dim=8, output_dim=3, hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU
+        )
+        model_params = NNModelParams(net=Nets.FEED_FWD, device=device, loss=Losses.CROSS_ENTROPY, mixed_precision=True)
+        first = NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=1, data_id=tag, train_loader=loader, optim=_base_optim(), scheduler=_base_sched()
+            )
+        )
+        first_state = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)
+        resumed = NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=1,
+                data_id=tag,
+                train_loader=loader,
+                optim=_base_optim(),
+                scheduler=_base_sched(),
+                resume_from_run_id=first.id,
+            )
+        )
+        resumed_state = NNCheckpoint.load_training_state(run=resumed.id, type=Checkpoints.LAST)
+        assert first_state is not None and resumed_state is not None
+        assert resumed.idps[0].epoch_idx == 1
+        return first, resumed, first_state, resumed_state
+
+    # CPU: AMP is a documented no-op — no scaler is built or persisted.
+    _, resumed, first_state, resumed_state = _fit_and_resume(Devices.CPU, "amp-cpu")
+    assert first_state["scaler"] is None and resumed_state["scaler"] is None
+    summary["cpu"] = {"scaler_state": None, "resumed_epoch": resumed.idps[0].epoch_idx}
+
+    if torch.cuda.is_available():
+        _, resumed, first_state, resumed_state = _fit_and_resume(Devices.CUDA, "amp-cuda")
+        assert first_state["scaler"] is not None and resumed_state["scaler"] is not None
+        # The resumed run continues from the saved scale rather than the
+        # factory default (65536.0 → 2**16); growth tracking carries on.
+        summary["cuda"] = {
+            "saved_scale": first_state["scaler"]["scale"],
+            "resumed_scale": resumed_state["scaler"]["scale"],
+            "resumed_growth_tracker": resumed_state["scaler"]["_growth_tracker"],
+            "resumed_epoch": resumed.idps[0].epoch_idx,
+        }
+    else:
+        summary["cuda"] = "skipped (no CUDA device): enabled-AMP resume not exercised here"
+    print(f"amp resume compatibility: {summary}")
     return summary
 
 
