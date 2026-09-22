@@ -27,7 +27,7 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
-from ._utils import get_module, set_module
+from ._utils import copy_param_roles, get_module, set_module
 
 
 def widen(
@@ -115,6 +115,9 @@ def widen(
         new_bias = torch.cat([layer.bias.data, layer.bias.data[duplicates]], dim=0)
         assert new_layer.bias is not None
         new_layer.bias.data.copy_(new_bias)
+    # The replacement keeps the target's own trainability roles and mode
+    # (skip_init defaults to trainable / train mode) — FIX-016.
+    copy_param_roles(layer, new_layer)
     set_module(new_model, layer_name, new_layer)
 
     # --- Adjust the downstream Linear so the forward is preserved -----
@@ -152,6 +155,8 @@ def widen(
         # column rescaling — copy as-is.
         assert new_down_layer.bias is not None
         new_down_layer.bias.data.copy_(down_layer.bias.data)
+    # Independent of the target: the consumer keeps ITS OWN flags/mode.
+    copy_param_roles(down_layer, new_down_layer)
     set_module(new_model, down_name, new_down_layer)
 
     return new_model
