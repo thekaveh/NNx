@@ -328,3 +328,84 @@ def test_autoencoder_style_step_trains_end_to_end(tmp_path, monkeypatch):
     # On-disk artifacts exist.
     assert (tmp_path / "runs" / run.id / "run.yaml").exists()
     assert (tmp_path / "runs" / run.id / "idps.csv").exists()
+
+
+def test_nll_default_step_matches_cross_entropy(tmp_path, monkeypatch):
+    """FIX-001: from identical initial weights and data, native NLL and
+    cross-entropy must produce the same per-batch losses and the same
+    parameter updates — including uneven gradient-accumulation windows
+    ([2, 2, 1] microbatches with accumulate_grad_batches=2) and a direct
+    `TrainStepContext` without accumulation state."""
+    import copy
+
+    from nnx import Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    torch.manual_seed(0)
+    X = torch.randn(5, 4)
+    y = torch.tensor([0, 1, 1, 0, 1])
+    loader = DataLoader(TensorDataset(X, y), batch_size=2, shuffle=False)
+
+    def _model_with(loss_enum: Losses) -> NNModel:
+        model = NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=loss_enum),
+        )
+        return model
+
+    torch.manual_seed(1)
+    ce = _model_with(Losses.CROSS_ENTROPY)
+    nll = _model_with(Losses.NEGATIVE_LOG_LIKELIHOOD)
+    nll.net.load_state_dict(copy.deepcopy(ce.net.state_dict()))
+
+    from dataclasses import replace
+
+    params = _make_train_params(loader, n_epochs=1)
+    params = replace(params, optim=replace(params.optim, accumulate_grad_batches=2))
+    run_ce = ce.train(params=params)
+    run_nll = nll.train(params=params)
+
+    ce_losses = [idp.train_edp.loss for idp in run_ce.idps]
+    nll_losses = [idp.train_edp.loss for idp in run_nll.idps]
+    assert len(ce_losses) == 3
+    for a, b in zip(ce_losses, nll_losses, strict=False):
+        assert a is not None and b is not None and abs(a - b) < 1e-6
+    for (name, p_ce), (_, p_nll) in zip(ce.net.named_parameters(), nll.net.named_parameters(), strict=False):
+        assert torch.allclose(p_ce, p_nll, atol=1e-6), name
+
+    # Reloaded native-NLL checkpoints evaluate under the corrected contract.
+    checkpoint = NNCheckpoint.load(run=run_nll.id, type=Checkpoints.BEST)
+    assert checkpoint is not None
+    reloaded = NNModel.from_checkpoint(checkpoint=checkpoint)
+    assert isinstance(reloaded.loss_fn, torch.nn.NLLLoss)
+    assert abs(reloaded.evaluate(loader).loss - ce.evaluate(loader).loss) < 1e-6
+
+    # Direct context, no accumulation state (the legacy branches).
+    torch.manual_seed(2)
+    ce2 = _model_with(Losses.CROSS_ENTROPY)
+    nll2 = _model_with(Losses.NEGATIVE_LOG_LIKELIHOOD)
+    nll2.net.load_state_dict(copy.deepcopy(ce2.net.state_dict()))
+    batch = next(iter(loader))
+    losses = []
+    for model in (ce2, nll2):
+        optimizer = Optims.ADAM(net=model.net, lr_start=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)
+        ctx = TrainStepContext(
+            model=model,
+            batch=batch,
+            optimizer=optimizer,
+            scaler=None,
+            grad_clip_norm=None,
+            extra_metrics=None,
+            accumulate_grad_batches=1,
+            batch_idx=0,
+            epoch_idx=0,
+            is_last_batch=True,
+        )
+        losses.append(default_train_step(ctx).loss)
+    assert losses[0] is not None and losses[1] is not None and abs(losses[0] - losses[1]) < 1e-6
+    for (name, p_ce), (_, p_nll) in zip(ce2.net.named_parameters(), nll2.net.named_parameters(), strict=False):
+        assert torch.allclose(p_ce, p_nll, atol=1e-6), name

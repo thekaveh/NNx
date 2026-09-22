@@ -632,3 +632,79 @@ def test_n6_best_symlink_falls_back_to_pointer_file_when_symlink_fails(tmp_path,
     pointer = tmp_path / "runs" / "best" / "POINTER.txt"
     assert pointer.exists()
     assert run.id in pointer.read_text()
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+def test_n7_nll_matches_log_softmax_reference(reduction):
+    """FIX-001: native NLL with class weights and ignore_index must equal
+    `F.nll_loss(F.log_softmax(raw, 1), y, ...)` on the full set — a direct
+    oracle, not just split-vs-combined self-consistency (which an
+    unnormalized objective also satisfies)."""
+    import torch.nn.functional as F
+
+    torch.manual_seed(0)
+    model = _model()
+    weight = torch.tensor([1.0, 7.0])
+    model.loss_fn = torch.nn.NLLLoss(weight=weight, ignore_index=-100, reduction=reduction)
+
+    X = torch.randn(5, 4)
+    y = torch.tensor([-100, -100, 0, 0, 1])
+    got = model.evaluate(loader=DataLoader(TensorDataset(X, y), batch_size=2, shuffle=False)).loss
+    with torch.no_grad():
+        raw = model.net(X)
+    expected = float(F.nll_loss(F.log_softmax(raw, dim=1), y, weight=weight, ignore_index=-100, reduction=reduction))
+    assert got == pytest.approx(expected, rel=1e-6)
+
+    ce_model = _model()
+    ce_model.net.load_state_dict(model.net.state_dict())
+    ce_model.loss_fn = torch.nn.CrossEntropyLoss(weight=weight, ignore_index=-100, reduction=reduction)
+    assert ce_model.evaluate(loader=DataLoader(TensorDataset(X, y), batch_size=5)).loss == pytest.approx(got, rel=1e-6)
+
+
+def test_n7_nll_transformer_token_logits_use_class_axis():
+    """Transformer token logits (B, T, V) are flattened to (tokens, V) by
+    `_fwd_pass` before the loss, so log-softmax must run over the class
+    axis of that flattened view; predictions are unchanged."""
+    import torch.nn.functional as F
+
+    from nnx.nn.params.nn_transformer_params import NNTransformerParams
+
+    torch.manual_seed(0)
+    params = NNTransformerParams(
+        input_dim=16,
+        output_dim=16,
+        dropout_prob=0.0,
+        vocab_size=16,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=8,
+    )
+    nll = NNModel(
+        net_params=params,
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.NEGATIVE_LOG_LIKELIHOOD),
+    )
+    ce = NNModel(
+        net_params=params,
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    ce.net.load_state_dict(nll.net.state_dict())
+    tokens = torch.randint(0, 16, (2, 4))
+    targets = torch.randint(0, 16, (2, 4))
+    loader = DataLoader(TensorDataset(tokens, targets), batch_size=2)
+
+    with torch.no_grad():
+        _, flat_targets, logits, predictions = nll._fwd_pass((tokens, targets))
+    assert logits.shape == (8, 16)
+    expected = float(F.nll_loss(F.log_softmax(logits, dim=1), flat_targets))
+    nll_edp = nll.evaluate(loader)
+    assert nll_edp.loss == pytest.approx(expected, rel=1e-6)
+    assert nll_edp.loss == pytest.approx(ce.evaluate(loader).loss, rel=1e-6)
+    assert nll_edp.accuracy == ce.evaluate(loader).accuracy
+    assert torch.equal(
+        nll.predict(tokens).logits
+        if isinstance(nll.predict(tokens).logits, torch.Tensor)
+        else torch.as_tensor(nll.predict(tokens).logits),
+        torch.as_tensor(ce.predict(tokens).logits),
+    )
