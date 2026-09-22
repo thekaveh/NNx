@@ -27,6 +27,12 @@ updates remain differentiable; the helper takes one optimizer step on a
 float32 loss reduction, checks the frozen base and round-trips the full
 ``state_dict()`` (the LoRA-only helpers omit ``magnitude``).
 
+``peft_preconverted_base`` below shows placement: adapters are allocated
+with the wrapped weight's dtype and device, so a base converted to
+float64 (or moved to an accelerator) *before* ``apply_lora_to`` composes
+immediately — one adapter-only SGD step, no second ``.to()``, base
+bit-exactly unchanged.
+
 Run:
     python examples/07_lora_finetuning.py
 """
@@ -105,6 +111,47 @@ def _train_params(n_epochs: int, train_loader, lr: float = 1e-2, data_id: str | 
             threshold=1e-3,
         ),
     )
+
+
+def peft_preconverted_base() -> dict:
+    """Bounded placement demonstration: convert the base BEFORE injecting
+    LoRA, then train the adapter without any corrective ``.to()``.
+
+    A tiny ``Linear -> ReLU -> Linear`` net is converted to float64 first.
+    ``apply_lora_to`` then allocates every ``lora_A`` / ``lora_B`` in
+    float64 on the base's device, the forward and backward run at once,
+    an optimizer built afterwards owns exactly the new adapter
+    parameters, and the frozen base tensors are the very same objects
+    with bit-exact values after the step.
+    """
+    set_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(8, 6), torch.nn.ReLU(), torch.nn.Linear(6, 3)).double()
+    base_tensors = {name: p for name, p in net.named_parameters()}
+    base_values = {name: p.detach().clone() for name, p in net.named_parameters()}
+
+    n_wrapped = apply_lora_to(net, "*", r=2, alpha=4.0)
+    assert n_wrapped == 2, n_wrapped
+    assert all(p.dtype == torch.float64 for p in net.parameters()), "adapters must inherit float64"
+    assert net[0].base.weight is base_tensors["0.weight"], "the base weight must be the same tensor"
+
+    trainable = [p for p in net.parameters() if p.requires_grad]
+    assert len(trainable) == 4  # two LoRA pairs
+    optimizer = torch.optim.SGD(trainable, lr=0.1)
+    x = torch.randn(5, 8, dtype=torch.float64)
+    loss = (net(x) ** 2).mean()
+    loss.backward()
+    optimizer.step()
+    out = net(x)
+    assert out.dtype == torch.float64 and torch.isfinite(out).all()
+
+    for name, value in base_values.items():
+        wrapped_name = name.replace(".weight", ".base.weight").replace(".bias", ".base.bias")
+        current = dict(net.named_parameters())[wrapped_name]
+        assert current is base_tensors[name] and torch.equal(current.detach(), value), name
+
+    summary = {"wrapped": n_wrapped, "adapter_dtype": str(net[0].lora_A.dtype), "loss": float(loss.detach())}
+    print(f"PEFT pre-converted base workflow: {summary}")
+    return summary
 
 
 def dora_zero_row_composition(dtype: torch.dtype = torch.float16) -> dict:
