@@ -111,3 +111,99 @@ def test_nn_graph_dataset_rejects_unknown_sampler():
 def test_nn_graph_dataset_rejects_batch_sizes_in_full_mode():
     with pytest.raises(ValueError, match="batch_sizes"):
         NNGraphDataset(ds_class=_TinyGraph, sampler="full", batch_sizes=(2, 2, 2))
+
+
+# ---------------------------------------------------------------------------
+# FIX-019: empty optional masks → absent loaders; empty train mask rejected
+# ---------------------------------------------------------------------------
+
+
+def _graph_class(*, train: list[int], val: list[int], test: list[int]):
+    """A dataset class over ONE shared 8-node graph with the given split
+    node lists, so a test can also prove the caller's masks are untouched."""
+    n = 8
+    masks = []
+    for nodes in (train, val, test):
+        mask = torch.zeros(n, dtype=torch.bool)
+        mask[nodes] = True
+        masks.append(mask)
+    shared = Data(
+        x=torch.randn(n, 5, generator=torch.Generator().manual_seed(1)),
+        edge_index=torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5, 6, 7, 0]], dtype=torch.long),
+        y=torch.arange(n) % 3,
+        train_mask=masks[0],
+        val_mask=masks[1],
+        test_mask=masks[2],
+    )
+
+    class _SplitGraph:
+        num_features = 5
+        num_classes = 3
+        data = shared
+
+        def __init__(self, root, transform=None):
+            pass
+
+        def __getitem__(self, idx):
+            return self.data
+
+    return _SplitGraph
+
+
+def _mode_kwargs(sampler: str) -> dict:
+    return dict(n_neighbors=[2], n_workers=0) if sampler == "neighbor" else {}
+
+
+@pytest.mark.parametrize("sampler", ["neighbor", "full"])
+@pytest.mark.parametrize(
+    ("val", "test"),
+    [([], [6, 7]), ([4, 5], []), ([], [])],
+    ids=["empty-val", "empty-test", "both-empty"],
+)
+def test_empty_optional_masks_return_none(sampler, val, test):
+    """An empty val/test mask yields loader None, resolved size 0 and state
+    "0" in both sampler modes; the nonempty splits are unchanged and the
+    caller's masks are never mutated. Neighbor loaders are only constructed
+    and inspected (no pyg-lib / torch-sparse iteration)."""
+    ds_class = _graph_class(train=[0, 1, 2, 3], val=val, test=test)
+    ds = NNGraphDataset(ds_class=ds_class, sampler=sampler, **_mode_kwargs(sampler))
+
+    assert (ds.val_loader is None) == (not val)
+    assert (ds.test_loader is None) == (not test)
+    assert ds.batch_sizes == (4, len(val), len(test))
+    assert ds.state()["val_batch_size"] == str(len(val)) and ds.state()["test_batch_size"] == str(len(test))
+
+    def _size(loader):
+        return loader[0].batch_size if sampler == "full" else loader.batch_size
+
+    assert _size(ds.train_loader) == 4
+    if val:
+        assert _size(ds.val_loader) == len(val)
+    if test:
+        assert _size(ds.test_loader) == len(test)
+    if sampler == "full" and test:
+        assert set(ds.test_loader[0].input_id.tolist()) == set(test)
+
+    # An explicit positive size on an EMPTY neighbor split still yields an
+    # absent loader (and derived size 0); populated splits keep the request.
+    if sampler == "neighbor":
+        requested = NNGraphDataset(
+            ds_class=ds_class, sampler="neighbor", n_neighbors=[2], n_workers=0, batch_sizes=(2, 3, 3)
+        )
+        assert requested.train_loader.batch_size == 2
+        assert requested.batch_sizes == (2, 3 if val else 0, 3 if test else 0)
+        assert (requested.val_loader is None) == (not val) and (requested.test_loader is None) == (not test)
+
+    data = ds_class.data
+    assert (
+        int(data.train_mask.sum()) == 4
+        and int(data.val_mask.sum()) == len(val)
+        and int(data.test_mask.sum()) == len(test)
+    )
+
+
+@pytest.mark.parametrize("sampler", ["neighbor", "full"])
+def test_empty_train_mask_rejected(sampler):
+    ds_class = _graph_class(train=[], val=[4], test=[6])
+    with pytest.raises(ValueError, match="train_mask"):
+        NNGraphDataset(ds_class=ds_class, sampler=sampler, **_mode_kwargs(sampler))

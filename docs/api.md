@@ -2927,6 +2927,14 @@ is kept verbatim; NumPy integers are normalized to ``int``. Zero,
 rejected with the ``batch_sizes[i] (split)`` slot named before
 ``ds_class`` is instantiated. ``sampler="full"`` rejects every explicit
 size (the complete split is always one batch).
+
+An empty ``val_mask`` / ``test_mask`` is an *absent* split in both
+sampler modes (FIX-019): that loader is ``None`` — the optional-loader
+contract the tabular / preference wrappers already follow, which
+``NNModel.train`` / ``Trainer.train`` honour by skipping validation —
+its resolved size is ``0`` (derived from absence, never an accepted
+explicit zero) and ``state()`` reports ``"0"``. An empty ``train_mask``
+raises ``ValueError`` at construction. The caller's masks are only read.
 ```
 
 
