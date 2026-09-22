@@ -144,3 +144,34 @@ def test_prompt_tuned_generate_survives_window_overflow(tmp_path):
     # this raised ValueError mid-generation.
     out = model.generate(prompt="the", max_new_tokens=40, temperature=0.0)
     assert isinstance(out, str)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float16, torch.bfloat16], ids=str)
+def test_prompt_inherits_embedding_placement(dtype, tmp_path):
+    """FIX-003: the soft prompt is allocated from the wrapped model's
+    token-embedding weight, so a model converted BEFORE wrapping runs a
+    token forward immediately; adapter-only load into an already
+    converted destination keeps the destination's placement and its
+    frozen base identity."""
+    set_seed(0)
+    model = _tiny_transformer().to(dtype)
+    embed_weight = model.tok_embed.weight
+    tuner = PromptTuner(model, n_prompt_tokens=3)
+    assert tuner.soft_prompt.dtype == embed_weight.dtype == dtype
+    assert tuner.soft_prompt.device == embed_weight.device
+    assert model.tok_embed.weight is embed_weight
+
+    ids = torch.randint(0, 100, (2, 5))
+    out = tuner(ids)
+    assert out.dtype == dtype and out.shape == (2, 5, 100) and torch.isfinite(out).all()
+    out.float().sum().backward()
+    assert tuner.soft_prompt.grad is not None and torch.isfinite(tuner.soft_prompt.grad).all()
+    assert all(p.grad is None for p in model.parameters())
+
+    # Adapter-only round trip from an FP32 tuner into the converted destination.
+    source = PromptTuner(_tiny_transformer(), n_prompt_tokens=3)
+    path = save_prompt_weights(source, tmp_path / "prompt.pt")
+    assert load_prompt_weights(tuner, path) == 1
+    assert tuner.soft_prompt.dtype == dtype
+    assert torch.equal(tuner.soft_prompt.detach(), source.soft_prompt.detach().to(dtype))
+    assert model.tok_embed.weight is embed_weight and embed_weight.dtype == dtype

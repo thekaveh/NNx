@@ -399,3 +399,101 @@ def test_lora_finetune_leaves_base_weights_frozen(tmp_path, monkeypatch):
             assert not torch.equal(post.detach(), lora_init[n]), (
                 f"LoRA parameter {n!r} did not change during fine-tuning"
             )
+
+
+# -------------------------------------------------------------------------
+# FIX-003: adapters inherit the wrapped tensor's dtype / device
+# -------------------------------------------------------------------------
+
+_PLACEMENT_DTYPES = [torch.float32, torch.float64, torch.float16, torch.bfloat16]
+
+
+def _wrap_lora(base):
+    return LoRALinear(base, r=2, alpha=4.0)
+
+
+def _wrap_dora(base):
+    from nnx import DoRALinear
+
+    return DoRALinear(base, r=2, alpha=4.0)
+
+
+def _wrap_ia3(base):
+    from nnx import IA3Linear
+
+    return IA3Linear(base)
+
+
+@pytest.mark.parametrize("wrap", [_wrap_lora, _wrap_dora, _wrap_ia3], ids=["lora", "dora", "ia3"])
+@pytest.mark.parametrize("dtype", _PLACEMENT_DTYPES, ids=str)
+def test_adapter_inherits_base_dtype_device(wrap, dtype):
+    """Wrapping an already-converted base must work immediately: adapter
+    parameters take the base weight's dtype/device, the forward runs
+    without a corrective `.to()`, the output keeps the base dtype, and
+    the base tensor is neither replaced nor recast nor trained."""
+    torch.manual_seed(0)
+    base = nn.Linear(4, 4).to(dtype)
+    original_weight = base.weight
+    adapted = wrap(base)
+    assert base.weight is original_weight and base.weight.dtype == dtype
+    for name, p in adapted.named_parameters():
+        assert p.dtype == dtype, name
+        assert p.device == base.weight.device, name
+
+    x = torch.ones(2, 4, dtype=dtype, requires_grad=True)
+    out = adapted(x)
+    assert out.dtype == dtype and torch.isfinite(out).all()
+    out.float().sum().backward()
+    assert base.weight.grad is None and (base.bias is None or base.bias.grad is None)
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in adapted.parameters())
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=str)
+def test_ia3_preserves_half_output_and_composes(dtype):
+    """IA3 used to allocate a float32 scaling vector, silently promoting
+    a half pipeline to float32 so the next half Linear crashed."""
+    from nnx import IA3Linear
+
+    torch.manual_seed(0)
+    first = IA3Linear(nn.Linear(4, 4).to(dtype))
+    nxt = nn.Linear(4, 2).to(dtype)
+    x = torch.ones(2, 4, dtype=dtype)
+    hidden = first(x)
+    assert hidden.dtype == dtype
+    assert nxt(hidden).dtype == dtype
+
+
+@pytest.mark.parametrize("wrap", [_wrap_lora, _wrap_dora, _wrap_ia3], ids=["lora", "dora", "ia3"])
+def test_meta_base_allocates_meta_adapters(wrap):
+    """A meta-device base must get meta adapters (no materialization and
+    no forward is attempted — meta construction is not a forward pass)."""
+    base = nn.Linear(4, 4, device="meta")
+    adapted = wrap(base)
+    for name, p in adapted.named_parameters():
+        assert p.device.type == "meta", name
+    assert base.weight.device.type == "meta"
+
+
+def test_apply_lora_to_preconverted_net_trains_new_params():
+    """apply_lora_to on a net converted BEFORE wrapping: the traversal
+    inherits placement per layer, the forward composes with the next
+    layer immediately, and an optimizer built afterwards owns exactly
+    the newly registered adapter Parameters."""
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(8, 6), nn.ReLU(), nn.Linear(6, 3)).double()
+    n = apply_lora_to(net, "*", r=2, alpha=4.0)
+    assert n == 2
+    assert all(p.dtype == torch.float64 for p in net.parameters())
+    trainable = [p for p in net.parameters() if p.requires_grad]
+    assert {id(p) for p in trainable} == {id(net[0].lora_A), id(net[0].lora_B), id(net[2].lora_A), id(net[2].lora_B)}
+    optimizer = torch.optim.SGD(trainable, lr=0.1)
+    x = torch.randn(5, 8, dtype=torch.float64)
+    before = [p.detach().clone() for p in trainable]
+    frozen = {name: p.detach().clone() for name, p in net.named_parameters() if not p.requires_grad}
+    loss = (net(x) ** 2).mean()
+    loss.backward()
+    optimizer.step()
+    assert net(x).dtype == torch.float64
+    assert any(not torch.equal(a, b.detach()) for a, b in zip(before, trainable, strict=True))
+    assert all(torch.equal(p.detach(), frozen[name]) for name, p in net.named_parameters() if name in frozen)

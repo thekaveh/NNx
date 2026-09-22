@@ -60,7 +60,9 @@ class PromptTuner(nn.Module):
         n_prompt_tokens: number of soft-prompt slots. Must be > 0.
 
     The soft prompt is initialized with ``nn.init.normal_(std=0.02)``
-    — the same scale Lester et al. use as their "random init" baseline.
+    — the same scale Lester et al. use as their "random init" baseline —
+    and allocated with the dtype/device of the wrapped model's token
+    embedding, so convert or move the model *before* wrapping.
     """
 
     def __init__(
@@ -84,8 +86,11 @@ class PromptTuner(nn.Module):
             p.requires_grad = False
 
         d_model = model.params.d_model
-        # (n_prompt_tokens, d_model). Normal(0, 0.02) init.
-        self.soft_prompt = nn.Parameter(torch.empty(n_prompt_tokens, d_model))
+        # (n_prompt_tokens, d_model). Normal(0, 0.02) init. Allocated from
+        # the token-embedding weight it is concatenated with, so it
+        # inherits that tensor's dtype and device (FIX-003) — a model
+        # converted or moved before wrapping forwards immediately.
+        self.soft_prompt = nn.Parameter(model.tok_embed.weight.new_empty(n_prompt_tokens, d_model))
         nn.init.normal_(self.soft_prompt, std=0.02)
 
     @property
