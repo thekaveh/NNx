@@ -48,6 +48,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("07_lora_finetuning.py", "lora_artifact_roundtrip"),
     ("07_lora_finetuning.py", "peft_preconverted_base"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
+    ("11_tinystories_lm.py", "manual_attention_lm_example"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
 ]
@@ -65,7 +66,7 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
     try:
         fn = namespace[helper]
         fn()
-        if helper == "dora_zero_row_composition":
+        if helper in {"dora_zero_row_composition", "manual_attention_lm_example"}:
             import torch
 
             fn(dtype=torch.float32)
