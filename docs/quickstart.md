@@ -245,6 +245,58 @@ step instead of feeding it NaN, and its checkpoint counts as an unavailable
 baseline that the next finite epoch (or run) replaces. Raw NaN/inf
 observations stay in the run history as diagnostics.
 
+### 2.12. Graph datasets with an empty validation split
+
+`NNGraphDataset` reads the split sizes from the graph's `train_mask` /
+`val_mask` / `test_mask`. An empty optional mask is an *absent* split: that
+loader is `None` (resolved `batch_sizes` entry `0`, `"0"` in `state()`), and
+passing it to `train()` skips validation instead of scoring zero seed rows —
+the same optional-loader contract `NNTabularDataset` and `NNPreferenceDataset`
+use. An empty `train_mask` raises at construction. Fully offline, no neighbor
+sampling backend needed:
+
+```python
+import torch
+from torch_geometric.data import Data
+from nnx import (
+    Activations, Devices, EarlyStopping, Losses, Nets,
+    NNGraphDataset, NNModel, NNModelParams, NNParams, NNTrainParams,
+)
+
+class TinySplitGraph:                      # (root, transform) ctor + dataset[0] surface
+    num_features, num_classes = 4, 2
+    def __init__(self, root, transform=None):
+        train = torch.tensor([True, True, True, False, False, False])
+        self.data = Data(
+            x=torch.randn(6, 4), y=torch.tensor([0, 1, 0, 1, 0, 1]),
+            edge_index=torch.tensor([[0, 1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 0]]),
+            train_mask=train, val_mask=torch.zeros(6, dtype=torch.bool), test_mask=~train,
+        )
+    def __getitem__(self, idx):
+        return self.data
+
+dataset = NNGraphDataset(ds_class=TinySplitGraph, sampler="full")
+assert dataset.val_loader is None and dataset.batch_sizes == (3, 0, 3)
+
+model = NNModel(
+    net_params=NNParams(input_dim=dataset.input_dim, output_dim=dataset.output_dim,
+                        hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+    params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+)
+run = model.train(
+    params=NNTrainParams(n_epochs=5, train_loader=dataset.train_loader, val_loader=dataset.val_loader),
+    callbacks=[EarlyStopping(monitor="train_edp.loss", patience=2)],   # no validation signal to monitor
+)
+assert all(idp.val_edp is None for idp in run.idps)                   # persisted as absence, not zeros
+print(model.evaluate(loader=dataset.test_loader).accuracy)            # test split scored on its seed rows
+```
+
+`EarlyStopping`'s default `val_edp.error` monitor has nothing to read here,
+so point it at a train metric. See
+[`examples/graph_optional_splits.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_optional_splits.py)
+for the runnable version (it also proves, with an `eval_step_fn` spy, that no
+validation hook runs).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
