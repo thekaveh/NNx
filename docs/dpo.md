@@ -103,6 +103,12 @@ preferences = NNPreferenceDataset(
     batch_sizes=(8, 8, 8),
     seed=0,
 )
+# batch_sizes=(train, val, test): None (the default for every slot) means
+# one batch holding the complete split — one DPO step per epoch for the
+# train loader; a positive integer is an explicit mini-batch size, kept
+# verbatim. Zero / False / fractions / a list or a 2-tuple raise ValueError
+# naming the slot before tokenizer.encode runs — zero never disables a
+# split; val_proportion=0.0 / test_proportion=0.0 do (that loader is None).
 
 # 5. DPO step — frozen reference + β temperature.
 # pad_token_id matches the dataset's — padded response positions are

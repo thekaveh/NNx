@@ -23,6 +23,7 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
+from ..._validation import require_batch_sizes
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -91,6 +92,18 @@ class NNPreferenceDataset(NNDatasetBase):
 
     Each batch yielded is ``(prompt_ids, chosen_ids, rejected_ids)``
     where each entry is ``(B, T_*)`` ``torch.LongTensor``.
+
+    ``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
+    default for every slot) means *one batch holding the complete split* —
+    one DPO step per epoch for the default train loader; pass an explicit
+    train size such as ``batch_sizes=(8, None, None)`` for mini-batches. A
+    positive integer is kept verbatim (larger than the split → one smaller
+    batch); NumPy integers are normalized to ``int``. Zero, ``False``,
+    negatives, floats, strings and anything but a 3-tuple are rejected with
+    the ``batch_sizes[i] (split)`` slot named before ``tokenizer.encode``
+    is called. Zero never disables a split: `val_proportion=0.0` /
+    `test_proportion=0.0` do (that loader is then ``None`` with a
+    placeholder ``1`` in the resolved ``batch_sizes``).
     """
 
     prompts: list[str]
@@ -124,6 +137,9 @@ class NNPreferenceDataset(NNDatasetBase):
             )
         if len(self.prompts) == 0:
             raise ValueError("NNPreferenceDataset requires non-empty input lists")
+        # Validate the batch-size request before a single tokenizer call
+        # (FIX-022): `None` is the only full-split sentinel.
+        requested = require_batch_sizes(self.batch_sizes, owner="NNPreferenceDataset")
 
         # Encode everything via the tokenizer up-front.
         encode = self.tokenizer.encode  # type: ignore[attr-defined]
@@ -162,9 +178,12 @@ class NNPreferenceDataset(NNDatasetBase):
 
         object.__setattr__(self, "name", self.name_override or "NNPreferenceDataset")
 
-        train_batch_size = self.batch_sizes[0] or n_train
-        val_batch_size = self.batch_sizes[1] or max(1, n_val)
-        test_batch_size = self.batch_sizes[2] or max(1, n_test)
+        # `None` → one batch holding the complete split (placeholder 1 for
+        # an empty optional split); an explicit positive size is kept
+        # verbatim — an `is None` test, not truthiness (FIX-022).
+        train_batch_size = n_train if requested[0] is None else requested[0]
+        val_batch_size = max(1, n_val) if requested[1] is None else requested[1]
+        test_batch_size = max(1, n_test) if requested[2] is None else requested[2]
         object.__setattr__(self, "batch_sizes", (train_batch_size, val_batch_size, test_batch_size))
 
         object.__setattr__(
