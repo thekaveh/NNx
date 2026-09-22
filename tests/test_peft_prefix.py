@@ -298,3 +298,27 @@ def test_prefix_uses_each_block_placement():
     assert tuner.prefix_keys[0].dtype == torch.float32 == model.blocks[0].attn.w_qkv.weight.dtype
     assert tuner.prefix_keys[1].dtype == torch.float64 == model.blocks[1].attn.w_qkv.weight.dtype
     assert tuner.prefix_values[1].dtype == torch.float64
+
+
+def test_prefix_state_dict_excludes_nested_name_collisions(tmp_path):
+    """FIX-002: only entries of the tuner-owned ``prefix_keys`` /
+    ``prefix_values`` lists belong in a prefix artifact — a nested base
+    submodule whose name contains ``prefix_`` is neither saved nor
+    writable through the loader."""
+    set_seed(0)
+    model = _tiny_transformer()
+    model.prefix_norm = torch.nn.Linear(2, 2)  # name collision inside the frozen base
+    tuner = PrefixTuner(model, n_prefix=2)
+    before = {k: v.detach().clone() for k, v in tuner.state_dict().items()}
+
+    owned = {f"prefix_keys.{i}" for i in range(2)} | {f"prefix_values.{i}" for i in range(2)}
+    assert set(tuner.prefix_state_dict()) == owned
+    path = save_prefix_weights(tuner, tmp_path / "prefix.pt")
+    assert set(torch.load(path, weights_only=True)) == owned
+
+    source = {k: v.detach().clone() for k, v in tuner.state_dict().items()}
+    source["model.prefix_norm.weight"].zero_()
+    source["model.blocks.0.attn.w_qkv.weight"].zero_()
+    assert load_prefix_weights(tuner, source) == 4
+    for k, v in tuner.state_dict().items():
+        assert torch.equal(v, before[k]), k

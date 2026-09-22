@@ -3869,8 +3869,11 @@ Save ONLY the LoRA parameters of ``module`` to ``path``.
 
 ```text
 The output is a plain ``torch.save`` of a dict-subset of the full
-state_dict, containing only keys with ``lora_A`` or ``lora_B`` in
-them. Loadable via :func:`load_lora_weights`.
+state_dict, containing exactly the ``lora_A`` / ``lora_B`` tensors
+owned by the :class:`LoRALinear` wrappers in ``module`` — selected by
+registered ownership, not by key substring, so a module *named*
+``lora_A_projection`` never leaks its frozen base weights. Loadable
+via :func:`load_lora_weights`.
 
 Args:
     module: any module that has been processed by
@@ -3906,7 +3909,12 @@ Returns:
 
 Loads via ``module.load_state_dict(..., strict=False)`` so the
 base layer's frozen weights — which are NOT in the LoRA-only
-checkpoint — don't trigger a missing-keys error.
+checkpoint — don't trigger a missing-keys error. The source is
+first restricted to the keys ``module``'s own LoRA wrappers register
+(derived from the destination, not from the source's key names), so
+a full checkpoint — or one carrying colliding ``*.base.*`` keys —
+can never overwrite a frozen base tensor. A wrong-shaped owned key
+still raises the native size-mismatch error.
 ```
 
 
@@ -4148,8 +4156,9 @@ Save ONLY the IA3 ``scaling`` parameters of ``module`` to ``path``.
 
 ```text
 The output is a ``torch.save`` of a dict-subset of the full
-state_dict, containing only keys whose name includes ``scaling``.
-Loadable via :func:`load_ia3_weights`.
+state_dict, containing exactly the ``scaling`` tensors owned by the
+:class:`IA3Linear` wrappers in ``module`` (selected by registered
+ownership, not by key substring). Loadable via :func:`load_ia3_weights`.
 
 Args:
     module: any module that has been processed by
@@ -4397,7 +4406,7 @@ is the iterator you hand to an optimizer.
 nnx.peft.prompt.PromptTuner.prompt_state_dict(self) -> 'dict'
 ```
 
-Return a state-dict containing only the soft-prompt tensor, keyed for round-trip via :meth:`load_prompt_weights`.
+Return a state-dict containing only the soft-prompt tensor, keyed for round-trip via :meth:`load_prompt_weights`. Only the tuner-owned ``soft_prompt`` entry qualifies — never anything under ``model.*``, even if a nested base module's name happens to contain the marker (FIX-002).
 
 
 #### `nnx.peft.prompt.save_prompt_weights`

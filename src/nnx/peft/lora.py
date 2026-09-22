@@ -24,7 +24,8 @@ This module ships:
   - :func:`save_lora_weights(module, path)` /
     :func:`load_lora_weights(module, source)` — persist ONLY the
     LoRA parameters (``lora_A`` / ``lora_B``) so adapter checkpoints
-    are tiny compared to a full ``state_dict``.
+    are tiny compared to a full ``state_dict``. Keys are selected by
+    registered wrapper ownership, never by name substring.
 
 The fnmatch glob conventions match those of :func:`nnx.finetune.freeze`
 — dotted parameter / module names against shell wildcards. The two
@@ -37,12 +38,14 @@ from __future__ import annotations
 
 import fnmatch
 import math
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import torch
 from torch import nn
 
+from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
 
 
@@ -211,18 +214,30 @@ def apply_lora_to(
     return len(targets)
 
 
-def _lora_keys_only(state_dict: dict) -> dict:
-    """Filter a state_dict to entries belonging to LoRA parameters
-    (``lora_A`` / ``lora_B``). Used by both save and load."""
-    return {k: v for k, v in state_dict.items() if "lora_A" in k or "lora_B" in k}
+_LORA_OWNED = ("lora_A", "lora_B")
+
+
+def _lora_keys_only(module: nn.Module, state_dict: Mapping[str, Any]) -> dict:
+    """Restrict ``state_dict`` to the ``lora_A`` / ``lora_B`` entries
+    *owned* by :class:`LoRALinear` wrappers registered in ``module``
+    (DoRA wrappers included by inheritance; their ``magnitude`` is not
+    LoRA state). Ownership is derived from the module tree, never from a
+    key substring, so a layer merely *named* ``lora_A_projection`` cannot
+    leak its frozen base tensors into an adapter file or receive them
+    from an untrusted source (FIX-002). Used by both save and load.
+    """
+    return select_owned(state_dict, owned_adapter_keys(module, LoRALinear, _LORA_OWNED))
 
 
 def save_lora_weights(module: nn.Module, path: Union[str, Path]) -> str:
     """Save ONLY the LoRA parameters of ``module`` to ``path``.
 
     The output is a plain ``torch.save`` of a dict-subset of the full
-    state_dict, containing only keys with ``lora_A`` or ``lora_B`` in
-    them. Loadable via :func:`load_lora_weights`.
+    state_dict, containing exactly the ``lora_A`` / ``lora_B`` tensors
+    owned by the :class:`LoRALinear` wrappers in ``module`` — selected by
+    registered ownership, not by key substring, so a module *named*
+    ``lora_A_projection`` never leaks its frozen base weights. Loadable
+    via :func:`load_lora_weights`.
 
     Args:
         module: any module that has been processed by
@@ -233,7 +248,7 @@ def save_lora_weights(module: nn.Module, path: Union[str, Path]) -> str:
     Returns:
         The path written (so calls can be chained).
     """
-    sd = _lora_keys_only(module.state_dict())
+    sd = _lora_keys_only(module, module.state_dict())
     torch.save(sd, str(path))
     return str(path)
 
@@ -253,10 +268,15 @@ def load_lora_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
 
     Loads via ``module.load_state_dict(..., strict=False)`` so the
     base layer's frozen weights — which are NOT in the LoRA-only
-    checkpoint — don't trigger a missing-keys error.
+    checkpoint — don't trigger a missing-keys error. The source is
+    first restricted to the keys ``module``'s own LoRA wrappers register
+    (derived from the destination, not from the source's key names), so
+    a full checkpoint — or one carrying colliding ``*.base.*`` keys —
+    can never overwrite a frozen base tensor. A wrong-shaped owned key
+    still raises the native size-mismatch error.
     """
     sd = _resolve_source_to_state_dict(source, "load_lora_weights")
-    sd = _lora_keys_only(sd)
+    sd = _lora_keys_only(module, sd)
     result = module.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the module
     # (e.g. loading into an un-adapted model) — subtract them so the

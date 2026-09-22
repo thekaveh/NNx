@@ -497,3 +497,65 @@ def test_apply_lora_to_preconverted_net_trains_new_params():
     assert net(x).dtype == torch.float64
     assert any(not torch.equal(a, b.detach()) for a, b in zip(before, trainable, strict=True))
     assert all(torch.equal(p.detach(), frozen[name]) for name, p in net.named_parameters() if name in frozen)
+
+
+# -------------------------------------------------------------------------
+# FIX-002: adapter artifacts are selected by ownership, not name substrings
+# -------------------------------------------------------------------------
+
+
+def test_lora_collision_name_cannot_overwrite_base(tmp_path):
+    """A submodule whose *name* contains ``lora_A`` must not leak its frozen
+    base tensors into an adapter-only file, and a source dict carrying
+    such colliding base keys must not modify any non-adapter tensor."""
+    torch.manual_seed(0)
+    net = nn.ModuleDict({"lora_A_projection": nn.Linear(4, 4), "lora_B_head": nn.Linear(4, 2)})
+    assert apply_lora_to(net, "*", r=2) == 2
+    before = {k: v.detach().clone() for k, v in net.state_dict().items()}
+
+    path = save_lora_weights(net, tmp_path / "lora.pt")
+    saved = torch.load(path, weights_only=True)
+    assert set(saved) == {
+        "lora_A_projection.lora_A",
+        "lora_A_projection.lora_B",
+        "lora_B_head.lora_A",
+        "lora_B_head.lora_B",
+    }
+
+    # Full state dict with every non-adapter tensor deliberately altered.
+    source = {k: v.detach().clone() for k, v in net.state_dict().items()}
+    for k, v in source.items():
+        if not (k.endswith(".lora_A") or k.endswith(".lora_B")):
+            v.zero_()
+    assert load_lora_weights(net, source) == 4
+    for k, v in net.state_dict().items():
+        assert torch.equal(v, before[k]), k
+
+
+def test_load_lora_weights_counts_only_accepted_adapter_tensors():
+    """Unrelated keys are ignored (counted as not loaded); a wrong-shaped
+    but genuinely owned key still raises the native load error; a root
+    wrapper has unprefixed keys."""
+    torch.manual_seed(0)
+    net = _TinyNet()
+    apply_lora_to(net, "layers.*", r=2)
+    valid = net.state_dict()["layers.0.lora_A"].clone().fill_(0.5)
+    n = load_lora_weights(
+        net, {"layers.0.lora_A": valid, "layers.0.base.weight": torch.zeros(16, 8), "nonsense": torch.ones(1)}
+    )
+    assert n == 1
+    assert torch.all(net.layers[0].lora_A == 0.5)
+    assert not torch.all(net.layers[0].base.weight == 0)
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        load_lora_weights(net, {"layers.0.lora_A": torch.zeros(3, 8)})
+
+    root = LoRALinear(nn.Linear(4, 4), r=2)
+    sd = {k: v for k, v in root.state_dict().items()}
+    assert set(sd) == {"base.weight", "base.bias", "lora_A", "lora_B"}
+    assert (
+        load_lora_weights(
+            root, {"lora_A": torch.zeros(2, 4), "lora_B": torch.zeros(4, 2), "base.weight": torch.zeros(4, 4)}
+        )
+        == 2
+    )
+    assert not torch.all(root.base.weight == 0)

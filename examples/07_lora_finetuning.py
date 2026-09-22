@@ -33,6 +33,15 @@ float64 (or moved to an accelerator) *before* ``apply_lora_to`` composes
 immediately — one adapter-only SGD step, no second ``.to()``, base
 bit-exactly unchanged.
 
+``lora_artifact_roundtrip`` below closes the loop the main flow leaves
+open: it inspects the exact keys ``save_lora_weights`` writes (adapter
+ownership, never a name substring — a layer named ``lora_A_projection``
+does not leak its base), reloads the artifact into a freshly wrapped
+matching base and checks the load count, output parity and base
+identity. An adapter file is *not* a resumable model checkpoint: it
+carries only the trainable delta; the base weights come from wherever
+the base model is loaded from.
+
 Run:
     python examples/07_lora_finetuning.py
 """
@@ -41,6 +50,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections import OrderedDict
 
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -48,6 +58,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from nnx import (
     Activations,
     Devices,
+    LoRALinear,
     Losses,
     Nets,
     NNModel,
@@ -59,6 +70,7 @@ from nnx import (
     Optims,
     apply_dora_to,
     apply_lora_to,
+    load_lora_weights,
     save_lora_weights,
     set_seed,
 )
@@ -111,6 +123,79 @@ def _train_params(n_epochs: int, train_loader, lr: float = 1e-2, data_id: str | 
             threshold=1e-3,
         ),
     )
+
+
+def _lora_owned_params(net: torch.nn.Module) -> set[int]:
+    """Identities of the parameters the LoRA wrappers in ``net`` own —
+    the ownership-aware alternative to matching ``"lora_" in name``,
+    which a colliding base name could satisfy."""
+    return {id(p) for m in net.modules() if isinstance(m, LoRALinear) for p in (m.lora_A, m.lora_B)}
+
+
+def lora_artifact_roundtrip() -> dict:
+    """Bounded adapter-artifact demonstration (writes one file under a
+    temporary directory).
+
+    Wraps a tiny classifier whose first layer is deliberately *named*
+    ``lora_A_projection`` (a name that contains the LoRA marker), moves
+    the adapters off their zero init, saves the LoRA-only artifact and
+    asserts its exact key set: the two adapter tensors per wrapped layer
+    and nothing else — no ``*.base.*`` tensors. Then it rebuilds a
+    matching wrapped destination from the same base weights, loads the
+    artifact, and checks the load count, bit-exact output parity, and
+    that the destination's base tensors are the same objects with the
+    same values as before the load.
+    """
+    set_seed(0)
+
+    def _build() -> torch.nn.Module:
+        return torch.nn.Sequential(
+            OrderedDict(
+                [
+                    ("lora_A_projection", torch.nn.Linear(8, 6)),
+                    ("act", torch.nn.ReLU()),
+                    ("head", torch.nn.Linear(6, 3)),
+                ]
+            )
+        )
+
+    source = _build()
+    base_state = {k: v.detach().clone() for k, v in source.state_dict().items()}
+    n_wrapped = apply_lora_to(source, "*", r=2, alpha=4.0)
+    assert n_wrapped == 2, n_wrapped
+    with torch.no_grad():
+        for p in source.parameters():
+            if id(p) in _lora_owned_params(source):
+                p.normal_(std=0.1)
+
+    x = torch.randn(4, 8)
+    expected = source(x)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = save_lora_weights(source, os.path.join(tmp, "lora.pt"))
+        saved_keys = set(torch.load(path, weights_only=True))
+        assert saved_keys == {
+            "lora_A_projection.lora_A",
+            "lora_A_projection.lora_B",
+            "head.lora_A",
+            "head.lora_B",
+        }, saved_keys
+
+        destination = _build()
+        destination.load_state_dict(base_state)  # same pretrained base, fresh adapters
+        apply_lora_to(destination, "*", r=2, alpha=4.0)
+        base_tensors = {n: p for n, p in destination.named_parameters() if id(p) not in _lora_owned_params(destination)}
+        base_values = {n: p.detach().clone() for n, p in base_tensors.items()}
+        n_loaded = load_lora_weights(destination, path)
+
+    assert n_loaded == len(saved_keys) == 4, n_loaded
+    assert torch.equal(destination(x), expected), "reloaded adapter must reproduce the source output"
+    for n, p in destination.named_parameters():
+        if n in base_tensors:
+            assert p is base_tensors[n] and torch.equal(p.detach(), base_values[n]), n
+
+    summary = {"wrapped": n_wrapped, "saved_keys": sorted(saved_keys), "loaded": n_loaded}
+    print(f"LoRA artifact round-trip workflow: {summary}")
+    return summary
 
 
 def peft_preconverted_base() -> dict:
@@ -250,8 +335,9 @@ def main():
     print("Phase 4: verifying base-frozen invariant")
     print("=" * 60)
     drifted = []
+    lora_owned = _lora_owned_params(model.net)  # wrapper-owned identities, not a name heuristic
     for n, post in model.net.named_parameters():
-        if "lora_" in n:
+        if id(post) in lora_owned:
             continue
         # apply_lora_to inserted a single `.base.` segment into every
         # wrapped layer's parameter name (e.g. `layers.0.weight` →
