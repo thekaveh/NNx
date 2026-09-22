@@ -327,7 +327,7 @@ from deleting or interleaving artifacts until final persistence ends.
 ##### `nnx.nn.nn_model.NNModel.evaluate`
 
 ```python
-nnx.nn.nn_model.NNModel.evaluate(self, loader: 'DataLoader', extra_metrics=None) -> 'NNEvaluationDataPoint'
+nnx.nn.nn_model.NNModel.evaluate(self, loader: 'Iterable[Any]', extra_metrics=None) -> 'NNEvaluationDataPoint'
 ```
 
 Aggregate predictions across all batches in `loader` and compute a single NNEvaluationDataPoint. Aggregating (rather than averaging per-batch metrics) gives correct sample-weighted f1/precision/recall when the final batch is short.
@@ -452,7 +452,7 @@ forward/backward dance.
 #### `nnx.nn.nn_model.EvalStepContext`
 
 ```python
-class nnx.nn.nn_model.EvalStepContext(model: 'NNModel', val_loader: 'DataLoader', extra_metrics: 'Optional[Mapping[str, Callable]]', epoch_idx: 'int') -> 'None'
+class nnx.nn.nn_model.EvalStepContext(model: 'NNModel', val_loader: 'Iterable[Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', epoch_idx: 'int') -> 'None'
 ```
 
 Frozen bundle of state passed into a validation-step function (#86).
@@ -977,7 +977,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_train_params.NNTrainParams`
 
 ```python
-class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'NNOptimParams' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False) -> 'None'
+class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'NNOptimParams' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False) -> 'None'
 ```
 
 Training configuration.
@@ -997,7 +997,7 @@ hash to the same `run.id`.
 ##### `nnx.nn.params.nn_train_params.NNTrainParams.with_train_loader`
 
 ```python
-nnx.nn.params.nn_train_params.NNTrainParams.with_train_loader(self, value: 'DataLoader') -> 'NNTrainParams'
+nnx.nn.params.nn_train_params.NNTrainParams.with_train_loader(self, value: 'Iterable[Any]') -> 'NNTrainParams'
 ```
 
 No public description is currently available.
@@ -1005,7 +1005,7 @@ No public description is currently available.
 ##### `nnx.nn.params.nn_train_params.NNTrainParams.with_val_loader`
 
 ```python
-nnx.nn.params.nn_train_params.NNTrainParams.with_val_loader(self, value: 'DataLoader') -> 'NNTrainParams'
+nnx.nn.params.nn_train_params.NNTrainParams.with_val_loader(self, value: 'Iterable[Any]') -> 'NNTrainParams'
 ```
 
 No public description is currently available.

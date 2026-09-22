@@ -1704,3 +1704,100 @@ def test_train_overwrite_failure_before_commit_re_elects_survivor(tmp_path, monk
     assert survivor_best is not None
     expected = NNModel.from_checkpoint(checkpoint=survivor_best).predict(X).logits
     assert np.array_equal(np.asarray(reconstructed.predict(X).logits), np.asarray(expected))
+
+
+# --- FIX-012: warm resume with iterable / list loaders ---------------------
+
+
+def _two_class_model() -> NNModel:
+    return NNModel(
+        net_params=NNParams(input_dim=2, output_dim=2, dropout_prob=0),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def test_list_resume_regression(tmp_path, monkeypatch):
+    """FIX-012: a plain list of batches is an accepted train loader; warm
+    resume must accept it too (it used to crash on `.num_workers` after
+    restoring state) and continue at source epoch + 1."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loader = [(torch.ones(2, 2), torch.tensor([0, 1]))]
+    first = _two_class_model().train(NNTrainParams(n_epochs=1, train_loader=loader))
+    resumed = _two_class_model().train(NNTrainParams(n_epochs=1, train_loader=loader, resume_from_run_id=first.id))
+    assert resumed.idps[0].epoch_idx == first.idps[-1].epoch_idx + 1
+
+
+def test_warm_resume_list_loader_matches_uninterrupted(tmp_path, monkeypatch):
+    """One saved epoch + one resumed epoch over a re-iterable list must
+    equal two uninterrupted epochs from identical initial weights:
+    parameters, optimizer state and scheduler state."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    torch.manual_seed(3)
+    batches = [(torch.randn(4, 2), torch.tensor([0, 1, 1, 0])), (torch.randn(4, 2), torch.tensor([1, 0, 1, 0]))]
+    optim = NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0)
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.STEP, step_size=1, factor=0.5, min_lr=0.0, patience=0, cooldown=0, threshold=0.0
+    )
+
+    torch.manual_seed(7)
+    uninterrupted = _two_class_model()
+    full_run = uninterrupted.train(
+        params=NNTrainParams(n_epochs=2, data_id="full", train_loader=batches, optim=optim, scheduler=scheduler)
+    )
+
+    torch.manual_seed(7)
+    first_half = _two_class_model()
+    first_run = first_half.train(
+        params=NNTrainParams(n_epochs=1, data_id="split", train_loader=batches, optim=optim, scheduler=scheduler)
+    )
+    resumed = _two_class_model()
+    resumed_run = resumed.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            data_id="split",
+            train_loader=batches,
+            optim=optim,
+            scheduler=scheduler,
+            resume_from_run_id=first_run.id,
+        )
+    )
+
+    assert resumed_run.idps[0].epoch_idx == 1
+    full_state = NNCheckpoint.load_training_state(full_run.id, Checkpoints.LAST)
+    resumed_state = NNCheckpoint.load_training_state(resumed_run.id, Checkpoints.LAST)
+    assert full_state is not None and resumed_state is not None
+    assert resumed_state["completed_epoch"] == full_state["completed_epoch"] == 1
+    assert resumed_state["optimizer"]["param_groups"][0]["lr"] == full_state["optimizer"]["param_groups"][0]["lr"]
+    assert resumed_state["scheduler"]["last_epoch"] == full_state["scheduler"]["last_epoch"]
+    for name, tensor in uninterrupted.net.state_dict().items():
+        assert torch.equal(resumed.net.state_dict()[name], tensor), name
+
+
+def test_resume_warns_only_for_worker_loaders(tmp_path, monkeypatch):
+    """The worker-RNG warning must fire for a real DataLoader with
+    num_workers > 0 and stay silent for list and zero-worker loaders."""
+    import warnings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X = torch.randn(8, 2)
+    y = torch.randint(0, 2, (8,))
+    cases = {
+        "list": [(X[:4], y[:4]), (X[4:], y[4:])],
+        "zero_workers": DataLoader(TensorDataset(X, y), batch_size=4, num_workers=0),
+        "workers": DataLoader(TensorDataset(X, y), batch_size=4, num_workers=1),
+    }
+    for name, loader in cases.items():
+        first = _two_class_model().train(NNTrainParams(n_epochs=1, data_id=name, train_loader=loader))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _two_class_model().train(
+                NNTrainParams(n_epochs=1, data_id=name, train_loader=loader, resume_from_run_id=first.id)
+            )
+        worker_warnings = [w for w in caught if "num_workers=0" in str(w.message)]
+        if name == "workers":
+            assert len(worker_warnings) == 1, name
+        else:
+            assert not worker_warnings, (name, [str(w.message) for w in caught])
