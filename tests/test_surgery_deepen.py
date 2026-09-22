@@ -286,3 +286,154 @@ def test_deepen_inserted_dropout_is_zero():
     rng_deeper = torch.get_rng_state()
     assert torch.equal(rng_net, rng_deeper), "the inserted zero-dropout site must not draw from the RNG"
     torch.testing.assert_close(out_deeper, out_net, atol=1e-5, rtol=1e-5)
+
+
+# ---------------- FIX-018: named nn.Sequential insertion ----------------
+
+
+def _named_net(dtype=torch.float32) -> nn.Sequential:
+    from collections import OrderedDict
+
+    return nn.Sequential(OrderedDict([("fc", nn.Linear(4, 4)), ("relu", nn.ReLU()), ("head", nn.Linear(4, 2))])).to(
+        dtype
+    )
+
+
+class _Wrap(nn.Module):
+    def __init__(self, body: nn.Sequential):
+        super().__init__()
+        self.body = body
+
+    def forward(self, x):
+        return self.body(x)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64], ids=str)
+def test_deepen_named_root_and_nested(dtype):
+    """A named ReLU inside a named Sequential — at the root or nested
+    below another module — must deepen with eval parity, keep every
+    original key (and the copied head reachable at its old path), add
+    deterministic new keys right after the site, and leave the source
+    container untouched."""
+    torch.manual_seed(4)
+    net = _named_net(dtype).eval()
+    x = torch.randn(3, 4, dtype=dtype)
+
+    deep = deepen(net, after_layer_name="relu").eval()
+    torch.testing.assert_close(deep(x), net(x), rtol=1e-5, atol=1e-5)
+    assert list(net._modules) == ["fc", "relu", "head"]
+    assert list(deep._modules) == ["fc", "relu", "_nnx_deepen_linear_0", "_nnx_deepen_relu_0", "head"]
+    assert deep.get_submodule("head").out_features == 2
+    inserted = deep.get_submodule("_nnx_deepen_linear_0")
+    assert isinstance(inserted, nn.Linear) and inserted.weight.dtype == dtype
+    assert torch.equal(inserted.weight, torch.eye(4, dtype=dtype))
+    assert deep[2] is inserted and isinstance(deep[3], nn.ReLU)
+
+    wrapped = _Wrap(_named_net(dtype)).eval()
+    deep_wrapped = deepen(wrapped, after_layer_name="body.relu").eval()
+    assert type(deep_wrapped) is _Wrap and deep_wrapped is not wrapped
+    torch.testing.assert_close(deep_wrapped(x), wrapped(x), rtol=1e-5, atol=1e-5)
+    assert list(deep_wrapped.body._modules) == ["fc", "relu", "_nnx_deepen_linear_0", "_nnx_deepen_relu_0", "head"]
+    assert list(wrapped.body._modules) == ["fc", "relu", "head"]
+
+    # Dotted-path consumers keep working on the returned container.
+    from nnx import NNParamGroupSpec, freeze
+    from nnx.finetune.param_groups import build_param_groups
+
+    assert freeze(deep, "head.*") == 2
+    assert not deep.get_submodule("head").weight.requires_grad and deep.get_submodule("fc").weight.requires_grad
+    groups = build_param_groups(
+        deep, [NNParamGroupSpec(name_pattern="fc.*", lr=1e-2)], default_lr=1e-3, default_weight_decay=0.0
+    )
+    assert {id(p) for g in groups for p in g["params"] if g.get("lr") == 1e-2} == {
+        id(p) for p in deep.get_submodule("fc").parameters()
+    }
+
+    # A raw state-dict round trip into an equivalently deepened fresh model.
+    fresh = deepen(_named_net(dtype), after_layer_name="relu").eval()
+    assert list(fresh.state_dict()) == list(deep.state_dict())
+    fresh.load_state_dict(deep.state_dict())
+    torch.testing.assert_close(fresh(x), deep(x), rtol=1e-6, atol=1e-6)
+
+
+def test_deepen_names_avoid_collisions():
+    """Deepening an already-deepened named container must pick unused
+    generated keys; both insertions keep parity and the mode."""
+    torch.manual_seed(0)
+    net = _named_net().eval()
+    x = torch.randn(3, 4)
+    once = deepen(net, after_layer_name="relu")
+    twice = deepen(once, after_layer_name="_nnx_deepen_relu_0")
+    keys = list(twice._modules)
+    assert len(keys) == len(set(keys)) == 7
+    assert "_nnx_deepen_linear_1" in keys and "_nnx_deepen_relu_1" in keys
+    assert keys.index("_nnx_deepen_linear_1") == keys.index("_nnx_deepen_relu_0") + 1
+    assert twice.training is False and all(m.training is False for m in twice.children())
+    torch.testing.assert_close(twice.eval()(x), net(x), rtol=1e-5, atol=1e-5)
+
+
+def test_deepen_keeps_repeated_execution_slots():
+    """`children()` deduplicates a module registered in two slots, so a
+    positional rebuild used to drop a whole execution and silently
+    corrupt the forward. Both numeric and named containers must keep
+    every slot, keep the two slots pointing at the SAME copied object,
+    and keep parity."""
+    from collections import OrderedDict
+
+    torch.manual_seed(0)
+    x = torch.randn(3, 4)
+
+    shared = nn.Linear(4, 4)
+    numeric = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), shared, nn.ReLU(), shared, nn.ReLU(), nn.Linear(4, 2)).eval()
+    assert len(numeric) == 7 and len(list(numeric.children())) == 6
+    deep = deepen(numeric, after_layer_name="1").eval()
+    assert len(deep) == 9
+    assert deep[4] is deep[6] and deep[4] is not shared
+    assert isinstance(deep[2], nn.Linear) and isinstance(deep[3], nn.ReLU)  # positional contract kept
+    torch.testing.assert_close(deep(x), numeric(x), rtol=1e-5, atol=1e-5)
+
+    shared2 = nn.Linear(4, 4)
+    named = nn.Sequential(
+        OrderedDict(
+            [
+                ("fc", nn.Linear(4, 4)),
+                ("relu", nn.ReLU()),
+                ("mid_a", shared2),
+                ("act", nn.ReLU()),
+                ("mid_b", shared2),
+                ("act2", nn.ReLU()),
+                ("head", nn.Linear(4, 2)),
+            ]
+        )
+    ).eval()
+    deep_named = deepen(named, after_layer_name="relu").eval()
+    assert deep_named.get_submodule("mid_a") is deep_named.get_submodule("mid_b")
+    torch.testing.assert_close(deep_named(x), named(x), rtol=1e-5, atol=1e-5)
+
+
+def test_deepen_named_container_then_widen_by_numeric_key():
+    """After a named insertion, a retained numeric key can sit at a
+    different position than its name; a second dotted-path operation
+    must address the registered key, not the position."""
+    from collections import OrderedDict
+
+    from nnx import widen
+
+    torch.manual_seed(0)
+    x = torch.randn(3, 4)
+    mixed = nn.Sequential(
+        OrderedDict(
+            [
+                ("fc", nn.Linear(4, 4)),
+                ("relu", nn.ReLU()),
+                ("1", nn.Linear(4, 4)),
+                ("relu2", nn.ReLU()),
+                ("head", nn.Linear(4, 2)),
+            ]
+        )
+    ).eval()
+    deep = deepen(mixed, after_layer_name="relu").eval()
+    assert list(deep._modules).index("1") == 4  # key "1" no longer at position 1
+    wider = widen(deep, layer_name="1", new_width=6).eval()
+    assert wider.get_submodule("1").out_features == 6 and wider.get_submodule("head").in_features == 6
+    torch.testing.assert_close(wider(x), mixed(x), rtol=1e-5, atol=1e-5)

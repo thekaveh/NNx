@@ -20,9 +20,15 @@ forward output drifts.
 Two insertion modes are supported:
 
   - **nn.Sequential mode**: ``after_layer_name`` points at an
-    :class:`nn.ReLU` module. The primitive returns a deep copy of
-    the Sequential with ``[nn.Linear(I), nn.ReLU()]`` spliced in
-    immediately after the named ReLU.
+    :class:`nn.ReLU` module — by position (``"1"``) in a numeric
+    Sequential or by dotted key (``"body.relu"``) in a named one. The
+    primitive returns a deep copy of the Sequential with
+    ``[nn.Linear(I), nn.ReLU()]`` spliced in immediately after the
+    named ReLU. Every original key is kept in order; in a named
+    container the new modules are registered as
+    ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N`` (``N`` increments
+    until both keys are unused), and a module registered in several
+    slots keeps every slot (FIX-018).
   - **FeedFwdNN / ModuleList mode**: ``after_layer_name`` points at a
     Linear inside a :class:`nn.ModuleList` whose parent applies an
     activation between consecutive layers (the FeedFwdNN forward
@@ -42,6 +48,7 @@ Two insertion modes are supported:
 from __future__ import annotations
 
 import copy
+from collections import OrderedDict
 from dataclasses import replace
 from typing import Any, Optional, cast
 
@@ -51,7 +58,7 @@ from torch.nn.utils import skip_init
 
 from ..nn.enum.activations import Activations
 from ..nn.params.nn_params import NNParams
-from ._utils import get_module
+from ._utils import get_module, set_module
 
 
 def deepen(
@@ -69,7 +76,12 @@ def deepen(
             the insertion site. Either:
 
               * an :class:`nn.ReLU` inside a parent :class:`nn.Sequential`
-                — the primitive splices ``Linear(I) → ReLU`` in after it.
+                (addressed by position in a numeric container or by its
+                dotted key in a named one) — the primitive splices
+                ``Linear(I) → ReLU`` in after it, keeping every original
+                key and every repeated slot, and registering the new
+                modules as ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N``
+                in a named container.
               * an :class:`nn.Linear` inside a parent :class:`nn.ModuleList`
                 whose grandparent module applies ReLU at that site (the
                 FeedFwdNN contract; ``params.activation_for(idx)`` is
@@ -122,24 +134,38 @@ def _insert_after_relu_in_sequential(
     attr: str,
 ) -> nn.Module:
     """Splice [Linear(I), ReLU] into a Sequential right after the
-    named ReLU. The Linear's dim comes from the previous Linear's
-    out_features (walked from earlier siblings)."""
-    parent = cast(nn.Sequential, new_model if not parent_path else new_model.get_submodule(parent_path))
-    idx = int(attr)
+    ReLU registered under key ``attr``. The Linear's dim comes from the
+    nearest earlier Linear (walked back through the registered entries).
 
-    # Find the most recent Linear earlier in the Sequential — its
+    The container is rebuilt from its ordered ``_modules`` mapping, not
+    ``children()`` (which deduplicates a module registered in several
+    slots — a positional rebuild used to drop an execution and silently
+    corrupt the forward). Keys are located by name, never by ``int()``
+    coercion, so named containers work; every original key is kept in
+    order and the new modules get collision-free generated keys
+    (numeric containers are renumbered positionally so ``deeper[2]`` /
+    ``deeper[3]`` keep meaning the inserted pair). The rebuilt container
+    keeps the original's training mode (FIX-018).
+    """
+    parent = cast(nn.Sequential, new_model if not parent_path else new_model.get_submodule(parent_path))
+    entries = list(parent._modules.items())
+    keys = [key for key, _ in entries]
+    if attr not in keys:  # pragma: no cover — get_module resolved it, so this cannot happen
+        raise KeyError(f"deepen: no module named {attr!r} in Sequential {parent_path or '<root>'!r}")
+    idx = keys.index(attr)
+
+    # Find the nearest Linear registered earlier in the Sequential — its
     # out_features is the activation's hidden dimension.
-    src_linear = None
-    for j in range(idx - 1, -1, -1):
-        if isinstance(parent[j], nn.Linear):
-            src_linear = parent[j]
+    src_linear: Optional[nn.Linear] = None
+    for _, mod in reversed(entries[:idx]):
+        if isinstance(mod, nn.Linear):
+            src_linear = mod
             break
     if src_linear is None:
         raise ValueError(
             "deepen: could not find an upstream nn.Linear before "
             f"the ReLU at position {idx} to source the hidden dim from."
         )
-    src_linear = cast(nn.Linear, src_linear)
 
     # dtype/device come from the SAME Linear that sourced the dim — the
     # old probe peeked at parent[idx-1], which is wrong whenever a
@@ -153,18 +179,41 @@ def _insert_after_relu_in_sequential(
     )
     new_relu = nn.ReLU()
 
-    # Rebuild the Sequential with the two new modules inserted right
-    # after `idx`. nn.Sequential supports __setitem__ but not insert(),
-    # so we build a new one. If the Sequential IS the root model, we
-    # return the new Sequential directly; otherwise we splice it into
-    # the original root in place of the old Sequential.
-    children = list(parent.children())
-    new_children = children[: idx + 1] + [new_linear, new_relu] + children[idx + 1 :]
-    new_sequential = nn.Sequential(*new_children)
+    # nn.Sequential supports __setitem__ but not insert(), so we build a
+    # new one. A purely numeric container is rebuilt positionally (keys
+    # stay equal to positions); any named key switches to an OrderedDict
+    # rebuild that preserves every original key and generates unused
+    # keys for the two inserted modules.
+    if all(key.isdigit() for key in keys):
+        modules = [mod for _, mod in entries]
+        new_sequential = nn.Sequential(*modules[: idx + 1], new_linear, new_relu, *modules[idx + 1 :])
+    else:
+        linear_key, relu_key = _unused_insertion_keys(keys)
+        rebuilt: OrderedDict[str, nn.Module] = OrderedDict(entries[: idx + 1])
+        rebuilt[linear_key] = new_linear
+        rebuilt[relu_key] = new_relu
+        rebuilt.update(entries[idx + 1 :])
+        new_sequential = nn.Sequential(rebuilt)
+    new_sequential.train(parent.training)
+
+    # If the Sequential IS the root model, return the new Sequential
+    # directly; otherwise splice it into the original root in place of
+    # the old Sequential.
     if not parent_path:
         return new_sequential
-    _replace_in_parent(new_model, parent_path, new_sequential)
+    set_module(new_model, parent_path, new_sequential)
     return new_model
+
+
+def _unused_insertion_keys(existing: list[str]) -> tuple[str, str]:
+    """Deterministic, collision-free keys for the inserted Linear/ReLU
+    pair: ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N`` with the
+    smallest ``N`` for which neither key is already registered."""
+    taken = set(existing)
+    n = 0
+    while f"_nnx_deepen_linear_{n}" in taken or f"_nnx_deepen_relu_{n}" in taken:
+        n += 1
+    return f"_nnx_deepen_linear_{n}", f"_nnx_deepen_relu_{n}"
 
 
 def _insert_after_linear_in_module_list(
@@ -210,7 +259,7 @@ def _insert_after_linear_in_module_list(
     children = list(parent)
     new_children = children[: idx + 1] + [new_linear] + children[idx + 1 :]
     new_module_list = nn.ModuleList(new_children)
-    _replace_in_parent(new_model, parent_path, new_module_list)
+    set_module(new_model, parent_path, new_module_list)
 
     # Keep the owner's immutable configuration aligned with its layers
     # (FIX-006): FeedFwdNN.forward indexes `activation_for(i)` /
@@ -319,19 +368,3 @@ def _identity_linear(
         assert layer.bias is not None
         layer.bias.zero_()
     return layer
-
-
-def _replace_in_parent(root: nn.Module, dotted: str, new_mod: nn.Module) -> None:
-    """Replace the submodule at ``dotted`` with ``new_mod``. Handles the
-    empty-path case (replacing root itself is not supported here — the
-    caller never reaches that branch)."""
-    if not dotted:
-        raise ValueError("_replace_in_parent: refusing to replace root module")
-    parent_path, _, attr = dotted.rpartition(".")
-    parent = root if not parent_path else root.get_submodule(parent_path)
-    if attr.isdigit() and isinstance(parent, (nn.Sequential, nn.ModuleList)):
-        parent[int(attr)] = new_mod
-    elif isinstance(parent, nn.ModuleDict):
-        parent[attr] = new_mod
-    else:
-        setattr(parent, attr, new_mod)
