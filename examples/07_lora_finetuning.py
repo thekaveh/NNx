@@ -19,6 +19,14 @@ and LoRA fine-tuning land near the same val error. The point is
 demonstrating PEFT's storage and update efficiency: a few hundred new
 parameters per layer instead of tens of thousands.
 
+``dora_zero_row_composition`` below is a bounded DoRA companion: a wrapped
+layer with mixed zero / nonzero base rows feeding a following projection,
+converted to half after wrapping. DoRA normalizes rows in FP32 for
+FP16/BF16, so zero rows stay finite (equal to the base) and learned
+updates remain differentiable; the helper takes one optimizer step on a
+float32 loss reduction, checks the frozen base and round-trips the full
+``state_dict()`` (the LoRA-only helpers omit ``magnitude``).
+
 Run:
     python examples/07_lora_finetuning.py
 """
@@ -43,6 +51,7 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    apply_dora_to,
     apply_lora_to,
     save_lora_weights,
     set_seed,
@@ -74,9 +83,13 @@ def _loader(seed: int, n: int = 256) -> DataLoader:
     return DataLoader(TensorDataset(X, cls), batch_size=32, shuffle=True)
 
 
-def _train_params(n_epochs: int, train_loader, lr: float = 1e-2):
+def _train_params(n_epochs: int, train_loader, lr: float = 1e-2, data_id: str | None = None):
+    # `data_id` keeps the pretraining run and the fine-tuning run distinct:
+    # loaders are not part of run.id, so two phases with identical params
+    # would otherwise collide on the same run directory.
     return NNTrainParams(
         n_epochs=n_epochs,
+        data_id=data_id,
         train_loader=train_loader,
         optim=NNOptimParams(
             name=Optims.ADAM,
@@ -94,6 +107,61 @@ def _train_params(n_epochs: int, train_loader, lr: float = 1e-2):
     )
 
 
+def dora_zero_row_composition(dtype: torch.dtype = torch.float16) -> dict:
+    """Bounded DoRA composition with zero rows in reduced precision.
+
+    Builds ``Linear(8, 6) -> ReLU -> Linear(6, 3)``, zeroes two rows of
+    the first weight (as pruning or explicit zero init would), wraps both
+    layers with ``apply_dora_to`` and converts the *whole* net to ``dtype``
+    afterwards (so this exercises the normalization path, not parameter
+    placement). Checks a finite forward through the following projection
+    with the zero rows still producing the base's zeros, one SGD step on
+    a float32 loss reduction (half MSE backward is not supported on CPU)
+    that moves only adapter/magnitude parameters, the bit-exact frozen
+    base, and a complete ``state_dict()`` reload including ``magnitude``.
+    Runs on CPU in FP32 and FP16; BF16/CUDA lanes are the same call with
+    a different ``dtype``.
+    """
+    set_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(8, 6), torch.nn.ReLU(), torch.nn.Linear(6, 3))
+    with torch.no_grad():
+        net[0].weight[0].zero_()
+        net[0].weight[1].zero_()
+    n_wrapped = apply_dora_to(net, "*", r=2, alpha=4.0)
+    assert n_wrapped == 2, n_wrapped
+    net = net.to(dtype)
+    base_snapshot = {n: p.detach().clone() for n, p in net.named_parameters() if not p.requires_grad}
+
+    x = torch.randn(4, 8).to(dtype)
+    hidden = net[0](x)
+    assert hidden.dtype == dtype and torch.isfinite(hidden).all(), "zero rows must not produce NaN"
+    assert torch.equal(hidden[:, :2], net[0].base(x)[:, :2]), "zero rows keep the base's output at init"
+    out = net(x)
+    assert out.dtype == dtype and torch.isfinite(out).all()
+
+    trainable = [p for p in net.parameters() if p.requires_grad]
+    before = [p.detach().clone() for p in trainable]
+    optimizer = torch.optim.SGD(trainable, lr=0.05)
+    loss = (net(x).float() ** 2).mean()  # float32 reduction: supported half backward on CPU
+    loss.backward()
+    assert torch.isfinite(loss) and all(p.grad is not None and torch.isfinite(p.grad).all() for p in trainable)
+    optimizer.step()
+    assert any(not torch.equal(a, b.detach()) for a, b in zip(before, trainable, strict=True)), "adapter must move"
+    assert all(torch.equal(p.detach(), base_snapshot[n]) for n, p in net.named_parameters() if n in base_snapshot)
+
+    reloaded = torch.nn.Sequential(torch.nn.Linear(8, 6), torch.nn.ReLU(), torch.nn.Linear(6, 3))
+    apply_dora_to(reloaded, "*", r=2, alpha=4.0)
+    reloaded = reloaded.to(dtype)
+    state = net.state_dict()
+    assert "0.magnitude" in state and "2.magnitude" in state
+    reloaded.load_state_dict(state)
+    assert torch.equal(reloaded(x), net(x)) and torch.isfinite(reloaded(x)).all()
+
+    summary = {"dtype": str(dtype), "wrapped": n_wrapped, "loss": float(loss.detach()), "state_keys": len(state)}
+    print(f"DoRA zero-row composition workflow: {summary}")
+    return summary
+
+
 def main():
     set_seed(0)
 
@@ -104,7 +172,7 @@ def main():
     model = _classifier()
     pre_total = sum(p.numel() for p in model.net.parameters())
     print(f"net: {pre_total} total parameters\n")
-    model.train(params=_train_params(5, _loader(seed=0)))
+    model.train(params=_train_params(5, _loader(seed=0), data_id="pretrain-A"))
 
     # Snapshot every parameter for the strict equality check after
     # LoRA fine-tuning. We snapshot by name BEFORE wrapping; after
@@ -128,7 +196,7 @@ def main():
     print("Phase 3: LoRA fine-tuning on distribution B")
     print("=" * 60)
     set_seed(1)
-    model.train(params=_train_params(5, _loader(seed=42)))
+    model.train(params=_train_params(5, _loader(seed=42), data_id="finetune-B"))
 
     # ---- Phase 4: verify the PEFT contract.
     print("\n" + "=" * 60)
