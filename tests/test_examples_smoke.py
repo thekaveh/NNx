@@ -53,6 +53,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("20_low_rank_surgery_ffn.py", "surgery_freeze_roles"),
     ("20_low_rank_surgery_ffn.py", "widen_supported_workflow"),
     ("20_low_rank_surgery_ffn.py", "deepen_override_workflow"),
+    ("20_low_rank_surgery_ffn.py", "named_deepen_workflow"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
 ]
 
