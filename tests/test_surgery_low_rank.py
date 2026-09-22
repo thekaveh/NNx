@@ -139,3 +139,55 @@ def test_low_rank_factorize_does_not_advance_global_rng():
     state = torch.get_rng_state()
     low_rank_factorize(linear, rank=4)
     assert torch.equal(torch.get_rng_state(), state)
+
+
+# ---------------- FIX-016: factors preserve trainability and modes ----------------
+
+
+@pytest.mark.parametrize(
+    ("w_flag", "b_flag", "has_bias"),
+    [
+        pytest.param(True, True, True, id="w_train-b_train"),
+        pytest.param(True, False, True, id="w_train-b_frozen"),
+        pytest.param(False, True, True, id="w_frozen-b_train"),
+        pytest.param(False, False, True, id="w_frozen-b_frozen"),
+        pytest.param(False, None, False, id="w_frozen-no_bias"),
+        pytest.param(True, None, False, id="w_train-no_bias"),
+    ],
+)
+def test_low_rank_preserves_weight_bias_roles(w_flag, b_flag, has_bias):
+    """Both SVD factors represent the one source weight and inherit its
+    flag; only `up.bias` carries the source bias and inherits the bias
+    flag; `down` has no bias. The source Linear is untouched."""
+    torch.manual_seed(0)
+    base = nn.Linear(6, 4, bias=has_bias)
+    base.weight.requires_grad_(w_flag)
+    if has_bias:
+        base.bias.requires_grad_(b_flag)
+    source_flags = {n: p.requires_grad for n, p in base.named_parameters()}
+
+    factors = low_rank_factorize(base, rank=4)
+    down, up = factors[0], factors[1]
+    assert down.weight.requires_grad is w_flag and up.weight.requires_grad is w_flag
+    assert down.bias is None
+    if has_bias:
+        assert up.bias.requires_grad is b_flag and up.bias is not base.bias
+    else:
+        assert up.bias is None
+    assert {n: p.requires_grad for n, p in base.named_parameters()} == source_flags
+
+    x = torch.randn(3, 6)
+    torch.testing.assert_close(factors(x), base(x), atol=1e-5, rtol=1e-5)
+    trainable = [p for p in factors.parameters() if p.requires_grad]
+    if trainable:
+        factors(x).square().mean().backward()
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in trainable)
+        assert all(p.grad is None for p in factors.parameters() if not p.requires_grad)
+
+
+@pytest.mark.parametrize("mode", [True, False], ids=["train", "eval"])
+def test_low_rank_preserves_module_mode(mode):
+    base = nn.Linear(6, 4).train(mode)
+    factors = low_rank_factorize(base, rank=4)
+    assert factors.training is mode
+    assert all(m.training is mode for m in factors)

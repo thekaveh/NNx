@@ -18,6 +18,14 @@ Note: `low_rank_factorize` takes a `nn.Linear` directly and returns a
 `nn.Sequential` of two Linears. The caller is responsible for swapping
 the layer back into the network's ModuleList.
 
+``surgery_freeze_roles`` below is a bounded companion: surgery preserves
+each replaced tensor's ``requires_grad`` and each replaced module's
+train/eval mode, so a weight-frozen / bias-trainable layer factorizes into
+frozen factors plus a trainable bias, and an optimizer built afterwards
+from explicit parameter groups updates only what was trainable before.
+Want the factors themselves to learn? ``unfreeze`` them explicitly before
+creating the optimizer.
+
 Run:
     pip install thekaveh-nnx
     python examples/20_low_rank_surgery_ffn.py
@@ -42,6 +50,7 @@ from nnx import (
     Optims,
     set_seed,
 )
+from nnx.finetune.param_groups import build_param_groups
 from nnx.surgery import low_rank_factorize
 
 
@@ -71,6 +80,66 @@ def _val_acc(net: torch.nn.Module, loader: DataLoader) -> float:
             correct += (preds == y).sum().item()
             total += y.numel()
     return correct / total
+
+
+def surgery_freeze_roles() -> dict:
+    """Bounded demonstration that surgery preserves trainability roles.
+
+    Builds ``Linear(8, 16) -> ReLU -> Linear(16, 3)``, freezes the first
+    layer's weight but leaves its bias trainable, factorizes that layer at
+    rank 8 and reattaches the factors. Then it builds *fresh* explicit
+    parameter groups (``strict=True``, so frozen tensors cannot enter),
+    takes one SGD step and checks: both factor weights are frozen and
+    unchanged, the up-projection bias (the only intended trainable role
+    in that layer) moved, the untouched second layer trained normally,
+    and the source Linear's parameters are unchanged. No temporary files.
+    """
+    from nnx import NNParamGroupSpec
+
+    set_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(8, 16), torch.nn.ReLU(), torch.nn.Linear(16, 3))
+    source = net[0]
+    source.weight.requires_grad_(False)
+    source.bias.requires_grad_(True)
+    source_snapshot = {n: p.detach().clone() for n, p in source.named_parameters()}
+
+    factors = low_rank_factorize(source, rank=8)
+    net[0] = factors  # reattach — low_rank_factorize returns a NEW nn.Sequential
+    down, up = factors[0], factors[1]
+    assert not down.weight.requires_grad and not up.weight.requires_grad, "factor weights inherit the frozen role"
+    assert up.bias is not None and up.bias.requires_grad, "the bias keeps its own trainable role"
+    assert factors.training == source.training
+
+    groups = build_param_groups(
+        net,
+        [NNParamGroupSpec(name_pattern="0.*", lr=1e-2), NNParamGroupSpec(name_pattern="2.*", lr=1e-3)],
+        default_lr=1e-3,
+        default_weight_decay=0.0,
+        strict=True,
+    )
+    grouped = {id(p) for g in groups for p in g["params"]}
+    assert grouped == {id(up.bias), id(net[2].weight), id(net[2].bias)}, "frozen factors must not enter the groups"
+
+    before = {n: p.detach().clone() for n, p in net.named_parameters()}
+    optimizer = torch.optim.SGD(groups)
+    x = torch.randn(5, 8)
+    loss = net(x).square().mean()
+    loss.backward()
+    optimizer.step()
+
+    assert torch.equal(down.weight.detach(), before["0.0.weight"]) and torch.equal(
+        up.weight.detach(), before["0.1.weight"]
+    )
+    assert not torch.equal(up.bias.detach(), before["0.1.bias"]), "the intended trainable bias must move"
+    assert not torch.equal(net[2].weight.detach(), before["2.weight"])
+    assert all(torch.equal(p.detach(), source_snapshot[n]) for n, p in source.named_parameters()), "source untouched"
+
+    summary = {
+        "trainable_after_surgery": sorted(n for n, p in net.named_parameters() if p.requires_grad),
+        "loss": float(loss.detach()),
+    }
+    print(f"surgery freeze-roles workflow: {summary}")
+    return summary
 
 
 def main() -> None:

@@ -30,6 +30,8 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from ._utils import copy_param_roles
+
 _SUPPORTED_METHODS = ("svd",)
 
 
@@ -104,4 +106,12 @@ def low_rank_factorize(
         assert up.bias is not None
         up.bias.data.copy_(linear.bias.data)
 
-    return nn.Sequential(down, up)
+    # Both factors represent the one source weight and inherit its
+    # trainability; only `up.bias` carries (and inherits the role of)
+    # the source bias; every new module takes the source's mode. Without
+    # this, skip_init's defaults made a frozen layer trainable — FIX-016.
+    copy_param_roles(linear, down)
+    copy_param_roles(linear, up)
+    factors = nn.Sequential(down, up)
+    factors.train(linear.training)
+    return factors
