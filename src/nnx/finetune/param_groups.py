@@ -24,6 +24,8 @@ from typing import Optional
 
 from torch import nn
 
+from .._validation import require_finite_real
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNParamGroupSpec:
@@ -69,20 +71,37 @@ class NNParamGroupSpec:
         # effective learning rate (params never update) or, when negative, runs
         # gradient ascent on that group. weight_decay == 0 is valid (disables it),
         # so only reject a negative.
-        if self.lr is not None and self.lr <= 0:
-            raise ValueError(
-                f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): lr must be positive, "
-                f"got {self.lr} (to freeze a group use nnx.finetune.freeze, not lr=0)"
+        # Finite-real first, then the domain (FIX-020). Per-group lr /
+        # lr_multiplier are strictly positive (to freeze a group use
+        # nnx.finetune.freeze, not lr=0); group weight_decay >= 0.
+        owner = f"NNParamGroupSpec(name_pattern={self.name_pattern!r})"
+        if self.lr is not None:
+            require_finite_real(
+                self.lr,
+                "lr",
+                owner=owner,
+                minimum=0.0,
+                exclusive_min=True,
+                domain_message=(
+                    f"{owner}: lr must be positive, got {self.lr} (to freeze a group use nnx.finetune.freeze, not lr=0)"
+                ),
             )
-        if self.lr_multiplier is not None and self.lr_multiplier <= 0:
-            raise ValueError(
-                f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): lr_multiplier must be "
-                f"positive, got {self.lr_multiplier}"
+        if self.lr_multiplier is not None:
+            require_finite_real(
+                self.lr_multiplier,
+                "lr_multiplier",
+                owner=owner,
+                minimum=0.0,
+                exclusive_min=True,
+                domain_message=f"{owner}: lr_multiplier must be positive, got {self.lr_multiplier}",
             )
-        if self.weight_decay is not None and self.weight_decay < 0:
-            raise ValueError(
-                f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): weight_decay must be "
-                f"non-negative, got {self.weight_decay}"
+        if self.weight_decay is not None:
+            require_finite_real(
+                self.weight_decay,
+                "weight_decay",
+                owner=owner,
+                minimum=0.0,
+                domain_message=f"{owner}: weight_decay must be non-negative, got {self.weight_decay}",
             )
 
     def state(self) -> dict:
@@ -168,7 +187,15 @@ def build_param_groups(
         if spec.lr is not None:
             group["lr"] = spec.lr
         elif spec.lr_multiplier is not None:
-            group["lr"] = default_lr * spec.lr_multiplier
+            # A finite multiplier can still overflow the resolved rate;
+            # validate the value the optimizer will actually see (FIX-020).
+            group["lr"] = require_finite_real(
+                default_lr * spec.lr_multiplier,
+                "lr (resolved from lr_multiplier)",
+                owner=f"NNParamGroupSpec(name_pattern={spec.name_pattern!r})",
+                minimum=0.0,
+                exclusive_min=True,
+            )
         else:
             group["lr"] = default_lr
         group["weight_decay"] = spec.weight_decay if spec.weight_decay is not None else default_weight_decay

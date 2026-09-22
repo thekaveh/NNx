@@ -40,7 +40,11 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
 
-### 2.3. Variant-gated construction via `.builder()`
+### 2.3. Finite numeric domains
+
+Every public real-valued hyperparameter is validated in `__post_init__` (or the direct constructor) as a *finite real number* first and against its domain second, so NaN and ±infinity — and booleans or numeric strings, which are never coerced — are rejected with a `ValueError` naming the field and its accepted domain before any optimizer, run directory or RoPE table exists. The inventory: `NNOptimParams.max_lr` and `weight_decay` ≥ 0 (zero is meaningful: frozen updates / no decay), `grad_clip_norm` > 0 when set (`None` disables), SGD `momentum` ≥ 0, Adam betas in `[0, 1)`; `NNParamGroupSpec.lr` / `lr_multiplier` > 0 (freeze a group with `nnx.finetune.freeze`, not `lr=0`) and group `weight_decay` ≥ 0, with the *resolved* per-group learning rate also required to be finite before the optimizer is built; `NNSchedulerParams.min_lr` / `threshold` ≥ 0, `factor` > 0, optional `max_lr` > 0; `NNTransformerParams.rope_base` > 0 (also enforced by a direct `RoPE(base=...)`); `RMSNorm(eps)` finite and ≥ 0; `EarlyStopping(min_delta)` finite and ≥ 0; LoRA / DoRA `alpha` finite and > 0. Probability fields keep their existing `[0, 1]` domains and integer counts are validated separately; validation never touches `state()`, so a valid configuration hashes to the same run identity as before.
+
+### 2.3.1. Variant-gated construction via `.builder()`
 
 Params dataclasses with **tagged-union shape** (a `kind` field whose value gates which other fields are meaningful) expose a `.builder()` classmethod as an alternative to the direct kwarg constructor. The Builder methods are named after the variants; each writes exactly the fields its variant uses, so the user can't construct an invalid combination by accident.
 

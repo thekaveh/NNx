@@ -16,6 +16,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
+from .._validation import require_finite_real
 from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
@@ -104,8 +105,7 @@ class EarlyStopping(Callback):
             raise ValueError(f"monitor must be one of {sorted(valid_monitors)}, got {monitor!r}")
         if patience < 0:
             raise ValueError(f"patience must be >= 0, got {patience}")
-        if min_delta < 0:
-            raise ValueError(f"min_delta must be >= 0, got {min_delta}")
+        require_finite_real(min_delta, "min_delta", owner="EarlyStopping", minimum=0.0)
         self.monitor = monitor
         self.patience = patience
         self.min_delta = min_delta
