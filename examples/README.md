@@ -77,7 +77,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()` (KV-cache enabled by default). CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). Requires `pip install "thekaveh-nnx[lm]"`. |
+| `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer, build a `TransformerNN`, train next-token prediction via a custom `train_step_fn`, then sample with `GenerativeNNModel.generate()` (KV-cache enabled by default). CPU-friendly (uses an inline corpus by default; pass `--use-hf` to download TinyStories). Requires `pip install "thekaveh-nnx[lm]"`. Its bounded `manual_attention_lm_example(dtype=torch.bfloat16)` helper (executed by `tests/test_examples_smoke.py -k manual_attention_lm_example` in BF16 and FP32, CPU; skipped without `[lm]`) runs one attention-dropout training update on a one-layer `d_model=16` model with a four-token local batch and greedily generates two tokens on the cached and full paths. |
 
 ### 2.8. Self-supervised pretraining
 

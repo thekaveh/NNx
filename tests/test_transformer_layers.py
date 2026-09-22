@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from nnx.nn.net.transformer_layers import (
+    MultiHeadCausalAttention,
     RMSNorm,
     RoPE,
     SwiGLU,
@@ -222,3 +223,115 @@ def test_transformer_block_kv_cache_seam_returns_none_when_disabled():
 def test_transformer_block_requires_d_model_divisible_by_n_heads():
     with pytest.raises(ValueError, match="divisible"):
         TransformerBlock(d_model=15, n_heads=4, ffn_mult=4, max_seq_len=32)
+
+
+# ---------------- FIX-004: manual attention dropout in reduced precision ----------------
+
+_ATTN_DTYPES = [torch.float16, torch.bfloat16, torch.float32, torch.float64]
+
+
+@pytest.mark.parametrize("dtype", _ATTN_DTYPES, ids=str)
+def test_manual_attention_dropout_dtype_and_backward(dtype):
+    """Nonzero attention dropout takes the manual (non-SDPA) path. Its
+    FP32 additive mask used to promote scores/softmax to FP32 and the
+    final matmul then mixed FP32 attention with half values. The output
+    must keep the input dtype and backward must be finite in every
+    supported dtype — FP64 included, without truncation to FP32."""
+    torch.manual_seed(7)
+    layer = MultiHeadCausalAttention(8, 2, 16, attn_dropout=0.1).to(dtype)
+    x = torch.randn(2, 4, 8, dtype=dtype, requires_grad=True)
+    out, cache = layer(x)
+    assert cache is None and out.dtype == dtype
+    assert torch.isfinite(out).all()
+    out.float().square().mean().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in layer.parameters())
+
+
+def _reference_manual_attention(q, k, v, mask, dropout_p, seed, compute_dtype):
+    """Oracle: the same math in an explicit compute dtype with the same
+    dropout mask (seed reset before the dropout draw)."""
+    qc, kc, vc, mc = (t.to(compute_dtype) for t in (q, k, v, mask))
+    scores = torch.matmul(qc, kc.transpose(-1, -2)) / (q.size(-1) ** 0.5) + mc
+    attn = torch.softmax(scores, dim=-1)
+    torch.manual_seed(seed)
+    attn = torch.nn.functional.dropout(attn, p=dropout_p, training=True)
+    return torch.matmul(attn, vc).to(v.dtype)
+
+
+@pytest.mark.parametrize("dtype", _ATTN_DTYPES, ids=str)
+def test_manual_attention_matches_promoted_reference(dtype):
+    """Half/BF16 inputs are accumulated in FP32 (FP64 stays FP64) and cast
+    back to the value dtype; with the dropout draw seeded identically the
+    primitive matches the explicit-dtype oracle at a declared tolerance,
+    for a square training mask AND a rectangular prefix/cache mask."""
+    torch.manual_seed(0)
+    b, h, t, d = 2, 2, 4, 8
+    q, k, v = (torch.randn(b, h, t, d).to(dtype) for _ in range(3))
+    compute = torch.float64 if dtype == torch.float64 else torch.float32
+    tol = {torch.float16: 2e-3, torch.bfloat16: 2e-2, torch.float32: 1e-6, torch.float64: 1e-12}[dtype]
+
+    square = build_causal_mask(seq_len=t)
+    torch.manual_seed(11)
+    out = multi_head_causal_attention(q, k, v, square, dropout_p=0.25)
+    assert out.dtype == dtype and torch.isfinite(out).all()
+    torch.testing.assert_close(out, _reference_manual_attention(q, k, v, square, 0.25, 11, compute), atol=tol, rtol=tol)
+
+    n_prefix = 3
+    k_ext = torch.cat([torch.randn(b, h, n_prefix, d).to(dtype), k], dim=-2)
+    v_ext = torch.cat([torch.randn(b, h, n_prefix, d).to(dtype), v], dim=-2)
+    rect = torch.cat([torch.zeros(t, n_prefix), square], dim=-1)  # (t, n_prefix + t), FP32 like the callers build
+    torch.manual_seed(12)
+    out_rect = multi_head_causal_attention(q, k_ext, v_ext, rect, dropout_p=0.25)
+    assert out_rect.dtype == dtype and out_rect.shape == (b, h, t, d) and torch.isfinite(out_rect).all()
+    torch.testing.assert_close(
+        out_rect, _reference_manual_attention(q, k_ext, v_ext, rect, 0.25, 12, compute), atol=tol, rtol=tol
+    )
+
+
+def test_manual_attention_dropout_is_seeded_and_causal():
+    """Seed-reset repeats are bit-identical, eval mode (dropout off)
+    repeats without seeding, and perturbing future values never changes
+    earlier outputs even with dropout active — in FP16 on the manual path."""
+    layer = MultiHeadCausalAttention(8, 2, 16, attn_dropout=0.3).half()
+    x = torch.randn(1, 4, 8, dtype=torch.float16)
+
+    torch.manual_seed(3)
+    out_a, _ = layer(x)
+    torch.manual_seed(3)
+    out_b, _ = layer(x)
+    assert torch.equal(out_a, out_b)
+    torch.manual_seed(4)
+    out_c, _ = layer(x)
+    assert not torch.equal(out_a, out_c)  # dropout really is active in train mode
+
+    layer.eval()
+    e1, _ = layer(x)
+    e2, _ = layer(x)
+    assert torch.equal(e1, e2)
+    layer.train()
+
+    torch.manual_seed(5)
+    q, k, v = (torch.randn(1, 2, 4, 4, dtype=torch.float16) for _ in range(3))
+    mask = build_causal_mask(seq_len=4)
+    torch.manual_seed(6)
+    base = multi_head_causal_attention(q, k, v, mask, dropout_p=0.3)
+    v_future = v.clone()
+    v_future[:, :, 1:, :] += 8.0
+    torch.manual_seed(6)
+    perturbed = multi_head_causal_attention(q, k, v_future, mask, dropout_p=0.3)
+    assert torch.equal(base[:, :, 0, :], perturbed[:, :, 0, :])
+    assert not torch.equal(base[:, :, -1, :], perturbed[:, :, -1, :])
+
+
+def test_manual_attention_under_cpu_autocast_keeps_contract():
+    """FP32 parameters under CPU bf16 autocast with dropout active stay
+    finite; the promoted path must not fight autocast."""
+    torch.manual_seed(0)
+    layer = MultiHeadCausalAttention(8, 2, 16, attn_dropout=0.1)
+    x = torch.randn(2, 4, 8, requires_grad=True)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        out, _ = layer(x)
+    assert out.dtype == torch.bfloat16 and torch.isfinite(out).all()
+    out.float().sum().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()

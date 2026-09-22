@@ -154,18 +154,34 @@ def multi_head_causal_attention(
     when no dropout is configured (PyTorch picks the fastest available
     kernel — Flash, mem-efficient, or math), falling back to the explicit
     math path when dropout is requested so training-mode dropout is
-    deterministic with the rest of the run's seed.
+    deterministic with the rest of the run's seed. The math path
+    accumulates in FP32 for FP16/BF16 inputs (FP32/FP64 keep their dtype)
+    and returns ``v``'s dtype, so reduced-precision training with
+    attention dropout composes with the following projection.
     """
     if dropout_p == 0.0:
         # PyTorch's SDPA accepts an additive (float) mask.
         return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
 
+    # Manual path (FIX-004): run the scaled scores, additive mask, softmax
+    # and dropout in one coherent compute dtype. The additive mask is
+    # built in FP32 by the callers; adding it to half/bf16 scores used to
+    # promote scores/softmax to FP32 and the final matmul then mixed an
+    # FP32 attention matrix with half values ("expected scalar type
+    # Float but found Half"). FP16/BF16 accumulate in FP32 (also the
+    # numerically safer choice for softmax); FP32 and FP64 keep their
+    # own dtype so explicit double precision is never truncated. The
+    # attention result is cast back to V's dtype before the final
+    # matmul so the caller-facing output dtype (and the following
+    # projection) is unchanged. Nothing is detached and the mask's
+    # -inf semantics are untouched.
+    compute_dtype = torch.float32 if q.dtype in (torch.float16, torch.bfloat16) else q.dtype
     head_dim = q.size(-1)
-    scores = torch.matmul(q, k.transpose(-1, -2)) / (head_dim**0.5)
-    scores = scores + mask  # additive causal mask
+    scores = torch.matmul(q.to(compute_dtype), k.to(compute_dtype).transpose(-1, -2)) / (head_dim**0.5)
+    scores = scores + mask.to(compute_dtype)  # additive causal mask
     attn = F.softmax(scores, dim=-1)
     attn = F.dropout(attn, p=dropout_p, training=True)
-    return torch.matmul(attn, v)
+    return torch.matmul(attn.to(v.dtype), v)
 
 
 class MultiHeadCausalAttention(nn.Module):

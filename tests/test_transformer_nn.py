@@ -600,3 +600,29 @@ def test_untrained_lm_starts_near_uniform_ce():
     assert ce.item() < 2 * uniform, (
         f"untrained CE {ce.item():.2f} far above the uniform baseline {uniform:.2f} — embedding init regressed"
     )
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=str)
+def test_transformer_half_attention_dropout_forward(dtype):
+    """FIX-004 through the public net: a reduced-precision TransformerNN
+    with nonzero attention dropout trains (forward + finite backward),
+    evaluates deterministically with dropout disabled, and its cached
+    decode matches the full forward on a short window."""
+    torch.manual_seed(0)
+    net = TransformerNN(_params(attn_dropout=0.1)).to(dtype)
+    tokens = torch.randint(0, 32, (2, 6))
+
+    net.train()
+    logits = net(tokens)
+    assert logits.dtype == dtype and logits.shape == (2, 6, 32) and torch.isfinite(logits).all()
+    logits.float().square().mean().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in net.parameters())
+
+    net.eval()
+    full = net(tokens)
+    assert torch.equal(full, net(tokens))
+    prefill, kvs = net.forward_with_cache(tokens[:, :4])
+    step, _ = net.forward_with_cache(tokens[:, 4:5], past_kvs=kvs)
+    tol = {torch.float16: 2e-2, torch.bfloat16: 1e-1}[dtype]
+    torch.testing.assert_close(prefill.float(), full[:, :4].float(), atol=tol, rtol=tol)
+    torch.testing.assert_close(step[:, -1].float(), full[:, 4].float(), atol=tol, rtol=tol)
