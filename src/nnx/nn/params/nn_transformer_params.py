@@ -21,7 +21,7 @@ import ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..._validation import require_finite_real
+from ..._validation import require_count, require_finite_real
 from ..enum.activations import Activations
 from .nn_params import NNParams
 
@@ -64,18 +64,23 @@ class NNTransformerParams(NNParams):
         # divide d_model evenly — checked here so an invalid config
         # fails loudly at params-construction time rather than during
         # the forward pass.
-        if self.n_heads is None or self.n_heads <= 0:
+        # `n_heads > 0` (and integrality) is enforced by the base class
+        # whenever the field is set; the transformer additionally requires it.
+        if self.n_heads is None:
             raise ValueError(f"NNTransformerParams requires n_heads > 0, got {self.n_heads!r}")
-        # Required positive architectural dimensions. `d_model` must be
+        # Required positive architectural dimensions, validated as integer
+        # counts and normalized to plain `int` (FIX-021). `d_model` must be
         # validated BEFORE the divisibility test below: `d_model=0` passes
         # `0 % n_heads == 0` but then yields `head_dim = d_model // n_heads = 0`
         # (a zero attention-scale divisor and zero-width FFN) downstream — a
         # silent-failure footgun, not a loud one. `n_layers<=0` likewise builds
         # a degenerate embed→norm→head model with no error at all.
         for name in ("vocab_size", "n_layers", "d_model", "max_seq_len", "ffn_mult"):
-            value = getattr(self, name)
-            if value <= 0:
-                raise ValueError(f"NNTransformerParams requires {name} > 0, got {value}")
+            object.__setattr__(
+                self,
+                name,
+                require_count(getattr(self, name), name, owner="NNTransformerParams", minimum=0, exclusive_min=True),
+            )
         # Probability fields validated alongside the base-class `dropout_prob`
         # (checked by NNParams.__post_init__ above) so all three dropout knobs
         # fail fast at construction rather than at the first training forward
@@ -87,6 +92,15 @@ class NNTransformerParams(NNParams):
                 raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
+        # RoPE rotates pairs of head channels, so the head width must be
+        # even — `RoPE(dim=head_dim)` would otherwise reject it at net
+        # construction, far from the config (FIX-021).
+        head_dim = self.d_model // self.n_heads
+        if head_dim % 2 != 0:
+            raise ValueError(
+                f"NNTransformerParams requires an even head width (d_model / n_heads) for RoPE, "
+                f"got d_model={self.d_model}, n_heads={self.n_heads} (head_dim={head_dim})"
+            )
         # RoPE base feeds `1 / base ** (2k/dim)`: zero, negative or non-finite
         # bases produce non-finite tables silently (FIX-020).
         require_finite_real(self.rope_base, "rope_base", owner="NNTransformerParams", minimum=0.0, exclusive_min=True)

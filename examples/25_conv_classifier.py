@@ -24,6 +24,12 @@ Demonstrates:
   5. Checkpoint round-trip: ``resolve_from_state`` dispatches on the
      always-emitted ``conv_channels`` key, so the reloaded model is a
      conv net with identical logits.
+  6. Integer-count schema (bounded helper ``conv_integral_schema_roundtrip``,
+     no training): dimensions that arrive as NumPy integers (``np.prod``
+     of a shape, a ``shape[i]`` entry) are accepted and normalized to
+     plain ``int`` so ``state()`` is YAML-portable and hashes like the
+     hand-typed config, while fractional / boolean counts are rejected
+     with the field named before any layer is allocated.
 
 The task is synthetic 16×16 imagery (horizontal stripes vs vertical
 stripes vs checkerboard, plus noise) — spatially-structured classes a
@@ -49,6 +55,7 @@ from nnx import (
     NNModel,
     NNModelParams,
     NNOptimParams,
+    NNParams,
     NNSchedulerParams,
     NNTrainParams,
     Optims,
@@ -79,6 +86,73 @@ def _make_loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
     train = DataLoader(TensorDataset(X_train, y_train), batch_size=32, shuffle=True)
     val = DataLoader(TensorDataset(X_val, y_val), batch_size=64, shuffle=False)
     return train, val
+
+
+def conv_integral_schema_roundtrip() -> None:
+    """Bounded config/checkpoint-schema helper (FIX-021) — one tiny forward,
+    no training schedule.
+
+    Conv dimensions routinely arrive as NumPy integers (``np.prod(shape)``,
+    ``shape[0]``). ``NNConvParams`` accepts any non-boolean integral value,
+    normalizes it to a plain ``int`` before the immutable lists and shape
+    arithmetic, and serializes it identically to the hand-typed config —
+    a raw ``numpy.int64`` used to make ``yaml.safe_dump`` (``run.yaml``)
+    fail. Fractional and boolean counts are rejected with the field named
+    before any layer exists.
+    """
+    import numpy as np
+    import yaml
+
+    shape = np.array([1, 8, 8])  # (C, H, W) — every entry is a numpy.int64
+    common = dict(output_dim=3, dropout_prob=0.0, activation=Activations.RELU)
+    params = NNConvParams(
+        input_dim=np.prod(shape),  # np.int64(64)
+        hidden_dims=[np.int64(8)],
+        conv_channels=[np.int64(4)],
+        in_channels=shape[0],  # np.int64(1)
+        kernel_size=np.int64(3),
+        **common,
+    )
+    typed = dict(input_dim=64, hidden_dims=[8], conv_channels=[4], kernel_size=3, **common)
+    twin = NNConvParams(**typed)
+    assert type(params.input_dim) is int and type(params.in_channels) is int and type(params.kernel_size) is int
+    assert all(type(c) is int for c in params.conv_channels) and all(type(d) is int for d in params.hidden_dims)
+    assert params.state() == twin.state()  # plain-int metadata, same run-id hash
+    assert params.spatial_sizes() == [3] and params.flatten_dim() == 4 * 3 * 3
+
+    # Serialize the way NNRun.save does, reload, and re-dispatch the subtype.
+    text = yaml.safe_dump(params.state(), sort_keys=True)
+    reloaded = NNParams.resolve_from_state(yaml.safe_load(text))
+    assert isinstance(reloaded, NNConvParams) and reloaded.state() == params.state()
+
+    model_params = NNModelParams(net=Nets.CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = NNModel(net_params=params, params=model_params)
+    X = torch.randn(2, 1, 8, 8, generator=torch.Generator().manual_seed(0))
+    model.net.eval()
+    with torch.no_grad():
+        logits = model.net(X)
+    assert logits.shape == (2, 3)
+    rebuilt = NNModel(net_params=reloaded, params=model_params)
+    rebuilt.net.load_state_dict(model.net.state_dict())
+    rebuilt.net.eval()
+    with torch.no_grad():
+        assert torch.equal(rebuilt.net(X), logits)
+
+    # Rejected before allocation, naming the offending field.
+    for bad, field in (
+        (dict(kernel_size=2.5), "kernel_size"),
+        (dict(conv_channels=[4.0]), "conv_channels"),
+        (dict(in_channels=True), "in_channels"),
+    ):
+        try:
+            NNConvParams(**{**typed, **bad})
+        except ValueError as exc:
+            assert field in str(exc), exc
+        else:
+            raise AssertionError(f"{bad} was accepted")
+    print(
+        f"numpy-integer config normalized: state={params.state()}; logits {tuple(logits.shape)}; 3 fractional/boolean counts rejected"
+    )
 
 
 def main() -> None:
@@ -150,6 +224,9 @@ def main() -> None:
         same = torch.allclose(model.net(X_imgs), reloaded.net(X_imgs))
     print(f"checkpoint round-trip: net_params={type(ckpt.net_params).__name__}, ")
     print(f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}")
+
+    # ---- Integer-count schema: NumPy dims normalize, fractional dims fail early.
+    conv_integral_schema_roundtrip()
 
 
 if __name__ == "__main__":
