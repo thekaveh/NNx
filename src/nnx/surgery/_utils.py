@@ -63,3 +63,25 @@ def _assign(parent: nn.Module, key: str, new_mod: nn.Module) -> None:
         parent[key] = new_mod
         return
     setattr(parent, key, new_mod)
+
+
+def copy_param_roles(src: nn.Module, dst: nn.Module) -> None:
+    """Give ``dst``'s parameters the ``requires_grad`` flags of ``src``'s
+    same-named parameters and ``dst`` the train/eval mode of ``src``
+    (FIX-016).
+
+    Surgery rebuilds existing layers with freshly constructed modules
+    whose parameters default to trainable and whose mode defaults to
+    train — so a frozen layer silently became trainable after widening
+    or factorization and an optimizer built afterwards updated it. Each
+    replacement tensor inherits the flag of the *tensor it replaces*
+    (weight and bias independently); parameters present on ``dst`` but
+    absent on ``src`` (or vice versa) are left alone, so a factor
+    without a bias, or a source without one, needs no special casing.
+    Values are never touched: call this after copying the data.
+    """
+    src_flags = {name: p.requires_grad for name, p in src.named_parameters(recurse=False)}
+    for name, p in dst.named_parameters(recurse=False):
+        if name in src_flags:
+            p.requires_grad_(src_flags[name])
+    dst.train(src.training)

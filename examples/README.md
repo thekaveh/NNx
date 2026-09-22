@@ -97,7 +97,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | Example | What it demonstrates |
 |---|---|
 | `19_prune_synthetic_classifier.py` | Magnitude prune a small synthetic-data classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then briefly fine-tune to recover. Demonstrates `nnx.prune.magnitude_prune`. |
-| `20_low_rank_surgery_ffn.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. |
+| `20_low_rank_surgery_ffn.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. Its bounded `surgery_freeze_roles()` helper (executed by `tests/test_examples_smoke.py -k surgery_freeze_roles`, CPU, no files) factorizes a weight-frozen / bias-trainable layer, builds fresh strict parameter groups and takes one update, asserting the factors stay frozen and unchanged while only the intended bias and the untouched layer move. |
 
 ### 2.11. Explainability
 

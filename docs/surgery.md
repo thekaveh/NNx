@@ -143,6 +143,9 @@ Worked end-to-end in [ml-eng-lab](https://github.com/thekaveh/ml-eng-lab):
 
 ## 7. Combining with `nnx.finetune` for the "freeze old, train new" pattern
 
+Surgery preserves trainability and modes. Every primitive that rebuilds an *existing* Linear — `widen` for the target layer and its downstream consumer, `low_rank_factorize` for both SVD factors — gives each replacement tensor the `requires_grad` flag of the tensor it replaces (the target's weight flag and bias flag independently; the downstream layer's own flags, never the target's; both factors inherit the source weight's flag while only `up.bias` inherits the source bias's flag) and each replacement module the train/eval mode of the module it replaces, so a mixed root/child configuration survives unchanged. Build the optimizer *after* surgery: a frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`; if you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules (trainable, train mode). These flags and modes live on the returned object only — `state_dict()` carries neither, so they are not a cross-process freeze policy.
+
+
 `expand_embedding` returns a `frozen_mask` of bool shape `(new_num_embeddings,)` — `True` for rows that came from the original embedding, `False` for new rows. The mask is a hand-off to the caller's training step:
 
 ```python
