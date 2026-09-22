@@ -3935,6 +3935,15 @@ At step 0, ``B`` is zero-initialized (inherited from LoRALinear)
 so ``V = W_0`` and ``||V||_c == magnitude``, giving ``W == W_0``
 exactly — fine-tuning starts from the pretrained behavior.
 
+The row normalization is carried out in FP32 for FP16/BF16 layers
+(FP64 stays FP64), so a zero or tiny row of ``V`` — from pruning,
+explicit zero initialization or a zero row in a loaded base — yields
+a finite, zero output equal to the base instead of NaN, and learned
+nonzero updates stay differentiable. The effective weight is cast
+back to the layer dtype before the matmul, so the output dtype is
+unchanged. Persist a DoRA adapter with the full ``state_dict()``:
+the LoRA-only helpers omit ``magnitude``.
+
 Args:
     base: the :class:`nn.Linear` to wrap. Its parameters are frozen
         on construction (inherited from LoRALinear).

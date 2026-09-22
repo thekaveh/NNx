@@ -61,6 +61,15 @@ class DoRALinear(LoRALinear):
     so ``V = W_0`` and ``||V||_c == magnitude``, giving ``W == W_0``
     exactly — fine-tuning starts from the pretrained behavior.
 
+    The row normalization is carried out in FP32 for FP16/BF16 layers
+    (FP64 stays FP64), so a zero or tiny row of ``V`` — from pruning,
+    explicit zero initialization or a zero row in a loaded base — yields
+    a finite, zero output equal to the base instead of NaN, and learned
+    nonzero updates stay differentiable. The effective weight is cast
+    back to the layer dtype before the matmul, so the output dtype is
+    unchanged. Persist a DoRA adapter with the full ``state_dict()``:
+    the LoRA-only helpers omit ``magnitude``.
+
     Args:
         base: the :class:`nn.Linear` to wrap. Its parameters are frozen
             on construction (inherited from LoRALinear).
@@ -102,12 +111,22 @@ class DoRALinear(LoRALinear):
         # a no-op in the common case.
         lora_update = self.lora_dropout(lora_update)
         V = self.base.weight + lora_update
-        # Per-output-row L2 norm. clamp_min avoids divide-by-zero in
-        # the pathological case where a row of V is all zeros (which
-        # shouldn't happen for a sensibly-init'd base, but be safe).
-        norm = V.norm(p=2, dim=1, keepdim=True).clamp_min(1e-8)
-        V_normalized = V / norm
-        W = self.magnitude.unsqueeze(1) * V_normalized
+        # Row normalization runs in a promoted dtype (FIX-015): FP16 cannot
+        # represent the 1e-8 guard (it rounds to 0), so an all-zero row —
+        # after pruning, explicit zero init, or a zero row in a loaded
+        # base — used to divide 0/0 and poison the whole output with NaN.
+        # FP16/BF16 promote to FP32; FP32 and FP64 keep their own dtype so
+        # doubles are never truncated. The norm, clamp, division and
+        # magnitude rescale are computed coherently in that dtype, then
+        # the effective weight is cast back so the caller-facing
+        # dtype/device contract (and the next half layer) is unchanged.
+        # Gradients flow through the casts to A, B and magnitude; a zero
+        # row stays exactly zero (0 / 1e-8 == 0), never an invented
+        # direction.
+        acc_dtype = torch.float32 if V.dtype in (torch.float16, torch.bfloat16) else V.dtype
+        V_acc = V.to(acc_dtype)
+        norm = V_acc.norm(p=2, dim=1, keepdim=True).clamp_min(1e-8)
+        W = (self.magnitude.to(acc_dtype).unsqueeze(1) * (V_acc / norm)).to(V.dtype)
         return torch.nn.functional.linear(x, W, self.base.bias)
 
     def extra_repr(self) -> str:
