@@ -109,7 +109,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `22_dpo_synthetic_preferences.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. Requires `pip install "thekaveh-nnx[lm]"`. |
+| `22_dpo_synthetic_preferences.py` | DPO preference fine-tuning of a tiny `TransformerNN` against synthetic `(prompt, chosen, rejected)` triples using `dpo_train_step_factory`; reference policy frozen via `copy.deepcopy`. `build_preference_dataset()` wraps the `NNPreferenceDataset` construction; the bounded `dpo_sample_batch_sizes()` helper (offline counting stub tokenizer, no `lm` extra, no training) shows `batch_sizes`: `None` = one full-split batch, positive = explicit mini-batch, zero rejected before tokenization. Requires `pip install "thekaveh-nnx[lm]"` for `main()`. |
 
 ### 2.13. Distillation variants
 

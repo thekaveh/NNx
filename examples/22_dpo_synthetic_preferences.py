@@ -16,6 +16,13 @@ Key API notes:
     as the reference policy — not a raw `nn.Module`.
   - `NNPreferenceDataset` takes separate `prompts`, `chosen`, `rejected`
     keyword args; it builds its own train/val DataLoaders internally.
+  - `batch_sizes=(train, val, test)`: `None` means one batch holding the
+    complete split (one DPO step per epoch for the train loader); a
+    positive integer is an explicit mini-batch size; zero / `False` are
+    rejected — they never disable a split (use `val_proportion=0.0`).
+    `build_preference_dataset` wraps the construction, and the bounded
+    `dpo_sample_batch_sizes` helper exercises the contract with an offline
+    counting stub tokenizer (no `lm` extra, no training).
   - `train_bpe` must use the `texts=` keyword (not positional) when
     passing in-memory strings.
 
@@ -32,7 +39,9 @@ from __future__ import annotations
 
 import copy
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Optional
 
 import torch
 
@@ -103,6 +112,90 @@ def _build_model(tokenizer: NNTokenizerParams) -> GenerativeNNModel:
     return GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
 
 
+def build_preference_dataset(
+    tokenizer,
+    triples: Sequence[tuple[str, str, str]],
+    batch_sizes: tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None),
+    *,
+    val_proportion: float = 0.1,
+    test_proportion: float = 0.1,
+    seed: int = 42,
+) -> NNPreferenceDataset:
+    """Wrap ``(prompt, chosen, rejected)`` triples as an ``NNPreferenceDataset``.
+
+    ``batch_sizes`` is ``(train, val, test)``: ``None`` = one batch holding
+    the complete split (the default — one DPO step per epoch), a positive
+    integer = that mini-batch size, kept verbatim. Zero / ``False`` /
+    fractions / malformed tuples raise ``ValueError`` naming the slot
+    *before* ``tokenizer.encode`` runs; zero never disables a split — the
+    proportions do. ``tokenizer`` is anything with ``encode`` and
+    ``vocab_size`` (an ``NNTokenizerParams`` in ``main``; an offline stub in
+    ``dpo_sample_batch_sizes``).
+    """
+    prompts, chosen, rejected = (list(column) for column in zip(*triples, strict=True))
+    return NNPreferenceDataset(
+        prompts=prompts,
+        chosen=chosen,
+        rejected=rejected,
+        tokenizer=tokenizer,
+        max_prompt_len=8,
+        max_response_len=8,
+        # id 1 is "<pad>" in train_bpe's default specials — the dataset
+        # default of 0 would pad (and the DPO step would mask) with
+        # "<unk>", dropping genuine unknown tokens.
+        pad_token_id=1,
+        batch_sizes=batch_sizes,
+        val_proportion=val_proportion,
+        test_proportion=test_proportion,
+        seed=seed,
+    )
+
+
+class _CountingStubTokenizer:
+    """Offline stand-in for ``NNTokenizerParams`` — counts ``encode`` calls."""
+
+    vocab_size = 16
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encode(self, text: str) -> list[int]:
+        self.calls += 1
+        return [2 + (ord(ch) % 13) for ch in text.strip()][:8] or [2]
+
+
+def dpo_sample_batch_sizes() -> None:
+    """Bounded, offline ``batch_sizes`` contract check (FIX-022): no ``lm``
+    extra, no tokenizer training, no model, no training loop."""
+    triples = [("story ", "good story end ", "bad story end ")] * 20  # 16 / 2 / 2 split
+
+    tok = _CountingStubTokenizer()
+    automatic = build_preference_dataset(tok, triples)  # None → one full-split batch each
+    assert tok.calls == 60 and automatic.batch_sizes == (16, 2, 2)
+    assert len(automatic.train_loader) == 1  # one DPO step per epoch
+
+    tok = _CountingStubTokenizer()
+    explicit = build_preference_dataset(tok, triples, batch_sizes=(4, 2, None))
+    assert explicit.batch_sizes == (4, 2, 2) and len(explicit.train_loader) == 4
+    assert next(iter(explicit.train_loader))[0].shape == (4, 8)
+
+    # Zero never disables a split — and nothing is tokenized before the
+    # request is rejected.
+    rejected = 0
+    for bad in [(0, None, None), (None, False, None), (None, None, 2.5), (8, 4), [8, 4, 4]]:
+        tok = _CountingStubTokenizer()
+        try:
+            build_preference_dataset(tok, triples, batch_sizes=bad)  # type: ignore[arg-type]
+        except ValueError as exc:
+            assert "batch_sizes" in str(exc), exc
+            rejected += 1
+        assert tok.calls == 0, bad
+    assert rejected == 5
+    print(
+        f"batch_sizes contract: automatic={automatic.batch_sizes}, explicit={explicit.batch_sizes}, {rejected} invalid requests rejected before tokenization"
+    )
+
+
 def main() -> None:
     set_seed(42)
 
@@ -120,27 +213,12 @@ def main() -> None:
         print(f"TransformerNN parameters: {n_params:,}")
 
         # ─── Phase 3: preference dataset ───
-        # Chosen: "good story end"; Rejected: "bad story end".
-        prompts = ["story "] * 64
-        chosen = ["good story end "] * 64
-        rejected = ["bad story end "] * 64
-        pref_ds = NNPreferenceDataset(
-            prompts=prompts,
-            chosen=chosen,
-            rejected=rejected,
-            tokenizer=tokenizer,
-            max_prompt_len=8,
-            max_response_len=8,
-            # id 1 is "<pad>" in train_bpe's default specials — the
-            # dataset default of 0 would pad (and the DPO step would
-            # mask) with "<unk>", dropping genuine unknown tokens.
-            pad_token_id=1,
-            batch_sizes=(8, 4, 4),
-            val_proportion=0.1,
-            test_proportion=0.1,
-            seed=42,
-        )
-        print(f"Preference dataset: {len(prompts)} triples total")
+        # Chosen: "good story end"; Rejected: "bad story end". Explicit
+        # mini-batches (8 / 4 / 4): with the default `(None, None, None)`
+        # each split would be a single full batch — one DPO step per epoch.
+        triples = [("story ", "good story end ", "bad story end ")] * 64
+        pref_ds = build_preference_dataset(tokenizer, triples, batch_sizes=(8, 4, 4))
+        print(f"Preference dataset: {len(triples)} triples total, batch_sizes={pref_ds.batch_sizes}")
 
         # ─── Phase 4: frozen reference policy ───
         ref_model = copy.deepcopy(model)
