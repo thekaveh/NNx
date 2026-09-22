@@ -253,3 +253,48 @@ def test_prefix_tuned_net_torch_save_round_trips(tmp_path):
         # The loaded net's prefix refs are live and self-consistent.
         loaded.blocks[0].attn._nnx_prefix_tuner.prefix_keys[0].add_(5.0)
         assert not torch.equal(loaded(ids), baseline)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float16, torch.bfloat16], ids=str)
+def test_prefix_forward_on_preconverted_model(dtype, tmp_path):
+    """FIX-003: K/V prefixes are allocated from each block's attention
+    projection, so a model converted BEFORE wrapping runs a token forward
+    (and a cached decode step) immediately; adapter-only load into the
+    converted destination keeps its placement and frozen base identity."""
+    set_seed(0)
+    model = _tiny_transformer().to(dtype)
+    proj = model.blocks[0].attn.w_qkv.weight
+    tuner = PrefixTuner(model, n_prefix=2)
+    for i, (k, v) in enumerate(zip(tuner.prefix_keys, tuner.prefix_values, strict=True)):
+        block_weight = model.blocks[i].attn.w_qkv.weight
+        assert k.dtype == v.dtype == block_weight.dtype == dtype, i
+        assert k.device == v.device == block_weight.device, i
+    assert model.blocks[0].attn.w_qkv.weight is proj
+
+    ids = torch.randint(0, 100, (2, 5))
+    out = tuner(ids)
+    assert out.dtype == dtype and out.shape == (2, 5, 100) and torch.isfinite(out).all()
+    out.float().sum().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in tuner.trainable_parameters())
+    assert all(p.grad is None for p in model.parameters())
+
+    source = PrefixTuner(_tiny_transformer(), n_prefix=2)
+    path = save_prefix_weights(source, tmp_path / "prefix.pt")
+    assert load_prefix_weights(tuner, path) == 4
+    assert all(p.dtype == dtype for p in tuner.trainable_parameters())
+    assert torch.equal(tuner.prefix_keys[0].detach(), source.prefix_keys[0].detach().to(dtype))
+    assert model.blocks[0].attn.w_qkv.weight is proj and proj.dtype == dtype
+
+
+def test_prefix_uses_each_block_placement():
+    """Allocation follows the targeted block's own projection, not a
+    single model-wide parameter: with blocks converted to different
+    dtypes, each layer's prefix matches its block (allocation only — a
+    mixed-dtype model is not expected to forward)."""
+    set_seed(0)
+    model = _tiny_transformer()
+    model.blocks[1].to(torch.float64)
+    tuner = PrefixTuner(model, n_prefix=2, n_layers=2)
+    assert tuner.prefix_keys[0].dtype == torch.float32 == model.blocks[0].attn.w_qkv.weight.dtype
+    assert tuner.prefix_keys[1].dtype == torch.float64 == model.blocks[1].attn.w_qkv.weight.dtype
+    assert tuner.prefix_values[1].dtype == torch.float64

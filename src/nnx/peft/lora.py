@@ -60,6 +60,11 @@ class LoRALinear(nn.Module):
     The wrapper preserves the base layer's ``in_features`` /
     ``out_features``, so consumers that read ``base.weight.shape`` or
     pass tensors through the layer don't change.
+
+    ``lora_A`` / ``lora_B`` are allocated with the base weight's dtype
+    and device, so convert or move the base *before* wrapping and the
+    adapter composes immediately (a meta-device base yields meta
+    adapters). The base is never moved, recast or replaced.
     """
 
     def __init__(
@@ -97,10 +102,16 @@ class LoRALinear(nn.Module):
 
         # A: (r, in). Init with Kaiming-uniform (sqrt(5) gain), matching
         # the original LoRA implementation. B: (out, r), zero-init so
-        # the residual contributes 0 at step 0.
-        self.lora_A = nn.Parameter(torch.empty(r, in_features))
+        # the residual contributes 0 at step 0. Both are allocated from
+        # the base weight (`new_empty` / `new_zeros`) so they inherit its
+        # dtype AND device (FIX-003): wrapping a base that was already
+        # converted to half/double or moved to an accelerator — or lives
+        # on the meta device — composes immediately, with no corrective
+        # `.to()` and without ever moving or recasting the base itself.
+        weight = base.weight
+        self.lora_A = nn.Parameter(weight.new_empty(r, in_features))
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        self.lora_B = nn.Parameter(torch.zeros(out_features, r))
+        self.lora_B = nn.Parameter(weight.new_zeros(out_features, r))
 
         self.lora_dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
 
