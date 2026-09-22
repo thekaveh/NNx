@@ -20,6 +20,12 @@ committed winner exists, ``runs/best`` is absent. ``overwrite_best_recovery``
 below demonstrates this in a fresh temporary root — it is a teaching fixture,
 not a recommendation to enable overwrite in ordinary workflows.
 
+Warm resume accepts every batch source ordinary training accepts — a
+``DataLoader``, a plain re-iterable list of ``(X, Y)`` batches, or the
+one-element full-batch list ``NNGraphDataset(sampler="full")`` produces.
+``iterable_graph_resume`` below demonstrates both (the graph branch needs
+the optional ``thekaveh-nnx[graph]`` extra and is skipped without it).
+
 Run:
     python examples/02_resume_training.py
 """
@@ -179,6 +185,106 @@ def overwrite_best_recovery() -> dict:
 
     summary = {"winner": winner_id, "winner_is_survivor": winner_id == run_b.id}
     print(f"overwrite-best recovery workflow: {summary}")
+    return summary
+
+
+def iterable_graph_resume() -> dict:
+    """Bounded demonstration of warm resume over non-DataLoader batch
+    sources (writes ``runs/`` under the current working directory; the
+    smoke test runs it in a temporary one).
+
+    1. A reusable list of two ``(X, Y)`` batches: one saved epoch, one
+       resumed epoch; the resumed run starts at epoch 1.
+    2. A tiny in-memory five-node graph through ``NNGraphDataset(sampler="full")``
+       and ``Nets.GRAPH_CONV`` (no downloads, no pyg-lib / torch-sparse):
+       one saved + one resumed epoch, and evaluation still scores only the
+       split's seed node (accuracy is exactly 0.0 or 1.0 for a one-node
+       validation split). Skipped when ``torch_geometric`` is missing.
+    """
+    set_seed(7)
+    summary: dict = {}
+
+    batches = [(torch.randn(4, 8), torch.tensor([0, 1, 2, 1])), (torch.randn(4, 8), torch.tensor([2, 0, 1, 0]))]
+    model_a, _ = _make_model_and_loader()
+    first = model_a.train(params=NNTrainParams(n_epochs=1, data_id="list", train_loader=batches, optim=_base_optim()))
+    model_b, _ = _make_model_and_loader()
+    resumed = model_b.train(
+        params=NNTrainParams(
+            n_epochs=1, data_id="list", train_loader=batches, optim=_base_optim(), resume_from_run_id=first.id
+        )
+    )
+    assert resumed.idps[0].epoch_idx == first.idps[-1].epoch_idx + 1 == 1
+    summary["list_resumed_epoch"] = resumed.idps[0].epoch_idx
+
+    try:
+        from torch_geometric.data import Data
+    except ImportError:  # pragma: no cover - exercised only on core-only installs
+        summary["graph"] = "skipped (install thekaveh-nnx[graph])"
+        print(f"iterable/graph resume workflow: {summary}")
+        return summary
+
+    from nnx import NNGraphDataset
+
+    class _TinyGraph:
+        """Five-node directed cycle with train nodes {0, 2}, val node {1}."""
+
+        num_features = 3
+        num_classes = 2
+
+        def __init__(self, root, transform=None):
+            n = 5
+            g = torch.Generator().manual_seed(7)
+            train_mask = torch.zeros(n, dtype=torch.bool)
+            train_mask[[0, 2]] = True
+            val_mask = torch.zeros(n, dtype=torch.bool)
+            val_mask[[1]] = True
+            test_mask = torch.zeros(n, dtype=torch.bool)
+            test_mask[[3, 4]] = True
+            self._data = Data(
+                x=torch.randn(n, self.num_features, generator=g),
+                edge_index=torch.tensor([[0, 1, 2, 3, 4], [1, 2, 3, 4, 0]], dtype=torch.long),
+                y=torch.tensor([0, 1, 0, 1, 0], dtype=torch.long),
+                train_mask=train_mask,
+                val_mask=val_mask,
+                test_mask=test_mask,
+            )
+
+        def __getitem__(self, idx):
+            return self._data
+
+    ds = NNGraphDataset(ds_class=_TinyGraph, sampler="full")
+
+    def _graph_model() -> NNModel:
+        return NNModel(
+            net_params=NNParams(
+                dropout_prob=0.0,
+                activation=Activations.RELU,
+                input_dim=ds.input_dim,
+                output_dim=ds.output_dim,
+                hidden_dims=[8],
+            ),
+            params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    graph_first = _graph_model().train(
+        params=NNTrainParams(n_epochs=1, train_loader=ds.train_loader, val_loader=ds.val_loader, optim=_base_optim())
+    )
+    graph_model = _graph_model()
+    graph_resumed = graph_model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=ds.train_loader,
+            val_loader=ds.val_loader,
+            optim=_base_optim(),
+            resume_from_run_id=graph_first.id,
+        )
+    )
+    assert graph_resumed.idps[0].epoch_idx == 1
+    val_edp = graph_model.evaluate(loader=ds.val_loader)
+    assert val_edp.accuracy in (0.0, 1.0), "only the single seed node may be scored"
+    summary["graph_resumed_epoch"] = graph_resumed.idps[0].epoch_idx
+    summary["graph_val_accuracy"] = val_edp.accuracy
+    print(f"iterable/graph resume workflow: {summary}")
     return summary
 
 

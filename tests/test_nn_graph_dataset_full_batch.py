@@ -312,3 +312,52 @@ def test_full_batch_state_includes_sampler():
     assert s["name"] == "_TinyFullBatch"
     assert s["input_dim"] == 3
     assert s["output_dim"] == 2
+
+
+def test_full_graph_loader_warm_resume(tmp_path, monkeypatch):
+    """FIX-012: the full-batch graph loader is a one-element list; a
+    save/resume cycle must complete without neighbor sampling
+    extensions, resume at source epoch + 1, and keep scoring only the
+    leading seed rows."""
+    from nnx import Checkpoints, NNCheckpoint, NNModel
+    from nnx.nn.enum.activations import Activations
+    from nnx.nn.enum.devices import Devices
+    from nnx.nn.enum.losses import Losses
+    from nnx.nn.enum.nets import Nets
+    from nnx.nn.params.nn_model_params import NNModelParams
+    from nnx.nn.params.nn_params import NNParams
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    ds = NNGraphDataset(ds_class=_TinyFullBatch, sampler="full")
+
+    def _model() -> NNModel:
+        return NNModel(
+            net_params=NNParams(
+                dropout_prob=0.0,
+                activation=Activations.RELU,
+                input_dim=ds.input_dim,
+                output_dim=ds.output_dim,
+                hidden_dims=[8],
+            ),
+            params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    torch.manual_seed(0)
+    first = _model().train(params=NNTrainParams(n_epochs=1, train_loader=ds.train_loader, val_loader=ds.val_loader))
+    resumed_model = _model()
+    resumed = resumed_model.train(
+        params=NNTrainParams(
+            n_epochs=1, train_loader=ds.train_loader, val_loader=ds.val_loader, resume_from_run_id=first.id
+        )
+    )
+    assert resumed.idps[0].epoch_idx == 1
+    state = NNCheckpoint.load_training_state(resumed.id, Checkpoints.LAST)
+    assert state is not None and state["completed_epoch"] == 1
+
+    # Seed-only scoring: the val split has exactly one node, so the
+    # evaluated accuracy is 0.0 or 1.0 — never a fraction over context rows.
+    edp = resumed_model.evaluate(loader=ds.val_loader)
+    assert edp.accuracy in (0.0, 1.0)
+    assert resumed.idps[-1].val_edp is not None and resumed.idps[-1].val_edp.accuracy in (0.0, 1.0)
