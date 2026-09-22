@@ -49,7 +49,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 | Example | What it demonstrates |
 |---|---|
 | `06_finetune_with_layer_freezing.py` | Transfer learning: pretrain on distribution A, export weights, load into a fresh model, `freeze("layers.0.*", "layers.1.*")`, fine-tune the head on distribution B. |
-| `07_lora_finetuning.py` | Parameter-efficient fine-tuning via LoRA: `apply_lora_to(net, "layers.*", r=4, alpha=8)`, fine-tune on a new distribution, verify every base parameter is bit-exactly unchanged, save a LoRA-only checkpoint and compare its size to the full state-dict. |
+| `07_lora_finetuning.py` | Parameter-efficient fine-tuning via LoRA: `apply_lora_to(net, "layers.*", r=4, alpha=8)`, fine-tune on a new distribution, verify every base parameter is bit-exactly unchanged, save a LoRA-only checkpoint and compare its size to the full state-dict. Its bounded `dora_zero_row_composition(dtype=torch.float16)` helper (executed by `tests/test_examples_smoke.py -k dora_zero_row_composition` in FP16 and FP32, CPU) wraps a two-layer net with mixed zero/nonzero base rows via `apply_dora_to`, converts it to half after wrapping, checks a finite forward through the following projection, one optimizer step on a float32 loss reduction, the frozen base, and a full `state_dict()` reload including `magnitude`. |
 
 ### 2.4. Alternative paradigms
 
