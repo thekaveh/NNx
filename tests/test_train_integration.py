@@ -1801,3 +1801,85 @@ def test_resume_warns_only_for_worker_loaders(tmp_path, monkeypatch):
             assert len(worker_warnings) == 1, name
         else:
             assert not worker_warnings, (name, [str(w.message) for w in caught])
+
+
+# ---------------------------------------------------------------------------
+# FIX-011: the declared PyTorch floor must provide the AMP scaler factory
+# ---------------------------------------------------------------------------
+
+
+def _declared_floor(package: str) -> tuple[int, int]:
+    """(major, minor) of ``package>=X.Y`` in pyproject's core ``dependencies``
+    (regex over the raw text: ``tomllib`` is 3.11+ and NNx supports 3.10)."""
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    block = re.search(r"^dependencies = \[(.*?)^\]", text, re.M | re.S)
+    assert block is not None
+    requirements = re.findall(r'"([^"]+)"', block.group(1))
+    (req,) = [dep for dep in requirements if re.match(rf"{package}(\W|$)", dep)]
+    match = re.fullmatch(rf"{package}>=(\d+)\.(\d+)(?:\.\d+)?", req)
+    assert match is not None, f"{package} requirement must be a plain floor, got {req!r}"
+    return int(match.group(1)), int(match.group(2))
+
+
+def _torch_floor_from_pyproject() -> tuple[int, int]:
+    return _declared_floor("torch")
+
+
+# The oldest torch / torchvision pair on which the full core suite passes
+# (FIX-011; verified on CPU — see docs/external-contracts.md §2.1). torch 2.3
+# fails: `torch.is_autocast_enabled(device_type)` (TransformerNN forward),
+# SDPA float masks vs half/bf16/double queries, and the weights-only
+# unpickling allowlist for the training-state sidecar.
+EXPECTED_TORCH_FLOOR = (2, 4)
+EXPECTED_TORCHVISION_FLOOR = (0, 19)
+
+
+def test_declared_torch_floor_provides_torch_amp_grad_scaler():
+    """`_build_grad_scaler` calls ``torch.amp.GradScaler("cuda")`` — a symbol
+    (and a device-first signature) that exists from PyTorch 2.3. The
+    advertised floor must not admit a torch that lacks it (FIX-011)."""
+    import inspect
+
+    assert _torch_floor_from_pyproject() >= EXPECTED_TORCH_FLOOR >= (2, 3)
+    assert hasattr(torch.amp, "GradScaler")
+    first_param = next(iter(inspect.signature(torch.amp.GradScaler).parameters.values()))
+    assert first_param.name == "device"
+    assert torch.amp.GradScaler("cuda", enabled=False).state_dict() == {}
+
+
+def test_torchvision_floor_matches_torch_floor():
+    """Each torch minor pairs with exactly one torchvision minor (2.4 ↔
+    0.19); the two floors must move together and match the verified pair."""
+    assert _torch_floor_from_pyproject() == EXPECTED_TORCH_FLOOR
+    assert _declared_floor("torchvision") == EXPECTED_TORCHVISION_FLOOR
+
+
+def test_grad_scaler_prefers_modern_factory():
+    """CUDA + mixed_precision → exactly ``torch.amp.GradScaler("cuda")``
+    (dispatch only — no CUDA tensor is allocated)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    fake = SimpleNamespace(params=SimpleNamespace(mixed_precision=True), device=torch.device("cuda"))
+    sentinel = object()
+    with patch.object(torch.amp, "GradScaler", return_value=sentinel) as modern:
+        assert NNModel._build_grad_scaler(fake) is sentinel  # type: ignore[arg-type]
+    modern.assert_called_once_with("cuda")
+
+
+@pytest.mark.parametrize(
+    ("mixed_precision", "device"),
+    [(False, "cuda"), (True, "cpu"), (False, "cpu"), (True, "mps")],
+)
+def test_grad_scaler_disabled_on_cpu_or_without_mixed_precision(mixed_precision, device):
+    """No scaler — and no factory call — unless AMP is requested on CUDA."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    fake = SimpleNamespace(params=SimpleNamespace(mixed_precision=mixed_precision), device=torch.device(device))
+    with patch.object(torch.amp, "GradScaler") as modern:
+        assert NNModel._build_grad_scaler(fake) is None  # type: ignore[arg-type]
+    modern.assert_not_called()
