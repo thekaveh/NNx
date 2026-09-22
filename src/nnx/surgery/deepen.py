@@ -28,19 +28,29 @@ Two insertion modes are supported:
     activation between consecutive layers (the FeedFwdNN forward
     contract). The primitive inserts a fresh identity-init Linear into
     the ModuleList right after the named one, and the parent's forward
-    automatically applies the ReLU on either side. The parent's
-    declared activation must be :class:`nn.ReLU`.
+    automatically applies the ReLU on either side. The activation
+    *effective at the insertion site* — ``params.activation_for(idx)``,
+    so a per-layer override wins over the scalar default — must be
+    ReLU. The parent's immutable ``params`` are rebuilt to describe the
+    deeper topology (FIX-006): one more ``hidden_dims`` entry at the
+    site, a ReLU inserted into an explicit ``activations`` list, and
+    dropout ``0.0`` at the new identity site with every existing site
+    keeping its own probability (a nonzero scalar dropout is
+    materialized into a per-layer list rather than switched off).
 """
 
 from __future__ import annotations
 
 import copy
-from typing import cast
+from dataclasses import replace
+from typing import Any, Optional, cast
 
 import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from ..nn.enum.activations import Activations
+from ..nn.params.nn_params import NNParams
 from ._utils import get_module
 
 
@@ -61,20 +71,29 @@ def deepen(
               * an :class:`nn.ReLU` inside a parent :class:`nn.Sequential`
                 — the primitive splices ``Linear(I) → ReLU`` in after it.
               * an :class:`nn.Linear` inside a parent :class:`nn.ModuleList`
-                whose grandparent module declares ReLU as its activation
-                (the FeedFwdNN contract) — the primitive inserts a new
-                identity-init Linear into the ModuleList right after.
+                whose grandparent module applies ReLU at that site (the
+                FeedFwdNN contract; ``params.activation_for(idx)`` is
+                consulted, so per-layer overrides are honoured) — the
+                primitive inserts a new identity-init Linear into the
+                ModuleList right after and rebuilds the grandparent's
+                ``params`` so ``hidden_dims`` / ``activations`` /
+                ``dropout_probs`` describe the deeper topology (the new
+                site gets dropout ``0.0``). Adopt ``deeper.params`` as the
+                ``net_params`` of a fresh ``NNModel`` when rebuilding.
 
     Returns:
         A fresh :class:`nn.Module` whose forward output matches the
-        original within ``atol=1e-5``.
+        original within ``atol=1e-5`` (eval mode when dropout is
+        configured; a seeded training forward also matches, because the
+        zero-dropout site draws nothing from the RNG).
 
     Raises:
         KeyError: if ``after_layer_name`` is not a submodule.
         TypeError: if the layer is neither a ReLU-in-Sequential nor a
             Linear-in-FeedFwdNN-like ModuleList.
-        ValueError: if the parent's activation is anything other than
-            ReLU. Sigmoid / tanh / GELU break function-preservation.
+        ValueError: if the activation effective at the insertion site is
+            anything other than ReLU. Sigmoid / tanh / GELU break
+            function-preservation.
     """
     new_model = copy.deepcopy(model)
     target = get_module(new_model, after_layer_name)
@@ -176,7 +195,7 @@ def _insert_after_linear_in_module_list(
     # FeedFwdNN contract) or refuse.
     grandparent_path, _, _ = parent_path.rpartition(".")
     grandparent = new_model if not grandparent_path else new_model.get_submodule(grandparent_path)
-    _check_relu_activation(grandparent, parent_path)
+    _check_relu_activation(grandparent, parent_path, idx)
 
     new_linear = _identity_linear(
         target.out_features,
@@ -192,14 +211,58 @@ def _insert_after_linear_in_module_list(
     new_children = children[: idx + 1] + [new_linear] + children[idx + 1 :]
     new_module_list = nn.ModuleList(new_children)
     _replace_in_parent(new_model, parent_path, new_module_list)
+
+    # Keep the owner's immutable configuration aligned with its layers
+    # (FIX-006): FeedFwdNN.forward indexes `activation_for(i)` /
+    # `dropout_for(i)` for every hidden layer, so explicit override lists
+    # must grow with the ModuleList or the next forward raises
+    # IndexError. The rebuilt params describe the deeper topology, not
+    # merely lists of the right length.
+    params = getattr(grandparent, "params", None)
+    if isinstance(params, NNParams):
+        # cast(Any, ...): nn.Module.__setattr__ is typed for tensors/modules,
+        # but a plain attribute assignment is exactly what FeedFwdNN.__init__ does.
+        cast(Any, grandparent).params = _deepened_params(params, idx, target.out_features)
     return new_model
 
 
-def _check_relu_activation(grandparent: nn.Module, parent_path: str) -> None:
-    """Inspect the FeedFwdNN-like parent for a ReLU activation choice."""
+def _deepened_params(params: NNParams, idx: int, width: int) -> NNParams:
+    """``params`` with one identity layer of ``width`` inserted after hidden
+    layer ``idx``: hidden dim inserted at ``idx + 1``; a ReLU inserted at the
+    same position when an explicit ``activations`` list exists (the site
+    was validated to be ReLU, and the scalar is left as it is so every
+    existing effective activation is preserved); dropout ``0.0`` at the new
+    site — an explicit list gains the entry in place, a nonzero scalar is
+    materialized into a per-layer list so the old sites keep their
+    probability, and an all-zero scalar needs no list at all."""
+    hidden = list(params.hidden_dims) if params.hidden_dims is not None else []
+    hidden.insert(idx + 1, width)
+
+    activations: Optional[list[Activations]] = None
+    if params.activations is not None:
+        activations = list(params.activations)
+        activations.insert(idx + 1, Activations.RELU)
+
+    dropout_probs: Optional[list[float]] = None
+    if params.dropout_probs is not None:
+        dropout_probs = list(params.dropout_probs)
+        dropout_probs.insert(idx + 1, 0.0)
+    elif params.dropout_prob != 0.0:
+        dropout_probs = [params.dropout_prob] * (len(hidden) - 1)
+        dropout_probs.insert(idx + 1, 0.0)
+
+    return replace(params, hidden_dims=hidden, activations=activations, dropout_probs=dropout_probs)
+
+
+def _check_relu_activation(grandparent: nn.Module, parent_path: str, idx: int) -> None:
+    """Inspect the FeedFwdNN-like parent for a ReLU activation at the
+    insertion site ``idx`` — the activation that actually runs after
+    ``layers[idx]`` (``params.activation_for(idx)``), so a per-layer
+    override wins over the scalar default in both directions."""
     # NNx's FeedFwdNN holds an Activations enum on `params.activation`
-    # and calls it as a factory in the forward pass. We accept either
-    # the enum value or a module / callable that produces nn.ReLU.
+    # (plus optional per-layer overrides) and calls the effective one as
+    # a factory in the forward pass. We accept either the enum value or a
+    # module / callable that produces nn.ReLU.
     params = getattr(grandparent, "params", None)
     if params is None or not hasattr(params, "activation"):
         raise ValueError(
@@ -208,7 +271,7 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str) -> None:
             "supported in ModuleList mode."
         )
 
-    act = params.activation
+    act = params.activation_for(idx) if hasattr(params, "activation_for") else params.activation
 
     # Fast path: NNx Activations enum. The enum's `__call__` returns a
     # functional callable (e.g. F.relu), not an nn.Module — so we must
@@ -220,9 +283,9 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str) -> None:
             if act is _A.RELU:
                 return
             raise ValueError(
-                f"deepen: activation is {act.value!r}, but identity-init "
-                "insertion is function-preserving only for ReLU. Sigmoid/tanh/"
-                "GELU/etc. networks must be deepened by another method."
+                f"deepen: the activation effective after hidden layer {idx} is {act.value!r}, "
+                "but identity-init insertion is function-preserving only for ReLU. Sigmoid/tanh/"
+                "GELU/etc. sites must be deepened by another method."
             )
     except ImportError:  # pragma: no cover — same package
         pass

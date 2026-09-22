@@ -35,6 +35,13 @@ path — widen ``model.net``, rebuild the *immutable params* with
 aligned, load the widened state into a fresh correctly-described
 ``NNModel``, train with a new optimizer, and reload BEST.
 
+``deepen_override_workflow`` below is the ``deepen`` companion: starting
+from explicit per-layer activation/dropout overrides it inserts one
+identity layer, shows that the returned ``FeedFwdNN.params`` now describes
+the deeper topology (one more hidden dim, aligned overrides, zero dropout
+at the new site), rebuilds a fresh ``NNModel`` from ``deeper.params``,
+fits one tiny epoch with a new optimizer and reloads BEST.
+
 Run:
     pip install thekaveh-nnx
     python examples/20_low_rank_surgery_ffn.py
@@ -60,7 +67,7 @@ from nnx import (
     set_seed,
 )
 from nnx.finetune.param_groups import build_param_groups
-from nnx.surgery import low_rank_factorize, widen
+from nnx.surgery import deepen, low_rank_factorize, widen
 
 
 def _make_data():
@@ -169,6 +176,83 @@ def widen_supported_workflow() -> dict:
 
     summary = {"widened_hidden_dims": rebuilt_params.hidden_dims, "best_eval_loss": float(loss), "run_id": run.id}
     print(f"widen supported-workflow: {summary}")
+    return summary
+
+
+def deepen_override_workflow() -> dict:
+    """Bounded ``deepen`` contract demonstration (writes ``runs/`` under the
+    current working directory; the smoke test runs it in a temporary one).
+
+    A ``FeedFwdNN`` with hidden dims ``[8, 6]``, explicit ReLU overrides
+    and mixed dropout ``[0.2, 0.0]`` is deepened after ``layers.0``. The
+    returned network's ``params`` must describe the new topology — hidden
+    ``[8, 8, 6]``, three ReLU entries, dropout ``[0.2, 0.0, 0.0]`` with
+    zero at the new identity site — and the eval forward must match the
+    original. A fresh ``NNModel`` is then built from ``deeper.params``
+    (never from the old descriptor), the deeper state is loaded, one
+    tiny epoch trains with a new optimizer, and BEST reloads with the
+    deeper descriptor for a finite evaluation. The original params and
+    network are left unchanged.
+    """
+    from nnx import Checkpoints, NNCheckpoint
+
+    set_seed(0)
+    x = torch.randn(6, 8)
+    y = torch.randint(0, 3, (6,))
+
+    net_params = NNParams(
+        input_dim=8,
+        output_dim=3,
+        hidden_dims=[8, 6],
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+        activations=[Activations.RELU, Activations.RELU],
+        dropout_probs=[0.2, 0.0],
+    )
+    model_params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = NNModel(net_params=net_params, params=model_params)
+    model.net.eval()
+
+    deeper_net = deepen(model.net, after_layer_name="layers.0")
+    deeper_net.eval()
+    with torch.no_grad():
+        assert torch.allclose(model.net(x), deeper_net(x), atol=1e-5), "deepen must preserve the eval forward"
+    new_params = deeper_net.params  # the transformed descriptor travels with the network
+    assert list(new_params.hidden_dims) == [8, 8, 6], list(new_params.hidden_dims)
+    assert list(new_params.activations) == [Activations.RELU] * 3
+    assert list(new_params.dropout_probs) == [0.2, 0.0, 0.0], list(new_params.dropout_probs)
+    assert list(net_params.hidden_dims) == [8, 6] and len(model.net.layers) == 3, "source untouched"
+
+    refined = NNModel(net_params=new_params, params=model_params)  # fresh, correctly described
+    refined.net.load_state_dict(deeper_net.state_dict())
+    refined.net.eval()
+    with torch.no_grad():
+        assert torch.allclose(model.net(x), refined.net(x), atol=1e-5)
+
+    loader = DataLoader(TensorDataset(x, y), batch_size=3)
+    run = refined.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            val_loader=loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=NNSchedulerParams(min_lr=1e-6, factor=0.5, patience=2, cooldown=1, threshold=1e-3),
+        )
+    )
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None
+    reloaded = NNModel.from_checkpoint(checkpoint=best)
+    assert list(reloaded.net_params.hidden_dims) == [8, 8, 6]
+    assert [reloaded.net_params.dropout_for(i) for i in range(3)] == [0.2, 0.0, 0.0]
+    loss = reloaded.evaluate(loader).loss
+    assert loss is not None and torch.isfinite(torch.tensor(loss))
+
+    summary = {
+        "hidden_dims": list(new_params.hidden_dims),
+        "dropout_probs": list(new_params.dropout_probs),
+        "run_id": run.id,
+    }
+    print(f"deepen override workflow: {summary}")
     return summary
 
 
