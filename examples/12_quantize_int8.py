@@ -25,6 +25,13 @@ package, even though the ``quantize`` extra alone covers steps 1-4):
 
     pip install 'thekaveh-nnx[quantize,onnx]'
 
+``quantized_generative_subtype`` below is a separate bounded helper for LM
+users: ``quantize_int8`` returns an instance of the *same* class it was
+given, so a :class:`GenerativeNNModel` keeps its tokenizer and ``generate``.
+It needs ``thekaveh-nnx[quantize,lm]`` (torchao + tokenizers), imported
+lazily so importing this module stays valid without them; ONNX is not
+required for it.
+
 Run:
     python examples/12_quantize_int8.py
 """
@@ -110,6 +117,78 @@ def _val_accuracy(model: NNModel, val_loader: DataLoader) -> float:
     return correct / total
 
 
+def quantized_generative_subtype() -> dict:
+    """Bounded INT8 + generation composition (inference only, no training,
+    no download, no ONNX). Raises ``ImportError`` naming the missing extra
+    when ``tokenizers`` or ``torchao`` is unavailable — an explicit skip
+    for the smoke harness, never a silent pass.
+
+    Trains a tiny local BPE tokenizer, builds a one-layer ``d_model=16``
+    :class:`GenerativeNNModel`, quantizes it, and generates at most two
+    new tokens on both the KV-cached and full-recompute paths. Asserts
+    the subtype, shared tokenizer, deterministic greedy output, the token
+    callback bound, training-mode restoration and that the FP32 source is
+    left untouched and still generates.
+    """
+    try:
+        import tokenizers  # noqa: F401
+    except ImportError as e:
+        raise ImportError("quantized_generative_subtype needs `pip install 'thekaveh-nnx[lm]'` (tokenizers)") from e
+    try:
+        import torchao  # noqa: F401
+    except ImportError as e:
+        raise ImportError("quantized_generative_subtype needs `pip install 'thekaveh-nnx[quantize]'` (torchao)") from e
+
+    from nnx import GenerativeNNModel, NNTokenizerParams, NNTransformerParams, train_bpe
+
+    set_seed(0)
+    corpus = ["the cat sat on the mat", "the dog ran in the park", "hello world hello there"]
+    with tempfile.TemporaryDirectory() as tmp:
+        bpe = train_bpe(files=None, texts=corpus, vocab_size=64, special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"])
+        tokenizer = NNTokenizerParams.of(tokenizer=bpe, path=os.path.join(tmp, "tok.json"))
+        model = GenerativeNNModel(
+            net_params=NNTransformerParams(
+                input_dim=tokenizer.vocab_size,
+                output_dim=tokenizer.vocab_size,
+                dropout_prob=0.0,
+                vocab_size=tokenizer.vocab_size,
+                n_layers=1,
+                n_heads=2,
+                d_model=16,
+                ffn_mult=2,
+                max_seq_len=16,
+            ),
+            params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+            tokenizer=tokenizer,
+        )
+        source_values = {n: p.detach().clone() for n, p in model.net.named_parameters()}
+
+        quantized = quantize_int8(model)
+        assert type(quantized) is GenerativeNNModel, type(quantized)
+        assert quantized.tokenizer is model.tokenizer and quantized.net is not model.net
+
+        emitted: list[int] = []
+        quantized.net.train()
+        cached = quantized.generate(prompt="the", max_new_tokens=2, temperature=0.0, on_token=emitted.append)
+        assert quantized.net.training, "generate must restore the training mode it found"
+        assert 1 <= len(emitted) <= 2, emitted
+        full = quantized.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=False)
+        assert full == cached == quantized.generate(prompt="the", max_new_tokens=2, temperature=0.0)
+
+        for n, p in model.net.named_parameters():
+            assert type(p) is torch.nn.Parameter and torch.equal(p.detach(), source_values[n]), n
+        fp32_text = model.generate(prompt="the", max_new_tokens=2, temperature=0.0)
+
+    summary = {
+        "subtype": type(quantized).__name__,
+        "int8_text": cached,
+        "fp32_text": fp32_text,
+        "n_emitted": len(emitted),
+    }
+    print(f"quantized generative subtype workflow: {summary}")
+    return summary
+
+
 def main():
     set_seed(0)
     train_loader, val_loader = _loaders(seed=0)
@@ -156,7 +235,7 @@ def main():
     print("Phase 3: PTQ INT8 weight-only quantization")
     print("=" * 60)
     model_q = quantize_int8(model)
-    print("quantize_int8 returned a new NNModel; source is unchanged.")
+    print(f"quantize_int8 returned a new {type(model_q).__name__} (same class as its input); source is unchanged.")
     # Show that the original's first Linear weight is still a plain Parameter.
     src_w_type = type(model.net.layers[0].weight).__name__
     q_w_type = type(model_q.net.layers[0].weight).__name__

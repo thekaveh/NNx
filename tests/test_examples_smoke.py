@@ -45,6 +45,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("02_resume_training.py", "iterable_graph_resume"),
     ("02_resume_training.py", "overwrite_best_recovery"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
+    ("12_quantize_int8.py", "quantized_generative_subtype"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
 ]
 
@@ -58,4 +59,9 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     namespace = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")
-    namespace[helper]()
+    try:
+        namespace[helper]()
+    except ImportError as exc:
+        # Helpers that need an optional extra raise ImportError naming it:
+        # an explicit skip in a core-only environment, never a silent pass.
+        pytest.skip(f"{name}:{helper} needs an optional extra: {exc}")

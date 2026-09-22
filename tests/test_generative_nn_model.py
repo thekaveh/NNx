@@ -806,3 +806,40 @@ def test_generate_on_token_callback_raises_restores_training_mode(tmp_path):
             )
     finally:
         assert model.net.training is True, "on_token raise stranded the net in eval()"
+
+
+def test_quantized_generative_model_can_generate(tmp_path):
+    """FIX-017: quantizing a GenerativeNNModel must keep it a
+    GenerativeNNModel — tokenizer shared, `generate` callable — with
+    deterministic greedy output on both the cached and full-recompute
+    paths, at most `max_new_tokens` token callbacks, training mode
+    restored, and the FP32 source still generating independently."""
+    pytest.importorskip("torchao")
+    from nnx import quantize_int8
+
+    torch.manual_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    model = _make_model(tokenizer)
+    source_types = {n: type(p) for n, p in model.net.named_parameters()}
+    source_values = {n: p.detach().clone() for n, p in model.net.named_parameters()}
+
+    quantized = quantize_int8(model)
+    assert type(quantized) is GenerativeNNModel
+    assert quantized is not model and quantized.net is not model.net
+    assert quantized.tokenizer is model.tokenizer
+    assert callable(getattr(quantized, "generate", None))
+
+    emitted: list[int] = []
+    quantized.net.train()
+    cached = quantized.generate(prompt="the", max_new_tokens=3, temperature=0.0, on_token=emitted.append)
+    assert quantized.net.training  # mode restored by the non-destructive helper
+    assert 1 <= len(emitted) <= 3
+    assert quantized.generate(prompt="the", max_new_tokens=3, temperature=0.0) == cached
+    full = quantized.generate(prompt="the", max_new_tokens=3, temperature=0.0, use_cache=False)
+    assert isinstance(full, str) and full == cached
+
+    # The FP32 source is isolated: still plain Parameters, values unchanged, still generates.
+    for n, p in model.net.named_parameters():
+        assert type(p) is source_types[n] is torch.nn.Parameter, n
+        assert torch.equal(p.detach(), source_values[n]), n
+    assert isinstance(model.generate(prompt="the", max_new_tokens=3, temperature=0.0), str)
