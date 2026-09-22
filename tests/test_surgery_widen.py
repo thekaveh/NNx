@@ -261,3 +261,151 @@ def test_widen_frozen_network_cannot_enter_explicit_param_groups():
         build_param_groups(
             wider, [NNParamGroupSpec(name_pattern="*", lr=1e-2)], default_lr=1e-2, default_weight_decay=0.0, strict=True
         )
+
+
+# ---------------- FIX-005: widen validates the target→consumer path ----------------
+
+
+def _snapshot(net: nn.Module):
+    return (
+        {k: v.clone() for k, v in net.state_dict().items()},
+        {name: id(m) for name, m in net.named_modules()},
+        torch.get_rng_state().clone(),
+    )
+
+
+def _assert_untouched(net: nn.Module, snapshot) -> None:
+    values, identities, rng = snapshot
+    assert all(torch.equal(values[k], v) for k, v in net.state_dict().items())
+    assert {name: id(m) for name, m in net.named_modules()} == identities
+    assert torch.equal(torch.get_rng_state(), rng)
+
+
+@pytest.mark.parametrize(
+    "op",
+    [nn.Softmax(dim=-1), nn.LayerNorm(4), nn.BatchNorm1d(4)],
+    ids=["softmax", "layernorm", "batchnorm"],
+)
+def test_widen_rejects_width_dependent_intermediate(op):
+    """Softmax / LayerNorm / BatchNorm between the target and its consumer
+    are width-dependent: duplicating units changes their output, so the
+    Net2WiderNet rescaling cannot preserve the function. widen() must
+    refuse before returning a model, name the op, and leave the source
+    (values, module identities, RNG) untouched."""
+    torch.manual_seed(4)
+    net = nn.Sequential(nn.Linear(4, 4), op, nn.Linear(4, 2)).eval()
+    snapshot = _snapshot(net)
+    with pytest.raises(ValueError, match=type(op).__name__):
+        widen(net, layer_name="0", new_width=7)
+    _assert_untouched(net, snapshot)
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        nn.Tanh(),
+        nn.GELU(),
+        nn.Sigmoid(),
+        nn.LeakyReLU(0.1),
+        nn.ELU(),
+        nn.SELU(),
+        nn.Softplus(),
+        nn.SiLU(),
+        nn.Identity(),
+        nn.Dropout(0.3),
+    ],
+    ids=lambda m: type(m).__name__,
+)
+def test_widen_accepts_elementwise_intermediates(op):
+    """Any elementwise op between target and consumer keeps Net2WiderNet
+    function-preserving (Dropout: in eval mode, where it is the identity)."""
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(4, 4), op, nn.Linear(4, 2)).eval()
+    x = torch.randn(3, 4)
+    wider = widen(net, layer_name="0", new_width=7)
+    assert torch.allclose(net(x), wider(x), atol=1e-5)
+
+
+def test_widen_rejects_unproven_registered_branch():
+    """Registration order is not data flow: a module whose *registered*
+    next Linear is not the consumer must be rejected (only nn.Sequential
+    and FeedFwdNN.layers prove the execution order)."""
+
+    class Branch(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = nn.Linear(4, 4)
+            self.side = nn.Linear(4, 2)  # registered next, never fed by `a`
+            self.b = nn.Linear(4, 2)
+
+        def forward(self, x):
+            return self.b(torch.relu(self.a(x)))
+
+    net = Branch()
+    snapshot = _snapshot(net)
+    with pytest.raises(ValueError, match="Sequential|FeedFwdNN"):
+        widen(net, layer_name="a", new_width=7)
+    _assert_untouched(net, snapshot)
+
+
+def test_widen_rejects_missing_consumer():
+    net = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    with pytest.raises(ValueError, match="no downstream nn.Linear"):
+        widen(net, layer_name="2", new_width=7)
+
+
+def test_widen_rejects_shared_alias():
+    """A target or consumer registered under more than one path is used
+    in more than one place; widening one path would leave the other at
+    the old width. Reject and name the alias paths."""
+    shared = nn.Linear(4, 4)
+    net = nn.Sequential(shared, nn.ReLU(), nn.Linear(4, 2))
+    net.add_module("alias", shared)
+    snapshot = _snapshot(net)
+    with pytest.raises(ValueError, match="alias"):
+        widen(net, layer_name="0", new_width=7)
+    _assert_untouched(net, snapshot)
+
+    consumer = nn.Linear(4, 2)
+    net2 = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), consumer)
+    net2.add_module("alias", consumer)
+    with pytest.raises(ValueError, match="alias"):
+        widen(net2, layer_name="0", new_width=7)
+
+
+def test_widen_resolves_effective_feedforward_activation():
+    """FeedFwdNN executes `params.activation_for(i)`, not the scalar
+    default: a per-layer Softmax between the target and its consumer is
+    rejected even when the net-wide activation is ReLU, while a Softmax
+    on a later layer does not block widening an earlier one."""
+    torch.manual_seed(0)
+    blocked = FeedFwdNN(
+        NNParams(
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[4, 4],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            activations=[Activations.SOFTMAX, Activations.RELU],
+        )
+    )
+    snapshot = _snapshot(blocked)
+    with pytest.raises(ValueError, match="softmax"):
+        widen(blocked, layer_name="layers.0", new_width=7)
+    _assert_untouched(blocked, snapshot)
+
+    allowed = FeedFwdNN(
+        NNParams(
+            input_dim=4,
+            output_dim=2,
+            hidden_dims=[4, 4],
+            dropout_prob=0.5,
+            activation=Activations.RELU,
+            activations=[Activations.TANH, Activations.SOFTMAX],
+        )
+    ).eval()
+    x = torch.randn(3, 4)
+    wider = widen(allowed, layer_name="layers.0", new_width=7)
+    assert torch.allclose(allowed(x), wider(x), atol=1e-5)  # eval-mode parity with dropout configured
+    with pytest.raises(ValueError, match="no downstream nn.Linear"):
+        widen(allowed, layer_name="layers.2", new_width=5)
