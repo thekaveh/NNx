@@ -177,3 +177,87 @@ def test_widen_does_not_advance_global_rng():
     widen(net, layer_name="0", new_width=16)
     widen(net, layer_name="0", new_width=16, rng_seed=None)
     assert torch.equal(torch.get_rng_state(), state)
+
+
+# ---------------- FIX-016: replacements preserve trainability and modes ----------------
+
+_ROLE_CASES = [
+    pytest.param(True, True, True, id="w_train-b_train"),
+    pytest.param(True, False, True, id="w_train-b_frozen"),
+    pytest.param(False, True, True, id="w_frozen-b_train"),
+    pytest.param(False, False, True, id="w_frozen-b_frozen"),
+    pytest.param(False, None, False, id="w_frozen-no_bias"),
+    pytest.param(True, None, False, id="w_train-no_bias"),
+]
+
+
+@pytest.mark.parametrize(("w_flag", "b_flag", "has_bias"), _ROLE_CASES)
+def test_surgery_preserves_weight_bias_roles(w_flag, b_flag, has_bias):
+    """widen must give the target replacement the target's own weight/bias
+    `requires_grad` flags and the downstream replacement the downstream's
+    own (opposing) flags — never cross-propagate — while the source model
+    keeps its flags and the new tensors are independent storage."""
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(4, 4, bias=has_bias), nn.ReLU(), nn.Linear(4, 2, bias=has_bias))
+    net[0].weight.requires_grad_(w_flag)
+    net[2].weight.requires_grad_(not w_flag)
+    if has_bias:
+        net[0].bias.requires_grad_(b_flag)
+        net[2].bias.requires_grad_(not b_flag)
+    source_flags = {n: p.requires_grad for n, p in net.named_parameters()}
+
+    wider = widen(net, layer_name="0", new_width=7)
+
+    assert wider[0].weight.requires_grad is w_flag
+    assert wider[2].weight.requires_grad is (not w_flag)
+    if has_bias:
+        assert wider[0].bias.requires_grad is b_flag
+        assert wider[2].bias.requires_grad is (not b_flag)
+    else:
+        assert wider[0].bias is None and wider[2].bias is None
+    assert {n: p.requires_grad for n, p in net.named_parameters()} == source_flags
+    assert wider[0].weight is not net[0].weight and wider[2].weight is not net[2].weight
+
+    x = torch.randn(3, 4)
+    torch.testing.assert_close(wider(x), net(x), atol=1e-5, rtol=1e-5)
+    trainable = [p for p in wider.parameters() if p.requires_grad]
+    if trainable:
+        wider(x).square().mean().backward()
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in trainable)
+        assert all(p.grad is None for p in wider.parameters() if not p.requires_grad)
+
+
+def test_surgery_preserves_mixed_module_modes():
+    """Replaced children keep the mode of the module they replace; the
+    copied root keeps its own mode; a mixed root/child configuration
+    survives widening unchanged."""
+    net = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    net.eval()
+    net[0].train()  # mixed: root eval, target train, downstream eval
+    wider = widen(net, layer_name="0", new_width=6)
+    assert wider.training is False
+    assert wider[0].training is True
+    assert wider[2].training is False
+
+    net.train()
+    net[2].eval()
+    wider = widen(net, layer_name="0", new_width=6)
+    assert wider.training is True and wider[0].training is True and wider[2].training is False
+
+
+def test_widen_frozen_network_cannot_enter_explicit_param_groups():
+    """The practical consequence: an optimizer built AFTER surgery on a
+    fully frozen network must not receive any parameter — replacement
+    constructors used to default every new tensor back to trainable."""
+    from nnx import NNParamGroupSpec
+    from nnx.finetune.param_groups import build_param_groups
+
+    net = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2)).eval()
+    net.requires_grad_(False)
+    wider = widen(net, layer_name="0", new_width=7)
+    assert not any(p.requires_grad for p in wider.parameters())
+    assert not wider[0].training and not wider[2].training
+    with pytest.raises(ValueError, match="no parameter groups"):
+        build_param_groups(
+            wider, [NNParamGroupSpec(name_pattern="*", lr=1e-2)], default_lr=1e-2, default_weight_decay=0.0, strict=True
+        )

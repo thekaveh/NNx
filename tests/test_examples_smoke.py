@@ -50,6 +50,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
     ("11_tinystories_lm.py", "manual_attention_lm_example"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),
+    ("20_low_rank_surgery_ffn.py", "surgery_freeze_roles"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
 ]
 
