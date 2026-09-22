@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Optional
-
-from torch.utils.data import DataLoader
+from typing import Any, Optional
 
 from ..enum.optims import Optims
 from ..params.nn_optim_params import NNOptimParams
@@ -39,8 +37,12 @@ class NNTrainParams:
     # per-epoch checkpoint I/O dominates wall-clock time.
     save_phase_checkpoints: bool = True
 
-    train_loader: Optional[DataLoader] = field(repr=False, default=None)
-    val_loader: Optional[DataLoader] = field(repr=False, default=None)
+    # Any re-iterable of batches is accepted (a DataLoader, a list of
+    # (X, Y) tuples, NNGraphDataset's one-element full-batch list, ...).
+    # Runtime-only: never serialized. Warm resume restores generator state
+    # for real DataLoaders; a consumed one-shot iterator cannot be replayed.
+    train_loader: Optional[Iterable[Any]] = field(repr=False, default=None)
+    val_loader: Optional[Iterable[Any]] = field(repr=False, default=None)
 
     # Custom metrics: name -> callable(Y_true, Y_pred) -> float. Runtime-only
     # (functions don't round-trip through YAML), so this lives outside
@@ -72,10 +74,10 @@ class NNTrainParams:
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
 
-    def with_train_loader(self, value: DataLoader) -> NNTrainParams:
+    def with_train_loader(self, value: Iterable[Any]) -> NNTrainParams:
         return replace(self, train_loader=value)
 
-    def with_val_loader(self, value: DataLoader) -> NNTrainParams:
+    def with_val_loader(self, value: Iterable[Any]) -> NNTrainParams:
         return replace(self, val_loader=value)
 
     def __str__(self):

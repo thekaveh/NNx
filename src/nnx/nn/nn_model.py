@@ -6,7 +6,7 @@ import math
 import os
 import random
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
@@ -95,7 +95,21 @@ def _optimizer_topology(optimizer: torch.optim.Optimizer, net: torch.nn.Module) 
     ]
 
 
-def _capture_rng_state(train_loader: Optional[DataLoader] = None) -> dict[str, Any]:
+def _loader_num_workers(train_loader: Any) -> int:
+    """Worker count of a batch source, treating absent metadata as zero.
+
+    Training accepts any re-iterable of batches, not only ``DataLoader``
+    (FIX-012); only a real loader can spawn workers whose local RNG state
+    is not reconstructible on resume. Never iterates the source.
+    """
+    workers = getattr(train_loader, "num_workers", 0)
+    try:
+        return int(workers or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _capture_rng_state(train_loader: Optional[Iterable[Any]] = None) -> dict[str, Any]:
     numpy_state = cast(tuple[str, np.ndarray, int, int, float], np.random.get_state())
     state = {
         "python": random.getstate(),
@@ -132,7 +146,7 @@ def _capture_rng_state(train_loader: Optional[DataLoader] = None) -> dict[str, A
     return state
 
 
-def _restore_rng_state(state: dict[str, Any], train_loader: Optional[DataLoader] = None) -> None:
+def _restore_rng_state(state: dict[str, Any], train_loader: Optional[Iterable[Any]] = None) -> None:
     random.setstate(state["python"])
     numpy_state = state["numpy"]
     np.random.set_state(
@@ -330,7 +344,7 @@ class EvalStepContext:
     """
 
     model: NNModel
-    val_loader: DataLoader
+    val_loader: Iterable[Any]
     extra_metrics: Optional[Mapping[str, Callable]]
     epoch_idx: int
 
@@ -1282,6 +1296,13 @@ class NNModel(_HubMixinBase):
                         f"beyond scheduler.total_steps={params.scheduler.total_steps}; configure one shared "
                         "horizon covering the original and resumed epochs"
                     )
+                # Worker capability is decided BEFORE any state is restored:
+                # ordinary training accepts any re-iterable batch source (a
+                # list, NNGraphDataset's one-element full-batch list, ...),
+                # which has no `num_workers`. Absent metadata means "no
+                # worker-local RNG to worry about"; a real DataLoader with
+                # workers keeps its warning. Nothing here iterates the source.
+                warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
                 previous_net_state = _snapshot_state_dict(self.net.state_dict())
                 previous_rng_state = _capture_rng_state(train_loader)
                 try:
@@ -1297,7 +1318,7 @@ class NNModel(_HubMixinBase):
                     self.net.load_state_dict(previous_net_state)
                     _restore_rng_state(previous_rng_state, train_loader)
                     raise
-                if training_state.get("rng") is not None and train_loader.num_workers > 0:
+                if warn_worker_rng:
                     warnings.warn(
                         "exact warm-resume continuity requires train_loader.num_workers=0; "
                         "worker-local RNG state cannot be reconstructed",
@@ -1327,7 +1348,7 @@ class NNModel(_HubMixinBase):
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
-            n_iter: Optional[int] = int(params.n_epochs * len(train_loader))
+            n_iter: Optional[int] = int(params.n_epochs * len(cast(Sized, train_loader)))
         except TypeError:
             n_iter = None
         best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
@@ -1515,7 +1536,7 @@ class NNModel(_HubMixinBase):
         print(f"Run saved to {runs_root_path}")
         return saved
 
-    def evaluate(self, loader: DataLoader, extra_metrics=None) -> NNEvaluationDataPoint:
+    def evaluate(self, loader: Iterable[Any], extra_metrics=None) -> NNEvaluationDataPoint:
         """Aggregate predictions across all batches in `loader` and compute
         a single NNEvaluationDataPoint. Aggregating (rather than averaging
         per-batch metrics) gives correct sample-weighted f1/precision/recall
@@ -1791,7 +1812,7 @@ class NNModel(_HubMixinBase):
         scheduler=None,
         scaler: Optional[torch.amp.GradScaler] = None,
         completed_epoch: Optional[int] = None,
-        train_loader: Optional[DataLoader] = None,
+        train_loader: Optional[Iterable[Any]] = None,
     ) -> NNCheckpoint:
         checkpoint = NNCheckpoint(
             idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
