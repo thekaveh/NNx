@@ -230,6 +230,17 @@ purely opt-in.
 - **Callbacks** — `EarlyStopping`, `ModelCheckpoint`,
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
   `train_loss` for an LM is the standard signal; perplexity = `exp(loss)`.
+- **Attention dropout and reduced precision** — with `attn_dropout=0` (or in
+  eval mode) attention runs through `torch.nn.functional.scaled_dot_product_attention`;
+  a nonzero `attn_dropout` in train mode takes the manual, seed-deterministic
+  path. That path accumulates the scaled scores, additive mask, softmax and
+  dropout in FP32 for FP16/BF16 layers (FP32 and FP64 keep their own dtype)
+  and casts the attention result back to the value dtype before the output
+  projection, so a half or bf16 model trains with dropout and returns logits
+  in its own dtype. The same rule covers the rectangular prefix/cache masks
+  built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
+  bf16 autocast are the lanes exercised by the test suite; other
+  backend/dtype combinations are not claimed until run on that hardware.
 - **KV cache** — `TransformerBlock` exposes a `use_cache` kwarg whose
   off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
   defaults `use_cache=True` and runs a single prefill pass through
