@@ -135,11 +135,19 @@ class PrefixTuner(nn.Module):
         assert n_heads is not None
         head_dim = model.params.d_model // n_heads
 
+        # Each layer's K/V prefix is allocated from THAT block's attention
+        # projection weight, so it inherits the block's dtype and device
+        # (FIX-003) — not a single model-wide parameter: the prefix is
+        # concatenated with that block's own K/V inside the patched
+        # attention forward.
+        def _projection_weight(i: int) -> torch.Tensor:
+            return cast(Any, model.blocks[i]).attn.w_qkv.weight
+
         self.prefix_keys = nn.ParameterList(
-            [nn.Parameter(torch.empty(n_prefix, n_heads, head_dim)) for _ in range(n_layers)]
+            [nn.Parameter(_projection_weight(i).new_empty(n_prefix, n_heads, head_dim)) for i in range(n_layers)]
         )
         self.prefix_values = nn.ParameterList(
-            [nn.Parameter(torch.empty(n_prefix, n_heads, head_dim)) for _ in range(n_layers)]
+            [nn.Parameter(_projection_weight(i).new_empty(n_prefix, n_heads, head_dim)) for i in range(n_layers)]
         )
         # Init with small Gaussian noise — matches the original
         # prefix-tuning paper's "random init" baseline.

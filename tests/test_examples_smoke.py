@@ -45,6 +45,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("02_resume_training.py", "iterable_graph_resume"),
     ("02_resume_training.py", "overwrite_best_recovery"),
     ("07_lora_finetuning.py", "dora_zero_row_composition"),
+    ("07_lora_finetuning.py", "peft_preconverted_base"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),

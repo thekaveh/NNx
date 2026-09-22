@@ -3755,6 +3755,11 @@ only as B picks up gradient.
 The wrapper preserves the base layer's ``in_features`` /
 ``out_features``, so consumers that read ``base.weight.shape`` or
 pass tensors through the layer don't change.
+
+``lora_A`` / ``lora_B`` are allocated with the base weight's dtype
+and device, so convert or move the base *before* wrapping and the
+adapter composes immediately (a meta-device base yields meta
+adapters). The base is never moved, recast or replaced.
 ```
 
 ##### `nnx.peft.lora.LoRALinear.in_features`
@@ -4041,6 +4046,9 @@ vector initialized to all-ones so the layer's output at step 0
 equals the base layer's output exactly.
 
 Forward: ``y = base(x) * scaling`` (broadcast over the trailing dim).
+``scaling`` takes the base weight's dtype and device, so the output
+keeps the base dtype (a half base stays half) and a pre-converted or
+pre-moved base composes without a second ``.to()``.
 
 Args:
     base: the :class:`nn.Linear` to wrap.
@@ -4329,7 +4337,9 @@ Args:
     n_prompt_tokens: number of soft-prompt slots. Must be > 0.
 
 The soft prompt is initialized with ``nn.init.normal_(std=0.02)``
-— the same scale Lester et al. use as their "random init" baseline.
+— the same scale Lester et al. use as their "random init" baseline —
+and allocated with the dtype/device of the wrapped model's token
+embedding, so convert or move the model *before* wrapping.
 ```
 
 ##### `nnx.peft.prompt.PromptTuner.effective_max_seq_len`

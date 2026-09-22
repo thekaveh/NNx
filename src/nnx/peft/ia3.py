@@ -46,6 +46,9 @@ class IA3Linear(nn.Module):
     equals the base layer's output exactly.
 
     Forward: ``y = base(x) * scaling`` (broadcast over the trailing dim).
+    ``scaling`` takes the base weight's dtype and device, so the output
+    keeps the base dtype (a half base stays half) and a pre-converted or
+    pre-moved base composes without a second ``.to()``.
 
     Args:
         base: the :class:`nn.Linear` to wrap.
@@ -63,8 +66,11 @@ class IA3Linear(nn.Module):
             p.requires_grad = False
 
         # Per-output-dim scaling vector, initialized to all-ones so
-        # the layer's output at step 0 equals base(x) exactly.
-        self.scaling = nn.Parameter(torch.ones(base.out_features))
+        # the layer's output at step 0 equals base(x) exactly. Allocated
+        # from the base weight so it inherits its dtype and device
+        # (FIX-003): a float32 vector would silently promote a half
+        # pipeline's output to float32 and break the next half Linear.
+        self.scaling = nn.Parameter(base.weight.new_ones(base.out_features))
 
     @property
     def in_features(self) -> int:
