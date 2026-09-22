@@ -4651,8 +4651,14 @@ Args:
     model: any :class:`nn.Module`. The function deep-copies it so
         the caller's reference survives.
     layer_name: dotted name (as produced by ``named_modules()``) of
-        the :class:`nn.Linear` to widen. Must be a Linear, must
-        have an immediately downstream Linear, otherwise raises.
+        the :class:`nn.Linear` to widen. Must be a Linear whose
+        consumer can be *proven*: the target lives directly inside an
+        ``nn.Sequential`` (the following siblings are walked) or in
+        ``FeedFwdNN.layers`` (the effective per-layer activation /
+        dropout is resolved), and every op between it and the next
+        Linear is elementwise — the built-in activations except
+        Softmax, ``Dropout``, ``Identity``. Anything else raises
+        before any allocation (see ``Raises``).
     new_width: desired ``out_features``. Must be strictly greater
         than the current ``out_features``.
     rng_seed: seed for the unit-duplication choices. Pass an int
@@ -4664,13 +4670,24 @@ Args:
 Returns:
     A new :class:`nn.Module` (same class as ``model``) with the
     widened Linear in place. Forward output equals the original's
-    within ``atol=1e-5`` (typically much tighter).
+    within ``atol=1e-5`` (typically much tighter) — in eval mode when
+    a ``Dropout`` sits between the target and its consumer, since a
+    stochastic training forward is not identical by construction.
 
 Raises:
     KeyError: if ``layer_name`` is not a submodule of ``model``.
     TypeError: if the named submodule is not :class:`nn.Linear`.
     ValueError: if ``new_width`` is not strictly greater than the
-        current ``out_features``, or if no downstream Linear exists.
+        current ``out_features``; if no downstream Linear exists; if
+        a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
+        module outside the elementwise allowlist) sits between the
+        target and its consumer; if the target lives in a container
+        other than ``nn.Sequential`` / ``FeedFwdNN.layers`` (module
+        registration order is not data flow); or if the target or
+        its consumer is registered under more than one path (an
+        alias used in several places). Validation runs on the source
+        before anything is copied or allocated, so a rejected call
+        leaves the model, its module identities and the RNG untouched.
 ```
 
 
