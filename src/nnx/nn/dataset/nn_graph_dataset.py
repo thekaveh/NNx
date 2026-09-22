@@ -72,6 +72,14 @@ class NNGraphDataset(NNDatasetBase):
     rejected with the ``batch_sizes[i] (split)`` slot named before
     ``ds_class`` is instantiated. ``sampler="full"`` rejects every explicit
     size (the complete split is always one batch).
+
+    An empty ``val_mask`` / ``test_mask`` is an *absent* split in both
+    sampler modes (FIX-019): that loader is ``None`` — the optional-loader
+    contract the tabular / preference wrappers already follow, which
+    ``NNModel.train`` / ``Trainer.train`` honour by skipping validation —
+    its resolved size is ``0`` (derived from absence, never an accepted
+    explicit zero) and ``state()`` reports ``"0"``. An empty ``train_mask``
+    raises ``ValueError`` at construction. The caller's masks are only read.
     """
 
     ds_class: type[Dataset]
@@ -122,71 +130,63 @@ class NNGraphDataset(NNDatasetBase):
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 
+        # Split sizes are read from the masks once (the caller's graph is
+        # never edited). An empty optional split is an ABSENT loader
+        # (FIX-019) — not a zero-size batch that NeighborLoader rejects and
+        # evaluate() cannot score — and an empty training split is an error.
+        n_train, n_val, n_test = (
+            int(cast(torch.Tensor, getattr(data, mask)).sum()) for mask in ("train_mask", "val_mask", "test_mask")
+        )
+        if n_train == 0:
+            raise ValueError(
+                f"{self.name}: train_mask selects no nodes — NNGraphDataset needs at least one training "
+                "seed node (val_mask / test_mask may be empty, which yields an absent loader)"
+            )
         # `None` → every node of the split mask in one batch; an explicit
         # positive size is kept verbatim — an `is None` test, not
-        # truthiness (FIX-022).
-        train_batch_size = int(data.train_mask.sum()) if requested[0] is None else requested[0]
-        val_batch_size = int(data.val_mask.sum()) if requested[1] is None else requested[1]
-        test_batch_size = int(data.test_mask.sum()) if requested[2] is None else requested[2]
+        # truthiness (FIX-022). An empty optional split resolves to 0
+        # whatever was requested: the zero is derived from absence (its
+        # loader is None), never an accepted explicit zero.
+        train_batch_size = n_train if requested[0] is None else requested[0]
+        val_batch_size = 0 if n_val == 0 else (n_val if requested[1] is None else requested[1])
+        test_batch_size = 0 if n_test == 0 else (n_test if requested[2] is None else requested[2])
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
 
         object.__setattr__(self, "batch_sizes", resolved_batch_sizes)
 
         if self.sampler == "full":
             object.__setattr__(self, "train_loader", _full_batch_loader(data, data.train_mask))
-            object.__setattr__(self, "val_loader", _full_batch_loader(data, data.val_mask))
-            object.__setattr__(self, "test_loader", _full_batch_loader(data, data.test_mask))
+            object.__setattr__(self, "val_loader", _full_batch_loader(data, data.val_mask) if n_val > 0 else None)
+            object.__setattr__(self, "test_loader", _full_batch_loader(data, data.test_mask) if n_test > 0 else None)
         else:
             assert self.n_neighbors is not None
+            n_neighbors = self.n_neighbors
             # seed=None must genuinely fall back to the global torch RNG (the
             # documented contract): a fresh torch.Generator() always carries the
             # same fixed default seed, which would make every unseeded run
             # bit-identical and deaf to torch.manual_seed.
             gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
 
-            object.__setattr__(
-                self,
-                "train_loader",
-                NeighborLoader(
-                    shuffle=True,
+            def neighbor_loader(mask: torch.Tensor, batch_size: int, *, shuffle: bool) -> NeighborLoader:
+                return NeighborLoader(
+                    shuffle=shuffle,
                     data=data,
                     num_workers=self.n_workers,
-                    num_neighbors=self.n_neighbors,
-                    batch_size=resolved_batch_sizes[0],
-                    input_nodes=data.train_mask,
+                    num_neighbors=n_neighbors,
+                    batch_size=batch_size,
+                    input_nodes=mask,
                     generator=gen,
                     worker_init_fn=dataloader_worker_init_fn,
-                ),
-            )
+                )
 
+            object.__setattr__(self, "train_loader", neighbor_loader(data.train_mask, train_batch_size, shuffle=True))
             object.__setattr__(
-                self,
-                "val_loader",
-                NeighborLoader(
-                    shuffle=False,
-                    data=data,
-                    num_workers=self.n_workers,
-                    num_neighbors=self.n_neighbors,
-                    batch_size=resolved_batch_sizes[1],
-                    input_nodes=data.val_mask,
-                    generator=gen,
-                    worker_init_fn=dataloader_worker_init_fn,
-                ),
+                self, "val_loader", neighbor_loader(data.val_mask, val_batch_size, shuffle=False) if n_val > 0 else None
             )
-
             object.__setattr__(
                 self,
                 "test_loader",
-                NeighborLoader(
-                    shuffle=False,
-                    data=data,
-                    num_workers=self.n_workers,
-                    num_neighbors=self.n_neighbors,
-                    batch_size=resolved_batch_sizes[2],
-                    input_nodes=data.test_mask,
-                    generator=gen,
-                    worker_init_fn=dataloader_worker_init_fn,
-                ),
+                neighbor_loader(data.test_mask, test_batch_size, shuffle=False) if n_test > 0 else None,
             )
 
         object.__setattr__(self, "input_dim", dataset.num_features)

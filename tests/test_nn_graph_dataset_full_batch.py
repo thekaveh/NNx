@@ -361,3 +361,112 @@ def test_full_graph_loader_warm_resume(tmp_path, monkeypatch):
     edp = resumed_model.evaluate(loader=ds.val_loader)
     assert edp.accuracy in (0.0, 1.0)
     assert resumed.idps[-1].val_edp is not None and resumed.idps[-1].val_edp.accuracy in (0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# FIX-019: training without a validation split
+# ---------------------------------------------------------------------------
+
+
+class _NoValFullBatch(_TinyFullBatch):
+    """Same 5-node cycle, but the validation mask is empty (val node 1
+    joins the test split: train {0, 2}, val {}, test {1, 3, 4})."""
+
+    def __init__(self, root, transform=None):
+        super().__init__(root, transform)
+        self._data.val_mask = torch.zeros(5, dtype=torch.bool)
+        self._data.test_mask = torch.tensor([False, True, False, True, True])
+
+
+def test_full_graph_train_without_validation(tmp_path, monkeypatch):
+    """With an empty val mask the dataset publishes ``val_loader=None``;
+    passing it through NNModel.train and Trainer.train invokes no
+    evaluation hook, records and persists ``val_edp=None`` (reloaded from
+    disk), commits LAST, keeps EarlyStopping usable on a train monitor, and
+    leaves the nonempty test split independently evaluable on its seed
+    rows only."""
+    from nnx import Checkpoints, EarlyStopping, NNCheckpoint, NNModel, NNOptimParams, NNRun, Optims
+    from nnx.nn.enum.activations import Activations
+    from nnx.nn.enum.devices import Devices
+    from nnx.nn.enum.losses import Losses
+    from nnx.nn.enum.nets import Nets
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from nnx.nn.params.nn_model_params import NNModelParams
+    from nnx.nn.params.nn_params import NNParams
+    from nnx.nn.params.nn_train_params import NNTrainParams
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    ds = NNGraphDataset(ds_class=_NoValFullBatch, sampler="full")
+    assert ds.val_loader is None and ds.batch_sizes == (2, 0, 3) and ds.state()["val_batch_size"] == "0"
+    assert ds.train_loader[0].batch_size == 2 and ds.test_loader[0].batch_size == 3
+
+    model = NNModel(
+        net_params=NNParams(dropout_prob=0.0, activation=Activations.RELU, input_dim=3, output_dim=2, hidden_dims=[8]),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    eval_calls: list[int] = []
+
+    def eval_spy(ctx):
+        eval_calls.append(ctx.epoch_idx)
+        raise AssertionError("validation must not run without a validation split")
+
+    torch.manual_seed(0)
+    run = model.train(
+        params=NNTrainParams(n_epochs=2, train_loader=ds.train_loader, val_loader=ds.val_loader),
+        eval_step_fn=eval_spy,
+        callbacks=[EarlyStopping(monitor="train_edp.loss", patience=1)],
+    )
+    assert eval_calls == []
+    assert len(run.idps) == 2 and all(idp.val_edp is None for idp in run.idps)
+    assert all(idp.train_edp.loss is not None and torch.isfinite(torch.tensor(idp.train_edp.loss)) for idp in run.idps)
+    assert NNCheckpoint.load(run=run.id, type=Checkpoints.LAST) is not None
+    reloaded = NNRun.load(run.id)
+    assert len(reloaded.idps) == 2 and all(idp.val_edp is None for idp in reloaded.idps)
+
+    # The nonempty test split is still evaluable, on its 3 seed rows only.
+    assert model.net.seed_count(ds.test_loader[0]) == 3
+    edp = model.evaluate(loader=ds.test_loader)
+    assert edp.loss is not None and torch.isfinite(torch.tensor(edp.loss))
+    assert edp.accuracy in (0.0, 1 / 3, 2 / 3, 1.0)
+
+    # Trainer route: the absent loader disables validation there too.
+    evaluate_calls: list[int] = []
+    original_evaluate = model.evaluate
+
+    def evaluate_spy(*args, **kwargs):
+        evaluate_calls.append(1)
+        return original_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(model, "evaluate", evaluate_spy)
+
+    def _graph_step(ctx) -> NNEvaluationDataPoint:
+        m = ctx.model
+        opt = ctx.optimizers["main"]
+        m.net.train()
+        opt.zero_grad()
+        _, Y, logits, Y_hat = m._fwd_pass(ctx.batch)
+        loss = m.loss_fn(logits, Y)
+        loss.backward()
+        opt.step()
+        return NNEvaluationDataPoint(
+            f1=0.0,
+            recall=0.0,
+            accuracy=0.0,
+            precision=0.0,
+            loss=float(loss.detach()),
+            error=float((Y_hat != Y).float().mean()),
+        )
+
+    trainer_run = Trainer(model).train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=ds.train_loader,
+            val_loader=ds.val_loader,
+            optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)},
+            data_id="trainer",
+        ),
+        trainer_step_fn=_graph_step,
+    )
+    assert evaluate_calls == [] and all(idp.val_edp is None for idp in trainer_run.idps)
