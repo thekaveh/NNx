@@ -211,7 +211,18 @@ class PrefixTuner(nn.Module):
         prefix entries — i.e., ``prefix_keys.0``, ``prefix_values.0``,
         ``prefix_keys.1``, …
         """
-        return {k: v for k, v in self.state_dict().items() if "prefix_" in k}
+        owned = self._owned_keys()
+        return {k: v for k, v in self.state_dict().items() if k in owned}
+
+    def _owned_keys(self) -> set[str]:
+        """Qualified keys of the tuner-owned ``prefix_keys`` /
+        ``prefix_values`` list entries — derived from the registered
+        ParameterLists, never from a key substring, so nothing under
+        ``model.*`` qualifies even if a nested base module's name
+        contains ``prefix_`` (FIX-002)."""
+        return {f"prefix_keys.{i}" for i in range(len(self.prefix_keys))} | {
+            f"prefix_values.{i}" for i in range(len(self.prefix_values))
+        }
 
 
 def save_prefix_weights(tuner: PrefixTuner, path: Union[str, Path]) -> str:
@@ -243,9 +254,11 @@ def load_prefix_weights(tuner: PrefixTuner, source: Union[str, Path, dict]) -> i
         The number of parameter tensors loaded.
     """
     sd = _resolve_source_to_state_dict(source, "load_prefix_weights")
-    # Filter to prefix-only keys defensively so a full-model state-dict
-    # accidentally passed in doesn't blow up the loader.
-    sd = {k: v for k, v in sd.items() if "prefix_" in k}
+    # Allowlist from the DESTINATION tuner's registered lists so a
+    # full-model state-dict (or colliding ``model.*`` keys) can never
+    # overwrite the frozen base.
+    owned = tuner._owned_keys()
+    sd = {k: v for k, v in sd.items() if k in owned}
     result = tuner.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the tuner —
     # subtract them so the return value counts tensors that landed.

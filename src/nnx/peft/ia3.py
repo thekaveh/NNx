@@ -27,12 +27,14 @@ This module ships:
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import torch
 from torch import nn
 
+from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
 
 
@@ -140,26 +142,24 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
     return len(targets)
 
 
-def _ia3_keys_only(state_dict: dict) -> dict:
-    """Filter a state_dict to entries belonging to IA3 ``scaling`` keys.
-    Used by both save and load.
-
-    Note: the substring ``scaling`` is also the name of an inherited
-    attribute on :class:`LoRALinear` (``self.scaling = alpha / r`` — a
-    plain float, not a Parameter, so it does NOT appear in
-    ``state_dict()``). The filter is therefore unambiguous in practice:
-    only IA3's ``nn.Parameter`` named ``scaling`` lands in a state_dict
-    key matching this substring.
+def _ia3_keys_only(module: nn.Module, state_dict: Mapping[str, Any]) -> dict:
+    """Restrict ``state_dict`` to the ``scaling`` entries *owned* by
+    :class:`IA3Linear` wrappers registered in ``module``. Ownership is
+    derived from the module tree, never from a key substring, so a layer
+    merely *named* ``scaling_projection`` cannot leak its frozen base
+    tensors into an adapter file or receive them from an untrusted
+    source (FIX-002). Used by both save and load.
     """
-    return {k: v for k, v in state_dict.items() if "scaling" in k}
+    return select_owned(state_dict, owned_adapter_keys(module, IA3Linear, ("scaling",)))
 
 
 def save_ia3_weights(module: nn.Module, path: Union[str, Path]) -> str:
     """Save ONLY the IA3 ``scaling`` parameters of ``module`` to ``path``.
 
     The output is a ``torch.save`` of a dict-subset of the full
-    state_dict, containing only keys whose name includes ``scaling``.
-    Loadable via :func:`load_ia3_weights`.
+    state_dict, containing exactly the ``scaling`` tensors owned by the
+    :class:`IA3Linear` wrappers in ``module`` (selected by registered
+    ownership, not by key substring). Loadable via :func:`load_ia3_weights`.
 
     Args:
         module: any module that has been processed by
@@ -170,7 +170,7 @@ def save_ia3_weights(module: nn.Module, path: Union[str, Path]) -> str:
     Returns:
         The path written (so calls can be chained).
     """
-    sd = _ia3_keys_only(module.state_dict())
+    sd = _ia3_keys_only(module, module.state_dict())
     torch.save(sd, str(path))
     return str(path)
 
@@ -193,7 +193,9 @@ def load_ia3_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     checkpoint — don't trigger a missing-keys error.
     """
     sd = _resolve_source_to_state_dict(source, "load_ia3_weights")
-    sd = _ia3_keys_only(sd)
+    # Allowlist from the DESTINATION's registered wrappers: a full or
+    # colliding source can never write a frozen base tensor.
+    sd = _ia3_keys_only(module, sd)
     result = module.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the module
     # (e.g. loading into an un-adapted model) — subtract them so the

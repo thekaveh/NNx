@@ -250,3 +250,28 @@ def test_load_ia3_weights_with_empty_dict_is_zero_op():
     post = {n: p.clone() for n, p in net.named_parameters() if "scaling" in n}
     for k in pre:
         assert torch.equal(pre[k], post[k]), f"empty-dict load_ia3_weights mutated {k!r}"
+
+
+def test_ia3_collision_name_is_not_ownership(tmp_path):
+    """FIX-002: a submodule named ``scaling_projection`` must not leak its
+    base tensors into an IA3-only file, and colliding base keys in a
+    source dict must not modify the frozen base."""
+    torch.manual_seed(0)
+    net = nn.ModuleDict({"scaling_projection": nn.Linear(4, 4)})
+    assert apply_ia3_to(net, "*") == 1
+    before = {k: v.detach().clone() for k, v in net.state_dict().items()}
+
+    path = save_ia3_weights(net, tmp_path / "ia3.pt")
+    assert set(torch.load(path, weights_only=True)) == {"scaling_projection.scaling"}
+
+    source = {k: v.detach().clone() for k, v in net.state_dict().items()}
+    source["scaling_projection.base.weight"].zero_()
+    source["scaling_projection.base.bias"].zero_()
+    assert load_ia3_weights(net, source) == 1
+    for k, v in net.state_dict().items():
+        assert torch.equal(v, before[k]), k
+
+    root = IA3Linear(nn.Linear(4, 4))
+    assert set(k for k in root.state_dict()) == {"base.weight", "base.bias", "scaling"}
+    assert load_ia3_weights(root, {"scaling": torch.full((4,), 2.0), "base.weight": torch.zeros(4, 4)}) == 1
+    assert torch.all(root.scaling == 2.0) and not torch.all(root.base.weight == 0)
