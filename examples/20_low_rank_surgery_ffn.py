@@ -42,6 +42,13 @@ the deeper topology (one more hidden dim, aligned overrides, zero dropout
 at the new site), rebuilds a fresh ``NNModel`` from ``deeper.params``,
 fits one tiny epoch with a new optimizer and reloads BEST.
 
+``named_deepen_workflow`` below deepens a *named* ``nn.Sequential`` at a
+dotted ReLU key: every original key survives, the two inserted modules
+get deterministic ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N`` keys
+right after the site, dotted-path consumers (``get_submodule``,
+``freeze``, parameter-group globs) still address the original layers, and
+a raw ``state_dict`` round-trips into an equivalently deepened fresh model.
+
 Run:
     pip install thekaveh-nnx
     python examples/20_low_rank_surgery_ffn.py
@@ -253,6 +260,66 @@ def deepen_override_workflow() -> dict:
         "run_id": run.id,
     }
     print(f"deepen override workflow: {summary}")
+    return summary
+
+
+def named_deepen_workflow() -> dict:
+    """Bounded named-container ``deepen`` demonstration (no files written).
+
+    Builds ``Sequential(OrderedDict(fc, relu, head))``, deepens at the
+    dotted key ``relu``, and checks: eval-mode parity, the original keys
+    preserved in order with the generated keys spliced after the site,
+    ``head`` still reachable at its old path for ``get_submodule`` /
+    ``freeze("head.*")`` / a ``head.*`` parameter group, the source
+    container untouched, and a state-dict round trip into a fresh,
+    equivalently deepened model with identical predictions. Returns the
+    original and transformed predictions plus both key lists.
+    """
+    from collections import OrderedDict
+
+    from nnx import NNParamGroupSpec, freeze
+
+    set_seed(0)
+    x = torch.randn(5, 8)
+    net = torch.nn.Sequential(
+        OrderedDict([("fc", torch.nn.Linear(8, 6)), ("relu", torch.nn.ReLU()), ("head", torch.nn.Linear(6, 3))])
+    ).eval()
+    with torch.no_grad():
+        original = net(x)
+
+    deeper = deepen(net, after_layer_name="relu").eval()
+    with torch.no_grad():
+        transformed = deeper(x)
+    assert torch.allclose(original, transformed, atol=1e-5), "named deepen must preserve the forward"
+    keys_before, keys_after = list(net._modules), list(deeper._modules)
+    assert keys_before == ["fc", "relu", "head"], keys_before
+    assert keys_after == ["fc", "relu", "_nnx_deepen_linear_0", "_nnx_deepen_relu_0", "head"], keys_after
+
+    head = deeper.get_submodule("head")
+    assert head.out_features == 3
+    assert freeze(deeper, "head.*") == 2 and not head.weight.requires_grad
+    groups = build_param_groups(
+        deeper, [NNParamGroupSpec(name_pattern="fc.*", lr=1e-2)], default_lr=1e-3, default_weight_decay=0.0
+    )
+    fc_params = {id(p) for p in deeper.get_submodule("fc").parameters()}
+    assert any({id(p) for p in g["params"]} == fc_params for g in groups), "fc.* rule must still reach fc"
+
+    fresh = deepen(
+        torch.nn.Sequential(
+            OrderedDict([("fc", torch.nn.Linear(8, 6)), ("relu", torch.nn.ReLU()), ("head", torch.nn.Linear(6, 3))])
+        ),
+        after_layer_name="relu",
+    ).eval()
+    fresh.load_state_dict(deeper.state_dict())
+    with torch.no_grad():
+        assert torch.allclose(fresh(x), transformed, atol=1e-6), "state-dict round trip must reproduce predictions"
+
+    summary = {
+        "keys_before": keys_before,
+        "keys_after": keys_after,
+        "max_abs_diff": float((original - transformed).abs().max()),
+    }
+    print(f"named deepen workflow: {summary}")
     return summary
 
 

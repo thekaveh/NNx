@@ -48,14 +48,29 @@ def set_module(root: nn.Module, dotted: str, new_mod: nn.Module) -> None:
 
 
 def _step_into(parent: nn.Module, key: str) -> nn.Module:
-    """Index one step down a dotted module path."""
+    """Index one step down a dotted module path.
+
+    A registered key is addressed *exactly* (the same slot
+    ``get_submodule`` resolves) — after a named insertion (FIX-018) a
+    retained numeric key such as ``"1"`` may no longer sit at position
+    1, so positional ``parent[int(key)]`` is only a fallback for a
+    numeric key that is not a registered name.
+    """
+    registered = parent._modules.get(key)
+    if registered is not None:
+        return registered
     if key.isdigit() and isinstance(parent, (nn.Sequential, nn.ModuleList)):
         return parent[int(key)]
     return getattr(parent, key)
 
 
 def _assign(parent: nn.Module, key: str, new_mod: nn.Module) -> None:
-    """Write ``new_mod`` into ``parent`` at ``key`` (index or attribute)."""
+    """Write ``new_mod`` into ``parent`` at ``key`` — the registered slot
+    when ``key`` is a registered name (``Module.__setattr__`` keeps the
+    slot's position), else a positional index for a numeric key."""
+    if key in parent._modules:
+        setattr(parent, key, new_mod)
+        return
     if key.isdigit() and isinstance(parent, (nn.Sequential, nn.ModuleList)):
         parent[int(key)] = new_mod
         return
