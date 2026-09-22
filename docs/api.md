@@ -4709,7 +4709,12 @@ Args:
         the insertion site. Either:
 
           * an :class:`nn.ReLU` inside a parent :class:`nn.Sequential`
-            — the primitive splices ``Linear(I) → ReLU`` in after it.
+            (addressed by position in a numeric container or by its
+            dotted key in a named one) — the primitive splices
+            ``Linear(I) → ReLU`` in after it, keeping every original
+            key and every repeated slot, and registering the new
+            modules as ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N``
+            in a named container.
           * an :class:`nn.Linear` inside a parent :class:`nn.ModuleList`
             whose grandparent module applies ReLU at that site (the
             FeedFwdNN contract; ``params.activation_for(idx)`` is

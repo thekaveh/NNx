@@ -98,7 +98,7 @@ The first layer grows by `q·(in + 1)` (new units · (incoming weight + bias)); 
 | Linear(8, 2) | 18 | 18 |
 | **Total** | **58** | **130** — **delta +72** |
 
-The inserted Linear has `dim·dim + dim` parameters and is identity-initialized (weight = I, bias = 0). On a `FeedFwdNN`, `deeper.params.hidden_dims` gains the matching entry and any `activations` / `dropout_probs` overrides stay aligned (dropout `0.0` at the new site).
+The inserted Linear has `dim·dim + dim` parameters and is identity-initialized (weight = I, bias = 0). In a *named* `nn.Sequential` (built from an `OrderedDict`, at the root or nested below another module) address the ReLU by its dotted key — `deepen(model, after_layer_name="body.relu")`; every original key is preserved in order, the two new modules are registered as `_nnx_deepen_linear_N` / `_nnx_deepen_relu_N` right after the site (`N` increments until both keys are unused, so repeated deepening never collides), and a module registered in several slots keeps every slot pointing at one copied object. Numeric containers keep their positional contract (`deeper[2]` is the new Linear, `deeper[3]` the new ReLU); retained numeric keys are not renumbered, and every surgery primitive addresses a registered key exactly, so a later `widen(deeper, layer_name="1")` targets the module named `"1"` even when it no longer sits at position 1. On a `FeedFwdNN`, `deeper.params.hidden_dims` gains the matching entry and any `activations` / `dropout_probs` overrides stay aligned (dropout `0.0` at the new site).
 
 ### 3.3. `low_rank_factorize` on `nn.Linear(in=64, out=32)`
 
