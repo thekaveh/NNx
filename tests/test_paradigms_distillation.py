@@ -221,3 +221,87 @@ def test_kd_alpha_one_is_pure_distillation(tmp_path, monkeypatch):
     losses = [idp.train_edp.loss for idp in run.idps]
     assert len(losses) > 0
     assert all(lo is not None and torch.isfinite(torch.tensor(lo)).item() for lo in losses)
+
+
+def _nll_twin(model: NNModel) -> NNModel:
+    """Same weights as `model`, configured with native NLL instead of CE."""
+    twin = NNModel(
+        net_params=model.net_params,
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.NEGATIVE_LOG_LIKELIHOOD),
+    )
+    twin.net.load_state_dict(model.net.state_dict())
+    return twin
+
+
+def _step_once(model: NNModel, step_fn, batch, seed: int = 0):
+    from nnx import Optims, TrainStepContext
+
+    torch.manual_seed(seed)
+    optimizer = Optims.ADAM(net=model.net, lr_start=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)
+    ctx = TrainStepContext(
+        model=model,
+        batch=batch,
+        optimizer=optimizer,
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+        is_last_batch=True,
+    )
+    return step_fn(ctx)
+
+
+@pytest.mark.parametrize("alpha", [0.0, 0.5])
+def test_kd_hard_term_uses_normalized_nll(alpha):
+    """FIX-001: the KD hard-label term under native NLL must equal the
+    explicit log-softmax reference and the CE-configured student from
+    identical state — `alpha=0` isolates the hard term so the KL cannot
+    hide a wrong sign."""
+    import torch.nn.functional as F
+
+    from nnx.paradigms import kd_train_step_factory
+
+    torch.manual_seed(0)
+    teacher = _make_classifier(32)
+    student_ce = _make_classifier(16)
+    student_nll = _nll_twin(student_ce)
+    batch = next(iter(_classification_loader()))
+    X, Y = batch
+
+    with torch.no_grad():
+        raw = student_nll.net(X)
+    expected_hard = float(F.nll_loss(F.log_softmax(raw, dim=1), Y))
+
+    edp_ce = _step_once(student_ce, kd_train_step_factory(teacher, alpha=alpha, temperature=2.0), batch)
+    edp_nll = _step_once(student_nll, kd_train_step_factory(teacher, alpha=alpha, temperature=2.0), batch)
+    assert edp_ce.loss is not None and edp_nll.loss is not None
+    assert edp_nll.loss == pytest.approx(edp_ce.loss, rel=1e-6)
+    if alpha == 0.0:
+        assert edp_nll.loss == pytest.approx(expected_hard, rel=1e-6)
+    for (name, p_ce), (_, p_nll) in zip(
+        student_ce.net.named_parameters(), student_nll.net.named_parameters(), strict=False
+    ):
+        assert torch.allclose(p_ce, p_nll, atol=1e-6), name
+
+
+def test_feature_kd_hard_term_uses_normalized_nll():
+    from nnx.paradigms import feature_kd_train_step_factory
+
+    torch.manual_seed(0)
+    teacher = _make_classifier(16)
+    student_ce = _make_classifier(16)
+    student_nll = _nll_twin(student_ce)
+    batch = next(iter(_classification_loader()))
+    factory = lambda: feature_kd_train_step_factory(  # noqa: E731
+        teacher, auxiliary_layers={"layers.0": "layers.0"}, alpha=0.5, beta=0.5, temperature=2.0
+    )
+    edp_ce = _step_once(student_ce, factory(), batch)
+    edp_nll = _step_once(student_nll, factory(), batch)
+    assert edp_ce.loss is not None and edp_nll.loss is not None
+    assert edp_nll.loss == pytest.approx(edp_ce.loss, rel=1e-6)
+    for (name, p_ce), (_, p_nll) in zip(
+        student_ce.net.named_parameters(), student_nll.net.named_parameters(), strict=False
+    ):
+        assert torch.allclose(p_ce, p_nll, atol=1e-6), name
