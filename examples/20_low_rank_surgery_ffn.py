@@ -26,6 +26,15 @@ from explicit parameter groups updates only what was trainable before.
 Want the factors themselves to learn? ``unfreeze`` them explicitly before
 creating the optimizer.
 
+``widen_supported_workflow`` below is a second bounded companion for the
+``widen`` primitive: it shows eval-mode parity through a direct Linear and
+through an elementwise activation, the rejection of a width-dependent
+Softmax boundary (source left untouched), and the honest reconstruction
+path — widen ``model.net``, rebuild the *immutable params* with
+``dataclasses.replace`` so the new width and every per-layer override stay
+aligned, load the widened state into a fresh correctly-described
+``NNModel``, train with a new optimizer, and reload BEST.
+
 Run:
     pip install thekaveh-nnx
     python examples/20_low_rank_surgery_ffn.py
@@ -51,7 +60,7 @@ from nnx import (
     set_seed,
 )
 from nnx.finetune.param_groups import build_param_groups
-from nnx.surgery import low_rank_factorize
+from nnx.surgery import low_rank_factorize, widen
 
 
 def _make_data():
@@ -80,6 +89,87 @@ def _val_acc(net: torch.nn.Module, loader: DataLoader) -> float:
             correct += (preds == y).sum().item()
             total += y.numel()
     return correct / total
+
+
+def widen_supported_workflow() -> dict:
+    """Bounded ``widen`` contract demonstration (writes ``runs/`` under the
+    current working directory; the smoke test runs it in a temporary one).
+
+    1. ``Linear -> ReLU -> Linear``: widening the first layer keeps the
+       eval-mode forward identical (Net2WiderNet through an elementwise op).
+    2. ``Linear -> Softmax -> Linear``: rejected with a ``ValueError``
+       naming the width-dependent op; the source model is untouched.
+    3. A ``FeedFwdNN`` model with per-layer activation overrides: widen
+       ``layers.0``, rebuild the params with ``dataclasses.replace`` (new
+       width, overrides preserved), load the widened state into a fresh
+       ``NNModel``, verify parity, train one epoch with a new optimizer
+       and reload the BEST checkpoint for a finite evaluation.
+    """
+    from dataclasses import replace
+
+    from nnx import Checkpoints, NNCheckpoint
+
+    set_seed(0)
+    x = torch.randn(6, 8)
+
+    plain = torch.nn.Sequential(torch.nn.Linear(8, 6), torch.nn.ReLU(), torch.nn.Linear(6, 3)).eval()
+    wider = widen(plain, layer_name="0", new_width=10)
+    assert wider[0].out_features == 10 and wider[2].in_features == 10
+    assert torch.allclose(plain(x), wider(x), atol=1e-5), "widen through ReLU must preserve the forward"
+
+    softmax_net = torch.nn.Sequential(torch.nn.Linear(8, 6), torch.nn.Softmax(dim=-1), torch.nn.Linear(6, 3))
+    before = {k: v.clone() for k, v in softmax_net.state_dict().items()}
+    try:
+        widen(softmax_net, layer_name="0", new_width=10)
+    except ValueError as exc:
+        assert "Softmax" in str(exc), exc
+    else:
+        raise AssertionError("a width-dependent Softmax boundary must be rejected")
+    assert all(torch.equal(before[k], v) for k, v in softmax_net.state_dict().items()), (
+        "rejection must not mutate the source"
+    )
+
+    net_params = NNParams(
+        input_dim=8,
+        output_dim=3,
+        hidden_dims=[8, 6],
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+        activations=[Activations.TANH, Activations.RELU],  # per-layer overrides must survive the rebuild
+    )
+    model_params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = NNModel(net_params=net_params, params=model_params)
+    model.net.eval()
+    wider_net = widen(model.net, layer_name="layers.0", new_width=12)
+    rebuilt_params = replace(net_params, hidden_dims=[12, 6])  # width changes; activations stay aligned
+    assert rebuilt_params.activation_for(0) is Activations.TANH
+    refined = NNModel(net_params=rebuilt_params, params=model_params)
+    refined.net.load_state_dict(wider_net.state_dict())
+    refined.net.eval()
+    with torch.no_grad():
+        assert torch.allclose(model.net(x), refined.net(x), atol=1e-5), "fresh correctly-described model must match"
+
+    y = torch.randint(0, 3, (6,))
+    loader = DataLoader(TensorDataset(x, y), batch_size=3)
+    run = refined.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            val_loader=loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=NNSchedulerParams(min_lr=1e-6, factor=0.5, patience=2, cooldown=1, threshold=1e-3),
+        )
+    )
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None
+    reloaded = NNModel.from_checkpoint(checkpoint=best)
+    assert reloaded.net_params.hidden_dims == [12, 6]
+    loss = reloaded.evaluate(loader).loss
+    assert loss is not None and torch.isfinite(torch.tensor(loss))
+
+    summary = {"widened_hidden_dims": rebuilt_params.hidden_dims, "best_eval_loss": float(loss), "run_id": run.id}
+    print(f"widen supported-workflow: {summary}")
+    return summary
 
 
 def surgery_freeze_roles() -> dict:
