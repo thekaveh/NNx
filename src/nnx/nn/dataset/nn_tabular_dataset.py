@@ -31,6 +31,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
+from ..._validation import require_batch_sizes
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -48,6 +49,19 @@ class NNTabularDataset(NNDatasetBase):
     targets of shape `(batch, 1)` so they line up with a model whose
     final linear layer has one output. Integer dtypes are rejected —
     leave `target_dtype` unset (`None`) for classification.
+
+    ``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
+    default for every slot) means *one batch holding the complete split* —
+    the default train loader yields one full-split batch per epoch, i.e.
+    one optimizer step per epoch; pass an explicit train size such as
+    ``batch_sizes=(64, None, None)`` for mini-batches. A positive integer
+    is kept verbatim (larger than the split → one smaller batch); NumPy
+    integers are normalized to ``int``. Zero, ``False``, negatives, floats,
+    strings and anything but a 3-tuple are rejected with the
+    ``batch_sizes[i] (split)`` slot named before any tensor conversion or
+    split. Zero never disables a split: `val_proportion=0.0` /
+    `test_proportion=0.0` do, and that split's loader is then ``None`` with
+    a placeholder ``1`` in the resolved ``batch_sizes``.
     """
 
     df: pd.DataFrame
@@ -87,6 +101,9 @@ class NNTabularDataset(NNDatasetBase):
             raise ValueError(
                 f"val_proportion + test_proportion must be < 1, got {self.val_proportion + self.test_proportion}"
             )
+        # Validate the batch-size request before any tensor conversion or
+        # split (FIX-022): `None` is the only full-split sentinel.
+        requested = require_batch_sizes(self.batch_sizes, owner="NNTabularDataset")
         # target_dtype is a tri-state: None = classification (the existing
         # contract), a floating-point dtype = regression. An integer dtype
         # is rejected because it's an unambiguous footgun: torch.long is
@@ -189,9 +206,12 @@ class NNTabularDataset(NNDatasetBase):
 
         object.__setattr__(self, "name", self.name_override or "NNTabularDataset")
 
-        train_batch_size = self.batch_sizes[0] or n_train
-        val_batch_size = self.batch_sizes[1] or max(1, n_val)
-        test_batch_size = self.batch_sizes[2] or max(1, n_test)
+        # `None` → one batch holding the complete split (placeholder 1 for
+        # an empty optional split); an explicit positive size is kept
+        # verbatim — an `is None` test, not truthiness (FIX-022).
+        train_batch_size = n_train if requested[0] is None else requested[0]
+        val_batch_size = max(1, n_val) if requested[1] is None else requested[1]
+        test_batch_size = max(1, n_test) if requested[2] is None else requested[2]
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
         object.__setattr__(self, "batch_sizes", resolved_batch_sizes)
 

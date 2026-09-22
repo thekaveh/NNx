@@ -136,6 +136,34 @@ model_params = NNModelParams(
 Leave `target_dtype=None` for classification, where targets remain `torch.long`
 and `output_dim` is the number of classes.
 
+**Batch sizes.** Every dataset wrapper (`NNDataset`, `NNTabularDataset`,
+`NNPreferenceDataset`, `NNGraphDataset`) takes `batch_sizes=(train, val, test)`.
+`None` — the default for every slot — means *one batch holding the complete
+split*, so the default train loader performs **one optimizer step per epoch**;
+pass an explicit train size for stochastic mini-batches:
+
+```python
+from torchvision import datasets, transforms
+from nnx import NNDataset
+
+dataset = NNDataset(
+    ds_class=datasets.MNIST,
+    transform=transforms.ToTensor(),
+    batch_sizes=(128, None, None),   # 128-sample train batches; val/test = one full batch each
+    val_proportion=0.1,
+)
+```
+
+A positive integer is used verbatim (larger than the split → one smaller
+batch); NumPy integers are normalized to `int`. Zero, `False`, negatives,
+fractions, strings and anything but a 3-tuple raise a `ValueError` naming the
+slot (`batch_sizes[0] (train)`) *before* the dataset factory, tokenizer or split
+runs — zero never disables a split. Empty optional splits come from the
+proportions: with `val_proportion=0.0` (tabular / preference: also
+`test_proportion=0.0`) that loader is `None` and the resolved `batch_sizes`
+carries a placeholder `1` for it. `NNGraphDataset(sampler="full")` rejects every
+explicit size, since the whole graph is always one batch.
+
 ### 2.6. Custom metrics
 
 ```python
