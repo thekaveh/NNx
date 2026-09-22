@@ -1,0 +1,70 @@
+"""Configuration-boundary validators shared across params dataclasses and
+public constructors (FIX-020).
+
+`require_finite_real` is the one place that decides what a *finite real*
+hyperparameter is: an instance of :class:`numbers.Real` that is not a
+``bool`` (``True == 1`` would otherwise pass every inequality) and that
+``math.isfinite`` accepts. Callers check the domain *after* finiteness so a
+NaN — which fails every comparison and therefore sails through ``<``/``>``
+guards — is rejected with an error that names the field and its accepted
+domain, at construction time, before any optimizer, run directory or
+lookup table is created. Nothing here coerces numeric strings or touches
+``state()``.
+
+Internal; not part of the public API.
+"""
+
+from __future__ import annotations
+
+import math
+import numbers
+from typing import Optional
+
+
+def require_finite_real(
+    value: object,
+    field: str,
+    *,
+    owner: str,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+    exclusive_min: bool = False,
+    exclusive_max: bool = False,
+    domain_message: Optional[str] = None,
+) -> float:
+    """Return ``value`` once it is a finite real inside the domain.
+
+    Raises ``ValueError`` naming ``owner.field`` and the accepted domain for
+    a non-real (``bool``, ``str``, ``None``), a NaN / ±inf, or an
+    out-of-range value. ``minimum`` / ``maximum`` bound the domain;
+    ``exclusive_*`` turns a bound strict. ``domain_message`` replaces the
+    generic out-of-range message so a boundary can keep its established
+    user-facing wording (it must still name the field).
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(
+            f"{owner} requires {field} to be a finite real number{_domain(minimum, maximum, exclusive_min, exclusive_max)}, "
+            f"got {value!r} of type {type(value).__name__}"
+        )
+    real = float(value)
+    if not math.isfinite(real):
+        raise ValueError(
+            f"{owner} requires {field} to be finite{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
+        )
+    below = minimum is not None and (real <= minimum if exclusive_min else real < minimum)
+    above = maximum is not None and (real >= maximum if exclusive_max else real > maximum)
+    if below or above:
+        raise ValueError(
+            domain_message
+            or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
+        )
+    return real
+
+
+def _domain(minimum, maximum, exclusive_min, exclusive_max) -> str:
+    parts = []
+    if minimum is not None:
+        parts.append(f"{'>' if exclusive_min else '>='} {minimum:g}")
+    if maximum is not None:
+        parts.append(f"{'<' if exclusive_max else '<='} {maximum:g}")
+    return f" {' and '.join(parts)}" if parts else ""

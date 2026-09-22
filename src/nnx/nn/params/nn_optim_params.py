@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Union
 
+from ..._validation import require_finite_real
 from ..enum.optims import Optims
 from .nn_params import _ImmutableList
 
@@ -63,9 +64,17 @@ class NNOptimParams:
                 f"accumulate_grad_batches must be >= 1, got {self.accumulate_grad_batches} "
                 "(1 = step every batch; N = step every N batches)."
             )
-        if self.grad_clip_norm is not None and self.grad_clip_norm <= 0:
-            raise ValueError(
-                f"grad_clip_norm must be > 0 when set, got {self.grad_clip_norm} (use None to disable clipping, not 0)."
+        if self.grad_clip_norm is not None:
+            require_finite_real(
+                self.grad_clip_norm,
+                "grad_clip_norm",
+                owner="NNOptimParams",
+                minimum=0.0,
+                exclusive_min=True,
+                domain_message=(
+                    f"grad_clip_norm must be > 0 when set, got {self.grad_clip_norm} "
+                    "(use None to disable clipping, not 0)."
+                ),
             )
         #   * max_lr < 0: a negative LR performs gradient *ascent*. max_lr=0
         #     is allowed — it is an explicit "freeze updates" choice (used as a
@@ -73,13 +82,38 @@ class NNOptimParams:
         #     unlike the knobs above, 0 is intended, not a silent footgun.
         #   * weight_decay < 0: grows weights instead of decaying them (matches
         #     the per-group NNParamGroupSpec guard).
-        if self.max_lr < 0:
-            raise ValueError(
+        # Finite-real first (NaN passes every inequality), then the domain
+        # (FIX-020): max_lr / weight_decay >= 0, SGD momentum >= 0, Adam
+        # betas in [0, 1). Meaningful zeros stay valid; nothing here
+        # touches state().
+        require_finite_real(
+            self.max_lr,
+            "max_lr",
+            owner="NNOptimParams",
+            minimum=0.0,
+            domain_message=(
                 f"max_lr must be non-negative, got {self.max_lr} "
                 "(a negative LR performs gradient ascent; 0 freezes updates)."
-            )
-        if self.weight_decay < 0:
-            raise ValueError(f"weight_decay must be non-negative, got {self.weight_decay} (use 0 to disable).")
+            ),
+        )
+        require_finite_real(
+            self.weight_decay,
+            "weight_decay",
+            owner="NNOptimParams",
+            minimum=0.0,
+            domain_message=f"weight_decay must be non-negative, got {self.weight_decay} (use 0 to disable).",
+        )
+        if isinstance(self.momentum, tuple):
+            if len(self.momentum) != 2:
+                raise ValueError(
+                    f"NNOptimParams requires momentum betas as a (beta1, beta2) pair, got {self.momentum!r}"
+                )
+            for i, beta in enumerate(self.momentum):
+                require_finite_real(
+                    beta, f"momentum[{i}]", owner="NNOptimParams", minimum=0.0, maximum=1.0, exclusive_max=True
+                )
+        else:
+            require_finite_real(self.momentum, "momentum", owner="NNOptimParams", minimum=0.0)
         # Fail fast on plain dicts: they construct fine but crash much
         # later inside state() during NNRun hashing with an opaque
         # AttributeError. Same construction-time convention as the
