@@ -148,10 +148,15 @@ class PromptTuner(nn.Module):
         """
         yield self.soft_prompt
 
+    _OWNED_KEYS = frozenset({"soft_prompt"})
+
     def prompt_state_dict(self) -> dict:
         """Return a state-dict containing only the soft-prompt tensor,
-        keyed for round-trip via :meth:`load_prompt_weights`."""
-        return {k: v for k, v in self.state_dict().items() if "soft_prompt" in k}
+        keyed for round-trip via :meth:`load_prompt_weights`. Only the
+        tuner-owned ``soft_prompt`` entry qualifies — never anything
+        under ``model.*``, even if a nested base module's name happens
+        to contain the marker (FIX-002)."""
+        return {k: v for k, v in self.state_dict().items() if k in self._OWNED_KEYS}
 
 
 def save_prompt_weights(tuner: PromptTuner, path: Union[str, Path]) -> str:
@@ -183,7 +188,9 @@ def load_prompt_weights(tuner: PromptTuner, source: Union[str, Path, dict]) -> i
         The number of parameter tensors loaded.
     """
     sd = _resolve_source_to_state_dict(source, "load_prompt_weights")
-    sd = {k: v for k, v in sd.items() if "soft_prompt" in k}
+    # Allowlist from the tuner's own registration: a full checkpoint (or
+    # colliding ``model.*`` keys) can never overwrite the frozen base.
+    sd = {k: v for k, v in sd.items() if k in PromptTuner._OWNED_KEYS}
     result = tuner.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the tuner —
     # subtract them so the return value counts tensors that landed.
