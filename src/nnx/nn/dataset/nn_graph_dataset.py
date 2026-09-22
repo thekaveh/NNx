@@ -9,6 +9,7 @@ from torch_geometric.data import Data as PyGData
 from torch_geometric.data import Dataset
 from torch_geometric.loader import NeighborLoader
 
+from ..._validation import require_batch_sizes
 from ...seeding import dataloader_worker_init_fn
 from .nn_dataset_base import NNDatasetBase
 
@@ -54,6 +55,25 @@ def _full_batch_loader(data: PyGData, split_mask: torch.Tensor) -> list[PyGData]
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNGraphDataset(NNDatasetBase):
+    """Single-graph node-classification wrapper over a PyG dataset class.
+
+    ``sampler="neighbor"`` (default) builds one ``NeighborLoader`` per split
+    from the graph's ``train_mask`` / ``val_mask`` / ``test_mask``;
+    ``sampler="full"`` yields the whole graph as one batch per split (no
+    pyg-lib / torch-sparse needed).
+
+    ``batch_sizes`` is a ``(train, val, test)`` tuple of *seed-node* counts
+    for the neighbor sampler. ``None`` (the default for every slot) means
+    *every node of the split mask in one batch* — one optimizer step per
+    epoch for the default train loader; pass an explicit train size such as
+    ``batch_sizes=(256, None, None)`` for mini-batches. A positive integer
+    is kept verbatim; NumPy integers are normalized to ``int``. Zero,
+    ``False``, negatives, floats, strings and anything but a 3-tuple are
+    rejected with the ``batch_sizes[i] (split)`` slot named before
+    ``ds_class`` is instantiated. ``sampler="full"`` rejects every explicit
+    size (the complete split is always one batch).
+    """
+
     ds_class: type[Dataset]
     # n_neighbors is required for sampler="neighbor"; unused for "full".
     # Kept Optional so that full-batch callers need not supply a meaningless list.
@@ -82,7 +102,11 @@ class NNGraphDataset(NNDatasetBase):
     def __post_init__(self):
         if self.sampler not in ("neighbor", "full"):
             raise ValueError(f"sampler must be 'neighbor' or 'full', got {self.sampler!r}")
-        if self.sampler == "full" and any(size is not None for size in self.batch_sizes):
+        # Validate the request before the dataset class is instantiated
+        # (FIX-022): `None` is the only full-split sentinel, so an explicit
+        # zero is rejected here rather than silently treated as "all nodes".
+        requested = require_batch_sizes(self.batch_sizes, owner="NNGraphDataset")
+        if self.sampler == "full" and any(size is not None for size in requested):
             raise ValueError("batch_sizes are not supported when sampler='full'; the complete split is one batch")
         if self.sampler == "neighbor" and self.n_neighbors is None:
             raise ValueError(
@@ -98,9 +122,12 @@ class NNGraphDataset(NNDatasetBase):
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 
-        train_batch_size = self.batch_sizes[0] or int(data.train_mask.sum())
-        val_batch_size = self.batch_sizes[1] or int(data.val_mask.sum())
-        test_batch_size = self.batch_sizes[2] or int(data.test_mask.sum())
+        # `None` → every node of the split mask in one batch; an explicit
+        # positive size is kept verbatim — an `is None` test, not
+        # truthiness (FIX-022).
+        train_batch_size = int(data.train_mask.sum()) if requested[0] is None else requested[0]
+        val_batch_size = int(data.val_mask.sum()) if requested[1] is None else requested[1]
+        test_batch_size = int(data.test_mask.sum()) if requested[2] is None else requested[2]
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
 
         object.__setattr__(self, "batch_sizes", resolved_batch_sizes)

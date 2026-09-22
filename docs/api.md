@@ -2881,6 +2881,25 @@ class nnx.nn.dataset.nn_dataset.NNDataset(*, ds_class: 'type[VisionDataset]', ro
 
 Vision dataset wrapper. `val_proportion` carves a validation slice out of the source `train=True` split (NOT out of the test split, which stays untouched for final evaluation).
 
+**Details**
+
+```text
+``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` — the
+default for every slot — means *one batch holding the complete split*:
+the default train loader therefore yields a single full-split batch per
+epoch, i.e. **one optimizer step per epoch**. That suits small
+full-batch fits but not stochastic training (diffusion, MoE routing,
+self-supervision); pass an explicit train size such as
+``batch_sizes=(128, None, None)`` for mini-batches. A positive integer
+is used verbatim (a size larger than the split simply yields one smaller
+batch); NumPy integers are normalized to ``int``. Zero, ``False``,
+negatives, floats, strings and anything but a 3-tuple are rejected with
+the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
+instantiated — zero never disables a split; ``val_proportion=0.0`` does
+(``val_loader`` is then ``None`` and the resolved val size is a
+placeholder ``1``).
+```
+
 
 #### `nnx.nn.dataset.nn_graph_dataset.NNGraphDataset`
 
@@ -2888,7 +2907,27 @@ Vision dataset wrapper. `val_proportion` carves a validation slice out of the so
 class nnx.nn.dataset.nn_graph_dataset.NNGraphDataset(*, ds_class: 'type[Dataset]', n_neighbors: 'Optional[list[int]]' = None, root_dir: 'str' = './data', transform: 'Optional[Callable]' = None, n_workers: 'int' = 4, batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), seed: 'Optional[int]' = None, sampler: "Literal['neighbor', 'full']" = 'neighbor') -> 'None'
 ```
 
-NNGraphDataset(*, ds_class: 'type[Dataset]', n_neighbors: 'Optional[list[int]]' = None, root_dir: 'str' = './data', transform: 'Optional[Callable]' = None, n_workers: 'int' = 4, batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), seed: 'Optional[int]' = None, sampler: "Literal['neighbor', 'full']" = 'neighbor')
+Single-graph node-classification wrapper over a PyG dataset class.
+
+**Details**
+
+```text
+``sampler="neighbor"`` (default) builds one ``NeighborLoader`` per split
+from the graph's ``train_mask`` / ``val_mask`` / ``test_mask``;
+``sampler="full"`` yields the whole graph as one batch per split (no
+pyg-lib / torch-sparse needed).
+
+``batch_sizes`` is a ``(train, val, test)`` tuple of *seed-node* counts
+for the neighbor sampler. ``None`` (the default for every slot) means
+*every node of the split mask in one batch* — one optimizer step per
+epoch for the default train loader; pass an explicit train size such as
+``batch_sizes=(256, None, None)`` for mini-batches. A positive integer
+is kept verbatim; NumPy integers are normalized to ``int``. Zero,
+``False``, negatives, floats, strings and anything but a 3-tuple are
+rejected with the ``batch_sizes[i] (split)`` slot named before
+``ds_class`` is instantiated. ``sampler="full"`` rejects every explicit
+size (the complete split is always one batch).
+```
 
 
 #### `nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset`
@@ -2912,6 +2951,19 @@ check and fix `output_dim=1` for regression; the loaders then yield
 targets of shape `(batch, 1)` so they line up with a model whose
 final linear layer has one output. Integer dtypes are rejected —
 leave `target_dtype` unset (`None`) for classification.
+
+``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
+default for every slot) means *one batch holding the complete split* —
+the default train loader yields one full-split batch per epoch, i.e.
+one optimizer step per epoch; pass an explicit train size such as
+``batch_sizes=(64, None, None)`` for mini-batches. A positive integer
+is kept verbatim (larger than the split → one smaller batch); NumPy
+integers are normalized to ``int``. Zero, ``False``, negatives, floats,
+strings and anything but a 3-tuple are rejected with the
+``batch_sizes[i] (split)`` slot named before any tensor conversion or
+split. Zero never disables a split: `val_proportion=0.0` /
+`test_proportion=0.0` do, and that split's loader is then ``None`` with
+a placeholder ``1`` in the resolved ``batch_sizes``.
 ```
 
 
@@ -2934,6 +2986,18 @@ training loop work unchanged).
 
 Each batch yielded is ``(prompt_ids, chosen_ids, rejected_ids)``
 where each entry is ``(B, T_*)`` ``torch.LongTensor``.
+
+``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
+default for every slot) means *one batch holding the complete split* —
+one DPO step per epoch for the default train loader; pass an explicit
+train size such as ``batch_sizes=(8, None, None)`` for mini-batches. A
+positive integer is kept verbatim (larger than the split → one smaller
+batch); NumPy integers are normalized to ``int``. Zero, ``False``,
+negatives, floats, strings and anything but a 3-tuple are rejected with
+the ``batch_sizes[i] (split)`` slot named before ``tokenizer.encode``
+is called. Zero never disables a split: `val_proportion=0.0` /
+`test_proportion=0.0` do (that loader is then ``None`` with a
+placeholder ``1`` in the resolved ``batch_sizes``).
 ```
 
 

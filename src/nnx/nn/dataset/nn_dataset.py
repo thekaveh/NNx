@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision.datasets import VisionDataset
 
+from ..._validation import require_batch_sizes
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -16,7 +17,23 @@ from .nn_dataset_base import NNDatasetBase
 class NNDataset(NNDatasetBase):
     """Vision dataset wrapper. `val_proportion` carves a validation slice
     out of the source `train=True` split (NOT out of the test split, which
-    stays untouched for final evaluation)."""
+    stays untouched for final evaluation).
+
+    ``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` — the
+    default for every slot — means *one batch holding the complete split*:
+    the default train loader therefore yields a single full-split batch per
+    epoch, i.e. **one optimizer step per epoch**. That suits small
+    full-batch fits but not stochastic training (diffusion, MoE routing,
+    self-supervision); pass an explicit train size such as
+    ``batch_sizes=(128, None, None)`` for mini-batches. A positive integer
+    is used verbatim (a size larger than the split simply yields one smaller
+    batch); NumPy integers are normalized to ``int``. Zero, ``False``,
+    negatives, floats, strings and anything but a 3-tuple are rejected with
+    the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
+    instantiated — zero never disables a split; ``val_proportion=0.0`` does
+    (``val_loader`` is then ``None`` and the resolved val size is a
+    placeholder ``1``).
+    """
 
     ds_class: type[VisionDataset]
     root_dir: str = "./data"
@@ -35,6 +52,10 @@ class NNDataset(NNDatasetBase):
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
+        # Validate the request before the factories run (FIX-022): `None`
+        # is the only full-split sentinel; zero / False / malformed tuples
+        # fail here, not after a download or deep inside DataLoader.
+        requested = require_batch_sizes(self.batch_sizes, owner="NNDataset")
         dataset_factory = cast(Any, self.ds_class)
         full_train_dataset, test_dataset = (
             dataset_factory(root=self.root_dir, train=True, download=self.download, transform=self.transform),
@@ -66,11 +87,13 @@ class NNDataset(NNDatasetBase):
                 "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
             )
 
-        train_batch_size = self.batch_sizes[0] or len(train_dataset)
-        # max(1, ...): an empty split would otherwise resolve to
-        # DataLoader(batch_size=0), which raises.
-        val_batch_size = self.batch_sizes[1] or max(1, len(val_dataset))
-        test_batch_size = self.batch_sizes[2] or max(1, len(test_dataset))
+        # `None` → one batch holding the complete split; an explicit
+        # positive size is kept verbatim (an `is None` test, not
+        # truthiness — FIX-022). max(1, ...): an empty split would
+        # otherwise resolve to DataLoader(batch_size=0), which raises.
+        train_batch_size = len(train_dataset) if requested[0] is None else requested[0]
+        val_batch_size = max(1, len(val_dataset)) if requested[1] is None else requested[1]
+        test_batch_size = max(1, len(test_dataset)) if requested[2] is None else requested[2]
         resolved_batch_sizes = (train_batch_size, val_batch_size, test_batch_size)
 
         object.__setattr__(self, "batch_sizes", resolved_batch_sizes)

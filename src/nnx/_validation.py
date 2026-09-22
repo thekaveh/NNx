@@ -1,5 +1,5 @@
 """Configuration-boundary validators shared across params dataclasses and
-public constructors (FIX-020, FIX-021).
+public constructors (FIX-020, FIX-021, FIX-022).
 
 `require_finite_real` is the one place that decides what a *finite real*
 hyperparameter is: an instance of :class:`numbers.Real` that is not a
@@ -17,7 +17,15 @@ plain ``int`` so immutable lists and ``state()`` snapshots carry portable
 values (a raw ``numpy.int64`` is not YAML-safe). Every float is rejected,
 ``2.0`` included — a count is never rounded — as are strings, ``None`` and
 NaN / ±inf, before any ``range``, modulo, ``math.isqrt`` or layer
-allocation consumes the value. Nothing here coerces numeric strings or
+allocation consumes the value.
+
+`require_batch_sizes` applies the count rule to a dataset wrapper's
+``(train, val, test)`` request, where ``None`` is the *only* automatic
+"one batch holding the complete split" sentinel: zero and ``False`` — which
+truthiness resolution used to turn into a full-split request — are
+rejected like every other non-positive or non-integral entry, and
+anything but a 3-tuple fails with the tuple contract before a dataset
+factory, tokenizer or split runs. Nothing here coerces numeric strings or
 touches ``state()``.
 
 Internal; not part of the public API.
@@ -107,6 +115,46 @@ def require_count(
             or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
         )
     return count
+
+
+_SPLITS = ("train", "val", "test")
+
+
+def require_batch_sizes(value: object, *, owner: str) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """Return a dataset wrapper's ``batch_sizes`` request as a
+    ``(train, val, test)`` tuple of ``None`` or plain positive ``int``
+    (FIX-022).
+
+    ``None`` is the only automatic sentinel ("one batch holding the
+    complete split"); a positive integral entry — NumPy integers
+    normalized to ``int`` — is kept verbatim, never clipped to the split.
+    Zero, ``False``, negatives, floats (``2.0`` included), strings and NaN
+    raise ``ValueError`` naming ``batch_sizes[i] (split)``; a list, a bare
+    value or a tuple of the wrong length raises with the 3-tuple contract.
+    Call it *before* any dataset factory, tokenizer or RNG-consuming split.
+    """
+    if not isinstance(value, tuple) or len(value) != 3:
+        raise ValueError(
+            f"{owner} requires batch_sizes to be a 3-tuple (train, val, test) of None or positive integers, "
+            f"got {value!r} of type {type(value).__name__}"
+        )
+    resolved: list[Optional[int]] = []
+    for i, (split, entry) in enumerate(zip(_SPLITS, value, strict=True)):
+        if entry is None:
+            resolved.append(None)
+            continue
+        slot = f"batch_sizes[{i}] ({split})"
+        resolved.append(
+            require_count(
+                entry,
+                slot,
+                owner=owner,
+                minimum=0,
+                exclusive_min=True,
+                domain_message=f"{owner} requires {slot} to be None (one full-split batch) or a positive integer, got {entry!r}",
+            )
+        )
+    return (resolved[0], resolved[1], resolved[2])
 
 
 def _domain(minimum, maximum, exclusive_min, exclusive_max) -> str:
