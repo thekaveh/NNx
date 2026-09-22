@@ -6,6 +6,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Changed
+
+- The declared PyTorch floor is now `torch>=2.4` with `torchvision>=0.19` (was `torch>=2.0` / `torchvision>=0.15`). The advertised floor was never honest: the CUDA mixed-precision path constructs `torch.amp.GradScaler("cuda")`, which does not exist before 2.3, and on 2.3 the full test suite still fails in three library paths (`torch.is_autocast_enabled(device_type)` in the transformer forward, SDPA float masks for half/bf16/double queries, and the weights-only unpickling allowlist for the training-state sidecar). 2.4.1 / 0.19.1 is the oldest pair on which the whole suite passes; CI now runs a `floor-deps` lane on exactly that pair (CPU, core dependencies only) next to the frozen all-extras lane, and `docs/external-contracts.md` publishes the tested matrix. No fallback factory was added: the scaler protocol, checkpoint serialization and resume validation are unchanged. CUDA execution of AMP remains unverified in this change (no CUDA hardware in the local or CI environments) and is recorded as such.
+
 ### Fixed
 
 - `NNGraphDataset` now represents an empty `val_mask` / `test_mask` as an *absent* split in both sampler modes: that loader is `None` (the optional-loader contract `NNDatasetBase`, `NNModel.train` and `Trainer.train` already honour, so validation is skipped rather than run over zero seed rows), the resolved size is `0` and `state()` reports `"0"`; an explicit positive request for an empty neighbor split also yields `None`. Previously full mode built a zero-node batch that made training fail with `evaluate() loader produced zero samples`, and neighbor mode failed inside `NeighborLoader` with `batch_size=0`. An empty `train_mask` now raises a `ValueError` naming it at construction instead of producing a zero-size training loader. Nonempty splits, the full-graph permutation / `input_id` seed-row scoring and `sampler="full"`'s rejection of explicit sizes are unchanged.

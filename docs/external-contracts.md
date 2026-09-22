@@ -18,7 +18,7 @@ remain defined by `pyproject.toml`.
 
 | Integration | Supported / frozen | NNx contract relied on | Verification |
 | --- | --- | --- | --- |
-| PyTorch training core | `torch>=2.0` / `2.13.0`; `torchvision>=0.15` / `0.28.0`; `torch-geometric>=2.4` / `2.8.0.post1` | `nn.Module`, autograd, optimizer, PyG loader, and torchvision dataset APIs | Full frozen all-extras pytest matrix; graph, dataset, and network tests exercise public paths. |
+| PyTorch training core | `torch>=2.4` / `2.13.0`; `torchvision>=0.19` / `0.28.0`; `torch-geometric>=2.4` / `2.8.0.post1` | `nn.Module`, autograd, optimizer, `torch.amp.GradScaler(device)` + `torch.amp.autocast` for CUDA mixed precision, `torch.is_autocast_enabled(device_type)`, SDPA with float masks, `torch.load(weights_only=True)` for training-state sidecars, PyG loader, and torchvision dataset APIs | Full frozen all-extras pytest matrix (current lane) plus the CI `floor-deps` lane on the declared minimum pair; see §2.1 for the tested matrix and what remains unverified. |
 | ONNX export | `onnx>=1.15` / `1.22.0`; `onnxscript>=0.1` / `0.7.1` | Legacy `torch.onnx.export`; optional `dynamo=True` only when supported | `tests/test_to_onnx_inputs.py`, `tests/test_onnx_dynamo.py`, and `tests/test_viz_netron.py`; known exporter dispatch skew uses the documented guard in `tests/conftest.py`. |
 | Netron viewer | `netron>=7.0` / `9.1.8` | `netron.start(path)` only when `launch=True`; ONNX export remains independent | `tests/test_viz_netron.py` covers launch dispatch and missing-package errors. |
 | Hugging Face Hub | `huggingface-hub>=1.4.0` / `1.24.0`; `safetensors>=0.7.0` / `0.8.0` | `PyTorchModelHubMixin` and safetensors checkpoint APIs | `tests/test_hub_mixin.py` and `tests/test_checkpoint_safetensors.py`; authenticated pushes are intentionally credential-gated. |
@@ -29,6 +29,27 @@ remain defined by `pyproject.toml`.
 | Experiment logging | `tensorboard>=2.15` / `2.21.0`; `wandb>=0.16` / `0.28.1` | Writer/run lifecycle and finish semantics | Callback tests cover lifecycle and TensorBoard event output; real W&B service calls remain credential/network-gated. |
 | Maintenance tooling | `uv==0.12.3`; `pip-audit==2.10.1`; Pyright `1.1.411`; Ruff `0.16.2` | Frozen resolution, exact-graph security audit, type and style gates | Automation installs the same uv version declared in `requirements-tools.txt`; CI uses `uv sync --frozen --all-extras`; security exports that lock before auditing; Pyright warnings are gating. |
 | Package publishing | `setuptools==84.0.0`; `uv==0.12.3`; `twine==7.0.0`; PyPI OIDC | Release version/tag agreement, reproducible artifact bytes, exact registry hashes, trusted publish, immutable GitHub release | The top-level dispatch-only release workflow builds once for publication, verifies local/PyPI filename and SHA-256 sets, attaches the same artifacts to the GitHub release, verifies API digests and immutable attestations, then installs from PyPI. |
+
+### 2.1. PyTorch support matrix
+
+The floor in `pyproject.toml` is the oldest torch / torchvision pair on which
+the **full core test suite** passes, not merely the oldest release that
+imports (FIX-011). Every row states how it was exercised; a row without
+hardware evidence says so.
+
+| torch / torchvision | Python | Environment | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| `2.13.0` / `0.28.0` (frozen `uv.lock`) | 3.10 – 3.14 | GitHub-hosted Ubuntu, CPU, all extras (`uv sync --frozen --all-extras`) | CI `lint-and-test` matrix: the whole suite including extras, ruff, pyright, docs build. | **Tested — current.** |
+| `2.4.1` / `0.19.1` (declared floor) | 3.10 | CPU, core dependencies only (no extras): CI `floor-deps` lane on Ubuntu (CPU wheels from `download.pytorch.org/whl/cpu`), and a local macOS arm64 run on 2026-09-22 | Whole core suite: 1714 passed, 70 skipped (extra-gated `importorskip`), docs-projection modules and the Cora download test excluded. | **Tested — minimum.** |
+| `2.5.1` / `0.20.1` | 3.10 | Local macOS arm64 CPU run on 2026-09-22, core dependencies only | Whole core suite, same exclusions as the floor row: 1714 passed, 70 skipped. | **Tested — intermediate** (not a CI lane). |
+| `2.3.1` / `0.18.1` (with `numpy<2`) | 3.10 | Local macOS arm64 CPU run on 2026-09-22 | 23 failures in library code: `torch.is_autocast_enabled(device_type)` raises `TypeError` in the `TransformerNN` forward (13 tests), SDPA rejects a float `attn_mask` whose dtype differs from a half / bf16 / double query (9), and `torch.load(weights_only=True)` cannot unpickle the training-state sidecar (1). `torch.amp.GradScaler("cuda")` itself exists from 2.3. | **Unsupported** — excluded by metadata. |
+| `< 2.3` | — | not run | `torch.amp.GradScaler` does not exist; the CUDA AMP factory would raise `AttributeError`. | **Unsupported** — excluded by metadata. |
+| CUDA mixed precision (`mixed_precision=True` on a CUDA device) on any row | — | no CUDA hardware in the local or CI environments used for this matrix | Constructor dispatch is covered by stubs only (`test_grad_scaler_prefers_modern_factory`, `test_grad_scaler_disabled_on_cpu_or_without_mixed_precision`); resume presence validation and unscale-before-clip ordering are covered on CPU with a disabled scaler; `examples/02_resume_training.py::amp_resume_compatibility` runs its enabled branch only when `torch.cuda.is_available()` and reports it as skipped otherwise. | **Unverified** — control-flow coverage, not hardware execution. |
+
+Optional extras carry their own constraints and are *not* part of the floor
+lane: `torchao` (`[quantize]`) is validated only against the frozen torch
+above, `pyg-lib` / `torch-sparse` (neighbor-sampler iteration) are never
+installed, and CUDA-only quantization behaviour is hardware-gated.
 
 NNx uses a release-please-managed static package version. Wheels and sdists from
 untagged commits are local test artifacts only and must not be distributed,

@@ -106,3 +106,66 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           retention-days: 7
+
+  floor-deps:
+    # The frozen lock above validates the *newest* resolution, not the
+    # declared dependency floor. This lane installs exactly the minimum
+    # torch / torchvision pair from pyproject.toml (CPU wheels, core
+    # dependencies only — optional extras such as torchao have their own,
+    # newer, torch requirements and are deliberately absent) and runs the
+    # core suite on it (FIX-011). Keep TORCH_FLOOR / TORCHVISION_FLOOR in
+    # sync with pyproject.toml and docs/external-contracts.md §2.1;
+    # tests/test_train_integration.py asserts the pyproject side.
+    # (Static name: the `env` context is not available in a job's `name`.)
+    name: floor-deps (torch 2.4.1, Python 3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TORCH_FLOOR: "2.4.1"
+      TORCHVISION_FLOOR: "0.19.1"
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.10
+        # actions/setup-python@v7.0.0 — 3.10 has wheels for every torch
+        # release from the floor to the current lock.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.10"
+
+      - name: Install the declared minimum torch / torchvision (CPU wheels)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "torch==${TORCH_FLOOR}" "torchvision==${TORCHVISION_FLOOR}" \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install NNx core (no extras) against the pinned floor
+        # The constraints file stops the package install from upgrading
+        # torch / torchvision to the newest release on PyPI.
+        run: |
+          printf 'torch==%s\ntorchvision==%s\n' "$TORCH_FLOOR" "$TORCHVISION_FLOOR" > floor-constraints.txt
+          python -m pip install -c floor-constraints.txt -e . "pytest>=7.4"
+          python - <<'PY'
+          import torch, torchvision, nnx
+          print("torch", torch.__version__, "torchvision", torchvision.__version__, "nnx", nnx.__file__)
+          assert torch.__version__.startswith("2.4."), torch.__version__
+          assert hasattr(torch.amp, "GradScaler")
+          PY
+
+      - name: Run the core suite on the floor
+        # Docs-projection modules need the docs extras; the Cora parity
+        # test downloads data. Everything else runs, with extra-gated tests
+        # skipping via importorskip exactly as documented in
+        # docs/external-contracts.md §2.1.
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          python -m pytest tests \
+            --ignore=tests/test_docs_projection.py \
+            --ignore=tests/test_wiki_projection.py \
+            --deselect tests/test_nn_graph_dataset_full_batch.py::test_full_batch_cora_parity \
+            -p no:cacheprovider -q

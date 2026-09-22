@@ -1796,6 +1796,16 @@ class NNModel(_HubMixinBase):
         return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs)
 
     def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:
+        """The AMP loss scaler for this model, or ``None``.
+
+        Built only for ``mixed_precision=True`` on a CUDA device — CPU / MPS
+        runs never instantiate one. ``torch.amp.GradScaler(device)`` is the
+        PyTorch >= 2.3 factory; NNx's declared floor (``torch>=2.4``, the
+        oldest release the full test suite passes on) guarantees it exists,
+        so no legacy ``torch.cuda.amp`` fallback is needed (FIX-011). The
+        returned object is used through the standard ``scale`` /
+        ``unscale_`` / ``step`` / ``update`` / ``state_dict`` protocol.
+        """
         if getattr(self.params, "mixed_precision", False) and self.device.type == "cuda":
             return torch.amp.GradScaler("cuda")
         return None
