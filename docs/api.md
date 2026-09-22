@@ -4796,10 +4796,10 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 #### `nnx.quantize.ptq.quantize_int8`
 
 ```python
-nnx.quantize.ptq.quantize_int8(model: 'NNModel') -> 'NNModel'
+nnx.quantize.ptq.quantize_int8(model: '_M') -> '_M'
 ```
 
-Return a new :class:`NNModel` with int8 weight-only quantized ``net``.
+Return a new instance of ``type(model)`` with int8 weight-only quantized ``net``.
 
 **Details**
 
@@ -4811,20 +4811,26 @@ parameter replaced with an :class:`AffineQuantizedTensor` (int8
 per-channel, symmetric). Activations stay FP32 — only the weights
 are stored in int8.
 
-The original ``model`` is untouched. The returned ``NNModel`` shares
-every other attribute (``params``, ``net_params``, ``device``,
-``loss_fn``) with the original — only ``net`` is the quantized copy.
+The original ``model`` is untouched. The returned wrapper is a shallow
+copy of ``model`` — the same class (a :class:`GenerativeNNModel` keeps
+its tokenizer and ``generate``; a user subclass keeps its overrides and
+custom attributes) sharing every other attribute (``params``,
+``net_params``, ``device``, ``loss_fn``, ``tokenizer``) with the
+original — only ``net`` is the independent quantized copy. No
+constructor is re-run, so no weights are re-initialized and no RNG
+is consumed; subclasses that define their own copy hooks are copied
+through them.
 
 Args:
-    model: a trained :class:`NNModel`. PTQ has no training step;
-        this function is a pure post-process.
+    model: a trained :class:`NNModel` (or subclass). PTQ has no
+        training step; this function is a pure post-process.
 
 Returns:
-    a new :class:`NNModel` instance whose ``net`` is the quantized
+    a new instance of ``type(model)`` whose ``net`` is the quantized
     deep-copy of ``model.net``. The new model can be used for
-    ``predict`` / ``evaluate`` / ``to_onnx`` exactly like the
-    original; ``train`` on the quantized model is not supported
-    (QAT lands in a separate module).
+    ``predict`` / ``evaluate`` / ``generate`` / ``to_onnx`` exactly
+    like the original; ``train`` on the quantized model is not
+    supported (QAT lands in a separate module).
 
 Raises:
     ImportError: if ``torchao`` is not installed. Install with

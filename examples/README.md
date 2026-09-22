@@ -64,7 +64,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. |
+| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, verify val accuracy is preserved and the quantized model still ONNX-exports. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. Its bounded `quantized_generative_subtype()` helper (executed by `tests/test_examples_smoke.py -k quantized_generative_subtype`; needs `[quantize,lm]`, skipped otherwise; no ONNX) quantizes a one-layer `GenerativeNNModel` with a locally trained BPE tokenizer and generates two tokens on the cached and full-recompute paths — `quantize_int8` returns the same class it was given. |
 | `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Verifies the saved LAST checkpoint holds the CONVERTED int4 state (scales/zeros on disk) and round-trips it into a fresh prepare→convert net. Requires `pip install "thekaveh-nnx[quantize,onnx-dynamo]"`. |
 
 ### 2.6. Embeddings + FAISS export

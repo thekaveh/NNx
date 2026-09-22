@@ -14,7 +14,9 @@ no labeled data needed. The single-call API:
 
 deep-copies ``model.net``, replaces the FP32 weights on every ``nn.Linear``
 with int8-backed :class:`AffineQuantizedTensor` parameters, and returns
-a fresh :class:`NNModel` whose ``net`` is the quantized copy. The original
+a fresh sibling of ``model``'s own class (an :class:`NNModel`, or a
+subclass such as :class:`GenerativeNNModel` with its tokenizer and
+``generate`` intact) whose ``net`` is the quantized copy. The original
 ``model`` is left untouched so callers can keep both around for an
 accuracy comparison.
 
@@ -31,13 +33,16 @@ weight-only and per-tensor activation quantization are not yet shipped.
 
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
+from typing import TypeVar
 
 from ..nn.nn_model import NNModel
 
+_M = TypeVar("_M", bound=NNModel)
 
-def quantize_int8(model: NNModel) -> NNModel:
-    """Return a new :class:`NNModel` with int8 weight-only quantized ``net``.
+
+def quantize_int8(model: _M) -> _M:
+    """Return a new instance of ``type(model)`` with int8 weight-only quantized ``net``.
 
     Deep-copies ``model.net`` and applies
     ``torchao.quantization.quantize_(net, Int8WeightOnlyConfig())`` to
@@ -46,20 +51,26 @@ def quantize_int8(model: NNModel) -> NNModel:
     per-channel, symmetric). Activations stay FP32 — only the weights
     are stored in int8.
 
-    The original ``model`` is untouched. The returned ``NNModel`` shares
-    every other attribute (``params``, ``net_params``, ``device``,
-    ``loss_fn``) with the original — only ``net`` is the quantized copy.
+    The original ``model`` is untouched. The returned wrapper is a shallow
+    copy of ``model`` — the same class (a :class:`GenerativeNNModel` keeps
+    its tokenizer and ``generate``; a user subclass keeps its overrides and
+    custom attributes) sharing every other attribute (``params``,
+    ``net_params``, ``device``, ``loss_fn``, ``tokenizer``) with the
+    original — only ``net`` is the independent quantized copy. No
+    constructor is re-run, so no weights are re-initialized and no RNG
+    is consumed; subclasses that define their own copy hooks are copied
+    through them.
 
     Args:
-        model: a trained :class:`NNModel`. PTQ has no training step;
-            this function is a pure post-process.
+        model: a trained :class:`NNModel` (or subclass). PTQ has no
+            training step; this function is a pure post-process.
 
     Returns:
-        a new :class:`NNModel` instance whose ``net`` is the quantized
+        a new instance of ``type(model)`` whose ``net`` is the quantized
         deep-copy of ``model.net``. The new model can be used for
-        ``predict`` / ``evaluate`` / ``to_onnx`` exactly like the
-        original; ``train`` on the quantized model is not supported
-        (QAT lands in a separate module).
+        ``predict`` / ``evaluate`` / ``generate`` / ``to_onnx`` exactly
+        like the original; ``train`` on the quantized model is not
+        supported (QAT lands in a separate module).
 
     Raises:
         ImportError: if ``torchao`` is not installed. Install with
@@ -81,10 +92,12 @@ def quantize_int8(model: NNModel) -> NNModel:
     # standard weight-only INT8 layout.
     quantize_(quantized_net, Int8WeightOnlyConfig(version=2))
 
-    # Build a sibling NNModel without re-running __init__ (which would
-    # build a fresh FP32 net via self.params.net(...)). Share every other
-    # attribute so loss_fn / device / params line up with the original.
-    m = NNModel.__new__(NNModel)
-    m.__dict__.update(model.__dict__)
+    # Build a sibling of the caller's OWN class without re-running
+    # __init__ (which would build a fresh FP32 net via self.params.net(...)
+    # and, for subclasses, may need extra arguments). copy.copy keeps the
+    # exact subtype — GenerativeNNModel's generate / tokenizer, user
+    # overrides and custom attributes — and shares every other attribute
+    # so loss_fn / device / params line up with the original (FIX-017).
+    m = copy(model)
     m.net = quantized_net
     return m

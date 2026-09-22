@@ -324,3 +324,56 @@ def test_quantize_int8_preserves_eval_mode_train_mode_toggle(tiny_model):
     assert all(not m.training for m in m_q.net.modules())
     m_q.net.train()
     assert m_q.net.training
+
+
+# -------------------------------------------------------------------------
+# FIX-017: the quantized wrapper keeps the caller's NNModel subtype
+# -------------------------------------------------------------------------
+
+
+class _TaggedModel(NNModel):
+    """Ordinary subclass with an overridden method and an extra attribute."""
+
+    def label(self) -> str:
+        return self.tag  # type: ignore[attr-defined]
+
+    def predict(self, X):  # type: ignore[override]
+        result = super().predict(X)
+        self.last_n = len(result.classes)
+        return result
+
+
+def test_quantize_int8_preserves_custom_subclass():
+    """`quantize_int8` must return a sibling of the caller's subtype (methods,
+    overrides and custom attributes intact), with a distinct wrapper and a
+    distinct quantized net, while params/net_params/loss_fn stay shared and
+    the source network stays FP32 and value-identical."""
+    torch.manual_seed(0)
+    model = _TaggedModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.tag = "original-subtype"
+    source_values = {n: p.detach().clone() for n, p in model.net.named_parameters()}
+    source_types = {n: type(p) for n, p in model.net.named_parameters()}
+
+    quantized = quantize_int8(model)
+
+    assert type(quantized) is _TaggedModel
+    assert quantized.label() == "original-subtype"
+    assert quantized is not model and quantized.net is not model.net
+    assert quantized.params is model.params
+    assert quantized.net_params is model.net_params
+    assert quantized.loss_fn is model.loss_fn
+    quantized.predict(torch.randn(3, 4))
+    assert quantized.last_n == 3  # overridden method ran on the quantized wrapper
+    assert not hasattr(model, "last_n")  # …and did not leak onto the source
+
+    for n, p in model.net.named_parameters():
+        assert type(p) is source_types[n] is torch.nn.Parameter, n
+        assert torch.equal(p.detach(), source_values[n]), n
+    assert all(
+        type(m.weight).__module__.startswith("torchao")
+        for m in quantized.net.modules()
+        if isinstance(m, torch.nn.Linear)
+    )
