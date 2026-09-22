@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
+from ..._validation import require_finite_real
 from ..enum.schedulers import Schedulers
 
 if TYPE_CHECKING:
@@ -37,17 +38,26 @@ class NNSchedulerParams:
         # enforces itself for that variant); `patience`/`cooldown` are epoch
         # counts; `min_lr`/`threshold` are non-negative bounds. Present
         # (non-None) variant knobs are positive step/length counts.
-        if self.factor <= 0:
-            raise ValueError(f"NNSchedulerParams requires factor > 0, got {self.factor}")
-        if self.min_lr < 0:
-            raise ValueError(f"NNSchedulerParams requires min_lr >= 0, got {self.min_lr}")
-        if self.threshold < 0:
-            raise ValueError(f"NNSchedulerParams requires threshold >= 0, got {self.threshold}")
+        # Real-valued fields: finite first, then the domain (FIX-020).
+        require_finite_real(self.factor, "factor", owner="NNSchedulerParams", minimum=0.0, exclusive_min=True)
+        require_finite_real(self.min_lr, "min_lr", owner="NNSchedulerParams", minimum=0.0)
+        require_finite_real(self.threshold, "threshold", owner="NNSchedulerParams", minimum=0.0)
+        if self.max_lr is not None:
+            require_finite_real(
+                self.max_lr,
+                "max_lr",
+                owner="NNSchedulerParams",
+                minimum=0.0,
+                exclusive_min=True,
+                domain_message=f"NNSchedulerParams requires max_lr > 0 when set, got {self.max_lr}",
+            )
         if self.patience < 0:
             raise ValueError(f"NNSchedulerParams requires patience >= 0, got {self.patience}")
         if self.cooldown < 0:
             raise ValueError(f"NNSchedulerParams requires cooldown >= 0, got {self.cooldown}")
-        for name in ("step_size", "T_max", "max_lr", "total_steps", "warmup_steps"):
+        # Integer step/length counts (validated as counts by FIX-021; kept
+        # separate from the real-valued fields above).
+        for name in ("step_size", "T_max", "total_steps", "warmup_steps"):
             value = getattr(self, name)
             if value is not None and value <= 0:
                 raise ValueError(f"NNSchedulerParams requires {name} > 0 when set, got {value}")

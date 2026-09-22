@@ -21,6 +21,7 @@ import ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..._validation import require_finite_real
 from ..enum.activations import Activations
 from .nn_params import NNParams
 
@@ -86,6 +87,9 @@ class NNTransformerParams(NNParams):
                 raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
+        # RoPE base feeds `1 / base ** (2k/dim)`: zero, negative or non-finite
+        # bases produce non-finite tables silently (FIX-020).
+        require_finite_real(self.rope_base, "rope_base", owner="NNTransformerParams", minimum=0.0, exclusive_min=True)
 
     def state(self) -> dict:
         # Start with the base-class state (input_dim/output_dim/etc.)
