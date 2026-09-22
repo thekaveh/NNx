@@ -4711,20 +4711,29 @@ Args:
           * an :class:`nn.ReLU` inside a parent :class:`nn.Sequential`
             — the primitive splices ``Linear(I) → ReLU`` in after it.
           * an :class:`nn.Linear` inside a parent :class:`nn.ModuleList`
-            whose grandparent module declares ReLU as its activation
-            (the FeedFwdNN contract) — the primitive inserts a new
-            identity-init Linear into the ModuleList right after.
+            whose grandparent module applies ReLU at that site (the
+            FeedFwdNN contract; ``params.activation_for(idx)`` is
+            consulted, so per-layer overrides are honoured) — the
+            primitive inserts a new identity-init Linear into the
+            ModuleList right after and rebuilds the grandparent's
+            ``params`` so ``hidden_dims`` / ``activations`` /
+            ``dropout_probs`` describe the deeper topology (the new
+            site gets dropout ``0.0``). Adopt ``deeper.params`` as the
+            ``net_params`` of a fresh ``NNModel`` when rebuilding.
 
 Returns:
     A fresh :class:`nn.Module` whose forward output matches the
-    original within ``atol=1e-5``.
+    original within ``atol=1e-5`` (eval mode when dropout is
+    configured; a seeded training forward also matches, because the
+    zero-dropout site draws nothing from the RNG).
 
 Raises:
     KeyError: if ``after_layer_name`` is not a submodule.
     TypeError: if the layer is neither a ReLU-in-Sequential nor a
         Linear-in-FeedFwdNN-like ModuleList.
-    ValueError: if the parent's activation is anything other than
-        ReLU. Sigmoid / tanh / GELU break function-preservation.
+    ValueError: if the activation effective at the insertion site is
+        anything other than ReLU. Sigmoid / tanh / GELU break
+        function-preservation.
 ```
 
 
