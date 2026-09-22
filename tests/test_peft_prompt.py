@@ -175,3 +175,25 @@ def test_prompt_inherits_embedding_placement(dtype, tmp_path):
     assert tuner.soft_prompt.dtype == dtype
     assert torch.equal(tuner.soft_prompt.detach(), source.soft_prompt.detach().to(dtype))
     assert model.tok_embed.weight is embed_weight and embed_weight.dtype == dtype
+
+
+def test_prompt_state_dict_excludes_nested_name_collisions(tmp_path):
+    """FIX-002: only the tuner-owned ``soft_prompt`` belongs in a prompt
+    artifact — a nested base submodule whose name contains the marker
+    is neither saved nor writable through the loader."""
+    set_seed(0)
+    model = _tiny_transformer()
+    model.soft_prompt_bias = torch.nn.Linear(2, 2)  # name collision inside the frozen base
+    tuner = PromptTuner(model, n_prompt_tokens=3)
+    before = {k: v.detach().clone() for k, v in tuner.state_dict().items()}
+
+    assert set(tuner.prompt_state_dict()) == {"soft_prompt"}
+    path = save_prompt_weights(tuner, tmp_path / "prompt.pt")
+    assert set(torch.load(path, weights_only=True)) == {"soft_prompt"}
+
+    source = {k: v.detach().clone() for k, v in tuner.state_dict().items()}
+    source["model.soft_prompt_bias.weight"].zero_()
+    source["model.tok_embed.weight"].zero_()
+    assert load_prompt_weights(tuner, source) == 1
+    for k, v in tuner.state_dict().items():
+        assert torch.equal(v, before[k]), k
