@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..._validation import require_count
 from ..enum.activations import Activations
 
 
@@ -65,14 +66,38 @@ class NNParams:
         # eventually for these, but far from the origin — surfacing the error
         # here keeps the [[params-boundary-validation]] contract consistent
         # with the rest of the params hierarchy. None of these touch state().
+        #
+        # Dimensions and head counts are *counts* (FIX-021): any non-bool
+        # `numbers.Integral` — NumPy integers included — is normalized to a
+        # plain `int` before the immutable lists, `_dims` and every
+        # subclass's arithmetic see it; floats (`2.0` included), booleans
+        # and numeric strings are rejected with the field named. Subclasses
+        # report themselves as the owner.
+        owner = type(self).__name__
+        object.__setattr__(
+            self, "input_dim", require_count(self.input_dim, "input_dim", owner=owner, minimum=0, exclusive_min=True)
+        )
+        object.__setattr__(
+            self, "output_dim", require_count(self.output_dim, "output_dim", owner=owner, minimum=0, exclusive_min=True)
+        )
+        if self.hidden_dims is not None:
+            all_positive = f"{owner} requires all hidden_dims > 0, got {list(self.hidden_dims)}"
+            object.__setattr__(
+                self,
+                "hidden_dims",
+                _ImmutableList(
+                    require_count(
+                        d, f"hidden_dims[{i}]", owner=owner, minimum=0, exclusive_min=True, domain_message=all_positive
+                    )
+                    for i, d in enumerate(self.hidden_dims)
+                ),
+            )
+        if self.n_heads is not None:
+            object.__setattr__(
+                self, "n_heads", require_count(self.n_heads, "n_heads", owner=owner, minimum=0, exclusive_min=True)
+            )
         if not 0.0 <= self.dropout_prob <= 1.0:
             raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob}")
-        if self.input_dim <= 0:
-            raise ValueError(f"NNParams requires input_dim > 0, got {self.input_dim}")
-        if self.output_dim <= 0:
-            raise ValueError(f"NNParams requires output_dim > 0, got {self.output_dim}")
-        if self.hidden_dims is not None and not all(d > 0 for d in self.hidden_dims):
-            raise ValueError(f"NNParams requires all hidden_dims > 0, got {self.hidden_dims}")
 
         # Per-layer overrides (#85): length must equal the number of hidden
         # layers; dropout entries must be valid probabilities.
@@ -90,8 +115,6 @@ class NNParams:
             if not all(0.0 <= q <= 1.0 for q in self.dropout_probs):
                 raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
 
-        if self.hidden_dims is not None:
-            object.__setattr__(self, "hidden_dims", _ImmutableList(self.hidden_dims))
         if self.activations is not None:
             object.__setattr__(self, "activations", _ImmutableList(self.activations))
         if self.dropout_probs is not None:

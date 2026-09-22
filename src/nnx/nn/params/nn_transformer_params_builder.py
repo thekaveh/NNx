@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from ..._validation import require_count
 from ..enum.activations import Activations
 from .nn_transformer_params import NNTransformerParams
 
@@ -44,15 +45,35 @@ class NNTransformerParamsBuilder:
         d_model: int,
     ) -> NNTransformerParamsBuilder:
         """Set depth (`n_layers`), attention head count (`n_heads`),
-        and hidden dimension (`d_model`). Enforces
-        `d_model % heads == 0` immediately — this is the Builder's
-        safety value-add over the direct-kwarg ctor, which only
-        catches the mismatch at __post_init__ time after all kwargs
-        have already been typed."""
+        and hidden dimension (`d_model`). All three must be positive
+        integers — Python or NumPy integers, normalized to plain `int`;
+        floats (even `128.0`), booleans and strings raise `ValueError`
+        naming the argument — and the check runs *before* the
+        divisibility arithmetic so the builder rejects exactly what the
+        direct constructor rejects. Enforces `d_model % heads == 0` and
+        an even head width (`d_model / heads`, required by RoPE)
+        immediately — this is the Builder's safety value-add over the
+        direct-kwarg ctor, which only catches the mismatch at
+        __post_init__ time after all kwargs have already been typed.
+
+        Raises:
+            ValueError: for a non-integral or non-positive `n`, `heads`
+                or `d_model`, for `d_model % heads != 0`, or for an odd
+                `d_model // heads`.
+        """
+        owner = "NNTransformerParams.builder().layers"
+        n = require_count(n, "n", owner=owner, minimum=0, exclusive_min=True)
+        heads = require_count(heads, "heads", owner=owner, minimum=0, exclusive_min=True)
+        d_model = require_count(d_model, "d_model", owner=owner, minimum=0, exclusive_min=True)
         if d_model % heads != 0:
             raise ValueError(
                 f"d_model={d_model} must be divisible by heads={heads} "
                 "(transformer attention requires d_model / n_heads to be integral)"
+            )
+        if (d_model // heads) % 2 != 0:
+            raise ValueError(
+                f"d_model={d_model} / heads={heads} gives an odd head width {d_model // heads}; "
+                "RoPE requires an even head width"
             )
         self._fields["n_layers"] = n
         self._fields["n_heads"] = heads

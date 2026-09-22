@@ -1389,7 +1389,16 @@ Set the vocabulary size. Mirrors into both `input_dim` and `output_dim` on the p
 nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.layers(self, *, n: 'int', heads: 'int', d_model: 'int') -> 'NNTransformerParamsBuilder'
 ```
 
-Set depth (`n_layers`), attention head count (`n_heads`), and hidden dimension (`d_model`). Enforces `d_model % heads == 0` immediately — this is the Builder's safety value-add over the direct-kwarg ctor, which only catches the mismatch at __post_init__ time after all kwargs have already been typed.
+Set depth (`n_layers`), attention head count (`n_heads`), and hidden dimension (`d_model`). All three must be positive integers — Python or NumPy integers, normalized to plain `int`; floats (even `128.0`), booleans and strings raise `ValueError` naming the argument — and the check runs *before* the divisibility arithmetic so the builder rejects exactly what the direct constructor rejects. Enforces `d_model % heads == 0` and an even head width (`d_model / heads`, required by RoPE) immediately — this is the Builder's safety value-add over the direct-kwarg ctor, which only catches the mismatch at __post_init__ time after all kwargs have already been typed.
+
+**Details**
+
+```text
+Raises:
+    ValueError: for a non-integral or non-positive `n`, `heads`
+        or `d_model`, for `d_model % heads != 0`, or for an odd
+        `d_model // heads`.
+```
 
 ##### `nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.ffn`
 
@@ -1487,6 +1496,17 @@ nnx.nn.params.nn_conv_params.NNConvParams.image_side(self) -> 'int'
 ```
 
 Spatial side of the (square) input image.
+
+**Details**
+
+```text
+Always a plain ``int``: every count that feeds the conv arithmetic
+(``input_dim``, ``in_channels``, ``kernel_size``, ``stride``,
+``padding``, ``pool_size``, ``conv_channels``) is validated at
+construction as a non-boolean integer — NumPy integers accepted and
+normalized — so a fractional or boolean knob raises ``ValueError``
+naming the field before any shape helper or layer runs (FIX-021).
+```
 
 ##### `nnx.nn.params.nn_conv_params.NNConvParams.spatial_sizes`
 
@@ -3369,7 +3389,10 @@ Args:
              "train_edp.error", or "train_edp.loss". Exactly that field is read —
              the finite val→train / error→loss fallback that BEST selection and
              ReduceLROnPlateau use does not apply here.
-    patience: epochs with no improvement before stopping.
+    patience: epochs with no improvement before stopping — a nonnegative
+              integer count (NumPy integers accepted and normalized; zero
+              stops on the first non-improving epoch). Fractional, boolean
+              or string values raise ``ValueError`` at construction.
     min_delta: minimum change to qualify as improvement.
     mode: "min" (default) for loss/error; "max" for accuracy/f1.
 ```

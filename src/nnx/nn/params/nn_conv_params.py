@@ -23,6 +23,12 @@ scalar ``activation`` because every Conv→Pool block uses it. Optional
 v1 targets small SQUARE images: the spatial side is derived as
 ``sqrt(input_dim / in_channels)`` (MNIST: 784/1 → 28), so the base
 ``input_dim`` keeps its meaning and no extra height/width fields are needed.
+
+Every count above is validated as a non-boolean integer at construction
+(FIX-021): Python and NumPy integers are accepted and normalized to plain
+``int`` before the immutable-list capture, the square-image arithmetic and
+``state()``; fractional, boolean or string values raise ``ValueError``
+naming the field. ``padding`` is the one count that accepts zero.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ import ast
 import math
 from dataclasses import dataclass
 
+from ..._validation import require_count
 from .nn_params import NNParams, _ImmutableList
 
 _LENET_DEFAULTS = {"in_channels": 1, "kernel_size": 5, "stride": 1, "padding": 0, "pool_size": 2}
@@ -53,21 +60,37 @@ class NNConvParams(NNParams):
         # Explicit unbound call — same slotted-dataclass reasoning as
         # NNTransformerParams.__post_init__.
         NNParams.__post_init__(self)
-        object.__setattr__(self, "conv_channels", _ImmutableList(self.conv_channels))
         if self.activation is None:
             raise ValueError("NNConvParams requires a scalar activation for convolution blocks")
-        if not self.conv_channels or not all(c > 0 for c in self.conv_channels):
-            raise ValueError(f"NNConvParams requires non-empty conv_channels with all > 0, got {self.conv_channels}")
-        if self.in_channels <= 0:
-            raise ValueError(f"NNConvParams requires in_channels > 0, got {self.in_channels}")
-        if self.kernel_size <= 0:
-            raise ValueError(f"NNConvParams requires kernel_size > 0, got {self.kernel_size}")
-        if self.stride <= 0:
-            raise ValueError(f"NNConvParams requires stride > 0, got {self.stride}")
-        if self.padding < 0:
-            raise ValueError(f"NNConvParams requires padding >= 0, got {self.padding}")
-        if self.pool_size <= 0:
-            raise ValueError(f"NNConvParams requires pool_size > 0, got {self.pool_size}")
+        # Conv-stack knobs are integer counts (FIX-021): validated and
+        # normalized to plain `int` BEFORE the immutable-list capture and the
+        # `%` / `isqrt` / floor arithmetic below. `padding` is the one
+        # nonnegative count (zero = valid, no padding); the rest are positive.
+        all_positive = f"NNConvParams requires non-empty conv_channels with all > 0, got {list(self.conv_channels)}"
+        if not self.conv_channels:
+            raise ValueError(all_positive)
+        object.__setattr__(
+            self,
+            "conv_channels",
+            _ImmutableList(
+                require_count(
+                    c,
+                    f"conv_channels[{i}]",
+                    owner="NNConvParams",
+                    minimum=0,
+                    exclusive_min=True,
+                    domain_message=all_positive,
+                )
+                for i, c in enumerate(self.conv_channels)
+            ),
+        )
+        for name in ("in_channels", "kernel_size", "stride", "pool_size"):
+            object.__setattr__(
+                self,
+                name,
+                require_count(getattr(self, name), name, owner="NNConvParams", minimum=0, exclusive_min=True),
+            )
+        object.__setattr__(self, "padding", require_count(self.padding, "padding", owner="NNConvParams", minimum=0))
 
         # v1 square-image contract: input_dim = in_channels * side².
         if self.input_dim % self.in_channels != 0:
@@ -94,7 +117,15 @@ class NNConvParams(NNParams):
                 )
 
     def image_side(self) -> int:
-        """Spatial side of the (square) input image."""
+        """Spatial side of the (square) input image.
+
+        Always a plain ``int``: every count that feeds the conv arithmetic
+        (``input_dim``, ``in_channels``, ``kernel_size``, ``stride``,
+        ``padding``, ``pool_size``, ``conv_channels``) is validated at
+        construction as a non-boolean integer — NumPy integers accepted and
+        normalized — so a fractional or boolean knob raises ``ValueError``
+        naming the field before any shape helper or layer runs (FIX-021).
+        """
         return math.isqrt(self.input_dim // self.in_channels)
 
     def spatial_sizes(self) -> list[int]:

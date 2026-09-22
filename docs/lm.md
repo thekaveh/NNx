@@ -18,7 +18,7 @@ training is out of scope.
 |---|---|
 | `nnx.Nets.TRANSFORMER` | Enum variant; dispatches to `TransformerNN` via `NNModelParams.net`. |
 | `nnx.TransformerNN` | `nn.Module` — decoder-only stack: token embed + N blocks + final RMSNorm + tied LM head. |
-| `nnx.NNTransformerParams` | Frozen dataclass (subclass of `NNParams`) — `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Every optional field omits itself from `state()` when at default (the omit-when-default invariant). |
+| `nnx.NNTransformerParams` | Frozen dataclass (subclass of `NNParams`) — `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Every optional field omits itself from `state()` when at default (the omit-when-default invariant). `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult` and `max_seq_len` are positive integer counts — NumPy integers are normalized to `int`; floats, booleans and strings raise `ValueError` at construction — with `d_model % n_heads == 0` and an even head width (`d_model / n_heads`, required by RoPE). |
 | `nnx.NNTokenizerParams` | Wraps `tokenizers.Tokenizer`; `state()` returns `{"path": "<tokenizer.json>"}`. Available when `thekaveh-nnx[lm]` is installed. |
 | `nnx.train_bpe(...)` | Quick BPE training helper (Whitespace pre-tokenizer + BPE + BpeTrainer). |
 | `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed, use_cache, logits_chain)`. |
@@ -91,8 +91,12 @@ print(out)
 
 Same config via `NNTransformerParams.builder()` — the dead parent
 fields (`hidden_dims`, `activation`, `dropout_prob`) are hidden, and
-`d_model % heads == 0` is enforced at `.layers(...)` call-time
-rather than waiting for `__post_init__`:
+`.layers(...)` validates at call-time rather than waiting for
+`__post_init__`: `n`, `heads` and `d_model` must be positive integers
+(NumPy integers are normalized to `int`; `128.0`, booleans and strings
+are rejected before any arithmetic), `d_model % heads == 0`, and the head
+width `d_model / heads` must be even because RoPE rotates channel pairs —
+the same rules the direct constructor applies:
 
 ```python
 net_params = (
