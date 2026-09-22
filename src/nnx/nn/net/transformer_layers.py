@@ -23,6 +23,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..._validation import require_finite_real
+
 
 class RMSNorm(nn.Module):
     """Root-mean-square layer normalization (Zhang & Sennrich, 2019).
@@ -33,6 +35,9 @@ class RMSNorm(nn.Module):
 
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
+        # eps is added inside rsqrt: a NaN/inf or negative eps poisons every
+        # normalized activation (FIX-020).
+        require_finite_real(eps, "eps", owner="RMSNorm", minimum=0.0)
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
 
@@ -59,6 +64,10 @@ class RoPE(nn.Module):
         super().__init__()
         if dim % 2 != 0:
             raise ValueError(f"RoPE dim must be even, got {dim}")
+        # inv_freq = 1 / base ** (2k/dim): zero, negative or non-finite bases
+        # yield non-finite tables silently (FIX-020). The params boundary
+        # enforces the same rule; direct construction must too.
+        require_finite_real(base, "base", owner="RoPE", minimum=0.0, exclusive_min=True)
         # inv_freq[k] = 1 / (base ** (2k/dim))  for k in [0, dim/2)
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
         t = torch.arange(max_seq_len, dtype=torch.float32)

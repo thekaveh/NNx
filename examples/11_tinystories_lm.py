@@ -238,6 +238,53 @@ def manual_attention_lm_example(dtype: torch.dtype = torch.bfloat16) -> dict:
     return summary
 
 
+def build_lm_train_params(lr: float, *, n_epochs: int, train_loader) -> NNTrainParams:
+    """The training configuration ``main`` builds from its CLI flags,
+    exposed so the boundary can be checked without tokenizing or training.
+    Every real-valued hyperparameter is validated at construction: a
+    non-finite ``lr`` raises a ``ValueError`` naming ``max_lr`` before any
+    optimizer, run directory or model exists.
+    """
+    return NNTrainParams(
+        n_epochs=n_epochs,
+        train_loader=train_loader,
+        optim=NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=lr,
+            momentum=(0.9, 0.95),
+            weight_decay=0.0,
+            grad_clip_norm=1.0,
+        ),
+        scheduler=NNSchedulerParams(
+            min_lr=1e-6,
+            factor=0.5,
+            patience=1,
+            cooldown=0,
+            threshold=1e-3,
+        ),
+        seed=0,
+    )
+
+
+def lm_config_rejects_nonfinite() -> dict:
+    """Bounded configuration-boundary check (no tokenizer, no training, no
+    downloads): a NaN learning rate is rejected with a ``ValueError`` that
+    names ``max_lr``, and the finite control keeps its normal state.
+    """
+    try:
+        build_lm_train_params(float("nan"), n_epochs=1, train_loader=None)
+    except ValueError as exc:
+        assert "max_lr" in str(exc), exc
+        rejection = str(exc)
+    else:
+        raise AssertionError("a NaN learning rate must be rejected at configuration time")
+    control = build_lm_train_params(3e-4, n_epochs=1, train_loader=None)
+    assert control.optim.max_lr == 3e-4 and control.optim.grad_clip_norm == 1.0
+    summary = {"rejected": rejection[:60], "control_max_lr": control.optim.max_lr}
+    print(f"LM config boundary workflow: {summary}")
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-hf", action="store_true", help="download TinyStories from HuggingFace")
@@ -300,25 +347,7 @@ def main() -> None:
 
     # --- 5. Train ---
     model.train(
-        params=NNTrainParams(
-            n_epochs=args.n_epochs,
-            train_loader=train_loader,
-            optim=NNOptimParams(
-                name=Optims.ADAM,
-                max_lr=args.lr,
-                momentum=(0.9, 0.95),
-                weight_decay=0.0,
-                grad_clip_norm=1.0,
-            ),
-            scheduler=NNSchedulerParams(
-                min_lr=1e-6,
-                factor=0.5,
-                patience=1,
-                cooldown=0,
-                threshold=1e-3,
-            ),
-            seed=0,
-        ),
+        params=build_lm_train_params(args.lr, n_epochs=args.n_epochs, train_loader=train_loader),
         train_step_fn=_lm_train_step,
     )
 
