@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
-from ..._validation import require_finite_real
+from ..._validation import require_count, require_finite_real
 from ..enum.schedulers import Schedulers
 
 if TYPE_CHECKING:
@@ -51,16 +51,29 @@ class NNSchedulerParams:
                 exclusive_min=True,
                 domain_message=f"NNSchedulerParams requires max_lr > 0 when set, got {self.max_lr}",
             )
-        if self.patience < 0:
-            raise ValueError(f"NNSchedulerParams requires patience >= 0, got {self.patience}")
-        if self.cooldown < 0:
-            raise ValueError(f"NNSchedulerParams requires cooldown >= 0, got {self.cooldown}")
-        # Integer step/length counts (validated as counts by FIX-021; kept
-        # separate from the real-valued fields above).
+        # Epoch counts: nonnegative integers, normalized to plain `int`
+        # (FIX-021); zero is a valid "react immediately" setting for both.
+        for name in ("patience", "cooldown"):
+            object.__setattr__(
+                self, name, require_count(getattr(self, name), name, owner="NNSchedulerParams", minimum=0)
+            )
+        # Positive step/length counts when supplied; `None` stays the
+        # "not this variant" sentinel and is never coerced (FIX-021).
         for name in ("step_size", "T_max", "total_steps", "warmup_steps"):
             value = getattr(self, name)
-            if value is not None and value <= 0:
-                raise ValueError(f"NNSchedulerParams requires {name} > 0 when set, got {value}")
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    name,
+                    require_count(
+                        value,
+                        name,
+                        owner="NNSchedulerParams",
+                        minimum=0,
+                        exclusive_min=True,
+                        domain_message=f"NNSchedulerParams requires {name} > 0 when set, got {value}",
+                    ),
+                )
 
     def __str__(self) -> str:
         if self.kind is None:

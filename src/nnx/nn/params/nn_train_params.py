@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
+from ..._validation import require_count
 from ..enum.optims import Optims
 from ..params.nn_optim_params import NNOptimParams
 from ..params.nn_scheduler_params import NNSchedulerParams
@@ -67,8 +68,19 @@ class NNTrainParams:
         # degenerate saved run, no BEST checkpoint) rather than erroring.
         # `n_epochs` is always emitted into state(), so this never shifts a
         # run.id for any valid config.
-        if self.n_epochs < 1:
-            raise ValueError(f"NNTrainParams requires n_epochs >= 1, got {self.n_epochs}")
+        # `n_epochs` is an integer count (FIX-021): a fractional value would
+        # otherwise reach `range()` only when training starts.
+        object.__setattr__(
+            self,
+            "n_epochs",
+            require_count(
+                self.n_epochs,
+                "n_epochs",
+                owner="NNTrainParams",
+                minimum=1,
+                domain_message=f"NNTrainParams requires n_epochs >= 1, got {self.n_epochs}",
+            ),
+        )
         if self.data_id is not None and not self.data_id.strip():
             raise ValueError("NNTrainParams.data_id must be non-empty when provided")
         if self.parent_run_id is not None and self.resume_from_run_id is not None:

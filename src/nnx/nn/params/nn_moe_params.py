@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..._validation import require_count
 from .nn_params import NNParams
 
 
@@ -46,10 +47,14 @@ class NNMoEParams(NNParams):
         NNParams.__post_init__(self)
         if not self.hidden_dims:
             raise ValueError("NNMoEParams requires at least one hidden layer in hidden_dims")
-        if self.num_experts < 2:
-            raise ValueError(f"NNMoEParams requires num_experts >= 2, got {self.num_experts}")
-        if self.top_k <= 0:
-            raise ValueError(f"NNMoEParams requires top_k > 0, got {self.top_k}")
+        # Expert and top-k counts are validated as integers and normalized
+        # to plain `int` before the bound check between them (FIX-021).
+        object.__setattr__(
+            self, "num_experts", require_count(self.num_experts, "num_experts", owner="NNMoEParams", minimum=2)
+        )
+        object.__setattr__(
+            self, "top_k", require_count(self.top_k, "top_k", owner="NNMoEParams", minimum=0, exclusive_min=True)
+        )
         if self.top_k > self.num_experts:
             raise ValueError(
                 f"NNMoEParams requires top_k <= num_experts, got top_k={self.top_k} > num_experts={self.num_experts}"

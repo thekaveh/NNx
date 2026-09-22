@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Generic, Optional, TypeVar
 
 from torch.utils.data import DataLoader
 
+from .._validation import require_count
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 
@@ -136,8 +137,18 @@ class NNTrainerParams:
         # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in Trainer.train,
         # so a value < 1 silently makes training a no-op. Symmetric with
         # NNTrainParams.__post_init__.
-        if self.n_epochs < 1:
-            raise ValueError(f"NNTrainerParams requires n_epochs >= 1, got {self.n_epochs}")
+        # Integer count, normalized to plain `int` (FIX-021).
+        object.__setattr__(
+            self,
+            "n_epochs",
+            require_count(
+                self.n_epochs,
+                "n_epochs",
+                owner="NNTrainerParams",
+                minimum=1,
+                domain_message=f"NNTrainerParams requires n_epochs >= 1, got {self.n_epochs}",
+            ),
+        )
         if self.data_id is not None and not self.data_id.strip():
             raise ValueError("NNTrainerParams.data_id must be non-empty when provided")
         if not self.optims:
