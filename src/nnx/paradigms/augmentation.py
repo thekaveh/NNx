@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from .._step_helpers import finalize_step
-from ..nn.nn_model import TrainStepContext, TrainStepFn
+from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -94,7 +94,8 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Y_b = Y[perm]
 
         Y_hat_logits = m.net(X_mixed)
-        loss = lam * m.loss_fn(Y_hat_logits, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_logits, Y_b)
+        loss_input = _loss_input(m.loss_fn, Y_hat_logits)
+        loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
         Y_hat = Y_hat_logits.argmax(dim=-1)
@@ -172,7 +173,8 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_b = Y[perm]
 
         Y_hat_logits = m.net(X_cut)
-        loss = lam * m.loss_fn(Y_hat_logits, Y_a) + (1.0 - lam) * m.loss_fn(Y_hat_logits, Y_b)
+        loss_input = _loss_input(m.loss_fn, Y_hat_logits)
+        loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
         Y_hat = Y_hat_logits.argmax(dim=-1)

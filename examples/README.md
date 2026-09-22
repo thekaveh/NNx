@@ -31,7 +31,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `01_synthetic_classification.py` | Train a feed-forward classifier on random data; `EarlyStopping`, `LRMonitor`; load BEST checkpoint and predict. |
+| `01_synthetic_classification.py` | Train a feed-forward classifier on random data; `EarlyStopping`, `LRMonitor`; load BEST checkpoint and predict. Its bounded `native_nll_workflow()` helper (executed by `tests/test_examples_smoke.py -k native_nll_workflow`, CPU, temporary working directory) trains one epoch with `Losses.NEGATIVE_LOG_LIKELIHOOD`, reloads BEST and checks the reported loss against an explicit log-softmax/NLL reference while `predict().logits` stays raw. |
 | `02_resume_training.py` | Warm-resume training from a prior run's LAST checkpoint with optimizer, scheduler, scaler, epoch, and RNG state preserved. Its bounded `checkpoint_probe_first_fit()` helper (executed by `tests/test_examples_smoke.py -k checkpoint_probe_first_fit`, CPU, temporary working directory) probes missing training/optimizer/combined state for the prospective run, asserts no run directory was reserved, then fits once with overwrite disabled and reloads LAST. Its bounded `overwrite_best_recovery()` helper (`-k overwrite_best_recovery`, temporary root only) commits two runs, overwrites the winner with a worse result and verifies `runs/best` re-elects the survivor, whose BEST loads for inference. |
 | `03_custom_metrics.py` | Plug a custom `metric_fn(Y, Y_hat)` into `NNTrainParams.extra_metrics`; inspect `idp.train_edp.extra` and `idp.val_edp.extra`. |
 | `04_onnx_export.py` | Export a trained model to ONNX, validate via `onnx.checker`. |

@@ -287,3 +287,58 @@ def test_augmentation_lambda_draws_respect_set_seed(factory):
 
     assert _draws(123) == _draws(123)
     assert _draws(123) != _draws(456)
+
+
+@pytest.mark.parametrize("family", ["mixup", "cutmix"])
+def test_augmentation_supervised_terms_use_normalized_nll(family):
+    """FIX-001: Mixup / CutMix interpolate two supervised terms through the
+    model's loss_fn; under native NLL both must be normalized so the run
+    matches the CE-configured model from identical state and RNG."""
+    import copy
+
+    import torch.nn.functional as F
+
+    from nnx import Optims, TrainStepContext
+    from nnx.paradigms import cutmix_train_step_factory, mixup_train_step_factory
+
+    torch.manual_seed(0)
+    if family == "mixup":
+        model_ce = _supervised_model()
+        X, Y = next(iter(_supervised_loader()))
+        factory = lambda: mixup_train_step_factory(alpha=0.4)  # noqa: E731
+    else:
+        model_ce = _image_model()
+        X, Y = next(iter(_image_loader()))
+        factory = lambda: cutmix_train_step_factory(alpha=1.0)  # noqa: E731
+    model_nll = copy.deepcopy(model_ce)
+    model_nll.loss_fn = torch.nn.NLLLoss()
+
+    results = []
+    for model in (model_ce, model_nll):
+        optimizer = Optims.ADAM(net=model.net, lr_start=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)
+        ctx = TrainStepContext(
+            model=model,
+            batch=(X, Y),
+            optimizer=optimizer,
+            scaler=None,
+            grad_clip_norm=None,
+            extra_metrics=None,
+            accumulate_grad_batches=1,
+            batch_idx=0,
+            epoch_idx=0,
+            is_last_batch=True,
+        )
+        torch.manual_seed(123)  # same λ / permutation / cut box for both
+        results.append(factory()(ctx).loss)
+    assert results[0] is not None and results[1] is not None
+    assert results[1] == pytest.approx(results[0], rel=1e-6)
+    for (name, p_ce), (_, p_nll) in zip(
+        model_ce.net.named_parameters(), model_nll.net.named_parameters(), strict=False
+    ):
+        assert torch.allclose(p_ce, p_nll, atol=1e-6), name
+
+    # Direct hard-term oracle with λ pinned: the normalized loss on the
+    # un-mixed batch is what a λ=1 draw would report.
+    with torch.no_grad():
+        raw = model_nll.net(X)
+    assert float(F.nll_loss(F.log_softmax(raw, dim=1), Y)) == pytest.approx(float(F.cross_entropy(raw, Y)), rel=1e-6)

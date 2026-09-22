@@ -33,7 +33,7 @@ import torch.nn.functional as F
 
 from .._metrics import classification_edp
 from .._step_helpers import finalize_step, softened_kl
-from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
+from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -100,7 +100,7 @@ def kd_train_step_factory(
         # KL(teacher || student) with both softened by T — the standard
         # Hinton direction (see softened_kl for the F.kl_div contract).
         soft_loss = softened_kl(student_logits, teacher_logits, temperature)
-        hard_loss = m.loss_fn(student_logits, Y)
+        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
@@ -263,7 +263,7 @@ def feature_kd_train_step_factory(
         feature_loss = feature_loss / len(auxiliary_layers)
 
         soft_loss = softened_kl(student_logits, teacher_logits, temperature)
-        hard_loss = m.loss_fn(student_logits, Y)
+        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")
 

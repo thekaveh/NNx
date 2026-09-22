@@ -104,6 +104,8 @@ NoiseSchedulers.LINEAR(T=1000, beta_min=1e-4, beta_max=2e-2)  # → NoiseSchedul
 
 Adding a new option is a one-place change: extend the enum + the `match` block. No parallel dispatch elsewhere to update.
 
+Built-in nets return **raw logits**; `predict().logits` is always that raw output. Native `torch.nn.NLLLoss` (`Losses.NEGATIVE_LOG_LIKELIHOOD`) requires log-probabilities, so the supervised loop, `evaluate()` and the NNx-owned classifier step factories (KD, feature-KD, MoE, Mixup, CutMix, and Born-Again through KD) apply `log_softmax` over the class axis internally before calling the exact native loss — the reported loss is the normalized NLL and the backpropagated gradient carries the competing-class term, matching cross-entropy from the same weights. The loss object's class weights, `ignore_index` and reduction remain authoritative. Any other loss module — including an `NLLLoss` *subclass* with its own `forward`, a custom `train_step_fn`, or the standalone `lr_finder` callable — receives the raw output unchanged and owns its own normalization.
+
 ## 4. What lands on disk
 
 Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer][, salt]}` partial dict):
@@ -462,7 +464,7 @@ step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
 student.train(params=train_params, train_step_fn=step_fn)
 ```
 
-The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard` — the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`. The hard-label term uses the student's `loss_fn` so KD works for any classification loss (CE, NLL, ...). EDP reports the combined loss and student top-1 error.
+The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard` — the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`. The hard-label term uses the student's `loss_fn` (native NLL gets the same internal log-softmax adaptation as the supervised loop, so CE and NLL students train identically from the same weights); the soft KL term always works on raw logits. EDP reports the combined loss and student top-1 error.
 
 ### 10.2. SimCLR contrastive
 
