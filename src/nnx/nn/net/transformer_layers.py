@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from ..._validation import require_finite_real
+from ..._validation import require_count, require_finite_real
 
 
 class RMSNorm(nn.Module):
@@ -62,6 +62,11 @@ class RoPE(nn.Module):
 
     def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
         super().__init__()
+        # Both counts are validated as positive integers before the table
+        # arithmetic (`torch.arange` silently accepts a float end) and the
+        # evenness guard below keeps its established wording (FIX-021).
+        dim = require_count(dim, "dim", owner="RoPE", minimum=0, exclusive_min=True)
+        max_seq_len = require_count(max_seq_len, "max_seq_len", owner="RoPE", minimum=0, exclusive_min=True)
         if dim % 2 != 0:
             raise ValueError(f"RoPE dim must be even, got {dim}")
         # inv_freq = 1 / base ** (2k/dim): zero, negative or non-finite bases

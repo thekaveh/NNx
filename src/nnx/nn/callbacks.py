@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
-from .._validation import require_finite_real
+from .._validation import require_count, require_finite_real
 from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
@@ -81,7 +81,10 @@ class EarlyStopping(Callback):
                  "train_edp.error", or "train_edp.loss". Exactly that field is read —
                  the finite val→train / error→loss fallback that BEST selection and
                  ReduceLROnPlateau use does not apply here.
-        patience: epochs with no improvement before stopping.
+        patience: epochs with no improvement before stopping — a nonnegative
+                  integer count (NumPy integers accepted and normalized; zero
+                  stops on the first non-improving epoch). Fractional, boolean
+                  or string values raise ``ValueError`` at construction.
         min_delta: minimum change to qualify as improvement.
         mode: "min" (default) for loss/error; "max" for accuracy/f1.
     """
@@ -103,8 +106,14 @@ class EarlyStopping(Callback):
         }
         if monitor not in valid_monitors:
             raise ValueError(f"monitor must be one of {sorted(valid_monitors)}, got {monitor!r}")
-        if patience < 0:
-            raise ValueError(f"patience must be >= 0, got {patience}")
+        # `patience` is an epoch count, not a real hyperparameter (FIX-021).
+        patience = require_count(
+            patience,
+            "patience",
+            owner="EarlyStopping",
+            minimum=0,
+            domain_message=f"patience must be >= 0, got {patience}",
+        )
         require_finite_real(min_delta, "min_delta", owner="EarlyStopping", minimum=0.0)
         self.monitor = monitor
         self.patience = patience
