@@ -6,11 +6,53 @@ from typing import Optional, Union
 from torch import nn, optim
 
 
+def resolve_param_groups(
+    net: nn.Module,
+    param_groups: Optional[list],
+    *,
+    lr_start: float,
+    weight_decay: float,
+    strict_param_groups: bool = False,
+) -> list[dict]:
+    """The parameter-ownership rule every optimizer is built with.
+
+    ``param_groups=None``: one group holding every parameter of ``net``
+    (the historical single-group behaviour — frozen parameters included,
+    they simply never receive gradients). Otherwise the
+    :func:`nnx.finetune.param_groups.build_param_groups` buckets: first
+    matching spec wins, frozen parameters dropped, and unmatched
+    parameters either joined into a default group (``strict=False``) or
+    left out entirely (``strict=True``, the multi-optimizer Trainer).
+    Built-in :class:`Optims` and registered optimizer factories
+    (:mod:`nnx.optimizers`) share this one rule.
+    """
+    if net is None:
+        raise ValueError("net must not be None")
+    if param_groups is None:
+        return [{"params": list(net.parameters())}]
+    # Lazy import — defers the finetune subpackage until a param-grouped
+    # optimizer is actually built (no cycle today; matches NNOptimParams'
+    # deferral style).
+    from ...finetune.param_groups import build_param_groups
+
+    return build_param_groups(
+        net,
+        param_groups,
+        default_lr=lr_start,
+        default_weight_decay=weight_decay,
+        strict=strict_param_groups,
+    )
+
+
 class Optims(Enum):
     SGD = "sgd"
     ADAM = "adam"
     ADAM_AMSGRAD = "adam_amsgrad"
     SGD_NESTEROV = "sgd_nesterov"
+    # Decoupled weight decay (Loshchilov & Hutter): torch.optim.AdamW decays
+    # the weights directly instead of adding an L2 term to the gradient as
+    # ADAM / ADAM_AMSGRAD do.
+    ADAMW = "adamw"
 
     def __str__(self) -> str:
         return self.value
@@ -26,6 +68,7 @@ class Optims(Enum):
         momentum: Union[float, tuple[float, float]],
         param_groups: Optional[list] = None,
         strict_param_groups: bool = False,
+        eps: float = 1e-8,
     ) -> optim.Optimizer:
         """Build the underlying torch optimizer.
 
@@ -46,25 +89,20 @@ class Optims(Enum):
         when True, unmatched parameters are dropped from the optimizer
         entirely. The Trainer passes True so disjoint optimizers don't
         end up co-owning the same params via implicit default buckets.
+
+        ``eps`` is forwarded to the Adam family (ADAM, ADAM_AMSGRAD,
+        ADAMW) and ignored by the SGD variants; ``1e-8`` is torch's
+        default, so omitting it builds exactly what earlier versions did.
+        ADAM / ADAM_AMSGRAD apply ``weight_decay`` as a coupled L2 term on
+        the gradient; ADAMW applies it as decoupled weight decay.
         """
-        if net is None:
-            raise ValueError("net must not be None")
-
-        if param_groups is not None:
-            # Lazy import — defers the finetune subpackage until a
-            # param-grouped optimizer is actually built (no cycle today;
-            # matches NNOptimParams' deferral style).
-            from ...finetune.param_groups import build_param_groups
-
-            params_or_groups = build_param_groups(
-                net,
-                param_groups,
-                default_lr=lr_start,
-                default_weight_decay=weight_decay,
-                strict=strict_param_groups,
-            )
-        else:
-            params_or_groups = net.parameters()
+        params_or_groups = resolve_param_groups(
+            net,
+            param_groups,
+            lr_start=lr_start,
+            weight_decay=weight_decay,
+            strict_param_groups=strict_param_groups,
+        )
 
         match self:
             case Optims.SGD:
@@ -82,6 +120,16 @@ class Optims(Enum):
                     lr=lr_start,
                     betas=momentum,
                     weight_decay=weight_decay,
+                    eps=eps,
+                )
+            case Optims.ADAMW:
+                assert isinstance(momentum, tuple)
+                return optim.AdamW(
+                    params_or_groups,
+                    lr=lr_start,
+                    betas=momentum,
+                    weight_decay=weight_decay,
+                    eps=eps,
                 )
             case Optims.ADAM_AMSGRAD:
                 assert isinstance(momentum, tuple)
@@ -91,6 +139,7 @@ class Optims(Enum):
                     lr=lr_start,
                     betas=momentum,
                     weight_decay=weight_decay,
+                    eps=eps,
                 )
             case Optims.SGD_NESTEROV:
                 assert isinstance(momentum, float)

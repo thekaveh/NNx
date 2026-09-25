@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ..._validation import require_count
 from ..enum.optims import Optims
 from ..params.nn_optim_params import NNOptimParams
 from ..params.nn_scheduler_params import NNSchedulerParams
+
+if TYPE_CHECKING:
+    from ...optimizers import NNOptimFactoryParams
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -32,7 +35,11 @@ class NNTrainParams:
 
     n_epochs: int
     scheduler: NNSchedulerParams = NNSchedulerParams(patience=8, cooldown=2, factor=95e-2, threshold=1e-3, min_lr=1e-7)
-    optim: NNOptimParams = NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=5e-5)
+    # A built-in NNOptimParams or a registered NNOptimFactoryParams
+    # (nnx.optimizers); state() carries a `factory` entry for the latter.
+    optim: Union[NNOptimParams, NNOptimFactoryParams] = NNOptimParams(
+        name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=5e-5
+    )
 
     seed: Optional[int] = None
     # Stable caller-supplied identity for the dataset or split. DataLoader
@@ -127,9 +134,12 @@ class NNTrainParams:
 
     @staticmethod
     def from_state(state: dict) -> NNTrainParams:
+        # Lazy import: nnx.optimizers imports this package's params.
+        from ...optimizers import optim_params_from_state
+
         return NNTrainParams(
             n_epochs=state["n_epochs"],
-            optim=NNOptimParams.from_state(state["optim"]),
+            optim=optim_params_from_state(state["optim"]),
             scheduler=NNSchedulerParams.from_state(state["scheduler"]),
             seed=state.get("seed"),
             data_id=state.get("data_id"),

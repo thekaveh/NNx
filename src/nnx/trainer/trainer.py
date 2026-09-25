@@ -247,36 +247,6 @@ class Trainer:
 
             set_seed(params.seed)
 
-        run = NNRun(
-            train=_representative_train_params(params),
-            trainer=params,
-            model=self.model.params,
-            # Use the model's stored NNParams rather than self.model.net.params
-            # so callers who substitute a custom nn.Module post-construction
-            # (the GAN composite idiom) still produce a saveable run.
-            net=self.model.net_params,
-            salt=salt,
-        )
-        with run.writable_lease(overwrite=params.overwrite_existing):
-            return self._train_impl(
-                params=params,
-                run=run,
-                trainer_step_fn=trainer_step_fn,
-                callbacks=callbacks,
-            )
-
-    def _train_impl(
-        self,
-        *,
-        params: NNTrainerParams,
-        run: NNRun,
-        trainer_step_fn: TrainerStepFn,
-        callbacks: Optional[list[CallbackLike]],
-    ) -> NNRun:
-        """Execute a validated multi-optimizer training session."""
-        assert params.train_loader is not None
-        validate = params.val_loader is not None
-
         # `strict_param_groups=True` is the multi-optim contract: each
         # optimizer owns only the parameters its specs explicitly match,
         # not also the default-bucket leftovers. Without this, opt_G
@@ -295,17 +265,48 @@ class Trainer:
                 "parameters via `param_groups` (NNParamGroupSpec); these have none and would "
                 f"each grab all net parameters, double-stepping them: {unscoped}."
             )
+        # Built through the shared hook (nnx.optimizers.build_optimizer)
+        # before any run directory exists, so an unknown registered factory
+        # or one returning a malformed optimizer fails with no run reserved.
+        from ..optimizers import build_optimizer
+
         optimizers = {
-            name: opt_params.name(
-                net=self.model.net,
-                lr_start=opt_params.max_lr,
-                momentum=opt_params.momentum,
-                weight_decay=opt_params.weight_decay,
-                param_groups=opt_params.param_groups,
-                strict_param_groups=True,
-            )
+            name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()
         }
+
+        run = NNRun(
+            train=_representative_train_params(params),
+            trainer=params,
+            model=self.model.params,
+            # Use the model's stored NNParams rather than self.model.net.params
+            # so callers who substitute a custom nn.Module post-construction
+            # (the GAN composite idiom) still produce a saveable run.
+            net=self.model.net_params,
+            salt=salt,
+        )
+        with run.writable_lease(overwrite=params.overwrite_existing):
+            return self._train_impl(
+                params=params,
+                run=run,
+                optimizers=optimizers,
+                trainer_step_fn=trainer_step_fn,
+                callbacks=callbacks,
+            )
+
+    def _train_impl(
+        self,
+        *,
+        params: NNTrainerParams,
+        run: NNRun,
+        optimizers: dict[str, torch.optim.Optimizer],
+        trainer_step_fn: TrainerStepFn,
+        callbacks: Optional[list[CallbackLike]],
+    ) -> NNRun:
+        """Execute a validated multi-optimizer training session."""
+        assert params.train_loader is not None
+        validate = params.val_loader is not None
+
         schedulers = {
             name: _build_scheduler(
                 opt=optimizers[name],

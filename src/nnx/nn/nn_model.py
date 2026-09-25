@@ -1168,11 +1168,19 @@ class NNModel(_HubMixinBase):
 
             set_seed(params.seed)
 
+        from ..optimizers import build_optimizer
+
+        # Build the optimizer before any run directory exists: a registered
+        # factory that is unknown, or that returns something other than an
+        # optimizer over exactly the resolved parameters, fails here with no
+        # run reserved (nnx.optimizers.build_optimizer is the shared hook).
+        optimizer = build_optimizer(self.net, params.optim)
         run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
         with run.writable_lease(overwrite=params.overwrite_existing):
             return self._train_impl(
                 params=params,
                 run=run,
+                optimizer=optimizer,
                 callbacks=callbacks,
                 train_step_fn=train_step_fn,
                 eval_step_fn=eval_step_fn,
@@ -1182,6 +1190,7 @@ class NNModel(_HubMixinBase):
         self,
         params: NNTrainParams,
         run: NNRun,
+        optimizer: torch.optim.Optimizer,
         callbacks: Optional[list[CallbackLike]] = None,
         train_step_fn: Optional[TrainStepFn] = None,
         eval_step_fn: Optional[EvalStepFn] = None,
@@ -1226,13 +1235,9 @@ class NNModel(_HubMixinBase):
         assert params.train_loader is not None
         train_loader = params.train_loader
         validate: bool = params.val_loader is not None
-        optimizer = params.optim.name(
-            net=self.net,
-            lr_start=params.optim.max_lr,
-            momentum=params.optim.momentum,
-            weight_decay=params.optim.weight_decay,
-            param_groups=params.optim.param_groups,
-        )
+        from ..optimizers import _canonical_factory_state, optimizer_factory_state
+
+        resume_optimizer_factory = optimizer_factory_state(params.optim)
         resume_optimizer_topology = _optimizer_topology(optimizer, self.net)
         scheduler_kind = getattr(params.scheduler, "kind", None)
         if (
@@ -1278,6 +1283,15 @@ class NNModel(_HubMixinBase):
                     raise ValueError(
                         f"resume scheduler type mismatch: checkpoint has {expected_scheduler}, "
                         f"configuration builds {_component_type(scheduler)}"
+                    )
+                # A registered factory is identified by id, version and config
+                # (None for a built-in, and for sidecars written before
+                # factories existed): any difference is a different optimizer.
+                expected_factory = training_state.get("optimizer_factory")
+                if _canonical_factory_state(expected_factory) != _canonical_factory_state(resume_optimizer_factory):
+                    raise ValueError(
+                        f"resume optimizer factory mismatch: checkpoint has {expected_factory}, "
+                        f"configuration builds {resume_optimizer_factory}"
                     )
                 expected_topology = training_state.get("optimizer_topology")
                 if expected_topology is not None and expected_topology != resume_optimizer_topology:
@@ -1473,6 +1487,7 @@ class NNModel(_HubMixinBase):
                         scaler=scaler,
                         completed_epoch=idx_epoch,
                         train_loader=train_loader,
+                        optimizer_factory=resume_optimizer_factory,
                     )
                 except BaseException:
                     # LAST is the epoch commit marker. If it cannot be
@@ -1532,6 +1547,7 @@ class NNModel(_HubMixinBase):
                 optimizer_type=_component_type(optimizer),
                 scheduler_type=_component_type(scheduler),
                 optimizer_topology=resume_optimizer_topology,
+                optimizer_factory=resume_optimizer_factory,
             )
 
         saved = run.with_idps(idps).save()
@@ -1828,6 +1844,7 @@ class NNModel(_HubMixinBase):
         scaler: Optional[torch.amp.GradScaler] = None,
         completed_epoch: Optional[int] = None,
         train_loader: Optional[Iterable[Any]] = None,
+        optimizer_factory: Optional[dict[str, Any]] = None,
     ) -> NNCheckpoint:
         checkpoint = NNCheckpoint(
             idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
@@ -1855,6 +1872,7 @@ class NNModel(_HubMixinBase):
             optimizer_type=optimizer_type,
             scheduler_type=scheduler_type,
             optimizer_topology=optimizer_topology,
+            optimizer_factory=optimizer_factory,
         )
 
         # Phase markers at epoch boundaries — fractions are nominal (1/4, 2/4,
@@ -1875,6 +1893,7 @@ class NNModel(_HubMixinBase):
                     optimizer_type=optimizer_type,
                     scheduler_type=scheduler_type,
                     optimizer_topology=optimizer_topology,
+                    optimizer_factory=optimizer_factory,
                 )
 
         # BEST tracking goes through the same _best_err helper used by
@@ -1894,6 +1913,7 @@ class NNModel(_HubMixinBase):
                 optimizer_type=optimizer_type,
                 scheduler_type=scheduler_type,
                 optimizer_topology=optimizer_topology,
+                optimizer_factory=optimizer_factory,
             )
 
         return checkpoint

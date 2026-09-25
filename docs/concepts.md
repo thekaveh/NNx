@@ -66,13 +66,16 @@ scheduler = NNSchedulerParams.builder().one_cycle(
 ).build()
 ```
 
-`NNOptimParams.builder()` extends the pattern with **four optimizer-variant methods** —
-`adam`, `adam_amsgrad`, `sgd`, `sgd_nesterov` — plus three optional chained
+`NNOptimParams.builder()` extends the pattern with **five optimizer-variant methods** —
+`adam`, `adam_amsgrad`, `adamw`, `sgd`, `sgd_nesterov` — plus three optional chained
 modifiers — `grad_clip(norm)`, `accumulate_grad(batches)`, `param_groups(specs)`.
-The Adam variants take the PyTorch-native `betas: tuple[float, float]` kwarg,
+The Adam-family variants take the PyTorch-native `betas: tuple[float, float]` kwarg,
 which the Builder maps onto the underlying `NNOptimParams.momentum` field
-(the field name stays `momentum` for on-disk back-compat). SGD variants keep
-the float `momentum=` kwarg.
+(the field name stays `momentum` for on-disk back-compat), and an optional
+`eps` (torch's `1e-8` when omitted, and then left out of `state()`). SGD
+variants keep the float `momentum=` kwarg and reject a non-default `eps`.
+`adamw` defaults `weight_decay` to torch's `1e-2`; see §3.1 for how its decay
+differs from Adam's.
 
 ```python
 from nnx import NNOptimParams
@@ -109,6 +112,35 @@ NoiseSchedulers.LINEAR(T=1000, beta_min=1e-4, beta_max=2e-2)  # → NoiseSchedul
 ```
 
 Adding a new option is a one-place change: extend the enum + the `match` block. No parallel dispatch elsewhere to update.
+
+### 3.1. Optimizers: AdamW, registered factories and the shared build hook
+
+**Adam vs AdamW decay.** `Optims.ADAM` / `ADAM_AMSGRAD` apply `weight_decay` as a *coupled* L2 term — it is added to the gradient and then rescaled by Adam's adaptive denominator, so heavily-updated weights are barely decayed. `Optims.ADAMW` builds `torch.optim.AdamW`, which decays *decoupled*: each step first scales every weight by `1 - lr * weight_decay` and then applies the Adam update. With `lr=0.1, weight_decay=0.2, betas=(0, 0)` and a zero gradient, a weight of `2.0` becomes `1.96` under AdamW but `1.9` under Adam. Per-group `NNParamGroupSpec` overrides apply to both exactly as for the other variants.
+
+**Registered optimizer factories.** An optimizer NNx does not ship joins a run through `nnx.optimizers` without borrowing a built-in name:
+
+```python
+from nnx import NNOptimFactoryParams, OptimizerFactorySpec, register_optimizer_factory
+
+def lion(param_groups, config):            # resolved groups + read-only JSON-like config
+    return MyLion(param_groups, betas=tuple(config["betas"]))
+
+register_optimizer_factory("acme.lion", 1, lion)
+optim = NNOptimFactoryParams(
+    factory=OptimizerFactorySpec(id="acme.lion", version=1, config={"betas": [0.9, 0.99]}),
+    max_lr=3e-4, weight_decay=0.1,
+)
+```
+
+The factory lifecycle:
+
+1. **Resolve** — `train()` looks the spec's `(id, version)` up in the process-local registry before any run directory exists. An unknown id or version fails up front; resolution never imports a module or evaluates a string.
+2. **Construct** — the factory is called **once** per optimizer with the *resolved* parameter groups — exactly what a built-in optimizer would receive (every parameter in one group when `param_groups` is `None`; otherwise the `NNParamGroupSpec` buckets with frozen parameters dropped and the Trainer's strict ownership applied), each group carrying explicit `params`, `lr` and `weight_decay` — and the spec's read-only `config` (lists arrive as tuples, NumPy scalars as plain numbers). It must return a `torch.optim.Optimizer` holding exactly those parameters — a missing, duplicated or foreign parameter, or any other return type, raises before the first epoch. Construction happens before the run is reserved, so keep factories side-effect-free constructors: one may be called for a run that is then refused (for example an existing run without `overwrite_existing`).
+3. **Persist** — `run.yaml` stores only the spec (`factory: {id, version, config}`), never the callable: a lambda or other callable passed as the factory or inside `config` is rejected at construction. The `factory` entry is also how `NNRun.load` tells a registered variant from a built-in `NNOptimParams`; built-in configurations serialize exactly as before, so their run ids are unchanged.
+
+**Metadata reload vs state resume.** Reloading a run's *metadata* — `NNRun.load(id)`, `str(run)`, the notebook view — needs nothing registered and runs no factory code: the optimizer is shown by its `id@vN`, never with fabricated `name` / `momentum` fields. Warm *resume* (`resume_from_run_id`, §14) rebuilds the optimizer, so the same `(id, version)` must be registered, and the checkpoint's recorded factory identity (id, version and config) and ordered named-parameter topology must match the new configuration exactly; switching between a built-in and a factory, or changing any of those, raises. Bump `version` whenever a factory's behaviour changes.
+
+**One build hook.** `NNModel.train()` and `Trainer.train()` both construct optimizers through `nnx.build_optimizer(net, optim_params, strict_param_groups=...)` — non-strict for `NNModel` (unmatched trainable parameters join a default group), strict for the Trainer (§8.1) — and both do it before the run is reserved, for built-ins and factories alike. [`examples/optimizer_factories.py`](https://github.com/thekaveh/NNx/blob/main/examples/optimizer_factories.py) runs a Trainer update with a registered factory and a built-in AdamW over disjoint named groups, then reloads the run offline.
 
 Built-in nets return **raw logits**; `predict().logits` is always that raw output. Native `torch.nn.NLLLoss` (`Losses.NEGATIVE_LOG_LIKELIHOOD`) requires log-probabilities, so the supervised loop, `evaluate()` and the NNx-owned classifier step factories (KD, feature-KD, MoE, Mixup, CutMix, and Born-Again through KD) apply `log_softmax` over the class axis internally before calling the exact native loss — the reported loss is the normalized NLL and the backpropagated gradient carries the competing-class term, matching cross-entropy from the same weights. The loss object's class weights, `ignore_index` and reduction remain authoritative. Any other loss module — including an `NLLLoss` *subclass* with its own `forward`, a custom `train_step_fn`, or the standalone `lr_finder` callable — receives the raw output unchanged and owns its own normalization.
 
@@ -398,7 +430,7 @@ defaults, so serialized descriptors and historical run IDs are unchanged.
 
 ### 8.1. Strict param-groups semantics
 
-The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from `nnx.finetune` apply, just with unmatched params dropped instead of bucketed.
+The Trainer enforces **strict** `param_groups` semantics — each optimizer owns ONLY parameters its specs explicitly match. Without that, `opt_G` would also pick up D's parameters in a default bucket and the two optimizers would silently update the same weights. The contract is enforced via `build_param_groups(..., strict=True)`; the same fine-tuning specs from `nnx.finetune` apply, just with unmatched params dropped instead of bucketed. Registered optimizer factories (§3.1) get the same strictly-owned groups, and a spec set that matches nothing fails instead of falling back to every parameter.
 
 ### 8.2. No default step
 
@@ -684,7 +716,7 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ))
 ```
 
-Current checkpoints resume only when their generation-addressed sidecar matches the checkpoint's recorded generation and optimizer topology. Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle; their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
+Current checkpoints resume only when their generation-addressed sidecar matches the checkpoint's recorded generation and optimizer topology — and, for a registered optimizer factory, its recorded id, version and config (§3.1). Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle; their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 

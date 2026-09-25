@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Generic, Optional, TypeVar
+from typing import TYPE_CHECKING, Generic, Optional, TypeVar, Union
 
 from torch.utils.data import DataLoader
 
@@ -26,6 +26,7 @@ from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 
 if TYPE_CHECKING:
+    from ..optimizers import NNOptimFactoryParams
     from .params_builder import NNTrainerParamsBuilder
 
 _V = TypeVar("_V")
@@ -112,7 +113,8 @@ class NNTrainerParams:
     """
 
     n_epochs: int
-    optims: Mapping[str, NNOptimParams]
+    # Built-in NNOptimParams and/or registered NNOptimFactoryParams.
+    optims: Mapping[str, Union[NNOptimParams, NNOptimFactoryParams]]
     schedulers: Mapping[str, NNSchedulerParams] = field(default_factory=dict)
 
     seed: Optional[int] = None
@@ -198,9 +200,11 @@ class NNTrainerParams:
 
     @staticmethod
     def from_state(state: dict) -> NNTrainerParams:
+        from ..optimizers import optim_params_from_state
+
         return NNTrainerParams(
             n_epochs=state["n_epochs"],
-            optims={k: NNOptimParams.from_state(v) for k, v in state["optims"].items()},
+            optims={k: optim_params_from_state(v) for k, v in state["optims"].items()},
             schedulers={k: NNSchedulerParams.from_state(v) for k, v in state.get("schedulers", {}).items()},
             seed=state.get("seed"),
             data_id=state.get("data_id"),
