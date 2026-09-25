@@ -35,6 +35,39 @@ from ..._validation import require_batch_sizes
 from .nn_dataset_base import NNDatasetBase
 
 
+def _feature_problem(column, dtype: torch.dtype) -> Optional[str]:
+    """Why a selected feature column cannot be admitted under ``dtype``.
+
+    Judged in source precision, before any conversion: ``"non-finite"`` for
+    ``±inf`` (NaN is rejected earlier), ``"out-of-range"`` for finite values
+    an integer ``dtype`` cannot hold (the cast would wrap them), else
+    ``None``. Boolean columns always fit; a column that cannot be read as
+    numbers (e.g. strings) is left to the tensor conversion, as before —
+    this check adds no feature coercion.
+    """
+    values = column.to_numpy()
+    kind = values.dtype.kind
+    if kind == "b":
+        return None
+    if kind not in "iufc":
+        try:
+            values = column.to_numpy(dtype=np.float64, na_value=np.nan)
+        except (TypeError, ValueError):
+            return None
+        kind = "f"
+    if kind in "fc" and bool(np.isinf(values).any()):
+        return "non-finite"
+    if dtype.is_floating_point or dtype.is_complex or dtype == torch.bool or kind == "c" or values.size == 0:
+        return None
+    info = torch.iinfo(dtype)
+    if kind in "iu":
+        return None if info.min <= int(values.min()) and int(values.max()) <= info.max else "out-of-range"
+    # Float → integer truncates toward zero; compare the truncated extremes.
+    # ``float(info.max) + 1`` rounds to the exclusive upper bound exactly.
+    lo, hi = float(np.trunc(values.min())), float(np.trunc(values.max()))
+    return None if lo >= float(info.min) and hi < float(info.max) + 1 else "out-of-range"
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNTabularDataset(NNDatasetBase):
     """Wrap a pandas DataFrame as train/val/test DataLoaders.
@@ -62,6 +95,16 @@ class NNTabularDataset(NNDatasetBase):
     split. Zero never disables a split: `val_proportion=0.0` /
     `test_proportion=0.0` do, and that split's loader is then ``None`` with
     a placeholder ``1`` in the resolved ``batch_sizes``.
+
+    Admission: only the selected feature and target columns are inspected.
+    NaN in any of them, ``±inf`` in a feature (checked in source precision,
+    before the ``feature_dtype`` cast that could absorb it), finite features
+    outside an integer ``feature_dtype``'s range (the cast would wrap them)
+    and a non-finite target raise ``ValueError`` naming the columns and
+    dtypes; so does a finite value that overflows a narrower floating /
+    complex ``feature_dtype`` or floating ``target_dtype`` during conversion.
+    All checks, the classification label check included, run before the
+    split, so a rejection leaves the DataFrame and the global RNG untouched.
     """
 
     df: pd.DataFrame
@@ -141,10 +184,33 @@ class NNTabularDataset(NNDatasetBase):
         # dict.fromkeys dedupes (order-preserving) duplicates WITHIN
         # feature_cols — target/feature overlap is rejected above.
         modeled = cast(pd.DataFrame, self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))])
+        target_kind = self.target_dtype if self.target_dtype is not None else "int64 class labels"
         if bool(modeled.isna().to_numpy().any()):
             bad_cols = [c for c in modeled.columns if bool(modeled[c].isna().to_numpy().any())]
             raise ValueError(
-                f"NaN values in columns {bad_cols} — drop or impute rows before constructing NNTabularDataset."
+                f"NaN values in columns {bad_cols} (feature_dtype={self.feature_dtype}, "
+                f"target_dtype={target_kind}) — drop or impute rows before constructing NNTabularDataset."
+            )
+        # FIX-023: ``isna`` is False for ±inf, and the dtype cast below would
+        # silently turn an infinite or out-of-range feature into garbage
+        # (int64 → an INT64 extreme, bool → True, int8 wraps 300 to 44).
+        # Check the selected feature columns in source precision, before
+        # any conversion; unselected columns are never inspected.
+        problems = {c: _feature_problem(self.df[c], self.feature_dtype) for c in dict.fromkeys(self.feature_cols)}
+        non_finite = [c for c, problem in problems.items() if problem == "non-finite"]
+        if non_finite:
+            raise ValueError(
+                f"feature columns {non_finite} contain non-finite values (±inf); non-finite features are "
+                f"never admitted (feature_dtype={self.feature_dtype}) — drop or impute rows before "
+                "constructing NNTabularDataset."
+            )
+        out_of_range = [c for c, problem in problems.items() if problem == "out-of-range"]
+        if out_of_range:
+            info = torch.iinfo(self.feature_dtype)
+            raise ValueError(
+                f"feature columns {out_of_range} hold finite values outside the range of "
+                f"feature_dtype={self.feature_dtype} ({info.min}..{info.max}); the conversion would wrap "
+                "them — use a wider feature_dtype or rescale the columns."
             )
 
         # Coerce the target once, then use the same numeric values for
@@ -159,8 +225,8 @@ class NNTabularDataset(NNDatasetBase):
         # have non-integral values.
         if not bool(np.isfinite(target_values).all()):
             raise ValueError(
-                f"target_col {self.target_col!r} contains non-finite values (NaN/Inf); "
-                "drop or impute rows before constructing the dataset."
+                f"target_col {self.target_col!r} contains non-finite values (NaN/Inf) "
+                f"(target_dtype={target_kind}); drop or impute rows before constructing the dataset."
             )
         if self.target_dtype is None and not bool(np.equal(target_values, np.floor(target_values)).all()):
             raise ValueError(
@@ -168,10 +234,24 @@ class NNTabularDataset(NNDatasetBase):
                 "factorize categorical labels, or set target_dtype for regression."
             )
 
-        X = torch.tensor(
-            self.df[self.feature_cols].to_numpy(),
-            dtype=self.feature_dtype,
-        )
+        # Classification: labels must be contiguous 0..K-1. nunique() on
+        # e.g. {0, 5} would size the model at 2 outputs and the mismatch
+        # only surfaces much later inside cross-entropy as an opaque index /
+        # device-side assert. Fail fast with a fixable message — before the
+        # split, so a rejection consumes no RNG.
+        n_classes = int(np.unique(target_values).size)
+        if self.target_dtype is None and target_values.size:
+            target_min = int(target_values.min())
+            target_max = int(target_values.max())
+            if target_min != 0 or target_max != n_classes - 1:
+                raise ValueError(
+                    f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
+                    f"got min={target_min}, max={target_max}, n_unique={n_classes}. "
+                    "Remap labels (e.g. pd.factorize) before constructing the dataset."
+                )
+
+        features = cast(pd.DataFrame, self.df[self.feature_cols])
+        X = torch.tensor(features.to_numpy(), dtype=self.feature_dtype)
         y = torch.tensor(
             target_values,
             dtype=self.target_dtype if self.target_dtype is not None else torch.long,
@@ -184,6 +264,24 @@ class NNTabularDataset(NNDatasetBase):
         # averaged into a scalar — a meaningless loss with no error.
         # Classification stays 1-D `(n,)` because that's the CrossEntropyLoss
         # convention (class indices, not one-hot).
+        # A finite source can still overflow a narrower floating dtype (e.g.
+        # 1e5 → float16 inf). Checked after conversion and before the split,
+        # so a rejection consumes no RNG and leaves nothing half-built.
+        if (X.is_floating_point() or X.is_complex()) and X.numel() and not bool(torch.isfinite(X).all()):
+            finite_per_column = torch.isfinite(X).all(dim=0).tolist()
+            # ``features.columns`` matches X column for column, duplicate labels included.
+            overflowed = list(
+                dict.fromkeys(c for c, ok in zip(features.columns, finite_per_column, strict=True) if not ok)
+            )
+            raise ValueError(
+                f"feature columns {overflowed} overflow feature_dtype={self.feature_dtype}: finite source "
+                "values become ±inf after conversion — use a wider feature_dtype or rescale the columns."
+            )
+        if y.is_floating_point() and y.numel() and not bool(torch.isfinite(y).all()):
+            raise ValueError(
+                f"target_col {self.target_col!r} overflows target_dtype={self.target_dtype}: finite source "
+                "values become ±inf after conversion — use a wider target_dtype or rescale the target."
+            )
         if self.target_dtype is not None:
             y = y.unsqueeze(-1)
         n_total = len(X)
@@ -236,20 +334,7 @@ class NNTabularDataset(NNDatasetBase):
 
         object.__setattr__(self, "input_dim", len(self.feature_cols))
         if self.target_dtype is None:
-            # Classification: labels must be contiguous 0..K-1.
-            # nunique() on e.g. {0, 5} would size the model at 2 outputs
-            # and the mismatch only surfaces much later inside
-            # cross-entropy as an opaque index / device-side assert.
-            # Fail fast with a fixable message.
-            n_classes = int(np.unique(target_values).size)
-            target_min = int(target_values.min())
-            target_max = int(target_values.max())
-            if target_min != 0 or target_max != n_classes - 1:
-                raise ValueError(
-                    f"target_col {self.target_col!r} labels must be contiguous integers 0..K-1; "
-                    f"got min={target_min}, max={target_max}, n_unique={n_classes}. "
-                    "Remap labels (e.g. pd.factorize) before constructing the dataset."
-                )
+            # Classification: labels validated as contiguous before the split.
             object.__setattr__(self, "output_dim", n_classes)
         else:
             # Regression: single continuous output.

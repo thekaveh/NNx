@@ -1423,3 +1423,128 @@ def test_tabular_numeric_string_targets_use_validated_values(target_dtype, expec
     assert y.dtype == expected_dtype
     assert tuple(y.shape) == expected_shape
     assert sorted(y.flatten().tolist()) == [0, 0, 1, 1]
+
+
+# --- FIX-023: non-finite feature admission -----------------------------------
+
+
+def _tabular(df, **kwargs):
+    return NNTabularDataset(df=df, target_col="y", val_proportion=0.0, test_proportion=0.0, **kwargs)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "+inf", "-inf"])
+def test_tabular_nonfinite_features_name_columns(bad):
+    df = pd.DataFrame({"ok": [1.0, 2.0, 3.0], "x": [1.0, bad, 3.0], "y": [0, 1, 0]})
+    with pytest.raises(ValueError) as info:
+        _tabular(df, feature_cols=["ok", "x"])
+    message = str(info.value)
+    assert "['x']" in message and "'ok'" not in message
+    assert "torch.float32" in message
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf")], ids=["+inf", "-inf"])
+@pytest.mark.parametrize("dtype", [torch.int64, torch.bool], ids=str)
+def test_tabular_source_infinity_rejected_before_integer_bool_cast(bad, dtype):
+    """int64 / bool conversion would silently absorb infinity (INT64 extreme,
+    ``True``), so the check runs on the source values before the cast."""
+    df = pd.DataFrame({"x": [1.0, bad], "y": [0, 1]})
+    with pytest.raises(ValueError, match=r"non-finite") as info:
+        _tabular(df, feature_cols=["x"], feature_dtype=dtype)
+    assert str(dtype) in str(info.value) and "['x']" in str(info.value)
+
+
+def test_tabular_float_cast_overflow():
+    """A finite float64 source narrowed to float16 becomes inf after
+    conversion: rejected for features and for a regression target."""
+    df = pd.DataFrame({"x": [1.0, 100000.0], "y": [0, 1]})
+    with pytest.raises(ValueError, match=r"overflow") as info:
+        _tabular(df, feature_cols=["x"], feature_dtype=torch.float16)
+    assert "['x']" in str(info.value) and "torch.float16" in str(info.value)
+
+    target_df = pd.DataFrame({"x": [1.0, 2.0], "y": [0.5, 100000.0]})
+    with pytest.raises(ValueError, match=r"overflow") as info:
+        _tabular(target_df, feature_cols=["x"], target_dtype=torch.float16)
+    assert "'y'" in str(info.value) and "torch.float16" in str(info.value)
+
+
+def test_tabular_ignores_unmodeled_nonfinite_columns():
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "unused": [float("inf"), float("nan"), 1.0, 2.0], "y": [0, 1, 0, 1]})
+    ds = _tabular(df, feature_cols=["x"])
+    X, _ = next(iter(ds.train_loader))
+    assert torch.isfinite(X).all()
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype"),
+    [([1, 2, 3], torch.int64), ([True, False, True], torch.bool), ([1, 2, 3], torch.float16)],
+    ids=["int64", "bool", "int-to-float16"],
+)
+def test_tabular_finite_integer_and_bool_features_still_build(values, dtype):
+    df = pd.DataFrame({"x": values, "y": [0, 1, 0]})
+    ds = _tabular(df, feature_cols=["x"], feature_dtype=dtype)
+    X, _ = next(iter(ds.train_loader))
+    assert X.dtype == dtype and X.shape == (3, 1)
+
+
+def test_tabular_rejection_leaves_frame_and_rng_untouched(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    df = pd.DataFrame({"x": [1.0, float("inf"), 3.0], "y": [0, 1, 0]})
+    frame_before = df.copy(deep=True)
+    rng_before = torch.default_generator.get_state()
+    with pytest.raises(ValueError):
+        NNTabularDataset(df=df, feature_cols=["x"], target_col="y", val_proportion=0.3)
+    pd.testing.assert_frame_equal(df, frame_before)
+    assert torch.equal(torch.default_generator.get_state(), rng_before)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype"),
+    [([1.0, 1e30], torch.int64), ([1.0, 300.0], torch.int8), ([1, 300], torch.int8), ([0.0, -1.0], torch.uint8)],
+    ids=["float-int64", "float-int8", "int-int8", "negative-uint8"],
+)
+def test_tabular_integer_cast_range_is_checked_in_source_precision(values, dtype):
+    """Finite values an integer feature_dtype cannot hold would wrap on
+    conversion (1e30 → INT64 extreme, 300 → 44 in int8)."""
+    df = pd.DataFrame({"x": values, "y": [0, 1]})
+    with pytest.raises(ValueError, match=r"outside the range") as info:
+        _tabular(df, feature_cols=["x"], feature_dtype=dtype)
+    assert "['x']" in str(info.value) and str(dtype) in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype"),
+    [([-128.9, 127.9], torch.int8), ([-0.5, 255.5], torch.uint8), ([-(2.0**63), 2.0**62], torch.int64)],
+    ids=["int8-truncates-in-range", "uint8-truncates-in-range", "int64-extreme"],
+)
+def test_tabular_integer_cast_range_boundaries_are_admitted(values, dtype):
+    df = pd.DataFrame({"x": values, "y": [0, 1]})
+    ds = _tabular(df, feature_cols=["x"], feature_dtype=dtype)
+    assert next(iter(ds.train_loader))[0].dtype == dtype
+
+
+def test_tabular_overflow_names_duplicate_label_columns():
+    df = pd.DataFrame([[1.0, 1.0, 0], [2.0, 100000.0, 1]], columns=["x", "x", "y"])
+    with pytest.raises(ValueError, match=r"overflow feature_dtype=torch.float16") as info:
+        _tabular(df, feature_cols=["x"], feature_dtype=torch.float16)
+    assert "['x']" in str(info.value)
+
+
+def test_tabular_complex_narrowing_overflow_is_rejected():
+    df = pd.DataFrame({"x": np.array([1 + 0j, 1e300j], dtype=np.complex128), "y": [0, 1]})
+    with pytest.raises(ValueError, match=r"overflow feature_dtype=torch.complex64"):
+        _tabular(df, feature_cols=["x"], feature_dtype=torch.complex64)
+
+
+def test_tabular_label_rejection_happens_before_the_split():
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "y": [0, 5, 0, 5]})
+    rng_before = torch.default_generator.get_state()
+    with pytest.raises(ValueError, match="contiguous"):
+        NNTabularDataset(df=df, feature_cols=["x"], target_col="y", val_proportion=0.25)
+    assert torch.equal(torch.default_generator.get_state(), rng_before)
+
+
+def test_tabular_nonfinite_target_message_names_dtype():
+    df = pd.DataFrame({"x": [1.0, 2.0], "y": [0.5, float("inf")]})
+    with pytest.raises(ValueError, match=r"non-finite.*target_dtype=torch.float32"):
+        _tabular(df, feature_cols=["x"], target_dtype=torch.float32)
