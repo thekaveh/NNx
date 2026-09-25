@@ -781,3 +781,136 @@ def test_quantize_qat_gated(tmp_path, monkeypatch):
     assert checkpoint is not None
     reloaded = NNModel.from_checkpoint(checkpoint)
     assert reloaded.net(torch.randn(2, 32)).shape == (2, 2)
+
+
+# ---------------------------------------------------------------------------
+# FIX-024: documented metric / monitor / parameter-group contracts
+# ---------------------------------------------------------------------------
+
+
+def test_documented_encoder_bias_group_rules():
+    """The documented rule order — specific ``encoder.*bias`` first, then
+    ``encoder.*``, then the broad ``*.bias`` — gives every parameter the
+    promised (lr, weight_decay); the first matching rule wins, rules never
+    merge."""
+    from nnx import NNParamGroupSpec
+    from nnx.finetune import build_param_groups
+
+    net = nn.Module()
+    net.encoder = nn.Linear(4, 4)
+    net.head = nn.Linear(4, 2)
+    documented = [
+        NNParamGroupSpec(name_pattern="encoder.*bias", lr_multiplier=0.01, weight_decay=0.0),
+        NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01),
+        NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0),
+    ]
+
+    def settings(specs):
+        groups = build_param_groups(net, specs, default_lr=1e-3, default_weight_decay=5e-4)
+        by_param = {id(p): (g["lr"], g["weight_decay"]) for g in groups for p in g["params"]}
+        return {name: by_param[id(p)] for name, p in net.named_parameters()}
+
+    got = settings(documented)
+    assert got["encoder.bias"] == pytest.approx((1e-5, 0.0))
+    assert got["encoder.weight"] == pytest.approx((1e-5, 5e-4))
+    assert got["head.bias"] == pytest.approx((1e-3, 0.0))
+    assert got["head.weight"] == pytest.approx((1e-3, 5e-4))
+    # The old example order: the broad encoder rule shadows the bias rule.
+    trap = settings([documented[1], documented[2]])
+    assert trap["encoder.bias"] == pytest.approx((1e-5, 5e-4))
+
+
+def test_documented_metric_argument_order(tmp_path, monkeypatch):
+    """Custom metrics are called ``(y_true, y_pred)``: an asymmetric metric
+    reading only the truth gives 2/3 (1/3 if the order were swapped)
+    through ``NNEvaluationDataPoint.of``, default evaluation, a training
+    run's validation record and ``NNRun.load``."""
+    import numpy as np
+
+    from nnx import NNRun
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    monkeypatch.chdir(tmp_path)
+    truth, pred = np.array([0, 1, 1]), np.array([0, 0, 1])
+    metric = {"truth_mean": lambda y_true, y_pred: float(np.asarray(y_true).mean())}
+    assert NNEvaluationDataPoint.of(truth, pred, extra_metrics=metric).extra["truth_mean"] == pytest.approx(2 / 3)
+    swapped = {"truth_mean": lambda y_pred, y_true: float(np.asarray(y_true).mean())}
+    assert NNEvaluationDataPoint.of(truth, pred, extra_metrics=swapped).extra["truth_mean"] == pytest.approx(1 / 3)
+
+    torch.manual_seed(0)
+    model = _make_model(input_dim=2, output_dim=2, hidden=4)
+    loader = DataLoader(TensorDataset(torch.randn(3, 2), torch.tensor([0, 1, 1])), batch_size=3)
+    assert model.evaluate(loader=loader, extra_metrics=metric).extra["truth_mean"] == pytest.approx(2 / 3)
+
+    params = _make_train_params(loader, val_loader=loader)
+    from dataclasses import replace
+
+    run = model.train(params=replace(params, extra_metrics=metric))
+    val = [idp.val_edp for idp in run.idps if idp.val_edp is not None][-1]
+    assert val.extra["truth_mean"] == pytest.approx(2 / 3)
+    reloaded = NNRun.load(run.id)
+    assert reloaded is not None
+    reloaded_val = [idp.val_edp for idp in reloaded.idps if idp.val_edp is not None][-1]
+    assert reloaded_val.extra["truth_mean"] == pytest.approx(2 / 3)
+
+
+def test_documented_early_stopping_monitor_example():
+    """EarlyStopping monitors one of four loss/error keys; ``mode`` only
+    reverses the improvement direction. The documented example
+    ``EarlyStopping(monitor="val_edp.loss", mode="min")`` is valid, and
+    accuracy/F1-style monitors are rejected."""
+    from types import SimpleNamespace
+
+    from nnx import EarlyStopping
+
+    es = EarlyStopping(monitor="val_edp.loss", mode="min", patience=1)
+    es.on_train_begin(ctx=None)
+    for epoch, loss in enumerate([0.5, 0.5]):
+        idp = SimpleNamespace(val_edp=SimpleNamespace(error=None, loss=loss), train_edp=None)
+        ctx = SimpleNamespace(epoch=epoch, idp=idp, should_stop=False)
+        es.on_epoch_end(ctx)
+    assert ctx.should_stop
+    for monitor in ("val_edp.accuracy", "val_edp.f1"):
+        with pytest.raises(ValueError, match="monitor"):
+            EarlyStopping(monitor=monitor, mode="max")
+
+
+def test_documented_trainer_disjoint_optimizer_groups():
+    """The GAN example's scoped optimizers own disjoint parameter sets that
+    together cover the model (built without running the example's main)."""
+    import runpy
+    from pathlib import Path
+
+    from nnx.finetune import build_param_groups
+
+    example = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "examples" / "09_gan_with_trainer.py"),
+        run_name="__nnx_doc_snippet__",
+    )
+    net = example["MiniGAN"]()
+    owned = {}
+    for name, pattern in (("G", "G.*"), ("D", "D.*")):
+        optim = example["_scoped_adam"](pattern)
+        groups = build_param_groups(
+            net, list(optim.param_groups), default_lr=optim.max_lr, default_weight_decay=0.0, strict=True
+        )
+        owned[name] = {id(p) for g in groups for p in g["params"]}
+    assert owned["G"] and owned["D"]
+    assert owned["G"].isdisjoint(owned["D"])
+    assert owned["G"] | owned["D"] == {id(p) for p in net.parameters()}
+
+
+def test_no_reversed_metric_argument_order_in_docs():
+    """Regression guard for FIX-024's first criterion."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    # Prediction-first spellings of a metric signature. (Loss functions such
+    # as lr_finder's ``loss_fn(y_hat, Y)`` legitimately take the prediction
+    # first, so only metric-shaped spellings are matched.)
+    pattern = re.compile(r"y_pred,\s*y_true|callable\(\s*(?:Y_hat|y_hat|y_pred)\s*,\s*(?:Y|y|y_true)\s*\)")
+    paths = [p for base in ("src", "docs", "examples") for p in (root / base).rglob("*") if p.suffix in {".py", ".md"}]
+    paths += [root / "README.md", root / "PYPI_README.md"]
+    offenders = [str(p.relative_to(root)) for p in paths if pattern.search(p.read_text(encoding="utf-8"))]
+    assert offenders == []

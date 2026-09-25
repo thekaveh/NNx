@@ -1542,6 +1542,9 @@ class NNModel(_HubMixinBase):
         per-batch metrics) gives correct sample-weighted f1/precision/recall
         when the final batch is short.
 
+        `extra_metrics` ({name -> callable(y_true, y_pred) -> float}) are
+        called once on the aggregate truth / decoded predictions.
+
         Raises ValueError if the loader yields zero batches — previously
         produced NaN metrics silently from np.mean over an empty list.
         """

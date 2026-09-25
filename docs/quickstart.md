@@ -213,16 +213,29 @@ explicit size, since the whole graph is always one batch.
 ### 2.6. Custom metrics
 
 ```python
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import f1_score
 
 NNTrainParams(
     ...,
     extra_metrics={
-        "roc_auc": lambda y, y_hat: float(roc_auc_score(y, y_hat, multi_class="ovr")),
+        # Called as fn(y_true, y_pred): truth first, decoded class labels second.
+        # zero_division=0 keeps per-batch calls quiet when a batch lacks a class.
+        "weighted_f1": lambda y_true, y_pred: float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
     },
 )
-# Every NNEvaluationDataPoint gets `.extra["roc_auc"]` populated.
+# Recorded in `.extra["weighted_f1"]` wherever NNx computes metrics.
 ```
+
+Each callable receives `(y_true, y_pred)` — the truth first and the *decoded*
+class predictions second, never probabilities, so use label-based metrics
+(ranking metrics such as ROC-AUC need scores that `extra_metrics` does not
+see). The default classification training step calls them per batch (a batch
+whose targets are all `ignore_index` has no metrics at all), `evaluate()` (and
+so the default validation pass) calls them once on the aggregate predictions,
+and a custom `train_step_fn` / `eval_step_fn` decides whether and how to call
+them. The values persist in `idp.*_edp.extra` and
+survive `NNRun.load`; see
+[`examples/03_custom_metrics.py`](https://github.com/thekaveh/NNx/blob/main/examples/03_custom_metrics.py).
 
 ### 2.7. Silencing the progress bar (CI / non-TTY)
 
@@ -353,7 +366,19 @@ The same hook underpins the four specialization-paradigm pointers below.
 
 ### 3.1. Fine-tuning (transfer learning)
 
-Load external pretrained weights, freeze layers by glob pattern, and (optionally) train them at different learning rates. See [Concepts → Fine-tuning](concepts.md#7-fine-tuning-transfer-learning) and [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py).
+Load external pretrained weights, freeze layers by glob pattern, and (optionally) train them at different learning rates. Parameter-group rules are matched in order and the first match wins (rules never merge), so specific rules go first:
+
+```python
+# For a net with `encoder` / `head` submodules (FeedFwdNN uses `layers.0`, `layers.1`, ...;
+# check `named_parameters()` — a pattern that matches nothing is silently empty).
+param_groups=[
+    NNParamGroupSpec(name_pattern="encoder.*bias", lr_multiplier=0.01, weight_decay=0.0),
+    NNParamGroupSpec(name_pattern="encoder.*",     lr_multiplier=0.01),
+    NNParamGroupSpec(name_pattern="*.bias",        weight_decay=0.0),
+]
+```
+
+See [Concepts → Fine-tuning](concepts.md#7-fine-tuning-transfer-learning) and [`examples/06_finetune_with_layer_freezing.py`](https://github.com/thekaveh/NNx/blob/main/examples/06_finetune_with_layer_freezing.py).
 
 ### 3.2. Multi-optimizer training (GANs, actor-critic)
 

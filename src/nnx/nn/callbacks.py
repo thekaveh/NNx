@@ -128,8 +128,19 @@ class EarlyStopping(Callback):
                   stops on the first non-improving epoch). Fractional, boolean
                   or string values raise ``ValueError`` at construction.
         min_delta: minimum change to qualify as improvement.
-        mode: "min" (default) for loss/error; "max" for accuracy/f1. ``"max"``
-              requires an explicit ``monitor``.
+        mode: improvement direction for the monitored field. ``"min"``
+              (default): lower is better — the meaning of every accepted
+              monitor (loss / error), and the direction BEST selection and
+              ReduceLROnPlateau also assume, so it is almost always right.
+              ``"max"`` only reverses this callback's comparison for one of
+              the four accepted keys; it does not enable accuracy/F1
+              monitors, which are rejected, and it does not change how the
+              rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
+              explicit ``monitor``.
+
+    Example::
+
+        EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)
     """
 
     def __init__(
