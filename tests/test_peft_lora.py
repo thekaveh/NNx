@@ -559,3 +559,228 @@ def test_load_lora_weights_counts_only_accepted_adapter_tensors():
         == 2
     )
     assert not torch.all(root.base.weight == 0)
+
+
+# -------------------------------------------------------------------------
+# FIX-013: wrappers inherit the wrapped layer's train/eval mode
+# -------------------------------------------------------------------------
+
+
+def _dropout_wrappers():
+    from nnx import DoRALinear, apply_dora_to
+
+    return {"lora": (LoRALinear, apply_lora_to), "dora": (DoRALinear, apply_dora_to)}
+
+
+def _set_nonzero_adapter(wrapper) -> None:
+    with torch.no_grad():
+        nn.init.normal_(wrapper.lora_B, std=0.5)
+
+
+def _reference_forward(wrapper, x, *, dropout_active: bool):
+    """Recompute a LoRA / DoRA forward with an explicit dropout switch, so
+    a seeded wrapper call can be compared with a seeded reference instead
+    of two random masks."""
+    import torch.nn.functional as F
+
+    from nnx import DoRALinear
+
+    p = wrapper.lora_dropout.p if isinstance(wrapper.lora_dropout, nn.Dropout) else 0.0
+    if isinstance(wrapper, DoRALinear):
+        update = F.dropout((wrapper.lora_B @ wrapper.lora_A) * wrapper.scaling, p, dropout_active)
+        v = wrapper.base.weight + update
+        w = wrapper.magnitude.unsqueeze(1) * (v / v.norm(p=2, dim=1, keepdim=True).clamp_min(1e-8))
+        return F.linear(x, w, wrapper.base.bias)
+    dropped = F.dropout(x, p, dropout_active)
+    return wrapper.base(x) + (dropped @ wrapper.lora_A.t() @ wrapper.lora_B.t()) * wrapper.scaling
+
+
+def _mode_map(module: nn.Module) -> dict[str, bool]:
+    return {name: m.training for name, m in module.named_modules()}
+
+
+@pytest.mark.parametrize("kind", ["lora", "dora"])
+def test_eval_adapter_injection_preserves_mode(kind):
+    """Injecting a nonzero-dropout adapter into an eval model keeps every
+    wrapper and dropout child in eval, so inference with nonzero adapter
+    weights is deterministic."""
+    _, apply = _dropout_wrappers()[kind]
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2)).eval()
+    assert apply(model, "*", r=2, alpha=4.0, dropout=0.5) == 2
+    assert not any(m.training for m in model.modules())
+    for idx in (0, 2):
+        _set_nonzero_adapter(model[idx])
+    x = torch.randn(8, 4)
+    with torch.no_grad():
+        first, second = model(x), model(x)
+    assert torch.equal(first, second)
+    for idx in (0, 2):
+        assert torch.allclose(model[idx](x), _reference_forward(model[idx], x, dropout_active=False))
+
+
+@pytest.mark.parametrize("kind", ["lora", "dora"])
+@pytest.mark.parametrize("training", [False, True], ids=["eval", "train"])
+def test_direct_wrapper_inherits_base_mode(kind, training):
+    """Direct construction, not only the apply helpers, inherits the base
+    mode; a train-mode base keeps dropout active (checked against a seeded
+    dropout reference)."""
+    cls, _ = _dropout_wrappers()[kind]
+    torch.manual_seed(0)
+    base = nn.Linear(4, 3)
+    base.train(training)
+    wrapper = cls(base, r=2, alpha=4.0, dropout=0.5)
+    assert wrapper.training is training
+    assert wrapper.lora_dropout.training is training
+    assert wrapper.base.training is training
+    _set_nonzero_adapter(wrapper)
+    x = torch.randn(6, 4)
+    with torch.no_grad():
+        torch.manual_seed(123)
+        out = wrapper(x)
+        torch.manual_seed(123)
+        expected = _reference_forward(wrapper, x, dropout_active=training)
+        torch.manual_seed(123)
+        no_dropout = _reference_forward(wrapper, x, dropout_active=False)
+    assert torch.allclose(out, expected)
+    assert torch.allclose(out, no_dropout) is (not training)
+
+
+@pytest.mark.parametrize("training", [False, True], ids=["eval", "train"])
+def test_ia3_wrapper_inherits_base_mode(training):
+    """IA3 has no dropout, but its wrapper still reports the base mode so
+    per-module mode maps stay faithful after injection."""
+    from nnx import IA3Linear
+
+    base = nn.Linear(4, 3)
+    base.train(training)
+    assert IA3Linear(base).training is training
+
+
+def test_apply_ia3_to_preserves_mixed_child_modes():
+    from nnx import apply_ia3_to
+
+    parent = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4)).eval()
+    parent[1].train()
+    assert apply_ia3_to(parent, "*") == 2
+    assert _mode_map(parent) == {"": False, "0": False, "0.base": False, "1": True, "1.base": True}
+
+
+@pytest.mark.parametrize("tuner_name", ["PromptTuner", "PrefixTuner"])
+def test_transformer_tuners_inherit_model_mode(tuner_name):
+    """Prompt / prefix tuners report the wrapped model's mode and leave the
+    model's own (mixed) submodule modes untouched."""
+    import nnx
+    from nnx import NNTransformerParams, TransformerNN
+
+    model = TransformerNN(
+        NNTransformerParams(
+            input_dim=32,
+            output_dim=32,
+            dropout_prob=0.0,
+            vocab_size=32,
+            n_layers=2,
+            n_heads=2,
+            d_model=16,
+            ffn_mult=2,
+            max_seq_len=16,
+        )
+    ).eval()
+    model.blocks[1].train()
+    model_modes = _mode_map(model)
+    tuner = getattr(nnx, tuner_name)(model)
+    assert tuner.training is False
+    assert all(not m.training for name, m in tuner.named_modules() if not name.startswith("model"))
+    assert _mode_map(model) == model_modes
+
+
+@pytest.mark.parametrize("kind", ["lora", "dora"])
+def test_adapter_injection_preserves_mixed_child_modes(kind):
+    """A parent with mixed child modes keeps each replaced child's own
+    mode; nothing is flattened to the parent's (or a fresh module's) flag."""
+    _, apply = _dropout_wrappers()[kind]
+    parent = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4)).eval()
+    parent[1].train()
+    apply(parent, "*", r=2, alpha=4.0, dropout=0.5)
+    assert parent.training is False
+    assert parent[0].training is False
+    assert parent[0].base.training is False
+    assert parent[0].lora_dropout.training is False
+    assert parent[1].training is True
+    assert parent[1].base.training is True
+    assert parent[1].lora_dropout.training is True
+
+
+@pytest.mark.parametrize("kind", ["lora", "dora"])
+def test_later_train_call_reactivates_adapter_dropout(kind):
+    """Preservation does not pin the wrapper in eval: a later
+    ``model.train()`` activates LoRA input dropout / DoRA matrix dropout."""
+    _, apply = _dropout_wrappers()[kind]
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 4)).eval()
+    apply(model, "*", r=2, alpha=4.0, dropout=0.5)
+    wrapper = model[0]
+    _set_nonzero_adapter(wrapper)
+    model.train()
+    assert wrapper.training and wrapper.lora_dropout.training
+    x = torch.randn(6, 4)
+    with torch.no_grad():
+        torch.manual_seed(7)
+        out = model(x)
+        torch.manual_seed(7)
+        expected = _reference_forward(wrapper, x, dropout_active=True)
+    assert torch.allclose(out, expected)
+    assert not torch.allclose(out, _reference_forward(wrapper, x, dropout_active=False))
+
+
+@pytest.mark.parametrize("kind", ["lora", "dora"])
+def test_loading_adapter_state_keeps_modes_and_adds_no_mode_key(kind, tmp_path):
+    """Modes are runtime state: loading full or adapter-only state leaves
+    the caller's per-module modes alone and serializes no mode field."""
+    _, apply = _dropout_wrappers()[kind]
+    torch.manual_seed(0)
+    target = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 2)).eval()
+    target[1].train()
+    apply(target, "*", r=2, alpha=4.0, dropout=0.5)
+    source = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 2)).train()
+    apply(source, "*", r=2, alpha=4.0, dropout=0.5)
+    _set_nonzero_adapter(source[0])
+    before = _mode_map(target)
+
+    state = source.state_dict()
+    registered = {n for n, _ in source.named_parameters()} | {n for n, _ in source.named_buffers()}
+    assert set(state) == registered  # no extra (mode) entry is serialized
+    target.load_state_dict(state)
+    assert _mode_map(target) == before
+
+    path = tmp_path / "adapter.pt"
+    save_lora_weights(source, path)
+    saved = torch.load(path, weights_only=True)
+    assert set(saved) == {"0.lora_A", "0.lora_B", "1.lora_A", "1.lora_B"}
+    assert load_lora_weights(target, path) == len(saved)
+    assert _mode_map(target) == before
+
+
+def test_inference_helpers_restore_wrapped_mixed_modes():
+    """``NNModel.predict`` / ``evaluate`` on a LoRA-wrapped net with mixed
+    modes restore every wrapper, base and dropout flag, not just the root."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.net.eval()
+    assert apply_lora_to(model.net, "*", r=2, alpha=4.0, dropout=0.5) >= 2
+    wrappers = [m for m in model.net.modules() if isinstance(m, LoRALinear)]
+    wrappers[0].train()  # deliberate mixed mode under an eval root
+    before = _mode_map(model.net)
+    assert any(before.values()) and not all(before.values())
+
+    x = torch.randn(5, 4)
+    model.predict(x)
+    assert _mode_map(model.net) == before
+    loader = DataLoader(TensorDataset(x, torch.tensor([0, 1, 2, 0, 1])), batch_size=5)
+    model.evaluate(loader=loader)
+    assert _mode_map(model.net) == before
