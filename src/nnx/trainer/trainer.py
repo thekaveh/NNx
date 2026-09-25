@@ -51,7 +51,7 @@ from ..nn.nn_model import (
 from ..nn.params.nn_checkpoint import NNCheckpoint
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
-from ..nn.params.nn_run import NNRun, _best_err
+from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
 from ..utils import Utils
@@ -214,6 +214,8 @@ class Trainer:
         Returns:
             NNRun with per-iteration idps, persisted under runs/<run.id>/
             alongside the standard FIRST/Q1/Q2/Q3/LAST/BEST checkpoints.
+            The printed completion line uses the same cwd-relative
+            ``runs/<id>`` display path as ``NNModel.train``.
 
         Raises:
             ValueError: when params is None, params.train_loader is None,
@@ -464,9 +466,7 @@ class Trainer:
             ).save(run=run.id, type=Checkpoints.LAST)
 
         saved = run.with_idps(idps).save()
-        print()
-        runs_root_path = os.path.join(os.getcwd(), "runs", run.id)
-        print(f"Run saved to {runs_root_path}")
+        _print_run_saved(run.id)
         return saved
 
     def _save_checkpoint(

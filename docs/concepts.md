@@ -131,6 +131,8 @@ runs/<id>/
 │   └── best.pt.opt.<generation>.pt
 ```
 
+Both `NNModel.train()` and `Trainer.train()` finish with one line such as `Run saved to runs/5c741de80116c9858a7e2a56256cb917 (relative to the working directory)`. It is a *display path*, not artifact provenance: `runs/<id>` is relative to the working directory the run was saved from, and no absolute prefix (home directory, worktree, temporary directory or container mount) is printed, so notebook output that captures the line is identical wherever it executes. Artifacts are still written under `<cwd>/runs/<id>/` exactly as before; use `os.path.abspath(f"runs/{run.id}")` when you need the absolute location. Separators are always `/`, so the line reads the same on every platform.
+
 ### 4.1. The `runs/best` pointer
 
 The `runs/best` symlink points at the lowest-error run across all runs in the directory — lowest-loss for paradigm runs whose steps don't produce a supervised error; in a runs root mixing both kinds, the comparison is between unlike metrics (accepted trade-off vs. a `best` pointer paradigm runs could never claim). On Windows without developer mode it's a `POINTER.txt` file instead.
