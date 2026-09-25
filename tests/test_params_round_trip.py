@@ -7,6 +7,7 @@ keeping both sides of the contract in sync."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -848,3 +849,35 @@ def test_iteration_data_point_round_trip_with_val():
     for k, v in obj.val_edp.state().items():
         flat[f"val_edp.{k}"] = v
     assert NNIterationDataPoint.from_state(flat) == obj
+
+
+def test_nn_transformer_params_round_trip_with_per_layer_lists():
+    """FEAT-041: the inherited per-layer lists (#85) survive
+    NNTransformerParams.from_state — they used to come back as None."""
+    obj = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        activation=Activations.LEAKY_RELU,
+        hidden_dims=[7, 5],
+        activations=[Activations.RELU, Activations.TANH],
+        dropout_probs=[0.1, 0.3],
+        n_heads=2,
+        vocab_size=64,
+        n_layers=1,
+        d_model=16,
+        max_seq_len=8,
+    )
+    rt = NNTransformerParams.from_state(obj.state())
+    assert rt == obj
+    assert list(rt.activations or []) == [Activations.RELU, Activations.TANH]
+    assert list(rt.dropout_probs or []) == [0.1, 0.3]
+    # Lists that merely repeat the net-wide scalar are omitted from state()
+    # (run-id stability, same as base NNParams): they reload as None with an
+    # identical state(), i.e. the same run id.
+    uniform = replace(obj, activations=[Activations.LEAKY_RELU, Activations.LEAKY_RELU], dropout_probs=[0.0, 0.0])
+    state = uniform.state()
+    assert "activations" not in state and "dropout_probs" not in state
+    reloaded = NNTransformerParams.from_state(state)
+    assert reloaded.activations is None and reloaded.dropout_probs is None
+    assert reloaded.state() == state

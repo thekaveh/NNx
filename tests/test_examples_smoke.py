@@ -11,7 +11,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 # Unnumbered scripts are outside the numbered glob: register them here so
 # they are imported (without running main) and, below, executed.
-UNNUMBERED_EXAMPLES = ["graph_optional_splits.py", "optimizer_factories.py", "tabular_validation.py"]
+UNNUMBERED_EXAMPLES = [
+    "builder_branching.py",
+    "graph_optional_splits.py",
+    "optimizer_factories.py",
+    "tabular_validation.py",
+]
 EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.py")) + [
     ROOT / "examples" / name for name in UNNUMBERED_EXAMPLES
 ]
@@ -66,6 +71,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("20_low_rank_surgery_ffn.py", "deepen_override_workflow"),
     ("20_low_rank_surgery_ffn.py", "named_deepen_workflow"),
     ("22_dpo_synthetic_preferences.py", "dpo_sample_batch_sizes"),
+    ("builder_branching.py", "builder_branching_workflow"),
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),
     ("optimizer_factories.py", "optimizer_factories_workflow"),
     ("tabular_validation.py", "tabular_validation_workflow"),

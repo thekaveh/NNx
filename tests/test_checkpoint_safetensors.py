@@ -382,3 +382,36 @@ def test_checkpoint_rejects_unsupported_safetensors_format_version(tmp_path):
 
     with pytest.raises(ValueError, match="unsupported safetensors checkpoint format version"):
         NNCheckpoint.from_file(path)
+
+
+def test_checkpoint_safetensors_keeps_transformer_per_layer_lists(tmp_path):
+    """FEAT-041: the safetensors metadata stores `net_params.state()`; the
+    transformer's per-layer `activations` / `dropout_probs` must come back
+    (NNTransformerParams.from_state used to drop them)."""
+    from nnx import NNTransformerParams
+
+    params = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        hidden_dims=[7, 5],
+        activations=[Activations.RELU, Activations.TANH],
+        dropout_probs=[0.1, 0.3],
+        n_heads=2,
+        vocab_size=64,
+        n_layers=1,
+        d_model=16,
+        max_seq_len=8,
+    )
+    checkpoint = NNCheckpoint(
+        idp=_tiny_idp(),
+        model_params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        net_params=params,
+        net_state={"w": torch.zeros(1)},
+    )
+    path = tmp_path / "transformer.safetensors"
+    checkpoint.to_file(str(path), format="safetensors")
+    restored = NNCheckpoint.from_file(str(path))
+    assert restored is not None
+    assert isinstance(restored.net_params, NNTransformerParams)
+    assert restored.net_params == params
