@@ -321,8 +321,10 @@ assert all(idp.val_edp is None for idp in run.idps)                   # persiste
 print(model.evaluate(loader=dataset.test_loader).accuracy)            # test split scored on its seed rows
 ```
 
-`EarlyStopping`'s default `val_edp.error` monitor has nothing to read here,
-so point it at a train metric. See
+`EarlyStopping`'s default monitor reads only validation data (`val_edp.error`,
+or `val_edp.loss` when the evaluator reports no error). Here it would have
+nothing to read — it would warn once and never stop — so point it at a train
+metric. See
 [`examples/graph_optional_splits.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_optional_splits.py)
 for the runnable version (it also proves, with an `eval_step_fn` spy, that no
 validation hook runs).

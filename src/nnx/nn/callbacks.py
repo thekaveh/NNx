@@ -11,11 +11,15 @@ notebooks keep working.
 
 from __future__ import annotations
 
+import math
 import os
 import re
+import sys
+import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
+from .._metrics import _resolve_metric_with_provenance
 from .._validation import require_count, require_finite_real
 from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
@@ -73,25 +77,64 @@ class _LegacyCallback(Callback):
         self._fn(ctx.idps)
 
 
+def _warn_at_user_frame(message: str) -> None:
+    """Emit a ``RuntimeWarning`` attributed to the first caller outside nnx.
+
+    ``warnings.warn(stacklevel=...)`` would point at a fixed line inside the
+    training loop, and Python's default filter shows a given message from a
+    given location only once per process — so a second ``train()`` call in
+    the same notebook would be silent. A fresh registry per call keeps user
+    filters (``ignore`` / ``error`` / ``once``) authoritative while callers
+    bound the volume themselves (``EarlyStopping`` reports once per run).
+    """
+    frame = sys._getframe(1)
+    while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).split(".")[0] == "nnx":
+        frame = frame.f_back
+    warnings.warn_explicit(
+        message,
+        RuntimeWarning,
+        frame.f_code.co_filename,
+        frame.f_lineno,
+        module=frame.f_globals.get("__name__"),
+        registry=None,
+        module_globals=frame.f_globals,
+    )
+
+
 class EarlyStopping(Callback):
     """Stop training when the monitored metric stops improving.
 
     Args:
-        monitor: which IDP field to track. "val_edp.error" (default), "val_edp.loss",
-                 "train_edp.error", or "train_edp.loss". Exactly that field is read —
-                 the finite val→train / error→loss fallback that BEST selection and
-                 ReduceLROnPlateau use does not apply here.
+        monitor: which data-point field to track. ``None`` (default) selects
+                 automatically from the validation data point, once per
+                 ``train()`` call: ``val_edp.error`` when the first validated
+                 epoch reports a finite error, otherwise ``val_edp.loss`` when it
+                 reports a finite loss (regression and other evaluators that
+                 leave ``error`` as ``None``). The choice then stays fixed for
+                 that run; ``selected_monitor`` reports it. The default never
+                 reads training metrics and only supports ``mode="min"``.
+                 An explicit ``"val_edp.error"``, ``"val_edp.loss"``,
+                 ``"train_edp.error"`` or ``"train_edp.loss"`` reads exactly that
+                 field with no fallback. Unlike BEST selection and
+                 ReduceLROnPlateau, there is no validation→training fallback.
+                 When the tracked field (or its whole data point) is absent, the
+                 epoch is not counted toward patience and one ``RuntimeWarning``
+                 per run names the monitor and what is missing, instead of the
+                 callback going silently inactive. A NaN/±inf value never
+                 becomes the best and counts as an epoch without improvement
+                 (also reported once per run).
         patience: epochs with no improvement before stopping — a nonnegative
                   integer count (NumPy integers accepted and normalized; zero
                   stops on the first non-improving epoch). Fractional, boolean
                   or string values raise ``ValueError`` at construction.
         min_delta: minimum change to qualify as improvement.
-        mode: "min" (default) for loss/error; "max" for accuracy/f1.
+        mode: "min" (default) for loss/error; "max" for accuracy/f1. ``"max"``
+              requires an explicit ``monitor``.
     """
 
     def __init__(
         self,
-        monitor: str = "val_edp.error",
+        monitor: Optional[str] = None,
         patience: int = 10,
         min_delta: float = 0.0,
         mode: str = "min",
@@ -104,8 +147,13 @@ class EarlyStopping(Callback):
             "train_edp.error",
             "train_edp.loss",
         }
-        if monitor not in valid_monitors:
-            raise ValueError(f"monitor must be one of {sorted(valid_monitors)}, got {monitor!r}")
+        if monitor is not None and monitor not in valid_monitors:
+            raise ValueError(f"monitor must be None or one of {sorted(valid_monitors)}, got {monitor!r}")
+        if monitor is None and mode == "max":
+            raise ValueError(
+                "mode='max' requires an explicit monitor: the default (monitor=None) selects "
+                "val_edp.error or val_edp.loss, which improve by decreasing"
+            )
         # `patience` is an epoch count, not a real hyperparameter (FIX-021).
         patience = require_count(
             patience,
@@ -121,23 +169,93 @@ class EarlyStopping(Callback):
         self.mode = mode
         self._best: Optional[float] = None
         self._wait: int = 0
+        # Field compared during the current run: the explicit monitor, or
+        # the automatic choice once a validated epoch offers a finite value.
+        self._selected: Optional[str] = monitor
+        # Diagnostics already emitted this run (one warning per reason).
+        self._reported: set[str] = set()
 
-    def _lookup_monitored(self, idp: NNIterationDataPoint) -> Optional[float]:
+    @property
+    def selected_monitor(self) -> Optional[str]:
+        """Field compared in the current run (``None`` until the automatic
+        default has seen a validated epoch with a finite error or loss)."""
+        return self._selected
+
+    def _report_once(self, key: str, detail: str) -> None:
+        if key in self._reported:
+            return
+        self._reported.add(key)
+        label = f"EarlyStopping(monitor={self.monitor!r})"
+        if self.monitor is None and self._selected is not None:
+            label += f" (automatically selected {self._selected!r})"
+        _warn_at_user_frame(f"{label}: {detail}")
+
+    def _observe(self, idp: NNIterationDataPoint, epoch: object) -> Optional[tuple[str, float]]:
+        """Return ``(field, value)`` to compare this epoch, or ``None`` when
+        the epoch does not count (the reason is reported once per run)."""
         # Named distinctly from nnx._metrics._resolve_metric (the
-        # val→train / error→loss fallback resolver) — this one just
-        # dereferences the user's `monitor` string, e.g. "val_edp.loss".
-        edp_name, _, field = self.monitor.partition(".")
+        # val→train / error→loss fallback resolver): this compares exactly
+        # one field — the explicit monitor or the run's automatic choice.
+        edp_name = self._selected.partition(".")[0] if self._selected else "val_edp"
         edp = getattr(idp, edp_name, None)
         if edp is None:
+            if edp_name == "val_edp":
+                hint = "Configure a val_loader"
+                if self.monitor is None:
+                    hint += ", or pass monitor='train_edp.loss' / 'train_edp.error' to stop on a training metric"
+                self._report_once(
+                    "val_edp:absent",
+                    f"epoch {epoch} has no validation data point, so there is nothing to monitor and "
+                    f"this epoch is not counted toward patience. {hint}.",
+                )
+            else:
+                self._report_once(
+                    "train_edp:absent",
+                    f"epoch {epoch} has no training data point, so this epoch is not counted toward patience.",
+                )
             return None
-        return getattr(edp, field, None)
+        if self._selected is None:
+            # Same val-side preference and finiteness rule as BEST selection
+            # and ReduceLROnPlateau: first finite of error → loss.
+            value, source, _ = _resolve_metric_with_provenance(edp, None)
+            if source is not None and value is not None:
+                self._selected = source
+                return source, float(value)
+            for field in ("error", "loss"):
+                present = getattr(edp, field, None)
+                if present is not None:
+                    # Only non-finite values so far (e.g. a run diverging from
+                    # the first epoch): count the epoch, keep the choice open.
+                    return f"val_edp.{field}", float(present)
+            self._report_once(
+                "val_edp:no-field",
+                f"epoch {epoch}'s validation data point has neither an 'error' nor a 'loss', so this "
+                "epoch is not counted toward patience. Have eval_step_fn return a loss (or an error).",
+            )
+            return None
+        field = self._selected.partition(".")[2]
+        value = getattr(edp, field, None)
+        if value is None:
+            self._report_once(
+                f"{self._selected}:missing",
+                f"epoch {epoch}'s {edp_name} has no {field!r} value, so this epoch is not counted "
+                "toward patience. Monitor a field the evaluator populates (regression evaluators "
+                "usually report 'loss' and leave 'error' as None).",
+            )
+            return None
+        return self._selected, float(value)
 
     def on_train_begin(self, ctx: _CallbackContext) -> None:
         # Fresh run, fresh patience: without this reset, reusing one
         # EarlyStopping instance across train() calls compares against
         # the previous run's best and can stop the new run immediately.
+        # The automatic monitor choice and the once-per-run diagnostics
+        # reset too, so a regression run followed by a classification run
+        # each pick their own field.
         self._best = None
         self._wait = 0
+        self._selected = self.monitor
+        self._reported = set()
 
     def _is_improvement(self, current: float, best: float) -> bool:
         if self.mode == "min":
@@ -147,16 +265,27 @@ class EarlyStopping(Callback):
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         if ctx.idp is None:
             return
-        current = self._lookup_monitored(ctx.idp)
-        if current is None:
+        epoch = getattr(ctx, "epoch", None)
+        observed = self._observe(ctx.idp, epoch)
+        if observed is None:
             return
-        if self._best is None or self._is_improvement(current, self._best):
-            self._best = current
-            self._wait = 0
+        field, current = observed
+        if math.isfinite(current):
+            if self._best is None or self._is_improvement(current, self._best):
+                self._best = current
+                self._wait = 0
+                return
         else:
-            self._wait += 1
-            if self._wait >= self.patience:
-                ctx.should_stop = True
+            # A NaN best would make every later comparison False; a
+            # non-finite epoch is simply one without improvement.
+            self._report_once(
+                "non-finite",
+                f"epoch {epoch} reported {field}={current}; a non-finite value never becomes the "
+                "best and counts as an epoch without improvement.",
+            )
+        self._wait += 1
+        if self._wait >= self.patience:
+            ctx.should_stop = True
 
 
 class ModelCheckpoint(Callback):
