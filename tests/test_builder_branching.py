@@ -524,7 +524,9 @@ def test_transformer_from_state_legacy_states_without_list_keys_are_unchanged():
     assert restored == legacy and restored.activations is None and restored.dropout_probs is None
 
 
-def test_transformer_per_layer_lists_survive_run_yaml_and_safetensors(tmp_path):
+def test_transformer_per_layer_lists_survive_run_yaml_and_pickle_checkpoint(tmp_path):
+    """Core-only round trips (no extras); the safetensors-metadata twin lives
+    in tests/test_checkpoint_safetensors.py behind the `hub` extra."""
     params = NNTransformerParamsBuilder.from_params(_full_transformer()).build()
     edp = NNEvaluationDataPoint(loss=1.0, error=0.5, accuracy=0.5, f1=0.5, recall=0.5, precision=0.5)
     idp = NNIterationDataPoint(lr=1e-3, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=edp)
@@ -535,9 +537,9 @@ def test_transformer_per_layer_lists_survive_run_yaml_and_safetensors(tmp_path):
     loaded = NNRun.load(run.id, root=str(tmp_path))
     assert loaded.net == params and loaded.id == run.id
 
-    path = tmp_path / "ckpt.safetensors"
+    path = tmp_path / "ckpt.pt"
     NNCheckpoint(idp=idp, model_params=model_params, net_params=params, net_state={"w": torch.zeros(1)}).to_file(
-        str(path), format="safetensors"
+        str(path)
     )
     restored = NNCheckpoint.from_file(str(path))
     assert restored is not None and restored.net_params == params
