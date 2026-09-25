@@ -253,6 +253,20 @@ purely opt-in.
   built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
   bf16 autocast are the lanes exercised by the test suite; other
   backend/dtype combinations are not claimed until run on that hardware.
+- **RMSNorm precision** — every `RMSNorm` (each block's `norm1` / `norm2` and
+  the final `norm_out`) computes the mean of squares in at least FP32:
+  FP16/BF16 inputs are promoted to FP32, and FP32 and FP64 keep their own
+  dtype (the same rule as the manual attention path above), so the norms of
+  a `.double()` model keep FP64 range and precision (a `1e30` activation
+  normalises to unit RMS instead of collapsing to zero). The normalised
+  value is cast back to the input dtype before the weight multiply, so the
+  output dtype still follows the input/weight promotion; parameters, `eps`
+  (the `1e-6` the GGUF writer exports) and checkpoint keys are unchanged.
+  The RoPE cos/sin tables are still computed in FP32 at construction and
+  only cast by `.double()`, so a double model's rotations carry FP32-level
+  rounding. `from_checkpoint` rebuilds the net in the default dtype, so
+  call `.double()` and reload the FP64 `net_state` to restore a double
+  model exactly.
 - **KV cache** — `TransformerBlock` exposes a `use_cache` kwarg whose
   off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
   defaults `use_cache=True` and runs a single prefill pass through

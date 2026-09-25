@@ -49,6 +49,96 @@ def test_rmsnorm_weight_is_learnable_param():
     assert norm.weight.shape == (4,)
 
 
+def _rmsnorm_reference(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    return x * (x.square().mean(-1, keepdim=True) + eps).rsqrt() * weight
+
+
+def test_rmsnorm_preserves_float64_range():
+    """FIX-026: 1e30 squares to 1e60, past float32's range. An FP64 layer
+    must reduce in FP64 and normalise to ones, not collapse to zeros."""
+    norm = RMSNorm(dim=4).double()
+    x = torch.full((1, 4), 1e30, dtype=torch.float64)
+    y = norm(x)
+    assert y.dtype == torch.float64
+    torch.testing.assert_close(y, torch.ones_like(y), rtol=1e-12, atol=1e-12)
+
+
+def test_rmsnorm_double_forward_and_gradients():
+    """FIX-026: ordinary FP64 inputs match an FP64 reference in the output
+    and in both input and weight gradients (no FP32 rounding)."""
+    values = [[0.123456789123, -2.234567891234, 3.345678912345, -4.456789123456]]
+    weight = [0.5, 1.0, 1.5, 2.0]
+    upstream = torch.tensor([[1.0, -2.0, 3.0, -4.0]], dtype=torch.float64)
+
+    norm = RMSNorm(dim=4, eps=1e-6).double()
+    with torch.no_grad():
+        norm.weight.copy_(torch.tensor(weight, dtype=torch.float64))
+    x = torch.tensor(values, dtype=torch.float64, requires_grad=True)
+    y = norm(x)
+    y.backward(upstream)
+
+    x_ref = torch.tensor(values, dtype=torch.float64, requires_grad=True)
+    w_ref = torch.tensor(weight, dtype=torch.float64, requires_grad=True)
+    y_ref = _rmsnorm_reference(x_ref, w_ref, 1e-6)
+    y_ref.backward(upstream)
+
+    assert x.grad is not None and norm.weight.grad is not None
+    assert y.dtype == x.grad.dtype == norm.weight.grad.dtype == torch.float64
+    torch.testing.assert_close(y, y_ref, rtol=1e-11, atol=1e-12)
+    torch.testing.assert_close(x.grad, x_ref.grad, rtol=1e-11, atol=1e-12)
+    torch.testing.assert_close(norm.weight.grad, w_ref.grad, rtol=1e-11, atol=1e-12)
+
+
+_NORM_DEVICES = ["cpu", *(["cuda"] if torch.cuda.is_available() else [])]
+
+
+def _require_dtype_support(device: str, dtype: torch.dtype) -> None:
+    """Skip, with the reason recorded, when this device lacks the dtype."""
+    try:
+        probe = torch.ones(2, 2, device=device, dtype=dtype, requires_grad=True)
+        (probe.float().rsqrt().to(dtype) * probe).sum().backward()
+    except (RuntimeError, NotImplementedError) as exc:
+        pytest.skip(f"{dtype} is not supported on {device}: {exc}")
+
+
+@pytest.mark.parametrize("device", _NORM_DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=str)
+@pytest.mark.parametrize("cast_weight", [False, True], ids=["fp32-weight", "cast-weight"])
+def test_rmsnorm_low_precision_accumulation(device, dtype, cast_weight):
+    """FIX-026: FP16/BF16 inputs still reduce in (at least) FP32. Inputs
+    of scale 300 square past float16's 65504 limit, so an FP16 reduction
+    would overflow to inf and return zeros. The output dtype still
+    follows the input/weight promotion (a float32 weight promotes a
+    half input's output to float32), and gradients match an FP32-built
+    reference."""
+    _require_dtype_support(device, dtype)
+    torch.manual_seed(0)
+    norm = RMSNorm(dim=64, eps=1e-6).to(device)
+    with torch.no_grad():
+        norm.weight.uniform_(0.5, 1.5)
+    if cast_weight:
+        norm = norm.to(dtype)
+    x = (torch.randn(3, 5, 64, device=device) * 300).to(dtype).requires_grad_()
+    upstream = torch.randn(3, 5, 64, device=device)
+
+    y = norm(x)
+    assert y.dtype == torch.promote_types(dtype, norm.weight.dtype)
+    y.backward(upstream.to(y.dtype))
+
+    x_ref = x.detach().float().requires_grad_()
+    w_ref = norm.weight.detach().clone().requires_grad_()
+    normed = x_ref * (x_ref.square().mean(-1, keepdim=True) + 1e-6).rsqrt()
+    y_ref = normed.to(dtype) * w_ref
+    y_ref.backward(upstream.to(y_ref.dtype))
+
+    assert x.grad is not None and norm.weight.grad is not None and x_ref.grad is not None
+    assert torch.isfinite(y).all() and torch.isfinite(x.grad).all() and torch.isfinite(norm.weight.grad).all()
+    assert x.grad.dtype == dtype and norm.weight.grad.dtype == norm.weight.dtype
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(x.grad, x_ref.grad.to(dtype))
+    torch.testing.assert_close(norm.weight.grad, w_ref.grad)
+
+
 # ---------------- RoPE ----------------
 
 

@@ -626,3 +626,22 @@ def test_transformer_half_attention_dropout_forward(dtype):
     tol = {torch.float16: 2e-2, torch.bfloat16: 1e-1}[dtype]
     torch.testing.assert_close(prefill.float(), full[:, :4].float(), atol=tol, rtol=tol)
     torch.testing.assert_close(step[:, -1].float(), full[:, 4].float(), atol=tol, rtol=tol)
+
+
+def test_transformer_nn_float64_forward_backward_keeps_rmsnorm_precision(rmsnorm_fp64_oracle):
+    """FIX-026: an explicitly double TransformerNN runs every shared
+    RMSNorm (``norm1``/``norm2`` per block plus ``norm_out``) in FP64
+    with no internal downcast, and backward yields finite FP64 grads."""
+    torch.manual_seed(0)
+    net = TransformerNN(_params()).double()
+    tokens = torch.randint(0, 32, (2, 6))
+
+    with rmsnorm_fp64_oracle(net) as norms:
+        logits = net(tokens)
+    assert len(norms) == 2 * net.params.n_layers + 1
+
+    assert logits.dtype == torch.float64 and torch.isfinite(logits).all()
+    logits.square().mean().backward()
+    for name, param in net.named_parameters():
+        assert param.grad is not None, name
+        assert param.grad.dtype == torch.float64 and torch.isfinite(param.grad).all(), name

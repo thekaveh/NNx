@@ -53,6 +53,7 @@ from nnx import (
     jepa_train_step_factory,
     random_block_mask,
     set_seed,
+    update_ema,
 )
 
 
@@ -79,6 +80,44 @@ def _make_cifar_loader(batch_size: int = 32) -> DataLoader:
     tx = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,) * 3, (0.5,) * 3)])
     ds = datasets.CIFAR10(root="data/cifar10", train=True, download=True, transform=tx)
     return DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
+
+
+def float64_vit_predictor_step() -> None:
+    """Bounded FP64 check: one I-JEPA-shaped forward/backward in double.
+
+    ``RMSNorm`` accumulates in at least FP32 and keeps FP64 as FP64, so an
+    explicitly ``.double()`` encoder, EMA target and predictor run forward,
+    backward and the EMA update in FP64. Tiny synthetic images; no CIFAR
+    download or training loop.
+    """
+    torch.manual_seed(0)
+    encoder = ViTNN(image_size=16, patch_size=4, in_channels=3, d_model=32, n_layers=2, n_heads=4).double()
+    target_encoder = build_target_encoder(encoder)
+    predictor = JEPAPredictor(
+        embed_dim=32, n_patches=encoder.n_patches, predictor_dim=16, n_layers=1, n_heads=2
+    ).double()
+    images = torch.randn(2, 3, 16, 16, dtype=torch.float64)
+    context_mask, target_mask = random_block_mask(n_patches=encoder.n_patches, grid_size=4)
+    positions = encoder.patch_positions()
+    context_positions = torch.cat([torch.zeros(1, dtype=torch.long), positions[context_mask]])
+    target_positions = positions[target_mask]
+
+    context = encoder(images, mask=context_mask.expand(images.shape[0], -1))
+    with torch.no_grad():
+        targets = target_encoder(images)[:, target_positions]
+    predicted = predictor(context, context_positions, target_positions)
+    loss = torch.nn.functional.mse_loss(predicted, targets)
+    loss.backward()
+
+    assert predicted.dtype == torch.float64
+    params = [*encoder.parameters(), *predictor.parameters()]
+    assert all(p.grad is not None and p.grad.dtype == torch.float64 and torch.isfinite(p.grad).all() for p in params)
+    update_ema(encoder, target_encoder, momentum=0.996)
+    assert all(p.dtype == torch.float64 and torch.isfinite(p).all() for p in target_encoder.parameters())
+    # Squares of 1e30 exceed float32's range; an FP64 norm still maps them to unit RMS.
+    probe = encoder.norm_out(torch.full((1, 1, 32), 1e30, dtype=torch.float64))
+    torch.testing.assert_close(probe, encoder.norm_out.weight.detach().expand_as(probe), rtol=1e-12, atol=1e-12)
+    print(f"float64 JEPA step: loss={loss.item():.6f}, all gradients finite float64")
 
 
 def main():
