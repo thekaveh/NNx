@@ -362,3 +362,36 @@ def test_prefix_attention_dropout_half_forward(dtype):
     step, kv2 = attn(torch.randn(2, 1, 32).to(dtype), past_kv=kv, use_cache=True)
     assert step.dtype == dtype and torch.isfinite(step).all()
     assert kv2 is not None and kv2[0].shape[-2] == 5
+
+
+def test_prefix_tuner_float64_matches_float32_past_sdpa_vector_width():
+    """FIX-026: a double prefix-tuned TransformerNN attends correctly at 24
+    tokens (past the CPU SDPA vector width, where its FP32 prefix/causal
+    mask used to corrupt FP64 attention): its logits match an FP32 copy to
+    FP32 precision, and incremental cached decoding matches the full
+    forward to FP64 precision."""
+    import copy
+
+    set_seed(0)
+    net = _tiny_transformer()
+    tuner = PrefixTuner(net, n_prefix=3)
+    with torch.no_grad():
+        for param in tuner.parameters():
+            if param.requires_grad:
+                param.normal_(std=0.5)
+    reference = copy.deepcopy(tuner)
+    tuner.double().eval()
+    reference.eval()
+
+    seq = torch.randint(0, 100, (2, 24))
+    with torch.no_grad():
+        logits = tuner(seq)
+        expected = reference(seq)
+        _, past = net.forward_with_cache(seq[:, :4], past_kvs=None)
+        steps = []
+        for i in range(4, seq.shape[1]):
+            step, past = net.forward_with_cache(seq[:, i : i + 1], past_kvs=past)
+            steps.append(step[:, -1])
+    assert logits.dtype == torch.float64
+    torch.testing.assert_close(logits.float(), expected, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(torch.stack(steps, dim=1), logits[:, 4:], rtol=1e-10, atol=1e-10)

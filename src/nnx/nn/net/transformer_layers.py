@@ -26,11 +26,27 @@ from torch import nn
 from ..._validation import require_count, require_finite_real
 
 
+def _accumulation_dtype(dtype: torch.dtype) -> torch.dtype:
+    """Return the at-least-FP32 compute dtype for ``dtype``.
+
+    FP16/BF16 are promoted to FP32; FP32 and FP64 keep their own dtype,
+    so explicit double precision is never truncated. Shared by
+    ``RMSNorm`` and the manual attention path so both follow one rule.
+    """
+    return torch.promote_types(dtype, torch.float32)
+
+
 class RMSNorm(nn.Module):
     """Root-mean-square layer normalization (Zhang & Sennrich, 2019).
 
     Cheaper than LayerNorm — no mean subtraction, no learnable bias.
     Used by LLaMA / Mistral / most modern decoder-only LLMs.
+
+    The mean of squares is computed in at least FP32: FP16/BF16 inputs
+    are promoted to FP32, while FP32 and FP64 keep their own dtype, so a
+    ``.double()`` model's norms keep FP64 range and precision. The normalised
+    value is cast back to the input dtype before the weight multiply, so
+    the output dtype follows the usual input/weight promotion.
     """
 
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -42,11 +58,14 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Cast to float32 for the norm computation so half-precision
-        # training doesn't underflow on small RMS values; cast back at
-        # the end so the rest of the network keeps its dtype.
-        norm = x.float().pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return (x.float() * norm).type_as(x) * self.weight
+        # Accumulate in at least FP32: FP16/BF16 inputs are promoted so the
+        # mean of squares neither overflows nor underflows, while FP64 stays
+        # FP64 so double models keep their range and precision (FIX-026).
+        # Cast back before the weight multiply so the output dtype still
+        # follows the usual input/weight promotion.
+        acc = x.to(_accumulation_dtype(x.dtype))
+        norm = acc.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return (acc * norm).type_as(x) * self.weight
 
 
 class RoPE(nn.Module):
@@ -171,10 +190,21 @@ def multi_head_causal_attention(
     deterministic with the rest of the run's seed. The math path
     accumulates in FP32 for FP16/BF16 inputs (FP32/FP64 keep their dtype)
     and returns ``v``'s dtype, so reduced-precision training with
-    attention dropout composes with the following projection.
+    attention dropout composes with the following projection. For FP64
+    queries the SDPA path upcasts a lower-precision float ``mask`` to FP64,
+    because CPU SDPA mis-applies an FP32 mask to FP64 queries at longer
+    sequence lengths.
     """
     if dropout_p == 0.0:
-        # PyTorch's SDPA accepts an additive (float) mask.
+        # PyTorch's SDPA accepts an additive (float) mask. CPU SDPA silently
+        # mis-applies a lower-precision float mask to FP64 queries once the
+        # sequence reaches the kernel's vector width (T >= 8 on AVX2, T >= 16
+        # on AVX512), so a double model's attention was wrong at ordinary
+        # lengths (FIX-026). Upcast the mask for FP64 queries only: other
+        # dtypes are unaffected, and never narrowing keeps a caller's finite
+        # mask values (e.g. -1e9 or a bias) exact.
+        if q.dtype == torch.float64 and mask.is_floating_point() and mask.dtype != torch.float64:
+            mask = mask.to(torch.float64)
         return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
 
     # Manual path (FIX-004): run the scaled scores, additive mask, softmax
@@ -189,7 +219,7 @@ def multi_head_causal_attention(
     # matmul so the caller-facing output dtype (and the following
     # projection) is unchanged. Nothing is detached and the mask's
     # -inf semantics are untouched.
-    compute_dtype = torch.float32 if q.dtype in (torch.float16, torch.bfloat16) else q.dtype
+    compute_dtype = _accumulation_dtype(q.dtype)
     head_dim = q.size(-1)
     scores = torch.matmul(q.to(compute_dtype), k.to(compute_dtype).transpose(-1, -2)) / (head_dim**0.5)
     scores = scores + mask.to(compute_dtype)  # additive causal mask

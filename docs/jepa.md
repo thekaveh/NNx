@@ -13,7 +13,7 @@ ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
 
 | Symbol | Notes |
 |---|---|
-| `nnx.ViTNN` | Small Vision Transformer encoder. Patch-embed conv + learned pos embeds + CLS + N pre-norm blocks (RMSNorm + bidirectional MHA + SwiGLU). `forward(x, mask=None)` accepts an optional `BoolTensor[B, n_patches]` mask — True = keep — so masked patches never enter attention. |
+| `nnx.ViTNN` | Small Vision Transformer encoder. Patch-embed conv + learned pos embeds + CLS + N pre-norm blocks (RMSNorm + bidirectional MHA + SwiGLU). `forward(x, mask=None)` accepts an optional `BoolTensor[B, n_patches]` mask — True = keep — so masked patches never enter attention. Its RMSNorms (like those in the `ViTBlock`s `JEPAPredictor` reuses) reduce in at least FP32 and keep FP64 as FP64, so a `.double()` encoder, its EMA target and the predictor run forward, backward and `update_ema` in FP64 (checked by the tests and by `float64_vit_predictor_step` in example 16). |
 | `nnx.ViTBlock` | Single pre-norm ViT block. Reused by `JEPAPredictor`. |
 | `nnx.JEPAPredictor` | Small predictor module mapping `(context_embeds, context_positions, target_positions) -> predicted_target_embeds`. Uses its own (smaller) hidden width + position embeddings + a learned mask token. Constructor params: `embed_dim, n_patches, predictor_dim=None, n_layers, n_heads, ffn_mult` (default `4`). |
 | `nnx.build_target_encoder(source)` | Deep-copy `source`, freeze every param (`requires_grad=False`), pin to `eval()`. The factory function freezes again defensively. |
