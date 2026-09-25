@@ -379,6 +379,50 @@ def test_manual_attention_matches_promoted_reference(dtype):
     )
 
 
+@pytest.mark.parametrize("dtype", _ATTN_DTYPES, ids=str)
+def test_sdpa_attention_with_fp32_mask_matches_reference(dtype):
+    """FIX-026: the SDPA path (no dropout) receives the FP32 additive masks
+    every caller builds. CPU SDPA mis-applied such a mask to FP64 queries
+    once the sequence reached the kernel's vector width (T >= 8 on AVX2,
+    T >= 16 on AVX512), off by order 1. At T=32, for a square causal mask
+    and a rectangular prefix/cache mask, the output must match an FP64
+    reference computed from the same dtype-rounded inputs."""
+    torch.manual_seed(0)
+    b, h, t, d, n_prefix = 1, 2, 32, 8, 3
+    q, k, v = (torch.randn(b, h, t, d).to(dtype) for _ in range(3))
+    k_ext = torch.cat([torch.randn(b, h, n_prefix, d).to(dtype), k], dim=-2)
+    v_ext = torch.cat([torch.randn(b, h, n_prefix, d).to(dtype), v], dim=-2)
+    square = build_causal_mask(seq_len=t)
+    rect = torch.cat([torch.zeros(t, n_prefix), square], dim=-1)
+    tol = {torch.float16: 2e-3, torch.bfloat16: 2e-2, torch.float32: 1e-6, torch.float64: 1e-12}[dtype]
+
+    for keys, values, mask in ((k, v, square), (k_ext, v_ext, rect)):
+        assert mask.dtype == torch.float32
+        out = multi_head_causal_attention(q, keys, values, mask, dropout_p=0.0)
+        assert out.dtype == dtype and torch.isfinite(out).all()
+        q64, k64, v64 = q.double(), keys.double(), values.double()
+        scores = q64 @ k64.transpose(-1, -2) / math.sqrt(d) + mask.double()
+        expected = torch.softmax(scores, dim=-1) @ v64
+        torch.testing.assert_close(out.double(), expected, atol=tol, rtol=tol)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=str)
+def test_sdpa_attention_keeps_finite_fp32_mask_values_for_half_queries(dtype):
+    """FIX-026: the FP64 mask upcast never narrows a half/bf16 caller's FP32
+    mask. A fully masked row with the finite -1e9 convention must still
+    average the values (casting -1e9 to FP16 would make it -inf and zero
+    the row), while the other rows keep causal attention."""
+    torch.manual_seed(0)
+    b, h, t, d = 1, 2, 16, 8
+    q, k, v = (torch.randn(b, h, t, d).to(dtype) for _ in range(3))
+    mask = torch.triu(torch.full((t, t), -1e9), diagonal=1)
+    mask[0] = -1e9  # row 0 attends to nothing
+    out = multi_head_causal_attention(q, k, v, mask, dropout_p=0.0)
+    assert out.dtype == dtype and torch.isfinite(out).all()
+    tol = {torch.float16: 2e-3, torch.bfloat16: 2e-2}[dtype]
+    torch.testing.assert_close(out[:, :, 0].float(), v.float().mean(dim=-2), atol=tol, rtol=tol)
+
+
 def test_manual_attention_dropout_is_seeded_and_causal():
     """Seed-reset repeats are bit-identical, eval mode (dropout off)
     repeats without seeding, and perturbing future values never changes

@@ -190,10 +190,21 @@ def multi_head_causal_attention(
     deterministic with the rest of the run's seed. The math path
     accumulates in FP32 for FP16/BF16 inputs (FP32/FP64 keep their dtype)
     and returns ``v``'s dtype, so reduced-precision training with
-    attention dropout composes with the following projection.
+    attention dropout composes with the following projection. For FP64
+    queries the SDPA path upcasts a lower-precision float ``mask`` to FP64,
+    because CPU SDPA mis-applies an FP32 mask to FP64 queries at longer
+    sequence lengths.
     """
     if dropout_p == 0.0:
-        # PyTorch's SDPA accepts an additive (float) mask.
+        # PyTorch's SDPA accepts an additive (float) mask. CPU SDPA silently
+        # mis-applies a lower-precision float mask to FP64 queries once the
+        # sequence reaches the kernel's vector width (T >= 8 on AVX2, T >= 16
+        # on AVX512), so a double model's attention was wrong at ordinary
+        # lengths (FIX-026). Upcast the mask for FP64 queries only: other
+        # dtypes are unaffected, and never narrowing keeps a caller's finite
+        # mask values (e.g. -1e9 or a bias) exact.
+        if q.dtype == torch.float64 and mask.is_floating_point() and mask.dtype != torch.float64:
+            mask = mask.to(torch.float64)
         return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
 
     # Manual path (FIX-004): run the scaled scores, additive mask, softmax

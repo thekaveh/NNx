@@ -327,7 +327,10 @@ def test_float64_decoder_cache_parity_and_checkpoint_round_trip(tmp_path, rmsnor
     """FIX-026: a tiny double decoder keeps every RMSNorm in FP64 on both
     decode paths, greedy cached and full-recompute tokens agree, and the
     state-dict keys are unchanged (no new parameter or buffer) across a
-    checkpoint save/reload that restores the FP64 weights exactly."""
+    checkpoint save/reload that restores the FP64 weights exactly. Twenty
+    new tokens take the context past the CPU SDPA vector width; on AVX2 an
+    FP32 causal mask used to make the two decode paths diverge there (the
+    logits-level guard for that bug is the TransformerNN FP64 test)."""
     from nnx.nn.params.nn_checkpoint import NNCheckpoint
 
     tokenizer = _make_tokenizer(tmp_path)
@@ -338,8 +341,8 @@ def test_float64_decoder_cache_parity_and_checkpoint_round_trip(tmp_path, rmsnor
     assert list(model.net.state_dict()) == float_keys
 
     with rmsnorm_fp64_oracle(model.net) as norms:
-        out_cached = model.generate(prompt="the", max_new_tokens=12, temperature=0.0, use_cache=True)
-        out_full = model.generate(prompt="the", max_new_tokens=12, temperature=0.0, use_cache=False)
+        out_cached = model.generate(prompt="the", max_new_tokens=20, temperature=0.0, use_cache=True)
+        out_full = model.generate(prompt="the", max_new_tokens=20, temperature=0.0, use_cache=False)
     assert out_cached == out_full
     # The GGUF writer exports layer_norm_rms_eps=1e-6; the norms must still match it.
     assert all(norm.eps == 1e-6 for norm in norms)
@@ -359,7 +362,7 @@ def test_float64_decoder_cache_parity_and_checkpoint_round_trip(tmp_path, rmsnor
         restored_value = restored.net.state_dict()[name]
         assert restored_value.dtype == torch.float64 and torch.equal(restored_value, value), name
     with rmsnorm_fp64_oracle(restored.net):
-        assert restored.generate(prompt="the", max_new_tokens=12, temperature=0.0, use_cache=True) == out_cached
+        assert restored.generate(prompt="the", max_new_tokens=20, temperature=0.0, use_cache=True) == out_cached
 
 
 def test_kv_cache_matches_full_forward_under_sampling_with_seed(tmp_path):

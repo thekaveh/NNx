@@ -262,6 +262,12 @@ purely opt-in.
   value is cast back to the input dtype before the weight multiply, so the
   output dtype still follows the input/weight promotion; parameters, `eps`
   (the `1e-6` the GGUF writer exports) and checkpoint keys are unchanged.
+  Double attention is covered too: for FP64 queries the dropout-free SDPA
+  path upcasts the FP32 additive causal mask (and `PrefixTuner`'s
+  prefix/cache mask) to FP64, because CPU `scaled_dot_product_attention`
+  silently mis-applies an FP32 mask to FP64 queries once the sequence
+  reaches the kernel's vector width (8 tokens on AVX2, 16 on AVX512).
+  FP16/BF16/FP32 queries are unaffected and receive the mask unchanged.
   The RoPE cos/sin tables are still computed in FP32 at construction and
   only cast by `.double()`, so a double model's rotations carry FP32-level
   rounding. `from_checkpoint` rebuilds the net in the default dtype, so
