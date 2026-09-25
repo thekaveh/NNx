@@ -85,7 +85,7 @@ Ordered from foundational to most specialized. Each numbered prefix on the filen
 
 | Example | What it demonstrates |
 |---|---|
-| `16_ijepa_image_plumbing.py` | I-JEPA image-path plumbing on synthetic images by default (`--cifar` opts into CIFAR-10): a small `ViTNN` context encoder predicts masked-patch latents against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `random_block_mask`. |
+| `16_ijepa_image_plumbing.py` | I-JEPA image-path plumbing on synthetic images by default (`--cifar` opts into CIFAR-10): a small `ViTNN` context encoder predicts masked-patch latents against an EMA target encoder. Demonstrates `jepa_train_step_factory` + `JEPAPredictor` + `build_target_encoder` + `random_block_mask`. The smoke-tested `float64_vit_predictor_step()` helper runs one bounded double-precision forward/backward on tiny synthetic images (no download) and checks every gradient is finite FP64. |
 
 ### 2.9. Experimental GGUF export
 

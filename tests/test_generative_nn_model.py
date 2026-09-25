@@ -323,6 +323,48 @@ def test_kv_cache_produces_same_output_as_full_forward(tmp_path):
     assert out_cached == out_full
 
 
+def test_float64_decoder_cache_parity_and_checkpoint_round_trip(tmp_path, rmsnorm_fp64_oracle):
+    """FIX-026: a tiny double decoder keeps every RMSNorm in FP64 on both
+    decode paths, greedy cached and full-recompute tokens agree, and the
+    state-dict keys are unchanged (no new parameter or buffer) across a
+    checkpoint save/reload that restores the FP64 weights exactly. Twenty
+    new tokens take the context past the CPU SDPA vector width; on AVX2 an
+    FP32 causal mask used to make the two decode paths diverge there (the
+    logits-level guard for that bug is the TransformerNN FP64 test)."""
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(7)
+    model = _make_model(tokenizer)
+    float_keys = list(model.net.state_dict())
+    model.net.double()
+    assert list(model.net.state_dict()) == float_keys
+
+    with rmsnorm_fp64_oracle(model.net) as norms:
+        out_cached = model.generate(prompt="the", max_new_tokens=20, temperature=0.0, use_cache=True)
+        out_full = model.generate(prompt="the", max_new_tokens=20, temperature=0.0, use_cache=False)
+    assert out_cached == out_full
+    # The GGUF writer exports layer_norm_rms_eps=1e-6; the norms must still match it.
+    assert all(norm.eps == 1e-6 for norm in norms)
+
+    path = str(tmp_path / "double_decoder.ckpt")
+    NNCheckpoint(
+        idp=None, model_params=model.params, net_params=model.net_params, net_state=model.net.state_dict()
+    ).to_file(path)
+    loaded = NNCheckpoint.from_file(path)
+    assert loaded is not None and list(loaded.net_state) == float_keys
+
+    # from_checkpoint rebuilds in the default dtype (its strict load also
+    # checks the key set); `.double()` plus an FP64 reload restores it exactly.
+    restored = GenerativeNNModel.from_checkpoint(loaded, tokenizer=tokenizer)
+    restored.net.double().load_state_dict(loaded.net_state)
+    for name, value in model.net.state_dict().items():
+        restored_value = restored.net.state_dict()[name]
+        assert restored_value.dtype == torch.float64 and torch.equal(restored_value, value), name
+    with rmsnorm_fp64_oracle(restored.net):
+        assert restored.generate(prompt="the", max_new_tokens=20, temperature=0.0, use_cache=True) == out_cached
+
+
 def test_kv_cache_matches_full_forward_under_sampling_with_seed(tmp_path):
     """Sampling-path equivalence — same seed, same prompt, both code
     paths should produce the same tokens. The sampler consumes the

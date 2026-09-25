@@ -626,3 +626,33 @@ def test_transformer_half_attention_dropout_forward(dtype):
     tol = {torch.float16: 2e-2, torch.bfloat16: 1e-1}[dtype]
     torch.testing.assert_close(prefill.float(), full[:, :4].float(), atol=tol, rtol=tol)
     torch.testing.assert_close(step[:, -1].float(), full[:, 4].float(), atol=tol, rtol=tol)
+
+
+def test_transformer_nn_float64_forward_backward_keeps_rmsnorm_precision(rmsnorm_fp64_oracle):
+    """FIX-026: an explicitly double TransformerNN runs every shared
+    RMSNorm (``norm1``/``norm2`` per block plus ``norm_out``) in FP64
+    with no internal downcast, its full forward matches incremental cached
+    decoding past the CPU SDPA vector width (an FP32 causal mask used to
+    corrupt FP64 attention from T=8 on AVX2 / T=16 on AVX512), and
+    backward yields finite FP64 grads."""
+    torch.manual_seed(0)
+    net = TransformerNN(_params(max_seq_len=32)).double()
+    tokens = torch.randint(0, 32, (2, 20))
+
+    with rmsnorm_fp64_oracle(net) as norms:
+        logits = net(tokens)
+    assert len(norms) == 2 * net.params.n_layers + 1
+
+    with torch.no_grad():
+        prefill, kvs = net.forward_with_cache(tokens[:, :4])
+        steps = [prefill]
+        for i in range(4, tokens.shape[1]):
+            step, kvs = net.forward_with_cache(tokens[:, i : i + 1], past_kvs=kvs)
+            steps.append(step)
+    torch.testing.assert_close(torch.cat(steps, dim=1), logits.detach(), rtol=1e-10, atol=1e-10)
+
+    assert logits.dtype == torch.float64 and torch.isfinite(logits).all()
+    logits.square().mean().backward()
+    for name, param in net.named_parameters():
+        assert param.grad is not None, name
+        assert param.grad.dtype == torch.float64 and torch.isfinite(param.grad).all(), name

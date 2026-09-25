@@ -11,6 +11,7 @@ practice.
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 # macOS + torch + faiss-cpu both bundle libomp.dylib statically. When both
@@ -99,3 +100,47 @@ def skip_on_dynamo_dispatch_error():
     an ``except`` block around their ``torch.onnx.export(..., dynamo=True)``
     invocation. See the helper's docstring for the upstream-skew rationale."""
     return _skip_if_dynamo_dispatch_error
+
+
+@contextlib.contextmanager
+def _rmsnorm_fp64_oracle(net):
+    """Check every ``RMSNorm`` inside ``net`` against an FP64 oracle.
+
+    While the ``with`` block runs, a forward hook on each norm asserts
+    that its input and output are float64 and that the output matches
+    ``x * rsqrt(mean(x**2) + eps) * weight`` computed in FP64 to 1e-12.
+    An FP32 round trip inside the norm is off by ~1e-8, so a silent
+    downcast fails loudly (FIX-026). On exit, every norm must have run
+    at least once, so a model path that skips a norm is caught too.
+    """
+    import torch
+
+    from nnx.nn.net.transformer_layers import RMSNorm
+
+    norms = [module for module in net.modules() if isinstance(module, RMSNorm)]
+    assert norms, "no RMSNorm modules to check"
+    fired: set[int] = set()
+
+    def hook(module, args, kwargs, output):
+        x = args[0] if args else kwargs["x"]
+        assert x.dtype == output.dtype == torch.float64, (x.dtype, output.dtype)
+        with torch.no_grad():
+            expected = x * (x.square().mean(-1, keepdim=True) + module.eps).rsqrt() * module.weight
+        torch.testing.assert_close(output.detach(), expected, rtol=1e-12, atol=1e-12)
+        fired.add(id(module))
+
+    handles = [module.register_forward_hook(hook, with_kwargs=True) for module in norms]
+    try:
+        yield norms
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert fired == {id(module) for module in norms}, f"{len(norms) - len(fired)} RMSNorm(s) never ran"
+
+
+@pytest.fixture(scope="session")
+def rmsnorm_fp64_oracle():
+    """Yield ``_rmsnorm_fp64_oracle``: a context manager that checks every
+    RMSNorm in a float64 model against an FP64 reference while the block
+    runs. Used by the Transformer, ViT/JEPA and generation FP64 tests."""
+    return _rmsnorm_fp64_oracle

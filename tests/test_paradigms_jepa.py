@@ -303,6 +303,42 @@ def test_jepa_predictor_forward_shapes():
     assert out.shape == (3, 6, 16)
 
 
+def test_vit_jepa_float64_forward_backward_keeps_rmsnorm_precision(rmsnorm_fp64_oracle):
+    """FIX-026: a double ViTNN context encoder, its EMA target copy, and a
+    double JEPAPredictor run every shared RMSNorm (ViTBlock ``norm1``/
+    ``norm2`` plus ``ViTNN.norm_out``) in FP64 with no internal downcast;
+    one JEPA-shaped step backpropagates finite FP64 gradients and the EMA
+    update keeps the target encoder FP64."""
+    torch.manual_seed(0)
+    encoder = ViTNN(image_size=16, patch_size=4, in_channels=3, d_model=16, n_layers=2, n_heads=2).double()
+    target_encoder = build_target_encoder(encoder)
+    predictor = JEPAPredictor(
+        embed_dim=16, n_patches=encoder.n_patches, predictor_dim=8, n_layers=1, n_heads=2
+    ).double()
+    images = torch.randn(2, 3, 16, 16, dtype=torch.float64)
+    context_mask, target_mask = random_block_mask(n_patches=encoder.n_patches, grid_size=4)
+    positions = encoder.patch_positions()
+    context_positions = torch.cat([torch.zeros(1, dtype=torch.long), positions[context_mask]])
+    target_positions = positions[target_mask]
+
+    with rmsnorm_fp64_oracle(torch.nn.ModuleList([encoder, target_encoder, predictor])) as norms:
+        context = encoder(images, mask=context_mask.expand(2, -1))
+        with torch.no_grad():
+            targets = target_encoder(images)[:, target_positions]
+        predicted = predictor(context, context_positions, target_positions)
+    assert len(norms) == 2 * (2 * 2 + 1) + 2 * 1
+
+    assert predicted.dtype == targets.dtype == torch.float64
+    torch.nn.functional.mse_loss(predicted, targets).backward()
+    for name, param in [*encoder.named_parameters(), *predictor.named_parameters()]:
+        assert param.grad is not None, name
+        assert param.grad.dtype == torch.float64 and torch.isfinite(param.grad).all(), name
+
+    update_ema(encoder, target_encoder, momentum=0.5)
+    for name, param in target_encoder.named_parameters():
+        assert param.dtype == torch.float64 and torch.isfinite(param).all(), name
+
+
 # --- Boundary validation: net constructors that bypass the params dataclasses ---
 # These take raw numeric kwargs and would otherwise build silently degenerate
 # models (n_layers=0 -> attention-free; ffn_mult=0 -> zero-width FFN; d_model=0
