@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Optional, cast
 
 import pandas as pd
@@ -34,6 +35,26 @@ def _runs_root(root: Optional[str] = None) -> str:
     """Resolve the on-disk root for `runs/`. Defaults to `<cwd>/runs` so
     existing notebook callers (which pass nothing) keep their layout."""
     return os.path.join(root if root is not None else os.getcwd(), "runs")
+
+
+def _run_display_path(run_id: str) -> str:
+    """Return the portable *display* path of a run directory (#190).
+
+    Used only for the training completion message, never as artifact
+    provenance. It is the persistence location ``_runs_root()/<id>``
+    expressed relative to the working directory — ``runs/<id>`` — with
+    ``/`` separators, so captured notebook output never embeds the
+    executing machine's absolute working directory and reads the same on
+    every platform.
+    """
+    return PurePath(os.path.relpath(os.path.join(_runs_root(), run_id))).as_posix()
+
+
+def _print_run_saved(run_id: str) -> None:
+    """Print the completion message shared by ``NNModel.train`` and
+    ``Trainer.train`` — the one place its wording and path rule live."""
+    print()
+    print(f"Run saved to {_run_display_path(run_id)} (relative to the working directory)")
 
 
 def _validate_run_id(run_id: str) -> str:
