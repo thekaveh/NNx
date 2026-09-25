@@ -27,7 +27,7 @@ from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
 from .params.nn_params import NNParams
-from .params.nn_run import NNRun, _best_err
+from .params.nn_run import NNRun, _best_err, _print_run_saved
 from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
@@ -1132,7 +1132,11 @@ class NNModel(_HubMixinBase):
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
-            iteration history, and configured checkpoints.
+            iteration history, and configured checkpoints under
+            ``<cwd>/runs/<run.id>/``. The printed completion line names
+            ``runs/<id>`` relative to the working directory: a display path
+            with no absolute prefix, so captured notebook output stays
+            portable; it is not artifact provenance.
 
         Raises:
             ValueError: If required training inputs are missing or invalid,
@@ -1531,9 +1535,7 @@ class NNModel(_HubMixinBase):
             )
 
         saved = run.with_idps(idps).save()
-        print()
-        runs_root_path = os.path.join(os.getcwd(), "runs", run.id)
-        print(f"Run saved to {runs_root_path}")
+        _print_run_saved(run.id)
         return saved
 
     def evaluate(self, loader: Iterable[Any], extra_metrics=None) -> NNEvaluationDataPoint:

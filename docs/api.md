@@ -311,7 +311,11 @@ Args:
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
-    iteration history, and configured checkpoints.
+    iteration history, and configured checkpoints under
+    ``<cwd>/runs/<run.id>/``. The printed completion line names
+    ``runs/<id>`` relative to the working directory: a display path
+    with no absolute prefix, so captured notebook output stays
+    portable; it is not artifact provenance.
 
 Raises:
     ValueError: If required training inputs are missing or invalid,
@@ -629,6 +633,8 @@ Args:
 Returns:
     NNRun with per-iteration idps, persisted under runs/<run.id>/
     alongside the standard FIRST/Q1/Q2/Q3/LAST/BEST checkpoints.
+    The printed completion line uses the same cwd-relative
+    ``runs/<id>`` display path as ``NNModel.train``.
 
 Raises:
     ValueError: when params is None, params.train_loader is None,
