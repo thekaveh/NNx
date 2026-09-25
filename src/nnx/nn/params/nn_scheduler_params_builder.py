@@ -16,8 +16,9 @@ absent from `self._fields`, so `state()` continues to omit it.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
+from ..._builders import params_init_values
 from ..enum.schedulers import Schedulers
 from .nn_scheduler_params import NNSchedulerParams
 
@@ -29,10 +30,56 @@ class NNSchedulerParamsBuilder:
     is self-contained — the user calls exactly one of them per builder
     instance. Calling a second variant overwrites the first (last
     write wins); `.build()` produces the dataclass.
+
+    `copy()` branches a (possibly empty) builder and `from_params()`
+    rebuilds one from an existing `NNSchedulerParams`.
     """
+
+    # Every `NNSchedulerParams` init field `from_params` can carry.
+    _PARAMS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "min_lr",
+        "factor",
+        "patience",
+        "cooldown",
+        "threshold",
+        "kind",
+        "step_size",
+        "T_max",
+        "max_lr",
+        "total_steps",
+        "warmup_steps",
+    )
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
+
+    def copy(self) -> NNSchedulerParamsBuilder:
+        """Return an independent branch of this builder.
+
+        The branch starts with the same fields; a later variant call on
+        either builder replaces only that builder's fields. Nothing is
+        built or validated here — `build()` validates each branch.
+        """
+        branch = type(self)()
+        branch._fields = dict(self._fields)  # every field is an immutable scalar or enum
+        return branch
+
+    @classmethod
+    def from_params(cls, params: NNSchedulerParams) -> NNSchedulerParamsBuilder:
+        """Return a builder pre-loaded with every field of `params`.
+
+        `from_params(params).build()` equals `params`, with the same
+        `state()` (key order and omitted defaults included). A variant
+        call afterwards replaces the whole configuration, as usual.
+
+        Raises:
+            TypeError: if `params` is not exactly an `NNSchedulerParams`.
+            ValueError: if `params` carries a field this builder cannot
+                reproduce.
+        """
+        builder = cls()
+        builder._fields = params_init_values("NNSchedulerParamsBuilder", params, NNSchedulerParams, cls._PARAMS_FIELDS)
+        return builder
 
     def reduce_on_plateau(
         self,

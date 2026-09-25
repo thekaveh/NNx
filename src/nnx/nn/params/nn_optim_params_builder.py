@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
+from ..._builders import copy_containers, params_init_values
 from ..enum.optims import Optims
 from .nn_optim_params import NNOptimParams
 
@@ -31,6 +32,10 @@ class NNOptimParamsBuilder:
     then `.build()`. Method-call order is independent — a modifier
     called before a variant survives the variant call, and the last
     variant always wins.
+
+    `copy()` branches a (possibly partial) builder and `from_params()`
+    rebuilds one from an existing `NNOptimParams`, so shared setup is
+    written once and varied per branch.
     """
 
     # Fields that a variant method owns. `_set_variant` drops these
@@ -39,9 +44,75 @@ class NNOptimParamsBuilder:
     # keys (grad_clip_norm / accumulate_grad_batches / param_groups)
     # survive.
     _VARIANT_KEYS: ClassVar[tuple[str, ...]] = ("name", "max_lr", "momentum", "weight_decay", "eps")
+    # Every `NNOptimParams` init field `from_params` can carry.
+    _PARAMS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "name",
+        "max_lr",
+        "weight_decay",
+        "momentum",
+        "grad_clip_norm",
+        "accumulate_grad_batches",
+        "param_groups",
+        "eps",
+    )
+    # Configuration containers a branch owns (its items stay shared).
+    _CONTAINER_FIELDS: ClassVar[tuple[str, ...]] = ("param_groups",)
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
+
+    # ---------- branching ----------
+
+    def copy(self) -> NNOptimParamsBuilder:
+        """Return an independent branch of this builder, complete or partial.
+
+        The branch starts with the same fields; afterwards setters on
+        either builder never affect the other, and neither touches values
+        already built. Configuration containers (the `param_groups` list)
+        are copied; the immutable `NNParamGroupSpec` rows are shared.
+        Nothing is built or validated here — `build()` validates each
+        branch on its own.
+        """
+        branch = type(self)()
+        branch._fields = copy_containers(self._fields, self._CONTAINER_FIELDS)
+        return branch
+
+    @classmethod
+    def from_params(cls, params: NNOptimParams) -> NNOptimParamsBuilder:
+        """Return a builder pre-loaded with every field of `params`.
+
+        `from_params(params).build()` equals `params`, with the same
+        `state()` (key order and omitted defaults included). The builder
+        is ordinary afterwards: a new variant call replaces the variant
+        fields (`name` / `max_lr` / `momentum` / `weight_decay` / `eps`)
+        and keeps the modifiers, exactly as in a hand-written chain.
+
+        Raises:
+            TypeError: if `params` is not exactly an `NNOptimParams` — a
+                registered-factory `NNOptimFactoryParams` has no builder
+                (pass it straight to `NNTrainerParamsBuilder.optimizer`),
+                and subclasses are rejected rather than downgraded.
+            ValueError: if `params` carries a field this builder cannot
+                reproduce.
+        """
+        # Lazy import: nnx.optimizers imports this params module.
+        from ...optimizers import NNOptimFactoryParams
+
+        builder = cls()
+        builder._fields = params_init_values(
+            "NNOptimParamsBuilder",
+            params,
+            NNOptimParams,
+            cls._PARAMS_FIELDS,
+            containers=cls._CONTAINER_FIELDS,
+            hint=(
+                "registered-factory optimizers have no builder — pass the NNOptimFactoryParams "
+                "value straight to NNTrainerParamsBuilder.optimizer(name, params)"
+                if isinstance(params, NNOptimFactoryParams)
+                else None
+            ),
+        )
+        return builder
 
     def _set_variant(self, **fields: Any) -> None:
         for k in self._VARIANT_KEYS:

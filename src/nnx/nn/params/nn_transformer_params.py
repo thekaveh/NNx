@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from ..._validation import require_count, require_finite_real
 from ..enum.activations import Activations
-from .nn_params import NNParams
+from .nn_params import NNParams, _per_layer_from_state
 
 if TYPE_CHECKING:
     from .nn_transformer_params_builder import NNTransformerParamsBuilder
@@ -161,12 +161,18 @@ class NNTransformerParams(NNParams):
             # Key absent entirely — legacy LM configs omitted it.
             activation = Activations.LEAKY_RELU
 
+        # Per-layer overrides (#85) — emitted by NNParams.state() only when
+        # they differ from the scalar; absent in legacy LM configs (FEAT-041).
+        activations, dropout_probs = _per_layer_from_state(state)
+
         return NNTransformerParams(
             input_dim=input_dim,
             output_dim=output_dim,
             dropout_prob=state.get("dropout_prob", 0.0),
             hidden_dims=hidden,
             activation=activation,
+            activations=activations,
+            dropout_probs=dropout_probs,
             n_heads=state.get("n_heads"),
             vocab_size=vocab_size,
             n_layers=state["n_layers"],

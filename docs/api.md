@@ -809,6 +809,57 @@ optims). Schedulers, seed, loaders, etc. are all chained optionals.
 Ownership (see `NNTrainerParams`): the custom ``trainer_step_fn``
 owns every optimizer update; Trainer steps registered schedulers once
 per epoch unless ``.auto_step_schedulers(False)``.
+
+`copy()` branches a (possibly partial) builder and `from_params()`
+rebuilds one from an existing `NNTrainerParams`, so a shared base
+(epochs, loaders, a common optimizer) is written once and each branch
+adds its own optimizers, schedulers or `data_id`.
+```
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.copy`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.copy(self) -> 'NNTrainerParamsBuilder'
+```
+
+Return an independent branch of this builder, complete or partial.
+
+**Details**
+
+```text
+The `optims` / `schedulers` maps and the `extra_metrics` mapping
+are copied, so registering, replacing or dropping an entry on one
+builder never shows up on the other (nor in values already
+built). Their values are shared by identity: optimizer and
+scheduler params are immutable, and `DataLoader` s and metric
+callables are runtime objects that are never copied or iterated.
+Nothing is built or validated here — `build()` validates each
+branch, including the `schedulers ⊆ optims` rule.
+```
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.from_params`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.from_params(params: 'NNTrainerParams') -> 'NNTrainerParamsBuilder'
+```
+
+Return a builder pre-loaded with every field of `params`.
+
+**Details**
+
+```text
+`from_params(params).build()` reproduces `params` field for field,
+with the same `state()` (sorted keys, omitted defaults) and the
+same runtime insertion order of `optims`. Built-in and
+registered-factory optimizer params, loaders and metric callables
+keep their identity; the builder's own maps are fresh copies, so
+extending it never alters `params`.
+
+Raises:
+    TypeError: if `params` is not exactly an `NNTrainerParams`
+        (the single-optimizer `NNTrainParams` has no builder).
+    ValueError: if `params` carries a field this builder cannot
+        reproduce.
 ```
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.n_epochs`
@@ -842,6 +893,30 @@ nnx.trainer.params_builder.NNTrainerParamsBuilder.seed(self, value: 'int') -> 'N
 ```
 
 Seed for reproducibility. None at default (no seeding via params; the caller's `set_seed()` is the only path).
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.data_id`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.data_id(self, value: 'str') -> 'NNTrainerParamsBuilder'
+```
+
+Name the dataset or split this configuration trains on.
+
+**Details**
+
+```text
+Part of `state()` and therefore of the run id, so two otherwise
+identical configurations (e.g. sibling builder branches) over
+different data get distinct run directories. None at default.
+```
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.overwrite_existing`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.overwrite_existing(self, value: 'bool') -> 'NNTrainerParamsBuilder'
+```
+
+Allow a run to replace an existing run directory with the same id. Default False; not part of `state()` or the run id.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.save_phase_checkpoints`
 
@@ -1474,6 +1549,55 @@ optional methods (`grad_clip`, `accumulate_grad`, `param_groups`),
 then `.build()`. Method-call order is independent — a modifier
 called before a variant survives the variant call, and the last
 variant always wins.
+
+`copy()` branches a (possibly partial) builder and `from_params()`
+rebuilds one from an existing `NNOptimParams`, so shared setup is
+written once and varied per branch.
+```
+
+##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.copy`
+
+```python
+nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.copy(self) -> 'NNOptimParamsBuilder'
+```
+
+Return an independent branch of this builder, complete or partial.
+
+**Details**
+
+```text
+The branch starts with the same fields; afterwards setters on
+either builder never affect the other, and neither touches values
+already built. Configuration containers (the `param_groups` list)
+are copied; the immutable `NNParamGroupSpec` rows are shared.
+Nothing is built or validated here — `build()` validates each
+branch on its own.
+```
+
+##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.from_params`
+
+```python
+nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.from_params(params: 'NNOptimParams') -> 'NNOptimParamsBuilder'
+```
+
+Return a builder pre-loaded with every field of `params`.
+
+**Details**
+
+```text
+`from_params(params).build()` equals `params`, with the same
+`state()` (key order and omitted defaults included). The builder
+is ordinary afterwards: a new variant call replaces the variant
+fields (`name` / `max_lr` / `momentum` / `weight_decay` / `eps`)
+and keeps the modifiers, exactly as in a hand-written chain.
+
+Raises:
+    TypeError: if `params` is not exactly an `NNOptimParams` — a
+        registered-factory `NNOptimFactoryParams` has no builder
+        (pass it straight to `NNTrainerParamsBuilder.optimizer`),
+        and subclasses are rejected rather than downgraded.
+    ValueError: if `params` carries a field this builder cannot
+        reproduce.
 ```
 
 ##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam`
@@ -1662,6 +1786,46 @@ Reach this via `NNSchedulerParams.builder()`. Each variant method
 is self-contained — the user calls exactly one of them per builder
 instance. Calling a second variant overwrites the first (last
 write wins); `.build()` produces the dataclass.
+
+`copy()` branches a (possibly empty) builder and `from_params()`
+rebuilds one from an existing `NNSchedulerParams`.
+```
+
+##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.copy`
+
+```python
+nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.copy(self) -> 'NNSchedulerParamsBuilder'
+```
+
+Return an independent branch of this builder.
+
+**Details**
+
+```text
+The branch starts with the same fields; a later variant call on
+either builder replaces only that builder's fields. Nothing is
+built or validated here — `build()` validates each branch.
+```
+
+##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.from_params`
+
+```python
+nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.from_params(params: 'NNSchedulerParams') -> 'NNSchedulerParamsBuilder'
+```
+
+Return a builder pre-loaded with every field of `params`.
+
+**Details**
+
+```text
+`from_params(params).build()` equals `params`, with the same
+`state()` (key order and omitted defaults included). A variant
+call afterwards replaces the whole configuration, as usual.
+
+Raises:
+    TypeError: if `params` is not exactly an `NNSchedulerParams`.
+    ValueError: if `params` carries a field this builder cannot
+        reproduce.
 ```
 
 ##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.reduce_on_plateau`
@@ -1790,6 +1954,55 @@ Reach via `NNTransformerParams.builder()`. The six methods can be
 chained in any order; `.build()` collects them, fills in the
 LM-path defaults for the dead parent-NNParams fields, and
 constructs the dataclass.
+
+`copy()` branches a (possibly partial) builder and `from_params()`
+rebuilds one from an existing `NNTransformerParams` — including the
+inherited `NNParams` fields (`hidden_dims`, `activation(s)`,
+`dropout_prob(s)`, custom `input_dim` / `output_dim`) no setter
+exposes.
+```
+
+##### `nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.copy`
+
+```python
+nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.copy(self) -> 'NNTransformerParamsBuilder'
+```
+
+Return an independent branch of this builder, complete or partial.
+
+**Details**
+
+```text
+The branch starts with the same fields; afterwards setters on
+either builder never affect the other. List fields carried from
+`from_params` are copied. Nothing is built or validated here —
+`build()` validates each branch on its own.
+```
+
+##### `nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.from_params`
+
+```python
+nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.from_params(params: 'NNTransformerParams') -> 'NNTransformerParamsBuilder'
+```
+
+Return a builder pre-loaded with every field of `params`.
+
+**Details**
+
+```text
+`from_params(params).build()` equals `params`, with the same
+`state()` (key order and omitted defaults included) — the
+inherited `hidden_dims`, `activation`, `activations`,
+`dropout_prob` and `dropout_probs` survive because `build()`
+applies its LM-path defaults *under* the carried fields. Setters
+keep their usual rules afterwards: `.vocab(size)` still resets
+`input_dim` / `output_dim` to `size`.
+
+Raises:
+    TypeError: if `params` is not exactly an `NNTransformerParams`
+        (base `NNParams` or a subclass).
+    ValueError: if `params` carries a field this builder cannot
+        reproduce.
 ```
 
 ##### `nnx.nn.params.nn_transformer_params_builder.NNTransformerParamsBuilder.vocab`
@@ -1881,12 +2094,13 @@ methods that haven't been called yet — matches the
 [[builder-pattern-shape]] §11b convention that PR #52
 established on NNTrainerParamsBuilder.
 
-Fills in the dead parent-NNParams fields the TransformerNN
-net never reads but the parent dataclass requires at
-construction. `activation` mirrors the parent NNParams's
-default (`Activations.LEAKY_RELU`); a Builder-default
-mismatch here previously produced a different `state()` /
-`run.id` than the direct-kwarg ctor.
+Supplies `dropout_prob=0.0` — the one dead parent-NNParams field
+the TransformerNN net never reads but the parent dataclass
+requires — *under* the set fields, so a value carried by
+`from_params` wins; `hidden_dims` / `activation` fall to the
+NNParams defaults (`None` / `LEAKY_RELU`) unless carried. Using
+the parent's own defaults keeps the builder's `state()` /
+`run.id` identical to the direct-kwarg ctor's.
 
 Raises:
     ValueError: if `.vocab(size=...)`, `.layers(n=..., heads=...,

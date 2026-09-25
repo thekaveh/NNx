@@ -10,10 +10,10 @@ chain step that introduced the mismatch, not at .build() much later.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
+from ..._builders import copy_containers, params_init_values
 from ..._validation import require_count
-from ..enum.activations import Activations
 from .nn_transformer_params import NNTransformerParams
 
 
@@ -24,10 +24,80 @@ class NNTransformerParamsBuilder:
     chained in any order; `.build()` collects them, fills in the
     LM-path defaults for the dead parent-NNParams fields, and
     constructs the dataclass.
+
+    `copy()` branches a (possibly partial) builder and `from_params()`
+    rebuilds one from an existing `NNTransformerParams` — including the
+    inherited `NNParams` fields (`hidden_dims`, `activation(s)`,
+    `dropout_prob(s)`, custom `input_dim` / `output_dim`) no setter
+    exposes.
     """
+
+    # Every `NNTransformerParams` init field `from_params` can carry
+    # (the derived `_dims` is rebuilt by the dataclass, never carried).
+    _PARAMS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "dropout_prob",
+        "n_heads",
+        "activation",
+        "activations",
+        "dropout_probs",
+        "input_dim",
+        "output_dim",
+        "hidden_dims",
+        "vocab_size",
+        "n_layers",
+        "d_model",
+        "max_seq_len",
+        "ffn_mult",
+        "rope_base",
+        "tie_embeddings",
+        "attn_dropout",
+        "resid_dropout",
+    )
+    # Configuration containers a branch owns (carried by `from_params`).
+    _CONTAINER_FIELDS: ClassVar[tuple[str, ...]] = ("hidden_dims", "activations", "dropout_probs")
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
+
+    def copy(self) -> NNTransformerParamsBuilder:
+        """Return an independent branch of this builder, complete or partial.
+
+        The branch starts with the same fields; afterwards setters on
+        either builder never affect the other. List fields carried from
+        `from_params` are copied. Nothing is built or validated here —
+        `build()` validates each branch on its own.
+        """
+        branch = type(self)()
+        branch._fields = copy_containers(self._fields, self._CONTAINER_FIELDS)
+        return branch
+
+    @classmethod
+    def from_params(cls, params: NNTransformerParams) -> NNTransformerParamsBuilder:
+        """Return a builder pre-loaded with every field of `params`.
+
+        `from_params(params).build()` equals `params`, with the same
+        `state()` (key order and omitted defaults included) — the
+        inherited `hidden_dims`, `activation`, `activations`,
+        `dropout_prob` and `dropout_probs` survive because `build()`
+        applies its LM-path defaults *under* the carried fields. Setters
+        keep their usual rules afterwards: `.vocab(size)` still resets
+        `input_dim` / `output_dim` to `size`.
+
+        Raises:
+            TypeError: if `params` is not exactly an `NNTransformerParams`
+                (base `NNParams` or a subclass).
+            ValueError: if `params` carries a field this builder cannot
+                reproduce.
+        """
+        builder = cls()
+        builder._fields = params_init_values(
+            "NNTransformerParamsBuilder",
+            params,
+            NNTransformerParams,
+            cls._PARAMS_FIELDS,
+            containers=cls._CONTAINER_FIELDS,
+        )
+        return builder
 
     def vocab(self, size: int) -> NNTransformerParamsBuilder:
         """Set the vocabulary size. Mirrors into both `input_dim` and
@@ -149,12 +219,13 @@ class NNTransformerParamsBuilder:
         [[builder-pattern-shape]] §11b convention that PR #52
         established on NNTrainerParamsBuilder.
 
-        Fills in the dead parent-NNParams fields the TransformerNN
-        net never reads but the parent dataclass requires at
-        construction. `activation` mirrors the parent NNParams's
-        default (`Activations.LEAKY_RELU`); a Builder-default
-        mismatch here previously produced a different `state()` /
-        `run.id` than the direct-kwarg ctor.
+        Supplies `dropout_prob=0.0` — the one dead parent-NNParams field
+        the TransformerNN net never reads but the parent dataclass
+        requires — *under* the set fields, so a value carried by
+        `from_params` wins; `hidden_dims` / `activation` fall to the
+        NNParams defaults (`None` / `LEAKY_RELU`) unless carried. Using
+        the parent's own defaults keeps the builder's `state()` /
+        `run.id` identical to the direct-kwarg ctor's.
 
         Raises:
             ValueError: if `.vocab(size=...)`, `.layers(n=..., heads=...,
@@ -178,9 +249,4 @@ class NNTransformerParamsBuilder:
                 + " before .build() — each setter fills the dataclass's "
                 "required-no-default fields for the LM path."
             )
-        return NNTransformerParams(
-            hidden_dims=None,
-            dropout_prob=0.0,
-            activation=Activations.LEAKY_RELU,
-            **self._fields,
-        )
+        return NNTransformerParams(**{"dropout_prob": 0.0, **self._fields})

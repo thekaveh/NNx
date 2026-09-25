@@ -99,6 +99,23 @@ Three more Builders shipped alongside the two above:
 - **`NNTrainerParams.builder()`** — composite, wraps the prior two. `.optimizer(name, NNOptimParams)` + `.scheduler(name, NNSchedulerParams)` register entries under user-chosen names; `.build()` enforces `schedulers.keys() ⊆ optims.keys()` with an actionable error. Used for the GAN-recipe pattern in §8.
 - **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order; `.build()` sorts the standard processors into NNx's canonical order (`RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`; temperature deliberately last — see [`docs/lm.md` §5](lm.md)) with custom processors appended after. Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
 
+**Branching a builder (`copy()` / `from_params()`).** The four params builders above (optimizer, scheduler, transformer, trainer) are mutable, so a shared base would otherwise be retyped per variant. `builder.copy()` branches a complete *or partial* builder: afterwards setters on either one never affect the other, and neither touches a value already built. `Builder.from_params(params)` goes the other way — it pre-loads a builder from an existing params value so that `from_params(params).build() == params` with the same `state()` (key order, omitted defaults, hence the same run id), and the result can be varied like any hand-written chain.
+
+```python
+base = NNOptimParams.builder().grad_clip(1.0)            # partial: no variant yet
+adamw = base.copy().adamw(max_lr=1e-3).build()
+sgd = base.copy().sgd(max_lr=0.05).build()               # base itself is unchanged
+
+trainer = NNTrainerParams.builder().n_epochs(3).train_loader(loader).optimizer("head", adamw)
+plain = trainer.copy().data_id("split-a").build()
+scheduled = trainer.copy().data_id("split-b").scheduler("head", plateau).build()
+
+# .context() sets max_seq_len AND rope_base: pass a carried rope_base again to keep it
+longer = NNTransformerParamsBuilder.from_params(lm_params).context(max_seq_len=2048, rope_base=lm_params.rope_base).build()
+```
+
+Ownership follows the built values: configuration containers — the `param_groups` list, the per-layer lists, the `optims` / `schedulers` maps and the `extra_metrics` mapping — are copied one level deep, while the immutable params values, loaders (any iterable), metric callables and registered-factory specs are shared by identity. Neither method iterates data, builds a model, advances an RNG or does I/O; validation still happens at `build()`, per branch (a branch that schedules a name absent from its `optims` fails there). Setter semantics are unchanged: setters mutate and return the same builder, the last variant wins, modifiers survive a variant change, `.vocab(size)` still resets `input_dim` / `output_dim`, and a group setter still replaces its whole group — `.context()` resets an omitted `rope_base` and `.dropout()` an omitted rate, so pass a carried value again to keep it. `from_params` accepts exactly its own params class — a subclass or foreign value raises `TypeError` naming the type (an `NNOptimFactoryParams` has no builder; pass it straight to `NNTrainerParamsBuilder.optimizer`), and a field the builder cannot carry raises `ValueError`. `NNTransformerParamsBuilder.from_params` also carries the inherited `NNParams` fields no setter exposes (`hidden_dims`, `activation(s)`, `dropout_prob(s)`, custom dims). `NNTrainerParamsBuilder` has `data_id(...)` / `overwrite_existing(...)` setters, so sibling branches over different data get distinct run ids. Runnable walkthrough: [`examples/builder_branching.py`](https://github.com/thekaveh/NNx/blob/main/examples/builder_branching.py).
+
 ## 3. Enums-as-factories
 
 Every enum's `__call__` constructs the underlying object:
