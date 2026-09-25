@@ -3448,7 +3448,7 @@ Completed topology transforms to persist on the final checkpoint.
 #### `nnx.nn.callbacks.EarlyStopping`
 
 ```python
-class nnx.nn.callbacks.EarlyStopping(monitor: 'str' = 'val_edp.error', patience: 'int' = 10, min_delta: 'float' = 0.0, mode: 'str' = 'min')
+class nnx.nn.callbacks.EarlyStopping(monitor: 'Optional[str]' = None, patience: 'int' = 10, min_delta: 'float' = 0.0, mode: 'str' = 'min')
 ```
 
 Stop training when the monitored metric stops improving.
@@ -3457,17 +3457,40 @@ Stop training when the monitored metric stops improving.
 
 ```text
 Args:
-    monitor: which IDP field to track. "val_edp.error" (default), "val_edp.loss",
-             "train_edp.error", or "train_edp.loss". Exactly that field is read —
-             the finite val→train / error→loss fallback that BEST selection and
-             ReduceLROnPlateau use does not apply here.
+    monitor: which data-point field to track. ``None`` (default) selects
+             automatically from the validation data point, once per
+             ``train()`` call: ``val_edp.error`` when the first validated
+             epoch reports a finite error, otherwise ``val_edp.loss`` when it
+             reports a finite loss (regression and other evaluators that
+             leave ``error`` as ``None``). The choice then stays fixed for
+             that run; ``selected_monitor`` reports it. The default never
+             reads training metrics and only supports ``mode="min"``.
+             An explicit ``"val_edp.error"``, ``"val_edp.loss"``,
+             ``"train_edp.error"`` or ``"train_edp.loss"`` reads exactly that
+             field with no fallback. Unlike BEST selection and
+             ReduceLROnPlateau, there is no validation→training fallback.
+             When the tracked field (or its whole data point) is absent, the
+             epoch is not counted toward patience and one ``RuntimeWarning``
+             per run names the monitor and what is missing, instead of the
+             callback going silently inactive. A NaN/±inf value never
+             becomes the best and counts as an epoch without improvement
+             (also reported once per run).
     patience: epochs with no improvement before stopping — a nonnegative
               integer count (NumPy integers accepted and normalized; zero
               stops on the first non-improving epoch). Fractional, boolean
               or string values raise ``ValueError`` at construction.
     min_delta: minimum change to qualify as improvement.
-    mode: "min" (default) for loss/error; "max" for accuracy/f1.
+    mode: "min" (default) for loss/error; "max" for accuracy/f1. ``"max"``
+          requires an explicit ``monitor``.
 ```
+
+##### `nnx.nn.callbacks.EarlyStopping.selected_monitor`
+
+```python
+property nnx.nn.callbacks.EarlyStopping.selected_monitor
+```
+
+Field compared in the current run (``None`` until the automatic default has seen a validated epoch with a finite error or loss).
 
 ##### `nnx.nn.callbacks.EarlyStopping.on_train_begin`
 
