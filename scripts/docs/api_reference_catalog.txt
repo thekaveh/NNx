@@ -40,7 +40,17 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.trainer.params_builder.NNTrainerParamsBuilder
 
-### 2.4. Optimizer construction and registered factories (`nnx.optimizers`)
+### 2.4. Probability-aware prediction (`nnx.prediction`)
+
+@api nnx.prediction.ProbabilitySpec
+
+@api nnx.prediction.PredictionResult
+
+@api nnx.prediction.prediction_from_logits
+
+@api nnx.prediction.PredictionValidationError
+
+### 2.5. Optimizer construction and registered factories (`nnx.optimizers`)
 
 @api nnx.optimizers.build_optimizer
 

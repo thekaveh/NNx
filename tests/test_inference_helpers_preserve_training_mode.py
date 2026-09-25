@@ -157,6 +157,31 @@ def test_predict_rejects_empty_loader_and_restores_training_mode():
     assert model.net.training is True
 
 
+@pytest.mark.parametrize("start_training", [True, False])
+def test_predict_proba_restores_training_mode_on_success_and_failure(start_training):
+    """FEAT-001: ``predict_proba`` shares ``predict``'s non-destructive
+    contract — success, a bad input, a spec that does not fit the logits
+    and an empty loader all leave the caller's mode as it was."""
+    from nnx import PredictionValidationError, ProbabilitySpec
+
+    model = _tiny_nnmodel()
+    model.net.train(start_training)
+    spec = ProbabilitySpec(kind="categorical", labels=("a", "b", "c"))
+
+    model.predict_proba(torch.randn(8, 4).numpy(), spec)
+    assert model.net.training is start_training
+    with pytest.raises(TypeError):
+        model.predict_proba([object(), object()], spec)
+    assert model.net.training is start_training
+    with pytest.raises(PredictionValidationError):
+        model.predict_proba(torch.randn(8, 4).numpy(), ProbabilitySpec(kind="categorical", labels=("a", "b")))
+    assert model.net.training is start_training
+    empty = DataLoader(TensorDataset(torch.empty(0, 4), torch.empty(0, dtype=torch.long)), batch_size=8)
+    with pytest.raises(ValueError, match=r"predict_proba\(\) loader produced zero batches"):
+        model.predict_proba(empty, spec)
+    assert model.net.training is start_training
+
+
 def _make_diffusion_model_with_schedule():
     """Shared fixture-factory for the two diffusion.sample mode-restore
     tests. Returns (model, schedule) primed for a 4-step reverse-diffusion

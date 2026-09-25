@@ -368,7 +368,8 @@ Accepts any of:
   (if present) are ignored.
 
 Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
-that unpacks like the original 2-tuple.
+that unpacks like the original 2-tuple. For probabilities, decoded
+labels and per-row sample ids, use :meth:`predict_proba`.
 
 Non-destructive: ``self.net.training`` is snapshotted before
 switching to ``eval()`` and restored on exit (matches
@@ -376,6 +377,39 @@ switching to ``eval()`` and restored on exit (matches
 ``nnx.lr_finder``). Without this, a caller doing the common
 train → predict → train-more pattern silently leaves the net
 in ``.eval()`` mode.
+```
+
+##### `nnx.nn.nn_model.NNModel.predict_proba`
+
+```python
+nnx.nn.nn_model.NNModel.predict_proba(self, X, spec: 'ProbabilitySpec') -> 'PredictionResult'
+```
+
+Probability-aware prediction declared by an explicit ``spec``.
+
+**Details**
+
+```text
+Accepts the same inputs as :meth:`predict` (arrays, tensors, tuples
+and ``DataLoader``s, including graph loaders whose rows are sliced
+to seed nodes) with the same non-destructive eval-mode contract,
+and returns a :class:`~nnx.prediction.PredictionResult`: the same
+raw logits ``predict()`` returns, probabilities (softmax over
+``spec.class_axis`` for ``"categorical"``, element-wise sigmoid for
+``"bernoulli"``), decoded values and ``sample_ids``: the row index
+for arrays, tensors and tuples; the position in iteration order for
+an ordinary ``DataLoader`` (the dataset index only when the loader
+does not shuffle — a shuffling loader warns); and the global node
+index for graph seed rows. A spec that does not fit the logits is
+rejected on the first loader batch.
+
+The task kind is never inferred from the loss or the output shape.
+For the default decoding rules, a categorical spec's ``decoded``
+equals ``predict().classes`` when the class axes agree, and a
+bernoulli spec's equals the ``BCEWithLogitsLoss`` threshold.
+Raises :class:`~nnx.prediction.PredictionValidationError` for a
+class axis or label count that does not fit the logits, or for
+non-finite logits. Parameters and gradients are never touched.
 ```
 
 
@@ -885,7 +919,171 @@ Raises:
 ```
 
 
-### 2.4. Optimizer construction and registered factories (`nnx.optimizers`)
+### 2.4. Probability-aware prediction (`nnx.prediction`)
+
+#### `nnx.prediction.ProbabilitySpec`
+
+```python
+class nnx.prediction.ProbabilitySpec(kind: 'str', class_axis: 'int' = -1, labels: 'Optional[tuple[str, ...]]' = None) -> 'None'
+```
+
+Explicit declaration of how raw logits become probabilities.
+
+**Details**
+
+```text
+Args:
+    kind: ``"categorical"`` (softmax over ``class_axis``, argmax
+        decoding) or ``"bernoulli"`` (independent sigmoid per output,
+        ``logit >= 0`` decoding).
+    class_axis: axis of the logits that indexes classes / outputs.
+        Negative values count from the end; ``-1`` (default) fits
+        ``(N, C)`` classifier logits and class-last ``(B, T, V)``
+        language-model logits, while class-first outputs such as
+        ``(N, C, H, W)`` need ``class_axis=1``. Axis 0 is always the
+        sample axis and cannot be the class axis.
+    labels: optional ordered class / output names, one per entry
+        along ``class_axis``; unique, non-empty strings.
+
+Serializes with :meth:`state` / :meth:`from_state` (plain YAML-safe
+types, label order preserved).
+```
+
+##### `nnx.prediction.ProbabilitySpec.resolve_class_axis`
+
+```python
+nnx.prediction.ProbabilitySpec.resolve_class_axis(self, ndim: 'int') -> 'int'
+```
+
+Return ``class_axis`` as a non-negative axis of an ``ndim``-D logits array, or raise if it is out of range or the sample axis.
+
+##### `nnx.prediction.ProbabilitySpec.state`
+
+```python
+nnx.prediction.ProbabilitySpec.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.prediction.ProbabilitySpec.from_state`
+
+```python
+nnx.prediction.ProbabilitySpec.from_state(state: 'Mapping[str, Any]') -> 'ProbabilitySpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.prediction.PredictionResult`
+
+```python
+class nnx.prediction.PredictionResult(logits: 'np.ndarray', probabilities: 'np.ndarray', decoded: 'np.ndarray', sample_ids: 'np.ndarray', spec: 'ProbabilitySpec') -> 'None'
+```
+
+Probability-aware prediction for ``N`` samples.
+
+**Details**
+
+```text
+Attributes:
+    logits: raw network output, exactly what ``predict().logits``
+        returns for the same input.
+    probabilities: same shape as ``logits``; softmax over the class
+        axis (categorical, rows sum to 1) or element-wise sigmoid
+        (bernoulli, not normalized).
+    decoded: categorical — argmax class indices (``logits`` without
+        the class axis); bernoulli — 0/1 indicators shaped like
+        ``logits`` (``logit >= 0``).
+    sample_ids: ``int64[N]`` identity of each row: the input row index
+        for arrays, tensors and ordinary loaders, and the global node
+        index (``input_id``) for seed rows of a graph loader.
+    spec: the :class:`ProbabilitySpec` that produced the result.
+```
+
+##### `nnx.prediction.PredictionResult.kind`
+
+```python
+property nnx.prediction.PredictionResult.kind
+```
+
+No public description is currently available.
+
+##### `nnx.prediction.PredictionResult.class_axis`
+
+```python
+property nnx.prediction.PredictionResult.class_axis
+```
+
+The class axis of :attr:`logits` / :attr:`probabilities`, non-negative.
+
+##### `nnx.prediction.PredictionResult.labels`
+
+```python
+property nnx.prediction.PredictionResult.labels
+```
+
+No public description is currently available.
+
+##### `nnx.prediction.PredictionResult.class_indices`
+
+```python
+property nnx.prediction.PredictionResult.class_indices
+```
+
+Decoded class indices — categorical results only.
+
+**Details**
+
+```text
+Bernoulli outputs are independent per-output indicators, not
+mutually exclusive classes, so they are refused here (and must
+never be fed to class-index consumers such as
+``VisUtils.confusion_matrix``).
+```
+
+##### `nnx.prediction.PredictionResult.decoded_labels`
+
+```python
+nnx.prediction.PredictionResult.decoded_labels(self) -> 'np.ndarray'
+```
+
+Decoded class names (categorical results with ``spec.labels``).
+
+
+#### `nnx.prediction.prediction_from_logits`
+
+```python
+nnx.prediction.prediction_from_logits(logits: 'Any', spec: 'ProbabilitySpec', *, sample_ids: 'Any' = None) -> 'PredictionResult'
+```
+
+Build a :class:`PredictionResult` from raw logits.
+
+**Details**
+
+```text
+``logits`` is an array or tensor whose axis 0 indexes samples and whose
+``spec.class_axis`` indexes classes / outputs. Raises
+:class:`PredictionValidationError` when the class axis is invalid, the
+label count differs from the class-axis size, any logit is NaN or
+±inf (masked logits must use a large finite negative value), or
+``sample_ids`` is not one id per sample. Probabilities are computed
+stably (max-shifted softmax, ``exp(-|x|)`` sigmoid) in the logits'
+float precision and returned in their dtype — float16 is computed in
+float32 and returned as float16, bfloat16 tensors are upcast to
+float32, integer logits give float64.
+```
+
+
+#### `nnx.prediction.PredictionValidationError`
+
+```python
+class nnx.prediction.PredictionValidationError
+```
+
+An invalid :class:`ProbabilitySpec`, or logits / sample ids that do not satisfy one (wrong label count, invalid class axis, non-finite logits, misaligned sample ids).
+
+
+### 2.5. Optimizer construction and registered factories (`nnx.optimizers`)
 
 #### `nnx.optimizers.build_optimizer`
 
