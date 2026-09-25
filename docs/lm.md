@@ -230,8 +230,12 @@ purely opt-in.
 - **PEFT (LoRA)** — `nnx.apply_lora_to(model.net, ...)` works on the
   `TransformerNN`'s `nn.Linear` projections (the fused `w_qkv`, `w_o`,
   and the SwiGLU `w1`/`w2`/`w3`). Test before publishing weights:
-  pattern-match against the actual `named_modules()` of your config.
-  Each wrapper inherits the train/eval mode of the projection it wraps,
+  pattern-match against every registration path of your config
+  (`named_modules(remove_duplicate=False)`). With tied embeddings the
+  output head's weight *is* the token embedding, so `"*"` (which also
+  wraps `lm_head`) freezes the embedding too; target the attention / MLP
+  projections by name to keep training it. A `Linear` registered under
+  two names is rejected before anything is wrapped. Each wrapper inherits the train/eval mode of the projection it wraps,
   so injecting a dropout-bearing adapter into an `eval()` model keeps
   `generate()` deterministic; modes are runtime state and never
   serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).

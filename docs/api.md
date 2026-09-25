@@ -3950,8 +3950,21 @@ Wrap every :class:`nn.Linear` submodule whose dotted name matches any of ``name_
 
 ```text
 Patterns use shell-style globs (``fnmatch``) against the dotted
-submodule name as it appears in ``module.named_modules()`` — e.g.,
-``"layers.0"``, ``"encoder.*"``, ``"*"`` for every Linear.
+submodule name — e.g., ``"layers.0"``, ``"encoder.*"``, ``"*"`` for
+every Linear. Every registration path is considered, including the
+non-first path through a shared container.
+
+**Shared modules (FIX-014):** a Linear inside a container that is
+registered under several names has one registration slot; it is
+wrapped once and every path sees the same wrapper. A Linear itself
+registered under more than one name (``m.a = m.b = linear``) cannot be
+wrapped without splitting it into independent layers, so selecting
+any of its names raises ``ValueError`` naming every alias — after the
+whole matched set is validated and before any wrapper is built, so a
+rejected call modifies nothing. Tied tensors between distinct modules
+are not aliases and are outside this check — but wrapping one of those
+modules freezes the shared tensor for both (wrapping a tied output
+head also freezes the tied token embedding).
 
 The wrap is in-place: each matched layer is removed from its parent
 and replaced with a :class:`LoRALinear` wrapping it. The base
@@ -3968,10 +3981,13 @@ Args:
     dropout: dropout on the LoRA path — passed through.
 
 Returns:
-    The count of layers wrapped (may be 0 if no patterns match).
+    The count of layers wrapped — unique registration slots, so a
+    shared container's Linear counts once (may be 0 if no patterns
+    match).
 
 Raises:
-    ValueError: if ``name_patterns`` is empty.
+    ValueError: if ``name_patterns`` is empty, or if a selected Linear
+        is registered under more than one name (nothing is modified).
 
 **Idempotency note:** if a layer is already a :class:`LoRALinear`,
 its inner ``.base`` is skipped — re-applying ``apply_lora_to``
@@ -4155,7 +4171,12 @@ Returns:
     or every match is already wrapped).
 
 Raises:
-    ValueError: if ``name_patterns`` is empty.
+    ValueError: if ``name_patterns`` is empty, or if a selected Linear
+        is registered under more than one name — the whole matched set
+        is validated before any wrapper is built, so nothing is
+        modified. A Linear inside a shared container is one slot and is
+        wrapped once; tied tensors between distinct modules are outside
+        this check (see :func:`nnx.peft.apply_lora_to`).
 ```
 
 
@@ -4268,7 +4289,12 @@ Returns:
     or every match is already wrapped).
 
 Raises:
-    ValueError: if ``name_patterns`` is empty.
+    ValueError: if ``name_patterns`` is empty, or if a selected Linear
+        is registered under more than one name — the whole matched set
+        is validated before any wrapper is built, so nothing is
+        modified. A Linear inside a shared container is one slot and is
+        wrapped once; tied tensors between distinct modules are outside
+        this check (see :func:`nnx.peft.apply_lora_to`).
 ```
 
 

@@ -36,7 +36,6 @@ hold fixed.
 
 from __future__ import annotations
 
-import fnmatch
 import math
 from collections.abc import Mapping
 from pathlib import Path
@@ -49,6 +48,7 @@ from .._validation import require_finite_real
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
+from ._targets import wrap_selected_linears
 
 
 class LoRALinear(nn.Module):
@@ -163,8 +163,21 @@ def apply_lora_to(
     number of layers wrapped.
 
     Patterns use shell-style globs (``fnmatch``) against the dotted
-    submodule name as it appears in ``module.named_modules()`` — e.g.,
-    ``"layers.0"``, ``"encoder.*"``, ``"*"`` for every Linear.
+    submodule name — e.g., ``"layers.0"``, ``"encoder.*"``, ``"*"`` for
+    every Linear. Every registration path is considered, including the
+    non-first path through a shared container.
+
+    **Shared modules (FIX-014):** a Linear inside a container that is
+    registered under several names has one registration slot; it is
+    wrapped once and every path sees the same wrapper. A Linear itself
+    registered under more than one name (``m.a = m.b = linear``) cannot be
+    wrapped without splitting it into independent layers, so selecting
+    any of its names raises ``ValueError`` naming every alias — after the
+    whole matched set is validated and before any wrapper is built, so a
+    rejected call modifies nothing. Tied tensors between distinct modules
+    are not aliases and are outside this check — but wrapping one of those
+    modules freezes the shared tensor for both (wrapping a tied output
+    head also freezes the tied token embedding).
 
     The wrap is in-place: each matched layer is removed from its parent
     and replaced with a :class:`LoRALinear` wrapping it. The base
@@ -181,48 +194,28 @@ def apply_lora_to(
         dropout: dropout on the LoRA path — passed through.
 
     Returns:
-        The count of layers wrapped (may be 0 if no patterns match).
+        The count of layers wrapped — unique registration slots, so a
+        shared container's Linear counts once (may be 0 if no patterns
+        match).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty.
+        ValueError: if ``name_patterns`` is empty, or if a selected Linear
+            is registered under more than one name (nothing is modified).
 
     **Idempotency note:** if a layer is already a :class:`LoRALinear`,
     its inner ``.base`` is skipped — re-applying ``apply_lora_to``
     against the same patterns is a no-op for layers that already
     carry a LoRA wrapper. The function returns the count of NEW wraps.
     """
-    if not name_patterns:
-        raise ValueError("apply_lora_to requires at least one name pattern")
-
-    # Two-phase: collect targets first, then mutate. Iterating
-    # named_modules() while reassigning child attributes would
-    # invalidate the traversal in ways that depend on dict iteration
-    # order. Collecting first keeps the loop predictable.
-    targets: list[str] = []
-    for name, child in module.named_modules():
-        if not name:
-            # named_modules() yields the root itself under "" — it has
-            # no parent attribute to reassign, so an in-place wrap is
-            # impossible. Skip it (wrap the root yourself if needed).
-            continue
-        if not isinstance(child, nn.Linear):
-            continue
-        # Skip the inner .base of an existing LoRALinear — its parent
-        # is a LoRALinear, which we surface via get_submodule.
-        parent_path, _, _ = name.rpartition(".")
-        parent = module if not parent_path else module.get_submodule(parent_path)
-        if isinstance(parent, LoRALinear):
-            continue
-        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
-            targets.append(name)
-
-    for name in targets:
-        parent_path, _, attr = name.rpartition(".")
-        parent = module if not parent_path else module.get_submodule(parent_path)
-        old = getattr(parent, attr)
-        setattr(parent, attr, LoRALinear(old, r=r, alpha=alpha, dropout=dropout))
-
-    return len(targets)
+    # Two-phase: the whole matched set (aliases included — FIX-014) is
+    # validated before the first wrapper is built, then each slot is wrapped.
+    return wrap_selected_linears(
+        module,
+        name_patterns,
+        skip_inside=LoRALinear,
+        helper="apply_lora_to",
+        wrap=lambda base: LoRALinear(base, r=r, alpha=alpha, dropout=dropout),
+    )
 
 
 _LORA_OWNED = ("lora_A", "lora_B")
