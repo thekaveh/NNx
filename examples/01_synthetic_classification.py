@@ -1,7 +1,12 @@
 """Train a feed-forward classifier on synthetic 3-class data.
 
 Demonstrates the core NNModel flow: build params → train with callbacks →
-inspect the resulting NNRun → reload the BEST checkpoint and predict.
+inspect the resulting NNRun → reload the BEST checkpoint and predict — both
+with the classic ``predict()`` (logits + classes) and with the opt-in,
+probability-aware ``predict_proba(X, ProbabilitySpec(...))``: equal logits
+and classes, rows of probabilities summing to 1, sample ids aligned with the
+input rows, and a confusion matrix from the decoded classes plus
+``spec.labels`` identical to the legacy one.
 
 ``native_nll_workflow`` below is a bounded variant using
 ``Losses.NEGATIVE_LOG_LIKELIHOOD``: built-in nets emit raw logits, and NNx
@@ -16,6 +21,7 @@ Run:
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
@@ -36,6 +42,9 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    ProbabilitySpec,
+    VisUtils,
+    prediction_from_logits,
     set_seed,
 )
 
@@ -181,6 +190,35 @@ def main():
     best_model = NNModel.from_checkpoint(checkpoint=ckpt)
     result = best_model.predict(X=X_val)
     print(f"predicted classes for {len(result.classes)} val samples; first 8: {result.classes[:8]}")
+
+    # 6. Probability-aware prediction (opt-in): declare the task explicitly.
+    spec = ProbabilitySpec(kind="categorical", class_axis=1, labels=("class_0", "class_1", "class_2"))
+    rich = best_model.predict_proba(X_val, spec)
+    assert np.array_equal(rich.logits, result.logits) and np.array_equal(rich.decoded, result.classes)
+    assert np.allclose(rich.probabilities.sum(axis=1), 1.0, atol=1e-6)
+    assert rich.sample_ids.tolist() == list(range(len(X_val)))  # row i of every array is X_val[i]
+    # Batched through a loader, every row keeps its identity.
+    batched = best_model.predict_proba(DataLoader(TensorDataset(X_val), batch_size=24), spec)
+    assert batched.sample_ids.tolist() == rich.sample_ids.tolist()
+    assert np.array_equal(batched.decoded, rich.decoded)
+    # Decoded classes + spec.labels give exactly the legacy confusion matrix.
+    names = list(spec.labels or ())
+    legacy_cm = VisUtils.confusion_matrix(y_val, result.classes, class_names=names)
+    rich_cm = VisUtils.confusion_matrix(y_val, rich.class_indices, class_names=names)
+    assert np.array_equal(np.asarray(legacy_cm.data[0].z), np.asarray(rich_cm.data[0].z))
+    # Independent Bernoulli outputs are per-output indicators, never classes.
+    bernoulli = prediction_from_logits(rich.logits, ProbabilitySpec(kind="bernoulli", labels=spec.labels))
+    try:
+        _ = bernoulli.class_indices
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("bernoulli outputs must not be usable as class indices")
+    confidence = rich.probabilities.max(axis=1)
+    print(
+        f"predict_proba: first 4 labels {rich.decoded_labels()[:4].tolist()}, "
+        f"mean top-class probability {confidence.mean():.3f}"
+    )
 
 
 if __name__ == "__main__":

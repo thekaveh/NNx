@@ -172,6 +172,11 @@ run = model.train(params=train_params, callbacks=[EarlyStopping(patience=5)])
 # 4. Use it
 print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 logits, classes = model.predict(X=X_val.numpy())  # returns PredictResult(logits=..., classes=...)
+
+# Opt-in probabilities with an explicit task declaration (predict() is unchanged)
+from nnx import ProbabilitySpec
+proba = model.predict_proba(X_val.numpy(), ProbabilitySpec(kind="categorical", class_axis=1))
+proba.probabilities, proba.decoded, proba.sample_ids  # softmax rows sum to 1; ids align with X_val
 ```
 
 ## 4. Advanced patterns

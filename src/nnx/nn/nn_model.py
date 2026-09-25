@@ -31,6 +31,7 @@ from .params.nn_run import NNRun, _best_err, _print_run_saved
 from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
+    from ..prediction import PredictionResult, ProbabilitySpec
     from .callbacks import Callback
 
 
@@ -1642,7 +1643,8 @@ class NNModel(_HubMixinBase):
           (if present) are ignored.
 
         Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
-        that unpacks like the original 2-tuple.
+        that unpacks like the original 2-tuple. For probabilities, decoded
+        labels and per-row sample ids, use :meth:`predict_proba`.
 
         Non-destructive: ``self.net.training`` is snapshotted before
         switching to ``eval()`` and restored on exit (matches
@@ -1651,13 +1653,71 @@ class NNModel(_HubMixinBase):
         train → predict → train-more pattern silently leaves the net
         in ``.eval()`` mode.
         """
+        logits, _ = self._predict_logits(X, caller="predict()")
+        class_axis = -1 if self.params.net is Nets.TRANSFORMER and logits.ndim > 2 else 1
+        classes = (
+            (logits >= 0).astype(np.int64)
+            if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
+            else logits.argmax(axis=class_axis)
+        )
+        return PredictResult(logits=logits, classes=classes)
+
+    def predict_proba(self, X, spec: ProbabilitySpec) -> PredictionResult:
+        """Probability-aware prediction declared by an explicit ``spec``.
+
+        Accepts the same inputs as :meth:`predict` (arrays, tensors, tuples
+        and ``DataLoader``s, including graph loaders whose rows are sliced
+        to seed nodes) with the same non-destructive eval-mode contract,
+        and returns a :class:`~nnx.prediction.PredictionResult`: the same
+        raw logits ``predict()`` returns, probabilities (softmax over
+        ``spec.class_axis`` for ``"categorical"``, element-wise sigmoid for
+        ``"bernoulli"``), decoded values and ``sample_ids``: the row index
+        for arrays, tensors and tuples; the position in iteration order for
+        an ordinary ``DataLoader`` (the dataset index only when the loader
+        does not shuffle — a shuffling loader warns); and the global node
+        index for graph seed rows. A spec that does not fit the logits is
+        rejected on the first loader batch.
+
+        The task kind is never inferred from the loss or the output shape.
+        For the default decoding rules, a categorical spec's ``decoded``
+        equals ``predict().classes`` when the class axes agree, and a
+        bernoulli spec's equals the ``BCEWithLogitsLoss`` threshold.
+        Raises :class:`~nnx.prediction.PredictionValidationError` for a
+        class axis or label count that does not fit the logits, or for
+        non-finite logits. Parameters and gradients are never touched.
+        """
+        from ..prediction import _check_spec_fits, prediction_from_logits
+
+        if isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
+            warnings.warn(
+                "predict_proba() over a shuffling DataLoader: sample_ids are iteration positions, not "
+                "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
+                "loader (graph loaders are exempt: their ids are global node indices)",
+                UserWarning,
+                stacklevel=2,
+            )
+        logits, sample_ids = self._predict_logits(
+            X, caller="predict_proba()", check_first=lambda first: _check_spec_fits(first, spec)
+        )
+        return prediction_from_logits(logits, spec, sample_ids=sample_ids)
+
+    def _predict_logits(
+        self, X, *, caller: str, check_first: Optional[Callable[[np.ndarray], object]] = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Shared inference path of :meth:`predict` / :meth:`predict_proba`:
+        raw logits (numpy) plus an ``int64`` sample id per row, computed in
+        eval mode under ``no_grad`` with every submodule's training mode
+        restored on exit (success or failure). ``check_first`` sees the
+        first loader batch's logits, so a caller can reject them before the
+        rest of the loader is run."""
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
 
         try:
             if isinstance(X, DataLoader):
                 logits_chunks: list[np.ndarray] = []
-                classes_chunks: list[np.ndarray] = []
+                id_chunks: list[np.ndarray] = []
+                offset = 0
                 with torch.no_grad():
                     for batch in X:
                         if isinstance(batch, torch.Tensor):
@@ -1670,30 +1730,38 @@ class NNModel(_HubMixinBase):
                             X_in, _ = cast(Any, self.net).unpack_batch(batch)
                         X_in = tuple(x.to(self.device) for x in X_in)
                         logits = self.net(*X_in).cpu().numpy()
+                        ids: Optional[np.ndarray] = None
                         # NeighborLoader subgraphs: only the leading seed
                         # rows are this batch's nodes (see
                         # GraphNNBase.seed_count) — without the slice,
                         # predictions for sampled neighbors pollute the
                         # output and the row count exceeds the loader's
-                        # node set.
+                        # node set. Their identity is the global node index.
                         seed_count = getattr(self.net, "seed_count", None)
                         if seed_count is not None:
                             n_seed = seed_count(batch)
                             if n_seed is not None:
                                 logits = logits[:n_seed]
+                                # NeighborLoader's `n_id` holds the global ids
+                                # of the subgraph's nodes, seeds first; its
+                                # `input_id` is only global when input_nodes
+                                # was a mask. NNGraphDataset's full-graph
+                                # batches carry the global ids in `input_id`.
+                                node_ids = getattr(batch, "n_id", None)
+                                if node_ids is None:
+                                    node_ids = getattr(batch, "input_id", None)
+                                if node_ids is not None:
+                                    ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
+                        if ids is None:
+                            ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
+                        offset += logits.shape[0]
+                        if check_first is not None and not logits_chunks:
+                            check_first(logits)
                         logits_chunks.append(logits)
-                        class_axis = -1 if self.params.net is Nets.TRANSFORMER and logits.ndim > 2 else 1
-                        classes_chunks.append(
-                            (logits >= 0).astype(np.int64)
-                            if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
-                            else logits.argmax(axis=class_axis)
-                        )
+                        id_chunks.append(ids)
                 if not logits_chunks:
-                    raise ValueError("predict() loader produced zero batches")
-                return PredictResult(
-                    logits=np.concatenate(logits_chunks),
-                    classes=np.concatenate(classes_chunks),
-                )
+                    raise ValueError(f"{caller} loader produced zero batches")
+                return np.concatenate(logits_chunks), np.concatenate(id_chunks)
 
             # Single input (any of: ndarray, Tensor, or a tuple thereof).
             if not isinstance(X, tuple):
@@ -1709,13 +1777,7 @@ class NNModel(_HubMixinBase):
 
             with torch.no_grad():
                 Y_hat_logits = self.net(*X_t).cpu().numpy()
-                class_axis = -1 if self.params.net is Nets.TRANSFORMER and Y_hat_logits.ndim > 2 else 1
-                Y_hat = (
-                    (Y_hat_logits >= 0).astype(np.int64)
-                    if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
-                    else Y_hat_logits.argmax(axis=class_axis)
-                )
-                return PredictResult(logits=Y_hat_logits, classes=Y_hat)
+            return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
 

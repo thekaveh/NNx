@@ -182,6 +182,56 @@ def test_predict_loader_slices_to_seed_nodes():
     assert result.classes.shape[0] == 5
 
 
+def test_predict_proba_loader_keeps_seed_rows_and_global_node_ids():
+    """FEAT-001: predict_proba over a NeighborLoader-style loader keeps
+    only seed rows (like predict) and identifies each by its global node
+    index (`input_id`), not by its position in the subgraph."""
+    from types import SimpleNamespace
+
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams, ProbabilitySpec
+
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=_params(),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+    def _subgraph(n_nodes: int, seed_ids: list[int]) -> SimpleNamespace:
+        return SimpleNamespace(
+            x=torch.randn(n_nodes, 4, generator=torch.Generator().manual_seed(n_nodes)),
+            edge_index=torch.tensor([[i for i in range(n_nodes)], [(i + 1) % n_nodes for i in range(n_nodes)]]),
+            y=torch.zeros(n_nodes, dtype=torch.long),
+            batch_size=len(seed_ids),
+            input_id=torch.tensor(seed_ids),
+        )
+
+    class _Loader:
+        def __iter__(self):
+            return iter([_subgraph(6, [40, 7]), _subgraph(5, [3, 18, 25])])
+
+    loader = _FakeDataLoader(_Loader())
+    legacy = model.predict(X=loader)
+    result = model.predict_proba(loader, ProbabilitySpec(kind="categorical", class_axis=1))
+    assert result.logits.shape[0] == 5 and result.sample_ids.tolist() == [40, 7, 3, 18, 25]
+
+    # A real NeighborLoader over an index-tensor `input_nodes` sets `input_id`
+    # to POSITIONS within input_nodes; `n_id` holds the global ids (seeds
+    # first) and takes precedence.
+    def _neighbor_batch(n_nodes: int, global_ids: list[int], n_seed: int) -> SimpleNamespace:
+        batch = _subgraph(n_nodes, list(range(n_seed)))
+        batch.n_id = torch.tensor(global_ids)
+        return batch
+
+    class _NeighborLoader:
+        def __iter__(self):
+            return iter([_neighbor_batch(4, [9, 2, 5, 6], 2), _neighbor_batch(3, [11, 1, 0], 1)])
+
+    with_n_id = model.predict_proba(_FakeDataLoader(_NeighborLoader()), ProbabilitySpec(kind="categorical"))
+    assert with_n_id.sample_ids.tolist() == [9, 2, 11]
+    assert torch.equal(torch.from_numpy(result.logits), torch.from_numpy(legacy.logits))
+    assert (result.decoded == legacy.classes).all()
+
+
 class _FakeDataLoader(torch.utils.data.DataLoader):
     """A DataLoader subclass whose iteration is fully overridden — lets
     predict()'s isinstance(X, DataLoader) branch run on synthetic
