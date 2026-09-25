@@ -26,7 +26,6 @@ This module ships:
 
 from __future__ import annotations
 
-import fnmatch
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Union
@@ -37,6 +36,7 @@ from torch import nn
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
+from ._targets import wrap_selected_linears
 
 
 class IA3Linear(nn.Module):
@@ -118,36 +118,15 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
         or every match is already wrapped).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty.
+        ValueError: if ``name_patterns`` is empty, or if a selected Linear
+            is registered under more than one name — the whole matched set
+            is validated before any wrapper is built, so nothing is
+            modified. A Linear inside a shared container is one slot and is
+            wrapped once; tied tensors between distinct modules are outside
+            this check (see :func:`nnx.peft.apply_lora_to`).
     """
-    if not name_patterns:
-        raise ValueError("apply_ia3_to requires at least one name pattern")
-
-    targets: list[str] = []
-    for name, child in module.named_modules():
-        if not name:
-            # named_modules() yields the root itself under "" — it has
-            # no parent attribute to reassign, so an in-place wrap is
-            # impossible. Skip it (wrap the root yourself if needed).
-            continue
-        if not isinstance(child, nn.Linear):
-            continue
-        # Skip the inner .base of an existing IA3Linear — re-applying
-        # must be idempotent.
-        parent_path, _, _ = name.rpartition(".")
-        parent = module if not parent_path else module.get_submodule(parent_path)
-        if isinstance(parent, IA3Linear):
-            continue
-        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
-            targets.append(name)
-
-    for name in targets:
-        parent_path, _, attr = name.rpartition(".")
-        parent = module if not parent_path else module.get_submodule(parent_path)
-        old = getattr(parent, attr)
-        setattr(parent, attr, IA3Linear(old))
-
-    return len(targets)
+    # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014).
+    return wrap_selected_linears(module, name_patterns, skip_inside=IA3Linear, helper="apply_ia3_to", wrap=IA3Linear)
 
 
 def _ia3_keys_only(module: nn.Module, state_dict: Mapping[str, Any]) -> dict:

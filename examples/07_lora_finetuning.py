@@ -40,6 +40,11 @@ it wraps, so repeated ``predict`` calls stay bit-identical and the
 per-module mode map is unchanged; a later ``train()`` still re-enables
 the adapter dropout.
 
+``peft_alias_preflight`` below shows the shared-module boundary: a Linear
+registered under two names cannot be wrapped without splitting it, so the
+apply helpers reject it (naming both aliases) before building any wrapper,
+and an independent target can still be wrapped and trained.
+
 ``lora_artifact_roundtrip`` below closes the loop the main flow leaves
 open: it inspects the exact keys ``save_lora_weights`` writes (adapter
 ownership, never a name substring — a layer named ``lora_A_projection``
@@ -348,6 +353,55 @@ def peft_eval_injection() -> dict:
 
     summary = {"wrapped": n_wrapped, "loaded": n_loaded, "eval_modules": len(modes)}
     print(f"PEFT eval-injection workflow: {summary}")
+    return summary
+
+
+def peft_alias_preflight() -> dict:
+    """Bounded shared-module preflight demonstration (FIX-014).
+
+    One ``Linear`` is registered under two names (``encoder`` and
+    ``decoder``) next to an independent ``head``. Wrapping any alias would
+    split the shared layer into two independent layers, so
+    ``apply_lora_to`` rejects the wildcard *and* the second name alone with
+    a ``ValueError`` naming both aliases — before building any wrapper, so
+    every module identity, weight and ``requires_grad`` flag is unchanged.
+    Selecting only the independent ``head`` then succeeds, and one
+    optimizer step trains exactly its adapter while the shared layer stays
+    untouched.
+    """
+    set_seed(0)
+    shared = torch.nn.Linear(6, 6)
+    net = torch.nn.ModuleDict(OrderedDict([("encoder", shared), ("decoder", shared), ("head", torch.nn.Linear(6, 3))]))
+    snapshot = {k: v.detach().clone() for k, v in net.state_dict().items()}
+
+    rejected = []
+    for pattern in ("*", "decoder"):
+        try:
+            apply_lora_to(net, pattern, r=2, alpha=4.0)
+        except ValueError as exc:
+            assert "(encoder, decoder)" in str(exc), exc
+            rejected.append(pattern)
+    assert rejected == ["*", "decoder"], rejected
+    assert net["encoder"] is net["decoder"] is shared and type(shared) is torch.nn.Linear
+    assert all(p.requires_grad for p in net.parameters()), "a rejected call must not freeze anything"
+    assert all(torch.equal(v, snapshot[k]) for k, v in net.state_dict().items())
+
+    n_wrapped = apply_lora_to(net, "head", r=2, alpha=4.0)
+    assert n_wrapped == 1 and isinstance(net["head"], LoRALinear)
+    adapter = [net["head"].lora_A, net["head"].lora_B]
+    optimizer = torch.optim.SGD(adapter, lr=0.1)
+    x = torch.randn(4, 6)
+    with torch.no_grad():
+        features = net["decoder"](net["encoder"](x))
+    loss = (net["head"](features) ** 2).mean() + net["head"].lora_B.sum()
+    loss.backward()
+    before = [p.detach().clone() for p in adapter]
+    optimizer.step()
+    assert any(not torch.equal(a, p.detach()) for a, p in zip(before, adapter, strict=True)), "adapter must move"
+    assert torch.equal(shared.weight.detach(), snapshot["encoder.weight"]), "the shared layer is untouched"
+
+    summary = {"rejected": rejected, "wrapped": n_wrapped, "loss": float(loss.detach())}
+    print(f"PEFT alias preflight workflow: {summary}")
     return summary
 
 

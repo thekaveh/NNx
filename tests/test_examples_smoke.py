@@ -52,6 +52,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("02_resume_training.py", "overwrite_best_recovery"),
     ("07_lora_finetuning.py", "dora_zero_row_composition"),
     ("07_lora_finetuning.py", "lora_artifact_roundtrip"),
+    ("07_lora_finetuning.py", "peft_alias_preflight"),
     ("07_lora_finetuning.py", "peft_eval_injection"),
     ("07_lora_finetuning.py", "peft_preconverted_base"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),

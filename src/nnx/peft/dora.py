@@ -33,11 +33,10 @@ single vector of length ``out_features`` per wrapped layer).
 
 from __future__ import annotations
 
-import fnmatch
-
 import torch
 from torch import nn
 
+from ._targets import wrap_selected_linears
 from .lora import LoRALinear
 
 
@@ -166,35 +165,19 @@ def apply_dora_to(
         or every match is already wrapped).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty.
+        ValueError: if ``name_patterns`` is empty, or if a selected Linear
+            is registered under more than one name — the whole matched set
+            is validated before any wrapper is built, so nothing is
+            modified. A Linear inside a shared container is one slot and is
+            wrapped once; tied tensors between distinct modules are outside
+            this check (see :func:`nnx.peft.apply_lora_to`).
     """
-    if not name_patterns:
-        raise ValueError("apply_dora_to requires at least one name pattern")
-
-    # Two-phase traversal — same rationale as apply_lora_to: avoid
-    # invalidating the iterator while reassigning child attributes.
-    targets: list[str] = []
-    for name, child in module.named_modules():
-        if not name:
-            # named_modules() yields the root itself under "" — it has
-            # no parent attribute to reassign, so an in-place wrap is
-            # impossible. Skip it (wrap the root yourself if needed).
-            continue
-        if not isinstance(child, nn.Linear):
-            continue
-        # Skip the inner .base of an existing LoRALinear (which covers
-        # DoRALinear via inheritance) — re-applying must be idempotent.
-        parent_path, _, _ = name.rpartition(".")
-        parent = module if not parent_path else module.get_submodule(parent_path)
-        if isinstance(parent, LoRALinear):
-            continue
-        if any(fnmatch.fnmatchcase(name, p) for p in name_patterns):
-            targets.append(name)
-
-    for name in targets:
-        parent_path, _, attr = name.rpartition(".")
-        parent = module if not parent_path else module.get_submodule(parent_path)
-        old = getattr(parent, attr)
-        setattr(parent, attr, DoRALinear(old, r=r, alpha=alpha, dropout=dropout))
-
-    return len(targets)
+    # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014);
+    # the LoRALinear skip covers DoRALinear by inheritance.
+    return wrap_selected_linears(
+        module,
+        name_patterns,
+        skip_inside=LoRALinear,
+        helper="apply_dora_to",
+        wrap=lambda base: DoRALinear(base, r=r, alpha=alpha, dropout=dropout),
+    )
