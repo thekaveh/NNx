@@ -2972,6 +2972,16 @@ strings and anything but a 3-tuple are rejected with the
 split. Zero never disables a split: `val_proportion=0.0` /
 `test_proportion=0.0` do, and that split's loader is then ``None`` with
 a placeholder ``1`` in the resolved ``batch_sizes``.
+
+Admission: only the selected feature and target columns are inspected.
+NaN in any of them, ``±inf`` in a feature (checked in source precision,
+before the ``feature_dtype`` cast that could absorb it), finite features
+outside an integer ``feature_dtype``'s range (the cast would wrap them)
+and a non-finite target raise ``ValueError`` naming the columns and
+dtypes; so does a finite value that overflows a narrower floating /
+complex ``feature_dtype`` or floating ``target_dtype`` during conversion.
+All checks, the classification label check included, run before the
+split, so a rejection leaves the DataFrame and the global RNG untouched.
 ```
 
 
