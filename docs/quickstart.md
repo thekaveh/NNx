@@ -166,6 +166,22 @@ model_params = NNModelParams(
 Leave `target_dtype=None` for classification, where targets remain `torch.long`
 and `output_dim` is the number of classes.
 
+**Admission checks.** Only the selected `feature_cols` and `target_col` are
+inspected — unrelated columns may hold anything. NaN in any of them is rejected
+naming the columns and the requested dtypes. Non-finite features are never
+admitted: `±inf` in a selected feature is rejected in source precision *before*
+the `feature_dtype` cast, so an int64 or bool cast cannot quietly absorb it
+(into an INT64 extreme or `True`); a non-finite target was already rejected.
+For an integer `feature_dtype`, finite values outside its range (for example
+`300` with `torch.int8`, `1e30` with `torch.int64`) are rejected in source
+precision too, since the cast would wrap them. A finite value that overflows a
+narrower floating or complex dtype during conversion (for example `1e5` with
+`feature_dtype` or `target_dtype=torch.float16`) is rejected after conversion.
+Errors name the columns and dtypes, and every admission check — including the
+classification label check — runs before the train/val/test split, so the
+caller's DataFrame and the global RNG are untouched. See
+[`examples/tabular_validation.py`](https://github.com/thekaveh/NNx/blob/main/examples/tabular_validation.py).
+
 **Batch sizes.** Every dataset wrapper (`NNDataset`, `NNTabularDataset`,
 `NNPreferenceDataset`, `NNGraphDataset`) takes `batch_sizes=(train, val, test)`.
 `None` — the default for every slot — means *one batch holding the complete
