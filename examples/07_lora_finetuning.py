@@ -33,6 +33,13 @@ float64 (or moved to an accelerator) *before* ``apply_lora_to`` composes
 immediately — one adapter-only SGD step, no second ``.to()``, base
 bit-exactly unchanged.
 
+``peft_eval_injection`` below covers deployment order: the classifier is
+put in ``eval()`` *before* adapters with nonzero dropout are injected and
+trained weights are loaded. Each wrapper inherits the mode of the layer
+it wraps, so repeated ``predict`` calls stay bit-identical and the
+per-module mode map is unchanged; a later ``train()`` still re-enables
+the adapter dropout.
+
 ``lora_artifact_roundtrip`` below closes the loop the main flow leaves
 open: it inspects the exact keys ``save_lora_weights`` writes (adapter
 ownership, never a name substring — a layer named ``lora_A_projection``
@@ -291,6 +298,56 @@ def dora_zero_row_composition(dtype: torch.dtype = torch.float16) -> dict:
 
     summary = {"dtype": str(dtype), "wrapped": n_wrapped, "loss": float(loss.detach()), "state_keys": len(state)}
     print(f"DoRA zero-row composition workflow: {summary}")
+    return summary
+
+
+def peft_eval_injection() -> dict:
+    """Bounded eval-before-injection demonstration (writes one file under a
+    temporary directory).
+
+    A deployed classifier is switched to ``eval()`` *before* LoRA adapters
+    with nonzero dropout are injected and trained weights are loaded into
+    them. Every wrapper inherits the eval mode of the layer it wraps, so
+    the dropout on the adapter path stays inactive: repeated ``predict``
+    calls are bit-identical and the per-module mode map is all-eval before
+    and after. A later ``net.train()`` still activates the adapter dropout
+    (preservation never pins a wrapper in eval), and modes are runtime
+    state — the adapter file holds only ``lora_A`` / ``lora_B`` tensors.
+    """
+    set_seed(0)
+    source = _classifier()
+    base_state = {k: v.detach().clone() for k, v in source.net.state_dict().items()}
+    apply_lora_to(source.net, "*", r=2, alpha=4.0, dropout=0.3)
+    with torch.no_grad():
+        for m in source.net.modules():
+            if isinstance(m, LoRALinear):
+                m.lora_B.normal_(std=0.2)  # a trained, nonzero adapter
+
+    deployed = _classifier()
+    deployed.net.load_state_dict(base_state)  # the same pretrained base weights
+    deployed.net.eval()  # eval BEFORE injection
+    n_wrapped = apply_lora_to(deployed.net, "*", r=2, alpha=4.0, dropout=0.3)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = save_lora_weights(source.net, os.path.join(tmp, "adapter.pt"))
+        saved_keys = sorted(torch.load(path, weights_only=True))
+        n_loaded = load_lora_weights(deployed.net, path)
+    assert n_loaded == len(saved_keys) == 2 * n_wrapped, (n_loaded, saved_keys)
+    assert all(key.endswith(("lora_A", "lora_B")) for key in saved_keys), "no mode field is serialized"
+
+    modes = {name: m.training for name, m in deployed.net.named_modules()}
+    assert not any(modes.values()), f"injection flipped modules into train mode: {modes}"
+    x = torch.randn(16, 8)
+    first, second = deployed.predict(x), deployed.predict(x)
+    assert (first.logits == second.logits).all(), "eval-mode inference must be deterministic"
+    assert {name: m.training for name, m in deployed.net.named_modules()} == modes
+
+    deployed.net.train()
+    dropouts = [m.lora_dropout for m in deployed.net.modules() if isinstance(m, LoRALinear)]
+    assert dropouts and all(d.training for d in dropouts), "a later train() must activate adapter dropout"
+    deployed.net.eval()
+
+    summary = {"wrapped": n_wrapped, "loaded": n_loaded, "eval_modules": len(modes)}
+    print(f"PEFT eval-injection workflow: {summary}")
     return summary
 
 

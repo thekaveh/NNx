@@ -231,6 +231,10 @@ purely opt-in.
   `TransformerNN`'s `nn.Linear` projections (the fused `w_qkv`, `w_o`,
   and the SwiGLU `w1`/`w2`/`w3`). Test before publishing weights:
   pattern-match against the actual `named_modules()` of your config.
+  Each wrapper inherits the train/eval mode of the projection it wraps,
+  so injecting a dropout-bearing adapter into an `eval()` model keeps
+  `generate()` deterministic; modes are runtime state and never
+  serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
 - **Callbacks** — `EarlyStopping`, `ModelCheckpoint`,
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
   `train_loss` for an LM is the standard signal; perplexity = `exp(loss)`.

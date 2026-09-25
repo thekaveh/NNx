@@ -68,7 +68,9 @@ class DoRALinear(LoRALinear):
     nonzero updates stay differentiable. The effective weight is cast
     back to the layer dtype before the matmul, so the output dtype is
     unchanged. Persist a DoRA adapter with the full ``state_dict()``:
-    the LoRA-only helpers omit ``magnitude``.
+    the LoRA-only helpers omit ``magnitude``. Like :class:`LoRALinear`,
+    the wrapper and its update dropout inherit the base layer's
+    train/eval mode at construction.
 
     Args:
         base: the :class:`nn.Linear` to wrap. Its parameters are frozen

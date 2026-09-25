@@ -42,6 +42,7 @@ import torch
 from torch import nn
 
 from ..nn.net.transformer_nn import TransformerNN
+from ._mode import inherit_training_mode
 from ._source import _resolve_source_to_state_dict
 
 
@@ -92,6 +93,9 @@ class PromptTuner(nn.Module):
         # converted or moved before wrapping forwards immediately.
         self.soft_prompt = nn.Parameter(model.tok_embed.weight.new_empty(n_prompt_tokens, d_model))
         nn.init.normal_(self.soft_prompt, std=0.02)
+        # Report the wrapped model's train/eval mode (FIX-013); the model's
+        # own (possibly mixed) submodule modes are left untouched.
+        inherit_training_mode(self, model)
 
     @property
     def effective_max_seq_len(self) -> int:

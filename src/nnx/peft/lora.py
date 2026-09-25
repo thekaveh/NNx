@@ -46,6 +46,7 @@ import torch
 from torch import nn
 
 from .._validation import require_finite_real
+from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
 
@@ -69,6 +70,11 @@ class LoRALinear(nn.Module):
     and device, so convert or move the base *before* wrapping and the
     adapter composes immediately (a meta-device base yields meta
     adapters). The base is never moved, recast or replaced.
+
+    The wrapper and its dropout inherit the base layer's train/eval mode
+    at construction, so wrapping an eval layer keeps inference
+    deterministic; a later ``.train()`` / ``.eval()`` switches them as
+    usual. Modes are runtime state and never serialized.
     """
 
     def __init__(
@@ -117,6 +123,11 @@ class LoRALinear(nn.Module):
         self.lora_B = nn.Parameter(weight.new_zeros(out_features, r))
 
         self.lora_dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
+
+        # FIX-013: inherit the wrapped layer's own train/eval mode (per layer,
+        # so a mixed-mode parent keeps each child's flag) for the wrapper and
+        # its dropout, without touching the base or any other module.
+        inherit_training_mode(self, base)
 
     @property
     def in_features(self) -> int:

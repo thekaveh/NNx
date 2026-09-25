@@ -34,6 +34,7 @@ from typing import Any, Union
 import torch
 from torch import nn
 
+from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
 
@@ -51,6 +52,9 @@ class IA3Linear(nn.Module):
     ``scaling`` takes the base weight's dtype and device, so the output
     keeps the base dtype (a half base stays half) and a pre-converted or
     pre-moved base composes without a second ``.to()``.
+
+    The wrapper inherits the base layer's train/eval mode at construction
+    (modes are runtime state and never serialized).
 
     Args:
         base: the :class:`nn.Linear` to wrap.
@@ -73,6 +77,10 @@ class IA3Linear(nn.Module):
         # (FIX-003): a float32 vector would silently promote a half
         # pipeline's output to float32 and break the next half Linear.
         self.scaling = nn.Parameter(base.weight.new_ones(base.out_features))
+        # Report the wrapped layer's mode rather than a fresh module's
+        # default train mode (FIX-013), so per-module mode maps stay
+        # faithful after injection into an eval or mixed-mode model.
+        inherit_training_mode(self, base)
 
     @property
     def in_features(self) -> int:
