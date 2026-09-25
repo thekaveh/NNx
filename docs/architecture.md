@@ -30,6 +30,9 @@ cleanup hook is attempted; cleanup errors do not mask an exception already
 raised by training. A failed LAST commit rolls history back; failures after LAST
 retain the durable history/checkpoint pair. On load, history newer than LAST is
 truncated, while an empty or corrupt LAST is rejected rather than treated as a
-request to erase history.
+request to erase history. Each text file is replaced on its own through an owned
+temporary file: a failed write leaves that destination's previous bytes and
+removes its temporary, but the history files are not one multi-file
+transaction, and a hard kill can still leave a stale temporary behind.
 
 ![NNx training lifecycle](assets/training-lifecycle.png)
