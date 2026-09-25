@@ -21,10 +21,12 @@ from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
 from ..params.nn_iteration_data_point import NNIterationDataPoint
 from ..params.nn_model_params import NNModelParams
+from ..params.nn_optim_params import NNOptimParams
 from ..params.nn_params import NNParams
 from ..params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
+    from ...optimizers import NNOptimFactoryParams
     from ...trainer.params import NNTrainerParams
 
 
@@ -35,6 +37,37 @@ def _runs_root(root: Optional[str] = None) -> str:
     """Resolve the on-disk root for `runs/`. Defaults to `<cwd>/runs` so
     existing notebook callers (which pass nothing) keep their layout."""
     return os.path.join(root if root is not None else os.getcwd(), "runs")
+
+
+def _factory_text(optim: NNOptimFactoryParams) -> str:
+    """``id@vN`` plus the config (when non-empty) of a registered factory.
+    Reads the spec as plain data — never resolves or runs the factory."""
+    config = optim.factory.state()["config"]
+    return f"{optim.factory} {config}" if config else str(optim.factory)
+
+
+def _optim_summary(optim: object) -> str:
+    """``str(NNRun)`` optimizer fields. A registered factory is named by its
+    ``id@vN`` and config — no fabricated ``momentum`` / ``name``."""
+    from ...optimizers import NNOptimFactoryParams
+
+    if isinstance(optim, NNOptimParams):
+        return f", max_lr={optim.max_lr}, momentum={optim.momentum}, decay={optim.weight_decay}"
+    if isinstance(optim, NNOptimFactoryParams):
+        return f", optimizer={_factory_text(optim)}, max_lr={optim.max_lr}, decay={optim.weight_decay}"
+    return f", optim={optim}"
+
+
+def _optim_label(optim: object) -> str:
+    """Notebook-view optimizer name: the built-in variant, or the
+    registered factory's ``id@vN`` and config."""
+    from ...optimizers import NNOptimFactoryParams
+
+    if isinstance(optim, NNOptimParams):
+        return str(optim.name)
+    if isinstance(optim, NNOptimFactoryParams):
+        return f"registered factory {_factory_text(optim)}"
+    return str(optim)
 
 
 def _run_display_path(run_id: str) -> str:
@@ -368,9 +401,7 @@ class NNRun:
             f", activation={self.net.activation}"
             f", n_heads={self.net.n_heads}"
             f", n_epochs={self.train.n_epochs}"
-            f", max_lr={self.train.optim.max_lr}"
-            f", momentum={self.train.optim.momentum}"
-            f", decay={self.train.optim.weight_decay}"
+            f"{_optim_summary(self.train.optim)}"
             f", scheduler={self.train.scheduler}"
             "}"
         )
@@ -445,7 +476,7 @@ class NNRun:
             ("dropout", str(self.net.dropout_prob)),
             ("activation", str(self.net.activation)),
             ("n_epochs", str(self.train.n_epochs)),
-            ("optim", f"{self.train.optim.name} (max_lr={self.train.optim.max_lr})"),
+            ("optim", f"{_optim_label(self.train.optim)} (max_lr={self.train.optim.max_lr})"),
         ]
         rows_html = "".join(
             f'<tr><td style="padding:2px 8px;font-weight:600;">{k}</td>'

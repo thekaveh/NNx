@@ -677,7 +677,7 @@ Public type alias.
 #### `nnx.trainer.params.NNTrainerParams`
 
 ```python
-class nnx.trainer.params.NNTrainerParams(*, n_epochs: 'int', optims: 'Mapping[str, NNOptimParams]', schedulers: 'Mapping[str, NNSchedulerParams]' = <factory>, seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, auto_step_schedulers: 'bool' = True, overwrite_existing: 'bool' = False, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'None'
+class nnx.trainer.params.NNTrainerParams(*, n_epochs: 'int', optims: 'Mapping[str, Union[NNOptimParams, NNOptimFactoryParams]]', schedulers: 'Mapping[str, NNSchedulerParams]' = <factory>, seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, auto_step_schedulers: 'bool' = True, overwrite_existing: 'bool' = False, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'None'
 ```
 
 Configuration for `Trainer.train()` — the multi-optimizer parallel to `NNModel.train()` / `NNTrainParams`.
@@ -788,10 +788,10 @@ Number of training epochs. Required.
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.optimizer`
 
 ```python
-nnx.trainer.params_builder.NNTrainerParamsBuilder.optimizer(self, name: 'str', params: 'NNOptimParams') -> 'NNTrainerParamsBuilder'
+nnx.trainer.params_builder.NNTrainerParamsBuilder.optimizer(self, name: 'str', params: 'Union[NNOptimParams, NNOptimFactoryParams]') -> 'NNTrainerParamsBuilder'
 ```
 
-Register one optimizer under `name`. Each name gets its own torch.optim.Optimizer at Trainer.train() time. Use `NNOptimParams.builder()` (Plan 2) to construct `params`.
+Register one optimizer under `name`. Each name gets its own torch.optim.Optimizer at Trainer.train() time. Use `NNOptimParams.builder()` (Plan 2) to construct a built-in `params`, or `nnx.NNOptimFactoryParams` for a registered factory.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.scheduler`
 
@@ -882,6 +882,137 @@ Raises:
         `.optimizer(name, ...)`. Both messages name the
         Builder methods to call so the user can fix the chain
         without consulting the dataclass schema.
+```
+
+
+### 2.4. Optimizer construction and registered factories (`nnx.optimizers`)
+
+#### `nnx.optimizers.build_optimizer`
+
+```python
+nnx.optimizers.build_optimizer(net: 'nn.Module', params: 'AnyOptimParams', *, strict_param_groups: 'bool' = False) -> 'torch.optim.Optimizer'
+```
+
+Build the optimizer ``params`` describes for ``net``.
+
+**Details**
+
+```text
+The one construction hook behind ``NNModel.train`` (non-strict: an
+unmatched trainable parameter joins a default group) and
+``Trainer.train`` (``strict_param_groups=True``: each optimizer owns
+only what its ``param_groups`` specs select, so disjoint optimizers
+never co-own a parameter).
+
+Built-in :class:`NNOptimParams` dispatch through
+:class:`~nnx.nn.enum.optims.Optims` exactly as before. For
+:class:`NNOptimFactoryParams` the factory is resolved in the registry,
+called once with the groups a built-in would receive (the shared
+:func:`~nnx.nn.enum.optims.resolve_param_groups` rule, each group with
+explicit ``lr`` / ``weight_decay``) and the read-only config, and its
+result is checked: it must be a ``torch.optim.Optimizer`` holding
+exactly those parameters.
+```
+
+
+#### `nnx.optimizers.OptimizerFactorySpec`
+
+```python
+class nnx.optimizers.OptimizerFactorySpec(id: 'str', version: 'int', config: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+Stable, serializable reference to a registered optimizer factory.
+
+**Details**
+
+```text
+``id`` and ``version`` name the factory in the registry; ``config`` is
+handed to it read-only and must be JSON-like — ``None``, ``bool``,
+``int``, finite ``float``, ``str``, lists (exposed as tuples) and
+string-keyed mappings. The spec never holds the callable, so it
+round-trips through ``run.yaml`` and reloads without the factory being
+registered or imported. Immutable; equal specs have equal ``state()``.
+```
+
+##### `nnx.optimizers.OptimizerFactorySpec.state`
+
+```python
+nnx.optimizers.OptimizerFactorySpec.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.optimizers.OptimizerFactorySpec.from_state`
+
+```python
+nnx.optimizers.OptimizerFactorySpec.from_state(state: 'Mapping[str, Any]') -> 'OptimizerFactorySpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.optimizers.register_optimizer_factory`
+
+```python
+nnx.optimizers.register_optimizer_factory(id: 'str', version: 'int', factory: 'OptimizerFactory', *, replace: 'bool' = False) -> 'None'
+```
+
+Register ``factory`` under ``(id, version)`` for this process.
+
+**Details**
+
+```text
+``factory(param_groups, config)`` receives the resolved parameter
+groups and the spec's read-only config and must return a
+``torch.optim.Optimizer`` over exactly those parameters. Registering an
+existing ``(id, version)`` raises unless ``replace=True``; bump
+``version`` instead when the factory's behaviour changes, so resumed
+runs can tell the difference.
+```
+
+
+#### `nnx.optimizers.unregister_optimizer_factory`
+
+```python
+nnx.optimizers.unregister_optimizer_factory(id: 'str', version: 'int') -> 'bool'
+```
+
+Remove ``(id, version)`` from the registry; returns whether it was registered. Run metadata that references it still loads — only training with it needs the registration.
+
+
+#### `nnx.optimizers.registered_optimizer_factories`
+
+```python
+nnx.optimizers.registered_optimizer_factories() -> 'tuple[tuple[str, int], ...]'
+```
+
+Sorted ``(id, version)`` pairs currently registered.
+
+
+#### `nnx.optimizers.resolve_optimizer_factory`
+
+```python
+nnx.optimizers.resolve_optimizer_factory(spec: 'OptimizerFactorySpec') -> 'OptimizerFactory'
+```
+
+Look ``spec`` up in the registry. Never imports anything: an unregistered id or version raises ``ValueError`` naming what is registered.
+
+
+#### `nnx.optimizers.optim_params_from_state`
+
+```python
+nnx.optimizers.optim_params_from_state(state: 'Mapping[str, Any]') -> 'AnyOptimParams'
+```
+
+Decode a serialized optimizer config into the right variant.
+
+**Details**
+
+```text
+A ``factory`` entry is the discriminator for
+:class:`NNOptimFactoryParams`; anything else is a built-in
+:class:`NNOptimParams` (every config written before factories
+existed). Decoding never resolves or runs a factory.
 ```
 
 
@@ -993,7 +1124,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_train_params.NNTrainParams`
 
 ```python
-class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'NNOptimParams' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False) -> 'None'
+class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False) -> 'None'
 ```
 
 Training configuration.
@@ -1053,7 +1184,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_optim_params.NNOptimParams`
 
 ```python
-class nnx.nn.params.nn_optim_params.NNOptimParams(*, name: 'Optims', max_lr: 'float', weight_decay: 'float', momentum: 'Union[float, tuple[float, float]]', grad_clip_norm: 'Optional[float]' = None, accumulate_grad_batches: 'int' = 1, param_groups: 'Optional[list[NNParamGroupSpec]]' = None) -> 'None'
+class nnx.nn.params.nn_optim_params.NNOptimParams(*, name: 'Optims', max_lr: 'float', weight_decay: 'float', momentum: 'Union[float, tuple[float, float]]', grad_clip_norm: 'Optional[float]' = None, accumulate_grad_batches: 'int' = 1, param_groups: 'Optional[list[NNParamGroupSpec]]' = None, eps: 'float' = 1e-08) -> 'None'
 ```
 
 Optimizer config.
@@ -1063,9 +1194,20 @@ Optimizer config.
 ```text
 `momentum` is overloaded by optimizer kind:
   - For SGD / SGD_NESTEROV: a single float, the SGD momentum coefficient.
-  - For ADAM / ADAM_AMSGRAD: a (beta1, beta2) tuple, passed as the
-    Adam `betas=` argument. The name is retained for backwards
+  - For ADAM / ADAM_AMSGRAD / ADAMW: a (beta1, beta2) tuple, passed as
+    the `betas=` argument. The name is retained for backwards
     compatibility — `is_valid()` enforces the per-optim shape.
+
+`weight_decay` follows the chosen optimizer: ADAM / ADAM_AMSGRAD add it
+to the gradient (coupled L2 penalty, rescaled by the adaptive
+denominator), while ADAMW decays the weights directly
+(``p -= lr * weight_decay * p``) before the Adam update — the
+decoupled decay of Loshchilov & Hutter.
+
+`eps` is the Adam-family denominator term (``1e-8``, torch's default).
+It is only meaningful for ADAM / ADAM_AMSGRAD / ADAMW; setting it on
+an SGD variant raises. It is omitted from `state()` at its default so
+existing run ids are unchanged.
 
 `grad_clip_norm` clips gradients by global L2 norm before optimizer.step().
 None = no clipping (back-compat default). Typical values: 1.0 for
@@ -1129,7 +1271,7 @@ Variant-aware builder for `NNOptimParams`.
 
 ```text
 Reach via `NNOptimParams.builder()`. Pick exactly one variant
-method (`adam`, `adam_amsgrad`, `sgd`, `sgd_nesterov`), then chain
+method (`adam`, `adam_amsgrad`, `adamw`, `sgd`, `sgd_nesterov`), then chain
 optional methods (`grad_clip`, `accumulate_grad`, `param_groups`),
 then `.build()`. Method-call order is independent — a modifier
 called before a variant survives the variant call, and the last
@@ -1139,18 +1281,26 @@ variant always wins.
 ##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam`
 
 ```python
-nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam(self, *, max_lr: 'float', betas: 'tuple[float, float]' = (0.9, 0.999), weight_decay: 'float' = 0.0) -> 'NNOptimParamsBuilder'
+nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam(self, *, max_lr: 'float', betas: 'tuple[float, float]' = (0.9, 0.999), weight_decay: 'float' = 0.0, eps: 'Optional[float]' = None) -> 'NNOptimParamsBuilder'
 ```
 
-torch.optim.Adam. `betas` is PyTorch's name for the (beta1, beta2) tuple; the Builder maps it onto the underlying `NNOptimParams.momentum` field (which holds the tuple for Adam variants).
+torch.optim.Adam. `betas` is PyTorch's name for the (beta1, beta2) tuple; the Builder maps it onto the underlying `NNOptimParams.momentum` field (which holds the tuple for Adam variants). `weight_decay` is Adam's coupled L2 term (added to the gradient); use `adamw()` for decoupled decay. `eps` defaults to torch's `1e-8` and is then omitted from `state()`.
 
 ##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam_amsgrad`
 
 ```python
-nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam_amsgrad(self, *, max_lr: 'float', betas: 'tuple[float, float]' = (0.9, 0.999), weight_decay: 'float' = 0.0) -> 'NNOptimParamsBuilder'
+nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adam_amsgrad(self, *, max_lr: 'float', betas: 'tuple[float, float]' = (0.9, 0.999), weight_decay: 'float' = 0.0, eps: 'Optional[float]' = None) -> 'NNOptimParamsBuilder'
 ```
 
-torch.optim.Adam with `amsgrad=True`. Same `betas` mapping as `adam()`.
+torch.optim.Adam with `amsgrad=True`. Same `betas` / `eps` mapping as `adam()`.
+
+##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adamw`
+
+```python
+nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.adamw(self, *, max_lr: 'float', betas: 'tuple[float, float]' = (0.9, 0.999), weight_decay: 'float' = 0.01, eps: 'Optional[float]' = None) -> 'NNOptimParamsBuilder'
+```
+
+torch.optim.AdamW — Adam with decoupled weight decay: each step first scales the weights by ``1 - lr * weight_decay`` and then applies the Adam update, instead of adding ``weight_decay * p`` to the gradient. `weight_decay` defaults to torch's `1e-2`; `betas` / `eps` map as in `adam()`.
 
 ##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.sgd`
 
@@ -1214,10 +1364,56 @@ that's what preserves the omit-when-default state() invariant.
 
 Raises:
     ValueError: if no variant method (`.adam`, `.adam_amsgrad`,
-        `.sgd`, `.sgd_nesterov`) was called before `.build()`.
-        The message names the four methods so the user can
-        fix the chain without consulting the dataclass schema.
+        `.adamw`, `.sgd`, `.sgd_nesterov`) was called before
+        `.build()`. The message names the five methods so the user
+        can fix the chain without consulting the dataclass schema.
 ```
+
+
+#### `nnx.optimizers.NNOptimFactoryParams`
+
+```python
+class nnx.optimizers.NNOptimFactoryParams(*, factory: 'OptimizerFactorySpec', max_lr: 'float', weight_decay: 'float' = 0.0, grad_clip_norm: 'Optional[float]' = None, accumulate_grad_batches: 'int' = 1, param_groups: 'Optional[list[NNParamGroupSpec]]' = None) -> 'None'
+```
+
+Optimizer config backed by a registered factory.
+
+**Details**
+
+```text
+The registered-variant counterpart of
+:class:`~nnx.nn.params.nn_optim_params.NNOptimParams`: it shares
+``max_lr`` / ``weight_decay`` (defaults for every resolved group),
+``grad_clip_norm``, ``accumulate_grad_batches`` and ``param_groups``
+with the same validation, but names its optimizer through ``factory``
+instead of an :class:`~nnx.nn.enum.optims.Optims` value and carries no
+``momentum`` / ``name`` fields. Its ``state()`` holds a ``factory``
+entry, which is how run decoding tells the two variants apart.
+```
+
+##### `nnx.optimizers.NNOptimFactoryParams.is_valid`
+
+```python
+nnx.optimizers.NNOptimFactoryParams.is_valid(self) -> 'bool'
+```
+
+Always True: every field was validated at construction (the built-in variant's momentum-shape check has no counterpart here). Whether the factory is registered is checked when training starts.
+
+##### `nnx.optimizers.NNOptimFactoryParams.state`
+
+```python
+nnx.optimizers.NNOptimFactoryParams.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.optimizers.NNOptimFactoryParams.from_state`
+
+```python
+nnx.optimizers.NNOptimFactoryParams.from_state(state: 'Mapping[str, Any]') -> 'NNOptimFactoryParams'
+```
+
+No public description is currently available.
 
 
 #### `nnx.nn.params.nn_scheduler_params.NNSchedulerParams`
@@ -1884,7 +2080,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.
@@ -3345,7 +3541,7 @@ Enum value `transformer`.
 class nnx.nn.enum.optims.Optims(Enum)
 ```
 
-Enum values: `SGD`, `ADAM`, `ADAM_AMSGRAD`, `SGD_NESTEROV`.
+Enum values: `SGD`, `ADAM`, `ADAM_AMSGRAD`, `SGD_NESTEROV`, `ADAMW`.
 
 ##### `nnx.nn.enum.optims.Optims.SGD`
 
@@ -3378,6 +3574,14 @@ nnx.nn.enum.optims.Optims.SGD_NESTEROV = 'sgd_nesterov'
 ```
 
 Enum value `sgd_nesterov`.
+
+##### `nnx.nn.enum.optims.Optims.ADAMW`
+
+```python
+nnx.nn.enum.optims.Optims.ADAMW = 'adamw'
+```
+
+Enum value `adamw`.
 
 
 #### `nnx.nn.enum.schedulers.Schedulers`

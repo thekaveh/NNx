@@ -16,13 +16,16 @@ __post_init__.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, Union
 
 from torch.utils.data import DataLoader
 
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from .params import NNTrainerParams
+
+if TYPE_CHECKING:
+    from ..optimizers import NNOptimFactoryParams
 
 
 class NNTrainerParamsBuilder:
@@ -40,7 +43,7 @@ class NNTrainerParamsBuilder:
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
-        self._optims: dict[str, NNOptimParams] = {}
+        self._optims: dict[str, Union[NNOptimParams, NNOptimFactoryParams]] = {}
         self._schedulers: dict[str, NNSchedulerParams] = {}
 
     def n_epochs(self, n: int) -> NNTrainerParamsBuilder:
@@ -48,10 +51,11 @@ class NNTrainerParamsBuilder:
         self._fields["n_epochs"] = n
         return self
 
-    def optimizer(self, name: str, params: NNOptimParams) -> NNTrainerParamsBuilder:
+    def optimizer(self, name: str, params: Union[NNOptimParams, NNOptimFactoryParams]) -> NNTrainerParamsBuilder:
         """Register one optimizer under `name`. Each name gets its
         own torch.optim.Optimizer at Trainer.train() time. Use
-        `NNOptimParams.builder()` (Plan 2) to construct `params`."""
+        `NNOptimParams.builder()` (Plan 2) to construct a built-in
+        `params`, or `nnx.NNOptimFactoryParams` for a registered factory."""
         self._optims[name] = params
         return self
 

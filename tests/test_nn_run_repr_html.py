@@ -163,3 +163,40 @@ def test_repr_html_handles_run_with_empty_idps():
     assert "<table" in html
     # Chart absent because idps is empty.
     assert "plotly" not in html.lower()
+
+
+def test_str_and_repr_html_name_a_registered_factory_without_running_it():
+    """FEAT-013: a run whose optimizer is a registered factory is displayed
+    by the factory's id@version — no fabricated `momentum` / `name`
+    fields — and displaying it needs neither the factory registered nor
+    any factory code (the spec is plain data)."""
+    from nnx import NNOptimFactoryParams, NNRun, OptimizerFactorySpec, registered_optimizer_factories
+
+    spec = OptimizerFactorySpec(id="tests.display_only", version=3, config={"momentum": 0.9})
+    assert ("tests.display_only", 3) not in registered_optimizer_factories()
+    run = NNRun(
+        net=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        train=NNTrainParams(n_epochs=1, optim=NNOptimFactoryParams(factory=spec, max_lr=0.05, weight_decay=1e-4)),
+    )
+    text = str(run)
+    assert "optimizer=tests.display_only@v3 {'momentum': 0.9}" in text and "max_lr=0.05" in text
+    # The config is the factory's own; no fabricated `momentum=` / `name=` field.
+    assert ", momentum=" not in text and "name=" not in text
+    html = run._repr_html_()
+    assert "registered factory tests.display_only@v3 {'momentum': 0.9} (max_lr=0.05)" in html
+
+
+def test_str_and_repr_html_name_adamw():
+    from nnx import NNRun
+
+    run = NNRun(
+        net=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        train=NNTrainParams(
+            n_epochs=1,
+            optim=NNOptimParams(name=Optims.ADAMW, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.01),
+        ),
+    )
+    assert "momentum=(0.9, 0.999)" in str(run)
+    assert "adamw (max_lr=0.001)" in run._repr_html_()

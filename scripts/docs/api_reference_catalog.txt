@@ -40,6 +40,22 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.trainer.params_builder.NNTrainerParamsBuilder
 
+### 2.4. Optimizer construction and registered factories (`nnx.optimizers`)
+
+@api nnx.optimizers.build_optimizer
+
+@api nnx.optimizers.OptimizerFactorySpec
+
+@api nnx.optimizers.register_optimizer_factory
+
+@api nnx.optimizers.unregister_optimizer_factory
+
+@api nnx.optimizers.registered_optimizer_factories
+
+@api nnx.optimizers.resolve_optimizer_factory
+
+@api nnx.optimizers.optim_params_from_state
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
@@ -51,6 +67,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.nn.params.nn_optim_params.NNOptimParams
 
 @api nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder
+
+@api nnx.optimizers.NNOptimFactoryParams
 
 @api nnx.nn.params.nn_scheduler_params.NNSchedulerParams
 
