@@ -16,10 +16,11 @@ __post_init__.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Union
 
 from torch.utils.data import DataLoader
 
+from .._builders import copy_containers, params_init_values
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from .params import NNTrainerParams
@@ -39,12 +40,79 @@ class NNTrainerParamsBuilder:
     Ownership (see `NNTrainerParams`): the custom ``trainer_step_fn``
     owns every optimizer update; Trainer steps registered schedulers once
     per epoch unless ``.auto_step_schedulers(False)``.
+
+    `copy()` branches a (possibly partial) builder and `from_params()`
+    rebuilds one from an existing `NNTrainerParams`, so a shared base
+    (epochs, loaders, a common optimizer) is written once and each branch
+    adds its own optimizers, schedulers or `data_id`.
     """
+
+    # Every `NNTrainerParams` init field `from_params` can carry.
+    _PARAMS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "n_epochs",
+        "optims",
+        "schedulers",
+        "seed",
+        "data_id",
+        "save_phase_checkpoints",
+        "auto_step_schedulers",
+        "overwrite_existing",
+        "train_loader",
+        "val_loader",
+        "extra_metrics",
+    )
+    # Configuration containers a branch owns (its items stay shared); the
+    # `optims` / `schedulers` maps are the builder's own dicts.
+    _CONTAINER_FIELDS: ClassVar[tuple[str, ...]] = ("optims", "schedulers", "extra_metrics")
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
         self._optims: dict[str, Union[NNOptimParams, NNOptimFactoryParams]] = {}
         self._schedulers: dict[str, NNSchedulerParams] = {}
+
+    def copy(self) -> NNTrainerParamsBuilder:
+        """Return an independent branch of this builder, complete or partial.
+
+        The `optims` / `schedulers` maps and the `extra_metrics` mapping
+        are copied, so registering, replacing or dropping an entry on one
+        builder never shows up on the other (nor in values already
+        built). Their values are shared by identity: optimizer and
+        scheduler params are immutable, and `DataLoader` s and metric
+        callables are runtime objects that are never copied or iterated.
+        Nothing is built or validated here — `build()` validates each
+        branch, including the `schedulers ⊆ optims` rule.
+        """
+        branch = type(self)()
+        branch._fields = copy_containers(self._fields, ("extra_metrics",))
+        branch._optims = dict(self._optims)
+        branch._schedulers = dict(self._schedulers)
+        return branch
+
+    @classmethod
+    def from_params(cls, params: NNTrainerParams) -> NNTrainerParamsBuilder:
+        """Return a builder pre-loaded with every field of `params`.
+
+        `from_params(params).build()` reproduces `params` field for field,
+        with the same `state()` (sorted keys, omitted defaults) and the
+        same runtime insertion order of `optims`. Built-in and
+        registered-factory optimizer params, loaders and metric callables
+        keep their identity; the builder's own maps are fresh copies, so
+        extending it never alters `params`.
+
+        Raises:
+            TypeError: if `params` is not exactly an `NNTrainerParams`
+                (the single-optimizer `NNTrainParams` has no builder).
+            ValueError: if `params` carries a field this builder cannot
+                reproduce.
+        """
+        values = params_init_values(
+            "NNTrainerParamsBuilder", params, NNTrainerParams, cls._PARAMS_FIELDS, containers=cls._CONTAINER_FIELDS
+        )
+        builder = cls()
+        builder._optims = values.pop("optims")
+        builder._schedulers = values.pop("schedulers", {})
+        builder._fields = values
+        return builder
 
     def n_epochs(self, n: int) -> NNTrainerParamsBuilder:
         """Number of training epochs. Required."""
@@ -70,6 +138,22 @@ class NNTrainerParamsBuilder:
         """Seed for reproducibility. None at default (no seeding via
         params; the caller's `set_seed()` is the only path)."""
         self._fields["seed"] = value
+        return self
+
+    def data_id(self, value: str) -> NNTrainerParamsBuilder:
+        """Name the dataset or split this configuration trains on.
+
+        Part of `state()` and therefore of the run id, so two otherwise
+        identical configurations (e.g. sibling builder branches) over
+        different data get distinct run directories. None at default.
+        """
+        self._fields["data_id"] = value
+        return self
+
+    def overwrite_existing(self, value: bool) -> NNTrainerParamsBuilder:
+        """Allow a run to replace an existing run directory with the same
+        id. Default False; not part of `state()` or the run id."""
+        self._fields["overwrite_existing"] = value
         return self
 
     def save_phase_checkpoints(self, value: bool) -> NNTrainerParamsBuilder:

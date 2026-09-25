@@ -34,6 +34,18 @@ class _ImmutableList(list):
         return (_ImmutableList, (list(self),))
 
 
+def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Optional[list[float]]]:
+    """Parse the per-layer ``activations`` / ``dropout_probs`` overrides (#85)
+    from a params ``state()``. ``NNParams.state()`` writes each only when it
+    differs from the net-wide scalar, so an absent key means ``None``. Shared
+    by every params ``from_state`` that inherits the lists."""
+    raw_acts = state.get("activations")
+    raw_drops = state.get("dropout_probs")
+    activations = [Activations(a) for a in ast.literal_eval(raw_acts)] if raw_acts is not None else None
+    dropout_probs = ast.literal_eval(raw_drops) if raw_drops is not None else None
+    return activations, dropout_probs
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNParams:
     dropout_prob: float
@@ -170,8 +182,7 @@ class NNParams:
     @staticmethod
     def from_state(state: dict) -> NNParams:
         raw_activation = state["activation"]
-        raw_acts = state.get("activations")
-        raw_drops = state.get("dropout_probs")
+        activations, dropout_probs = _per_layer_from_state(state)
         return NNParams(
             input_dim=state["input_dim"],
             output_dim=state["output_dim"],
@@ -179,8 +190,8 @@ class NNParams:
             activation=Activations(raw_activation) if raw_activation is not None else None,
             hidden_dims=ast.literal_eval(state["hidden_dims"]),
             n_heads=state["n_heads"] if "n_heads" in state else None,
-            activations=([Activations(a) for a in ast.literal_eval(raw_acts)] if raw_acts is not None else None),
-            dropout_probs=ast.literal_eval(raw_drops) if raw_drops is not None else None,
+            activations=activations,
+            dropout_probs=dropout_probs,
         )
 
     @staticmethod
