@@ -381,3 +381,252 @@ def test_early_stopping_resets_state_on_train_begin():
     es.on_train_begin(ctx=None)  # the hook reads nothing from ctx
     assert es._best is None
     assert es._wait == 0
+
+
+# --- #189: default monitor selection and missing-field diagnostics ---------
+
+
+def _edp_ctx(epoch=0, *, val=None, train=None):
+    """A context whose data points carry explicit ``error`` / ``loss`` pairs.
+
+    ``val`` / ``train`` are ``(error, loss)`` tuples, or ``None`` for an
+    absent data point (no validation loader configured).
+    """
+    val_edp = None if val is None else SimpleNamespace(error=val[0], loss=val[1])
+    train_edp = None if train is None else SimpleNamespace(error=train[0], loss=train[1])
+    idp = SimpleNamespace(epoch_idx=epoch, val_edp=val_edp, train_edp=train_edp, lr=1e-3)
+    return SimpleNamespace(epoch=epoch, idp=idp, idps=[idp], should_stop=False)
+
+
+def _drive(es, epochs, *, split="val"):
+    """Feed ``(error, loss)`` pairs to a fresh run; return the stop epoch."""
+    es.on_train_begin(ctx=None)
+    for epoch, pair in enumerate(epochs):
+        ctx = _edp_ctx(epoch, **{split: pair})
+        es.on_epoch_end(ctx)
+        if ctx.should_stop:
+            return epoch
+    return None
+
+
+def test_early_stopping_default_falls_back_to_val_loss_for_regression():
+    """Regression evaluators leave ``error`` as None; the default monitor
+    must then track ``val_edp.loss`` instead of silently never stopping."""
+    es = EarlyStopping(patience=2)
+    assert es.monitor is None  # automatic selection, not an explicit field
+    stop = _drive(es, [(None, 0.5), (None, 0.5), (None, 0.5), (None, 0.5)])
+    assert stop == 2
+    assert es.selected_monitor == "val_edp.loss"
+
+
+def test_early_stopping_default_prefers_val_error_for_classification():
+    """With both fields present the default follows ``error``: an improving
+    error keeps training alive even while the loss is flat, and a flat
+    error stops it even while the loss improves."""
+    es = EarlyStopping(patience=2)
+    assert _drive(es, [(0.5, 0.9), (0.4, 0.9), (0.3, 0.9), (0.2, 0.9)]) is None
+    assert es.selected_monitor == "val_edp.error"
+    assert _drive(es, [(0.5, 0.9), (0.5, 0.8), (0.5, 0.7), (0.5, 0.6)]) == 2
+    assert es.selected_monitor == "val_edp.error"
+
+
+@pytest.mark.parametrize(
+    ("monitor", "split", "index"),
+    [
+        ("val_edp.error", "val", 0),
+        ("val_edp.loss", "val", 1),
+        ("train_edp.error", "train", 0),
+        ("train_edp.loss", "train", 1),
+    ],
+)
+def test_early_stopping_explicit_monitor_reads_exactly_that_field(monitor, split, index):
+    """An explicit monitor never falls back: only the named field decides."""
+    es = EarlyStopping(monitor=monitor, patience=2)
+    flat, improving = 0.5, [0.9, 0.8, 0.7, 0.6]
+    epochs = []
+    for value in improving:
+        pair = [value, value]
+        pair[index] = flat
+        epochs.append(tuple(pair))
+    assert _drive(es, epochs, split=split) == 2
+    assert es.selected_monitor == monitor
+
+
+@pytest.mark.parametrize(
+    ("monitor", "val", "reason"),
+    [
+        ("val_edp.error", (None, 0.5), "has no 'error' value"),
+        ("val_edp.loss", (0.5, None), "has no 'loss' value"),
+        ("val_edp.loss", None, "no validation data point"),
+    ],
+)
+def test_early_stopping_explicit_missing_field_warns_once(monitor, val, reason):
+    """A missing explicitly requested field is reported, not silently
+    ignored — once per run, and the epoch is not counted."""
+    import warnings
+
+    es = EarlyStopping(monitor=monitor, patience=1)
+    es.on_train_begin(ctx=None)
+    ctx = _edp_ctx(0, val=val, train=(0.5, 0.5))
+    with pytest.warns(RuntimeWarning, match=reason) as record:
+        es.on_epoch_end(ctx)
+    assert monitor in str(record[0].message)
+    assert not ctx.should_stop
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for epoch in (1, 2, 3):
+            ctx = _edp_ctx(epoch, val=val, train=(0.5, 0.5))
+            es.on_epoch_end(ctx)  # already reported this run → no repeat
+            assert not ctx.should_stop
+    es.on_train_begin(ctx=None)
+    with pytest.warns(RuntimeWarning, match=reason):
+        es.on_epoch_end(_edp_ctx(0, val=val, train=(0.5, 0.5)))
+
+
+def test_early_stopping_default_warns_without_validation_data_point():
+    """The default monitor reads validation only; without a validation
+    loader it says so instead of silently doing nothing."""
+    es = EarlyStopping(patience=1)
+    es.on_train_begin(ctx=None)
+    ctx = _edp_ctx(0, val=None, train=(0.5, 0.5))
+    with pytest.warns(RuntimeWarning, match="no validation data point"):
+        es.on_epoch_end(ctx)
+    assert not ctx.should_stop
+    assert es.selected_monitor is None
+
+
+def test_early_stopping_default_warns_when_validation_has_no_error_or_loss():
+    es = EarlyStopping(patience=1)
+    es.on_train_begin(ctx=None)
+    with pytest.warns(RuntimeWarning, match="neither an 'error' nor a 'loss'"):
+        es.on_epoch_end(_edp_ctx(0, val=(None, None)))
+    assert es.selected_monitor is None
+
+
+def test_early_stopping_default_skips_nonfinite_error_when_loss_is_finite():
+    """Selection follows the same finiteness rule as BEST / ReduceLROnPlateau:
+    a NaN validation error must not lock the run onto an unusable field."""
+    import warnings
+
+    nan = float("nan")
+    es = EarlyStopping(patience=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the NaN error is never compared
+        stop = _drive(es, [(nan, 1.0), (nan, 0.5), (nan, 0.2), (nan, 0.1)])
+    assert es.selected_monitor == "val_edp.loss"
+    assert stop is None
+
+
+def test_early_stopping_nonfinite_value_never_becomes_best():
+    """A NaN first epoch must not poison ``_best`` (every later comparison
+    against NaN is False); later finite improvements still count."""
+    nan = float("nan")
+    es = EarlyStopping(monitor="val_edp.loss", patience=2)
+    with pytest.warns(RuntimeWarning, match="non-finite"):
+        stop = _drive(es, [(None, nan), (None, 1.0), (None, 0.9), (None, 0.8), (None, 0.7)])
+    assert stop is None
+    assert es._best == 0.7
+
+
+def test_early_stopping_diverged_run_still_stops():
+    """Non-finite epochs count as epochs without improvement, including
+    under the default before any finite value allowed a selection."""
+    nan = float("nan")
+    es = EarlyStopping(patience=2)
+    with pytest.warns(RuntimeWarning, match="non-finite"):
+        stop = _drive(es, [(nan, nan), (nan, nan), (nan, nan)])
+    assert stop == 1
+    assert es.selected_monitor is None
+
+
+def test_early_stopping_warning_repeats_for_each_run_under_default_filters():
+    """Python's default filter shows a message from one location only once
+    per process; each run's diagnostic must still reach the user, and it is
+    attributed to the caller rather than to nnx internals."""
+    import warnings
+
+    es = EarlyStopping(patience=1)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("default")
+        for _ in range(2):
+            es.on_train_begin(ctx=None)
+            es.on_epoch_end(_edp_ctx(0, val=None, train=(0.5, 0.5)))
+            es.on_epoch_end(_edp_ctx(1, val=None, train=(0.5, 0.5)))
+    messages = [w for w in record if issubclass(w.category, RuntimeWarning)]
+    assert len(messages) == 2
+    assert all(w.filename == __file__ for w in messages)
+
+
+def test_early_stopping_default_rejects_max_mode():
+    """The default only ever selects error or loss, which improve downward."""
+    with pytest.raises(ValueError, match="explicit monitor"):
+        EarlyStopping(mode="max")
+    assert EarlyStopping(monitor="val_edp.error", mode="max").mode == "max"
+
+
+def test_early_stopping_default_selection_stays_fixed_for_the_run():
+    """Once the default picks ``val_edp.loss`` it keeps comparing loss even
+    when a later epoch starts reporting ``error``."""
+    es = EarlyStopping(patience=2)
+    stop = _drive(es, [(None, 0.5), (0.4, 0.5), (0.3, 0.5), (0.2, 0.5)])
+    assert es.selected_monitor == "val_edp.loss"
+    assert stop == 2
+
+
+def test_early_stopping_default_reselects_per_train_call():
+    """One instance reused across train() calls picks its field afresh:
+    a regression run (loss) followed by a classification run (error)."""
+    es = EarlyStopping(patience=2)
+    assert _drive(es, [(None, 0.5), (None, 0.5), (None, 0.5)]) == 2
+    assert es.selected_monitor == "val_edp.loss"
+    assert _drive(es, [(0.5, 0.9), (0.4, 0.9), (0.3, 0.9)]) is None
+    assert es.selected_monitor == "val_edp.error"
+
+
+def test_early_stopping_default_stops_regression_training(tmp_path, monkeypatch):
+    """End to end: a loss-only ``eval_step_fn`` (regression style, ``error``
+    left as None) now stops a real ``train()`` under the default monitor."""
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import (
+        Activations,
+        Devices,
+        Losses,
+        Nets,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNParams,
+        NNTrainParams,
+        Optims,
+    )
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    X = torch.randn(16, 4)
+    y = torch.randint(0, 2, (16,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+    def loss_only_eval(ctx):  # noqa: ARG001
+        return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=0.25)
+
+    es = EarlyStopping(patience=1)
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=6,
+            train_loader=loader,
+            val_loader=loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+        ),
+        callbacks=[es],
+        eval_step_fn=loss_only_eval,
+    )
+    epochs = sorted({idp.epoch_idx for idp in run.idps})
+    assert epochs == [0, 1]
+    assert es.selected_monitor == "val_edp.loss"

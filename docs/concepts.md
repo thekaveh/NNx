@@ -249,11 +249,25 @@ value actually used. An epoch with no finite signal anywhere skips the
 plateau step (a distinct "no metric available" warning) and compares as an
 unavailable BEST baseline. The raw observations are retained unchanged in
 the live history and checkpoint payloads; CSV readback keeps mapping NaN
-cells to `None`. `EarlyStopping` is separate: it reads exactly the field
-named by its `monitor` argument and does not apply this fallback. To expose
-a loss-only control signal from a regression evaluator, set `loss` and leave
-`error` as `None` (or mirror the loss into `error`, as example 26 does) —
-never report a regression error as a classification accuracy.
+cells to `None`. `EarlyStopping` is separate and never falls back from
+validation to training metrics. Its default (`monitor=None`) picks one
+validation field per `train()` call — the first finite value in the order
+`val_edp.error` → `val_edp.loss`, like BEST selection but without the
+training fallback — and keeps that field for the rest of the run
+(`selected_monitor` reports the choice; `mode="max"` needs an explicit
+monitor).
+An explicit `monitor` (`"val_edp.error"`, `"val_edp.loss"`,
+`"train_edp.error"` or `"train_edp.loss"`) reads exactly that field. When
+the tracked field or its whole data point is missing — no validation loader,
+or an evaluator that never sets it — the epoch does not count toward
+patience and one `RuntimeWarning` per run names the monitor and what is
+missing, rather than the callback going silently inactive. A NaN/±inf
+value never becomes the best; it counts as an epoch without improvement, so
+a diverged run still stops. To expose a
+loss-only control signal from a regression evaluator, set `loss` and leave
+`error` as `None` (the default monitor then tracks the loss), or mirror the
+loss into `error` as example 26 does — never report a regression error as a
+classification accuracy.
 
 This supports regression and other non-classification validation without
 replacing the training loop. See
