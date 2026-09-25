@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ..._validation import require_count, require_finite_real
 from ..enum.optims import Optims
@@ -13,15 +13,131 @@ if TYPE_CHECKING:
     from .nn_optim_params_builder import NNOptimParamsBuilder
 
 
+# torch's Adam / AdamW default. `eps` is omitted from state() at this value,
+# so every pre-existing optimizer config keeps its run.id.
+_ADAM_EPS_DEFAULT = 1e-8
+_ADAM_FAMILY = frozenset({Optims.ADAM, Optims.ADAM_AMSGRAD, Optims.ADAMW})
+_SGD_FAMILY = frozenset({Optims.SGD, Optims.SGD_NESTEROV})
+
+
+def _validate_optim_scalars(obj: Any, owner: str) -> None:
+    """Validate the scalar knobs every optimizer config shares (built-in
+    ``NNOptimParams`` and registered ``NNOptimFactoryParams``).
+
+    Fails fast on out-of-range scalars — each constructs fine but
+    misbehaves silently/obscurely deep in the train loop:
+      * accumulate_grad_batches < 1: =0 dies mid-training with
+        `ZeroDivisionError` on `batch_idx % accumulate_grad_batches`
+        (AFTER printing the whole run-config table); <0 scales the
+        loss by 1/N < 0 and silently performs gradient *ascent*.
+      * grad_clip_norm <= 0 (when not the None "off" sentinel): 0.0
+        passes the `is not None` clip-enable check and zeros every
+        gradient, so training runs to completion making no progress.
+      * accumulate_grad_batches is an integer count (FIX-021): a
+        fractional value such as 2.5 used to reach the modulo and
+        silently step every five batches. NumPy integers are
+        normalized to a plain `int` so state() stays YAML-portable.
+      * max_lr < 0: a negative LR performs gradient *ascent*. max_lr=0
+        is allowed — it is an explicit "freeze updates" choice (used as a
+        no-update idiom, e.g. probing a loss without changing weights);
+        unlike the knobs above, 0 is intended, not a silent footgun.
+      * weight_decay < 0: grows weights instead of decaying them (matches
+        the per-group NNParamGroupSpec guard).
+    Finite-real first (NaN passes every inequality), then the domain
+    (FIX-020). Meaningful zeros stay valid; nothing here touches state().
+    """
+    accumulate = obj.accumulate_grad_batches
+    object.__setattr__(
+        obj,
+        "accumulate_grad_batches",
+        require_count(
+            accumulate,
+            "accumulate_grad_batches",
+            owner=owner,
+            minimum=1,
+            domain_message=(
+                f"accumulate_grad_batches must be >= 1, got {accumulate} "
+                "(1 = step every batch; N = step every N batches)."
+            ),
+        ),
+    )
+    grad_clip_norm = obj.grad_clip_norm
+    if grad_clip_norm is not None:
+        require_finite_real(
+            grad_clip_norm,
+            "grad_clip_norm",
+            owner=owner,
+            minimum=0.0,
+            exclusive_min=True,
+            domain_message=(
+                f"grad_clip_norm must be > 0 when set, got {grad_clip_norm} (use None to disable clipping, not 0)."
+            ),
+        )
+    max_lr = obj.max_lr
+    require_finite_real(
+        max_lr,
+        "max_lr",
+        owner=owner,
+        minimum=0.0,
+        domain_message=(
+            f"max_lr must be non-negative, got {max_lr} (a negative LR performs gradient ascent; 0 freezes updates)."
+        ),
+    )
+    weight_decay = obj.weight_decay
+    require_finite_real(
+        weight_decay,
+        "weight_decay",
+        owner=owner,
+        minimum=0.0,
+        domain_message=f"weight_decay must be non-negative, got {weight_decay} (use 0 to disable).",
+    )
+
+
+def _validate_optim_param_groups(obj: Any) -> None:
+    """Fail fast on plain dicts / generators in ``param_groups`` and freeze
+    the list. Plain dicts construct fine but crash much later inside
+    state() during NNRun hashing with an opaque AttributeError; a
+    generator would be silently EXHAUSTED by the validation loop (state()
+    would then emit an empty param_groups and training would run
+    single-group with a shifted run.id)."""
+    param_groups = obj.param_groups
+    if param_groups is None:
+        return
+    if not isinstance(param_groups, (list, tuple)):
+        raise TypeError(f"param_groups must be a list/tuple of NNParamGroupSpec, got {type(param_groups).__name__}")
+    # Lazy import — keeps this low-level dataclass importable without
+    # eagerly loading the finetune subpackage (no cycle today).
+    from ...finetune.param_groups import NNParamGroupSpec
+
+    for i, g in enumerate(param_groups):
+        if not isinstance(g, NNParamGroupSpec):
+            raise TypeError(
+                f"param_groups[{i}] must be an NNParamGroupSpec, got {type(g).__name__} — "
+                "wrap it: NNParamGroupSpec(name_pattern=..., lr=...)."
+            )
+    object.__setattr__(obj, "param_groups", _ImmutableList(param_groups))
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNOptimParams:
     """Optimizer config.
 
     `momentum` is overloaded by optimizer kind:
       - For SGD / SGD_NESTEROV: a single float, the SGD momentum coefficient.
-      - For ADAM / ADAM_AMSGRAD: a (beta1, beta2) tuple, passed as the
-        Adam `betas=` argument. The name is retained for backwards
+      - For ADAM / ADAM_AMSGRAD / ADAMW: a (beta1, beta2) tuple, passed as
+        the `betas=` argument. The name is retained for backwards
         compatibility — `is_valid()` enforces the per-optim shape.
+
+    `weight_decay` follows the chosen optimizer: ADAM / ADAM_AMSGRAD add it
+    to the gradient (coupled L2 penalty, rescaled by the adaptive
+    denominator), while ADAMW decays the weights directly
+    (``p -= lr * weight_decay * p``) before the Adam update — the
+    decoupled decay of Loshchilov & Hutter.
+
+    `eps` is the Adam-family denominator term (``1e-8``, torch's default).
+    It is only meaningful for ADAM / ADAM_AMSGRAD / ADAMW; setting it on
+    an SGD variant raises. It is omitted from `state()` at its default so
+    existing run ids are unchanged.
 
     `grad_clip_norm` clips gradients by global L2 norm before optimizer.step().
     None = no clipping (back-compat default). Typical values: 1.0 for
@@ -48,74 +164,11 @@ class NNOptimParams:
     grad_clip_norm: Optional[float] = None
     accumulate_grad_batches: int = 1
     param_groups: Optional[list[NNParamGroupSpec]] = field(default=None)
+    eps: float = _ADAM_EPS_DEFAULT
 
     def __post_init__(self):
-        # Fail fast on out-of-range scalars — both construct fine but
-        # misbehave silently/obscurely deep in the train loop:
-        #   * accumulate_grad_batches < 1: =0 dies mid-training with
-        #     `ZeroDivisionError` on `batch_idx % accumulate_grad_batches`
-        #     (AFTER printing the whole run-config table); <0 scales the
-        #     loss by 1/N < 0 and silently performs gradient *ascent*.
-        #   * grad_clip_norm <= 0 (when not the None "off" sentinel): 0.0
-        #     passes the `is not None` clip-enable check and zeros every
-        #     gradient, so training runs to completion making no progress.
-        #   * accumulate_grad_batches is an integer count (FIX-021): a
-        #     fractional value such as 2.5 used to reach the modulo and
-        #     silently step every five batches. NumPy integers are
-        #     normalized to a plain `int` so state() stays YAML-portable.
-        object.__setattr__(
-            self,
-            "accumulate_grad_batches",
-            require_count(
-                self.accumulate_grad_batches,
-                "accumulate_grad_batches",
-                owner="NNOptimParams",
-                minimum=1,
-                domain_message=(
-                    f"accumulate_grad_batches must be >= 1, got {self.accumulate_grad_batches} "
-                    "(1 = step every batch; N = step every N batches)."
-                ),
-            ),
-        )
-        if self.grad_clip_norm is not None:
-            require_finite_real(
-                self.grad_clip_norm,
-                "grad_clip_norm",
-                owner="NNOptimParams",
-                minimum=0.0,
-                exclusive_min=True,
-                domain_message=(
-                    f"grad_clip_norm must be > 0 when set, got {self.grad_clip_norm} "
-                    "(use None to disable clipping, not 0)."
-                ),
-            )
-        #   * max_lr < 0: a negative LR performs gradient *ascent*. max_lr=0
-        #     is allowed — it is an explicit "freeze updates" choice (used as a
-        #     no-update idiom, e.g. probing a loss without changing weights);
-        #     unlike the knobs above, 0 is intended, not a silent footgun.
-        #   * weight_decay < 0: grows weights instead of decaying them (matches
-        #     the per-group NNParamGroupSpec guard).
-        # Finite-real first (NaN passes every inequality), then the domain
-        # (FIX-020): max_lr / weight_decay >= 0, SGD momentum >= 0, Adam
-        # betas in [0, 1). Meaningful zeros stay valid; nothing here
-        # touches state().
-        require_finite_real(
-            self.max_lr,
-            "max_lr",
-            owner="NNOptimParams",
-            minimum=0.0,
-            domain_message=(
-                f"max_lr must be non-negative, got {self.max_lr} "
-                "(a negative LR performs gradient ascent; 0 freezes updates)."
-            ),
-        )
-        require_finite_real(
-            self.weight_decay,
-            "weight_decay",
-            owner="NNOptimParams",
-            minimum=0.0,
-            domain_message=f"weight_decay must be non-negative, got {self.weight_decay} (use 0 to disable).",
-        )
+        _validate_optim_scalars(self, "NNOptimParams")
+        # Adam betas in [0, 1); SGD momentum >= 0 (FIX-020).
         if isinstance(self.momentum, tuple):
             if len(self.momentum) != 2:
                 raise ValueError(
@@ -127,34 +180,20 @@ class NNOptimParams:
                 )
         else:
             require_finite_real(self.momentum, "momentum", owner="NNOptimParams", minimum=0.0)
-        # Fail fast on plain dicts: they construct fine but crash much
-        # later inside state() during NNRun hashing with an opaque
-        # AttributeError. Same construction-time convention as the
-        # dataset classes.
-        if self.param_groups is not None:
-            if not isinstance(self.param_groups, (list, tuple)):
-                # A generator would be silently EXHAUSTED by the
-                # validation loop below — state() would then emit an
-                # empty param_groups and training would run single-group
-                # with a shifted run.id.
-                raise TypeError(
-                    f"param_groups must be a list/tuple of NNParamGroupSpec, got {type(self.param_groups).__name__}"
-                )
-            # Lazy import — keeps this low-level dataclass importable
-            # without eagerly loading the finetune subpackage (no cycle
-            # today; same deferral style as from_state below).
-            from ...finetune.param_groups import NNParamGroupSpec
-
-            for i, g in enumerate(self.param_groups):
-                if not isinstance(g, NNParamGroupSpec):
-                    raise TypeError(
-                        f"param_groups[{i}] must be an NNParamGroupSpec, got {type(g).__name__} — "
-                        "wrap it: NNParamGroupSpec(name_pattern=..., lr=...)."
-                    )
-            object.__setattr__(self, "param_groups", _ImmutableList(self.param_groups))
+        # eps is the Adam-family denominator term: finite and > 0, and
+        # rejected on SGD variants rather than silently ignored.
+        eps = require_finite_real(self.eps, "eps", owner="NNOptimParams", minimum=0.0, exclusive_min=True)
+        if self.name not in _ADAM_FAMILY and eps != _ADAM_EPS_DEFAULT:
+            raise ValueError(
+                f"NNOptimParams eps applies only to Adam-family optimizers (adam, adam_amsgrad, adamw); "
+                f"{self.name} got eps={self.eps!r}"
+            )
+        object.__setattr__(self, "eps", eps)
+        _validate_optim_param_groups(self)
 
     def __str__(self):
-        return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"
+        eps = f", eps={self.eps:g}" if self.eps != _ADAM_EPS_DEFAULT else ""
+        return f"[name={self.name}, max_lr={self.max_lr:1.0e}, weight_decay={self.weight_decay:1.0e}, momentum={self.momentum}{eps}, grad_clip={self.grad_clip_norm}, accum={self.accumulate_grad_batches}]"
 
     def state(self):
         d: dict[str, object] = dict(
@@ -177,6 +216,8 @@ class NNOptimParams:
             d["accumulate_grad_batches"] = self.accumulate_grad_batches
         if self.param_groups is not None:
             d["param_groups"] = [g.state() for g in self.param_groups]
+        if self.eps != _ADAM_EPS_DEFAULT:
+            d["eps"] = self.eps
         return d
 
     @staticmethod
@@ -198,12 +239,13 @@ class NNOptimParams:
             grad_clip_norm=state.get("grad_clip_norm"),
             accumulate_grad_batches=state.get("accumulate_grad_batches", 1),
             param_groups=param_groups,
+            eps=state.get("eps", _ADAM_EPS_DEFAULT),
         )
 
     def is_valid(self) -> bool:
-        if self.name == Optims.SGD or self.name == Optims.SGD_NESTEROV:
+        if self.name in _SGD_FAMILY:
             return isinstance(self.momentum, float)
-        if self.name == Optims.ADAM or self.name == Optims.ADAM_AMSGRAD:
+        if self.name in _ADAM_FAMILY:
             return (
                 isinstance(self.momentum, tuple)
                 and len(self.momentum) == 2

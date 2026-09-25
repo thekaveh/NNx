@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import embeddings, interop, prune, viz
+from . import embeddings, interop, optimizers, prune, viz
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -122,6 +122,14 @@ from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
 from .nn.params.nn_train_params import NNTrainParams
 from .nn.params.nn_transformer_params import NNTransformerParams
 from .nn.params.nn_transformer_params_builder import NNTransformerParamsBuilder
+from .optimizers import (
+    NNOptimFactoryParams,
+    OptimizerFactorySpec,
+    build_optimizer,
+    register_optimizer_factory,
+    registered_optimizer_factories,
+    unregister_optimizer_factory,
+)
 from .paradigms import (
     JEPAPredictor,
     born_again_train,
@@ -198,6 +206,7 @@ __all__ = [
     "NNTrainParams",
     "NNOptimParams",
     "NNOptimParamsBuilder",
+    "NNOptimFactoryParams",
     "NNSchedulerParams",
     "NNSchedulerParamsBuilder",
     "NNIterationDataPoint",
@@ -253,6 +262,13 @@ __all__ = [
     "load_pretrained",
     "LoadPretrainedResult",
     "NNParamGroupSpec",
+    # Optimizer construction + registered factories
+    "optimizers",
+    "OptimizerFactorySpec",
+    "build_optimizer",
+    "register_optimizer_factory",
+    "registered_optimizer_factories",
+    "unregister_optimizer_factory",
     # Multi-optimizer Trainer
     "trainer",
     "Trainer",

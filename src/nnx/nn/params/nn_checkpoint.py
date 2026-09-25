@@ -269,6 +269,7 @@ class NNCheckpoint:
         optimizer_type: Optional[str] = None,
         scheduler_type: Optional[str] = None,
         optimizer_topology: Optional[list[list[dict[str, Any]]]] = None,
+        optimizer_factory: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -301,6 +302,9 @@ class NNCheckpoint:
                 "optimizer": optimizer_state,
                 "optimizer_type": optimizer_type,
                 "optimizer_topology": optimizer_topology,
+                # Registered-factory identity ({id, version, config}); absent
+                # (None) for built-in optimizers and older sidecars.
+                "optimizer_factory": optimizer_factory,
                 "scheduler": scheduler_state,
                 "scheduler_type": scheduler_type,
                 "scaler": scaler_state,

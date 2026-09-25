@@ -1,6 +1,7 @@
 """Builder for NNOptimParams — variant-gated optimizer config.
 
-Adam variants take `betas: tuple[float, float]` (PyTorch's spelling);
+Adam variants (`adam`, `adam_amsgrad`, `adamw`) take
+`betas: tuple[float, float]` (PyTorch's spelling) and an optional `eps`;
 SGD variants take `momentum: float`. Both map onto the underlying
 `NNOptimParams.momentum` field, which holds whichever shape is correct
 for the chosen optimizer kind (see `NNOptimParams.is_valid()`).
@@ -12,7 +13,7 @@ Builder is the spot where we present the PyTorch-native spelling.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from ..enum.optims import Optims
 from .nn_optim_params import NNOptimParams
@@ -25,7 +26,7 @@ class NNOptimParamsBuilder:
     """Variant-aware builder for `NNOptimParams`.
 
     Reach via `NNOptimParams.builder()`. Pick exactly one variant
-    method (`adam`, `adam_amsgrad`, `sgd`, `sgd_nesterov`), then chain
+    method (`adam`, `adam_amsgrad`, `adamw`, `sgd`, `sgd_nesterov`), then chain
     optional methods (`grad_clip`, `accumulate_grad`, `param_groups`),
     then `.build()`. Method-call order is independent — a modifier
     called before a variant survives the variant call, and the last
@@ -37,7 +38,7 @@ class NNOptimParamsBuilder:
     # variant call cleanly replaces the first AND any modifier-set
     # keys (grad_clip_norm / accumulate_grad_batches / param_groups)
     # survive.
-    _VARIANT_KEYS: ClassVar[tuple[str, ...]] = ("name", "max_lr", "momentum", "weight_decay")
+    _VARIANT_KEYS: ClassVar[tuple[str, ...]] = ("name", "max_lr", "momentum", "weight_decay", "eps")
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
@@ -45,6 +46,10 @@ class NNOptimParamsBuilder:
     def _set_variant(self, **fields: Any) -> None:
         for k in self._VARIANT_KEYS:
             self._fields.pop(k, None)
+        # `eps=None` means "not set": the dataclass default (1e-8) governs,
+        # which keeps eps out of state() and the run id unchanged.
+        if fields.get("eps", 0.0) is None:
+            fields.pop("eps")
         self._fields.update(fields)
 
     # ---------- variant methods ----------
@@ -55,17 +60,21 @@ class NNOptimParamsBuilder:
         max_lr: float,
         betas: tuple[float, float] = (0.9, 0.999),
         weight_decay: float = 0.0,
+        eps: Optional[float] = None,
     ) -> NNOptimParamsBuilder:
         """torch.optim.Adam. `betas` is PyTorch's name for the
         (beta1, beta2) tuple; the Builder maps it onto the underlying
         `NNOptimParams.momentum` field (which holds the tuple for Adam
-        variants).
+        variants). `weight_decay` is Adam's coupled L2 term (added to the
+        gradient); use `adamw()` for decoupled decay. `eps` defaults to
+        torch's `1e-8` and is then omitted from `state()`.
         """
         self._set_variant(
             name=Optims.ADAM,
             max_lr=max_lr,
             momentum=betas,
             weight_decay=weight_decay,
+            eps=eps,
         )
         return self
 
@@ -75,15 +84,40 @@ class NNOptimParamsBuilder:
         max_lr: float,
         betas: tuple[float, float] = (0.9, 0.999),
         weight_decay: float = 0.0,
+        eps: Optional[float] = None,
     ) -> NNOptimParamsBuilder:
-        """torch.optim.Adam with `amsgrad=True`. Same `betas` mapping
-        as `adam()`.
+        """torch.optim.Adam with `amsgrad=True`. Same `betas` / `eps`
+        mapping as `adam()`.
         """
         self._set_variant(
             name=Optims.ADAM_AMSGRAD,
             max_lr=max_lr,
             momentum=betas,
             weight_decay=weight_decay,
+            eps=eps,
+        )
+        return self
+
+    def adamw(
+        self,
+        *,
+        max_lr: float,
+        betas: tuple[float, float] = (0.9, 0.999),
+        weight_decay: float = 1e-2,
+        eps: Optional[float] = None,
+    ) -> NNOptimParamsBuilder:
+        """torch.optim.AdamW — Adam with decoupled weight decay: each step
+        first scales the weights by ``1 - lr * weight_decay`` and then
+        applies the Adam update, instead of adding ``weight_decay * p`` to
+        the gradient. `weight_decay` defaults to torch's `1e-2`; `betas` /
+        `eps` map as in `adam()`.
+        """
+        self._set_variant(
+            name=Optims.ADAMW,
+            max_lr=max_lr,
+            momentum=betas,
+            weight_decay=weight_decay,
+            eps=eps,
         )
         return self
 
@@ -163,14 +197,14 @@ class NNOptimParamsBuilder:
 
         Raises:
             ValueError: if no variant method (`.adam`, `.adam_amsgrad`,
-                `.sgd`, `.sgd_nesterov`) was called before `.build()`.
-                The message names the four methods so the user can
-                fix the chain without consulting the dataclass schema.
+                `.adamw`, `.sgd`, `.sgd_nesterov`) was called before
+                `.build()`. The message names the five methods so the user
+                can fix the chain without consulting the dataclass schema.
         """
         if "name" not in self._fields:
             raise ValueError(
                 "NNOptimParamsBuilder: call one of .adam(...), "
-                ".adam_amsgrad(...), .sgd(...), or .sgd_nesterov(...) "
+                ".adam_amsgrad(...), .adamw(...), .sgd(...), or .sgd_nesterov(...) "
                 "before .build() — a variant selects the optimizer kind "
                 "and sets the required name/max_lr/momentum/weight_decay fields."
             )
