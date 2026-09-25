@@ -1067,3 +1067,29 @@ def test_trainer_runs_captured_config_after_builder_mutation(tmp_path, monkeypat
     assert sorted(reloaded.trainer.schedulers) == ["head"]
     assert reloaded.id == run.id
     assert reloaded.state()["trainer"] == captured.state()
+
+
+def test_trainer_step_fn_owns_optimizer_updates(tmp_path, monkeypatch):
+    """FIX-024 documented contract: Trainer never steps an optimizer itself —
+    a step function that computes gradients but does not call ``step()``
+    leaves every parameter unchanged."""
+    monkeypatch.chdir(tmp_path)
+    model = _supervised_model()
+    before = {name: p.detach().clone() for name, p in model.net.named_parameters()}
+
+    def _no_update(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        X, Y = ctx.model.net.unpack_batch(ctx.batch)
+        loss = ctx.model.loss_fn(ctx.model.net(*X), Y)
+        loss.backward()  # gradients exist, but the step fn chooses not to step
+        return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=float(loss.detach()))
+
+    Trainer(model=model).train(
+        params=NNTrainerParams(
+            n_epochs=2,
+            train_loader=_supervised_loader(),
+            optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)},
+        ),
+        trainer_step_fn=_no_update,
+    )
+    for name, p in model.net.named_parameters():
+        assert torch.equal(p.detach(), before[name]), name

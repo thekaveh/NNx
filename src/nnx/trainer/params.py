@@ -94,9 +94,12 @@ class NNTrainerParams:
     the optims they want to customize.
 
     `seed`, `save_phase_checkpoints`, `extra_metrics`, `train_loader`,
-    `val_loader` mirror NNTrainParams. By default Trainer steps every
-    scheduler once after each epoch; set `auto_step_schedulers=False` when
-    the custom step function owns scheduler timing.
+    `val_loader` mirror NNTrainParams (`extra_metrics` are
+    ``callable(y_true, y_pred)``; Trainer's validation calls them on the
+    aggregate). The custom `trainer_step_fn` owns every optimizer update;
+    by default Trainer steps every scheduler once after each epoch — set
+    `auto_step_schedulers=False` when the custom step function owns
+    scheduler timing too.
 
     `optims`, `schedulers` and `extra_metrics` are captured as read-only,
     insertion-ordered snapshots at construction (also via `from_state`,

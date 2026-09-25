@@ -40,19 +40,28 @@ class NNParamGroupSpec:
     None the matched parameters use the optimizer's default LR — handy
     when you only want to override ``weight_decay`` for a group.
 
+    Specs are matched in list order and the **first** matching spec wins —
+    rules never merge. Put specific rules before broad ones: a parameter
+    that should get settings from two rules needs its own combined rule.
+
     Example:
-        # Freeze nothing, but train the backbone at 1/100th the head's LR
-        # and disable weight_decay on every bias term.
+        # Freeze nothing, but train the encoder at 1/100th the head's LR
+        # and disable weight_decay on every bias term. `encoder.*bias`
+        # must come first: with `encoder.*` first, the encoder biases
+        # would match it and keep weight decay.
         NNOptimParams(
             name=Optims.ADAM,
             max_lr=1e-3,
             momentum=(0.9, 0.999),
             weight_decay=5e-4,
             param_groups=[
+                NNParamGroupSpec(name_pattern="encoder.*bias", lr_multiplier=0.01, weight_decay=0.0),
                 NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01),
                 NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0),
             ],
         )
+        # encoder.bias: lr 1e-5, wd 0     encoder.weight: lr 1e-5, wd 5e-4
+        # head.bias:    lr 1e-3, wd 0     head.weight:    lr 1e-3, wd 5e-4
     """
 
     name_pattern: str
@@ -145,7 +154,9 @@ def build_param_groups(
         module: source of parameters to bucket.
         specs: list of :class:`NNParamGroupSpec` in priority order.
             The first spec whose ``name_pattern`` matches a parameter's
-            dotted name wins.
+            dotted name wins; later matches are ignored, never merged, so
+            list specific patterns (``encoder.*bias``) before broad ones
+            (``encoder.*``, ``*.bias``).
         default_lr: LR for parameters that don't match any spec, or
             for specs that omit both ``lr`` and ``lr_multiplier``.
         default_weight_decay: WD for parameters that don't match any

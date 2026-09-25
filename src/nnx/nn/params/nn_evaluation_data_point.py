@@ -40,7 +40,7 @@ class NNEvaluationDataPoint:
     fact by NNModel during training / evaluation.
 
     `extra` is a free-form dict of user-supplied custom metric names to
-    floats. Populated when NNTrainParams.extra_metrics or evaluate(metrics=)
+    floats. Populated when NNTrainParams.extra_metrics or evaluate(extra_metrics=)
     is set; empty by default (and omitted from state() when empty so that
     pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
     """
@@ -87,9 +87,11 @@ class NNEvaluationDataPoint:
         recover the legacy behavior (numerically identical to accuracy for
         single-label multi-class). Accuracy itself is not affected.
 
-        `extra_metrics` is a {name -> callable(Y, Y_hat) -> float} map of
-        user-supplied custom metrics. Each is invoked once on the aggregate
-        predictions and stored in the returned object's `extra` dict.
+        `extra_metrics` is a {name -> callable(y_true, y_pred) -> float} map
+        of user-supplied custom metrics, called as ``fn(Y, Y_hat)`` — truth
+        first, decoded predictions second — once on the arrays passed here
+        (one batch in the default training step, the aggregate in
+        `NNModel.evaluate`) and stored in the returned object's `extra` dict.
         """
         extra: dict[str, float] = {}
         if extra_metrics:
