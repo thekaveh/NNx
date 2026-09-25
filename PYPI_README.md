@@ -222,7 +222,8 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 NNTrainParams(
     ...,
     extra_metrics={
-        "my_metric": lambda y, y_hat: float((y == y_hat).mean()),
+        # Called as fn(y_true, y_pred): truth first, decoded predictions second.
+        "my_metric": lambda y_true, y_pred: float((y_true == y_pred).mean()),
     },
 )
 # Available on idp.train_edp.extra / idp.val_edp.extra and survives NNRun.load.

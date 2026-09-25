@@ -26,6 +26,7 @@ def test_example_imports_without_running_main(example):
     "name",
     [
         "01_synthetic_classification.py",
+        "03_custom_metrics.py",
         "05_custom_train_step_autoencoder.py",
         "26_custom_eval_step.py",
     ],

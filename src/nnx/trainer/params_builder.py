@@ -32,6 +32,10 @@ class NNTrainerParamsBuilder:
     `.n_epochs(N)`; at least one `.optimizer(name, params)` call is
     also required (`NNTrainerParams.__post_init__` rejects empty
     optims). Schedulers, seed, loaders, etc. are all chained optionals.
+
+    Ownership (see `NNTrainerParams`): the custom ``trainer_step_fn``
+    owns every optimizer update; Trainer steps registered schedulers once
+    per epoch unless ``.auto_step_schedulers(False)``.
     """
 
     def __init__(self) -> None:
@@ -94,8 +98,11 @@ class NNTrainerParamsBuilder:
         return self
 
     def extra_metrics(self, metrics: Mapping[str, Callable]) -> NNTrainerParamsBuilder:
-        """Extra metrics callables, name-keyed. Each is called with
-        (y_pred, y_true) at every validation step."""
+        """Extra metrics, name-keyed ``callable(y_true, y_pred) -> float``
+        (truth first, decoded predictions second). Trainer's built-in
+        validation calls each once on the aggregate predictions
+        (``NNModel.evaluate``); the custom ``trainer_step_fn`` decides
+        whether and how to call them on training batches."""
         self._fields["extra_metrics"] = metrics
         return self
 

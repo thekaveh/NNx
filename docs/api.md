@@ -335,6 +335,9 @@ Aggregate predictions across all batches in `loader` and compute a single NNEval
 **Details**
 
 ```text
+`extra_metrics` ({name -> callable(y_true, y_pred) -> float}) are
+called once on the aggregate truth / decoded predictions.
+
 Raises ValueError if the loader yields zero batches — previously
 produced NaN metrics silently from np.mean over an empty list.
 ```
@@ -689,9 +692,12 @@ NNTrainParams uses, so callers only have to populate schedulers for
 the optims they want to customize.
 
 `seed`, `save_phase_checkpoints`, `extra_metrics`, `train_loader`,
-`val_loader` mirror NNTrainParams. By default Trainer steps every
-scheduler once after each epoch; set `auto_step_schedulers=False` when
-the custom step function owns scheduler timing.
+`val_loader` mirror NNTrainParams (`extra_metrics` are
+``callable(y_true, y_pred)``; Trainer's validation calls them on the
+aggregate). The custom `trainer_step_fn` owns every optimizer update;
+by default Trainer steps every scheduler once after each epoch — set
+`auto_step_schedulers=False` when the custom step function owns
+scheduler timing too.
 
 `optims`, `schedulers` and `extra_metrics` are captured as read-only,
 insertion-ordered snapshots at construction (also via `from_state`,
@@ -759,6 +765,10 @@ Reach via `NNTrainerParams.builder()`. The required setter is
 `.n_epochs(N)`; at least one `.optimizer(name, params)` call is
 also required (`NNTrainerParams.__post_init__` rejects empty
 optims). Schedulers, seed, loaders, etc. are all chained optionals.
+
+Ownership (see `NNTrainerParams`): the custom ``trainer_step_fn``
+owns every optimizer update; Trainer steps registered schedulers once
+per epoch unless ``.auto_step_schedulers(False)``.
 ```
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.n_epochs`
@@ -837,7 +847,7 @@ Validation DataLoader. Optional at Builder time (can be wired later via NNTraine
 nnx.trainer.params_builder.NNTrainerParamsBuilder.extra_metrics(self, metrics: 'Mapping[str, Callable]') -> 'NNTrainerParamsBuilder'
 ```
 
-Extra metrics callables, name-keyed. Each is called with (y_pred, y_true) at every validation step.
+Extra metrics, name-keyed ``callable(y_true, y_pred) -> float`` (truth first, decoded predictions second). Trainer's built-in validation calls each once on the aggregate predictions (``NNModel.evaluate``); the custom ``trainer_step_fn`` decides whether and how to call them on training batches.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.build`
 
@@ -992,6 +1002,13 @@ seeding (default).
 To preserve back-compat with previously-saved runs, `seed` is included
 in state() ONLY when set — so existing runs with no seed continue to
 hash to the same `run.id`.
+
+`extra_metrics` maps a name to ``callable(y_true, y_pred) -> float``
+(truth first, decoded class predictions second). The default
+classification training step calls each per batch, and `evaluate()`
+(the default validation pass) calls each once on the aggregate
+predictions; a custom `train_step_fn` / `eval_step_fn` decides whether
+and how to call them. Runtime-only: not part of `state()`.
 ```
 
 ##### `nnx.nn.params.nn_train_params.NNTrainParams.with_train_loader`
@@ -2048,7 +2065,7 @@ The four core fields (f1, recall, accuracy, precision) are computed by
 fact by NNModel during training / evaluation.
 
 `extra` is a free-form dict of user-supplied custom metric names to
-floats. Populated when NNTrainParams.extra_metrics or evaluate(metrics=)
+floats. Populated when NNTrainParams.extra_metrics or evaluate(extra_metrics=)
 is set; empty by default (and omitted from state() when empty so that
 pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
 ```
@@ -2095,9 +2112,11 @@ recall mathematically distinct from accuracy. Pass "micro" to
 recover the legacy behavior (numerically identical to accuracy for
 single-label multi-class). Accuracy itself is not affected.
 
-`extra_metrics` is a {name -> callable(Y, Y_hat) -> float} map of
-user-supplied custom metrics. Each is invoked once on the aggregate
-predictions and stored in the returned object's `extra` dict.
+`extra_metrics` is a {name -> callable(y_true, y_pred) -> float} map
+of user-supplied custom metrics, called as ``fn(Y, Y_hat)`` — truth
+first, decoded predictions second — once on the arrays passed here
+(one batch in the default training step, the aggregate in
+`NNModel.evaluate`) and stored in the returned object's `extra` dict.
 ```
 
 ##### `nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint.mean_of`
@@ -3490,8 +3509,19 @@ Args:
               stops on the first non-improving epoch). Fractional, boolean
               or string values raise ``ValueError`` at construction.
     min_delta: minimum change to qualify as improvement.
-    mode: "min" (default) for loss/error; "max" for accuracy/f1. ``"max"``
-          requires an explicit ``monitor``.
+    mode: improvement direction for the monitored field. ``"min"``
+          (default): lower is better — the meaning of every accepted
+          monitor (loss / error), and the direction BEST selection and
+          ReduceLROnPlateau also assume, so it is almost always right.
+          ``"max"`` only reverses this callback's comparison for one of
+          the four accepted keys; it does not enable accuracy/F1
+          monitors, which are rejected, and it does not change how the
+          rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
+          explicit ``monitor``.
+
+Example::
+
+    EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)
 ```
 
 ##### `nnx.nn.callbacks.EarlyStopping.selected_monitor`
@@ -3783,19 +3813,28 @@ Exactly one of ``lr`` and ``lr_multiplier`` may be set. If both are
 None the matched parameters use the optimizer's default LR — handy
 when you only want to override ``weight_decay`` for a group.
 
+Specs are matched in list order and the **first** matching spec wins —
+rules never merge. Put specific rules before broad ones: a parameter
+that should get settings from two rules needs its own combined rule.
+
 Example:
-    # Freeze nothing, but train the backbone at 1/100th the head's LR
-    # and disable weight_decay on every bias term.
+    # Freeze nothing, but train the encoder at 1/100th the head's LR
+    # and disable weight_decay on every bias term. `encoder.*bias`
+    # must come first: with `encoder.*` first, the encoder biases
+    # would match it and keep weight decay.
     NNOptimParams(
         name=Optims.ADAM,
         max_lr=1e-3,
         momentum=(0.9, 0.999),
         weight_decay=5e-4,
         param_groups=[
+            NNParamGroupSpec(name_pattern="encoder.*bias", lr_multiplier=0.01, weight_decay=0.0),
             NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01),
             NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0),
         ],
     )
+    # encoder.bias: lr 1e-5, wd 0     encoder.weight: lr 1e-5, wd 5e-4
+    # head.bias:    lr 1e-3, wd 0     head.weight:    lr 1e-3, wd 5e-4
 ```
 
 ##### `nnx.finetune.param_groups.NNParamGroupSpec.state`
@@ -3835,7 +3874,9 @@ Args:
     module: source of parameters to bucket.
     specs: list of :class:`NNParamGroupSpec` in priority order.
         The first spec whose ``name_pattern`` matches a parameter's
-        dotted name wins.
+        dotted name wins; later matches are ignored, never merged, so
+        list specific patterns (``encoder.*bias``) before broad ones
+        (``encoder.*``, ``*.bias``).
     default_lr: LR for parameters that don't match any spec, or
         for specs that omit both ``lr`` and ``lr_multiplier``.
     default_weight_decay: WD for parameters that don't match any

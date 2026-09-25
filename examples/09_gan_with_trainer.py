@@ -13,6 +13,13 @@ training, G should produce samples concentrated near ±3. The training
 loop prints the average combined loss decreasing as G learns the
 distribution.
 
+Ownership: ``gan_step`` (the ``trainer_step_fn``) owns every optimizer
+update — it zeroes, back-propagates and steps ``optimizers["D"]`` and
+``optimizers["G"]`` itself. The Trainer owns the epoch loop and steps each
+registered scheduler once per epoch, unless
+``NNTrainerParams(auto_step_schedulers=False)`` (builder:
+``.auto_step_schedulers(False)``) hands scheduler timing to the step too.
+
 This is a *teaching* GAN — small, CPU-fast, intentionally minimal —
 not a production setup. Spectral norm, EMA, R1 regularization, larger
 nets, and longer schedules are all things you'd add for a real run.

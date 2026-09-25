@@ -195,7 +195,7 @@ ctx.idps          # running list of all idps so far
 ctx.should_stop   # writable — set True to break out of training
 ```
 
-Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need.
+Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
 
 ## 6. Custom training paradigms
 
@@ -291,20 +291,27 @@ print(f"loaded {len(result.loaded_keys)}, missing {len(result.missing_keys)}")
 
 # 2. Freeze whatever shouldn't train. Glob patterns match the dotted
 #    parameter name. `model.freeze` is a shortcut for nnx.finetune.freeze.
-model.freeze("layers.0.*", "layers.1.*")          # freeze the backbone
+model.freeze("layers.0.*")                         # freeze the first block
 # `model.unfreeze("*")` would reverse it; `frozen(model.net)` lists what's frozen.
 
-# 3. (Optional) Run the unfrozen part with a smaller LR than a fresh head.
-#    NNOptimParams.param_groups takes a list of NNParamGroupSpec; each
-#    matches parameters by glob and overrides lr / lr_multiplier / weight_decay.
+# 3. (Optional) Run the remaining pretrained block with a smaller LR than a
+#    fresh head. NNOptimParams.param_groups takes a list of NNParamGroupSpec;
+#    each matches parameters by glob and overrides lr / lr_multiplier /
+#    weight_decay. The FIRST matching spec wins and specs never merge, so the
+#    specific bias rule for that block must precede both broader rules.
+#    (FeedFwdNN names its layers `layers.0`, `layers.1`, ...; list the real
+#    names with `[n for n, _ in model.net.named_parameters()]`.)
 optim = NNOptimParams(
     name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=5e-4,
     param_groups=[
-        NNParamGroupSpec(name_pattern="layers.0.*", lr_multiplier=0.01),
-        NNParamGroupSpec(name_pattern="*.bias",     weight_decay=0.0),
+        NNParamGroupSpec(name_pattern="layers.1.*bias", lr_multiplier=0.01, weight_decay=0.0),
+        NNParamGroupSpec(name_pattern="layers.1.*",     lr_multiplier=0.01),
+        NNParamGroupSpec(name_pattern="*.bias",         weight_decay=0.0),
     ],
 )
 ```
+
+Rules are evaluated in list order and the first match wins; rules never merge. For a model whose submodules are named `encoder` and `head`, the same intent — encoder at 1/100th of the LR, no weight decay on any bias — must be written `encoder.*bias` (`lr_multiplier=0.01`, `weight_decay=0.0`), then `encoder.*` (`lr_multiplier=0.01`), then `*.bias` (`weight_decay=0.0`), giving `encoder.bias` lr 1e-5 / wd 0, `encoder.weight` 1e-5 / 5e-4, `head.bias` 1e-3 / 0 and `head.weight` 1e-3 / 5e-4. Listing `encoder.*` before `*.bias` would leave every encoder bias with weight decay, because the bias rule is never reached for those parameters. In fine-tuning (non-strict) mode a pattern that matches nothing is silently empty, so check the names against `named_parameters()`.
 
 `NNModel.export_state_dict(path)` saves the inverse — `self.net.state_dict()` only, no `NNCheckpoint` wrapper — for users who want to share weights with non-nnx consumers.
 
@@ -393,7 +400,7 @@ The Trainer enforces **strict** `param_groups` semantics — each optimizer owns
 
 ### 8.2. No default step
 
-There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn.
+There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly: the `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer), while the Trainer owns the epoch loop and steps each registered scheduler once per epoch — unless `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Trainer-level `extra_metrics` are `callable(y_true, y_pred)`; the built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches.
 
 ### 8.3. NNRun integration
 

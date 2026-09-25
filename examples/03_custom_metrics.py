@@ -1,9 +1,17 @@
 """Plug a custom metric callable into NNTrainParams.extra_metrics.
 
 Demonstrates how to record any metric beyond the four hard-coded ones
-(f1/recall/precision/accuracy). Custom metrics show up in
+(f1/recall/precision/accuracy). Each metric is called as
+``fn(y_true, y_pred)`` — the truth first, the decoded class predictions
+second: per batch by the default training step and once on the aggregate
+by ``evaluate()`` (the default validation pass). Custom metrics show up in
 ``idp.train_edp.extra`` and ``idp.val_edp.extra`` and survive the
 NNRun.save → NNRun.load round-trip.
+
+``true_class0_rate`` below is deliberately *asymmetric* — it reads only the
+truth — so the example can check the argument order against the validation
+labels it knows: swapping the arguments would report the predicted class-0
+rate instead.
 
 Run:
     python examples/03_custom_metrics.py
@@ -24,6 +32,7 @@ from nnx import (
     NNModelParams,
     NNOptimParams,
     NNParams,
+    NNRun,
     NNSchedulerParams,
     NNTrainParams,
     Optims,
@@ -36,6 +45,9 @@ def main():
     X = torch.randn(128, 8)
     y = torch.randint(0, 3, (128,))
     loader = DataLoader(TensorDataset(X, y), batch_size=32, shuffle=True)
+    X_val = torch.randn(40, 8)
+    y_val = torch.randint(0, 3, (40,))
+    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=16, shuffle=False)
 
     model = NNModel(
         net_params=NNParams(
@@ -54,18 +66,23 @@ def main():
 
     # Two custom metrics: 0-1 error (mirrors `error` but computed differently)
     # and the predicted-class entropy as a confidence proxy.
-    def hamming_error(Y, Y_hat):
-        return float((Y != Y_hat).mean())
+    def hamming_error(y_true, y_pred):
+        return float((y_true != y_pred).mean())
 
-    def predicted_class_entropy(_Y, Y_hat):
+    def predicted_class_entropy(_y_true, y_pred):
         # Distribution of predicted classes, then Shannon entropy in nats.
-        _, counts = np.unique(Y_hat, return_counts=True)
+        _, counts = np.unique(y_pred, return_counts=True)
         p = counts / counts.sum()
         return float(-(p * np.log(p + 1e-12)).sum())
+
+    def true_class0_rate(y_true, _y_pred):
+        # Asymmetric on purpose: depends on the truth only.
+        return float((np.asarray(y_true) == 0).mean())
 
     train_params = NNTrainParams(
         n_epochs=3,
         train_loader=loader,
+        val_loader=val_loader,
         optim=NNOptimParams(
             name=Optims.ADAM,
             max_lr=1e-2,
@@ -82,6 +99,7 @@ def main():
         extra_metrics={
             "hamming_error": hamming_error,
             "predicted_class_entropy": predicted_class_entropy,
+            "true_class0_rate": true_class0_rate,
         },
     )
 
@@ -91,7 +109,19 @@ def main():
     for name, value in last.train_edp.extra.items():
         print(f"  {name:30s} = {value:.4f}")
 
-    print("\nThese values also survive NNRun.load() — they're in idps.csv as extra.<name> columns.")
+    # Truth-first order, checked against the known validation labels: the
+    # aggregate validation value equals the class-0 rate of y_val.
+    expected = float((y_val.numpy() == 0).mean())
+    assert last.val_edp is not None
+    assert abs(last.val_edp.extra["true_class0_rate"] - expected) < 1e-9, dict(last.val_edp.extra)
+
+    reloaded = NNRun.load(run.id)
+    assert reloaded is not None
+    reloaded_last = reloaded.idps[-1]
+    assert reloaded_last.val_edp is not None
+    for name, value in last.val_edp.extra.items():
+        assert abs(reloaded_last.val_edp.extra[name] - value) < 1e-9, name
+    print(f"\nValidation true_class0_rate = {expected:.4f} (matches y_val); values survive NNRun.load().")
 
 
 if __name__ == "__main__":

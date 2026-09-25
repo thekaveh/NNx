@@ -21,6 +21,13 @@ class NNTrainParams:
     To preserve back-compat with previously-saved runs, `seed` is included
     in state() ONLY when set — so existing runs with no seed continue to
     hash to the same `run.id`.
+
+    `extra_metrics` maps a name to ``callable(y_true, y_pred) -> float``
+    (truth first, decoded class predictions second). The default
+    classification training step calls each per batch, and `evaluate()`
+    (the default validation pass) calls each once on the aggregate
+    predictions; a custom `train_step_fn` / `eval_step_fn` decides whether
+    and how to call them. Runtime-only: not part of `state()`.
     """
 
     n_epochs: int
@@ -45,7 +52,7 @@ class NNTrainParams:
     train_loader: Optional[Iterable[Any]] = field(repr=False, default=None)
     val_loader: Optional[Iterable[Any]] = field(repr=False, default=None)
 
-    # Custom metrics: name -> callable(Y_true, Y_pred) -> float. Runtime-only
+    # Custom metrics: name -> callable(y_true, y_pred) -> float. Runtime-only
     # (functions don't round-trip through YAML), so this lives outside
     # state() / from_state() — like train_loader/val_loader. Each is invoked
     # on every train batch and on every evaluate() aggregate.
