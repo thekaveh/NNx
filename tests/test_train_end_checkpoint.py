@@ -342,3 +342,55 @@ def test_legacy_converted_qat_checkpoint_has_targeted_error(tmp_path, monkeypatc
 
     with pytest.raises(ValueError, match="converted QAT.*lacks reconstruction metadata"):
         NNModel.from_checkpoint(legacy)
+
+
+def test_epoch_text_save_failure_keeps_committed_history(tmp_path, monkeypatch):
+    """FIX-025: a history text-save failure in a later epoch raises the
+    original exception, still finalizes begun callbacks, leaves no owned
+    temp, and keeps the LAST-bounded history of committed epochs loadable."""
+    import os
+
+    import nnx.nn.params.nn_run as nn_run
+    from nnx.nn.params.nn_run import NNRun
+
+    monkeypatch.chdir(tmp_path)
+
+    class Boom(Exception):
+        pass
+
+    boom = Boom("idps.csv write failed")
+    real_write = nn_run._atomic_write_text
+    calls = {"idps": 0}
+
+    def flaky_write(path, content):
+        if os.path.basename(path) == "idps.csv":
+            calls["idps"] += 1
+            if calls["idps"] == 2:  # the second epoch's history save
+                raise boom
+        return real_write(path, content)
+
+    monkeypatch.setattr(nn_run, "_atomic_write_text", flaky_write)
+
+    events: list[str] = []
+    captured: dict = {}
+
+    class Recorder(Callback):
+        def on_train_begin(self, ctx):
+            captured["run_id"] = ctx.run.id
+            events.append("begin")
+
+        def on_train_end(self, ctx):  # noqa: ARG002
+            events.append("end")
+
+    torch.manual_seed(0)
+    loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,))), batch_size=4)
+    with pytest.raises(Boom) as info:
+        _tiny_model().train(params=_tiny_train_params(loader, n_epochs=3), callbacks=[Recorder()])
+    assert info.value is boom
+    assert events == ["begin", "end"]
+
+    run_dir = tmp_path / "runs" / captured["run_id"]
+    assert [p.name for p in run_dir.iterdir() if p.name.startswith(".idps.csv.")] == []
+    reloaded = NNRun.load(captured["run_id"])
+    assert reloaded is not None
+    assert {idp.epoch_idx for idp in reloaded.idps} == {0}

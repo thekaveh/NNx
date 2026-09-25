@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import shutil
 import tempfile
@@ -70,33 +71,85 @@ def _validate_run_id(run_id: str) -> str:
 def _atomic_write_text(path: str, content: str) -> None:
     """Write `content` to `path` atomically — fsync, rename. A
     KeyboardInterrupt during the rename either leaves the prior file
-    intact OR the new file fully written; never a half-written file."""
-    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path) or None)
-    # Explicit utf-8 — the default text encoding varies by platform
-    # locale (cp1252 on Windows pre-3.15 / PEP 686). yaml.safe_dump
-    # output is ASCII-safe today, but pinning utf-8 here makes the
-    # contract platform-independent if a future state() ever emits
-    # non-ASCII (e.g., a user-supplied tokenizer path with unicode).
+    intact OR the new file fully written; never a half-written file.
+
+    The temporary file is created next to the resolved destination (also
+    for a bare filename, so the rename never crosses filesystems) and is
+    owned by this call until the rename: a failure while opening, writing,
+    flushing or closing it, or in the rename itself — a
+    ``KeyboardInterrupt`` included — releases the descriptor (through the
+    file object that owns it, never by a bare descriptor number that
+    another thread may have reused), unlinks that temp and re-raises the
+    original exception; a cleanup error never replaces it. An ``fsync``
+    ``OSError`` is tolerated and does not abort the write. Once the rename
+    has returned, the temp name is never touched again. (FIX-025; ordinary
+    exceptions only — SIGKILL or power loss can still leave a stale temp.)
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=directory)
+    committed = False
     try:
-        f = os.fdopen(fd, "w", encoding="utf-8")
-    except BaseException:
-        os.close(fd)
-        raise
-    with f:
-        f.write(content)
-        f.flush()
         try:
-            os.fsync(f.fileno())
-        except OSError:
-            # fsync isn't supported on every filesystem (e.g., some
-            # network mounts). Atomic rename is still useful even
-            # without the fsync guarantee.
-            pass
-    try:
+            raw = io.FileIO(fd, "w", closefd=True)
+        except BaseException:
+            _quietly(os.close, fd)  # FileIO never took ownership of the descriptor
+            raise
+        try:
+            # Explicit utf-8 — the default text encoding varies by platform
+            # locale (cp1252 on Windows pre-3.15 / PEP 686). yaml.safe_dump
+            # output is ASCII-safe today, but pinning utf-8 here makes the
+            # contract platform-independent if a future state() ever emits
+            # non-ASCII (e.g., a user-supplied tokenizer path with unicode).
+            f = io.TextIOWrapper(io.BufferedWriter(raw), encoding="utf-8")
+            try:
+                f.write(content)
+                f.flush()
+                try:
+                    os.fsync(raw.fileno())
+                except OSError:
+                    # fsync isn't supported on every filesystem (e.g., some
+                    # network mounts). Atomic rename is still useful even
+                    # without the fsync guarantee.
+                    pass
+            except BaseException:
+                _quietly(f.close)
+                raise
+            f.close()
+        finally:
+            # Idempotent: FileIO releases the descriptor at most once, even
+            # when the text wrapper's close raised part-way.
+            _quietly(raw.close)
         os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+        committed = True
+    except BaseException:
+        if not committed:
+            # Still ours: the rename did not happen.
+            _quietly(os.unlink, tmp)
+        raise
+
+
+def _quietly(fn, *args) -> None:
+    """Run a cleanup step without letting its failure replace the exception
+    that is already propagating."""
+    try:
+        fn(*args)
+    except BaseException:
+        pass
+
+
+def _release_empty_reservation(run_path: str) -> None:
+    """Remove a reservation that holds nothing but the history marker (or a
+    temporary left by a failed marker write), so the run can be retried."""
+    if not os.path.isdir(run_path):
+        return
+    marker_temp = f".{_HISTORY_PROTOCOL_FILE}."
+    entries = os.listdir(run_path)
+    if not all(name == _HISTORY_PROTOCOL_FILE or name.startswith(marker_temp) for name in entries):
+        return
+    for name in entries:
+        _quietly(os.remove, os.path.join(run_path, name))
+    if not os.listdir(run_path):
+        os.rmdir(run_path)
 
 
 def _point_best(best_run_path: str, run_path: str) -> None:
@@ -479,16 +532,14 @@ class NNRun:
         with FileLock(os.path.join(lease_root, f"{self.id}.lock")):
             self.ensure_writable(root=root, overwrite=overwrite)
             run_path = os.path.join(runs_root, self.id)
-            _atomic_write_text(os.path.join(run_path, _HISTORY_PROTOCOL_FILE), "1\n")
             try:
+                # Inside the release guard (FIX-025): a failed marker write
+                # must not strand the empty reservation, which would make a
+                # retry of the same run fail with "already exists".
+                _atomic_write_text(os.path.join(run_path, _HISTORY_PROTOCOL_FILE), "1\n")
                 yield
             except BaseException:
-                run_path = os.path.join(runs_root, self.id)
-                protocol_path = os.path.join(run_path, _HISTORY_PROTOCOL_FILE)
-                if os.path.isdir(run_path) and os.listdir(run_path) == [_HISTORY_PROTOCOL_FILE]:
-                    os.remove(protocol_path)
-                if os.path.isdir(run_path) and not os.listdir(run_path):
-                    os.rmdir(run_path)
+                _quietly(_release_empty_reservation, run_path)
                 raise
 
     def checkpoints(self, root: Optional[str] = None) -> list[Optional[NNCheckpoint]]:
