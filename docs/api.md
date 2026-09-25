@@ -3878,6 +3878,11 @@ pass tensors through the layer don't change.
 and device, so convert or move the base *before* wrapping and the
 adapter composes immediately (a meta-device base yields meta
 adapters). The base is never moved, recast or replaced.
+
+The wrapper and its dropout inherit the base layer's train/eval mode
+at construction, so wrapping an eval layer keeps inference
+deterministic; a later ``.train()`` / ``.eval()`` switches them as
+usual. Modes are runtime state and never serialized.
 ```
 
 ##### `nnx.peft.lora.LoRALinear.in_features`
@@ -4073,7 +4078,9 @@ a finite, zero output equal to the base instead of NaN, and learned
 nonzero updates stay differentiable. The effective weight is cast
 back to the layer dtype before the matmul, so the output dtype is
 unchanged. Persist a DoRA adapter with the full ``state_dict()``:
-the LoRA-only helpers omit ``magnitude``.
+the LoRA-only helpers omit ``magnitude``. Like :class:`LoRALinear`,
+the wrapper and its update dropout inherit the base layer's
+train/eval mode at construction.
 
 Args:
     base: the :class:`nn.Linear` to wrap. Its parameters are frozen
@@ -4175,6 +4182,9 @@ Forward: ``y = base(x) * scaling`` (broadcast over the trailing dim).
 ``scaling`` takes the base weight's dtype and device, so the output
 keeps the base dtype (a half base stays half) and a pre-converted or
 pre-moved base composes without a second ``.to()``.
+
+The wrapper inherits the base layer's train/eval mode at construction
+(modes are runtime state and never serialized).
 
 Args:
     base: the :class:`nn.Linear` to wrap.

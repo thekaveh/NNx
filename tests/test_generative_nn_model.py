@@ -843,3 +843,21 @@ def test_quantized_generative_model_can_generate(tmp_path):
         assert type(p) is source_types[n] is torch.nn.Parameter, n
         assert torch.equal(p.detach(), source_values[n]), n
     assert isinstance(model.generate(prompt="the", max_new_tokens=3, temperature=0.0), str)
+
+
+def test_generate_restores_lora_wrapped_mixed_modes(tmp_path):
+    """FIX-013: after LoRA injection with dropout into a mixed-mode LM,
+    ``generate`` restores every wrapper, base and dropout flag."""
+    from nnx import LoRALinear, apply_lora_to
+
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+    model.net.eval()
+    assert apply_lora_to(model.net, "*", r=2, alpha=4.0, dropout=0.5) > 0
+    wrappers = [m for m in model.net.modules() if isinstance(m, LoRALinear)]
+    assert all(not w.training and not w.lora_dropout.training for w in wrappers)
+    wrappers[0].train()
+    before = {name: m.training for name, m in model.net.named_modules()}
+    _ = model.generate(prompt="the", max_new_tokens=4, temperature=0.0)
+    assert {name: m.training for name, m in model.net.named_modules()} == before

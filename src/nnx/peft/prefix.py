@@ -53,6 +53,7 @@ from ..nn.net.transformer_layers import (
     multi_head_causal_attention,
 )
 from ..nn.net.transformer_nn import TransformerNN
+from ._mode import inherit_training_mode
 from ._source import _resolve_source_to_state_dict
 
 
@@ -180,6 +181,11 @@ class PrefixTuner(nn.Module):
             dynamic_mha = cast(Any, mha)
             dynamic_mha._nnx_prefix_layer_idx = i
             dynamic_mha.forward = types.MethodType(_prefix_patched_forward, mha)
+
+        # Report the wrapped model's train/eval mode (FIX-013) on the tuner
+        # and its prefix ParameterLists; the model's own submodule modes are
+        # left untouched.
+        inherit_training_mode(self, model)
 
     # ------------------------------------------------------------------
     # Forward + trainable params
