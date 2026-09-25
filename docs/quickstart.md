@@ -358,6 +358,41 @@ metric. See
 for the runnable version (it also proves, with an `eval_step_fn` spy, that no
 validation hook runs).
 
+### 2.13. Probabilities, decoded labels and sample ids
+
+`predict()` returns raw logits and decoded classes. When you need
+probabilities — NLL, Brier score, calibration, a decision threshold — declare
+the task and call `predict_proba` instead; `predict()` itself is unchanged:
+
+```python
+from nnx import ProbabilitySpec
+
+spec = ProbabilitySpec(kind="categorical", class_axis=1, labels=("cat", "dog", "fox"))
+result = model.predict_proba(X_val, spec)   # same inputs as predict(): arrays, tensors, tuples, loaders
+result.logits                               # exactly predict(X_val).logits
+result.probabilities                        # softmax over class_axis; each row sums to 1
+result.decoded                              # argmax class indices == predict(X_val).classes
+result.decoded_labels()                     # array(['dog', 'cat', ...], dtype=object)
+result.sample_ids                           # identity of row i (input row index for arrays)
+```
+
+`kind="bernoulli"` is for independent binary outputs (multi-label, or one
+binary logit trained with `Losses.BINARY_CROSS_ENTROPY`): element-wise sigmoid
+probabilities that are **not** normalized across outputs, and `decoded` holds
+0/1 indicators (`logit >= 0`, the same threshold `predict()` uses), which
+`result.class_indices` refuses to treat as class indices. The kind is always
+declared, never inferred from the loss or output shape. `class_axis` defaults
+to `-1` (fits `(N, C)` and class-last language-model logits); class-first
+outputs such as `(N, C, H, W)` need `class_axis=1`. A label count that does
+not match the class axis, an invalid axis, or NaN / ±inf logits raise
+`PredictionValidationError`. For an ordinary `DataLoader`, `sample_ids` are
+positions in iteration order — the dataset index only when the loader does not
+shuffle (a shuffling loader warns); for graph loaders only seed rows are
+returned and `sample_ids` holds their global node indices. A spec serializes with
+`spec.state()` / `ProbabilitySpec.from_state(...)`, label order included, and
+`prediction_from_logits(logits, spec)` applies the same rules to logits you
+already have.
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

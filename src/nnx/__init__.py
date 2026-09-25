@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import embeddings, interop, optimizers, prune, viz
+from . import embeddings, interop, optimizers, prediction, prune, viz
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -165,6 +165,7 @@ from .peft import (
     save_prefix_weights,
     save_prompt_weights,
 )
+from .prediction import PredictionResult, PredictionValidationError, ProbabilitySpec, prediction_from_logits
 from .quantize import QATLifecycleCallback, qat_train_step_factory, quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
 from .surgery import (
@@ -183,6 +184,12 @@ __all__ = [
     # Orchestration
     "NNModel",
     "PredictResult",
+    # Probability-aware prediction (opt-in; PredictResult is unchanged)
+    "prediction",
+    "ProbabilitySpec",
+    "PredictionResult",
+    "PredictionValidationError",
+    "prediction_from_logits",
     "TrainStepContext",
     "TrainStepFn",
     "EvalStepContext",

@@ -144,6 +144,8 @@ The factory lifecycle:
 
 Built-in nets return **raw logits**; `predict().logits` is always that raw output. Native `torch.nn.NLLLoss` (`Losses.NEGATIVE_LOG_LIKELIHOOD`) requires log-probabilities, so the supervised loop, `evaluate()` and the NNx-owned classifier step factories (KD, feature-KD, MoE, Mixup, CutMix, and Born-Again through KD) apply `log_softmax` over the class axis internally before calling the exact native loss — the reported loss is the normalized NLL and the backpropagated gradient carries the competing-class term, matching cross-entropy from the same weights. The loss object's class weights, `ignore_index` and reduction remain authoritative. Any other loss module — including an `NLLLoss` *subclass* with its own `forward`, a custom `train_step_fn`, or the standalone `lr_finder` callable — receives the raw output unchanged and owns its own normalization.
 
+**Probability-aware prediction.** `predict()` and `PredictResult` stay logits + classes. `NNModel.predict_proba(X, spec)` is the opt-in alternative: a `ProbabilitySpec(kind, class_axis, labels)` *declares* the task — `"categorical"` (softmax over `class_axis`, rows sum to 1, argmax decoding) or `"bernoulli"` (independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators) — rather than inferring it from the loss or the output shape. The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values, the spec (class axis and ordered labels) and `sample_ids` (the input row index for arrays and tensors, the iteration position for an ordinary loader — a shuffling loader warns — and the global node index for graph seed rows). It runs through the same inference path as `predict()` — the same inputs, graph seed-row slicing, `no_grad`, and non-destructive mode handling (§13.2) — and never touches parameters or gradients. `class_indices` exists only for categorical results, so Bernoulli indicators cannot be fed to class-index consumers such as `VisUtils.confusion_matrix` by mistake; `prediction_from_logits(logits, spec)` exposes the same computation for logits obtained elsewhere.
+
 ## 4. What lands on disk
 
 Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer][, salt]}` partial dict):
@@ -689,10 +691,10 @@ result.figure.show()
 
 ### 13.2. Non-destructive contract for inference and inspection helpers
 
-`lr_finder` isn't the only helper that snapshots and restores caller state. Ten NNx call sites share the same non-destructive contract: nine put the underlying `nn.Module` into `eval()` mode for the duration of the call, while `lr_finder` forces `train()` for its sweep. All ten restore each module's original mode rather than flattening a mixed-mode tree to the root flag. Restoration runs inside `try/finally`, so the contract holds even when the body raises mid-call:
+`lr_finder` isn't the only helper that snapshots and restores caller state. Eleven NNx call sites share the same non-destructive contract: ten put the underlying `nn.Module` into `eval()` mode for the duration of the call, while `lr_finder` forces `train()` for its sweep. All eleven restore each module's original mode rather than flattening a mixed-mode tree to the root flag. Restoration runs inside `try/finally`, so the contract holds even when the body raises mid-call:
 
 - `nnx.lr_finder`
-- `NNModel.predict`, `NNModel.evaluate`
+- `NNModel.predict`, `NNModel.predict_proba`, `NNModel.evaluate`
 - `GenerativeNNModel.generate`
 - `nnx.diffusion.sample`
 - `nnx.embeddings.embed_texts`
