@@ -107,6 +107,10 @@ dev = [
     "pip-audit==2.10.1",
     "tensorboard>=2.15",   # exercises TensorBoardCallback path in tests
     "onnx>=1.15",          # exercises NNModel.to_onnx in tests
+    # Runs exported graphs against the CPU model in tests (FEAT-006); 1.24+
+    # ships no CPython 3.10 wheels.
+    "onnxruntime>=1.17,<1.24; python_version < '3.11'",
+    "onnxruntime>=1.17; python_version >= '3.11'",
 ]
 tensorboard = ["tensorboard>=2.15"]
 notebook = ["ipython>=8.0"]

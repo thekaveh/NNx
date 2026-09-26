@@ -445,6 +445,31 @@ returned and `sample_ids` holds their global node indices. A spec serializes wit
 `prediction_from_logits(logits, spec)` applies the same rules to logits you
 already have.
 
+### 2.14. Your own `nn.Module`
+
+Any `torch.nn.Module` trains through the same loop. Register a factory to
+make it portable, or wrap an instance you already have:
+
+```python
+from nnx import KeywordInputs, ModelSpec, NNModel, NNModelParams, register_model_factory
+
+register_model_factory("acme.encoder", 1, lambda config: Encoder(**config))
+model = NNModel(params=NNModelParams(net=ModelSpec("acme.encoder", 1, {"width": 64}), loss=Losses.CROSS_ENTROPY))
+run = model.train(params=train_params)            # (x, y) batches reach forward(x)
+rebuilt = NNModel.from_checkpoint(checkpoint)     # through the registry — no pickled code
+
+wrapped = NNModel(module=encoder, params=NNModelParams(loss=Losses.CROSS_ENTROPY),
+                  batch_adapter=KeywordInputs(("input_ids", "attention_mask"), target="labels"))
+```
+
+A registered module is built under the spec's `seed` (your RNG is left
+alone) and rebuilds from checkpoints, safetensors and the Hub; a wrapped
+instance is trained in place (`wrapped.net is encoder`) but is runtime-only —
+its weights reload only into a module you pass again
+(`NNModel.from_checkpoint(ckpt, module=...)`). See
+[Concepts §3.2](concepts.md#32-arbitrary-modules-and-registered-model-factories)
+and [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

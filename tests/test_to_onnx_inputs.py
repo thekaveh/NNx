@@ -153,3 +153,36 @@ def test_to_onnx_preserves_eval_mode_caller(tmp_path):
     model.to_onnx(str(tmp_path / "preserve_eval.onnx"), example_input=torch.randn(2, 4))
 
     assert model.net.training is False
+
+
+class _TensorToy(torch.nn.Module):
+    """A registered, tensor-output toy (FEAT-006)."""
+
+    def __init__(self, width: int = 5) -> None:
+        super().__init__()
+        self.body = torch.nn.Sequential(torch.nn.Linear(4, width), torch.nn.GELU(), torch.nn.Linear(width, 3))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.body(x)
+
+
+def test_registered_tensor_output_modules_export_and_match_onnx_runtime(tmp_path):
+    """The exported graph of a registered module runs in ONNX Runtime and
+    matches the CPU model. Needs `onnxruntime` (the `dev` extra): without it
+    the test reports skipped, never passed."""
+    pytest.importorskip("onnx")
+    ort = pytest.importorskip("onnxruntime")
+    from nnx import ModelSpec, register_model_factory, unregister_model_factory
+
+    register_model_factory("tests.onnx_toy", 1, lambda config: _TensorToy(**config))
+    try:
+        model = NNModel(params=NNModelParams(net=ModelSpec("tests.onnx_toy", 1, {"width": 5}), device=Devices.CPU))
+        path = str(tmp_path / "toy.onnx")
+        model.to_onnx(path, example_input=torch.randn(2, 4))
+        X = torch.randn(7, 4, generator=torch.Generator().manual_seed(0))
+        session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        (onnx_out,) = session.run(None, {session.get_inputs()[0].name: X.numpy()})
+        np.testing.assert_allclose(onnx_out, model.predict(X).logits, rtol=1e-4, atol=1e-5)
+        assert onnx_out.shape == (7, 3)  # the batch dimension stayed dynamic
+    finally:
+        unregister_model_factory("tests.onnx_toy", 1)

@@ -26,14 +26,12 @@ stays one.
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import torch
 import torch.nn.functional as F
 
 from .._metrics import classification_edp
 from .._step_helpers import finalize_step, softened_kl
-from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input
+from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -93,18 +91,15 @@ def kd_train_step_factory(
         m.net.train()
         m.net.zero_grad()
 
-        # unpack_batch returns ((X,), Y); the singleton destructure asserts
-        # a single-input net and binds X to that one tensor.
-        (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
-        X = X.to(m.device)
-        Y = Y.to(m.device)
+        # One positional input, split by the model's batch adapter.
+        X, Y = _single_input_batch(m, ctx.batch, who="kd_train_step_factory")
 
-        student_logits = m.net(X)
+        student_logits = m._net_forward((X,), {})
         with torch.no_grad():
             # Teacher might live on a different device; migrate the
             # input into its frame for the forward pass. Cheap when
             # student.device == teacher.device.
-            teacher_logits = teacher.net(X.to(teacher.device)).to(m.device)
+            teacher_logits = teacher._net_forward((X.to(teacher.device),), {}).to(m.device)
 
         # KL(teacher || student) with both softened by T — the standard
         # Hinton direction (see softened_kl for the F.kl_div contract).
@@ -205,9 +200,7 @@ def feature_kd_train_step_factory(
         m.net.train()
         m.net.zero_grad()
 
-        (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
-        X = X.to(m.device)
-        Y = Y.to(m.device)
+        X, Y = _single_input_batch(m, ctx.batch, who="feature_kd_train_step_factory")
 
         # Resolve student layers per-step (cheap, and keeps us robust
         # if the user swapped m.net between factory build and first
@@ -235,11 +228,11 @@ def feature_kd_train_step_factory(
                 handles.append(teacher_layers[t_name].register_forward_hook(_t_hook))
                 handles.append(s_layer.register_forward_hook(_s_hook))
 
-            student_logits = m.net(X)
+            student_logits = m._net_forward((X,), {})
             with torch.no_grad():
                 # Teacher might live on a different device; migrate the
                 # input into its frame for the forward pass.
-                teacher_logits = teacher.net(X.to(teacher.device)).to(m.device)
+                teacher_logits = teacher._net_forward((X.to(teacher.device),), {}).to(m.device)
         finally:
             for h in handles:
                 h.remove()

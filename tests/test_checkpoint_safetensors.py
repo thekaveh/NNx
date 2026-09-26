@@ -448,3 +448,75 @@ def test_checkpoint_safetensors_keeps_the_monitor_selection_and_training_summary
         assert loaded.idp.selection == record
         assert loaded.idp.train_summary == idp.train_summary
         assert loaded.idp.val_edp == idp.val_edp
+
+
+# ---------- FEAT-006: registered and runtime-only modules ----------
+
+
+class _ToyEncoder(torch.nn.Module):
+    def __init__(self, width: int = 6) -> None:
+        super().__init__()
+        self.body = torch.nn.Sequential(torch.nn.Linear(4, width), torch.nn.ReLU(), torch.nn.Linear(width, 2))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.body(x)
+
+
+def _fit_briefly(model: NNModel) -> str:
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import NNOptimParams, NNTrainParams
+
+    X = torch.randn(8, 4, generator=torch.Generator().manual_seed(0))
+    loader = DataLoader(TensorDataset(X, (X[:, 0] > 0).long()), batch_size=4)
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams.builder().sgd(max_lr=0.05).build(),
+            save_phase_checkpoints=False,
+        )
+    )
+    return run.id
+
+
+def test_runtime_modules_write_non_reconstructible_weights_and_refuse_portable_saves(tmp_path, monkeypatch):
+    from nnx import MissingModelFactoryError
+    from nnx.nn.enum.checkpoints import Checkpoints
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = NNModel(module=_ToyEncoder(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run_id = _fit_briefly(model)
+    checkpoint = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.net_params is None
+    assert checkpoint.reconstructible is False
+    assert checkpoint.model_params.state()["net"]["reconstructible"] is False
+    assert set(checkpoint.net_state) == set(model.net.state_dict())  # the weights themselves are kept
+    target = tmp_path / "portable" / "encoder.safetensors"
+    with pytest.raises(MissingModelFactoryError, match="runtime-only module"):
+        checkpoint.to_file(str(target), format="safetensors")
+    assert not target.parent.exists()  # rejected before any directory or file was written
+
+
+def test_registered_modules_round_trip_through_safetensors(tmp_path, monkeypatch):
+    from nnx import ModelSpec, register_model_factory, unregister_model_factory
+    from nnx.nn.enum.checkpoints import Checkpoints
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    register_model_factory("tests.safetensors_encoder", 1, lambda config: _ToyEncoder(**config))
+    try:
+        spec = ModelSpec("tests.safetensors_encoder", 1, {"width": 6})
+        model = NNModel(params=NNModelParams(net=spec, loss=Losses.CROSS_ENTROPY))
+        checkpoint = NNCheckpoint.load(run=_fit_briefly(model), type=Checkpoints.LAST)
+        assert checkpoint is not None
+        path = str(tmp_path / "encoder.safetensors")
+        checkpoint.to_file(path, format="safetensors")
+        loaded = NNCheckpoint.from_file(path)
+        assert loaded is not None and loaded.net_params is None and loaded.model_params.net == spec
+        rebuilt = NNModel.from_checkpoint(loaded)
+        X = torch.randn(3, 4)
+        torch.testing.assert_close(torch.as_tensor(rebuilt.predict(X).logits), torch.as_tensor(model.predict(X).logits))
+    finally:
+        unregister_model_factory("tests.safetensors_encoder", 1)

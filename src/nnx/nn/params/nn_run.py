@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import io
+import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -69,6 +71,40 @@ def _optim_label(optim: object) -> str:
     if isinstance(optim, NNOptimFactoryParams):
         return f"registered factory {_factory_text(optim)}"
     return str(optim)
+
+
+def _net_summary(net: Optional[NNParams], descriptor: object) -> str:
+    """``__str__`` fields of the network: a built-in net's dimensions, or a
+    registered / runtime module's descriptor (FEAT-006)."""
+    if net is not None:
+        return f", dims={net.dims}, dropout={net.dropout_prob}, activation={net.activation}, n_heads={net.n_heads}"
+    return "".join(f", {key}={value}" for key, value in _descriptor_fields(descriptor))
+
+
+def _net_rows(net: Optional[NNParams], descriptor: object) -> list[tuple[str, str]]:
+    """Config-table rows of the network (see :func:`_net_summary`)."""
+    if net is not None:
+        return [
+            ("input_dim → output_dim", f"{net.input_dim} → {net.output_dim}"),
+            ("hidden_dims", str(net.hidden_dims)),
+            ("dropout", str(net.dropout_prob)),
+            ("activation", str(net.activation)),
+        ]
+    return [(key, html.escape(value)) for key, value in _descriptor_fields(descriptor)]
+
+
+def _descriptor_fields(descriptor: object) -> list[tuple[str, str]]:
+    state = getattr(descriptor, "state", None)
+    if not callable(state):
+        return []
+    fields: dict[str, Any] = dict(cast(Callable[[], Mapping[str, Any]], state)())
+    kind = str(fields.pop("kind", ""))
+    rows = [("kind", kind)]
+    if kind == "registered":
+        rows += [("config", json.dumps(fields.get("config", {}), sort_keys=True)), ("seed", str(fields.get("seed")))]
+    else:
+        rows += [("module", str(fields.get("module"))), ("reconstructible", "False")]
+    return rows
 
 
 def _run_display_path(run_id: str) -> str:
@@ -393,7 +429,9 @@ def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
-    net: NNParams
+    # Built-in nets only; ``None`` for a registered or runtime module
+    # (FEAT-006), whose descriptor is ``model.net``.
+    net: Optional[NNParams]
     train: NNTrainParams
     model: NNModelParams
 
@@ -429,10 +467,7 @@ class NNRun:
             f"{f', task={self.model.task}' if self.model.task is not None else ''}"
             f", device={self.model.device}"
             f", net={self.model.net}"
-            f", dims={self.net.dims}"
-            f", dropout={self.net.dropout_prob}"
-            f", activation={self.net.activation}"
-            f", n_heads={self.net.n_heads}"
+            f"{_net_summary(self.net, self.model.net)}"
             f", n_epochs={self.train.n_epochs}"
             f"{_optim_summary(self.train.optim)}"
             f", scheduler={self.train.scheduler}"
@@ -455,7 +490,12 @@ class NNRun:
         # since callers can reach this API without a static type checker.
         if self.salt is not None and (not isinstance(self.salt, str) or not self.salt.strip()):
             raise ValueError("NNRun.salt must be a non-empty string when provided")
-        state: dict[str, object] = dict(model=self.model.state(), net=self.net.state(), train=self.train.state())
+        # Key order is part of the run id: model, net, train. `net` is absent
+        # for registered / runtime modules (FEAT-006), described by `model`.
+        state: dict[str, object] = dict(model=self.model.state())
+        if self.net is not None:
+            state["net"] = self.net.state()
+        state["train"] = self.train.state()
         # `trainer` is omitted when None so existing NNModel runs hash to
         # the same run.id as before this field existed. Same omit-when-
         # default pattern as NNTrainParams.seed / save_phase_checkpoints
@@ -502,14 +542,11 @@ class NNRun:
         """HTML table of the canonical run config (subset of state())."""
         rows = [
             ("run.id", self.id),
-            ("net", str(self.model.net)),
+            ("net", html.escape(str(self.model.net))),
             ("device", str(self.model.device)),
             ("loss", str(self.model.loss)),
             *([("task", str(self.model.task))] if self.model.task is not None else []),
-            ("input_dim → output_dim", f"{self.net.input_dim} → {self.net.output_dim}"),
-            ("hidden_dims", str(self.net.hidden_dims)),
-            ("dropout", str(self.net.dropout_prob)),
-            ("activation", str(self.net.activation)),
+            *_net_rows(self.net, self.model.net),
             ("n_epochs", str(self.train.n_epochs)),
             ("optim", f"{_optim_label(self.train.optim)} (max_lr={self.train.optim.max_lr})"),
             *self._monitoring_rows(),
@@ -859,13 +896,14 @@ class NNRun:
             else:
                 trainer = None
 
+            model = NNModelParams.from_state(rep["model"])
             return NNRun(
                 # resolve_from_state: a TRANSFORMER run's net params must
                 # come back as NNTransformerParams, not be downgraded to
-                # NNParams.
-                net=NNParams.resolve_from_state(rep["net"]),
+                # NNParams. Registered / runtime modules (FEAT-006) have none.
+                net=NNParams.resolve_from_state(rep["net"]) if model.builtin else None,
                 train=NNTrainParams.from_state(rep["train"]),
-                model=NNModelParams.from_state(rep["model"]),
+                model=model,
                 trainer=trainer,
                 salt=rep.get("salt"),
                 idps=idps,
