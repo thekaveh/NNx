@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Any, Optional
 
+from ...monitors import MonitorRecord
 from .nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -16,6 +17,14 @@ class NNIterationDataPoint:
     the same epoch have `val_edp=None`. When reading idps.csv, group by
     epoch_idx and take the row with val_edp set for per-epoch validation
     metrics.
+
+    **Epoch summary (FEAT-003).** A run that declares metrics or a monitor
+    also records, on the same last idp of each epoch, `train_summary` —
+    the whole-epoch training record (loss and error averaged with every
+    batch's own denominator, declared metrics over the full sample) — and
+    `selection`, the epoch's :class:`~nnx.MonitorRecord` (monitor identity,
+    value, status and whether the epoch improved). Both are omitted from
+    `state()` otherwise, so legacy history is unchanged.
     """
 
     lr: float
@@ -24,12 +33,24 @@ class NNIterationDataPoint:
     batch_idx: int
     train_edp: NNEvaluationDataPoint
     val_edp: Optional[NNEvaluationDataPoint] = None
+    train_summary: Optional[NNEvaluationDataPoint] = None
+    selection: Optional[MonitorRecord] = None
 
     def with_val_edp(self, value: Optional[NNEvaluationDataPoint]) -> NNIterationDataPoint:
         return replace(self, val_edp=value)
 
+    def with_epoch_summary(
+        self, train_summary: Optional[NNEvaluationDataPoint], selection: Optional[MonitorRecord]
+    ) -> NNIterationDataPoint:
+        return replace(self, train_summary=train_summary, selection=selection)
+
+    def monitored_train_edp(self) -> NNEvaluationDataPoint:
+        """The epoch's training record for monitors: the whole-epoch
+        summary when recorded, else this (last) batch's record."""
+        return self.train_summary if self.train_summary is not None else self.train_edp
+
     def state(self) -> dict:
-        return dict(
+        d: dict[str, Any] = dict(
             lr=self.lr,
             iter_idx=self.iter_idx,
             epoch_idx=self.epoch_idx,
@@ -37,6 +58,13 @@ class NNIterationDataPoint:
             train_edp=self.train_edp.state(),
             val_edp=self.val_edp.state() if self.val_edp is not None else None,
         )
+        # FEAT-003 epoch summary: only on runs that declare metrics / a
+        # monitor, and only on each epoch's last idp.
+        if self.train_summary is not None:
+            d["train_summary"] = self.train_summary.state()
+        if self.selection is not None:
+            d["selection"] = self.selection.state()
+        return d
 
     @staticmethod
     def from_state(state: dict) -> NNIterationDataPoint:
@@ -74,17 +102,35 @@ class NNIterationDataPoint:
         # A validation record is present when any of its scalars is — an
         # all-masked task record (FEAT-002) has no loss but still has its
         # kind, count and status.
-        val_state = _edp_state("val_edp")
-        val_edp = None
-        if any(val_state[name] is not None for name in _EDP_SCALARS) or val_state["metrics"]:
-            val_edp = NNEvaluationDataPoint.from_state(val_state)
+        def _optional_edp(prefix: str) -> Optional[NNEvaluationDataPoint]:
+            edp_state = _edp_state(prefix)
+            if any(edp_state[name] is not None for name in _EDP_SCALARS) or edp_state["metrics"]:
+                return NNEvaluationDataPoint.from_state(edp_state)
+            return None
+
+        selection = None
+        if _field("selection.status") is not None:
+            monitor_state = {
+                name: _field(f"selection.monitor.{name}")
+                for name in ("metric", "split", "mode", "min_delta", "on_missing", "on_nonfinite")
+            }
+            selection = MonitorRecord.from_state(
+                {
+                    "monitor": {k: v for k, v in monitor_state.items() if v is not None},
+                    "value": state.get("selection.value"),
+                    "status": _field("selection.status"),
+                    "improved": _field("selection.improved"),
+                }
+            )
         return NNIterationDataPoint(
             lr=state["lr"],
             iter_idx=state["iter_idx"],
             epoch_idx=state["epoch_idx"],
             batch_idx=state["batch_idx"],
             train_edp=NNEvaluationDataPoint.from_state(_edp_state("train_edp")),
-            val_edp=val_edp,
+            val_edp=_optional_edp("val_edp"),
+            train_summary=_optional_edp("train_summary"),
+            selection=selection,
         )
 
 

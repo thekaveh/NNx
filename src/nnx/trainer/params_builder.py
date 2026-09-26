@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Union
 from torch.utils.data import DataLoader
 
 from .._builders import copy_containers, params_init_values
+from ..monitors import MetricSpec, MonitorSpec
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from .params import NNTrainerParams
@@ -64,6 +65,8 @@ class NNTrainerParamsBuilder:
         "resume_from_checkpoint",
         "parent_run_id",
         "resume_mode",
+        "metrics",
+        "monitor",
     )
     # Configuration containers a branch owns (its items stay shared); the
     # `optims` / `schedulers` maps are the builder's own dicts.
@@ -152,6 +155,18 @@ class NNTrainerParamsBuilder:
         different data get distinct run directories. None at default.
         """
         self._fields["data_id"] = value
+        return self
+
+    def metrics(self, *specs: MetricSpec) -> NNTrainerParamsBuilder:
+        """Declare named, registered metrics (FEAT-003) — computed over the
+        whole validation set by ``evaluate()`` and reported under each
+        spec's name. Replaces any earlier declaration."""
+        self._fields["metrics"] = tuple(specs)
+        return self
+
+    def monitor(self, spec: MonitorSpec) -> NNTrainerParamsBuilder:
+        """What BEST selection and plateau schedulers track (FEAT-003)."""
+        self._fields["monitor"] = spec
         return self
 
     def resume_from(self, run_id: str, checkpoint: str = "last", mode: str = "auto") -> NNTrainerParamsBuilder:

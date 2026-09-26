@@ -54,16 +54,14 @@ Lifecycle and guarantees:
 from __future__ import annotations
 
 import json
-import math
-import numbers
-import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 from torch import nn
 
+from ._config import _SLUG, _freeze_config, _thaw_config
 from ._validation import require_count
 from .nn.enum.optims import resolve_param_groups
 from .nn.params.nn_optim_params import NNOptimParams, _validate_optim_param_groups, _validate_optim_scalars
@@ -86,7 +84,7 @@ __all__ = [
 OptimizerFactory = Callable[[list[dict[str, Any]], Mapping[str, Any]], torch.optim.Optimizer]
 """``factory(param_groups, config) -> torch.optim.Optimizer``."""
 
-_FACTORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
+_FACTORY_ID = _SLUG
 _REGISTRY: dict[tuple[str, int], OptimizerFactory] = {}
 
 
@@ -101,78 +99,6 @@ def _require_factory_id(value: object, *, owner: str) -> str:
 
 def _require_factory_version(value: object, *, owner: str) -> int:
     return require_count(value, "version", owner=owner, minimum=1)
-
-
-class _FrozenConfig(Mapping[str, Any]):
-    """Read-only, picklable / deep-copyable string-keyed mapping used for
-    a spec's ``config`` (``types.MappingProxyType`` cannot be copied)."""
-
-    __slots__ = ("_data",)
-
-    def __init__(self, data: Mapping[str, Any]) -> None:
-        self._data = dict(data)
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def __repr__(self) -> str:
-        return repr(self._data)
-
-    def __reduce__(self):
-        return (_FrozenConfig, (self._data,))
-
-
-def _freeze_config(value: Any, path: str) -> Any:
-    """Return an immutable, JSON-like copy of ``value`` or raise.
-
-    Accepted: ``None``, ``bool``, ``int``, finite ``float``, ``str``,
-    lists/tuples of those (frozen to tuples) and mappings with string keys
-    (frozen to sorted read-only mappings). Callables, tensors, modules and
-    every other object are rejected, so a spec always serializes to plain
-    YAML and never smuggles executable state into ``run.yaml``.
-    """
-    if value is None or isinstance(value, (bool, str)):
-        return value
-    # NumPy / other numeric scalars are normalized to plain int / float so
-    # state() stays YAML-portable (same convention as the params counts).
-    if isinstance(value, numbers.Integral):
-        return int(value)
-    if isinstance(value, numbers.Real):
-        real = float(value)
-        if not math.isfinite(real):
-            raise ValueError(f"OptimizerFactorySpec config{path} must be finite, got {value!r}")
-        return real
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_config(item, f"{path}[{i}]") for i, item in enumerate(value))
-    if isinstance(value, Mapping):
-        frozen: dict[str, Any] = {}
-        for key in sorted(value, key=lambda k: str(k)):
-            if not isinstance(key, str):
-                raise TypeError(f"OptimizerFactorySpec config{path} keys must be strings, got {key!r}")
-            frozen[key] = _freeze_config(value[key], f"{path}[{key!r}]")
-        return _FrozenConfig(frozen)
-    kind = "a callable" if callable(value) else f"a {type(value).__name__}"
-    raise TypeError(
-        f"OptimizerFactorySpec config{path} must be JSON-like (None, bool, int, finite float, str, "
-        f"list, or a str-keyed mapping); got {kind}: {value!r}. Factories and other executable objects "
-        "are registered with register_optimizer_factory(...) and referenced by id/version, never "
-        "stored in a run config."
-    )
-
-
-def _thaw_config(value: Any) -> Any:
-    """Plain YAML-safe copy (dicts / lists) of a frozen config value."""
-    if isinstance(value, Mapping):
-        return {key: _thaw_config(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_config(item) for item in value]
-    return value
 
 
 class OptimizerFactorySpec:

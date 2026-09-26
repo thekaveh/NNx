@@ -7,7 +7,7 @@ import os
 import random
 import re
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
@@ -20,6 +20,17 @@ from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..components import ComponentRegistry, ResumeStatus
+from ..monitors import (
+    MetricSpec,
+    MonitorRecord,
+    MonitorSpec,
+    MonitorTracker,
+    _check_metric_inputs,
+    _ignore_index,
+    _metric_domain,
+    _MetricSet,
+    _TrainEpochSummary,
+)
 from ..tasks import TaskAdapter, task_adapter
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
@@ -512,6 +523,10 @@ class TrainStepContext:
     epoch_idx: int
     is_last_batch: bool = False
     accumulation_state: Optional[GradientAccumulationState] = None
+    # FEAT-003: the whole-epoch training summary a run with declared metrics
+    # or a monitor keeps; `default_train_step` reports each batch's outputs
+    # and denominators to it. Custom steps may ignore it.
+    epoch_summary: Optional[_TrainEpochSummary] = None
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -830,6 +845,149 @@ def _enumerate_with_last(iterable: Iterable[Any]) -> Iterator[tuple[int, Any, bo
         index += 1
 
 
+def _observe_epoch_summary(
+    summary: _TrainEpochSummary, model: NNModel, terms: _StepLossTerms, adapter: Optional[TaskAdapter]
+) -> None:
+    """Report one default-step batch to the whole-epoch summary (FEAT-003):
+    its outputs for the declared metrics, its loss denominator and the
+    number of targets its error scores."""
+    if adapter is not None:
+        summary.observe(terms.target, terms.output, terms.valid, terms.normalization_weight)
+        return
+    assert terms.prediction is not None
+    scored, _ = _classification_metric_tensors(model.loss_fn, terms.target, terms.prediction)
+    summary.observe(terms.target, terms.output, None, terms.normalization_weight, float(scored.numel()))
+
+
+def _batch_sample_count(net: Any, batch: Any) -> int:
+    """Samples in a batch, for weighting custom-step records in the epoch
+    summary: graph seed rows, else the leading size of the first tensor."""
+    seed_count = getattr(net, "seed_count", None)
+    if callable(seed_count):
+        n_seed = seed_count(batch)
+        if n_seed is not None:
+            return int(cast(int, n_seed))
+    first = batch
+    while isinstance(first, (tuple, list)) and first:
+        first = first[0]
+    if isinstance(first, torch.Tensor) and first.ndim:
+        return int(first.shape[0])
+    return 1
+
+
+def _metric_context(model: Any) -> tuple[Optional[str], Optional[int], float, Optional[int]]:
+    """How this model's outputs become metric inputs (FEAT-003): the output
+    domain, the ignored class index, the multilabel decision threshold (in
+    logit space, as the task decodes) and the class count."""
+    adapter = getattr(model, "task_adapter", None)
+    spec = adapter.spec if adapter is not None else None
+    domain = _metric_domain(model.loss_fn, spec)
+    threshold = float(getattr(adapter, "_logit_threshold", 0.0))
+    n_classes = getattr(spec, "num_outputs", None) if spec is not None else None
+    if n_classes is None:
+        n_classes = getattr(getattr(model, "net_params", None), "output_dim", None)
+    return domain, _ignore_index(model.loss_fn), threshold, n_classes
+
+
+def _named_metric_set(model: Any, metrics: tuple[MetricSpec, ...], *, where: str) -> Optional[_MetricSet]:
+    """Accumulators for declared metrics (``None`` when there are none),
+    after checking that the model can provide every metric's input."""
+    if not metrics:
+        return None
+    domain, ignore_index, threshold, n_classes = _metric_context(model)
+    _check_metric_inputs(metrics, domain, where=where, n_classes=n_classes)
+    return _MetricSet(metrics, domain, ignore_index, threshold)
+
+
+def _check_plateau_resume(saved: Optional[Mapping[str, Any]], scheduler: Any, monitor: Optional[MonitorSpec]) -> None:
+    """A monitor-aligned plateau scheduler (FEAT-003) resumes only from a
+    plateau state saved under the same improvement rule — loading one
+    saved under another direction or threshold would silently replace the
+    monitor's rule. Checked before anything is restored."""
+    if monitor is None or saved is None or not isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+        return
+    saved_rule = (saved.get("mode"), saved.get("threshold_mode"), saved.get("threshold"))
+    if saved_rule != (monitor.mode, "abs", monitor.min_delta):
+        raise ValueError(
+            f"resume plateau scheduler was saved with mode={saved_rule[0]!r}, threshold_mode={saved_rule[1]!r}, "
+            f"threshold={saved_rule[2]!r}, but this run's monitor {monitor.key!r} decides with mode="
+            f"{monitor.mode!r}, threshold_mode='abs', threshold={monitor.min_delta!r}; resume with the same "
+            "monitor, or pass resume_mode='weights_only'"
+        )
+
+
+def _monitoring_preflight(
+    model: Any,
+    *,
+    metrics: tuple[MetricSpec, ...],
+    monitor: Optional[MonitorSpec],
+    callbacks: Optional[list[Any]],
+    default_train_step: bool,
+    default_eval_step: bool,
+    has_val_loader: bool,
+    owner: str,
+) -> Optional[MonitorSpec]:
+    """FEAT-003: resolve declared metrics and monitors before any run is
+    reserved or loader read. Unknown registrations fail here without any
+    metric code running; so does a metric input the model cannot provide on
+    a path NNx computes, and a monitor that can never have a value."""
+    for spec in metrics:
+        spec.check()
+    if metrics and (default_train_step or default_eval_step):
+        domain, _, _, n_classes = _metric_context(model)
+        where = "the default training step" if default_train_step else "evaluate()"
+        _check_metric_inputs(metrics, domain, where=where, n_classes=n_classes)
+    resolved = monitor.resolve(metrics, owner=f"{owner}.monitor") if monitor is not None else None
+    monitors = [resolved] if resolved is not None else []
+    for callback in callbacks or ():
+        bind = getattr(callback, "_bind_metrics", None)
+        if callable(bind):
+            bound = bind(metrics)
+            if isinstance(bound, MonitorSpec):
+                monitors.append(bound)
+    for spec in monitors:
+        if spec.split == "val" and not has_val_loader:
+            raise ValueError(f"monitor {spec.key!r} tracks the validation split, but no val_loader is configured")
+        if spec.split == "train" and spec.metric not in ("loss", "error") and not default_train_step:
+            raise ValueError(
+                f"monitor {spec.key!r} needs {spec.metric!r} over the full training epoch, which only the default "
+                f"training step records; monitor 'val.{spec.metric}' or 'train.loss' instead"
+            )
+    return resolved
+
+
+def _monitored_plateau(scheduler: Any, optimizer: torch.optim.Optimizer, monitor: Optional[MonitorSpec]) -> Any:
+    """With a monitor, a ReduceLROnPlateau decides improvement exactly as the
+    monitor does: its direction, and an absolute ``min_delta`` threshold
+    (``a < best - min_delta`` / ``a > best + min_delta``, first finite value
+    improves, ties never do). Other settings are kept."""
+    if monitor is None or not isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+        return scheduler
+    return lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode=cast(Any, monitor.mode),
+        factor=scheduler.factor,
+        patience=scheduler.patience,
+        threshold=monitor.min_delta,
+        threshold_mode="abs",
+        cooldown=scheduler.cooldown,
+        min_lr=list(scheduler.min_lrs),
+        eps=scheduler.eps,
+    )
+
+
+def _step_monitored_plateau(scheduler: Any, record: MonitorRecord) -> None:
+    """Step a monitor-aligned plateau scheduler on the epoch's decision: a
+    missing value makes no decision; a non-finite one is an epoch without
+    improvement."""
+    if record.status == "missing":
+        return
+    if record.status == "nonfinite":
+        scheduler.step(math.inf if record.monitor.mode == "min" else -math.inf)
+        return
+    scheduler.step(record.value)
+
+
 def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     """Standard supervised training step: forward → loss → backward → step.
 
@@ -880,6 +1038,9 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
         loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
         terms.backward_loss.backward()
+
+    if ctx.epoch_summary is not None:
+        _observe_epoch_summary(ctx.epoch_summary, model, terms, adapter)
 
     if should_step and _window_is_masked(terms, accumulation_state, window_is_this_batch=cycle_size == 1):
         # FEAT-002: every target in this optimizer window is masked — there
@@ -1438,6 +1599,16 @@ class NNModel(_HubMixinBase):
         if params is None:
             raise ValueError("train params must be non-None")
         self._check_task_preflight()
+        _monitoring_preflight(
+            self,
+            metrics=params.metrics,
+            monitor=params.monitor,
+            callbacks=callbacks,
+            default_train_step=train_step_fn is None,
+            default_eval_step=eval_step_fn is None,
+            has_val_loader=params.val_loader is not None,
+            owner="NNTrainParams",
+        )
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
@@ -1532,6 +1703,20 @@ class NNModel(_HubMixinBase):
         registry = ComponentRegistry.discover(
             normalized_callbacks, train_step_fn, eval_step_fn, explicit=list(components or [])
         )
+        # FEAT-003: declared metrics and the run's monitor (validated in
+        # train()); the whole-epoch summary is kept when anything monitors.
+        monitor = params.monitor.resolve(params.metrics) if params.monitor is not None else None
+        tracker = MonitorTracker(monitor, warn_missing=True) if monitor is not None else None
+        if tracker is not None:
+            # Its best continues across a stateful resume (component state).
+            registry.register(tracker)
+        summarize = (
+            bool(params.metrics)
+            or monitor is not None
+            or any(isinstance(getattr(cb, "monitor", None), MonitorSpec) for cb in normalized_callbacks)
+        )
+        metric_domain, metric_ignore_index, metric_threshold, _ = _metric_context(self)
+        train_metrics = params.metrics if train_step_fn is None else ()
         component_plan = None
         resume_status = ResumeStatus()
         previous_net_state: Optional[dict[str, Any]] = None
@@ -1543,7 +1728,7 @@ class NNModel(_HubMixinBase):
         stateful_resume = params.resume_from_run_id is not None and params.resume_mode != "weights_only"
         if stateful_resume:
             _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
-        scheduler = self._build_scheduler(optimizer, params)
+        scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
         scaler = self._build_grad_scaler()
         start_epoch = 0
 
@@ -1584,6 +1769,7 @@ class NNModel(_HubMixinBase):
                     raise ValueError(
                         "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
                     )
+                _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
                 completed_epoch = training_state.get("completed_epoch")
                 if completed_epoch is not None:
                     start_epoch = int(completed_epoch) + 1
@@ -1698,6 +1884,11 @@ class NNModel(_HubMixinBase):
 
                 n_idps_before_epoch = len(idps)
                 accumulation_state = GradientAccumulationState()
+                epoch_summary = (
+                    _TrainEpochSummary(train_metrics, metric_domain, metric_ignore_index, metric_threshold)
+                    if summarize
+                    else None
+                )
                 for idx_batch, batch, is_last_batch in _enumerate_with_last(train_loader):
                     step_ctx = TrainStepContext(
                         model=self,
@@ -1711,8 +1902,11 @@ class NNModel(_HubMixinBase):
                         epoch_idx=idx_epoch,
                         is_last_batch=is_last_batch,
                         accumulation_state=accumulation_state,
+                        epoch_summary=epoch_summary,
                     )
                     train_edp = step_fn(step_ctx)
+                    if epoch_summary is not None:
+                        epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
 
                     idps.append(
                         NNIterationDataPoint(
@@ -1753,12 +1947,31 @@ class NNModel(_HubMixinBase):
                         )
                 elif validate:
                     assert params.val_loader is not None
-                    val_edp = self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
+                    # `metrics=` only when declared: evaluate() overrides written
+                    # before FEAT-003 keep their (loader, extra_metrics) call.
+                    val_edp = (
+                        self.evaluate(
+                            loader=params.val_loader, extra_metrics=params.extra_metrics, metrics=params.metrics
+                        )
+                        if params.metrics
+                        else self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
+                    )
                 else:
                     val_edp = None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
+                record: Optional[MonitorRecord] = None
+                if epoch_summary is not None:
+                    train_summary = epoch_summary.result()
+                    if tracker is not None:
+                        assert monitor is not None
+                        value = monitor.value(train=train_summary or train_edp, val=val_edp)
+                        record = tracker.observe(value, epoch=idx_epoch)
+                    idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
 
-                self._step_scheduler(scheduler, val_edp, train_edp, epoch_idx=idx_epoch)
+                if record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                    _step_monitored_plateau(scheduler, record)
+                else:
+                    self._step_scheduler(scheduler, val_edp, train_edp, epoch_idx=idx_epoch)
 
                 ctx.idp = idps[-1]
                 ctx.idps = idps
@@ -1784,6 +1997,7 @@ class NNModel(_HubMixinBase):
                         train_loader=train_loader,
                         optimizer_factory=resume_optimizer_factory,
                         components=registry.collect(),
+                        is_best=record.improved if record is not None else None,
                     )
                 except BaseException:
                     # LAST is the epoch commit marker. If it cannot be
@@ -1801,10 +2015,15 @@ class NNModel(_HubMixinBase):
                 # best_checkpoint every epoch (because checkpoint.idp.val_edp
                 # is None there) while the on-disk BEST tracks training error,
                 # diverging the two views of "best".
-                if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
+                if record is not None:
+                    # FEAT-003: the monitor decides BEST (same rule as the
+                    # on-disk BEST write above).
+                    if record.improved:
+                        best_checkpoint = checkpoint
+                elif best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
                     best_checkpoint = checkpoint
 
-                self._update_tqdm_postfix(tqdm_bar, optimizer, val_edp, train_edp)
+                self._update_tqdm_postfix(tqdm_bar, optimizer, val_edp, train_edp, record)
 
                 if ctx.should_stop:
                     break
@@ -1851,7 +2070,9 @@ class NNModel(_HubMixinBase):
         _print_run_saved(run.id)
         return saved
 
-    def evaluate(self, loader: Iterable[Any], extra_metrics=None) -> NNEvaluationDataPoint:
+    def evaluate(
+        self, loader: Iterable[Any], extra_metrics=None, metrics: Sequence[MetricSpec] = ()
+    ) -> NNEvaluationDataPoint:
         """Aggregate predictions across all batches in `loader` and compute
         a single NNEvaluationDataPoint. Aggregating (rather than averaging
         per-batch metrics) gives correct sample-weighted f1/precision/recall
@@ -1860,15 +2081,24 @@ class NNModel(_HubMixinBase):
         `extra_metrics` ({name -> callable(y_true, y_pred) -> float}) are
         called once on the aggregate truth / decoded predictions.
 
+        `metrics` (FEAT-003) are declared :class:`~nnx.MetricSpec`s,
+        accumulated over every valid sample of the loader from the input
+        each declares (decoded labels, probabilities or continuous outputs)
+        and reported in the record's ``metrics`` under each spec's name. A
+        metric whose input this model cannot provide raises before any
+        batch is read.
+
         Raises ValueError if the loader yields zero batches — previously
         produced NaN metrics silently from np.mean over an empty list.
         """
         # Ensure loss_fn lives on the same device as the model — guards
         # against callers reassigning self.device after construction.
         self.loss_fn = self.loss_fn.to(self.device)
+        # Module-level (not a method): legacy stand-ins borrow evaluate().
+        named = _named_metric_set(self, tuple(metrics), where="evaluate()")
         # getattr: legacy stand-ins borrow these methods without the property.
         if getattr(self, "task_adapter", None) is not None:
-            return self._evaluate_task(loader, extra_metrics)
+            return self._evaluate_task(loader, extra_metrics, named)
         # Snapshot training-mode for non-destructive restore (matches the
         # convention already used by `nnx.viz.activation_map` and
         # `nnx.lr_finder`). Without this, a caller doing the common
@@ -1891,6 +2121,8 @@ class NNModel(_HubMixinBase):
             with torch.no_grad():
                 for batch in loader:
                     _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
+                    if named is not None:
+                        named.update(Y, Y_hat_logits)
                     batch_n = int(Y.size(0))
                     # Aggregate predictions / labels across the entire loader so
                     # metrics are computed on the full eval set, not per-batch.
@@ -1918,7 +2150,10 @@ class NNModel(_HubMixinBase):
         Y_hat_concat = np.concatenate(all_Y_hat)
 
         edp = NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat, extra_metrics=extra_metrics)
-        assert edp.accuracy is not None  # `of` always computes the classification fields
+        accuracy = edp.accuracy
+        assert accuracy is not None  # `of` always computes the classification fields
+        if named is not None:
+            edp = replace(edp, metrics={**edp.metrics, **named.results()})
         return edp.with_loss(
             value=(
                 loss_numerator
@@ -1927,9 +2162,11 @@ class NNModel(_HubMixinBase):
                 if loss_normalization_weight
                 else float("nan")
             )
-        ).with_error(value=float(1 - edp.accuracy))
+        ).with_error(value=float(1 - accuracy))
 
-    def _evaluate_task(self, loader: Iterable[Any], extra_metrics=None) -> NNEvaluationDataPoint:
+    def _evaluate_task(
+        self, loader: Iterable[Any], extra_metrics=None, named: Optional[_MetricSet] = None
+    ) -> NNEvaluationDataPoint:
         """``evaluate()`` for a model with a task (FEAT-002): the adapter
         validates every batch, and loss and metrics are accumulated over
         the valid targets of the whole loader. Every target masked yields
@@ -1949,6 +2186,8 @@ class NNModel(_HubMixinBase):
                     _, Y, logits = self._fwd_outputs(batch)
                     output, target, valid = adapter.prepare(logits, Y)
                     accumulator.update(output, target, valid)
+                    if named is not None:
+                        named.update(target, output, valid)
                     _, numerator, weight = adapter.loss_terms(self.loss_fn, output, target, valid)
                     loss_numerator += float(numerator.detach())
                     if weight is None:
@@ -1966,7 +2205,10 @@ class NNModel(_HubMixinBase):
             loss = loss_numerator
         else:
             loss = loss_numerator / loss_normalization_weight if loss_normalization_weight else float("nan")
-        return accumulator.result(loss=loss, extra_metrics=extra_metrics)
+        edp = accumulator.result(loss=loss, extra_metrics=extra_metrics)
+        if named is not None and edp.count:
+            edp = replace(edp, metrics={**edp.metrics, **named.results()})
+        return edp
 
     def predict(self, X) -> PredictResult:
         """Run the network in eval mode and return logits + argmax classes.
@@ -2278,7 +2520,11 @@ class NNModel(_HubMixinBase):
         optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
+        is_best: Optional[bool] = None,
     ) -> NNCheckpoint:
+        """Publish LAST, the due phase tag and — when this epoch is the best
+        so far — BEST. ``is_best`` is the monitor's decision (FEAT-003);
+        ``None`` keeps the legacy comparison."""
         checkpoint = NNCheckpoint(
             idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
         )
@@ -2341,7 +2587,9 @@ class NNModel(_HubMixinBase):
         # — single source of truth for "what's the comparable error here"
         # (val→train, error→loss, +inf fall-through, tolerating None EDP
         # or None .error from custom train_step_fn paradigms).
-        if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
+        if is_best is None:
+            is_best = best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint)
+        if is_best:
             checkpoint.save(
                 run=run_id,
                 type=Checkpoints.BEST,
@@ -2388,8 +2636,14 @@ class NNModel(_HubMixinBase):
         optimizer,
         val_edp: Optional[NNEvaluationDataPoint],
         train_edp: NNEvaluationDataPoint,
+        record: Optional[MonitorRecord] = None,
     ) -> None:
         lr = optimizer.param_groups[0]["lr"]
+        if record is not None:
+            # FEAT-003: show what selection tracks, from the epoch summary.
+            shown = f"{record.value:.4f}" if record.value is not None else "n/a"
+            tqdm_bar.set_postfix_str(f"{record.monitor.key}={shown}, lr={lr:.4f}")
+            return
         # Custom train_step_fn hooks may leave .error unset — fall back to
         # .loss for display so the progress bar doesn't crash mid-train on
         # an `f"{None:.4f}"` format error. Same shared fallback resolver
