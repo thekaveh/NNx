@@ -172,8 +172,8 @@
 
         <rect x="540" y="338" width="160" height="60" rx="6" fill="#0f172a"/>
         <rect x="540" y="338" width="160" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
-        <text x="620" y="362" fill="white" font-size="11" font-weight="600" text-anchor="middle">NaN + grad-clip</text>
-        <text x="620" y="380" fill="#94a3b8" font-size="9" text-anchor="middle">inline / _step_helpers</text>
+        <text x="620" y="362" fill="white" font-size="11" font-weight="600" text-anchor="middle">update / NaN + clip</text>
+        <text x="620" y="380" fill="#94a3b8" font-size="8" text-anchor="middle">update engine · inline · finalize_step</text>
 
         <rect x="760" y="338" width="160" height="60" rx="6" fill="#0f172a"/>
         <rect x="760" y="338" width="160" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
@@ -188,7 +188,7 @@
         <!-- Layer 6: Callback bus (kept inside the nnx package boundary x=220..1160) -->
         <rect x="240" y="478" width="900" height="32" rx="6" fill="#0f172a"/>
         <rect x="240" y="478" width="900" height="32" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
-        <text x="690" y="498" fill="white" font-size="11" font-weight="600" text-anchor="middle">Callback Bus  •  on_train_begin / on_epoch_begin / on_epoch_end / on_train_end</text>
+        <text x="690" y="498" fill="white" font-size="11" font-weight="600" text-anchor="middle">Callback Bus  •  on_train_begin / on_epoch_begin / on_optimizer_update / on_epoch_end / on_train_end</text>
 
         <!-- Layer 7: Callback listeners (orange) — 5 boxes evenly spaced inside the bus -->
         <rect x="240" y="568" width="120" height="50" rx="6" fill="#0f172a"/>

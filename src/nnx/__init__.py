@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import components, embeddings, interop, monitors, optimizers, prediction, prune, tasks, viz
+from . import components, embeddings, interop, monitors, objectives, optimizers, prediction, prune, tasks, viz
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
@@ -132,6 +132,17 @@ from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
 from .nn.params.nn_train_params import NNTrainParams
 from .nn.params.nn_transformer_params import NNTransformerParams
 from .nn.params.nn_transformer_params_builder import NNTransformerParamsBuilder
+from .objectives import (
+    KDObjective,
+    LossTerm,
+    Objective,
+    ObjectiveContext,
+    ObjectiveResult,
+    SupervisedObjective,
+    UpdateEvent,
+    kd_objective,
+    supervised_objective,
+)
 from .optimizers import (
     NNOptimFactoryParams,
     OptimizerFactorySpec,
@@ -205,6 +216,17 @@ __all__ = [
     # Checkpointable component state and resume status (FEAT-005)
     "components",
     "monitors",
+    # Objectives over the shared update engine (FEAT-004)
+    "objectives",
+    "Objective",
+    "ObjectiveContext",
+    "ObjectiveResult",
+    "LossTerm",
+    "UpdateEvent",
+    "SupervisedObjective",
+    "KDObjective",
+    "supervised_objective",
+    "kd_objective",
     "MetricSpec",
     "MonitorSpec",
     "MonitorRecord",
