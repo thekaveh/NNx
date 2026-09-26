@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import tempfile
+import warnings
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
@@ -20,6 +21,7 @@ from filelock import FileLock
 
 from ..._metrics import _resolve_metric
 from ...components import ResumeStatus
+from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
 from ..params.nn_iteration_data_point import NNIterationDataPoint
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
 
 
 _HISTORY_PROTOCOL_FILE = ".history-committed-by-last"
+_PROVENANCE_MANIFEST_FILE = "provenance.json"  # nnx.provenance.MANIFEST_FILE
+_PROVENANCE_ATTEMPT_FILE = "attempt.json"  # nnx.provenance.ATTEMPT_FILE
 
 
 def _runs_root(root: Optional[str] = None) -> str:
@@ -233,9 +237,12 @@ def _release_empty_reservation(run_path: str) -> None:
     temporary left by a failed marker write), so the run can be retried."""
     if not os.path.isdir(run_path):
         return
-    marker_temp = f".{_HISTORY_PROTOCOL_FILE}."
+    # Provenance files (FEAT-019) are reservation bookkeeping too: an attempt
+    # that failed before its first committed epoch leaves nothing behind.
+    bookkeeping = (_HISTORY_PROTOCOL_FILE, _PROVENANCE_MANIFEST_FILE, _PROVENANCE_ATTEMPT_FILE)
+    temps = tuple(f".{name}." for name in bookkeeping)
     entries = os.listdir(run_path)
-    if not all(name == _HISTORY_PROTOCOL_FILE or name.startswith(marker_temp) for name in entries):
+    if not all(name in bookkeeping or name.startswith(temps) for name in entries):
         return
     for name in entries:
         _quietly(os.remove, os.path.join(run_path, name))
@@ -407,6 +414,21 @@ def _publish_best(runs_root: str, best_run_path: str, winner: Optional[str]) -> 
         shutil.rmtree(best_run_path)
 
 
+def _load_provenance_tolerantly(run_id: str, root: Optional[str]) -> Optional[ProvenanceRecord]:
+    """A run's provenance (FEAT-019), or ``None`` — with a warning when the
+    files exist but are unreadable (truncated, edited, a newer format): like
+    ``metadata.yaml`` it is never needed to reload the run itself."""
+    try:
+        return load_provenance(run_id, root)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        warnings.warn(
+            f"run {run_id}: unreadable provenance ignored ({error}); run.provenance is None",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return None
+
+
 def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
     """The :class:`~nnx.ResumeStatus` recorded in ``metadata.yaml``
     (FEAT-005); ``None`` for runs written before it or when unreadable —
@@ -455,6 +477,10 @@ class NNRun:
     # Runtime/provenance only — never part of state() or the run id; it is
     # written to metadata.yaml and read back by NNRun.load.
     resume_status: Optional[ResumeStatus] = field(repr=False, compare=False, default=None)
+    # The declared manifest and this run's attempt (FEAT-019), read from
+    # runs/<id>/provenance.json and attempt.json. Opt-in and never part of
+    # state() or the run id; None means absent — never "equal".
+    provenance: Optional[ProvenanceRecord] = field(repr=False, compare=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -675,6 +701,9 @@ class NNRun:
 
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
+
+    def with_provenance(self, value: Optional[ProvenanceRecord]) -> NNRun:
+        return replace(self, provenance=value)
 
     def ensure_writable(self, root: Optional[str] = None, *, overwrite: bool = False) -> None:
         runs_root = _runs_root(root)
@@ -908,6 +937,7 @@ class NNRun:
                 salt=rep.get("salt"),
                 idps=idps,
                 resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
+                provenance=_load_provenance_tolerantly(id, root),
             )
         except KeyError as e:
             # A hand-edited / truncated run.yaml otherwise surfaces as a

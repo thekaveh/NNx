@@ -320,7 +320,7 @@ Returns ``path`` so calls can be chained.
 ##### `nnx.nn.nn_model.NNModel.train`
 
 ```python
-nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None) -> 'NNRun'
+nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None) -> 'NNRun'
 ```
 
 Train the model and return its persisted run history.
@@ -354,6 +354,12 @@ Args:
         optimizer step, firing ``Callback.on_optimizer_update`` once
         per committed update. Mutually exclusive with
         ``train_step_fn``.
+    provenance: Optional :class:`~nnx.provenance.ExperimentManifest`
+        (FEAT-019) — the declared intent. The fit records it
+        (``runs/<id>/provenance.json``, with its fingerprint) and a
+        fresh attempt (``attempt.json``: parent attempt and
+        checkpoint generation on resume; final status and last
+        committed checkpoint). Never part of the run id.
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
@@ -696,7 +702,7 @@ configuration on disk.
 ##### `nnx.trainer.trainer.Trainer.train`
 
 ```python
-nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'Optional[TrainerStepFn]' = None, callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None) -> 'NNRun'
+nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'Optional[TrainerStepFn]' = None, callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None) -> 'NNRun'
 ```
 
 Run the multi-optimizer training loop and return the resulting NNRun.
@@ -722,6 +728,9 @@ Args:
         optimizer's parameters with its own ``grad_clip_norm`` and
         steps every named optimizer once per committed update,
         announcing each to ``Callback.on_optimizer_update``.
+    provenance: an optional ``nnx.provenance.ExperimentManifest``
+        (FEAT-019): the declared intent, recorded with a fresh
+        attempt exactly as ``NNModel.train`` records it.
     callbacks: optional list of Callback instances. The callback
         context exposes `ctx.optimizer` (primary, sorted-first), plus
         a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -2916,6 +2925,264 @@ class nnx.decisions.ProviderFailure
 The provider's backend failed while answering a supported, valid request (the original error is the ``__cause__``).
 
 
+### 2.12. Experiment provenance (`nnx.provenance`)
+
+#### `nnx.provenance.ExperimentManifest`
+
+```python
+class nnx.provenance.ExperimentManifest(task: 'Optional[Mapping[str, Any]]' = None, labels: 'Optional[Sequence[str]]' = None, model: 'Optional[Mapping[str, Any]]' = None, data: 'Mapping[str, Any]' = <factory>, splits: 'Mapping[str, Any]' = <factory>, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Mapping[str, Any]' = <factory>) -> 'None'
+```
+
+The declared intent of an experiment. Everything is JSON-like and immutable; :meth:`fingerprint` is the SHA-256 of its canonical bytes (with :data:`FORMAT`), so changing the task, the label order, a split's digest or the objective's version changes it.
+
+**Details**
+
+```text
+Values are validated and copied into immutable form at construction, so
+later changes to the dicts you passed never change the manifest;
+equality and hashing follow the canonical bytes (``1`` and ``1.0``
+differ, as they do in the fingerprint).
+
+Args:
+    task: the task declaration (e.g. ``TaskSpec.state()``).
+    labels: the ordered output labels.
+    model: the model descriptor (e.g. ``NNModelParams.state()``).
+    data: named data identities (:class:`IdentityRef`, a declared id
+        string, or ``None`` for unknown).
+    splits: named split identities, likewise.
+    objective: the objective's identity, e.g. ``{"id": "kd", "version": 1}``.
+    config: any other JSON-like configuration.
+```
+
+##### `nnx.provenance.ExperimentManifest.state`
+
+```python
+nnx.provenance.ExperimentManifest.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.ExperimentManifest.from_state`
+
+```python
+nnx.provenance.ExperimentManifest.from_state(state: 'Mapping[str, Any]') -> 'ExperimentManifest'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.ExperimentManifest.document`
+
+```python
+nnx.provenance.ExperimentManifest.document(self) -> 'dict[str, Any]'
+```
+
+The hashed document: the format version plus the manifest.
+
+##### `nnx.provenance.ExperimentManifest.canonical_bytes`
+
+```python
+nnx.provenance.ExperimentManifest.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.ExperimentManifest.fingerprint`
+
+```python
+nnx.provenance.ExperimentManifest.fingerprint(self) -> 'str'
+```
+
+``sha256:<hex>`` of the canonical bytes.
+
+##### `nnx.provenance.ExperimentManifest.for_model`
+
+```python
+nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None) -> 'ExperimentManifest'
+```
+
+A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read). Builds no model and iterates no loader.
+
+
+#### `nnx.provenance.IdentityRef`
+
+```python
+class nnx.provenance.IdentityRef(kind: 'str', value: 'Optional[str]' = None) -> 'None'
+```
+
+How a data or split identity is known.
+
+**Details**
+
+```text
+- ``declared`` — a name you supplied (a dataset id, a split name): it is
+  recorded and compared, but **never reported as verified**;
+- ``digest`` — a content digest NNx computed (:func:`hash_file`,
+  :func:`hash_bytes`): equal digests are verified equality;
+- ``unknown`` — not known.
+```
+
+##### `nnx.provenance.IdentityRef.declared`
+
+```python
+nnx.provenance.IdentityRef.declared(value: 'str') -> 'IdentityRef'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.IdentityRef.unknown`
+
+```python
+nnx.provenance.IdentityRef.unknown() -> 'IdentityRef'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.IdentityRef.verified`
+
+```python
+property nnx.provenance.IdentityRef.verified
+```
+
+Whether this identity is a computed content digest.
+
+##### `nnx.provenance.IdentityRef.state`
+
+```python
+nnx.provenance.IdentityRef.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.IdentityRef.from_state`
+
+```python
+nnx.provenance.IdentityRef.from_state(state: 'Mapping[str, Any]') -> 'IdentityRef'
+```
+
+No public description is currently available.
+
+
+#### `nnx.provenance.hash_file`
+
+```python
+nnx.provenance.hash_file(path: 'Union[str, os.PathLike[str]]', *, chunk_size: 'int' = 1048576) -> 'IdentityRef'
+```
+
+A verified ``sha256:<hex>`` identity of a file's bytes — the one call here that reads data, and only when you make it.
+
+
+#### `nnx.provenance.hash_bytes`
+
+```python
+nnx.provenance.hash_bytes(data: 'bytes') -> 'IdentityRef'
+```
+
+A verified ``sha256:<hex>`` identity of ``data``.
+
+
+#### `nnx.provenance.canonical_bytes`
+
+```python
+nnx.provenance.canonical_bytes(value: 'Any') -> 'bytes'
+```
+
+Canonical UTF-8 JSON of a JSON-like ``value``: sorted keys, arrays in order, compact separators, Unicode kept as UTF-8. Raises ``TypeError`` / ``ValueError`` (naming the path) for anything else.
+
+
+#### `nnx.provenance.Attempt`
+
+```python
+class nnx.provenance.Attempt(attempt_id: 'str', fingerprint: 'str', run_id: 'str', status: 'str', started_at: 'str', finished_at: 'Optional[str]' = None, parent: 'Optional[Mapping[str, Any]]' = None, last_committed: 'Optional[Mapping[str, Any]]' = None, error: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+One execution of a plan: a fresh ``attempt_id`` per ``train()`` call, the plan's ``fingerprint`` and ``run_id``, its ``status`` (``running`` / ``completed`` / ``failed`` / ``cancelled``), the ``parent`` it resumed from (run, attempt, checkpoint tag and generation), the ``last_committed`` checkpoint (tag, epoch, generation) and, when it did not complete, the ``error`` (type and message).
+
+##### `nnx.provenance.Attempt.state`
+
+```python
+nnx.provenance.Attempt.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.Attempt.from_state`
+
+```python
+nnx.provenance.Attempt.from_state(state: 'Mapping[str, Any]') -> 'Attempt'
+```
+
+No public description is currently available.
+
+
+#### `nnx.provenance.ProvenanceRecord`
+
+```python
+class nnx.provenance.ProvenanceRecord(manifest: 'ExperimentManifest', fingerprint: 'str', attempt: 'Optional[Attempt]' = None) -> 'None'
+```
+
+A run's provenance: the declared manifest, its fingerprint and the attempt that produced the run (``NNRun.provenance``).
+
+
+#### `nnx.provenance.load_provenance`
+
+```python
+nnx.provenance.load_provenance(run_id: 'str', root: 'Optional[str]' = None) -> 'Optional[ProvenanceRecord]'
+```
+
+Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format or a fingerprint that does not match its manifest.
+
+
+#### `nnx.provenance.compare`
+
+```python
+nnx.provenance.compare(left: 'Any', right: 'Any', *, root: 'Optional[str]' = None) -> 'ProvenanceComparison'
+```
+
+Compare two plans field by field — manifests, provenance records, ``NNRun``\ s or run ids (their provenance files are read; no model is loaded, no loader iterated, no file hashed).
+
+
+#### `nnx.provenance.ProvenanceComparison`
+
+```python
+class nnx.provenance.ProvenanceComparison(fields: 'tuple[FieldComparison, ...]') -> 'None'
+```
+
+Every compared field. :attr:`verified_equal` is true only when both sides have provenance and every field is ``equal`` or ``verified`` — declared or unknown identities and absent provenance never count as verified equality.
+
+##### `nnx.provenance.ProvenanceComparison.differences`
+
+```python
+property nnx.provenance.ProvenanceComparison.differences
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.ProvenanceComparison.verified_equal`
+
+```python
+property nnx.provenance.ProvenanceComparison.verified_equal
+```
+
+No public description is currently available.
+
+##### `nnx.provenance.ProvenanceComparison.by_path`
+
+```python
+nnx.provenance.ProvenanceComparison.by_path(self) -> 'dict[str, FieldComparison]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.provenance.FieldComparison`
+
+```python
+class nnx.provenance.FieldComparison(path: 'str', status: 'str', left: 'Any' = None, right: 'Any' = None) -> 'None'
+```
+
+One field of a comparison: a stable dotted ``path`` and a ``status`` — ``equal``, ``different``, ``missing`` (on one side only), ``unknown`` (an unknown identity), ``declared`` (equal *declared* identities: unverified), ``verified`` (equal digests) or ``absent`` (no provenance at all).
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -3968,10 +4235,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -4001,6 +4268,14 @@ No public description is currently available.
 
 ```python
 nnx.nn.params.nn_run.NNRun.with_idps(self, value: 'list[NNIterationDataPoint]') -> 'NNRun'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_run.NNRun.with_provenance`
+
+```python
+nnx.nn.params.nn_run.NNRun.with_provenance(self, value: 'Optional[ProvenanceRecord]') -> 'NNRun'
 ```
 
 No public description is currently available.

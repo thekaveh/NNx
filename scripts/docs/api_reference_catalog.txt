@@ -192,6 +192,30 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.ProviderFailure
 
+### 2.12. Experiment provenance (`nnx.provenance`)
+
+@api nnx.provenance.ExperimentManifest
+
+@api nnx.provenance.IdentityRef
+
+@api nnx.provenance.hash_file
+
+@api nnx.provenance.hash_bytes
+
+@api nnx.provenance.canonical_bytes
+
+@api nnx.provenance.Attempt
+
+@api nnx.provenance.ProvenanceRecord
+
+@api nnx.provenance.load_provenance
+
+@api nnx.provenance.compare
+
+@api nnx.provenance.ProvenanceComparison
+
+@api nnx.provenance.FieldComparison
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
