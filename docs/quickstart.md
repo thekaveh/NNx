@@ -491,6 +491,31 @@ A plain id string (for example `data={"train": "animals-v2"}`) is recorded as
 digests are. A run without a manifest has `run.provenance is None`: absent, not
 equal. See [Concepts §4.4](concepts.md#44-provenance-fingerprint-and-attempts).
 
+### 2.16. Group, time and stratified splits
+
+`NNTabularDataset` splits rows with a seeded `random_split` (`val_proportion`,
+`test_proportion`, `seed`). When rows are related (one patient, one user) or
+ordered in time, plan explicit membership by sample id instead and replay it:
+
+```python
+from nnx.data_splits import SplitManifest, plan_split
+
+plan = plan_split(df["row_id"], strategy="chronological", times=df["day"], cutoffs=(300, 330), gap=7)
+plan.save("split.json")                         # plain JSON; plan.digest() is the split identity
+dataset = NNTabularDataset(
+    df=df, feature_cols=["age", "income"], target_col="label",
+    split=SplitManifest.load("split.json"), id_col="row_id",
+)
+```
+
+`strategy="group"` (with `groups=` and `proportions=`) keeps every group in one
+split, and `strategy="stratified"` (with `labels=`) keeps every class in every
+split. Rows are matched by id, so a reordered DataFrame replays into the same
+splits; duplicate, missing or unexpected ids raise before any loader is built,
+an empty validation or test split gives a `None` loader, and without `split=`
+the random split is unchanged. See
+[Concepts §13.3](concepts.md#133-reproducible-splits-group-time-and-stratified).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
