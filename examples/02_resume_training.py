@@ -41,6 +41,15 @@ stateful or weights-only and which components were restored;
 ``resume_mode="weights_only"`` warm-starts from the weights alone.
 ``callback_continuation`` below demonstrates both.
 
+Provenance is opt-in (FEAT-019): ``train(..., provenance=manifest)`` records
+the declared experiment intent (``runs/<id>/provenance.json`` with its
+fingerprint) and a fresh attempt per fit (``attempt.json``). A resume is a
+new attempt of the same plan: it keeps the fingerprint, links the parent
+attempt and checkpoint generation, and leaves the parent's manifest
+untouched. ``provenance_mode`` below checks all three; ``run.id``, the
+fingerprint, the attempt id and the ``metadata.yaml`` environment snapshot
+stay four separate identities.
+
 Run:
     python examples/02_resume_training.py
 """
@@ -439,6 +448,52 @@ def callback_continuation() -> dict:
         "weights_only_fresh": list(warm_status.fresh_components),
     }
     print(f"callback continuation: {summary}")
+    return summary
+
+
+def provenance_mode() -> dict:
+    """Bounded, opt-in provenance demonstration: a parent fit and its
+    resume share one plan (fingerprint), get distinct attempts, and the
+    parent's manifest file is byte-identical after the resume."""
+    from nnx.provenance import ExperimentManifest, hash_bytes
+
+    def params(n_epochs: int, loader, **resume) -> NNTrainParams:
+        return NNTrainParams(
+            n_epochs=n_epochs, train_loader=loader, optim=_base_optim(), scheduler=_base_sched(), **resume
+        )
+
+    set_seed(11)
+    model, loader = _make_model_and_loader()
+    X, y = loader.dataset.tensors
+    plan = ExperimentManifest.for_model(
+        model,
+        data={"train": hash_bytes(X.numpy().tobytes() + y.numpy().tobytes())},  # a verified content digest
+        objective={"id": "supervised", "version": 1},
+        config={"note": "provenance demo"},
+    )
+    parent = model.train(params=params(2, loader, data_id="provenance"), provenance=plan)
+    manifest_path = os.path.join("runs", parent.id, "provenance.json")
+    with open(manifest_path, "rb") as handle:
+        parent_manifest = handle.read()
+
+    set_seed(12)
+    model, loader = _make_model_and_loader()
+    child = model.train(params=params(1, loader, resume_from_run_id=parent.id), provenance=plan)
+    with open(manifest_path, "rb") as handle:
+        assert handle.read() == parent_manifest  # byte-identical across the resume
+    parent_attempt = parent.provenance.attempt
+    child_attempt = child.provenance.attempt
+    assert child.provenance.fingerprint == parent.provenance.fingerprint == plan.fingerprint()
+    assert child_attempt.attempt_id != parent_attempt.attempt_id
+    assert child_attempt.parent["attempt_id"] == parent_attempt.attempt_id
+    assert child_attempt.parent["generation"] == parent_attempt.last_committed["generation"]
+    assert NNRun.load(child.id).provenance == child.provenance
+    summary = {
+        "run_ids": [parent.id, child.id],
+        "fingerprint": plan.fingerprint(),
+        "attempts": [parent_attempt.attempt_id, child_attempt.attempt_id],
+    }
+    print(f"provenance: {summary}")
     return summary
 
 

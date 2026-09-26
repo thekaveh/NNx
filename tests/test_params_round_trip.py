@@ -900,3 +900,39 @@ def test_nn_model_params_round_trip_with_task():
     assert NNModelParams.from_state(with_task.state()) == with_task
     with pytest.raises(TypeError, match="TaskSpec"):
         NNModelParams(net=Nets.FEED_FWD, task={"kind": "regression"})  # type: ignore[arg-type]
+
+
+def test_provenance_round_trips_outside_the_run_state(tmp_path, monkeypatch):
+    """FEAT-019: a manifest round-trips through its own files; the run's
+    state(), run id and params round trip are exactly as without one."""
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx.nn.nn_model import NNModel
+    from nnx.nn.params.nn_optim_params import NNOptimParams
+    from nnx.nn.params.nn_params import NNParams
+    from nnx.nn.params.nn_run import NNRun
+    from nnx.nn.params.nn_train_params import NNTrainParams
+    from nnx.provenance import ExperimentManifest, hash_bytes
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X = torch.randn(4, 3, generator=torch.Generator().manual_seed(0))
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=DataLoader(TensorDataset(X, (X[:, 0] > 0).long()), batch_size=2),
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+    )
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=2, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    manifest = ExperimentManifest.for_model(model, train=params, data={"train": hash_bytes(b"x")})
+    run = model.train(params=params, provenance=manifest)
+    assert NNTrainParams.from_state(params.state()).state() == params.state()
+    assert "provenance" not in run.state()
+    loaded = NNRun.load(run.id)
+    assert loaded.id == run.id and loaded.state() == run.state()
+    assert loaded.provenance is not None and loaded.provenance.manifest == manifest
+    assert loaded.provenance.fingerprint == manifest.fingerprint()
+    assert ExperimentManifest.from_state(manifest.state()) == manifest

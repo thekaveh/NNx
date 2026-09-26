@@ -64,6 +64,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("04_onnx_export.py", "registered_module_variant"),
     ("10_knowledge_distillation.py", "objective_mode"),
     ("02_resume_training.py", "callback_continuation"),
+    ("02_resume_training.py", "provenance_mode"),
     ("02_resume_training.py", "checkpoint_probe_first_fit"),
     ("02_resume_training.py", "iterable_graph_resume"),
     ("02_resume_training.py", "overwrite_best_recovery"),

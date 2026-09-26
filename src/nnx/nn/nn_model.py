@@ -42,6 +42,7 @@ from ..monitors import (
     _MetricSet,
     _TrainEpochSummary,
 )
+from ..provenance import ExperimentManifest
 from ..tasks import TaskAdapter, task_adapter
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
@@ -859,6 +860,46 @@ def _single_input_batch(model: Any, batch: Any, *, who: str) -> tuple[torch.Tens
             f"{' and no target' if target is None else ''} — use a custom train_step_fn for other layouts"
         )
     return args[0].to(model.device), target.to(model.device)
+
+
+def _check_provenance(provenance: Any) -> None:
+    """Reject anything but an ExperimentManifest before a run is reserved."""
+    if provenance is not None and not isinstance(provenance, ExperimentManifest):
+        raise TypeError(f"provenance must be an nnx.provenance.ExperimentManifest, got {type(provenance).__name__}")
+
+
+def _with_attempt(run: Any, provenance: Optional[ExperimentManifest], params: Any, fit: Callable[[], Any]) -> Any:
+    """Run ``fit`` as one recorded attempt (FEAT-019) when a manifest is
+    given — shared by ``NNModel.train`` and ``Trainer.train``. The attempt's
+    final status (``completed``, ``failed``, or ``cancelled`` on
+    ``KeyboardInterrupt``) and last committed checkpoint are recorded; a
+    failure to record a failed attempt never masks the training error."""
+    if provenance is None:
+        return fit()
+    from ..provenance import _AttemptRecorder
+
+    recorder = _AttemptRecorder(
+        run,
+        provenance,
+        parent_run_id=getattr(params, "resume_from_run_id", None),
+        parent_checkpoint=getattr(params, "resume_from_checkpoint", None),
+    )
+    recorder.start()
+    try:
+        result = fit()
+    except BaseException as error:
+        recorder.fail(error)
+        raise
+    try:
+        recorder.complete()
+    except Exception as record_error:  # the fit succeeded and is saved; do not lose it
+        warnings.warn(
+            f"run {run.id} trained and saved, but its attempt could not be recorded as completed "
+            f"({record_error}); attempt.json still reads 'running'",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return result.with_provenance(recorder.record)
 
 
 def _tensor_keys(state: Mapping[str, Any]) -> set[str]:
@@ -1850,6 +1891,7 @@ class NNModel(_HubMixinBase):
         salt: Optional[str] = None,
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
+        provenance: Optional[ExperimentManifest] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -1879,6 +1921,12 @@ class NNModel(_HubMixinBase):
                 optimizer step, firing ``Callback.on_optimizer_update`` once
                 per committed update. Mutually exclusive with
                 ``train_step_fn``.
+            provenance: Optional :class:`~nnx.provenance.ExperimentManifest`
+                (FEAT-019) — the declared intent. The fit records it
+                (``runs/<id>/provenance.json``, with its fingerprint) and a
+                fresh attempt (``attempt.json``: parent attempt and
+                checkpoint generation on resume; final status and last
+                committed checkpoint). Never part of the run id.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -1906,6 +1954,7 @@ class NNModel(_HubMixinBase):
             )
         if objective is not None and not callable(objective):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        _check_provenance(provenance)
         if train_step_fn is None:
             # NNx owns the update (default step or objective): the run's
             # checkpoints must be reconstructible from the params recipe.
@@ -1948,15 +1997,20 @@ class NNModel(_HubMixinBase):
         optimizer = build_optimizer(self.net, params.optim)
         run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
         with run.writable_lease(overwrite=params.overwrite_existing):
-            return self._train_impl(
-                params=params,
-                run=run,
-                optimizer=optimizer,
-                callbacks=callbacks,
-                train_step_fn=train_step_fn,
-                eval_step_fn=eval_step_fn,
-                components=components,
-                objective=objective,
+            return _with_attempt(
+                run,
+                provenance,
+                params,
+                lambda: self._train_impl(
+                    params=params,
+                    run=run,
+                    optimizer=optimizer,
+                    callbacks=callbacks,
+                    train_step_fn=train_step_fn,
+                    eval_step_fn=eval_step_fn,
+                    components=components,
+                    objective=objective,
+                ),
             )
 
     def _train_impl(

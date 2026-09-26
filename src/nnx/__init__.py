@@ -34,6 +34,7 @@ from . import (
     objectives,
     optimizers,
     prediction,
+    provenance,
     prune,
     tasks,
     viz,
@@ -350,6 +351,8 @@ __all__ = [
     "NNParamGroupSpec",
     # Provider-neutral typed decisions (FEAT-009)
     "decisions",
+    # Versioned experiment provenance manifests (FEAT-019)
+    "provenance",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

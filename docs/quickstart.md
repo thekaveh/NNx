@@ -470,6 +470,27 @@ its weights reload only into a module you pass again
 [Concepts §3.2](concepts.md#32-arbitrary-modules-and-registered-model-factories)
 and [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py).
 
+### 2.15. Recording what an experiment was
+
+`run.id` names the configuration, and `metadata.yaml` the environment. To also
+record the declared intent and each execution, pass a manifest; this is opt-in
+and never changes the run id:
+
+```python
+from nnx.provenance import ExperimentManifest, compare, hash_file
+
+plan = ExperimentManifest.for_model(model, train=train_params, data={"train": hash_file("train.csv")})
+run = model.train(params=train_params, provenance=plan)
+run.provenance.fingerprint           # the plan: same manifest, same fingerprint
+run.provenance.attempt.attempt_id    # this fit: fresh on every train() call
+compare(run.id, other_run.id).differences
+```
+
+A plain id string (for example `data={"train": "animals-v2"}`) is recorded as
+*declared* and never reported as verified; only `hash_file` / `hash_bytes`
+digests are. A run without a manifest has `run.provenance is None`: absent, not
+equal. See [Concepts §4.4](concepts.md#44-provenance-fingerprint-and-attempts).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

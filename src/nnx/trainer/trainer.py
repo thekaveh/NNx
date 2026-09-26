@@ -56,6 +56,7 @@ from ..nn.nn_model import (
     _CallbackFinalizer,
     _capture_rng_state,
     _check_plateau_resume,
+    _check_provenance,
     _check_resume_horizon,
     _collect_checkpoint_transforms,
     _component_type,
@@ -74,6 +75,7 @@ from ..nn.nn_model import (
     _restore_weights_only,
     _rollback_resume,
     _step_monitored_plateau,
+    _with_attempt,
 )
 from ..nn.params.nn_checkpoint import NNCheckpoint, _snapshot_state_dict
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -81,6 +83,7 @@ from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
+from ..provenance import ExperimentManifest
 from ..utils import Utils
 from .params import NNTrainerParams
 
@@ -246,6 +249,7 @@ class Trainer:
         salt: Optional[str] = None,
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
+        provenance: Optional[ExperimentManifest] = None,
     ) -> NNRun:
         """Run the multi-optimizer training loop and return the resulting NNRun.
 
@@ -267,6 +271,9 @@ class Trainer:
                 optimizer's parameters with its own ``grad_clip_norm`` and
                 steps every named optimizer once per committed update,
                 announcing each to ``Callback.on_optimizer_update``.
+            provenance: an optional ``nnx.provenance.ExperimentManifest``
+                (FEAT-019): the declared intent, recorded with a fresh
+                attempt exactly as ``NNModel.train`` records it.
             callbacks: optional list of Callback instances. The callback
                 context exposes `ctx.optimizer` (primary, sorted-first), plus
                 a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -299,6 +306,7 @@ class Trainer:
             )
         if objective is not None and not callable(objective):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        _check_provenance(provenance)
         if params is None:
             raise ValueError("trainer params must not be None")
         if params.train_loader is None:
@@ -383,15 +391,20 @@ class Trainer:
             salt=salt,
         )
         with run.writable_lease(overwrite=params.overwrite_existing):
-            return self._train_impl(
-                params=params,
-                run=run,
-                optimizers=optimizers,
-                trainer_step_fn=trainer_step_fn,
-                callbacks=callbacks,
-                components=components,
-                objective=objective,
-                objective_window=objective_window,
+            return _with_attempt(
+                run,
+                provenance,
+                params,
+                lambda: self._train_impl(
+                    params=params,
+                    run=run,
+                    optimizers=optimizers,
+                    trainer_step_fn=trainer_step_fn,
+                    callbacks=callbacks,
+                    components=components,
+                    objective=objective,
+                    objective_window=objective_window,
+                ),
             )
 
     def _train_impl(
