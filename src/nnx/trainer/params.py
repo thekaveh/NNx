@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader
 from .._validation import require_count
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
+from ..nn.params.nn_train_params import _validate_resume_mode
 
 if TYPE_CHECKING:
     from ..optimizers import NNOptimFactoryParams
@@ -128,6 +129,15 @@ class NNTrainerParams:
 
     extra_metrics: Optional[Mapping[str, Callable]] = field(repr=False, default=None)
 
+    # Warm-resume controls (FEAT-005), mirroring NNTrainParams: the source run
+    # and checkpoint are serialized only as parent lineage (`parent_run_id` /
+    # `parent_checkpoint`), so a resumed session gets a distinct run id and the
+    # default serialization is unchanged. `resume_mode` is runtime-only.
+    resume_from_run_id: Optional[str] = field(repr=False, default=None)
+    resume_from_checkpoint: str = field(repr=False, default="last")
+    parent_run_id: Optional[str] = field(repr=False, default=None)
+    resume_mode: str = field(repr=False, default="auto")
+
     def __post_init__(self):
         # Snapshot the configuration containers FIRST so every later check
         # (and every later reader) sees the captured mapping, not the
@@ -156,6 +166,9 @@ class NNTrainerParams:
         )
         if self.data_id is not None and not self.data_id.strip():
             raise ValueError("NNTrainerParams.data_id must be non-empty when provided")
+        if self.parent_run_id is not None and self.resume_from_run_id is not None:
+            raise ValueError("set resume_from_run_id or parent_run_id, not both")
+        _validate_resume_mode(self.resume_mode, "NNTrainerParams")
         if not self.optims:
             raise ValueError(
                 "NNTrainerParams.optims must have at least one entry — the Trainer constructs one Optimizer per name."
@@ -192,6 +205,10 @@ class NNTrainerParams:
             d["seed"] = self.seed
         if self.data_id is not None:
             d["data_id"] = self.data_id
+        lineage = self.parent_run_id or self.resume_from_run_id
+        if lineage is not None:
+            d["parent_run_id"] = lineage
+            d["parent_checkpoint"] = self.resume_from_checkpoint
         if self.save_phase_checkpoints is not True:
             d["save_phase_checkpoints"] = self.save_phase_checkpoints
         if self.auto_step_schedulers is not True:
@@ -208,6 +225,8 @@ class NNTrainerParams:
             schedulers={k: NNSchedulerParams.from_state(v) for k, v in state.get("schedulers", {}).items()},
             seed=state.get("seed"),
             data_id=state.get("data_id"),
+            parent_run_id=state.get("parent_run_id"),
+            resume_from_checkpoint=state.get("parent_checkpoint", "last"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
             auto_step_schedulers=state.get("auto_step_schedulers", True),
         )

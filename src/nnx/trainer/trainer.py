@@ -24,15 +24,20 @@ running the wrong update.
 
 Saves NNRun + per-tag NNCheckpoint artifacts the same way
 NNModel.train() does, with an extra `trainer` block in run.yaml
-capturing the multi-optim config. Optimizer states are NOT sidecar'd
-in this initial pass — trainer-mode warm-resume is a follow-up.
+capturing the multi-optim config. Every checkpoint's training-state
+sidecar carries each named optimizer's and scheduler's state, the RNG and
+every registered component (FEAT-005), so
+``NNTrainerParams(resume_from_run_id=...)`` (or
+``NNTrainerParams.builder().resume_from(...)``) warm-resumes a
+multi-optimizer run where it stopped.
 """
 
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 import torch
@@ -40,15 +45,27 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
+from ..components import ComponentRegistry, ResumeStatus
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
     CallbackLike,
     NNModel,
     _CallbackContext,
     _CallbackFinalizer,
+    _capture_rng_state,
+    _check_resume_horizon,
     _collect_checkpoint_transforms,
+    _component_type,
+    _load_resume_source,
+    _loader_num_workers,
+    _named_training_state,
+    _optimizer_topology,
+    _plan_component_restore,
+    _restore_rng_state,
+    _restore_weights_only,
+    _rollback_resume,
 )
-from ..nn.params.nn_checkpoint import NNCheckpoint
+from ..nn.params.nn_checkpoint import NNCheckpoint, _snapshot_state_dict
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
@@ -188,6 +205,7 @@ class Trainer:
         trainer_step_fn: TrainerStepFn,
         callbacks: Optional[list[CallbackLike]] = None,
         salt: Optional[str] = None,
+        components: Optional[list[Any]] = None,
     ) -> NNRun:
         """Run the multi-optimizer training loop and return the resulting NNRun.
 
@@ -210,6 +228,9 @@ class Trainer:
                 (model, net, train) configs run as distinct experiments
                 without altering modeled params. ``None`` (the default)
                 preserves existing run.id hashes exactly.
+            components: extra checkpointable components (FEAT-005);
+                callbacks and a step function that implement
+                :class:`~nnx.StatefulComponent` register automatically.
 
         Returns:
             NNRun with per-iteration idps, persisted under runs/<run.id>/
@@ -296,6 +317,7 @@ class Trainer:
                 optimizers=optimizers,
                 trainer_step_fn=trainer_step_fn,
                 callbacks=callbacks,
+                components=components,
             )
 
     def _train_impl(
@@ -306,9 +328,11 @@ class Trainer:
         optimizers: dict[str, torch.optim.Optimizer],
         trainer_step_fn: TrainerStepFn,
         callbacks: Optional[list[CallbackLike]],
+        components: Optional[list[Any]] = None,
     ) -> NNRun:
         """Execute a validated multi-optimizer training session."""
         assert params.train_loader is not None
+        train_loader = params.train_loader
         validate = params.val_loader is not None
 
         schedulers = {
@@ -320,7 +344,14 @@ class Trainer:
             for name in optimizers
         }
 
+        from ..optimizers import optimizer_factory_state
+
+        optimizer_factories = {name: optimizer_factory_state(params.optims[name]) for name in optimizers}
         normalized_callbacks = NNModel._normalize_callbacks(callbacks)
+        registry = ComponentRegistry.discover(normalized_callbacks, trainer_step_fn, explicit=list(components or []))
+        start_epoch, component_plan, resume_status, rollback = self._resume(
+            params, optimizers, schedulers, registry, train_loader
+        )
 
         primary = _primary_name(optimizers.keys())
         ctx = _CallbackContext(
@@ -360,7 +391,22 @@ class Trainer:
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
             callback_lifecycle.start()
-            for idx_epoch in range(params.n_epochs):
+            # FEAT-005: reset hooks have run once; restore the validated
+            # component states (all-or-nothing) before the first resumed epoch.
+            if component_plan is not None:
+                try:
+                    restored = registry.restore(component_plan)
+                except BaseException:
+                    assert rollback is not None
+                    rollback()
+                    raise
+                resume_status = replace(resume_status, restored_components=restored)
+            run = run.with_resume_status(resume_status)
+            ctx.run = run
+            pre_transform_net_state: Optional[dict[str, Any]] = None
+            pre_transform_rng_state: Optional[dict[str, Any]] = None
+            for local_epoch in range(params.n_epochs):
+                idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
@@ -433,10 +479,16 @@ class Trainer:
                     checkpoint = self._save_checkpoint(
                         idp=idps[-1],
                         run_id=run.id,
-                        idx_epoch=idx_epoch,
+                        idx_epoch=local_epoch,
                         n_epochs=params.n_epochs,
                         best_checkpoint=best_checkpoint,
                         save_phase_checkpoints=params.save_phase_checkpoints,
+                        optimizers=optimizers,
+                        schedulers=schedulers,
+                        completed_epoch=idx_epoch,
+                        train_loader=train_loader,
+                        components=registry.collect(),
+                        optimizer_factories=optimizer_factories,
                     )
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
@@ -455,6 +507,11 @@ class Trainer:
                 if ctx.should_stop:
                     break
 
+            # Resume state is the pre-on_train_end model (callbacks may
+            # convert modules as the finalizer exits), like NNModel.train.
+            pre_transform_net_state = _snapshot_state_dict(self.model.net.state_dict())
+            pre_transform_rng_state = _capture_rng_state(train_loader)
+
         # on_train_end callbacks run as the finalizer exits above and may
         # mutate the net (for example, by converting modules). Refresh LAST
         # from the live model so it matches the state returned to the caller.
@@ -468,7 +525,18 @@ class Trainer:
                 net_params=self.model.net_params,
                 net_state=self.model.net.state_dict(),
                 transforms=final_transforms,
-            ).save(run=run.id, type=Checkpoints.LAST)
+            ).save(
+                run=run.id,
+                type=Checkpoints.LAST,
+                # FEAT-005: the final post-callback LAST generation keeps every
+                # named optimizer / scheduler and component, so a completed run
+                # resumes the continuous states.
+                **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
+                rng_state=pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader),
+                completed_epoch=idps[-1].epoch_idx,
+                resume_net_state=pre_transform_net_state if final_transforms else None,
+                components=registry.collect(),
+            )
 
         saved = run.with_idps(idps).save()
         _print_run_saved(run.id)
@@ -482,13 +550,17 @@ class Trainer:
         n_epochs: int,
         best_checkpoint: Optional[NNCheckpoint],
         save_phase_checkpoints: bool,
+        optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
+        schedulers: Optional[Mapping[str, Any]] = None,
+        completed_epoch: Optional[int] = None,
+        train_loader: Optional[Any] = None,
+        components: Optional[dict[str, Any]] = None,
+        optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
     ) -> NNCheckpoint:
-        """Delegates to NNModel._save_checkpoints with optimizer=None —
-        same FIRST/Q1/Q2/Q3/LAST/BEST cadence, minus the optimizer-state
-        sidecar (a single sidecar can't represent the multi-optim dict).
-        Trainer-mode warm-resume is a follow-up — saving one sidecar per
-        optim (`<tag>.opt.<name>.pt`) is the natural extension when that
-        lands."""
+        """Delegates to NNModel._save_checkpoints — the same
+        FIRST/Q1/Q2/Q3/LAST/BEST cadence — with the named optimizers and
+        schedulers, the RNG and the component states in one generation
+        sidecar per tag (FEAT-005), so every tag is a warm-resume point."""
         return self.model._save_checkpoints(
             idp=idp,
             run_id=run_id,
@@ -497,4 +569,133 @@ class Trainer:
             best_checkpoint=best_checkpoint,
             save_phase_checkpoints=save_phase_checkpoints,
             optimizer=None,
+            completed_epoch=completed_epoch,
+            train_loader=train_loader,
+            components=components,
+            optimizers=optimizers,
+            schedulers=schedulers,
+            optimizer_factories=optimizer_factories,
         )
+
+    def _resume(
+        self,
+        params: NNTrainerParams,
+        optimizers: Mapping[str, torch.optim.Optimizer],
+        schedulers: Mapping[str, Any],
+        registry: ComponentRegistry,
+        train_loader: Any,
+    ) -> tuple[int, Any, ResumeStatus, Optional[Callable[[], None]]]:
+        """Warm-resume a multi-optimizer run (FEAT-005).
+
+        Everything is validated before any state is mutated, with the same
+        rules ``NNModel.train`` applies to its one optimizer: the optimizer
+        and scheduler name sets, each optimizer's type, registered-factory
+        identity and parameter topology, each scheduler's type and
+        one-cycle horizon, and the component set. Returns ``(start_epoch,
+        component_plan, status, rollback)``; ``rollback`` puts the model and
+        RNG back if the later component restore fails.
+        """
+        if params.resume_from_run_id is None:
+            return 0, None, ResumeStatus(), None
+        from ..optimizers import _canonical_factory_state, optimizer_factory_state
+
+        stateful = params.resume_mode != "weights_only"
+        scheduler_params = {name: params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS) for name in optimizers}
+        if stateful:
+            for name, sched_params in scheduler_params.items():
+                _check_resume_horizon(sched_params, n_epochs=params.n_epochs, owner=f" for {name!r}")
+        source = _load_resume_source(
+            params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=True
+        )
+        net = self.model.net
+        training_state = source.training_state
+        if training_state is None:
+            _restore_weights_only(
+                net,
+                source,
+                train_loader,
+                params.resume_mode,
+                fresh="optimizer, scheduler, RNG and component state",
+                stacklevel=4,
+            )
+            status = ResumeStatus(
+                mode="weights_only",
+                source_run_id=params.resume_from_run_id,
+                source_checkpoint=source.label,
+                fresh_components=registry.names,
+            )
+            return source.checkpoint.idp.epoch_idx + 1, None, status, None
+
+        saved_optimizers = training_state["optimizers"]
+        saved_schedulers = training_state.get("schedulers") or {}
+        for kind, saved in (("optimizer", saved_optimizers), ("scheduler", saved_schedulers)):
+            if set(saved) != set(optimizers):
+                raise ValueError(
+                    f"resume {kind} names do not match: checkpoint has {sorted(saved)}, "
+                    f"configuration builds {sorted(optimizers)}"
+                )
+        for kind, built, saved_types in (
+            ("optimizer", optimizers, training_state.get("optimizer_types") or {}),
+            ("scheduler", schedulers, training_state.get("scheduler_types") or {}),
+        ):
+            for name, component in built.items():
+                expected = saved_types.get(name)
+                if expected is not None and expected != _component_type(component):
+                    raise ValueError(
+                        f"resume {kind} type mismatch for {name!r}: checkpoint has {expected}, "
+                        f"configuration builds {_component_type(component)}"
+                    )
+        saved_factories = training_state.get("optimizer_factories") or {}
+        saved_topologies = training_state.get("optimizer_topologies") or {}
+        for name, optimizer in optimizers.items():
+            expected_factory = saved_factories.get(name)
+            configured_factory = optimizer_factory_state(params.optims[name])
+            if _canonical_factory_state(expected_factory) != _canonical_factory_state(configured_factory):
+                raise ValueError(
+                    f"resume optimizer factory mismatch for {name!r}: checkpoint has {expected_factory}, "
+                    f"configuration builds {configured_factory}"
+                )
+            expected_topology = saved_topologies.get(name)
+            if expected_topology is not None and expected_topology != _optimizer_topology(optimizer, net):
+                raise ValueError(f"resume optimizer parameter topology for {name!r} does not match the checkpoint")
+        completed = training_state.get("completed_epoch")
+        start_epoch = int(completed) + 1 if completed is not None else source.checkpoint.idp.epoch_idx + 1
+        for name, sched_params in scheduler_params.items():
+            _check_resume_horizon(
+                sched_params, n_epochs=params.n_epochs, start_epoch=start_epoch, owner=f" for {name!r}"
+            )
+        component_plan = _plan_component_restore(registry, training_state)
+        warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
+
+        previous_net_state = _snapshot_state_dict(net.state_dict())
+        previous_rng_state = _capture_rng_state(train_loader)
+        try:
+            net.load_state_dict(source.net_state)
+            for name, optimizer in optimizers.items():
+                optimizer.load_state_dict(saved_optimizers[name])
+            for name, scheduler in schedulers.items():
+                scheduler.load_state_dict(saved_schedulers[name])
+            if training_state.get("rng") is not None:
+                _restore_rng_state(training_state["rng"], train_loader)
+        except BaseException:
+            net.load_state_dict(previous_net_state)
+            _restore_rng_state(previous_rng_state, train_loader)
+            raise
+        if warn_worker_rng:
+            warnings.warn(
+                "exact warm-resume continuity requires train_loader.num_workers=0; "
+                "worker-local RNG state cannot be reconstructed",
+                RuntimeWarning,
+                stacklevel=4,
+            )
+
+        def rollback() -> None:
+            _rollback_resume(net, previous_net_state, previous_rng_state, train_loader)
+
+        status = ResumeStatus(
+            mode="stateful",
+            source_run_id=params.resume_from_run_id,
+            source_checkpoint=source.label,
+            fresh_components=tuple(component_plan.fresh),
+        )
+        return start_epoch, component_plan, status, rollback

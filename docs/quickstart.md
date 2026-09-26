@@ -117,6 +117,19 @@ source works — a `DataLoader`, a list of `(X, Y)` batches, or the graph
 full-batch list — and the worker warning only appears for a real loader with
 `num_workers > 0`.
 
+Callback and step state resumes too. `EarlyStopping`'s best value and
+patience counter, the I-JEPA target encoder and any object registered through
+`train(..., components=[...])` are written into every checkpoint and restored
+after the callbacks' reset hooks, so a split run stops at the same epoch as
+the uninterrupted one
+([Concepts §14.1](concepts.md#141-component-state)). `resume_mode="stateful"`
+fails before restoring anything when the checkpoint is weights-only, and
+`resume_mode="weights_only"` warm-starts from the weights alone (fresh optimizer,
+scheduler and components); the returned
+`run.resume_status` says which happened. The multi-optimizer `Trainer` resumes
+the same way through `NNTrainerParams.builder().resume_from(run_id)`
+([Concepts §8.4](concepts.md#84-warm-resume)).
+
 Probing for state is side-effect free: `NNCheckpoint.load_with_training_state(run=..., type=Checkpoints.LAST)`
 returns `(None, None)` for a run that was never written and does not create
 its directory, so a preflight check never blocks the first fit.

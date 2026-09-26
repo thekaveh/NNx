@@ -32,6 +32,15 @@ rides along in the training-state sidecar. ``amp_resume_compatibility``
 below fits and resumes with AMP requested on CPU (no scaler is built or
 saved) and, only on a CUDA host, with AMP actually enabled.
 
+Component state resumes too (FEAT-005): callbacks such as ``EarlyStopping``
+save their patience with every checkpoint and get it back on a stateful
+resume *after* ``on_train_begin`` resets them, so a split run stops at the
+same epoch an uninterrupted one would. The returned run's
+``resume_status`` (also in ``metadata.yaml``) says whether the resume was
+stateful or weights-only and which components were restored;
+``resume_mode="weights_only"`` warm-starts from the weights alone.
+``callback_continuation`` below demonstrates both.
+
 Run:
     python examples/02_resume_training.py
 """
@@ -47,6 +56,8 @@ from nnx import (
     Activations,
     Checkpoints,
     Devices,
+    EarlyStopping,
+    EvalStepContext,
     Losses,
     Nets,
     NNCheckpoint,
@@ -359,6 +370,75 @@ def amp_resume_compatibility() -> dict:
     else:
         summary["cuda"] = "skipped (no CUDA device): enabled-AMP resume not exercised here"
     print(f"amp resume compatibility: {summary}")
+    return summary
+
+
+def callback_continuation() -> dict:
+    """Bounded demonstration that EarlyStopping's patience survives a split.
+
+    Validation losses are scripted as ``[0.6, 0.4, 0.41, 0.42, ...]``: the
+    best is epoch 1, so ``patience=2`` stops an uninterrupted run at epoch 3.
+    Split after three epochs, the resumed run restores ``wait=1`` and stops
+    after its first epoch — epoch 3 again — instead of restarting patience.
+    """
+    scripted = [0.6, 0.4, 0.41, 0.42] + [0.43] * 6
+
+    def eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
+        return NNEvaluationDataPoint(loss=scripted[ctx.epoch_idx], error=scripted[ctx.epoch_idx])
+
+    def params(n_epochs: int, loader, **resume) -> NNTrainParams:
+        return NNTrainParams(
+            n_epochs=n_epochs,
+            train_loader=loader,
+            val_loader=loader,
+            optim=_base_optim(),
+            scheduler=_base_sched(),
+            **resume,
+        )
+
+    set_seed(3)
+    model, loader = _make_model_and_loader()
+    continuous = model.train(
+        params=params(10, loader),
+        eval_step_fn=eval_step,
+        callbacks=[EarlyStopping(monitor="val_edp.error", patience=2)],
+    )
+    set_seed(3)
+    model, loader = _make_model_and_loader()
+    first = model.train(
+        params=params(3, loader, data_id="split"),
+        eval_step_fn=eval_step,
+        callbacks=[EarlyStopping(monitor="val_edp.error", patience=2)],
+    )
+    set_seed(4)
+    model, loader = _make_model_and_loader()
+    stopper = EarlyStopping(monitor="val_edp.error", patience=2)
+    resumed = model.train(
+        params=params(7, loader, resume_from_run_id=first.id), eval_step_fn=eval_step, callbacks=[stopper]
+    )
+    status = resumed.resume_status
+    assert status is not None and status.mode == "stateful" and status.restored_components == ("early_stopping",)
+    assert continuous.idps[-1].epoch_idx == resumed.idps[-1].epoch_idx == 3
+    assert NNRun.load(resumed.id).resume_status == status
+
+    # A weights-only warm start loads the model alone: patience starts fresh.
+    set_seed(5)
+    model, loader = _make_model_and_loader()
+    warm = model.train(
+        params=params(1, loader, resume_from_run_id=first.id, resume_mode="weights_only"),
+        eval_step_fn=eval_step,
+        callbacks=[EarlyStopping(monitor="val_edp.error", patience=2)],
+    )
+    warm_status = warm.resume_status
+    assert warm_status is not None and warm_status.mode == "weights_only"
+    assert warm_status.fresh_components == ("early_stopping",) and warm_status.restored_components == ()
+
+    summary = {
+        "stopped_at": resumed.idps[-1].epoch_idx,
+        "restored": list(status.restored_components),
+        "weights_only_fresh": list(warm_status.fresh_components),
+    }
+    print(f"callback continuation: {summary}")
     return summary
 
 

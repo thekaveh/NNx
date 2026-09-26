@@ -36,6 +36,7 @@ from .distillation import feature_kd_train_step_factory, kd_train_step_factory
 from .dpo import dpo_train_step_factory
 from .jepa import (
     JEPAPredictor,
+    JEPATrainStep,
     build_target_encoder,
     jepa_train_step_factory,
     random_block_mask,
@@ -57,5 +58,6 @@ __all__ = [
     "update_ema",
     "random_block_mask",
     "JEPAPredictor",
+    "JEPATrainStep",
     "dpo_train_step_factory",
 ]
