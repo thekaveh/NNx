@@ -347,10 +347,23 @@ def test_records_keep_monitor_identity_direction_config_and_status(tmp_path, mon
     assert reloaded[1].value is None and math.isnan(reloaded[2].value)
     assert reloaded[3].value == pytest.approx(0.5)
     for idp in (i for i in run.idps if i.selection is not None):
-        assert _idp_from_nested_state(idp.state()) == idp  # the checkpoint-metadata reader
+        nested = _idp_from_nested_state(idp.state())  # the checkpoint-metadata reader
+        assert nested.train_summary == idp.train_summary and nested.val_edp == idp.val_edp
+        _assert_same_record(nested.selection, idp.selection)
     best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
     assert best is not None and best.idp.epoch_idx == 3
     assert best.idp.selection == MonitorRecord(MonitorSpec(metric="nll", mode="min"), 0.5, "ok", True)
+
+
+def _assert_same_record(got, want) -> None:
+    """MonitorRecord equality that treats a NaN value as equal to NaN
+    (dataclass equality compares field by field on Python 3.13+)."""
+    assert got is not None and want is not None
+    assert (got.monitor, got.status, got.improved) == (want.monitor, want.status, want.improved)
+    if want.value is not None and math.isnan(want.value):
+        assert got.value is not None and math.isnan(got.value)
+    else:
+        assert got.value == want.value
 
 
 def test_named_monitor_runs_are_never_elected_into_runs_best(tmp_path, monkeypatch):
