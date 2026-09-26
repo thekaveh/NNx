@@ -164,6 +164,11 @@
         <text x="755" y="262" fill="#fde68a" font-size="8">finetune · peft · prune · surgery · interop · generation · viz</text>
         <text x="700" y="276" fill="#94a3b8" font-size="8">model transforms, experimental exchange formats, inference helpers, diagnostics</text>
 
+        <!-- The inference branch beside the training path (FEAT-009). -->
+        <text x="668" y="291" fill="#38bdf8" font-size="9" font-weight="600">Inference branch:</text>
+        <text x="762" y="291" fill="#bae6fd" font-size="8">decisions — Choice / Boolean / Score → DecisionProvider → validated results</text>
+        <text x="700" y="303" fill="#94a3b8" font-size="8">FixedHeadProvider reads NNModel.predict_proba; capabilities checked before any model call</text>
+
         <!-- Layer 5: Training loop internals (emerald) -->
         <rect x="260" y="338" width="220" height="60" rx="6" fill="#0f172a"/>
         <rect x="260" y="338" width="220" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>

@@ -1,6 +1,6 @@
 # 3. Concepts
 
-This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the twelve specialization subpackages — Tier-1 (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`) and Tier-2 (`quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`) — plus the decoder-only LM path on top.
+This document explains the design decisions behind NNx: the architecture, the foundational patterns every other feature builds on, and the thirteen specialization subpackages — Tier-1 (`finetune`, `peft`, `diffusion`, `paradigms`, `trainer`), Tier-2 (`quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`) and the inference branch (`decisions`, §17) — plus the decoder-only LM path on top.
 
 Sections are ordered from most fundamental to most specialized. Read top-to-bottom on a first pass; jump by anchor for reference.
 
@@ -1142,3 +1142,16 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 - **`nnx.embeddings`** — the one RAG-adjacent surface NNx ships. `train_contrastive` reuses the existing NT-Xent machinery for domain-specific text embedders; `export_to_faiss` writes the trained model's outputs to a FAISS index (Flat / HNSW) that any retrieval framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. The chunker, reranker, and vector-DB client are deliberately out of scope. See [`docs/embeddings.md`](embeddings.md) for the full when-to-use guide; `examples/13_train_domain_embedder.py` is the runnable demo.
 
 `nnx.generation` (LogitsProcessor chain) is documented inline in §15 since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` owns experimental NNx-tagged GGUF and Ollama bundle generation; safetensors belongs to `NNCheckpoint`, embeddings export, and Hub integration. See [`docs/gguf.md`](gguf.md) and [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.
+
+## 17. Typed decisions (`nnx.decisions`)
+
+Everything above trains, transforms or exports models; `nnx.decisions` is the **inference branch**. It asks provider-neutral typed questions — `Choice` (2+ options), `Boolean` (one `p_true`) and `Score` (2+ ordered levels) — and returns validated, labelled probabilities instead of positional logits:
+
+```text
+question (Choice / Boolean / Score, digest) ──► DecisionProvider.capabilities().check(...)   # UnsupportedCapability before any model call
+                                           └──► provider.decide(question, inputs)            # e.g. FixedHeadProvider → NNModel.predict_proba
+                                                   └──► validate_response(...)              # request order; never renormalized
+                                                           └──► ChoiceResult / BooleanResult / ScoreResult (+ raw)
+```
+
+An option's `id` is bookkeeping and its `description` the model-facing text, and a question's `digest()` changes when options are reordered or reworded. `validate_response` is the single validator every provider shares: it reorders keyed output into the question's order and rejects missing, duplicate, unknown or unlabeled ids and malformed distributions instead of renormalizing them. `ScoreResult.expected_index` (`sum(i * p_i)`) is ordinal, and a vendor's own score stays in `vendor_score`. `FixedHeadProvider` turns a trained classifier into a provider for exactly what its head justifies: `Choice` (or `Score` when ordinal) from a categorical head over its exact label space or a bijection onto it, and `Boolean` from a one-logit head. It restores the model's modes and raises typed errors (`UnsupportedCapability`, `InvalidDecisionRequest`, `InvalidDecisionResponse`, `ProviderFailure`). Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs it end to end.

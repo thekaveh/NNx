@@ -1,4 +1,4 @@
-# 11. API Reference
+# 12. API Reference
 
 Generated from runtime signatures and source docstrings as portable Markdown so the same reference is readable in the repository, on the documentation site, and in the wiki. Sections are ordered from foundational APIs to specialized modules.
 
@@ -155,6 +155,42 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.models.KeywordInputs
 
 @api nnx.models.module_topology
+
+### 2.11. Typed decisions (`nnx.decisions`)
+
+@api nnx.decisions.Option
+
+@api nnx.decisions.Choice
+
+@api nnx.decisions.Boolean
+
+@api nnx.decisions.Score
+
+@api nnx.decisions.question_from_state
+
+@api nnx.decisions.ChoiceResult
+
+@api nnx.decisions.BooleanResult
+
+@api nnx.decisions.ScoreResult
+
+@api nnx.decisions.validate_response
+
+@api nnx.decisions.Capabilities
+
+@api nnx.decisions.DecisionProvider
+
+@api nnx.decisions.FixedHeadProvider
+
+@api nnx.decisions.DecisionError
+
+@api nnx.decisions.UnsupportedCapability
+
+@api nnx.decisions.InvalidDecisionRequest
+
+@api nnx.decisions.InvalidDecisionResponse
+
+@api nnx.decisions.ProviderFailure
 
 ## 3. Params
 

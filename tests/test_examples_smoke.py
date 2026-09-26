@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UNNUMBERED_EXAMPLES = [
     "builder_branching.py",
     "custom_module.py",
+    "decision_fixed_head.py",
     "graph_optional_splits.py",
     "optimizer_factories.py",
     "regression_task.py",
@@ -37,6 +38,7 @@ def test_example_imports_without_running_main(example):
         "05_custom_train_step_autoencoder.py",
         "10_knowledge_distillation.py",
         "custom_module.py",
+        "decision_fixed_head.py",
         "26_custom_eval_step.py",
         "regression_task.py",
     ],
@@ -83,6 +85,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("22_dpo_synthetic_preferences.py", "dpo_sample_batch_sizes"),
     ("builder_branching.py", "builder_branching_workflow"),
     ("custom_module.py", "custom_module_workflow"),
+    ("decision_fixed_head.py", "decision_fixed_head_workflow"),
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),
     ("optimizer_factories.py", "optimizer_factories_workflow"),
     ("regression_task.py", "regression_task_workflow"),
