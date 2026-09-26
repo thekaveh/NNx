@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover — Python <3.8.
 
 from . import (
     components,
+    data_splits,
     decisions,
     embeddings,
     interop,
@@ -353,6 +354,8 @@ __all__ = [
     "decisions",
     # Versioned experiment provenance manifests (FEAT-019)
     "provenance",
+    # Reproducible group, time and stratified splits (FEAT-017)
+    "data_splits",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

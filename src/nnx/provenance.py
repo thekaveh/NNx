@@ -186,6 +186,12 @@ def hash_file(path: Union[str, os.PathLike[str]], *, chunk_size: int = 1 << 20) 
     return IdentityRef("digest", f"sha256:{digest.hexdigest()}")
 
 
+def _is_split_manifest(value: Any) -> bool:
+    from .data_splits import SplitManifest
+
+    return isinstance(value, SplitManifest)
+
+
 def _refs(values: Optional[Mapping[str, Any]], *, owner: str) -> dict[str, IdentityRef]:
     out: dict[str, IdentityRef] = {}
     for name, value in (values or {}).items():
@@ -197,8 +203,13 @@ def _refs(values: Optional[Mapping[str, Any]], *, owner: str) -> dict[str, Ident
             out[name] = IdentityRef.unknown()
         elif isinstance(value, str):
             out[name] = IdentityRef.declared(value)  # a supplied id is declared, never verified
+        elif owner == "splits" and _is_split_manifest(value):
+            out[name] = value.identity()  # FEAT-017: the plan's digest, the same after replay
         else:
-            raise TypeError(f"{owner}[{name!r}] must be an IdentityRef, a declared id string or None, got {value!r}")
+            accepted = "an IdentityRef, a declared id string or None" + (
+                ", or a nnx.data_splits.SplitManifest" if owner == "splits" else ""
+            )
+            raise TypeError(f"{owner}[{name!r}] must be {accepted}, got {value!r}")
     return dict(sorted(out.items()))
 
 
@@ -242,7 +253,9 @@ class ExperimentManifest:
         model: the model descriptor (e.g. ``NNModelParams.state()``).
         data: named data identities (:class:`IdentityRef`, a declared id
             string, or ``None`` for unknown).
-        splits: named split identities, likewise.
+        splits: named split identities, likewise; a
+            :class:`nnx.data_splits.SplitManifest` is recorded as its digest
+            (:meth:`~nnx.data_splits.SplitManifest.identity`).
         objective: the objective's identity, e.g. ``{"id": "kd", "version": 1}``.
         config: any other JSON-like configuration.
     """
