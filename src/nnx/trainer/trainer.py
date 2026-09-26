@@ -270,6 +270,10 @@ class Trainer:
         # or one returning a malformed optimizer fails with no run reserved.
         from ..optimizers import build_optimizer
 
+        # FEAT-002: a declared task must be able to score the model's current
+        # loss_fn — checked before any loader is iterated or run reserved.
+        self.model._check_task_preflight()
+
         optimizers = {
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()

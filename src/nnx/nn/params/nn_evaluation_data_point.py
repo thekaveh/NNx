@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numbers
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, cast
@@ -31,24 +32,38 @@ class _FrozenMetrics(Mapping[str, float]):
         return isinstance(other, Mapping) and dict(self.items()) == dict(other.items())
 
 
+_RECORD_STATUSES = ("ok", "empty")
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNEvaluationDataPoint:
     """Per-batch / per-epoch evaluation metrics.
 
-    The four core fields (f1, recall, accuracy, precision) are computed by
-    `of()` via sklearn. `loss` and `error` are typically attached after the
-    fact by NNModel during training / evaluation.
+    The four classification fields (f1, recall, accuracy, precision) are
+    computed by `of()` via sklearn. `loss` and `error` are typically
+    attached after the fact by NNModel during training / evaluation.
 
     `extra` is a free-form dict of user-supplied custom metric names to
     floats. Populated when NNTrainParams.extra_metrics or evaluate(extra_metrics=)
     is set; empty by default (and omitted from state() when empty so that
     pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
+
+    **Task records (FEAT-002).** A model with a ``TaskSpec`` writes records
+    that also carry the task `kind` (``"categorical"`` / ``"multilabel"`` /
+    ``"regression"``), the `count` of valid (unmasked) targets they
+    summarize, a `status` (``"ok"``, or ``"empty"`` when every target was
+    masked) and the task's own `metrics` (``mse`` / ``mae`` for regression,
+    ``subset_accuracy`` / ``element_accuracy`` for multilabel). A
+    regression record leaves the classification fields and `error` as
+    ``None`` rather than fabricating them; an empty record has no loss or
+    metrics at all. All four task fields are omitted from `state()` on
+    legacy records, whose serialization is unchanged.
     """
 
-    f1: float
-    recall: float
-    accuracy: float
-    precision: float
+    f1: Optional[float] = None
+    recall: Optional[float] = None
+    accuracy: Optional[float] = None
+    precision: Optional[float] = None
     loss: Optional[float] = None
     error: Optional[float] = None
 
@@ -57,9 +72,33 @@ class NNEvaluationDataPoint:
     # the dict default.
     extra: Mapping[str, float] = field(default_factory=_FrozenMetrics)
 
+    # Task-record fields (FEAT-002) — None / empty on legacy records.
+    kind: Optional[str] = None
+    count: Optional[int] = None
+    status: Optional[str] = None
+    metrics: Mapping[str, float] = field(default_factory=_FrozenMetrics)
+
     def __post_init__(self) -> None:
         if not isinstance(self.extra, _FrozenMetrics):
             object.__setattr__(self, "extra", _FrozenMetrics(self.extra))
+        if not isinstance(self.metrics, _FrozenMetrics):
+            object.__setattr__(self, "metrics", _FrozenMetrics(self.metrics))
+        if self.kind is None:
+            if self.count is not None or self.status is not None:
+                raise ValueError("NNEvaluationDataPoint count / status describe a task record and need a kind")
+            return
+        if not isinstance(self.kind, str) or not self.kind:
+            raise ValueError(f"NNEvaluationDataPoint kind must be a non-empty string, got {self.kind!r}")
+        count = self.count
+        # CSV reload yields floats for integer columns: accept integral values.
+        if isinstance(count, bool) or not isinstance(count, numbers.Real) or count != int(count) or count < 0:
+            raise ValueError(f"NNEvaluationDataPoint count must be a non-negative integer, got {count!r}")
+        object.__setattr__(self, "count", int(count))
+        expected = "ok" if self.count else "empty"
+        if self.status != expected:
+            raise ValueError(
+                f"NNEvaluationDataPoint status must be {expected!r} for count={self.count}, got {self.status!r}"
+            )
 
     def with_loss(self, value: float):
         return replace(self, loss=value)
@@ -134,12 +173,17 @@ class NNEvaluationDataPoint:
         if not edps:
             raise ValueError("mean_of() requires at least one evaluation data point")
 
-        # Aggregate the standard fields with the existing logic.
+        # Aggregate the classification fields over the edps that carry them
+        # (task records such as regression leave them None).
+        def _mean(name: str) -> Optional[float]:
+            values = [getattr(edp, name) for edp in edps if getattr(edp, name) is not None]
+            return float(np.mean(values)) if values else None
+
         ret = NNEvaluationDataPoint(
-            f1=float(np.mean([edp.f1 for edp in edps])),
-            recall=float(np.mean([edp.recall for edp in edps])),
-            accuracy=float(np.mean([edp.accuracy for edp in edps])),
-            precision=float(np.mean([edp.precision for edp in edps])),
+            f1=_mean("f1"),
+            recall=_mean("recall"),
+            accuracy=_mean("accuracy"),
+            precision=_mean("precision"),
         )
 
         if len([edp.loss for edp in edps if edp.loss is not None]) > 0:
@@ -162,6 +206,16 @@ class NNEvaluationDataPoint:
                     extra_mean[k] = float(np.mean(values))
             ret = replace(ret, extra=extra_mean)
 
+        # Task metrics (FEAT-002) follow the same per-key rule. The result is
+        # a plain mean, not a merged task record, so kind / count / status
+        # are not carried (use NNModel.evaluate for whole-dataset records).
+        metric_keys = sorted({k for edp in edps for k in edp.metrics})
+        if metric_keys:
+            ret = replace(
+                ret,
+                metrics={k: float(np.mean([edp.metrics[k] for edp in edps if k in edp.metrics])) for k in metric_keys},
+            )
+
         return ret
 
     def state(self) -> dict:
@@ -178,16 +232,28 @@ class NNEvaluationDataPoint:
         # back-compat).
         if self.extra:
             d["extra"] = dict(self.extra)
+        # Task-record fields (FEAT-002): omitted on legacy records, so their
+        # serialized form (idps.csv columns, checkpoint metadata) is unchanged.
+        if self.kind is not None:
+            d["kind"] = self.kind
+            d["count"] = self.count
+            d["status"] = self.status
+        if self.metrics:
+            d["metrics"] = dict(self.metrics)
         return d
 
     @staticmethod
     def from_state(state: dict) -> NNEvaluationDataPoint:
         return NNEvaluationDataPoint(
-            f1=state["f1"],
-            recall=state["recall"],
-            accuracy=state["accuracy"],
-            precision=state["precision"],
-            loss=state["loss"],
-            error=state["error"],
+            f1=state.get("f1"),
+            recall=state.get("recall"),
+            accuracy=state.get("accuracy"),
+            precision=state.get("precision"),
+            loss=state.get("loss"),
+            error=state.get("error"),
             extra=dict(state.get("extra") or {}),
+            kind=state.get("kind"),
+            count=state.get("count"),
+            status=state.get("status"),
+            metrics=dict(state.get("metrics") or {}),
         )

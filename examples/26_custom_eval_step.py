@@ -1,10 +1,15 @@
 """Custom validation with ``eval_step_fn`` — replace the built-in
 classification val pass for paradigms it can't score.
 
-``NNModel.train`` computes argmax + sklearn classification metrics in
-BOTH its default train step and its built-in val pass. For regression
-(or LM perplexity, DPO margins, ...) those crash or produce garbage on
-continuous targets, so a non-classification paradigm needs the pair:
+Without a task, ``NNModel.train`` computes argmax + sklearn
+classification metrics in BOTH its default train step and its built-in val
+pass. Plain regression and multilabel problems no longer need custom
+steps: declare ``NNModelParams(task=TaskSpec.regression(...))`` (or
+``.multilabel``) and the default step, ``evaluate()`` and ``predict()``
+score continuous values with MSE / MAE — see
+``examples/regression_task.py``. Paradigms no task adapter covers (LM
+perplexity, DPO margins, a bespoke regression schedule like the one below)
+still use the pair:
 
   1. A custom ``train_step_fn`` (:class:`TrainStepContext` in, batch EDP
      out) — here the standard MSE forward/backward with MAE riding in
@@ -124,15 +129,9 @@ def regression_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     mse_val = float(mse.detach())
     with torch.no_grad():
         mae = float(F.l1_loss(pred.detach(), Y))
-    return NNEvaluationDataPoint(
-        f1=0.0,
-        recall=0.0,
-        accuracy=0.0,
-        precision=0.0,
-        loss=mse_val,
-        error=mse_val,
-        extra={"mae": mae},
-    )
+    # Classification fields are optional: a regression record leaves them
+    # None instead of fabricating zeros.
+    return NNEvaluationDataPoint(loss=mse_val, error=mse_val, extra={"mae": mae})
 
 
 def regression_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
@@ -154,17 +153,9 @@ def regression_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     if was_training:
         net.train()
     mse, mae = se_sum / n, ae_sum / n
-    # The classification fields are meaningless for regression — zero them
-    # and carry the real numbers in loss/error/extra.
-    return NNEvaluationDataPoint(
-        f1=0.0,
-        recall=0.0,
-        accuracy=0.0,
-        precision=0.0,
-        loss=mse,
-        error=mse,
-        extra={"mae": mae},
-    )
+    # The classification fields are meaningless for regression — leave them
+    # None and carry the real numbers in loss/error/extra.
+    return NNEvaluationDataPoint(loss=mse, error=mse, extra={"mae": mae})
 
 
 def _make_model() -> NNModel:

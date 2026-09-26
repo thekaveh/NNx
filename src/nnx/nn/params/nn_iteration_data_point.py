@@ -40,13 +40,14 @@ class NNIterationDataPoint:
 
     @staticmethod
     def from_state(state: dict) -> NNIterationDataPoint:
-        # Reassemble the `extra` dict from flattened CSV columns. After
-        # NNRun.save, pd.json_normalize flattens nested {prefix: {name: v}}
-        # into `<prefix>.extra.<name>` columns. We collect them back into
-        # the inner state dict so NNEvaluationDataPoint.from_state can
-        # populate the extra field correctly.
-        def _collect_extra(prefix: str) -> dict:
-            marker = f"{prefix}.extra."
+        # Reassemble the `extra` / `metrics` dicts from flattened CSV
+        # columns. After NNRun.save, pd.json_normalize flattens nested
+        # {prefix: {name: v}} into `<prefix>.extra.<name>` (and
+        # `<prefix>.metrics.<name>`) columns. We collect them back into the
+        # inner state dict so NNEvaluationDataPoint.from_state can populate
+        # both mappings correctly.
+        def _collect(prefix: str, group: str) -> dict:
+            marker = f"{prefix}.{group}."
             return {
                 k[len(marker) :]: v
                 for k, v in state.items()
@@ -64,37 +65,32 @@ class NNIterationDataPoint:
             v = state.get(key)
             return None if v is None or _is_nan(v) else v
 
+        def _edp_state(prefix: str) -> dict:
+            edp_state = {name: _field(f"{prefix}.{name}") for name in _EDP_SCALARS}
+            edp_state["extra"] = _collect(prefix, "extra")
+            edp_state["metrics"] = _collect(prefix, "metrics")
+            return edp_state
+
+        # A validation record is present when any of its scalars is — an
+        # all-masked task record (FEAT-002) has no loss but still has its
+        # kind, count and status.
+        val_state = _edp_state("val_edp")
         val_edp = None
-        if any(_field(f"val_edp.{k}") is not None for k in ("loss", "error", "accuracy", "f1", "recall", "precision")):
-            val_edp = NNEvaluationDataPoint.from_state(
-                dict(
-                    loss=_field("val_edp.loss"),
-                    error=_field("val_edp.error"),
-                    accuracy=_field("val_edp.accuracy"),
-                    f1=_field("val_edp.f1"),
-                    recall=_field("val_edp.recall"),
-                    precision=_field("val_edp.precision"),
-                    extra=_collect_extra("val_edp"),
-                )
-            )
+        if any(val_state[name] is not None for name in _EDP_SCALARS) or val_state["metrics"]:
+            val_edp = NNEvaluationDataPoint.from_state(val_state)
         return NNIterationDataPoint(
             lr=state["lr"],
             iter_idx=state["iter_idx"],
             epoch_idx=state["epoch_idx"],
             batch_idx=state["batch_idx"],
-            train_edp=NNEvaluationDataPoint.from_state(
-                dict(
-                    loss=_field("train_edp.loss"),
-                    error=_field("train_edp.error"),
-                    accuracy=_field("train_edp.accuracy"),
-                    f1=_field("train_edp.f1"),
-                    recall=_field("train_edp.recall"),
-                    precision=_field("train_edp.precision"),
-                    extra=_collect_extra("train_edp"),
-                )
-            ),
+            train_edp=NNEvaluationDataPoint.from_state(_edp_state("train_edp")),
             val_edp=val_edp,
         )
+
+
+# Scalar NNEvaluationDataPoint.state() keys, flattened to `<prefix>.<name>`
+# CSV columns by NNRun.save (`extra` / `metrics` become `<prefix>.<group>.<key>`).
+_EDP_SCALARS = ("loss", "error", "accuracy", "f1", "recall", "precision", "kind", "count", "status")
 
 
 def _is_nan(v) -> bool:

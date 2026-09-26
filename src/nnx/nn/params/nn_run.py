@@ -394,6 +394,7 @@ class NNRun:
         return (
             "{"
             f"loss={self.model.loss}"
+            f"{f', task={self.model.task}' if self.model.task is not None else ''}"
             f", device={self.model.device}"
             f", net={self.model.net}"
             f", dims={self.net.dims}"
@@ -471,6 +472,7 @@ class NNRun:
             ("net", str(self.model.net)),
             ("device", str(self.model.device)),
             ("loss", str(self.model.loss)),
+            *([("task", str(self.model.task))] if self.model.task is not None else []),
             ("input_dim → output_dim", f"{self.net.input_dim} → {self.net.output_dim}"),
             ("hidden_dims", str(self.net.hidden_dims)),
             ("dropout", str(self.net.dropout_prob)),

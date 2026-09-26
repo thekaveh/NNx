@@ -18,6 +18,7 @@ from tqdm import tqdm
 from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
+from ..tasks import TaskAdapter, task_adapter
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -538,6 +539,94 @@ def _scale_gradients(module: torch.nn.Module, factor: float) -> None:
             parameter.grad.mul_(factor)
 
 
+@dataclass(frozen=True, slots=True)
+class _StepLossTerms:
+    """One batch's forward outputs and loss terms for `default_train_step`."""
+
+    output: torch.Tensor
+    target: torch.Tensor
+    prediction: Optional[torch.Tensor]
+    valid: Optional[torch.Tensor]
+    train_loss: torch.Tensor
+    backward_loss: torch.Tensor
+    normalization_weight: Optional[float]
+
+
+def _step_loss_terms(
+    model: NNModel,
+    batch: Any,
+    accumulation_state: Optional[GradientAccumulationState],
+    accumulate_grad_batches: int,
+) -> _StepLossTerms:
+    """Forward one batch and compute its loss terms.
+
+    Legacy models decode by loss (`_fwd_pass`). A model with a task
+    (FEAT-002) validates the batch through its adapter first — before any
+    backward pass or optimizer update — and scores only the valid targets.
+    """
+    adapter = getattr(model, "task_adapter", None)
+    if adapter is None:
+        _, Y, Y_hat_logits, Y_hat = model._fwd_pass(batch)
+        output, target, prediction, valid = Y_hat_logits, Y, Y_hat, None
+        if accumulation_state is None:
+            train_loss = model.loss_fn(_loss_input(model.loss_fn, output), target)
+            return _StepLossTerms(
+                output, target, prediction, valid, train_loss, train_loss / accumulate_grad_batches, None
+            )
+        train_loss, backward_loss, weight = _loss_terms(model.loss_fn, output, target)
+        return _StepLossTerms(output, target, prediction, valid, train_loss, backward_loss, weight)
+
+    _, Y, logits = model._fwd_outputs(batch)
+    output, target, valid = adapter.prepare(logits, Y)
+    train_loss, backward_loss, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
+    if accumulation_state is None and weight != 0:
+        backward_loss = train_loss / accumulate_grad_batches
+    return _StepLossTerms(output, target, None, valid, train_loss, backward_loss, weight)
+
+
+def _record_step_loss(
+    terms: _StepLossTerms,
+    accumulation_state: Optional[GradientAccumulationState],
+    *,
+    should_step: bool,
+) -> Optional[float]:
+    """The batch's display loss, with the finite-loss guard. An all-masked
+    task batch (weight 0) has no loss of its own."""
+    if terms.valid is not None and terms.normalization_weight == 0:
+        return None
+    return _record_accumulation_loss(
+        terms.train_loss,
+        terms.normalization_weight,
+        accumulation_state,
+        should_step=should_step,
+    )
+
+
+def _window_is_masked(
+    terms: _StepLossTerms,
+    accumulation_state: Optional[GradientAccumulationState],
+    *,
+    window_is_this_batch: bool,
+) -> bool:
+    """True when a task model's whole optimizer window had no valid target.
+
+    Without accumulation state (direct legacy callers) only a one-batch
+    window can be judged; a longer window may hold valid gradients from
+    earlier batches, so it is never discarded."""
+    if terms.valid is None:
+        return False
+    if accumulation_state is None:
+        return window_is_this_batch and terms.normalization_weight == 0
+    return accumulation_state.normalization_required and accumulation_state.normalization_weight == 0
+
+
+def _reset_accumulation(accumulation_state: Optional[GradientAccumulationState]) -> None:
+    if accumulation_state is not None:
+        accumulation_state.normalization_weight = 0.0
+        accumulation_state.loss_numerator = 0.0
+        accumulation_state.normalization_required = True
+
+
 def _enumerate_with_last(iterable: Iterable[Any]) -> Iterator[tuple[int, Any, bool]]:
     iterator = iter(iterable)
     try:
@@ -588,90 +677,68 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     accumulation_state = ctx.accumulation_state
     if is_cycle_start:
         model.net.zero_grad()
-        if accumulation_state is not None:
-            accumulation_state.normalization_weight = 0.0
-            accumulation_state.loss_numerator = 0.0
-            accumulation_state.normalization_required = True
+        _reset_accumulation(accumulation_state)
 
     # Mixed precision is opt-in via NNModelParams.mixed_precision; only
     # takes effect on CUDA where autocast + GradScaler are meaningful.
     scaler = ctx.scaler
     amp_enabled = scaler is not None and model.device.type == "cuda"
 
+    adapter = getattr(model, "task_adapter", None)
     if amp_enabled:
         assert scaler is not None
         with torch.amp.autocast(device_type="cuda"):
-            X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
-            if accumulation_state is None:
-                train_loss = model.loss_fn(_loss_input(model.loss_fn, Y_hat_logits), Y)
-                backward_loss = train_loss / accumulate_grad_batches
-                normalization_weight = None
-            else:
-                train_loss, backward_loss, normalization_weight = _loss_terms(model.loss_fn, Y_hat_logits, Y)
-        loss_value = _record_accumulation_loss(
-            train_loss,
-            normalization_weight,
-            accumulation_state,
-            should_step=should_step,
-        )
-        scaler.scale(backward_loss).backward()
-        if should_step:
+            terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
+        loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+        scaler.scale(terms.backward_loss).backward()
+    else:
+        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
+        loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+        terms.backward_loss.backward()
+
+    if should_step and _window_is_masked(terms, accumulation_state, window_is_this_batch=cycle_size == 1):
+        # FEAT-002: every target in this optimizer window is masked — there
+        # is nothing to learn from, so no update is taken.
+        model.net.zero_grad()
+        _reset_accumulation(accumulation_state)
+    elif should_step:
+        if amp_enabled:
+            assert scaler is not None
             scaler.unscale_(ctx.optimizer)
-            if (
-                accumulation_state is not None
-                and accumulation_state.normalization_required
-                and accumulation_state.normalization_weight
-            ):
-                _scale_gradients(model.net, 1.0 / accumulation_state.normalization_weight)
-            elif accumulation_state is None and cycle_size < accumulate_grad_batches:
-                _scale_gradients(model.net, accumulate_grad_batches / cycle_size)
-            if ctx.grad_clip_norm is not None:
-                # Unscale before clipping so the clip threshold applies
-                # in the original gradient space, not the scaled one.
-                torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
+        if (
+            accumulation_state is not None
+            and accumulation_state.normalization_required
+            and accumulation_state.normalization_weight
+        ):
+            _scale_gradients(model.net, 1.0 / accumulation_state.normalization_weight)
+        elif accumulation_state is None and cycle_size < accumulate_grad_batches:
+            _scale_gradients(model.net, accumulate_grad_batches / cycle_size)
+        if ctx.grad_clip_norm is not None:
+            # Under AMP the gradients were unscaled above, so the clip
+            # threshold applies in the original gradient space.
+            torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
+        if amp_enabled:
+            assert scaler is not None
             scaler.step(ctx.optimizer)
             scaler.update()
-            if accumulation_state is not None:
-                accumulation_state.normalization_weight = 0.0
-                accumulation_state.loss_numerator = 0.0
-                accumulation_state.normalization_required = True
-    else:
-        X, Y, Y_hat_logits, Y_hat = model._fwd_pass(ctx.batch)
-        if accumulation_state is None:
-            train_loss = model.loss_fn(_loss_input(model.loss_fn, Y_hat_logits), Y)
-            backward_loss = train_loss / accumulate_grad_batches
-            normalization_weight = None
         else:
-            train_loss, backward_loss, normalization_weight = _loss_terms(model.loss_fn, Y_hat_logits, Y)
-        loss_value = _record_accumulation_loss(
-            train_loss,
-            normalization_weight,
-            accumulation_state,
-            should_step=should_step,
-        )
-        backward_loss.backward()
-        if should_step:
-            if (
-                accumulation_state is not None
-                and accumulation_state.normalization_required
-                and accumulation_state.normalization_weight
-            ):
-                _scale_gradients(model.net, 1.0 / accumulation_state.normalization_weight)
-            elif accumulation_state is None and cycle_size < accumulate_grad_batches:
-                _scale_gradients(model.net, accumulate_grad_batches / cycle_size)
-            if ctx.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
             ctx.optimizer.step()
-            if accumulation_state is not None:
-                accumulation_state.normalization_weight = 0.0
-                accumulation_state.loss_numerator = 0.0
-                accumulation_state.normalization_required = True
+        _reset_accumulation(accumulation_state)
 
+    if adapter is not None:
+        assert terms.valid is not None
+        accumulator = adapter.accumulator(keep_arrays=bool(ctx.extra_metrics))
+        accumulator.update(terms.output, terms.target, terms.valid)
+        return accumulator.result(
+            loss=loss_value if terms.normalization_weight != 0 else None,
+            extra_metrics=ctx.extra_metrics,
+        )
+    assert terms.prediction is not None
     return _classification_edp_for_loss(
         loss_fn=model.loss_fn,
-        target=Y,
-        prediction=Y_hat,
-        loss=loss_value,
+        target=terms.target,
+        prediction=terms.prediction,
+        loss=cast(float, loss_value),
         extra_metrics=ctx.extra_metrics,
     )
 
@@ -697,6 +764,15 @@ class NNModel(_HubMixinBase):
         if net_params is None:
             raise ValueError("net_params must not be None")
 
+        # FEAT-002: a declared task is checked against the loss, net type and
+        # output width before any module is built.
+        self._task_adapter: Optional[TaskAdapter] = None
+        if params.task is not None:
+            self._task_adapter = task_adapter(params.task)
+            self._task_adapter.check_model(
+                net=params.net, loss=params.loss, output_dim=getattr(net_params, "output_dim", None)
+            )
+
         self.net_params = net_params
         self.params = params
         self._topology_transforms: tuple[NNCheckpointTransform, ...] = ()
@@ -704,6 +780,22 @@ class NNModel(_HubMixinBase):
         self.device = self.params.device()
         self.loss_fn = self.params.loss().to(self.device)
         self.net = self.params.net(params=net_params).to(self.device)
+
+    @property
+    def task_adapter(self) -> Optional[TaskAdapter]:
+        """The adapter for ``params.task`` (FEAT-002), or ``None`` for a
+        legacy classification model. Custom steps can call
+        ``task_adapter.record(output, target, loss=...)`` to write the same
+        task record the default step writes."""
+        # getattr: subclasses and stand-ins that bypass __init__ are legacy models.
+        return getattr(self, "_task_adapter", None)
+
+    def _check_task_preflight(self) -> None:
+        """Reject a runtime ``loss_fn`` the declared task cannot score —
+        before any loader is iterated (NNModel.train and Trainer.train)."""
+        adapter = getattr(self, "task_adapter", None)
+        if adapter is not None:
+            adapter.check_loss_fn(self.loss_fn)
 
     def _assert_reconstructible_topology(self) -> None:
         if self._topology_transforms:
@@ -1153,6 +1245,7 @@ class NNModel(_HubMixinBase):
             self._assert_reconstructible_topology()
         if params is None:
             raise ValueError("train params must be non-None")
+        self._check_task_preflight()
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
@@ -1570,6 +1663,9 @@ class NNModel(_HubMixinBase):
         # Ensure loss_fn lives on the same device as the model — guards
         # against callers reassigning self.device after construction.
         self.loss_fn = self.loss_fn.to(self.device)
+        # getattr: legacy stand-ins borrow these methods without the property.
+        if getattr(self, "task_adapter", None) is not None:
+            return self._evaluate_task(loader, extra_metrics)
         # Snapshot training-mode for non-destructive restore (matches the
         # convention already used by `nnx.viz.activation_map` and
         # `nnx.lr_finder`). Without this, a caller doing the common
@@ -1619,6 +1715,7 @@ class NNModel(_HubMixinBase):
         Y_hat_concat = np.concatenate(all_Y_hat)
 
         edp = NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat, extra_metrics=extra_metrics)
+        assert edp.accuracy is not None  # `of` always computes the classification fields
         return edp.with_loss(
             value=(
                 loss_numerator
@@ -1628,6 +1725,45 @@ class NNModel(_HubMixinBase):
                 else float("nan")
             )
         ).with_error(value=float(1 - edp.accuracy))
+
+    def _evaluate_task(self, loader: Iterable[Any], extra_metrics=None) -> NNEvaluationDataPoint:
+        """``evaluate()`` for a model with a task (FEAT-002): the adapter
+        validates every batch, and loss and metrics are accumulated over
+        the valid targets of the whole loader. Every target masked yields
+        an ``"empty"`` record (no loss, no metrics) instead of raising."""
+        adapter = self.task_adapter
+        assert adapter is not None
+        training_modes = _capture_training_modes(self.net)
+        self.net.eval()
+        accumulator = adapter.accumulator(keep_arrays=bool(extra_metrics))
+        loss_numerator = 0.0
+        loss_normalization_weight = 0.0
+        loss_uses_sum_reduction = False
+        n_batches = 0
+        try:
+            with torch.no_grad():
+                for batch in loader:
+                    _, Y, logits = self._fwd_outputs(batch)
+                    output, target, valid = adapter.prepare(logits, Y)
+                    accumulator.update(output, target, valid)
+                    _, numerator, weight = adapter.loss_terms(self.loss_fn, output, target, valid)
+                    loss_numerator += float(numerator.detach())
+                    if weight is None:
+                        loss_uses_sum_reduction = True
+                    else:
+                        loss_normalization_weight += weight
+                    n_batches += 1
+        finally:
+            _restore_training_modes(training_modes)
+        if n_batches == 0:
+            raise ValueError("evaluate() loader produced zero samples")
+        if not accumulator.count:
+            loss: Optional[float] = None
+        elif loss_uses_sum_reduction:
+            loss = loss_numerator
+        else:
+            loss = loss_numerator / loss_normalization_weight if loss_normalization_weight else float("nan")
+        return accumulator.result(loss=loss, extra_metrics=extra_metrics)
 
     def predict(self, X) -> PredictResult:
         """Run the network in eval mode and return logits + argmax classes.
@@ -1654,6 +1790,9 @@ class NNModel(_HubMixinBase):
         in ``.eval()`` mode.
         """
         logits, _ = self._predict_logits(X, caller="predict()")
+        adapter = getattr(self, "task_adapter", None)
+        if adapter is not None:
+            return PredictResult(logits=logits, classes=adapter.decode_array(logits))
         class_axis = -1 if self.params.net is Nets.TRANSFORMER and logits.ndim > 2 else 1
         classes = (
             (logits >= 0).astype(np.int64)
@@ -1662,8 +1801,15 @@ class NNModel(_HubMixinBase):
         )
         return PredictResult(logits=logits, classes=classes)
 
-    def predict_proba(self, X, spec: ProbabilitySpec) -> PredictionResult:
+    def predict_proba(self, X, spec: Optional[ProbabilitySpec] = None) -> PredictionResult:
         """Probability-aware prediction declared by an explicit ``spec``.
+
+        ``spec`` may be omitted for a model with a task (FEAT-002): the task
+        supplies it — softmax over axis 1 for ``categorical``, sigmoid
+        decoded at the task's ``threshold`` for ``multilabel`` — and a
+        ``regression`` task returns its continuous values with
+        ``probabilities=None`` and ``spec=None`` (``decoded`` holds the
+        values). An explicit ``spec`` always wins.
 
         Accepts the same inputs as :meth:`predict` (arrays, tensors, tuples
         and ``DataLoader``s, including graph loaders whose rows are sliced
@@ -1696,10 +1842,20 @@ class NNModel(_HubMixinBase):
                 UserWarning,
                 stacklevel=2,
             )
+        if spec is None:
+            adapter = getattr(self, "task_adapter", None)
+            if adapter is None:
+                raise TypeError(
+                    "predict_proba() needs a ProbabilitySpec for a model without a task "
+                    "(or declare NNModelParams(task=TaskSpec...))"
+                )
+            logits, sample_ids = self._predict_logits(X, caller="predict_proba()", check_first=adapter.check_logits)
+            return adapter.prediction(logits, sample_ids)
+        explicit = spec
         logits, sample_ids = self._predict_logits(
-            X, caller="predict_proba()", check_first=lambda first: _check_spec_fits(first, spec)
+            X, caller="predict_proba()", check_first=lambda first: _check_spec_fits(first, explicit)
         )
-        return prediction_from_logits(logits, spec, sample_ids=sample_ids)
+        return prediction_from_logits(logits, explicit, sample_ids=sample_ids)
 
     def _predict_logits(
         self, X, *, caller: str, check_first: Optional[Callable[[np.ndarray], object]] = None
@@ -1786,6 +1942,21 @@ class NNModel(_HubMixinBase):
         run net, take argmax over class logits. Used by `default_train_step`
         and `evaluate()`; custom train_step_fn's may call this directly
         or roll their own forward pass."""
+        X, Y, Y_hat_logits = self._fwd_outputs(batch)
+        class_axis = -1 if self.params.net is Nets.TRANSFORMER else 1
+        Y_hat = (
+            (Y_hat_logits >= 0).to(dtype=torch.long)
+            if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
+            else Y_hat_logits.argmax(dim=class_axis)
+        )
+
+        return X, Y, Y_hat_logits, Y_hat
+
+    def _fwd_outputs(self, batch):
+        """Unpack a supervised batch, move it to the device and run the net:
+        ``(X, Y, logits)`` with transformer outputs flattened to rows and
+        graph outputs sliced to their seed rows — no decoding. Shared by
+        `_fwd_pass` and the task-adapter path (FEAT-002)."""
         X, Y = cast(Any, self.net).unpack_batch(batch)
 
         X = tuple(x.to(self.device) for x in X)
@@ -1808,14 +1979,7 @@ class NNModel(_HubMixinBase):
             if n_seed is not None:
                 Y_hat_logits = Y_hat_logits[:n_seed]
                 Y = Y[:n_seed]
-        class_axis = -1 if self.params.net is Nets.TRANSFORMER else 1
-        Y_hat = (
-            (Y_hat_logits >= 0).to(dtype=torch.long)
-            if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
-            else Y_hat_logits.argmax(dim=class_axis)
-        )
-
-        return X, Y, Y_hat_logits, Y_hat
+        return X, Y, Y_hat_logits
 
     def _train_step(
         self,

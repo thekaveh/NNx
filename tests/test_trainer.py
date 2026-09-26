@@ -1093,3 +1093,102 @@ def test_trainer_step_fn_owns_optimizer_updates(tmp_path, monkeypatch):
     )
     for name, p in model.net.named_parameters():
         assert torch.equal(p.detach(), before[name]), name
+
+
+# --- FEAT-002: Trainer with a task-adapter model ---------------------------
+
+
+def _regression_task_model() -> NNModel:
+    from nnx import TaskSpec
+
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)),
+    )
+
+
+def _regression_loader(n: int = 16) -> DataLoader:
+    torch.manual_seed(1)
+    X = torch.randn(n, 4)
+    return DataLoader(TensorDataset(X, X.sum(dim=1, keepdim=True)), batch_size=8, shuffle=False)
+
+
+def _task_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+    """A custom hook that writes the same task record the default step does."""
+    model = ctx.model
+    adapter = model.task_adapter
+    assert adapter is not None
+    model.net.train()
+    optimizer = ctx.optimizers["main"]
+    optimizer.zero_grad()
+    (x,), y = model.net.unpack_batch(ctx.batch)
+    output = model.net(x)
+    loss = model.loss_fn(output, y)
+    loss.backward()
+    optimizer.step()
+    return adapter.record(output.detach(), y, loss=float(loss.detach()))
+
+
+def test_trainer_custom_hook_and_task_evaluation_share_record_semantics(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    run = Trainer(model=_regression_task_model()).train(
+        params=NNTrainerParams(
+            n_epochs=2,
+            train_loader=_regression_loader(),
+            val_loader=_regression_loader(8),
+            optims={"main": NNOptimParams.builder().sgd(max_lr=0.01).build()},
+        ),
+        trainer_step_fn=_task_step,
+    )
+    for idp in run.idps:
+        assert idp.train_edp.kind == "regression" and idp.train_edp.f1 is None
+    val = run.idps[-1].val_edp
+    assert val is not None and val.kind == "regression" and val.count == 8 and set(val.metrics) == {"mse", "mae"}
+    assert val.error is None and val.accuracy is None
+    _assert_same_records(NNRun.load(run.id).idps, run.idps)
+
+
+class _ExplodingLoader:
+    def __iter__(self):
+        raise AssertionError("preflight must fail before any loader is consumed")
+
+
+def test_trainer_task_preflight_fails_before_consuming_the_loader(tmp_path, monkeypatch):
+    from nnx import TaskValidationError
+
+    monkeypatch.chdir(tmp_path)
+    model = _regression_task_model()
+    model.loss_fn = nn.CrossEntropyLoss()  # cannot score a regression task
+    with pytest.raises(TaskValidationError, match="regression loss"):
+        Trainer(model=model).train(
+            params=NNTrainerParams(
+                n_epochs=1,
+                train_loader=_ExplodingLoader(),  # type: ignore[arg-type]
+                val_loader=_ExplodingLoader(),  # type: ignore[arg-type]
+                optims={"main": NNOptimParams.builder().sgd(max_lr=0.01).build()},
+            ),
+            trainer_step_fn=_task_step,
+        )
+    assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())
+
+
+def _assert_same_records(loaded, expected):
+    """Reloaded idps.csv records equal the originals up to pandas' float
+    parsing (the CSV reader is not bit-exact for every double)."""
+    assert len(loaded) == len(expected)
+    for got, want in zip(loaded, expected, strict=True):
+        for edp_got, edp_want in ((got.train_edp, want.train_edp), (got.val_edp, want.val_edp)):
+            assert (edp_got is None) == (edp_want is None)
+            if edp_got is None:
+                continue
+            state_got, state_want = edp_got.state(), edp_want.state()
+            assert state_got.keys() == state_want.keys()
+            for key, value in state_want.items():
+                if isinstance(value, float):
+                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
+                elif isinstance(value, dict):
+                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
+                else:
+                    assert state_got[key] == value, key

@@ -881,3 +881,22 @@ def test_nn_transformer_params_round_trip_with_per_layer_lists():
     reloaded = NNTransformerParams.from_state(state)
     assert reloaded.activations is None and reloaded.dropout_probs is None
     assert reloaded.state() == state
+
+
+def test_nn_model_params_round_trip_with_task():
+    """FEAT-002: the task spec rides on NNModelParams as a versioned mapping
+    and is omitted for legacy models (unchanged state() and run.id)."""
+    from nnx.tasks import TaskSpec
+
+    legacy = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR)
+    assert "task" not in legacy.state()
+    with_task = NNModelParams(
+        net=Nets.FEED_FWD,
+        device=Devices.CPU,
+        loss=Losses.MEAN_SQUARED_ERROR,
+        task=TaskSpec.regression(2, labels=["a", "b"]),
+    )
+    assert with_task.state()["task"] == {"version": 1, "kind": "regression", "num_outputs": 2, "labels": ["a", "b"]}
+    assert NNModelParams.from_state(with_task.state()) == with_task
+    with pytest.raises(TypeError, match="TaskSpec"):
+        NNModelParams(net=Nets.FEED_FWD, task={"kind": "regression"})  # type: ignore[arg-type]
