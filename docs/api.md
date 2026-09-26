@@ -2999,10 +2999,10 @@ nnx.provenance.ExperimentManifest.fingerprint(self) -> 'str'
 ##### `nnx.provenance.ExperimentManifest.for_model`
 
 ```python
-nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None) -> 'ExperimentManifest'
+nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None, preprocessing: 'Any' = None) -> 'ExperimentManifest'
 ```
 
-A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read). Builds no model and iterates no loader.
+A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
 
 
 #### `nnx.provenance.IdentityRef`
@@ -3365,6 +3365,218 @@ class nnx.data_splits.SplitError
 ```
 
 A split that cannot be planned or replayed as asked.
+
+
+### 2.14. Train-fitted preprocessing (`nnx.preprocessing`)
+
+#### `nnx.preprocessing.Standardizer`
+
+```python
+class nnx.preprocessing.Standardizer(mean: 'tuple[float, ...]', scale: 'tuple[float, ...]', columns: 'Optional[tuple[ColumnLabel, ...]]' = None, dtype: 'str' = 'float32', fit_rows: 'int' = 0, fit_membership: 'IdentityRef' = <factory>) -> 'None'
+```
+
+Frozen per-column ``(x - mean) / scale`` with a declared schema.
+
+**Details**
+
+```text
+Build one with :meth:`fit`; reload one with :meth:`load` /
+:meth:`from_state`. ``columns`` names the fitted DataFrame columns in
+order (``str`` or ``int`` labels; ``None`` for unnamed arrays);
+``dtype`` is the output dtype of :meth:`transform`; ``fit_rows`` and
+``fit_membership`` identify the training rows it was fitted on. Calling
+the standardizer on one sample (a 1-D row) standardizes that row, so it
+also works as a :class:`SplitView` transform. Equality and hashing
+follow :meth:`canonical_bytes`.
+```
+
+##### `nnx.preprocessing.Standardizer.fit`
+
+```python
+nnx.preprocessing.Standardizer.fit(source: 'Any', *, rows: 'Iterable[Any]', columns: 'Optional[Sequence[ColumnLabel]]' = None, dtype: 'Union[str, torch.dtype]' = 'float32', membership: 'Any' = None) -> 'Standardizer'
+```
+
+Fit on ``source``'s training ``rows`` (integer positions) only.
+
+**Details**
+
+```text
+``source`` is a DataFrame (``columns`` selects and orders the schema,
+default all columns; only the training rows of those columns are
+copied), a 2-D tensor or array, or any row-indexable sequence. No
+other row is read. The population mean and standard deviation are
+computed in float64; a constant column (all training values equal)
+gets its value as the mean and scale 1. ``membership`` identifies the
+rows (an ``IdentityRef``, a ``SplitManifest``, a declared string); by
+default it is a digest of the positions. Raises
+:class:`PreprocessingError` for an empty, repeated or out-of-range
+membership and for non-numeric or non-finite training values.
+```
+
+##### `nnx.preprocessing.Standardizer.n_features`
+
+```python
+property nnx.preprocessing.Standardizer.n_features
+```
+
+No public description is currently available.
+
+##### `nnx.preprocessing.Standardizer.transform`
+
+```python
+nnx.preprocessing.Standardizer.transform(self, data: 'Any') -> 'torch.Tensor'
+```
+
+Standardize ``data`` with the frozen statistics.
+
+**Details**
+
+```text
+A DataFrame must hold the fitted ``columns`` once each and in the
+fitted order (other columns are ignored); a tensor, array or row
+sequence must be 2-D with ``n_features`` columns. Values must be
+numeric and finite, and so must the result in ``dtype``. Returns a
+new tensor; the input is never modified. Raises
+:class:`PreprocessingError` otherwise — before any model sees it.
+```
+
+##### `nnx.preprocessing.Standardizer.state`
+
+```python
+nnx.preprocessing.Standardizer.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.preprocessing.Standardizer.from_state`
+
+```python
+nnx.preprocessing.Standardizer.from_state(state: 'Mapping[str, Any]') -> 'Standardizer'
+```
+
+Rebuild from :meth:`state`, rejecting anything malformed with :class:`PreprocessingError` (bad lengths, non-finite values, non-positive scales, missing or mistyped entries).
+
+##### `nnx.preprocessing.Standardizer.canonical_bytes`
+
+```python
+nnx.preprocessing.Standardizer.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.preprocessing.Standardizer.digest`
+
+```python
+nnx.preprocessing.Standardizer.digest(self) -> 'str'
+```
+
+``sha256:<hex>`` of the canonical state: the schema identity.
+
+##### `nnx.preprocessing.Standardizer.to_json`
+
+```python
+nnx.preprocessing.Standardizer.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.preprocessing.Standardizer.from_json`
+
+```python
+nnx.preprocessing.Standardizer.from_json(text: 'str') -> 'Standardizer'
+```
+
+No public description is currently available.
+
+##### `nnx.preprocessing.Standardizer.save`
+
+```python
+nnx.preprocessing.Standardizer.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write the statistics and schema as JSON, atomically.
+
+##### `nnx.preprocessing.Standardizer.load`
+
+```python
+nnx.preprocessing.Standardizer.load(path: 'Union[str, os.PathLike[str]]') -> 'Standardizer'
+```
+
+No public description is currently available.
+
+
+#### `nnx.preprocessing.SplitView`
+
+```python
+class nnx.preprocessing.SplitView(base: 'Any', indices: 'Iterable[int]', *, transform: 'Optional[Callable[..., Any]]' = None) -> 'None'
+```
+
+Rows ``indices`` of ``base``, with ``transform`` applied to each sample's input.
+
+**Details**
+
+```text
+A sample is read from ``base`` (with whatever transform ``base`` already
+applies) and only its first element is transformed; targets and any
+other elements pass through unchanged, and tuples, named tuples and
+lists keep their type. ``base`` itself — its ``transform``, labels and
+order — is never modified, so a training view with a random
+augmentation and an evaluation view with a fixed transform can share one
+base and be read alternately or from DataLoader workers. ``indices``
+are the view's sample ids in ``base``; ``dataset`` aliases ``base`` like
+``torch.utils.data.Subset``, and ``classes`` forwards the base's class
+names. Dict samples are rejected: which entry is the input is ambiguous.
+```
+
+##### `nnx.preprocessing.SplitView.dataset`
+
+```python
+property nnx.preprocessing.SplitView.dataset
+```
+
+No public description is currently available.
+
+##### `nnx.preprocessing.SplitView.classes`
+
+```python
+property nnx.preprocessing.SplitView.classes
+```
+
+The base dataset's class names (dataset-wide, like its labels).
+
+##### `nnx.preprocessing.SplitView.reconstructible`
+
+```python
+property nnx.preprocessing.SplitView.reconstructible
+```
+
+Whether the transform can be rebuilt from :meth:`state` alone.
+
+##### `nnx.preprocessing.SplitView.state`
+
+```python
+nnx.preprocessing.SplitView.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.preprocessing.describe_transform`
+
+```python
+nnx.preprocessing.describe_transform(transform: 'Optional[Callable[..., Any]]') -> 'Optional[dict[str, Any]]'
+```
+
+How a view's transform can be rebuilt: a ``Standardizer`` from its state (by digest); any other callable is runtime-only and must be registered again — passed to the view anew — to reconstruct it.
+
+
+#### `nnx.preprocessing.PreprocessingError`
+
+```python
+class nnx.preprocessing.PreprocessingError
+```
+
+Preprocessing that cannot be fitted, loaded or applied as declared.
 
 
 ## 3. Params
@@ -5681,7 +5893,7 @@ No public description is currently available.
 #### `nnx.nn.dataset.nn_dataset.NNDataset`
 
 ```python
-class nnx.nn.dataset.nn_dataset.NNDataset(*, ds_class: 'type[VisionDataset]', root_dir: 'str' = './data', download: 'bool' = True, transform: 'Optional[Callable]' = None, batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.1, seed: 'Optional[int]' = None) -> 'None'
+class nnx.nn.dataset.nn_dataset.NNDataset(*, ds_class: 'type[VisionDataset]', root_dir: 'str' = './data', download: 'bool' = True, transform: 'Optional[Callable]' = None, batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.1, seed: 'Optional[int]' = None, train_transform: 'Optional[Callable]' = None, eval_transform: 'Optional[Callable]' = None) -> 'None'
 ```
 
 Vision dataset wrapper. `val_proportion` carves a validation slice out of the source `train=True` split (NOT out of the test split, which stays untouched for final evaluation).
@@ -5703,6 +5915,20 @@ the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
 instantiated — zero never disables a split; ``val_proportion=0.0`` does
 (``val_loader`` is then ``None`` and the resolved val size is a
 placeholder ``1``).
+
+``transform`` is handed to both torchvision factories and applies to
+every split. Split transforms (FEAT-018): ``train_transform`` and
+``eval_transform`` add a per-split input transform on top of it — e.g. a
+random augmentation for training and a fixed resize for validation and
+test. Each split then becomes a ``nnx.preprocessing.SplitView`` over
+the untouched base dataset: targets pass through, the base
+``transform`` / labels / order never change, and views are safe to read
+alternately and from DataLoader workers. ``input_dim`` is probed through
+``eval_transform`` when one is set. Both default to ``None`` (the
+existing single-transform behavior, plain ``Subset`` splits); ``state()``
+gains ``train_transform`` / ``eval_transform`` descriptions only when
+set — runtime callables are recorded by name and must be passed again
+to rebuild the dataset.
 ```
 
 
@@ -5746,7 +5972,7 @@ raises ``ValueError`` at construction. The caller's masks are only read.
 #### `nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset`
 
 ```python
-class nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset(*, df: 'pd.DataFrame', feature_cols: 'list[str]', target_col: 'str', batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.15, test_proportion: 'float' = 0.15, name_override: 'Optional[str]' = None, feature_dtype: 'torch.dtype' = torch.float32, target_dtype: 'Optional[torch.dtype]' = None, seed: 'Optional[int]' = None, split: 'Optional[SplitManifest]' = None, id_col: 'Optional[str]' = None, source_identity: 'Optional[Union[IdentityRef, str]]' = None) -> 'None'
+class nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset(*, df: 'pd.DataFrame', feature_cols: 'list[str]', target_col: 'str', batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.15, test_proportion: 'float' = 0.15, name_override: 'Optional[str]' = None, feature_dtype: 'torch.dtype' = torch.float32, target_dtype: 'Optional[torch.dtype]' = None, seed: 'Optional[int]' = None, split: 'Optional[SplitManifest]' = None, id_col: 'Optional[str]' = None, source_identity: 'Optional[Union[IdentityRef, str]]' = None, standardize: 'Union[bool, Standardizer]' = False) -> 'None'
 ```
 
 Wrap a pandas DataFrame as train/val/test DataLoaders.
@@ -5786,7 +6012,10 @@ and a non-finite target raise ``ValueError`` naming the columns and
 dtypes; so does a finite value that overflows a narrower floating /
 complex ``feature_dtype`` or floating ``target_dtype`` during conversion.
 All checks, the classification label check included, run before the
-split, so a rejection leaves the DataFrame and the global RNG untouched.
+split, so a rejection leaves the DataFrame and the global RNG untouched
+(the one exception: with ``standardize``, a standardized feature that
+overflows ``feature_dtype`` can only be detected after the split, once
+the training statistics exist).
 
 Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
 (``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
@@ -5803,6 +6032,20 @@ validation or test membership gives a ``None`` loader. ``seed``,
 at their defaults; the train loader still shuffles, and validation /
 test follow the manifest's order. ``state()`` gains ``split`` (the
 manifest digest) only then.
+
+Train-only standardization (FEAT-018): ``standardize=True`` fits a
+``nnx.preprocessing.Standardizer`` on the training split's rows of the
+feature columns only — after the split, so validation and test values
+never reach the statistics — and applies those frozen statistics to
+every split. ``standardize=<fitted Standardizer>`` reuses one without
+refitting; its columns must equal ``feature_cols`` (same order) and its
+dtype ``feature_dtype``, checked before the split. Either way the
+standardizer in use is ``ds.standardizer`` (save it to serve the model).
+Standardizing needs a floating ``feature_dtype`` and unique
+``feature_cols``; the raw features are never converted, targets are never
+transformed, and the split membership (and RNG draw) is the same as
+without standardization. ``state()`` gains ``standardizer`` (its digest)
+only then.
 ```
 
 

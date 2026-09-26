@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision.datasets import VisionDataset
 
 from ..._validation import require_batch_sizes
+from ...preprocessing import SplitView, describe_transform
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -33,6 +34,20 @@ class NNDataset(NNDatasetBase):
     instantiated — zero never disables a split; ``val_proportion=0.0`` does
     (``val_loader`` is then ``None`` and the resolved val size is a
     placeholder ``1``).
+
+    ``transform`` is handed to both torchvision factories and applies to
+    every split. Split transforms (FEAT-018): ``train_transform`` and
+    ``eval_transform`` add a per-split input transform on top of it — e.g. a
+    random augmentation for training and a fixed resize for validation and
+    test. Each split then becomes a ``nnx.preprocessing.SplitView`` over
+    the untouched base dataset: targets pass through, the base
+    ``transform`` / labels / order never change, and views are safe to read
+    alternately and from DataLoader workers. ``input_dim`` is probed through
+    ``eval_transform`` when one is set. Both default to ``None`` (the
+    existing single-transform behavior, plain ``Subset`` splits); ``state()``
+    gains ``train_transform`` / ``eval_transform`` descriptions only when
+    set — runtime callables are recorded by name and must be passed again
+    to rebuild the dataset.
     """
 
     ds_class: type[VisionDataset]
@@ -48,6 +63,10 @@ class NNDataset(NNDatasetBase):
     # back to the global torch RNG (the pre-fix behavior). Mirrors the
     # NNPreferenceDataset contract that the seeded-split family already used.
     seed: Optional[int] = None
+    # FEAT-018: per-split input transforms on top of `transform` (None keeps
+    # the single shared transform and plain Subset splits).
+    train_transform: Optional[Callable] = None
+    eval_transform: Optional[Callable] = None
 
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
@@ -74,6 +93,13 @@ class NNDataset(NNDatasetBase):
         # every unseeded split bit-identical and deaf to torch.manual_seed.
         gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
         train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size], generator=gen)
+        split_views = self.train_transform is not None or self.eval_transform is not None
+        if split_views:
+            # Independent views over the untouched base datasets; the random
+            # split above (and its RNG draw) is unchanged.
+            train_dataset = SplitView(full_train_dataset, train_dataset.indices, transform=self.train_transform)
+            val_dataset = SplitView(full_train_dataset, val_dataset.indices, transform=self.eval_transform)
+            test_dataset = SplitView(test_dataset, range(len(test_dataset)), transform=self.eval_transform)
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 
@@ -81,6 +107,8 @@ class NNDataset(NNDatasetBase):
         # yield PIL Images without `transform`, and everything downstream
         # (input_dim inference, batching) needs tensors.
         sample = full_train_dataset[0][0]
+        if self.eval_transform is not None:
+            sample = self.eval_transform(sample)  # what the model sees at evaluation
         if not hasattr(sample, "shape"):
             raise ValueError(
                 f"{self.ds_class.__name__} samples have no .shape (got {type(sample).__name__}) — "
@@ -124,7 +152,7 @@ class NNDataset(NNDatasetBase):
 
         object.__setattr__(self, "output_dim", len(full_train_dataset.classes))
 
-        state = dict(
+        state: dict[str, Any] = dict(
             name=self.name,
             input_dim=self.input_dim,
             output_dim=self.output_dim,
@@ -134,5 +162,11 @@ class NNDataset(NNDatasetBase):
             val_batch_size=f"{self.batch_sizes[1] if len(val_dataset) > 0 else 0:,}",
             test_batch_size=f"{self.batch_sizes[2]:,}",
         )
+
+        if split_views:
+            if self.train_transform is not None:
+                state["train_transform"] = describe_transform(self.train_transform)
+            if self.eval_transform is not None:
+                state["eval_transform"] = describe_transform(self.eval_transform)
 
         object.__setattr__(self, "_state", state)
