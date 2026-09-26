@@ -63,6 +63,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "optimizers",
         "paradigms",
         "prediction",
+        "preprocessing",
         "provenance",
         "peft",
         "prune",
@@ -105,3 +106,11 @@ def test_data_splits_api_is_public_and_complete():
 
     assert {"plan_split", "SplitManifest", "SplitIndices", "SplitError", "FORMAT"} <= set(data_splits.__all__)
     assert all(getattr(data_splits, name, None) is not None for name in data_splits.__all__)
+
+
+def test_preprocessing_api_is_public_and_complete():
+    from nnx import preprocessing
+
+    expected = {"Standardizer", "SplitView", "describe_transform", "PreprocessingError", "FORMAT"}
+    assert expected <= set(preprocessing.__all__)
+    assert all(getattr(preprocessing, name, None) is not None for name in preprocessing.__all__)

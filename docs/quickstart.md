@@ -516,6 +516,31 @@ an empty validation or test split gives a `None` loader, and without `split=`
 the random split is unchanged. See
 [Concepts §13.3](concepts.md#133-reproducible-splits-group-time-and-stratified).
 
+### 2.17. Train-only preprocessing and inference reload
+
+Fit feature statistics on the training rows only, then serve the model with
+the same frozen statistics:
+
+```python
+from nnx.preprocessing import Standardizer
+
+dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="label",
+                           seed=0, standardize=True)       # fits on the training split only
+run = model.train(params=NNTrainParams(n_epochs=5, train_loader=dataset.train_loader, ...))
+dataset.standardizer.save("standardizer.json")          # float64 statistics + schema, as JSON
+
+standardizer = Standardizer.load("standardizer.json")    # later: reload, never refit
+prediction = model.predict(standardizer.transform(new_rows[["age", "income"]]))
+```
+
+`NNModel.predict` takes **prepared** features, the same space the model was
+trained on. Apply the reloaded standardizer exactly once to raw rows; a second
+pass would standardize twice. `transform` raises before inference on missing
+or reordered columns, a width mismatch and non-finite values. For image data,
+`NNDataset(train_transform=..., eval_transform=...)` gives training and
+evaluation their own transforms. See
+[Concepts §13.4](concepts.md#134-preprocessing-raw-and-transformed-views).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

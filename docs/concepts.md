@@ -1184,6 +1184,69 @@ dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="la
 
 See `examples/split_replay.py`.
 
+### 13.4. Preprocessing: raw and transformed views
+
+Statistics fitted on every row leak held-out values into training.
+`nnx.preprocessing` (FEAT-018) fits on the training membership only and keeps
+the raw data untouched.
+
+- **Train-only fit.** `Standardizer.fit(source, rows=..., columns=...)`
+  requires the training rows as integer positions and reads no other row
+  (DataFrames through `iloc`, tensors and arrays by index, and any
+  row-indexable source item by item). Statistics are the float64 population
+  mean and standard deviation; a constant column (all training values
+  equal) keeps that exact value as its mean and gets scale 1. The default
+  `membership` is a digest of the positions; pass a `SplitManifest` or an
+  identity to name it instead. `NNTabularDataset(standardize=True)` fits on
+  its training split after the split (random or `split=`, with the same
+  membership and RNG draw as without it) and exposes `ds.standardizer`.
+  `standardize=<fitted Standardizer>` applies one without refitting; its
+  columns must equal `feature_cols` and its dtype `feature_dtype`, which is
+  checked before the split. Only the training rows of the feature columns
+  are read; the raw features are never converted.
+- **Raw vs transformed views.** The source DataFrame is never modified, and
+  each loader holds prepared features. `NNModel.predict` takes prepared
+  features, so at inference apply the reloaded standardizer exactly once:
+  `model.predict(standardizer.transform(raw_rows))`.
+- **Declared schema.** `columns` fixes the names and their order, `dtype`
+  the output dtype. `transform` accepts a DataFrame holding the fitted
+  columns in the fitted order (other columns are ignored), or a 2-D tensor or
+  array of the fitted width. Missing or reordered columns, a width mismatch,
+  non-numeric values and non-finite values raise `PreprocessingError` before
+  a model sees the data. Column labels are `str` or `int`, since the schema
+  is JSON. Calling the standardizer on one row gives exactly the batch result.
+  A pandas `Series` row is checked by name; any other 1-D row is positional.
+- **Schema identity.** Statistics, schema and the fit-membership identity
+  are primitive JSON (`nnx.preprocessing/1`) that reloads float64-exact.
+  `digest()` identifies them, and loading rejects bad lengths, non-finite
+  values and non-positive scales.
+  `ExperimentManifest.for_model(..., preprocessing=standardizer)` (§4.4)
+  records the fitted state, never recomputed statistics.
+- **Split transforms and target preservation.**
+  `NNDataset(train_transform=..., eval_transform=...)` wraps each split in a
+  `SplitView` over the base dataset. The base `transform` still applies
+  first; the view's transform then applies to the input only, so targets
+  and sample ids (`view.indices`) pass through unchanged, and tuples, named
+  tuples and lists keep their type (`view.dataset` aliases the base, as for
+  `Subset`, and `view.classes` forwards the base's class names). Dict
+  samples are rejected, because which entry is the input is ambiguous. A
+  `Standardizer` also works as a view transform on single rows. The base dataset's
+  own `transform`, labels and order are never modified, so a random training
+  augmentation cannot leak into evaluation.
+- **Worker behaviour.** Views hold no mutable state, so alternate training /
+  evaluation reads and multi-worker `DataLoader`s return the same evaluation
+  samples as single-process loading. A random training transform draws from
+  each worker's own torch RNG, seeded by the `DataLoader` as usual.
+- **Reconstruction.** A `Standardizer` rebuilds from its state. Any other
+  transform is a runtime callable: `describe_transform` / `SplitView.state()`
+  record it by qualified name with `reconstructible: false`, so it must be
+  registered (passed) again to rebuild the view.
+- **Defaults are unchanged.** Without these options datasets behave as
+  before, and `state()` gains `standardizer` / `train_transform` /
+  `eval_transform` only when they are used.
+
+See `examples/preprocessing_offline.py`.
+
 ## 14. Resuming training
 
 ```python

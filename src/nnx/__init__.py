@@ -35,6 +35,7 @@ from . import (
     objectives,
     optimizers,
     prediction,
+    preprocessing,
     provenance,
     prune,
     tasks,
@@ -356,6 +357,8 @@ __all__ = [
     "provenance",
     # Reproducible group, time and stratified splits (FEAT-017)
     "data_splits",
+    # Train-fitted preprocessing and split transforms (FEAT-018)
+    "preprocessing",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

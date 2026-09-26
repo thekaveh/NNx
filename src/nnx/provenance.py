@@ -192,24 +192,30 @@ def _is_split_manifest(value: Any) -> bool:
     return isinstance(value, SplitManifest)
 
 
+def _ref(value: Any, what: str, *, allow_split: bool = False) -> IdentityRef:
+    """One identity from an ``IdentityRef``, a declared id string (never
+    verified), ``None`` (unknown) or — when allowed — a ``SplitManifest``
+    (its digest). Shared by manifests and preprocessing."""
+    if isinstance(value, IdentityRef):
+        return value
+    if value is None:
+        return IdentityRef.unknown()
+    if isinstance(value, str):
+        return IdentityRef.declared(value)  # a supplied id is declared, never verified
+    if allow_split and _is_split_manifest(value):
+        return value.identity()  # FEAT-017: the plan's digest, the same after replay
+    accepted = "an IdentityRef, a declared id string or None" + (
+        ", or a nnx.data_splits.SplitManifest" if allow_split else ""
+    )
+    raise TypeError(f"{what} must be {accepted}, got {value!r}")
+
+
 def _refs(values: Optional[Mapping[str, Any]], *, owner: str) -> dict[str, IdentityRef]:
     out: dict[str, IdentityRef] = {}
     for name, value in (values or {}).items():
         if not isinstance(name, str) or not name:
             raise TypeError(f"{owner} names must be non-empty strings, got {name!r}")
-        if isinstance(value, IdentityRef):
-            out[name] = value
-        elif value is None:
-            out[name] = IdentityRef.unknown()
-        elif isinstance(value, str):
-            out[name] = IdentityRef.declared(value)  # a supplied id is declared, never verified
-        elif owner == "splits" and _is_split_manifest(value):
-            out[name] = value.identity()  # FEAT-017: the plan's digest, the same after replay
-        else:
-            accepted = "an IdentityRef, a declared id string or None" + (
-                ", or a nnx.data_splits.SplitManifest" if owner == "splits" else ""
-            )
-            raise TypeError(f"{owner}[{name!r}] must be {accepted}, got {value!r}")
+        out[name] = _ref(value, f"{owner}[{name!r}]", allow_split=owner == "splits")
     return dict(sorted(out.items()))
 
 
@@ -334,13 +340,17 @@ class ExperimentManifest:
         splits: Optional[Mapping[str, Any]] = None,
         objective: Optional[Mapping[str, Any]] = None,
         config: Optional[Mapping[str, Any]] = None,
+        preprocessing: Any = None,
     ) -> ExperimentManifest:
         """A manifest from an existing model's declarations: its task and
         label order (FEAT-002), its model descriptor and built-in net params
         (FEAT-006), and — when given — the training configuration
         (``NNTrainParams.state()`` without ``n_epochs`` and the resume
-        lineage, which describe an attempt; loaders are never read). Builds
-        no model and iterates no loader."""
+        lineage, which describe an attempt; loaders are never read) and a
+        fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as
+        ``config["preprocessing"]``: its schema, frozen statistics and
+        fit-membership identity, never recomputed. Builds no model and
+        iterates no loader."""
         params = model.params
         task = getattr(params, "task", None)
         model_state = dict(params.state())
@@ -356,6 +366,14 @@ class ExperimentManifest:
             for key in _ATTEMPT_ONLY_TRAIN_KEYS:
                 train_state.pop(key, None)
             merged.setdefault("train", train_state)
+        if preprocessing is not None:
+            from .preprocessing import Standardizer
+
+            if not isinstance(preprocessing, Standardizer):
+                raise TypeError(f"preprocessing must be a fitted nnx.preprocessing.Standardizer, got {preprocessing!r}")
+            if "preprocessing" in merged:
+                raise ValueError("config already has a 'preprocessing' entry; pass it once")
+            merged["preprocessing"] = preprocessing.state()
         return cls(
             task=None if task is None else task.state(),
             labels=None if task is None or task.labels is None else tuple(task.labels),
