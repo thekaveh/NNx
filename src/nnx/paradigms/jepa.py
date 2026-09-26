@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import copy
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Optional, cast
 
 import torch
@@ -38,6 +38,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .._step_helpers import finalize_step
+from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
@@ -439,4 +440,42 @@ def jepa_train_step_factory(
             error=loss_val,
         )
 
-    return step
+    return JEPATrainStep(step, target_encoder, ema_momentum)
+
+
+class JEPATrainStep:
+    """The I-JEPA step returned by :func:`jepa_train_step_factory`.
+
+    Callable as a ``TrainStepFn`` and a checkpointable component
+    (FEAT-005) named ``"jepa.target_encoder"``: every checkpoint's
+    training state carries the EMA target encoder's weights, and a stateful
+    warm resume restores them, so a run split at an epoch boundary
+    continues with the same target encoder an uninterrupted run would
+    have. The component is required — resuming from a current stateful
+    checkpoint written without it fails before anything is restored, while a
+    checkpoint written before component state existed resumes with a fresh
+    target copy and a warning.
+    """
+
+    def __init__(self, step: TrainStepFn, target_encoder: nn.Module, ema_momentum: float) -> None:
+        self._step = step
+        self.target_encoder = target_encoder
+        self.ema_momentum = ema_momentum
+
+    def __call__(self, ctx: TrainStepContext) -> NNEvaluationDataPoint:
+        return self._step(ctx)
+
+    def component_spec(self) -> ComponentSpec:
+        return ComponentSpec("jepa.target_encoder", version=1)
+
+    def component_state(self) -> dict[str, Any]:
+        # Detached live tensors, not copies: checkpoints serialize them at
+        # once, and a restore snapshots them with its own deep copy.
+        return {"target_encoder": dict(self.target_encoder.state_dict()), "ema_momentum": self.ema_momentum}
+
+    def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
+        self.target_encoder.load_state_dict(state["target_encoder"])
+        # The EMA copy stays frozen and in eval mode after a restore.
+        self.target_encoder.eval()
+        for p in self.target_encoder.parameters():
+            p.requires_grad = False

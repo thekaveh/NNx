@@ -394,3 +394,76 @@ def test_epoch_text_save_failure_keeps_committed_history(tmp_path, monkeypatch):
     reloaded = NNRun.load(captured["run_id"])
     assert reloaded is not None
     assert {idp.epoch_idx for idp in reloaded.idps} == {0}
+
+
+def test_trainer_final_last_keeps_every_component_and_resumes_the_continuous_states(tmp_path, monkeypatch):
+    """FEAT-005: a completed two-optimizer Trainer run's final, post-callback
+    LAST generation carries both optimizers, both schedulers and every
+    component, and resuming from it continues where the run stopped."""
+    from nnx import EarlyStopping, NNParamGroupSpec, NNTrainerParams, Trainer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def step(ctx):
+        ctx.model.net.train()
+        for optimizer in ctx.optimizers.values():
+            optimizer.zero_grad()
+        (x,), y = ctx.model.net.unpack_batch(ctx.batch)
+        loss = ctx.model.loss_fn(ctx.model.net(x), y)
+        loss.backward()
+        for optimizer in ctx.optimizers.values():
+            optimizer.step()
+        from nnx import NNEvaluationDataPoint
+
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+    def params(n_epochs, **resume):
+        builder = (
+            NNTrainerParams.builder()
+            .n_epochs(n_epochs)
+            .train_loader(_loader())
+            .val_loader(_loader())
+            .optimizer(
+                "a",
+                NNOptimParams.builder()
+                .adam(max_lr=1e-2)
+                .param_groups([NNParamGroupSpec(name_pattern="layers.0.*")])
+                .build(),
+            )
+            .optimizer(
+                "b",
+                NNOptimParams.builder()
+                .sgd(max_lr=0.05)
+                .param_groups([NNParamGroupSpec(name_pattern="layers.1.*")])
+                .build(),
+            )
+        )
+        if resume:
+            builder.resume_from(**resume)
+        return builder.build()
+
+    class _ShiftOnTrainEnd(Callback):
+        """Mutates weight *values* in on_train_end (no topology change)."""
+
+        def on_train_end(self, ctx) -> None:  # noqa: ANN001 - Callback context
+            with torch.no_grad():
+                next(ctx.model.net.parameters()).add_(1.0)
+
+    stopper = EarlyStopping(monitor="val_edp.loss", patience=10)
+    model = _tiny_model()
+    run = Trainer(model).train(params=params(2), trainer_step_fn=step, callbacks=[stopper, _ShiftOnTrainEnd()])
+    last, state = NNCheckpoint.load_with_training_state(run=run.id, type=Checkpoints.LAST)
+    assert last is not None and state is not None
+    for key, value in model.net.state_dict().items():  # the post-callback generation
+        assert torch.equal(last.net_state[key], value), key
+    assert set(state["optimizers"]) == set(state["schedulers"]) == {"a", "b"}
+    assert state["components"]["early_stopping"]["state"] == stopper.component_state()
+    assert state["completed_epoch"] == 1
+
+    resumed_stopper = EarlyStopping(monitor="val_edp.loss", patience=10)
+    resumed = Trainer(_tiny_model()).train(
+        params=params(1, run_id=run.id), trainer_step_fn=step, callbacks=[resumed_stopper]
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.restored_components == ("early_stopping",)
+    assert resumed.idps[0].epoch_idx == 2

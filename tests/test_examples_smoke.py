@@ -55,6 +55,7 @@ def test_representative_examples_run_end_to_end(name, tmp_path):
 BOUNDED_EXAMPLE_HELPERS = [
     ("01_synthetic_classification.py", "native_nll_workflow"),
     ("02_resume_training.py", "amp_resume_compatibility"),
+    ("02_resume_training.py", "callback_continuation"),
     ("02_resume_training.py", "checkpoint_probe_first_fit"),
     ("02_resume_training.py", "iterable_graph_resume"),
     ("02_resume_training.py", "overwrite_best_recovery"),
@@ -64,6 +65,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("07_lora_finetuning.py", "peft_eval_injection"),
     ("07_lora_finetuning.py", "peft_preconverted_base"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
+    ("09_gan_with_trainer.py", "two_optimizer_resume"),
     ("11_tinystories_lm.py", "manual_attention_lm_example"),
     ("11_tinystories_lm.py", "lm_config_rejects_nonfinite"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),

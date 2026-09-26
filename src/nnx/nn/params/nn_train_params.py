@@ -13,6 +13,14 @@ if TYPE_CHECKING:
     from ...optimizers import NNOptimFactoryParams
 
 
+RESUME_MODES = ("auto", "stateful", "weights_only")
+
+
+def _validate_resume_mode(mode: object, owner: str) -> None:
+    if mode not in RESUME_MODES:
+        raise ValueError(f"{owner}.resume_mode must be one of {', '.join(repr(m) for m in RESUME_MODES)}, got {mode!r}")
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNTrainParams:
     """Training configuration.
@@ -75,6 +83,13 @@ class NNTrainParams:
     resume_from_checkpoint: Optional[str] = field(repr=False, default="last")
     parent_run_id: Optional[str] = field(repr=False, default=None)
     overwrite_existing: bool = field(repr=False, default=False)
+    # FEAT-005 — how a resume restores state (runtime-only, never serialized):
+    # "auto" (default) restores the complete training state when the
+    # checkpoint has it and falls back to its weights with a warning;
+    # "stateful" requires the training state and fails before restoring
+    # anything when the checkpoint is weights-only; "weights_only" restores
+    # only the model weights and starts every component fresh.
+    resume_mode: str = field(repr=False, default="auto")
 
     def __post_init__(self):
         # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in the train
@@ -99,6 +114,7 @@ class NNTrainParams:
             raise ValueError("NNTrainParams.data_id must be non-empty when provided")
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
+        _validate_resume_mode(self.resume_mode, "NNTrainParams")
 
     def with_train_loader(self, value: Iterable[Any]) -> NNTrainParams:
         return replace(self, train_loader=value)

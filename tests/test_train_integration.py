@@ -1883,3 +1883,279 @@ def test_grad_scaler_disabled_on_cpu_or_without_mixed_precision(mixed_precision,
     with patch.object(torch.amp, "GradScaler") as modern:
         assert NNModel._build_grad_scaler(fake) is None  # type: ignore[arg-type]
     modern.assert_not_called()
+
+
+# --- FEAT-005: component state is tied to one checkpoint generation --------
+
+
+class _EpochCounter(Callback):
+    """A callback component whose state is the number of finished epochs."""
+
+    def __init__(self):
+        self.epochs = 0
+
+    def component_spec(self):
+        from nnx import ComponentSpec
+
+        return ComponentSpec("epoch_counter")
+
+    def component_state(self):
+        return {"epochs": self.epochs}
+
+    def load_component_state(self, state, *, version):
+        self.epochs = state["epochs"]
+
+    def on_epoch_end(self, ctx):
+        self.epochs += 1
+
+
+def _component_epochs(state) -> int:
+    return state["components"]["epoch_counter"]["state"]["epochs"]
+
+
+@pytest.mark.parametrize("fail_at", ["checkpoint", "compat-sidecar"])
+def test_component_state_never_mixes_checkpoint_generations(tmp_path, monkeypatch, fail_at):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, None, n_epochs=2), callbacks=[_EpochCounter()]
+    )
+    checkpoint, state = NNCheckpoint.load_with_training_state(run.id, Checkpoints.LAST)
+    assert checkpoint is not None and state is not None
+    assert checkpoint.idp.epoch_idx == 1 and _component_epochs(state) == 2
+
+    newer = replace(checkpoint, idp=replace(checkpoint.idp, epoch_idx=7))
+    original_replace = os.replace
+    suffix = "last.pt" if fail_at == "checkpoint" else "last.pt.opt.pt"
+
+    def interrupted(src, dst):
+        if os.fspath(dst).endswith(os.sep + suffix):
+            raise KeyboardInterrupt
+        original_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        newer.save(
+            run.id,
+            Checkpoints.LAST,
+            optimizer_state=state["optimizer"],
+            components={"epoch_counter": {"version": 1, "required": True, "state": {"epochs": 99}}},
+        )
+    monkeypatch.setattr(os, "replace", original_replace)
+
+    reloaded, reloaded_state = NNCheckpoint.load_with_training_state(run.id, Checkpoints.LAST)
+    assert reloaded is not None and reloaded_state is not None
+    # Either the old pair or the new pair — never a model from one generation
+    # with component state from the other.
+    expected = (1, 2) if fail_at == "checkpoint" else (7, 99)
+    assert (reloaded.idp.epoch_idx, _component_epochs(reloaded_state)) == expected
+
+
+def test_legacy_sidecars_without_component_state_resume_with_fresh_components(tmp_path, monkeypatch):
+    from nnx.nn.callbacks import EarlyStopping
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, val_loader = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, val_loader, n_epochs=1), callbacks=[EarlyStopping()]
+    )
+    checkpoint = NNCheckpoint.load(run.id, Checkpoints.LAST)
+    assert checkpoint is not None
+    sidecar = tmp_path / "runs" / run.id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    state = torch.load(sidecar, weights_only=True)
+    for key in ("components", "optimizers", "optimizer_types", "schedulers", "scheduler_types"):
+        state.pop(key)
+    state["nnx_training_state_version"] = 3  # as written before FEAT-005
+    torch.save(state, sidecar)
+
+    resumed_params = _train_params(train_loader, val_loader, n_epochs=1)
+    from dataclasses import replace
+
+    with pytest.warns(RuntimeWarning, match="predates component state"):
+        resumed = NNModel(net_params=net_params, params=model_params).train(
+            params=replace(resumed_params, resume_from_run_id=run.id), callbacks=[EarlyStopping()]
+        )
+    assert resumed.resume_status is not None
+    assert resumed.resume_status.mode == "stateful" and resumed.resume_status.fresh_components == ("early_stopping",)
+
+
+def test_a_failing_component_restore_rolls_back_the_model_and_every_component(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from nnx import ComponentSpec
+
+    class Flaky:
+        def __init__(self, name, fail):
+            self.spec, self.value, self.fail = ComponentSpec(name), 0, fail
+
+        def component_spec(self):
+            return self.spec
+
+        def component_state(self):
+            return {"value": self.value}
+
+        def load_component_state(self, state, *, version):
+            self.value = state["value"]
+            if self.fail:
+                self.fail = False
+                raise RuntimeError(f"{self.spec.name} load failed")
+
+    class Bump(Callback):
+        def __init__(self, components):
+            self.components = components
+
+        def on_epoch_end(self, ctx):
+            for component in self.components:
+                component.value += 1
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    original = [Flaky("first", False), Flaky("second", False)]
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, None, n_epochs=1), callbacks=[Bump(original)], components=original
+    )
+
+    model = NNModel(net_params=net_params, params=model_params)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    fresh = [Flaky("first", False), Flaky("second", True)]
+    fresh[0].value, fresh[1].value = -5, -6
+    with pytest.raises(RuntimeError, match="second load failed"):
+        model.train(
+            params=replace(_train_params(train_loader, None, n_epochs=1), resume_from_run_id=run.id),
+            components=fresh,
+        )
+    assert [c.value for c in fresh] == [-5, -6]  # each equals its pre-call snapshot
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+def test_a_missing_required_component_fails_before_anything_is_restored(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from nnx import ComponentRestoreError
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, None, n_epochs=1)
+    )
+    model = NNModel(net_params=net_params, params=model_params)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(ComponentRestoreError, match="missing required component 'epoch_counter'"):
+        model.train(
+            params=replace(_train_params(train_loader, None, n_epochs=1), resume_from_run_id=run.id),
+            components=[_EpochCounter()],
+        )
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+def test_weights_only_resume_needs_no_shared_one_cycle_horizon(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, None, n_epochs=1)
+    )
+    one_cycle = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=0.1,
+        total_steps=None,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+    )
+    base = replace(_train_params(train_loader, None, n_epochs=2), scheduler=one_cycle, resume_from_run_id=run.id)
+    with pytest.raises(ValueError, match="requires scheduler.total_steps"):
+        NNModel(net_params=net_params, params=model_params).train(params=base)
+    # A weights-only warm start builds a fresh schedule over its own epochs.
+    warm = NNModel(net_params=net_params, params=model_params).train(params=replace(base, resume_mode="weights_only"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "weights_only"
+    assert [idp.epoch_idx for idp in warm.idps][-1] == 2
+
+
+def test_resume_checkpoint_names_keep_the_tag_typo_error():
+    from nnx.nn.nn_model import _resume_checkpoint_type
+
+    assert _resume_checkpoint_type("last") is Checkpoints.LAST
+    assert _resume_checkpoint_type("custom_e3") == "custom_e3"  # a ModelCheckpoint file stem
+    for typo in ("LAST", "Best", "custom", "custom_e", "../last"):
+        with pytest.raises(ValueError, match="must be a Checkpoints tag .* or a ModelCheckpoint file stem"):
+            _resume_checkpoint_type(typo)
+
+
+def test_early_stopping_monitor_mismatch_fails_before_any_callback_or_restore(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from nnx import ComponentRestoreError
+    from nnx.nn.callbacks import EarlyStopping
+
+    class Spy(Callback):
+        begun = False
+
+        def on_train_begin(self, ctx):
+            Spy.begun = True
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, val_loader = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, val_loader, n_epochs=1), callbacks=[EarlyStopping(monitor="val_edp.loss")]
+    )
+    model = NNModel(net_params=net_params, params=model_params)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(ComponentRestoreError, match="monitor='val_edp.loss'.*monitor='val_edp.error'"):
+        model.train(
+            params=replace(_train_params(train_loader, val_loader, n_epochs=1), resume_from_run_id=run.id),
+            callbacks=[Spy(), EarlyStopping(monitor="val_edp.error")],
+        )
+    assert Spy.begun is False
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+def test_a_reset_hook_that_changes_the_network_does_not_mask_a_failed_restore(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from nnx import ComponentSpec
+
+    class Breaks:
+        def component_spec(self):
+            return ComponentSpec("breaks")
+
+        def component_state(self):
+            return {"ok": True}
+
+        def load_component_state(self, state, *, version):
+            raise RuntimeError("breaks cannot load")
+
+    class Rewire(Callback):
+        """Swaps a layer at on_train_begin, as QAT preparation does."""
+
+        def on_train_begin(self, ctx):
+            ctx.model.net.layers[0] = torch.nn.Sequential(ctx.model.net.layers[0])
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+    run = NNModel(net_params=net_params, params=model_params).train(
+        params=_train_params(train_loader, None, n_epochs=1), components=[Breaks()]
+    )
+    model = NNModel(net_params=net_params, params=model_params)
+    with pytest.warns(RuntimeWarning, match="model could not be rolled back"):
+        with pytest.raises(RuntimeError, match="breaks cannot load"):
+            model.train(
+                params=replace(_train_params(train_loader, None, n_epochs=1), resume_from_run_id=run.id),
+                callbacks=[Rewire()],
+                components=[Breaks()],
+            )
