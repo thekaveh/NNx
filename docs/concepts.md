@@ -188,7 +188,7 @@ Both `NNModel.train()` and `Trainer.train()` finish with one line such as `Run s
 
 The `runs/best` symlink points at the lowest-error run across all runs in the directory — lowest-loss for paradigm runs whose steps don't produce a supervised error; in a runs root mixing both kinds, the comparison is between unlike metrics (accepted trade-off vs. a `best` pointer paradigm runs could never claim). On Windows without developer mode it's a `POINTER.txt` file instead.
 
-Only a run with a *committed* BEST checkpoint can own the pointer: a real run directory with `run.yaml`, loadable history, a parseable BEST and — under the history protocol — a BEST epoch no later than the committed LAST. `best`, `.leases`, bare reservations and malformed artifacts are never candidates. Overwriting a run (`overwrite_existing=True`) deletes its artifacts and reuses its ID; if that run owned `runs/best`, the best surviving committed run is elected *before* the old artifacts are removed (ties keep the incumbent, then the lexicographically smallest ID), so the pointer never dangles and an emptied replacement is never advertised. The replacement becomes a candidate again only once its own BEST commits; saving its history earlier cannot claim the slot. When no eligible run remains, `runs/best` is absent — readers should treat a missing pointer as "no winner yet", not as an error. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save; election reads other runs without taking their locks.
+Only a run with a *committed* BEST checkpoint can own the pointer: a real run directory with `run.yaml`, loadable history, a parseable BEST and — under the history protocol — a BEST epoch no later than the committed LAST. `best`, `.leases`, bare reservations and malformed artifacts are never candidates. Overwriting a run (`overwrite_existing=True`) deletes its artifacts and reuses its ID; if that run owned `runs/best`, the best surviving committed run is elected *before* the old artifacts are removed (ties keep the incumbent, then the lexicographically smallest ID), so the pointer never dangles and an emptied replacement is never advertised. The replacement becomes a candidate again only once its own BEST commits; saving its history earlier cannot claim the slot. When no eligible run remains, `runs/best` is absent — readers should treat a missing pointer as "no winner yet", not as an error. Runs that select BEST with a named monitor (§6.4) are never candidates: their ranking is not comparable with other runs'. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save; election reads other runs without taking their locks.
 
 Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by the first **finite** value in the order validation error → validation loss → training error → training loss. NaN and ±inf are never used as a comparison baseline — a non-finite validation error falls through to that same epoch's finite validation loss before training data is consulted — and a checkpoint with no finite signal at all scores as unavailable (`+inf`), so it is replaced by the next finite candidate. That also recovers legacy artifacts whose BEST was ranked on a NaN before this rule existed: the stale checkpoint payload is left untouched, and the next finite save takes the pointer.
 
@@ -249,6 +249,8 @@ ctx.should_stop   # writable — set True to break out of training
 ```
 
 Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
+
+`EarlyStopping(monitor=MonitorSpec(...))` tracks a named monitor instead — a declared metric or loss / error on either split, with the rule BEST and plateau scheduling share (§6.4).
 
 `EarlyStopping` is also a checkpointable component (§14.1) named `early_stopping` — numbered `early_stopping.2`, `early_stopping.3`, … in callback order when a run has several, or given an explicit unique name with `EarlyStopping(name=...)`: its best value, patience counter and selected monitor are written into every checkpoint's training state, and a stateful warm resume restores them after `on_train_begin` has reset the callback, so a run split at an epoch boundary stops at the same epoch as the uninterrupted run. The component is optional — resuming from a checkpoint without it keeps the fresh patience — and a resumed callback configured with a different `monitor` or `mode` is reported before anything is restored. `ModelCheckpoint` files are weights-only: they record `training_state_present: false`; pass a file's `<tag>_e<epoch>` stem (e.g. `"custom_e3"`) as `resume_from_checkpoint` to warm-start from its weights, while `resume_mode="stateful"` rejects it before anything is restored.
 
@@ -323,6 +325,8 @@ loss-only control signal from a regression evaluator, set `loss` and leave
 `error` as `None` (the default monitor then tracks the loss), or mirror the
 loss into `error` as example 26 does — never report a regression error as a
 classification accuracy.
+
+A run that declares a named monitor (§6.4) replaces these rules with the monitor's single decision for BEST, `ReduceLROnPlateau` and every `EarlyStopping` given the same spec.
 
 This supports regression and other non-classification validation without
 replacing the training loop. See
@@ -407,6 +411,111 @@ legacy `idps.csv` columns are unchanged. Custom training steps can call
 `model.task_adapter.record(output, target, loss=...)` to write the same
 record the default step writes. Runnable walkthrough:
 [`examples/regression_task.py`](https://github.com/thekaveh/NNx/blob/main/examples/regression_task.py).
+
+### 6.4. Named metrics and monitors
+
+`extra_metrics` callables see only decoded labels, and BEST selection,
+`ReduceLROnPlateau` and `EarlyStopping` each pick their control signal their
+own way. Two opt-in declarations (`nnx.monitors`) make both explicit:
+
+```python
+from nnx import EarlyStopping, MetricSpec, MonitorSpec, NNTrainParams
+
+monitor = MonitorSpec(metric="nll", split="val", min_delta=0.01)
+params = NNTrainParams(
+    n_epochs=20, train_loader=train, val_loader=val,
+    metrics=[MetricSpec("nll"), MetricSpec("brier"), MetricSpec("accuracy")],
+    monitor=monitor,                      # BEST + ReduceLROnPlateau
+)
+model.train(params=params, callbacks=[EarlyStopping(monitor=monitor, patience=5)])
+```
+
+**Metrics.** A `MetricSpec(id, version=1, config={}, name=None)` names a
+*registered* metric and reports it under `name` (the id by default). Each
+registration declares the prediction **input** it receives:
+
+| id | input | value over the full sample |
+|---|---|---|
+| `accuracy`, `f1` (`config={"average": "macro"}`) | `labels` — decoded predictions | fraction correct / F1 |
+| `nll`, `brier` | `probabilities` — softmax over the class axis (categorical), element-wise sigmoid (multilabel) | mean negative log-likelihood / mean Brier score (summed over classes when categorical) |
+| `mae`, `mse` | `continuous` — raw outputs | mean absolute / squared error |
+
+Values are accumulated over **every** valid sample — additive metrics as
+running sums, F1 once over all labels — so a short last batch weighs exactly
+its samples and a metric is never an unweighted mean of batch values.
+`ignore_index` and NaN-masked targets are excluded; multilabel and
+continuous metrics count each valid output as a sample (multilabel labels
+are decoded with the task's threshold, and multilabel F1 needs
+`config={"average": "binary"}` — the positive-decision F1 pooled over every
+output; per-label averaging is not available). `evaluate(loader,
+metrics=...)` computes them over the whole loader, and the default training
+step over the whole training epoch; the values land in the records'
+`metrics` under each name. The input must be one the model can provide —
+probabilities need a categorical (cross-entropy / NLL) or multilabel
+(BCE-with-logits) model, continuous inputs a regression loss or task — and a
+mismatch fails before any batch is read. Custom metrics register with
+`register_metric(id, version, factory, input=..., mode=..., check_config=None)`,
+where `factory(config)` returns an accumulator with `update(target,
+prediction)` and `result()`. A spec never holds code: it round-trips
+through `run.yaml` and `NNRun.load` works without the registration, while
+training with an unregistered `(id, version)` fails before any run is
+reserved and without any metric code running.
+
+**Monitors.** `MonitorSpec(metric="loss", split="val", mode=None,
+min_delta=0.0, on_missing="skip", on_nonfinite="skip")` names the split
+(`"val"` — the whole validation set — or `"train"` — the whole-epoch
+training summary), the metric (`"loss"`, `"error"` or a declared metric's
+name; undeclared names fail at construction), the direction (`None` takes
+the metric's natural one), the minimum improvement and the policies. Its
+`improved(current, best)` is the one rule: the first finite value improves,
+later ones must beat the best by more than `min_delta`, ties never improve,
+a non-finite value never improves. `on_missing="skip"` makes an epoch without
+a value a non-decision (no BEST, no plateau step, not counted toward
+patience); `on_nonfinite="skip"` makes a NaN / ±inf value an epoch without
+improvement; `"error"` raises `MonitorUnavailableError` instead. A monitor
+on the validation split needs a `val_loader`, and a training-split monitor of
+a declared metric needs the default training step — both checked before
+training.
+
+With `NNTrainParams(monitor=...)` the epoch's `MonitorRecord` decides:
+
+- **BEST** — written exactly on the epochs the monitor marks as improved;
+- **`ReduceLROnPlateau`** — rebuilt with the monitor's direction and an
+  absolute `min_delta` threshold and stepped on the monitored value (a
+  non-finite value as a worse one; no step when missing), so its
+  improvement decisions are the monitor's (`NNSchedulerParams.threshold` is
+  then unused);
+- **`EarlyStopping(monitor=spec)`** — given the same spec, it applies the
+  same rule to the same epoch summary.
+
+For validation NLL `[0.8, 0.7, 0.695, 0.71]` with `min_delta=0.01`, all
+three see two improvements (epochs 0 and 1).
+
+**Whole-epoch training summary.** A run that declares metrics or a monitor
+records on each epoch's last idp a `train_summary`: the training loss and
+error averaged with each batch's own denominator (the loss normalization
+weight and the number of scored targets from the default step; for custom
+steps each record is weighted by its `count` or the batch's sample count)
+plus the declared metrics over the full epoch — never the last batch. It
+also records `selection`, the epoch's `MonitorRecord` (monitor identity,
+direction, configuration, value, status `ok` / `missing` / `nonfinite`,
+whether it improved). Both persist through `idps.csv` and the checkpoint
+metadata (pickle and safetensors), and neither is written for runs without
+metrics or a monitor. Callbacks see them on `ctx.idp`; the progress bar
+shows the monitored value; TensorBoard / W&B add `train_epoch/*`,
+`monitor/<split>.<metric>` and `monitor/improved`; and the run chart plots
+the whole-epoch training loss and the monitor series with its improving
+epochs marked.
+
+A named-monitor run ranks BEST by its own monitor, which is not comparable
+with other runs' error / loss, so it is never elected into `runs/best`
+(§4.1). A resumed session is a new run with its own BEST; `EarlyStopping`'s
+patience resumes through its component state (§14.1). `Trainer`
+(`NNTrainerParams.builder().metrics(...).monitor(...)`) supports declared
+validation metrics and training loss / error monitors — its steps are
+custom, so training-split declared metrics are unavailable. Without
+`metrics` / `monitor`, serialization, run ids and every legacy selection
+rule are unchanged.
 
 ## 7. Fine-tuning (transfer learning)
 

@@ -22,9 +22,10 @@ from typing import TYPE_CHECKING, Generic, Optional, TypeVar, Union
 from torch.utils.data import DataLoader
 
 from .._validation import require_count
+from ..monitors import MetricSpec, MonitorSpec
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
-from ..nn.params.nn_train_params import _validate_resume_mode
+from ..nn.params.nn_train_params import _validate_monitoring, _validate_resume_mode
 
 if TYPE_CHECKING:
     from ..optimizers import NNOptimFactoryParams
@@ -138,6 +139,12 @@ class NNTrainerParams:
     parent_run_id: Optional[str] = field(repr=False, default=None)
     resume_mode: str = field(repr=False, default="auto")
 
+    # FEAT-003 declared metrics and monitor, as on NNTrainParams (serialized
+    # only when set). Trainer steps are custom, so training-split named
+    # metrics are unavailable; validation metrics come from evaluate().
+    metrics: tuple[MetricSpec, ...] = ()
+    monitor: Optional[MonitorSpec] = None
+
     def __post_init__(self):
         # Snapshot the configuration containers FIRST so every later check
         # (and every later reader) sees the captured mapping, not the
@@ -169,6 +176,7 @@ class NNTrainerParams:
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainerParams")
+        _validate_monitoring(self, "NNTrainerParams")
         if not self.optims:
             raise ValueError(
                 "NNTrainerParams.optims must have at least one entry — the Trainer constructs one Optimizer per name."
@@ -213,6 +221,10 @@ class NNTrainerParams:
             d["save_phase_checkpoints"] = self.save_phase_checkpoints
         if self.auto_step_schedulers is not True:
             d["auto_step_schedulers"] = self.auto_step_schedulers
+        if self.metrics:
+            d["metrics"] = [spec.state() for spec in self.metrics]
+        if self.monitor is not None:
+            d["monitor"] = self.monitor.state()
         return d
 
     @staticmethod
@@ -229,6 +241,8 @@ class NNTrainerParams:
             resume_from_checkpoint=state.get("parent_checkpoint", "last"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
             auto_step_schedulers=state.get("auto_step_schedulers", True),
+            metrics=tuple(MetricSpec.from_state(m) for m in state.get("metrics") or ()),
+            monitor=MonitorSpec.from_state(state["monitor"]) if state.get("monitor") is not None else None,
         )
 
     @classmethod

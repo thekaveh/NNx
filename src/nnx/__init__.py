@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import components, embeddings, interop, optimizers, prediction, prune, tasks, viz
+from . import components, embeddings, interop, monitors, optimizers, prediction, prune, tasks, viz
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
@@ -63,6 +63,15 @@ from .generation import (
     sample_next_token,
 )
 from .lr_finder import LRFinderResult, lr_finder
+from .monitors import (
+    MetricSpec,
+    MonitorRecord,
+    MonitorSpec,
+    MonitorUnavailableError,
+    register_metric,
+    registered_metrics,
+    unregister_metric,
+)
 from .nn.callbacks import (
     Callback,
     EarlyStopping,
@@ -195,6 +204,14 @@ __all__ = [
     "prediction_from_logits",
     # Checkpointable component state and resume status (FEAT-005)
     "components",
+    "monitors",
+    "MetricSpec",
+    "MonitorSpec",
+    "MonitorRecord",
+    "MonitorUnavailableError",
+    "register_metric",
+    "unregister_metric",
+    "registered_metrics",
     "ComponentSpec",
     "ComponentRegistry",
     "ComponentRestoreError",

@@ -13,6 +13,15 @@ truth — so the example can check the argument order against the validation
 labels it knows: swapping the arguments would report the predicted class-0
 rate instead.
 
+Named metrics and monitors (FEAT-003) are the declarative counterpart:
+``NNTrainParams(metrics=[MetricSpec("nll"), ...], monitor=MonitorSpec(...))``
+computes registered metrics over the *full* sample of each epoch — labels,
+probabilities or continuous outputs, as each metric declares — and one
+monitor drives BEST selection, ``ReduceLROnPlateau`` and any
+``EarlyStopping`` given the same spec. ``named_monitor_workflow`` below runs
+one beside a decoded callable on uneven CPU batches, reloads the records and
+verifies the reported value and the BEST epoch.
+
 Run:
     python examples/03_custom_metrics.py
 """
@@ -25,9 +34,14 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Checkpoints,
     Devices,
+    EarlyStopping,
     Losses,
+    MetricSpec,
+    MonitorSpec,
     Nets,
+    NNCheckpoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -38,6 +52,79 @@ from nnx import (
     Optims,
     set_seed,
 )
+
+
+def _model() -> NNModel:
+    return NNModel(
+        net_params=NNParams(input_dim=8, output_dim=3, hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def named_monitor_workflow() -> dict:
+    """Bounded demonstration of named metrics and a named monitor (FEAT-003).
+
+    Uneven batches on purpose — 50 training rows in batches of 16 (the last
+    holds 2) and 21 validation rows in batches of 8 — so a mean of batch
+    values would differ from the full-sample value. A decoded callable
+    (``hamming_error``) runs beside the declared ``nll`` / ``brier`` /
+    ``accuracy`` metrics; the validation NLL is the monitor for BEST
+    selection, the plateau scheduler and ``EarlyStopping``. After reloading
+    the run, the reported value is recomputed independently from the BEST
+    model's probabilities, and the BEST epoch is the last one the monitor
+    marked as improved.
+    """
+    set_seed(2)
+    X, y = torch.randn(50, 8), torch.randint(0, 3, (50,))
+    X_val, y_val = torch.randn(21, 8), torch.randint(0, 3, (21,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=16)  # batches [16, 16, 16, 2]
+    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=8)  # batches [8, 8, 5]
+
+    def hamming_error(y_true, y_pred):
+        return float((y_true != y_pred).mean())
+
+    monitor = MonitorSpec(metric="nll", min_delta=1e-3)
+    run = _model().train(
+        params=NNTrainParams(
+            n_epochs=4,
+            train_loader=loader,
+            val_loader=val_loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            metrics=[MetricSpec("nll"), MetricSpec("brier"), MetricSpec("accuracy")],
+            monitor=monitor,
+            extra_metrics={"hamming_error": hamming_error},
+            data_id="named-monitor-demo",
+        ),
+        callbacks=[EarlyStopping(monitor=monitor, patience=2)],
+    )
+
+    reloaded = NNRun.load(run.id)
+    epochs = [idp for idp in reloaded.idps if idp.selection is not None]
+    for idp in epochs:
+        assert idp.val_edp is not None and idp.train_summary is not None
+        # The monitored value is the declared metric of the whole validation set.
+        assert abs(idp.selection.value - idp.val_edp.metrics["nll"]) < 1e-12
+        # The decoded callable still reports beside it.
+        assert "hamming_error" in idp.val_edp.extra
+
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None and best.idp.selection is not None
+    best_epoch = max(idp.epoch_idx for idp in epochs if idp.selection.improved)
+    assert best.idp.epoch_idx == best_epoch, (best.idp.epoch_idx, best_epoch)
+
+    # Recompute the reported value from the BEST model's probabilities.
+    best_model = NNModel.from_checkpoint(checkpoint=best)
+    probabilities = torch.softmax(torch.as_tensor(best_model.predict(X_val.numpy()).logits), dim=1)
+    nll = float(-torch.log(probabilities[torch.arange(len(y_val)), y_val]).mean())
+    assert abs(nll - best.idp.selection.value) < 1e-5, (nll, best.idp.selection.value)
+
+    summary = {
+        "best_epoch": best_epoch,
+        "val_nll": round(best.idp.selection.value, 6),
+        "improved": [idp.selection.improved for idp in epochs],
+    }
+    print(f"named monitor: {summary}")
+    return summary
 
 
 def main():
@@ -122,6 +209,8 @@ def main():
     for name, value in last.val_edp.extra.items():
         assert abs(reloaded_last.val_edp.extra[name] - value) < 1e-9, name
     print(f"\nValidation true_class0_rate = {expected:.4f} (matches y_val); values survive NNRun.load().")
+
+    named_monitor_workflow()
 
 
 if __name__ == "__main__":

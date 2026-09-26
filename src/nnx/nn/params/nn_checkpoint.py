@@ -12,6 +12,7 @@ from typing import Any, Literal, Optional
 import torch
 from filelock import FileLock
 
+from ...monitors import MonitorRecord
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..params.nn_iteration_data_point import NNIterationDataPoint
@@ -150,6 +151,8 @@ def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
     train_edp = NNEvaluationDataPoint.from_state(state["train_edp"])
     val_edp_state = state.get("val_edp")
     val_edp = NNEvaluationDataPoint.from_state(val_edp_state) if val_edp_state is not None else None
+    summary_state = state.get("train_summary")
+    selection_state = state.get("selection")
     return NNIterationDataPoint(
         lr=state["lr"],
         iter_idx=state["iter_idx"],
@@ -157,6 +160,8 @@ def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
         batch_idx=state["batch_idx"],
         train_edp=train_edp,
         val_edp=val_edp,
+        train_summary=NNEvaluationDataPoint.from_state(summary_state) if summary_state is not None else None,
+        selection=MonitorRecord.from_state(selection_state) if selection_state is not None else None,
     )
 
 

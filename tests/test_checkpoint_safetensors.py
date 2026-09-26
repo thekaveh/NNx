@@ -415,3 +415,36 @@ def test_checkpoint_safetensors_keeps_transformer_per_layer_lists(tmp_path):
     assert restored is not None
     assert isinstance(restored.net_params, NNTransformerParams)
     assert restored.net_params == params
+
+
+def test_checkpoint_safetensors_keeps_the_monitor_selection_and_training_summary(tmp_path):
+    """FEAT-003: the selected checkpoint's metadata keeps the monitor's
+    identity, direction, configuration and status, and the whole-epoch
+    training summary, through the safetensors reader too."""
+    import math
+
+    from nnx import MonitorRecord, MonitorSpec
+
+    monitor = MonitorSpec(metric="nll", mode="min", min_delta=0.01, on_missing="error")
+    for record in (
+        MonitorRecord(monitor, 0.7, "ok", True),
+        MonitorRecord(monitor, math.inf, "nonfinite", False),
+        MonitorRecord(monitor, None, "missing", False),
+    ):
+        idp = NNIterationDataPoint(
+            lr=0.01,
+            iter_idx=4,
+            epoch_idx=1,
+            batch_idx=2,
+            train_edp=NNEvaluationDataPoint(loss=0.9, error=0.4),
+            val_edp=NNEvaluationDataPoint(loss=0.8, error=0.3, metrics={"nll": 0.7}),
+            train_summary=NNEvaluationDataPoint(loss=0.85, error=0.35, metrics={"nll": 0.72}),
+            selection=record,
+        )
+        checkpoint = replace(_build_checkpoint(_tiny_model()), idp=idp)
+        path = tmp_path / f"monitor_{record.status}.safetensors"
+        checkpoint.to_file(str(path), format="safetensors")
+        loaded = NNCheckpoint.from_file(str(path))
+        assert loaded.idp.selection == record
+        assert loaded.idp.train_summary == idp.train_summary
+        assert loaded.idp.val_edp == idp.val_edp

@@ -17,11 +17,12 @@ import re
 import sys
 import warnings
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 from .._metrics import _resolve_metric_with_provenance
 from .._validation import require_count, require_finite_real
 from ..components import ComponentSpec
+from ..monitors import MetricSpec, MonitorSpec, MonitorTracker
 from .params.nn_checkpoint import _MODEL_CHECKPOINT_TAG, NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
@@ -139,6 +140,17 @@ class EarlyStopping(Callback):
               rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
               explicit ``monitor``.
 
+              **Named monitors (FEAT-003).** ``monitor`` may instead be a
+              :class:`~nnx.MonitorSpec` — a split and metric (``loss``,
+              ``error`` or a metric declared in ``NNTrainParams.metrics``)
+              with its own direction, ``min_delta`` and missing / non-finite
+              policy. It reads the epoch's whole-epoch training summary or
+              validation record and applies
+              :meth:`~nnx.MonitorSpec.improved`, the rule BEST selection and
+              plateau scheduling use when the run declares the same monitor,
+              so all three agree. ``mode`` and ``min_delta`` must then stay
+              at their defaults (set them on the spec).
+
         name: component name under which the patience state is checkpointed
               (FEAT-005). By default ``"early_stopping"``, numbered
               (``early_stopping.2`` …) in callback order when a run has
@@ -158,7 +170,7 @@ class EarlyStopping(Callback):
 
     def __init__(
         self,
-        monitor: Optional[str] = None,
+        monitor: Optional[Union[str, MonitorSpec]] = None,
         patience: int = 10,
         min_delta: float = 0.0,
         mode: str = "min",
@@ -166,14 +178,26 @@ class EarlyStopping(Callback):
     ):
         if mode not in ("min", "max"):
             raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
+        # FEAT-003 named monitor: the spec as declared, and the copy resolved
+        # against the current run's metrics (re-resolved on every run).
+        self._declared_spec: Optional[MonitorSpec] = None
+        self._spec: Optional[MonitorSpec] = None
+        self._tracker: Optional[MonitorTracker] = None
+        if isinstance(monitor, MonitorSpec):
+            if mode != "min" or min_delta != 0.0:
+                raise ValueError(
+                    "EarlyStopping(monitor=MonitorSpec(...)) takes its direction and min_delta from the spec; "
+                    "leave mode and min_delta at their defaults"
+                )
+            self._declared_spec = self._spec = monitor
         valid_monitors = {
             "val_edp.error",
             "val_edp.loss",
             "train_edp.error",
             "train_edp.loss",
         }
-        if monitor is not None and monitor not in valid_monitors:
-            raise ValueError(f"monitor must be None or one of {sorted(valid_monitors)}, got {monitor!r}")
+        if monitor is not None and self._spec is None and monitor not in valid_monitors:
+            raise ValueError(f"monitor must be None, a MonitorSpec or one of {sorted(valid_monitors)}, got {monitor!r}")
         if monitor is None and mode == "max":
             raise ValueError(
                 "mode='max' requires an explicit monitor: the default (monitor=None) selects "
@@ -201,9 +225,17 @@ class EarlyStopping(Callback):
         self._wait: int = 0
         # Field compared during the current run: the explicit monitor, or
         # the automatic choice once a validated epoch offers a finite value.
-        self._selected: Optional[str] = monitor
+        self._selected: Optional[str] = self._spec.key if self._spec is not None else cast(Optional[str], monitor)
         # Diagnostics already emitted this run (one warning per reason).
         self._reported: set[str] = set()
+
+    def _bind_metrics(self, metrics: tuple[MetricSpec, ...]) -> Optional[MonitorSpec]:
+        """Resolve a named monitor against the run's declared metrics
+        (called by ``train()`` before any run is reserved)."""
+        if self._declared_spec is None:
+            return None
+        self._spec = self._declared_spec.resolve(metrics, owner="EarlyStopping monitor")
+        return self._spec
 
     @property
     def selected_monitor(self) -> Optional[str]:
@@ -215,7 +247,7 @@ class EarlyStopping(Callback):
         if key in self._reported:
             return
         self._reported.add(key)
-        label = f"EarlyStopping(monitor={self.monitor!r})"
+        label = f"EarlyStopping(monitor={self._spec.key if self._spec is not None else self.monitor!r})"
         if self.monitor is None and self._selected is not None:
             label += f" (automatically selected {self._selected!r})"
         _warn_at_user_frame(f"{label}: {detail}")
@@ -280,9 +312,12 @@ class EarlyStopping(Callback):
     def component_spec(self) -> ComponentSpec:
         return self._component
 
+    def _monitor_state(self) -> Any:
+        return self._spec.state() if self._spec is not None else self.monitor
+
     def component_state(self) -> dict[str, Any]:
         return {
-            "monitor": self.monitor,
+            "monitor": self._monitor_state(),
             "mode": self.mode,
             "best": self._best,
             "wait": self._wait,
@@ -292,10 +327,10 @@ class EarlyStopping(Callback):
     def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
         """Reject, before anything is restored, patience tracked for a
         different monitor or direction."""
-        if state.get("monitor") != self.monitor or state.get("mode") != self.mode:
+        if state.get("monitor") != self._monitor_state() or state.get("mode") != self.mode:
             return [
                 f"EarlyStopping tracked monitor={state.get('monitor')!r}, mode={state.get('mode')!r} in the "
-                f"checkpoint but is configured with monitor={self.monitor!r}, mode={self.mode!r}"
+                f"checkpoint but is configured with monitor={self._monitor_state()!r}, mode={self.mode!r}"
             ]
         return []
 
@@ -307,6 +342,8 @@ class EarlyStopping(Callback):
         self._best = None if best is None else float(best)
         self._wait = int(state["wait"])
         self._selected = state.get("selected")
+        if self._tracker is not None:
+            self._tracker.best = self._best
 
     def on_train_begin(self, ctx: _CallbackContext) -> None:
         # Fresh run, fresh patience: without this reset, reusing one
@@ -317,18 +354,59 @@ class EarlyStopping(Callback):
         # each pick their own field.
         self._best = None
         self._wait = 0
-        self._selected = self.monitor
+        self._selected = self._spec.key if self._spec is not None else cast(Optional[str], self.monitor)
         self._reported = set()
+        if self._spec is not None:
+            if self._spec.mode is None:
+                raise ValueError(
+                    f"EarlyStopping monitor {self._spec.key!r} has no direction: declare the metric in the run's "
+                    "metrics (NNTrainParams / NNTrainerParams) or set mode on the MonitorSpec"
+                )
+            # The shared FEAT-003 rule and missing / non-finite policies.
+            self._tracker = MonitorTracker(self._spec)
 
     def _is_improvement(self, current: float, best: float) -> bool:
         if self.mode == "min":
             return current < best - self.min_delta
         return current > best + self.min_delta
 
+    def _on_monitored_epoch_end(self, ctx: _CallbackContext, epoch: Any) -> None:
+        """Named monitor (FEAT-003): the same MonitorTracker rule BEST and
+        plateau scheduling use, applied to the epoch's summary."""
+        spec, tracker = self._spec, self._tracker
+        assert spec is not None and tracker is not None and ctx.idp is not None
+        value = spec.value(train=ctx.idp.monitored_train_edp(), val=ctx.idp.val_edp)
+        record = tracker.observe(value, epoch=epoch if isinstance(epoch, int) else -1)
+        if record.status == "missing":
+            self._report_once(
+                f"{spec.key}:missing",
+                f"epoch {epoch} has no {spec.key!r} value, so this epoch is not counted toward patience.",
+            )
+            return
+        if record.improved:
+            self._best = record.value
+            self._wait = 0
+            return
+        if record.status == "nonfinite":
+            self._report_once(
+                "non-finite",
+                f"epoch {epoch} reported {spec.key}={record.value}; a non-finite value never becomes the "
+                "best and counts as an epoch without improvement.",
+            )
+        self._wait += 1
+        if self._wait >= self.patience:
+            ctx.should_stop = True
+
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         if ctx.idp is None:
             return
         epoch = getattr(ctx, "epoch", None)
+        if self._spec is not None:
+            if self._tracker is None:  # used without on_train_begin (direct callers)
+                self._tracker = MonitorTracker(self._spec)
+                self._tracker.best = self._best
+            self._on_monitored_epoch_end(ctx, epoch)
+            return
         observed = self._observe(ctx.idp, epoch)
         if observed is None:
             return
@@ -447,6 +525,20 @@ def _edp_metric_iter(edp):
         yield f"extra/{name}", v
 
 
+def _summary_metric_iter(idp):
+    """Yield ``(tag, value)`` pairs for an epoch's FEAT-003 summary: the
+    whole-epoch training record under ``train_epoch/`` and the monitored
+    value (plus ``monitor/improved`` as 0/1) under ``monitor/``. Nothing
+    for runs without declared metrics or a monitor."""
+    summary = getattr(idp, "train_summary", None)
+    for name, v in _edp_metric_iter(summary):
+        yield f"train_epoch/{name}", v
+    record = getattr(idp, "selection", None)
+    if record is not None and record.value is not None:
+        yield f"monitor/{record.monitor.key}", record.value
+        yield "monitor/improved", float(record.improved)
+
+
 class TensorBoardCallback(Callback):
     """Stream train/val metrics + LR to a TensorBoard SummaryWriter.
 
@@ -481,6 +573,8 @@ class TensorBoardCallback(Callback):
             self._writer.add_scalar(f"train/{name}", v, step)
         for name, v in _edp_metric_iter(idp.val_edp):
             self._writer.add_scalar(f"val/{name}", v, step)
+        for tag, v in _summary_metric_iter(idp):
+            self._writer.add_scalar(tag, v, step)
         self._writer.add_scalar("lr", ctx.optimizer.param_groups[0]["lr"], step)
 
         if self._flush_each_epoch:
@@ -526,6 +620,8 @@ class WandbCallback(Callback):
             log[f"train/{name}"] = v
         for name, v in _edp_metric_iter(idp.val_edp):
             log[f"val/{name}"] = v
+        for tag, v in _summary_metric_iter(idp):
+            log[tag] = v
         self._run.log(log, step=idp.epoch_idx)
 
     def on_train_end(self, ctx: _CallbackContext) -> None:

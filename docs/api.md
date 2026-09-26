@@ -345,7 +345,7 @@ from deleting or interleaving artifacts until final persistence ends.
 ##### `nnx.nn.nn_model.NNModel.evaluate`
 
 ```python
-nnx.nn.nn_model.NNModel.evaluate(self, loader: 'Iterable[Any]', extra_metrics=None) -> 'NNEvaluationDataPoint'
+nnx.nn.nn_model.NNModel.evaluate(self, loader: 'Iterable[Any]', extra_metrics=None, metrics: 'Sequence[MetricSpec]' = ()) -> 'NNEvaluationDataPoint'
 ```
 
 Aggregate predictions across all batches in `loader` and compute a single NNEvaluationDataPoint. Aggregating (rather than averaging per-batch metrics) gives correct sample-weighted f1/precision/recall when the final batch is short.
@@ -355,6 +355,13 @@ Aggregate predictions across all batches in `loader` and compute a single NNEval
 ```text
 `extra_metrics` ({name -> callable(y_true, y_pred) -> float}) are
 called once on the aggregate truth / decoded predictions.
+
+`metrics` (FEAT-003) are declared :class:`~nnx.MetricSpec`s,
+accumulated over every valid sample of the loader from the input
+each declares (decoded labels, probabilities or continuous outputs)
+and reported in the record's ``metrics`` under each spec's name. A
+metric whose input this model cannot provide raises before any
+batch is read.
 
 Raises ValueError if the loader yields zero batches — previously
 produced NaN metrics silently from np.mean over an empty list.
@@ -455,7 +462,7 @@ is preferred for new code.
 #### `nnx.nn.nn_model.TrainStepContext`
 
 ```python
-class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None) -> 'None'
+class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None) -> 'None'
 ```
 
 Frozen bundle of state passed into a training-step function.
@@ -735,7 +742,7 @@ Public type alias.
 #### `nnx.trainer.params.NNTrainerParams`
 
 ```python
-class nnx.trainer.params.NNTrainerParams(*, n_epochs: 'int', optims: 'Mapping[str, Union[NNOptimParams, NNOptimFactoryParams]]', schedulers: 'Mapping[str, NNSchedulerParams]' = <factory>, seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, auto_step_schedulers: 'bool' = True, overwrite_existing: 'bool' = False, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'str' = 'last', parent_run_id: 'Optional[str]' = None, resume_mode: 'str' = 'auto') -> 'None'
+class nnx.trainer.params.NNTrainerParams(*, n_epochs: 'int', optims: 'Mapping[str, Union[NNOptimParams, NNOptimFactoryParams]]', schedulers: 'Mapping[str, NNSchedulerParams]' = <factory>, seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, auto_step_schedulers: 'bool' = True, overwrite_existing: 'bool' = False, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'str' = 'last', parent_run_id: 'Optional[str]' = None, resume_mode: 'str' = 'auto', metrics: 'tuple[MetricSpec, ...]' = (), monitor: 'Optional[MonitorSpec]' = None) -> 'None'
 ```
 
 Configuration for `Trainer.train()` — the multi-optimizer parallel to `NNModel.train()` / `NNTrainParams`.
@@ -933,6 +940,22 @@ Part of `state()` and therefore of the run id, so two otherwise
 identical configurations (e.g. sibling builder branches) over
 different data get distinct run directories. None at default.
 ```
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.metrics`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.metrics(self, *specs: 'MetricSpec') -> 'NNTrainerParamsBuilder'
+```
+
+Declare named, registered metrics (FEAT-003) — computed over the whole validation set by ``evaluate()`` and reported under each spec's name. Replaces any earlier declaration.
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.monitor`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.monitor(self, spec: 'MonitorSpec') -> 'NNTrainerParamsBuilder'
+```
+
+What BEST selection and plateau schedulers track (FEAT-003).
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.resume_from`
 
@@ -1737,6 +1760,355 @@ nnx.components.ResumeStatus.from_state(state: 'Mapping[str, Any]') -> 'ResumeSta
 No public description is currently available.
 
 
+### 2.8. Named metrics and monitors (`nnx.monitors`)
+
+#### `nnx.monitors.MetricSpec`
+
+```python
+class nnx.monitors.MetricSpec(id: 'str', version: 'int' = 1, config: 'Optional[Mapping[str, Any]]' = None, name: 'Optional[str]' = None) -> 'None'
+```
+
+Serializable declaration of a registered metric.
+
+**Details**
+
+```text
+Args:
+    id / version: the registration to use.
+    config: JSON-like options handed to the metric read-only
+        (``None``, ``bool``, ``int``, finite ``float``, ``str``, lists
+        and string-keyed mappings).
+    name: the key the value is reported under (default: ``id``); a slug,
+        unique among a run's metrics, and never ``"loss"`` / ``"error"``.
+
+The spec never holds code, so it round-trips through ``run.yaml`` and
+reloads without the metric being registered. It is resolved against
+the registry when training starts: an unknown ``(id, version)`` then
+fails before anything is trained, and no metric code has run.
+```
+
+##### `nnx.monitors.MetricSpec.label`
+
+```python
+property nnx.monitors.MetricSpec.label
+```
+
+The key the metric is reported under.
+
+##### `nnx.monitors.MetricSpec.definition`
+
+```python
+property nnx.monitors.MetricSpec.definition
+```
+
+The registration this spec names (``ValueError`` when unknown).
+
+##### `nnx.monitors.MetricSpec.input`
+
+```python
+property nnx.monitors.MetricSpec.input
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MetricSpec.mode`
+
+```python
+property nnx.monitors.MetricSpec.mode
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MetricSpec.check`
+
+```python
+nnx.monitors.MetricSpec.check(self) -> 'None'
+```
+
+Resolve the registration and validate the config, without computing anything.
+
+##### `nnx.monitors.MetricSpec.accumulator`
+
+```python
+nnx.monitors.MetricSpec.accumulator(self) -> 'MetricAccumulator'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MetricSpec.state`
+
+```python
+nnx.monitors.MetricSpec.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MetricSpec.from_state`
+
+```python
+nnx.monitors.MetricSpec.from_state(state: 'Mapping[str, Any]') -> 'MetricSpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.monitors.MonitorSpec`
+
+```python
+class nnx.monitors.MonitorSpec(metric: 'str' = 'loss', split: 'str' = 'val', mode: 'Optional[str]' = None, min_delta: 'float' = 0.0, on_missing: 'str' = 'skip', on_nonfinite: 'str' = 'skip') -> 'None'
+```
+
+What BEST selection, early stopping and plateau scheduling track.
+
+**Details**
+
+```text
+Args:
+    metric: ``"loss"``, ``"error"`` or the name of a declared
+        :class:`MetricSpec` (``NNTrainParams.metrics``).
+    split: ``"val"`` (default) — the whole-validation-set record — or
+        ``"train"`` — the whole-epoch training summary (full-epoch
+        denominators, never the last batch).
+    mode: ``"min"`` / ``"max"``; ``None`` (default) takes the metric's
+        natural direction (``"min"`` for loss and error).
+    min_delta: an improvement must beat the best by more than this
+        (finite, ``>= 0``); ties never improve.
+    on_missing: ``"skip"`` (default) — an epoch without a value makes no
+        decision (not counted toward patience, no plateau step, no
+        BEST) — or ``"error"``: raise :class:`MonitorUnavailableError`.
+    on_nonfinite: ``"skip"`` (default) — a NaN / ±inf value is an epoch
+        without improvement — or ``"error"``.
+```
+
+##### `nnx.monitors.MonitorSpec.key`
+
+```python
+property nnx.monitors.MonitorSpec.key
+```
+
+``"<split>.<metric>"``, as shown by displays and loggers.
+
+##### `nnx.monitors.MonitorSpec.check_names`
+
+```python
+nnx.monitors.MonitorSpec.check_names(self, metrics: 'Sequence[MetricSpec]', owner: 'str' = 'monitor') -> 'None'
+```
+
+Fail when the metric is neither a record field nor declared.
+
+##### `nnx.monitors.MonitorSpec.resolve`
+
+```python
+nnx.monitors.MonitorSpec.resolve(self, metrics: 'Sequence[MetricSpec]', owner: 'str' = 'monitor') -> 'MonitorSpec'
+```
+
+Check the name against the declared metrics and fill in the metric's natural direction when ``mode`` is ``None``.
+
+##### `nnx.monitors.MonitorSpec.improved`
+
+```python
+nnx.monitors.MonitorSpec.improved(self, current: 'float', best: 'Optional[float]') -> 'bool'
+```
+
+The shared rule: the first finite value improves; later values must beat ``best`` by more than ``min_delta`` (ties never improve); a non-finite value never improves.
+
+##### `nnx.monitors.MonitorSpec.value`
+
+```python
+nnx.monitors.MonitorSpec.value(self, *, train: 'Optional[NNEvaluationDataPoint]', val: 'Optional[NNEvaluationDataPoint]') -> 'Optional[float]'
+```
+
+The monitored value from an epoch's training summary / validation record (``None`` when absent).
+
+##### `nnx.monitors.MonitorSpec.state`
+
+```python
+nnx.monitors.MonitorSpec.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MonitorSpec.from_state`
+
+```python
+nnx.monitors.MonitorSpec.from_state(state: 'Mapping[str, Any]') -> 'MonitorSpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.monitors.MonitorRecord`
+
+```python
+class nnx.monitors.MonitorRecord(monitor: 'MonitorSpec', value: 'Optional[float]', status: 'str', improved: 'bool') -> 'None'
+```
+
+One epoch's monitor decision, persisted with the epoch's record.
+
+**Details**
+
+```text
+``status`` is ``"ok"``, ``"missing"`` (no value; no decision) or
+``"nonfinite"`` (an epoch without improvement); ``improved`` says
+whether this epoch became the best.
+```
+
+##### `nnx.monitors.MonitorRecord.state`
+
+```python
+nnx.monitors.MonitorRecord.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MonitorRecord.from_state`
+
+```python
+nnx.monitors.MonitorRecord.from_state(state: 'Mapping[str, Any]') -> 'MonitorRecord'
+```
+
+No public description is currently available.
+
+
+#### `nnx.monitors.MonitorTracker`
+
+```python
+class nnx.monitors.MonitorTracker(spec: 'MonitorSpec', *, warn_missing: 'bool' = False) -> 'None'
+```
+
+Applies one :class:`MonitorSpec` epoch by epoch: returns each epoch's :class:`MonitorRecord` and remembers the best value.
+
+**Details**
+
+```text
+The run's tracker is also an optional checkpointable component
+(``nnx.monitor``, FEAT-005): a stateful warm resume continues from the
+source run's best, so BEST keeps agreeing with a restored
+``EarlyStopping`` and plateau scheduler after the split.
+```
+
+##### `nnx.monitors.MonitorTracker.observe`
+
+```python
+nnx.monitors.MonitorTracker.observe(self, value: 'Optional[float]', *, epoch: 'int') -> 'MonitorRecord'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MonitorTracker.component_spec`
+
+```python
+nnx.monitors.MonitorTracker.component_spec(self) -> 'Any'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MonitorTracker.component_state`
+
+```python
+nnx.monitors.MonitorTracker.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MonitorTracker.check_component_state`
+
+```python
+nnx.monitors.MonitorTracker.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MonitorTracker.load_component_state`
+
+```python
+nnx.monitors.MonitorTracker.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+
+#### `nnx.monitors.MonitorUnavailableError`
+
+```python
+class nnx.monitors.MonitorUnavailableError
+```
+
+A monitor with ``on_missing="error"`` / ``on_nonfinite="error"`` found no finite value to decide on.
+
+
+#### `nnx.monitors.MetricAccumulator`
+
+```python
+class nnx.monitors.MetricAccumulator(*args, **kwargs)
+```
+
+Accumulates one metric over an epoch's full sample.
+
+**Details**
+
+```text
+``update`` receives one batch's valid targets and the declared
+prediction input as NumPy arrays (sample axis first); ``result``
+returns the metric over everything seen, or ``None`` if nothing was.
+```
+
+##### `nnx.monitors.MetricAccumulator.update`
+
+```python
+nnx.monitors.MetricAccumulator.update(self, target: 'np.ndarray', prediction: 'np.ndarray') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.monitors.MetricAccumulator.result`
+
+```python
+nnx.monitors.MetricAccumulator.result(self) -> 'Optional[float]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.monitors.register_metric`
+
+```python
+nnx.monitors.register_metric(id: 'str', version: 'int', factory: 'Callable[[Mapping[str, Any]], MetricAccumulator]', *, input: 'str', mode: 'str', check_config: 'Optional[Callable[[Mapping[str, Any]], None]]' = None, replace: 'bool' = False) -> 'None'
+```
+
+Register a metric under ``(id, version)`` for this process.
+
+**Details**
+
+```text
+``factory(config)`` returns a fresh :class:`MetricAccumulator` for one
+split of one epoch (``config`` is the spec's read-only config);
+``input`` is one of :data:`METRIC_INPUTS`; ``mode`` is the natural
+direction (``"min"``: lower is better). ``check_config(config)``, when
+given, validates a spec's config as the run starts, before any batch.
+Registering an existing ``(id, version)`` raises unless
+``replace=True``; bump the version when the metric's meaning changes.
+```
+
+
+#### `nnx.monitors.unregister_metric`
+
+```python
+nnx.monitors.unregister_metric(id: 'str', version: 'int') -> 'bool'
+```
+
+Remove a registration; ``True`` when one existed.
+
+
+#### `nnx.monitors.registered_metrics`
+
+```python
+nnx.monitors.registered_metrics() -> 'tuple[tuple[str, int], ...]'
+```
+
+Every registered ``(id, version)``, sorted.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -1845,7 +2217,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_train_params.NNTrainParams`
 
 ```python
-class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto') -> 'None'
+class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, metrics: 'tuple[MetricSpec, ...]' = (), monitor: 'Optional[MonitorSpec]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto') -> 'None'
 ```
 
 Training configuration.
@@ -1867,6 +2239,15 @@ classification training step calls each per batch, and `evaluate()`
 (the default validation pass) calls each once on the aggregate
 predictions; a custom `train_step_fn` / `eval_step_fn` decides whether
 and how to call them. Runtime-only: not part of `state()`.
+
+`metrics` declares named, registered metrics (:class:`~nnx.MetricSpec`)
+computed over the full sample of each epoch — on the validation set by
+`evaluate()` and on the training epoch by the default step — and
+reported in the records' `metrics` under each spec's name. `monitor`
+(:class:`~nnx.MonitorSpec`) names the split and metric that BEST
+selection and a `ReduceLROnPlateau` scheduler track, with one shared
+improvement rule (FEAT-003). Both are serialized only when set, so a
+configuration without them keeps its `state()` and run id.
 ```
 
 ##### `nnx.nn.params.nn_train_params.NNTrainParams.with_train_loader`
@@ -3088,7 +3469,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint`
 
 ```python
-class nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint(*, lr: 'float', iter_idx: 'int', epoch_idx: 'int', batch_idx: 'int', train_edp: 'NNEvaluationDataPoint', val_edp: 'Optional[NNEvaluationDataPoint]' = None) -> 'None'
+class nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint(*, lr: 'float', iter_idx: 'int', epoch_idx: 'int', batch_idx: 'int', train_edp: 'NNEvaluationDataPoint', val_edp: 'Optional[NNEvaluationDataPoint]' = None, train_summary: 'Optional[NNEvaluationDataPoint]' = None, selection: 'Optional[MonitorRecord]' = None) -> 'None'
 ```
 
 One row in the per-iteration training log.
@@ -3102,6 +3483,14 @@ each epoch** (the idp at which the validation loop ran). Other idps in
 the same epoch have `val_edp=None`. When reading idps.csv, group by
 epoch_idx and take the row with val_edp set for per-epoch validation
 metrics.
+
+**Epoch summary (FEAT-003).** A run that declares metrics or a monitor
+also records, on the same last idp of each epoch, `train_summary` —
+the whole-epoch training record (loss and error averaged with every
+batch's own denominator, declared metrics over the full sample) — and
+`selection`, the epoch's :class:`~nnx.MonitorRecord` (monitor identity,
+value, status and whether the epoch improved). Both are omitted from
+`state()` otherwise, so legacy history is unchanged.
 ```
 
 ##### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.with_val_edp`
@@ -3111,6 +3500,22 @@ nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.with_val_edp(self, va
 ```
 
 No public description is currently available.
+
+##### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.with_epoch_summary`
+
+```python
+nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.with_epoch_summary(self, train_summary: 'Optional[NNEvaluationDataPoint]', selection: 'Optional[MonitorRecord]') -> 'NNIterationDataPoint'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.monitored_train_edp`
+
+```python
+nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.monitored_train_edp(self) -> 'NNEvaluationDataPoint'
+```
+
+The epoch's training record for monitors: the whole-epoch summary when recorded, else this (last) batch's record.
 
 ##### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.state`
 
@@ -4576,7 +4981,7 @@ Completed topology transforms to persist on the final checkpoint.
 #### `nnx.nn.callbacks.EarlyStopping`
 
 ```python
-class nnx.nn.callbacks.EarlyStopping(monitor: 'Optional[str]' = None, patience: 'int' = 10, min_delta: 'float' = 0.0, mode: 'str' = 'min', name: 'Optional[str]' = None)
+class nnx.nn.callbacks.EarlyStopping(monitor: 'Optional[Union[str, MonitorSpec]]' = None, patience: 'int' = 10, min_delta: 'float' = 0.0, mode: 'str' = 'min', name: 'Optional[str]' = None)
 ```
 
 Stop training when the monitored metric stops improving.
@@ -4617,6 +5022,17 @@ Args:
           monitors, which are rejected, and it does not change how the
           rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
           explicit ``monitor``.
+
+          **Named monitors (FEAT-003).** ``monitor`` may instead be a
+          :class:`~nnx.MonitorSpec` — a split and metric (``loss``,
+          ``error`` or a metric declared in ``NNTrainParams.metrics``)
+          with its own direction, ``min_delta`` and missing / non-finite
+          policy. It reads the epoch's whole-epoch training summary or
+          validation record and applies
+          :meth:`~nnx.MonitorSpec.improved`, the rule BEST selection and
+          plateau scheduling use when the run declares the same monitor,
+          so all three agree. ``mode`` and ``min_delta`` must then stay
+          at their defaults (set them on the spec).
 
     name: component name under which the patience state is checkpointed
           (FEAT-005). By default ``"early_stopping"``, numbered
