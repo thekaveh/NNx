@@ -806,9 +806,11 @@ class _TrainEpochSummary:
     batch's own denominator, and the declared metrics over the full sample.
 
     The default training step reports each batch's outputs and its loss and
-    error denominators through :meth:`observe`; for custom steps only the
-    returned records are available, weighted by their ``count`` (task
-    records) or by the batch's sample count."""
+    error denominators through :meth:`observe`; an objective run (FEAT-004)
+    reports its loss terms through :meth:`observe_terms`, so the epoch's
+    loss is the objective's own window rule applied to the whole epoch; for
+    custom steps only the returned records are available, weighted by their
+    ``count`` (task records) or by the batch's sample count."""
 
     def __init__(
         self,
@@ -822,6 +824,9 @@ class _TrainEpochSummary:
         self._error = _WeightedMean()
         self._pending: Optional[tuple[Optional[float], Optional[float]]] = None
         self._records = 0
+        # Objective runs: {term name: [reduction, weight, Σ numerator, Σ denominator]}.
+        self._terms: dict[str, list[Any]] = {}
+        self._pending_terms = False
 
     def observe(
         self,
@@ -838,8 +843,34 @@ class _TrainEpochSummary:
         self._metrics.update(target, output, valid)
         self._pending = (loss_weight, error_weight)
 
+    def observe_terms(self, terms: Sequence[Any]) -> None:
+        """Called for each objective microbatch with its ``LossTerm``\\ s:
+        normalized terms add their numerators and denominators, summed terms
+        their totals."""
+        for term in terms:
+            entry = self._terms.setdefault(term.name, [term.reduction, term.weight, 0.0, 0.0])
+            entry[2] += term._numerator_value
+            if term.reduction == "mean":
+                entry[3] += float(term.denominator)
+        self._pending_terms = True
+
+    def _terms_loss(self) -> Optional[float]:
+        present = [
+            (weight, numerator if reduction == "sum" else numerator / denominator)
+            for reduction, weight, numerator, denominator in self._terms.values()
+            if reduction == "sum" or denominator
+        ]
+        return sum(weight * value for weight, value in present) if present else None
+
     def add(self, edp: NNEvaluationDataPoint, batch_size: int) -> None:
         fallback = float(edp.count if edp.count is not None else batch_size)
+        if self._pending_terms:
+            # The loss comes from the observed terms; the error is weighted
+            # like a custom step's.
+            self._pending_terms = False
+            self._records += 1
+            self._error.add(edp.error, fallback)
+            return
         if self._pending is not None:
             loss_weight, error_weight = self._pending
             if error_weight is None:
@@ -856,6 +887,5 @@ class _TrainEpochSummary:
             return None
         from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
-        return NNEvaluationDataPoint(
-            loss=self._loss.result(), error=self._error.result(), metrics=self._metrics.results()
-        )
+        loss = self._terms_loss() if self._terms else self._loss.result()
+        return NNEvaluationDataPoint(loss=loss, error=self._error.result(), metrics=self._metrics.results())

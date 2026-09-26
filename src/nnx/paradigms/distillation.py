@@ -37,6 +37,24 @@ from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
+def _check_kd_weights(alpha: float, temperature: float) -> None:
+    """Validate Hinton KD's mixing weight and temperature — shared by
+    :func:`kd_train_step_factory` and ``nnx.objectives.KDObjective``."""
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+    if temperature <= 0:
+        raise ValueError(f"temperature must be positive, got {temperature}")
+
+
+def _freeze_teacher(teacher: NNModel) -> None:
+    """Freeze the teacher and pin it to eval mode. The student's training
+    never touches the teacher; this just guards against accidental gradient
+    flow if the caller wires them into a shared module later."""
+    teacher.net.eval()
+    for p in teacher.net.parameters():
+        p.requires_grad = False
+
+
 def kd_train_step_factory(
     teacher: NNModel,
     *,
@@ -67,17 +85,8 @@ def kd_train_step_factory(
     Raises:
         ValueError: if ``alpha`` is not in [0, 1], or ``temperature`` ≤ 0.
     """
-    if not (0.0 <= alpha <= 1.0):
-        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
-
-    # Freeze the teacher and pin to eval mode. The student's training
-    # never touches the teacher; this just guards against accidental
-    # gradient flow if the caller wires them into a shared module later.
-    teacher.net.eval()
-    for p in teacher.net.parameters():
-        p.requires_grad = False
+    _check_kd_weights(alpha, temperature)
+    _freeze_teacher(teacher)
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -177,12 +186,7 @@ def feature_kd_train_step_factory(
             "auxiliary_layers must be a non-empty mapping of teacher_layer_name -> student_layer_name; got empty dict"
         )
 
-    # Freeze the teacher and pin to eval mode — same guarantee as
-    # kd_train_step_factory. Student training never touches the
-    # teacher; this just guards against accidental gradient flow.
-    teacher.net.eval()
-    for p in teacher.net.parameters():
-        p.requires_grad = False
+    _freeze_teacher(teacher)  # same guarantee as kd_train_step_factory
 
     # Resolve named submodules eagerly so a typo in the user's mapping
     # raises a clear error on factory call (not deep inside the first

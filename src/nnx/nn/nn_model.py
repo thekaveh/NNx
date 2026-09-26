@@ -988,6 +988,93 @@ def _step_monitored_plateau(scheduler: Any, record: MonitorRecord) -> None:
     scheduler.step(record.value)
 
 
+def _objective_microbatch(
+    engine: Any,
+    objective: Callable[[Any], Any],
+    *,
+    model: Any,
+    batch: Any,
+    epoch_idx: int,
+    batch_idx: int,
+    extra_metrics: Optional[Mapping[str, Callable]],
+    close_window: bool,
+    epoch_summary: Optional[_TrainEpochSummary] = None,
+) -> NNEvaluationDataPoint:
+    """The shared objective primitive (FEAT-004), used by ``NNModel.train``
+    and ``Trainer.train`` alike: run the objective under the engine's
+    autocast, accumulate its loss terms and — at the window's end — commit
+    one update. The terms also feed the whole-epoch summary (FEAT-003), so
+    the epoch's training loss uses the objective's own denominators.
+    Returns the microbatch's record."""
+    from ..objectives import ObjectiveContext, ObjectiveResult
+
+    with engine.autocast():
+        result = objective(
+            ObjectiveContext(
+                model=model, batch=batch, epoch_idx=epoch_idx, batch_idx=batch_idx, extra_metrics=extra_metrics
+            )
+        )
+    if not isinstance(result, ObjectiveResult):
+        raise TypeError(f"an objective must return an ObjectiveResult, got {type(result).__name__}")
+    engine.accumulate(result.terms, closes_window=close_window)
+    if epoch_summary is not None:
+        epoch_summary.observe_terms(result.terms)
+    if close_window:
+        engine.commit(epoch_idx=epoch_idx, batch_idx=batch_idx)
+    record = result.record
+    loss = result.loss()
+    if record is None:
+        return NNEvaluationDataPoint(loss=loss)
+    return record if record.loss is not None or loss is None else record.with_loss(loss)
+
+
+class _ObjectiveStep:
+    """``NNModel.train``'s step for an objective: windows follow
+    ``accumulate_grad_batches`` (cut short at the epoch's end), and the
+    shared engine owns every update."""
+
+    def __init__(self, objective: Callable[[Any], Any], engine: Any) -> None:
+        self.objective = objective
+        self.engine = engine
+
+    def __call__(self, ctx: TrainStepContext) -> NNEvaluationDataPoint:
+        window = ctx.accumulate_grad_batches
+        return _objective_microbatch(
+            self.engine,
+            self.objective,
+            model=ctx.model,
+            batch=ctx.batch,
+            epoch_idx=ctx.epoch_idx,
+            batch_idx=ctx.batch_idx,
+            extra_metrics=ctx.extra_metrics,
+            close_window=ctx.batch_idx % window == window - 1 or ctx.is_last_batch,
+            epoch_summary=ctx.epoch_summary,
+        )
+
+
+def _objective_engine(
+    objective: Callable[[Any], Any],
+    *,
+    optimizers: Mapping[str, torch.optim.Optimizer],
+    clip_norms: Mapping[str, Optional[float]],
+    scaler: Optional[torch.amp.GradScaler],
+    device: torch.device,
+) -> Any:
+    """The update engine for an objective run: mixed precision (autocast
+    around the objective, the scaler for the update) only where the
+    supervised path uses it — a CUDA device with a scaler."""
+    from .._update_engine import UpdateEngine
+
+    amp = scaler is not None and device.type == "cuda"
+    return UpdateEngine(
+        optimizers=optimizers,
+        scaler=scaler if amp else None,
+        clip_norms=clip_norms,
+        nonfinite=getattr(objective, "nonfinite", "fail"),
+        autocast=(lambda: torch.amp.autocast(device_type="cuda")) if amp else None,
+    )
+
+
 def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     """Standard supervised training step: forward → loss → backward → step.
 
@@ -1554,6 +1641,7 @@ class NNModel(_HubMixinBase):
         eval_step_fn: Optional[EvalStepFn] = None,
         salt: Optional[str] = None,
         components: Optional[list[Any]] = None,
+        objective: Optional[Callable[[Any], Any]] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -1575,6 +1663,14 @@ class NNModel(_HubMixinBase):
                 Callbacks and step functions that implement the protocol
                 (``EarlyStopping``, the JEPA step) are registered
                 automatically; names must be unique.
+            objective: Optional objective (FEAT-004, ``nnx.objectives``) —
+                a callable returning loss terms with explicit denominators.
+                NNx's shared update engine then owns backward,
+                accumulation (``accumulate_grad_batches``, exact for uneven
+                microbatches and masks), mixed precision, clipping and the
+                optimizer step, firing ``Callback.on_optimizer_update`` once
+                per committed update. Mutually exclusive with
+                ``train_step_fn``.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -1594,7 +1690,17 @@ class NNModel(_HubMixinBase):
         The run lease prevents another process using ``overwrite_existing``
         from deleting or interleaving artifacts until final persistence ends.
         """
+        if objective is not None and train_step_fn is not None:
+            # Checked before anything else: one owner per optimizer update.
+            raise ValueError(
+                "pass train_step_fn or objective, not both: a step function owns its own optimizer updates, "
+                "an objective hands them to NNx's shared update engine"
+            )
+        if objective is not None and not callable(objective):
+            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         if train_step_fn is None:
+            # NNx owns the update (default step or objective): the run's
+            # checkpoints must be reconstructible from the params recipe.
             self._assert_reconstructible_topology()
         if params is None:
             raise ValueError("train params must be non-None")
@@ -1604,7 +1710,7 @@ class NNModel(_HubMixinBase):
             metrics=params.metrics,
             monitor=params.monitor,
             callbacks=callbacks,
-            default_train_step=train_step_fn is None,
+            default_train_step=train_step_fn is None and objective is None,
             default_eval_step=eval_step_fn is None,
             has_val_loader=params.val_loader is not None,
             owner="NNTrainParams",
@@ -1642,6 +1748,7 @@ class NNModel(_HubMixinBase):
                 train_step_fn=train_step_fn,
                 eval_step_fn=eval_step_fn,
                 components=components,
+                objective=objective,
             )
 
     def _train_impl(
@@ -1653,6 +1760,7 @@ class NNModel(_HubMixinBase):
         train_step_fn: Optional[TrainStepFn] = None,
         eval_step_fn: Optional[EvalStepFn] = None,
         components: Optional[list[Any]] = None,
+        objective: Optional[Callable[[Any], Any]] = None,
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -1701,7 +1809,7 @@ class NNModel(_HubMixinBase):
         # before anything is restored or trained.
         normalized_callbacks = self._normalize_callbacks(callbacks)
         registry = ComponentRegistry.discover(
-            normalized_callbacks, train_step_fn, eval_step_fn, explicit=list(components or [])
+            normalized_callbacks, train_step_fn, eval_step_fn, objective, explicit=list(components or [])
         )
         # FEAT-003: declared metrics and the run's monitor (validated in
         # train()); the whole-epoch summary is kept when anything monitors.
@@ -1716,7 +1824,9 @@ class NNModel(_HubMixinBase):
             or any(isinstance(getattr(cb, "monitor", None), MonitorSpec) for cb in normalized_callbacks)
         )
         metric_domain, metric_ignore_index, metric_threshold, _ = _metric_context(self)
-        train_metrics = params.metrics if train_step_fn is None else ()
+        # Declared metrics over the training epoch need the default step's
+        # outputs; step functions and objectives record them on validation.
+        train_metrics = params.metrics if train_step_fn is None and objective is None else ()
         component_plan = None
         resume_status = ResumeStatus()
         previous_net_state: Optional[dict[str, Any]] = None
@@ -1730,6 +1840,19 @@ class NNModel(_HubMixinBase):
             _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
         scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
         scaler = self._build_grad_scaler()
+        # FEAT-004: an objective's updates belong to the shared engine; its
+        # committed-update counters are component state (nnx.update_engine),
+        # so they continue across a stateful resume.
+        engine = None
+        if objective is not None:
+            engine = _objective_engine(
+                objective,
+                optimizers={"default": optimizer},
+                clip_norms={"default": params.optim.grad_clip_norm},
+                scaler=scaler,
+                device=self.device,
+            )
+            registry.register(engine)
         start_epoch = 0
 
         # Warm resume restores every stateful training component when the
@@ -1849,6 +1972,12 @@ class NNModel(_HubMixinBase):
         # Explicit None check (not `or`) so a hypothetical callable that
         # happens to be falsy by __bool__ doesn't silently fall back.
         step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
+        if engine is not None:
+            assert objective is not None
+            # Committed updates are announced to every callback.
+            engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            step_fn = _ObjectiveStep(objective, engine)
+            ctx.update_count = engine.commits
 
         idx_iter = 0
         pre_transform_net_state: Optional[dict[str, Any]] = None
@@ -1874,6 +2003,8 @@ class NNModel(_HubMixinBase):
                     _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
                     raise
                 resume_status = replace(resume_status, restored_components=restored)
+            if engine is not None:
+                ctx.update_count = engine.commits  # continues after a stateful resume
             run = run.with_resume_status(resume_status)
             ctx.run = run
             for local_epoch in range(params.n_epochs):
@@ -1915,6 +2046,7 @@ class NNModel(_HubMixinBase):
                             batch_idx=idx_batch,
                             train_edp=train_edp,
                             lr=optimizer.param_groups[0]["lr"],
+                            update_count=engine.commits if engine is not None else None,
                         )
                     )
 
@@ -2670,6 +2802,15 @@ class NNModel(_HubMixinBase):
         return out
 
 
+def _dispatch_update(callbacks: Sequence[Any], ctx: Any, event: Any) -> None:
+    """Deliver one committed-update event (FEAT-004) to every callback."""
+    ctx.update_count = event.update_idx
+    for callback in callbacks:
+        hook = getattr(callback, "on_optimizer_update", None)
+        if callable(hook):
+            hook(ctx, event)
+
+
 class _CallbackContext:
     """Mutable state carried across callback invocations.
 
@@ -2689,3 +2830,5 @@ class _CallbackContext:
         self.optimizers: Any = None
         self.trainer: Any = None
         self.deferred_checkpoint_writes: list[Callable[[], None]] = []
+        # FEAT-004: committed optimizer updates so far (objective runs only).
+        self.update_count: Optional[int] = None

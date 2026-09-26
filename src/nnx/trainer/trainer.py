@@ -59,11 +59,15 @@ from ..nn.nn_model import (
     _check_resume_horizon,
     _collect_checkpoint_transforms,
     _component_type,
+    _dispatch_update,
+    _enumerate_with_last,
     _load_resume_source,
     _loader_num_workers,
     _monitored_plateau,
     _monitoring_preflight,
     _named_training_state,
+    _objective_engine,
+    _objective_microbatch,
     _optimizer_topology,
     _plan_component_restore,
     _restore_rng_state,
@@ -117,6 +121,31 @@ _DEFAULT_SCHEDULER_PARAMS = NNSchedulerParams(
     threshold=1e-3,
     min_lr=1e-7,
 )
+
+
+def _objective_window(params: NNTrainerParams) -> int:
+    """The update window of a Trainer objective run: every named optimizer
+    commits together, so their ``accumulate_grad_batches`` must agree."""
+    windows = {getattr(p, "accumulate_grad_batches", 1) for p in params.optims.values()}
+    if len(windows) > 1:
+        raise ValueError(
+            "an objective commits every named optimizer together, so their accumulate_grad_batches must "
+            f"agree; got {sorted(windows)}"
+        )
+    return windows.pop() if windows else 1
+
+
+def _warn_full_precision_objective(model: Any) -> None:
+    """``Trainer`` has no mixed-precision setting — its step functions own
+    AMP — so the shared engine runs a Trainer objective in full precision.
+    Say so when the model asks for mixed precision where it would apply."""
+    if getattr(model.params, "mixed_precision", False) and model.device.type == "cuda":
+        warnings.warn(
+            "Trainer.train(objective=...) runs in full precision: Trainer has no mixed-precision setting, so "
+            "the model's mixed_precision=True is not applied (NNModel.train(objective=...) applies it)",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _primary_name(names) -> str:
@@ -212,10 +241,11 @@ class Trainer:
     def train(
         self,
         params: NNTrainerParams,
-        trainer_step_fn: TrainerStepFn,
+        trainer_step_fn: Optional[TrainerStepFn] = None,
         callbacks: Optional[list[CallbackLike]] = None,
         salt: Optional[str] = None,
         components: Optional[list[Any]] = None,
+        objective: Optional[Callable[[Any], Any]] = None,
     ) -> NNRun:
         """Run the multi-optimizer training loop and return the resulting NNRun.
 
@@ -225,10 +255,18 @@ class Trainer:
                 save_phase_checkpoints, extra_metrics. Schedulers step once
                 per epoch by default; set auto_step_schedulers=False when the
                 custom step function owns scheduler timing.
-            trainer_step_fn: required. `Callable[[TrainerStepContext],
+            trainer_step_fn: `Callable[[TrainerStepContext],
                 NNEvaluationDataPoint]`. The function owns the entire per-batch
                 update — including which optimizers to step, in what order, and
-                with what loss(es). There is no supervised fallback.
+                with what loss(es). There is no supervised fallback: pass it or
+                ``objective``.
+            objective: an objective (FEAT-004, ``nnx.objectives``) in place of
+                ``trainer_step_fn``: the shared update engine accumulates its
+                loss terms over each window (the optimizers'
+                ``accumulate_grad_batches``, which must agree), clips each
+                optimizer's parameters with its own ``grad_clip_norm`` and
+                steps every named optimizer once per committed update,
+                announcing each to ``Callback.on_optimizer_update``.
             callbacks: optional list of Callback instances. The callback
                 context exposes `ctx.optimizer` (primary, sorted-first), plus
                 a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -250,21 +288,30 @@ class Trainer:
 
         Raises:
             ValueError: when params is None, params.train_loader is None,
-                trainer_step_fn is None, or any optim's
-                NNOptimParams.is_valid() returns False.
+                neither or both of trainer_step_fn and objective are given, or
+                any optim's NNOptimParams.is_valid() returns False.
         """
+        # One owner per optimizer update, decided before anything else.
+        if trainer_step_fn is not None and objective is not None:
+            raise ValueError(
+                "pass trainer_step_fn or objective, not both: a step function owns its optimizer updates, an "
+                "objective hands them to NNx's shared update engine"
+            )
+        if objective is not None and not callable(objective):
+            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         if params is None:
             raise ValueError("trainer params must not be None")
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
             )
-        if trainer_step_fn is None:
+        if trainer_step_fn is None and objective is None:
             raise ValueError(
-                "trainer_step_fn is required — Trainer has no default "
+                "trainer_step_fn is required (or pass an objective) — Trainer has no default "
                 "supervised step because multi-optim updates are inherently "
                 "scenario-specific."
             )
+        objective_window = _objective_window(params) if objective is not None else 1
         for name, opt_params in params.optims.items():
             if not opt_params.is_valid():
                 raise ValueError(f"optim {name!r} has invalid config: {opt_params}")
@@ -322,6 +369,8 @@ class Trainer:
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()
         }
+        if objective is not None:
+            _warn_full_precision_objective(self.model)
 
         run = NNRun(
             train=_representative_train_params(params),
@@ -341,6 +390,8 @@ class Trainer:
                 trainer_step_fn=trainer_step_fn,
                 callbacks=callbacks,
                 components=components,
+                objective=objective,
+                objective_window=objective_window,
             )
 
     def _train_impl(
@@ -349,9 +400,11 @@ class Trainer:
         params: NNTrainerParams,
         run: NNRun,
         optimizers: dict[str, torch.optim.Optimizer],
-        trainer_step_fn: TrainerStepFn,
+        trainer_step_fn: Optional[TrainerStepFn],
         callbacks: Optional[list[CallbackLike]],
         components: Optional[list[Any]] = None,
+        objective: Optional[Callable[[Any], Any]] = None,
+        objective_window: int = 1,
     ) -> NNRun:
         """Execute a validated multi-optimizer training session."""
         assert params.train_loader is not None
@@ -382,9 +435,24 @@ class Trainer:
             or monitor is not None
             or any(isinstance(getattr(cb, "monitor", None), MonitorSpec) for cb in normalized_callbacks)
         )
-        registry = ComponentRegistry.discover(normalized_callbacks, trainer_step_fn, explicit=list(components or []))
+        registry = ComponentRegistry.discover(
+            normalized_callbacks, trainer_step_fn, objective, explicit=list(components or [])
+        )
         if tracker is not None:
             registry.register(tracker)  # its best continues across a stateful resume
+        # FEAT-004: an objective's updates belong to the shared engine, which
+        # steps every named optimizer once per committed update; its counters
+        # are component state, so they continue across a stateful resume.
+        engine = None
+        if objective is not None:
+            engine = _objective_engine(
+                objective,
+                optimizers=optimizers,
+                clip_norms={name: getattr(params.optims[name], "grad_clip_norm", None) for name in optimizers},
+                scaler=None,  # Trainer has no mixed-precision setting (see _warn_full_precision_objective)
+                device=self.model.device,
+            )
+            registry.register(engine)
         start_epoch, component_plan, resume_status, rollback = self._resume(
             params, optimizers, schedulers, registry, train_loader
         )
@@ -400,6 +468,9 @@ class Trainer:
         # or ctx.trainer for the multi-optim view.
         ctx.optimizers = optimizers
         ctx.trainer = self
+        if engine is not None:
+            engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            ctx.update_count = engine.commits
 
         idps: list[NNIterationDataPoint] = []
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
@@ -437,6 +508,8 @@ class Trainer:
                     rollback()
                     raise
                 resume_status = replace(resume_status, restored_components=restored)
+            if engine is not None:
+                ctx.update_count = engine.commits  # continues after a stateful resume
             run = run.with_resume_status(resume_status)
             ctx.run = run
             pre_transform_net_state: Optional[dict[str, Any]] = None
@@ -451,17 +524,40 @@ class Trainer:
                 # FEAT-003 whole-epoch summary of the step's records (no named
                 # training metrics: Trainer steps are custom).
                 epoch_summary = _TrainEpochSummary((), None, None) if summarize else None
-                for idx_batch, batch in enumerate(params.train_loader):
-                    step_ctx = TrainerStepContext(
-                        model=self.model,
-                        batch=batch,
-                        optimizers=optimizers,
-                        schedulers=schedulers,
-                        extra_metrics=params.extra_metrics,
-                        batch_idx=idx_batch,
-                        epoch_idx=idx_epoch,
-                    )
-                    train_edp = trainer_step_fn(step_ctx)
+                # Only an objective needs to know the epoch's last batch (to
+                # close a short final window); step functions keep the plain
+                # fetch order.
+                batches = (
+                    _enumerate_with_last(params.train_loader)
+                    if engine is not None
+                    else ((idx, batch, False) for idx, batch in enumerate(params.train_loader))
+                )
+                for idx_batch, batch, is_last_batch in batches:
+                    if engine is not None:
+                        assert objective is not None
+                        train_edp = _objective_microbatch(
+                            engine,
+                            objective,
+                            model=self.model,
+                            batch=batch,
+                            epoch_idx=idx_epoch,
+                            batch_idx=idx_batch,
+                            extra_metrics=params.extra_metrics,
+                            close_window=idx_batch % objective_window == objective_window - 1 or is_last_batch,
+                            epoch_summary=epoch_summary,
+                        )
+                    else:
+                        assert trainer_step_fn is not None
+                        step_ctx = TrainerStepContext(
+                            model=self.model,
+                            batch=batch,
+                            optimizers=optimizers,
+                            schedulers=schedulers,
+                            extra_metrics=params.extra_metrics,
+                            batch_idx=idx_batch,
+                            epoch_idx=idx_epoch,
+                        )
+                        train_edp = trainer_step_fn(step_ctx)
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.model.net, batch))
 
@@ -472,6 +568,7 @@ class Trainer:
                             batch_idx=idx_batch,
                             train_edp=train_edp,
                             lr=optimizers[primary].param_groups[0]["lr"],
+                            update_count=engine.commits if engine is not None else None,
                         )
                     )
                     idx_iter += 1

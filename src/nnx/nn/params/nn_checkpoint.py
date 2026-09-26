@@ -162,6 +162,7 @@ def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
         val_edp=val_edp,
         train_summary=NNEvaluationDataPoint.from_state(summary_state) if summary_state is not None else None,
         selection=MonitorRecord.from_state(selection_state) if selection_state is not None else None,
+        update_count=state.get("update_count"),
     )
 
 

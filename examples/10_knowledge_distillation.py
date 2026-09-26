@@ -16,6 +16,14 @@ labels, the dark-knowledge effect is small or inconsistent.
 Distillation's real benefit shows up on harder real-data tasks with
 class confusion, noisy labels, or extreme student capacity gaps.
 
+**Objective mode (FEAT-004).** ``kd_objective(teacher, ...)`` describes the
+same loss as loss terms with explicit denominators and hands the update to
+NNx's shared update engine, so distillation also gets gradient accumulation
+(exact for uneven microbatches and short windows), mixed precision and
+clipping — the imperative factory refuses the first two.
+``objective_mode()`` below runs it with a short accumulation window and
+checks the one committed update against a full-batch reference.
+
 Run:
     python examples/10_knowledge_distillation.py
 """
@@ -23,10 +31,12 @@ Run:
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Callback,
     Devices,
     Losses,
     Nets,
@@ -37,6 +47,7 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    kd_objective,
     kd_train_step_factory,
     set_seed,
 )
@@ -105,6 +116,67 @@ def _train_params(n_epochs: int, train_loader, val_loader, lr: float = 1e-2):
     )
 
 
+def objective_mode() -> dict:
+    """Bounded demonstration of distillation as an objective (FEAT-004).
+
+    Three samples in microbatches of [2, 1] with ``accumulate_grad(4)``:
+    the window is cut short by the end of the epoch, so the engine commits
+    exactly one update — and it equals one full-batch step on
+    ``alpha · KL_T(teacher ‖ student) · T² + (1 − alpha) · CE`` over all
+    three samples. The teacher's tensors never change.
+    """
+    set_seed(3)
+    teacher = _make_classifier(hidden_dims=[64, 64])
+    set_seed(4)
+    student = _make_classifier(hidden_dims=[16])
+    X, y = torch.randn(3, 8), torch.tensor([0, 2, 1])
+    alpha, temperature = 0.5, 4.0
+
+    # Reference: one SGD step on the full batch, from a copy of the student.
+    reference = _make_classifier(hidden_dims=[16])
+    reference.net.load_state_dict(student.net.state_dict())
+    with torch.no_grad():
+        teacher_logits = teacher.net(X)
+    logits = reference.net(X)
+    soft = F.kl_div(
+        F.log_softmax(logits / temperature, dim=-1),
+        F.softmax(teacher_logits / temperature, dim=-1),
+        reduction="batchmean",
+    ) * (temperature**2)
+    loss = alpha * soft + (1 - alpha) * F.cross_entropy(logits, y)
+    loss.backward()
+    with torch.no_grad():
+        for param in reference.net.parameters():
+            param -= 0.05 * param.grad
+
+    teacher_snapshot = {k: v.clone() for k, v in teacher.net.state_dict().items()}
+    updates = []
+
+    class CountUpdates(Callback):
+        def on_optimizer_update(self, ctx, event):
+            updates.append((event.update_idx, event.microbatches))
+
+    student.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(X[:2], y[:2]), (X[2:], y[2:])],  # uneven microbatches
+            optim=NNOptimParams.builder().sgd(max_lr=0.05, momentum=0.0).accumulate_grad(4).build(),
+            save_phase_checkpoints=False,
+        ),
+        objective=kd_objective(teacher, alpha=alpha, temperature=temperature),
+        callbacks=[CountUpdates()],
+    )
+
+    assert updates == [(1, 2)], updates  # one committed update over both microbatches
+    for key, value in reference.net.state_dict().items():
+        assert torch.allclose(student.net.state_dict()[key], value, rtol=1e-6, atol=1e-7), key
+    for key, value in teacher.net.state_dict().items():
+        assert torch.equal(value, teacher_snapshot[key]), key
+    summary = {"updates": updates, "matches_reference": True}
+    print(f"objective mode: {summary}")
+    return summary
+
+
 def main():
     set_seed(0)
     train_loader, val_loader = _loaders(seed=0)
@@ -147,6 +219,8 @@ def main():
         if not torch.equal(v, teacher_snapshot[k]):
             raise RuntimeError(f"teacher param {k!r} drifted during distillation")
     print("teacher weights unchanged across student training: confirmed")
+
+    objective_mode()
 
 
 if __name__ == "__main__":

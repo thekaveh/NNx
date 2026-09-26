@@ -25,6 +25,11 @@ class NNIterationDataPoint:
     `selection`, the epoch's :class:`~nnx.MonitorRecord` (monitor identity,
     value, status and whether the epoch improved). Both are omitted from
     `state()` otherwise, so legacy history is unchanged.
+
+    **Update counter (FEAT-004).** Objective runs also record
+    `update_count` — the committed optimizer updates so far — distinct from
+    the microbatch counter `iter_idx` and the epoch `epoch_idx`; omitted
+    otherwise.
     """
 
     lr: float
@@ -35,6 +40,7 @@ class NNIterationDataPoint:
     val_edp: Optional[NNEvaluationDataPoint] = None
     train_summary: Optional[NNEvaluationDataPoint] = None
     selection: Optional[MonitorRecord] = None
+    update_count: Optional[int] = None
 
     def with_val_edp(self, value: Optional[NNEvaluationDataPoint]) -> NNIterationDataPoint:
         return replace(self, val_edp=value)
@@ -64,6 +70,8 @@ class NNIterationDataPoint:
             d["train_summary"] = self.train_summary.state()
         if self.selection is not None:
             d["selection"] = self.selection.state()
+        if self.update_count is not None:
+            d["update_count"] = self.update_count
         return d
 
     @staticmethod
@@ -131,12 +139,18 @@ class NNIterationDataPoint:
             val_edp=_optional_edp("val_edp"),
             train_summary=_optional_edp("train_summary"),
             selection=selection,
+            update_count=_optional_int(_field("update_count")),
         )
 
 
 # Scalar NNEvaluationDataPoint.state() keys, flattened to `<prefix>.<name>`
 # CSV columns by NNRun.save (`extra` / `metrics` become `<prefix>.<group>.<key>`).
 _EDP_SCALARS = ("loss", "error", "accuracy", "f1", "recall", "precision", "kind", "count", "status")
+
+
+def _optional_int(v: Any) -> Optional[int]:
+    """CSV reloads integer columns with gaps as floats: map back to int."""
+    return None if v is None else int(v)
 
 
 def _is_nan(v) -> bool:

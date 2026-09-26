@@ -248,7 +248,7 @@ ctx.idps          # running list of all idps so far
 ctx.should_stop   # writable — set True to break out of training
 ```
 
-Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
+Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need; objective runs (§6.5) also call `on_optimizer_update(ctx, event)` once per committed optimizer update. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
 
 `EarlyStopping(monitor=MonitorSpec(...))` tracks a named monitor instead — a declared metric or loss / error on either split, with the rule BEST and plateau scheduling share (§6.4).
 
@@ -284,7 +284,7 @@ model.train(params=train_params, train_step_fn=my_step)
 
 The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`); honoring them is on you. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not yet handled inside paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
+The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not handled inside these imperative paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective` ships for distillation). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
@@ -517,6 +517,80 @@ custom, so training-split declared metrics are unavailable. Without
 `metrics` / `monitor`, serialization, run ids and every legacy selection
 rule are unchanged.
 
+### 6.5. Objectives and the shared update engine
+
+A `train_step_fn` is fully responsible for its update — forward, backward,
+accumulation, mixed precision, clipping and `optimizer.step` — so every
+paradigm re-implements those mechanics, and the factories built on
+`finalize_step` refuse AMP and gradient accumulation outright. An
+**objective** (`nnx.objectives`) only describes the loss and hands the update
+to one shared engine, used by `NNModel.train` and `Trainer.train` alike:
+
+```python
+from nnx import kd_objective, supervised_objective
+
+student.train(params=train_params, objective=kd_objective(teacher, alpha=0.5, temperature=4.0))
+model.train(params=train_params, objective=supervised_objective())
+Trainer(model).train(params=trainer_params, objective=supervised_objective())
+```
+
+For each microbatch an objective returns an `ObjectiveResult` of
+`LossTerm`s — a differentiable **numerator** (the sum of the term over its
+samples) and either an explicit **denominator** (`reduction="mean"`: how many
+samples, or how much total weight, the numerator sums over; `0` when every
+sample is masked) or none (`reduction="sum"`). The engine never infers a
+reduction from a scalar, and a term that switches between summed and
+normalized within a window fails. Each term is back-propagated into its own
+gradient buffer (a window of one microbatch — the default — takes a single
+backward pass through its combined loss, and a term of weight `0` is never
+back-propagated); at the end of the update window — `accumulate_grad_batches`
+microbatches, or fewer when the epoch ends — a normalized term becomes
+`Σ numerators / Σ denominators` and a summed one `Σ numerators`, so uneven
+microbatches, a short final window and ignored targets give exactly the
+full-batch update (numerators 8 and 1 over counts 2 and 1 average to 3; as
+sums they total 9). The engine then runs the mixed-precision protocol in
+order — the objective's forward under autocast, `unscale`, clipping,
+`step`, `update` — and applies the objective's non-finite policy:
+`nonfinite="fail"` (default) raises `FloatingPointError` before anything is
+stepped; `"skip"` drops the window's gradients. A window whose every term is
+masked takes no update, and a `GradScaler`-skipped step is always a quiet
+skip. Only parameters that require gradients when a microbatch runs are
+differentiated, so freezing or unfreezing between epochs (gradual unfreezing)
+trains exactly as the default step does.
+
+Each **committed** optimizer update — never a microbatch, a masked window or
+a skipped step — fires one detached `UpdateEvent` (optimizer name, that
+optimizer's update index, epoch and batch where the window closed,
+microbatches, term values) to `Callback.on_optimizer_update(ctx, event)`;
+`ctx.update_count` and each record's `update_count` carry the run's
+committed-update counter, distinct from the microbatch counter `iter_idx` and
+the epoch. The counters are checkpointed component state (`nnx.update_engine`,
+§14.2): a stateful resume continues them, a `weights_only` resume starts them
+at zero. The whole-epoch training loss (§6.4) of an objective run applies the
+same rule to the whole epoch — each term's summed numerators over its summed
+denominators — and, as with step functions, declared metrics are recorded on
+validation only. `SupervisedObjective` is the model's `loss_fn` normalized by its
+own denominator (non-ignored targets, class weights; summed for a
+`reduction="sum"` loss; a `TaskSpec`'s masked loss when declared).
+`KDObjective` splits distillation into a `"distillation"` term (the softened
+KL summed over rows, normalized by their count, weight `alpha`) and a
+`"supervised"` term (weight `1 − alpha`), which is exactly
+`alpha · KL_batchmean + (1 − alpha) · L_hard` of the full batch however the
+rows are split. Any callable `(ObjectiveContext) -> ObjectiveResult` is an
+objective; subclass `Objective` to declare `nonfinite`.
+
+A run has exactly one update owner: passing both `train_step_fn` (or
+`trainer_step_fn`) and `objective` fails before any callback runs, any
+loader is read or any parameter changes. In `Trainer` the engine steps every
+named optimizer once per committed update — each clipped with its own
+`grad_clip_norm`, all sharing one `accumulate_grad_batches` — and emits one
+event per named optimizer. `Trainer` has no mixed-precision setting (its step
+functions own AMP), so it runs objectives in full precision and warns when
+the model asks for `mixed_precision` on CUDA; `NNModel.train` applies it. As
+with the default step, `NNModel.train` rejects an objective run on a
+low-rank-surgery topology it cannot reconstruct. Imperative step functions and
+`finalize_step` are unchanged.
+
 ## 7. Fine-tuning (transfer learning)
 
 The standard transfer-learning recipe — "load pretrained weights, freeze most of the model, train only the head" — has three moving parts in NNx, all under `nnx.finetune`:
@@ -642,7 +716,7 @@ The Trainer enforces **strict** `param_groups` semantics — each optimizer owns
 
 ### 8.2. No default step
 
-There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly: the `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer), while the Trainer owns the epoch loop and steps each registered scheduler once per epoch — unless `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Trainer-level `extra_metrics` are `callable(y_true, y_pred)`; the built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches.
+There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly: the `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer), while the Trainer owns the epoch loop and steps each registered scheduler once per epoch — unless `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Trainer-level `extra_metrics` are `callable(y_true, y_pred)`; the built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively pass `objective=` (§6.5) instead of a step function: the shared update engine then steps every named optimizer once per committed update.
 
 ### 8.3. NNRun integration
 
@@ -750,6 +824,8 @@ student.train(params=train_params, train_step_fn=step_fn)
 ```
 
 The factory **freezes the teacher's parameters and sets its net to eval mode** on call — teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard` — the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`. The hard-label term uses the student's `loss_fn` (native NLL gets the same internal log-softmax adaptation as the supervised loop, so CE and NLL students train identically from the same weights); the soft KL term always works on raw logits. EDP reports the combined loss and student top-1 error.
+
+`kd_objective(teacher, alpha=..., temperature=...)` is the same loss as an objective (§6.5): passed as `student.train(..., objective=...)`, it gains gradient accumulation (exact for uneven microbatches and short windows), mixed precision and clipping from the shared update engine — see `examples/10_knowledge_distillation.py::objective_mode`.
 
 ### 10.2. SimCLR contrastive
 

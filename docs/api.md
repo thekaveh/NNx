@@ -296,7 +296,7 @@ Returns ``path`` so calls can be chained.
 ##### `nnx.nn.nn_model.NNModel.train`
 
 ```python
-nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None) -> 'NNRun'
+nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None) -> 'NNRun'
 ```
 
 Train the model and return its persisted run history.
@@ -322,6 +322,14 @@ Args:
         Callbacks and step functions that implement the protocol
         (``EarlyStopping``, the JEPA step) are registered
         automatically; names must be unique.
+    objective: Optional objective (FEAT-004, ``nnx.objectives``) —
+        a callable returning loss terms with explicit denominators.
+        NNx's shared update engine then owns backward,
+        accumulation (``accumulate_grad_batches``, exact for uneven
+        microbatches and masks), mixed precision, clipping and the
+        optimizer step, firing ``Callback.on_optimizer_update`` once
+        per committed update. Mutually exclusive with
+        ``train_step_fn``.
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
@@ -664,7 +672,7 @@ configuration on disk.
 ##### `nnx.trainer.trainer.Trainer.train`
 
 ```python
-nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'TrainerStepFn', callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None) -> 'NNRun'
+nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'Optional[TrainerStepFn]' = None, callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None) -> 'NNRun'
 ```
 
 Run the multi-optimizer training loop and return the resulting NNRun.
@@ -678,10 +686,18 @@ Args:
         save_phase_checkpoints, extra_metrics. Schedulers step once
         per epoch by default; set auto_step_schedulers=False when the
         custom step function owns scheduler timing.
-    trainer_step_fn: required. `Callable[[TrainerStepContext],
+    trainer_step_fn: `Callable[[TrainerStepContext],
         NNEvaluationDataPoint]`. The function owns the entire per-batch
         update — including which optimizers to step, in what order, and
-        with what loss(es). There is no supervised fallback.
+        with what loss(es). There is no supervised fallback: pass it or
+        ``objective``.
+    objective: an objective (FEAT-004, ``nnx.objectives``) in place of
+        ``trainer_step_fn``: the shared update engine accumulates its
+        loss terms over each window (the optimizers'
+        ``accumulate_grad_batches``, which must agree), clips each
+        optimizer's parameters with its own ``grad_clip_norm`` and
+        steps every named optimizer once per committed update,
+        announcing each to ``Callback.on_optimizer_update``.
     callbacks: optional list of Callback instances. The callback
         context exposes `ctx.optimizer` (primary, sorted-first), plus
         a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -703,8 +719,8 @@ Returns:
 
 Raises:
     ValueError: when params is None, params.train_loader is None,
-        trainer_step_fn is None, or any optim's
-        NNOptimParams.is_valid() returns False.
+        neither or both of trainer_step_fn and objective are given, or
+        any optim's NNOptimParams.is_valid() returns False.
 ```
 
 
@@ -2109,6 +2125,158 @@ nnx.monitors.registered_metrics() -> 'tuple[tuple[str, int], ...]'
 Every registered ``(id, version)``, sorted.
 
 
+### 2.9. Objectives and the shared update engine (`nnx.objectives`)
+
+#### `nnx.objectives.LossTerm`
+
+```python
+class nnx.objectives.LossTerm(name: 'str', numerator: 'torch.Tensor', denominator: 'Optional[Union[int, float]]' = None, reduction: 'str' = 'mean', weight: 'float' = 1.0) -> 'None'
+```
+
+One named part of an objective's loss for one microbatch.
+
+**Details**
+
+```text
+Args:
+    name: identifies the term across the microbatches of a window.
+    numerator: differentiable scalar — the **sum** of the term over its
+        samples (or, for ``reduction="sum"``, the term's total).
+    denominator: for ``reduction="mean"``, the number (or total weight)
+        of samples ``numerator`` sums over — ``0`` when every sample is
+        masked; must be ``None`` for ``reduction="sum"``.
+    reduction: ``"mean"`` (divided by the window-total denominator) or
+        ``"sum"`` (the window total). A term keeps its reduction for
+        the whole window; mixing them fails.
+    weight: finite factor applied to the term's window value.
+```
+
+##### `nnx.objectives.LossTerm.value`
+
+```python
+property nnx.objectives.LossTerm.value
+```
+
+This microbatch's own value (``None`` when fully masked).
+
+
+#### `nnx.objectives.ObjectiveContext`
+
+```python
+class nnx.objectives.ObjectiveContext(model: 'NNModel', batch: 'Any', epoch_idx: 'int', batch_idx: 'int', extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'None'
+```
+
+What an objective sees for one microbatch.
+
+
+#### `nnx.objectives.ObjectiveResult`
+
+```python
+class nnx.objectives.ObjectiveResult(terms: 'Sequence[LossTerm]', record: 'Optional[NNEvaluationDataPoint]' = None) -> 'None'
+```
+
+An objective's output: the loss terms and, optionally, the microbatch's metric record (its ``loss`` is filled from the terms when absent).
+
+##### `nnx.objectives.ObjectiveResult.loss`
+
+```python
+nnx.objectives.ObjectiveResult.loss(self) -> 'Optional[float]'
+```
+
+The microbatch's weighted loss over its unmasked terms.
+
+
+#### `nnx.objectives.Objective`
+
+```python
+class nnx.objectives.Objective(*, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+Base class for objectives: override :meth:`__call__`.
+
+**Details**
+
+```text
+``nonfinite`` (``"fail"`` default, or ``"skip"``) is the engine's policy
+for a non-finite loss term or gradient. Any callable
+``(ObjectiveContext) -> ObjectiveResult`` works as an objective; a plain
+function uses ``"fail"``.
+```
+
+
+#### `nnx.objectives.SupervisedObjective`
+
+```python
+class nnx.objectives.SupervisedObjective(*, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+The standard supervised loss as an objective: the model's ``loss_fn`` on its outputs, normalized by the loss's own denominator (non-ignored targets, class weights) — or summed for a ``reduction="sum"`` loss — and, with a ``TaskSpec``, the task's masked loss over its valid targets.
+
+
+#### `nnx.objectives.KDObjective`
+
+```python
+class nnx.objectives.KDObjective(teacher: 'NNModel', *, alpha: 'float' = 0.5, temperature: 'float' = 4.0, nonfinite: 'str' = 'fail')
+```
+
+Hinton knowledge distillation as an objective.
+
+**Details**
+
+```text
+Two terms: ``"distillation"`` — the temperature-softened
+``KL(teacher ‖ student)`` summed over the rows and normalized by their
+count, scaled by ``T²`` (weight ``alpha``) — and ``"supervised"`` —
+the student's loss on the labels with its own denominator (weight
+``1 − alpha``). Over a window this is exactly
+``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
+the rows are split into microbatches or targets are ignored. The teacher
+is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
+and never updated.
+```
+
+
+#### `nnx.objectives.supervised_objective`
+
+```python
+nnx.objectives.supervised_objective(*, nonfinite: 'str' = 'fail') -> 'SupervisedObjective'
+```
+
+The standard supervised loss as an objective (see :class:`SupervisedObjective`).
+
+
+#### `nnx.objectives.kd_objective`
+
+```python
+nnx.objectives.kd_objective(teacher: 'NNModel', *, alpha: 'float' = 0.5, temperature: 'float' = 4.0, nonfinite: 'str' = 'fail') -> 'KDObjective'
+```
+
+Knowledge distillation as an objective (see :class:`KDObjective`) — the objective counterpart of ``kd_train_step_factory``, which stays available (and unchanged) as the imperative step.
+
+
+#### `nnx.objectives.UpdateEvent`
+
+```python
+class nnx.objectives.UpdateEvent(optimizer: 'str', update_idx: 'int', epoch_idx: 'int', batch_idx: 'int', microbatches: 'int', losses: 'Mapping[str, float]', loss: 'float') -> 'None'
+```
+
+One committed optimizer update (detached values only).
+
+**Details**
+
+```text
+Attributes:
+    optimizer: the optimizer that stepped (``"default"`` for
+        ``NNModel.train``; the name for ``Trainer``).
+    update_idx: this optimizer's committed updates so far (1-based).
+    epoch_idx / batch_idx: where the window closed.
+    microbatches: microbatches the update accumulated.
+    losses: each term's window value (normalized terms divided by their
+        window-total denominator).
+    loss: the weighted total.
+```
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -3469,7 +3637,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint`
 
 ```python
-class nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint(*, lr: 'float', iter_idx: 'int', epoch_idx: 'int', batch_idx: 'int', train_edp: 'NNEvaluationDataPoint', val_edp: 'Optional[NNEvaluationDataPoint]' = None, train_summary: 'Optional[NNEvaluationDataPoint]' = None, selection: 'Optional[MonitorRecord]' = None) -> 'None'
+class nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint(*, lr: 'float', iter_idx: 'int', epoch_idx: 'int', batch_idx: 'int', train_edp: 'NNEvaluationDataPoint', val_edp: 'Optional[NNEvaluationDataPoint]' = None, train_summary: 'Optional[NNEvaluationDataPoint]' = None, selection: 'Optional[MonitorRecord]' = None, update_count: 'Optional[int]' = None) -> 'None'
 ```
 
 One row in the per-iteration training log.
@@ -3491,6 +3659,11 @@ batch's own denominator, declared metrics over the full sample) — and
 `selection`, the epoch's :class:`~nnx.MonitorRecord` (monitor identity,
 value, status and whether the epoch improved). Both are omitted from
 `state()` otherwise, so legacy history is unchanged.
+
+**Update counter (FEAT-004).** Objective runs also record
+`update_count` — the committed optimizer updates so far — distinct from
+the microbatch counter `iter_idx` and the epoch `epoch_idx`; omitted
+otherwise.
 ```
 
 ##### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint.with_val_edp`
@@ -4968,6 +5141,14 @@ nnx.nn.callbacks.Callback.on_train_end(self, ctx: '_CallbackContext') -> 'None'
 ```
 
 No public description is currently available.
+
+##### `nnx.nn.callbacks.Callback.on_optimizer_update`
+
+```python
+nnx.nn.callbacks.Callback.on_optimizer_update(self, ctx: '_CallbackContext', event: 'Any') -> 'None'
+```
+
+Called once per committed optimizer update of an objective run (FEAT-004) — never per microbatch, for an all-masked window or a skipped step. ``event`` is a detached ``nnx.objectives.UpdateEvent`` (optimizer name, its update index, epoch / batch, microbatches, loss values); ``ctx.update_count`` is the run's committed-update count.
 
 ##### `nnx.nn.callbacks.Callback.checkpoint_transforms`
 
