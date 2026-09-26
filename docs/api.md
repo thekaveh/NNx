@@ -1,4 +1,4 @@
-# 11. API Reference
+# 12. API Reference
 
 Generated from runtime signatures and source docstrings as portable Markdown so the same reference is readable in the repository, on the documentation site, and in the wiki. Sections are ordered from foundational APIs to specialized modules.
 
@@ -2525,6 +2525,395 @@ nnx.models.module_topology(module: 'nn.Module') -> 'str'
 ```
 
 Fingerprint of ``module``'s state-dict names, shapes and dtypes plus its ``repr`` (layer hyperparameters). Uninitialized lazy parameters (``nn.LazyLinear`` before its first forward) count by name only.
+
+
+### 2.11. Typed decisions (`nnx.decisions`)
+
+#### `nnx.decisions.Option`
+
+```python
+class nnx.decisions.Option(id: 'str', description: 'str') -> 'None'
+```
+
+One answer of a :class:`Choice` or one level of a :class:`Score`.
+
+**Details**
+
+```text
+``id`` is bookkeeping — how results are keyed, never shown to a model;
+``description`` is the model-facing text.
+```
+
+
+#### `nnx.decisions.Choice`
+
+```python
+class nnx.decisions.Choice(prompt: 'str', options: 'tuple[Option, ...]') -> 'None'
+```
+
+Pick one of 2+ options; answered by a distribution over the options.
+
+##### `nnx.decisions.Choice.option_ids`
+
+```python
+property nnx.decisions.Choice.option_ids
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.Choice.state`
+
+```python
+nnx.decisions.Choice.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.Choice.model_view`
+
+```python
+nnx.decisions.Choice.model_view(self) -> 'dict[str, Any]'
+```
+
+What a model may see: the prompt and the option texts in order — never the bookkeeping ids.
+
+
+#### `nnx.decisions.Boolean`
+
+```python
+class nnx.decisions.Boolean(prompt: 'str') -> 'None'
+```
+
+A yes / no question; answered by one probability ``p_true``.
+
+##### `nnx.decisions.Boolean.state`
+
+```python
+nnx.decisions.Boolean.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.Boolean.model_view`
+
+```python
+nnx.decisions.Boolean.model_view(self) -> 'dict[str, Any]'
+```
+
+What a model may see: the prompt and the option texts in order — never the bookkeeping ids.
+
+
+#### `nnx.decisions.Score`
+
+```python
+class nnx.decisions.Score(prompt: 'str', levels: 'tuple[Option, ...]') -> 'None'
+```
+
+Place the input on 2+ ordered levels (lowest first); answered by a distribution over the levels. The levels are **ordinal**: their order is meaningful, their spacing is not.
+
+##### `nnx.decisions.Score.option_ids`
+
+```python
+property nnx.decisions.Score.option_ids
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.Score.state`
+
+```python
+nnx.decisions.Score.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.Score.model_view`
+
+```python
+nnx.decisions.Score.model_view(self) -> 'dict[str, Any]'
+```
+
+What a model may see: the prompt and the option texts in order — never the bookkeeping ids.
+
+
+#### `nnx.decisions.question_from_state`
+
+```python
+nnx.decisions.question_from_state(state: 'Mapping[str, Any]') -> 'Union[Choice, Boolean, Score]'
+```
+
+Rebuild a question from :meth:`Question.state`, by its ``kind``; malformed state raises :class:`InvalidDecisionRequest`.
+
+
+#### `nnx.decisions.ChoiceResult`
+
+```python
+class nnx.decisions.ChoiceResult(question_digest: 'str', distribution: 'tuple[tuple[str, float], ...]', provider: 'Optional[str]' = None, raw: 'Any' = None) -> 'None'
+```
+
+A validated answer to a :class:`Choice`: ``distribution`` in the question's option order. ``raw`` is the provider's own output, kept apart from the normalized fields (and from equality).
+
+##### `nnx.decisions.ChoiceResult.probabilities`
+
+```python
+nnx.decisions.ChoiceResult.probabilities(self) -> 'dict[str, float]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.ChoiceResult.top`
+
+```python
+property nnx.decisions.ChoiceResult.top
+```
+
+The most probable option id (the first one on ties).
+
+
+#### `nnx.decisions.BooleanResult`
+
+```python
+class nnx.decisions.BooleanResult(question_digest: 'str', p_true: 'float', provider: 'Optional[str]' = None, raw: 'Any' = None) -> 'None'
+```
+
+A validated answer to a :class:`Boolean`: one ``p_true`` in ``[0, 1]``.
+
+##### `nnx.decisions.BooleanResult.p_false`
+
+```python
+property nnx.decisions.BooleanResult.p_false
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.ScoreResult`
+
+```python
+class nnx.decisions.ScoreResult(question_digest: 'str', distribution: 'tuple[tuple[str, float], ...]', provider: 'Optional[str]' = None, vendor_score: 'Optional[float]' = None, raw: 'Any' = None) -> 'None'
+```
+
+A validated answer to a :class:`Score`: ``distribution`` over the levels in the question's order (lowest first).
+
+**Details**
+
+```text
+:attr:`expected_index` is ``sum(i * p_i)`` over zero-based levels — an
+**ordinal** summary (a position between levels), not an interval-scale
+score: the levels' spacing is undefined. A provider's own numeric
+score, if it reports one, stays in ``vendor_score`` and is never mixed
+into the distribution.
+```
+
+##### `nnx.decisions.ScoreResult.probabilities`
+
+```python
+nnx.decisions.ScoreResult.probabilities(self) -> 'dict[str, float]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.ScoreResult.expected_index`
+
+```python
+property nnx.decisions.ScoreResult.expected_index
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.validate_response`
+
+```python
+nnx.decisions.validate_response(question: 'Union[Choice, Boolean, Score]', response: 'Any', *, provider: 'Optional[str]' = None, raw: 'Any' = None, vendor_score: 'Optional[float]' = None) -> 'DecisionResult'
+```
+
+Validate a provider's keyed output against ``question`` and return the normalized result.
+
+**Details**
+
+```text
+For a :class:`Choice` or :class:`Score`, ``response`` maps option ids to
+probabilities (a mapping, or ``(id, p)`` pairs in any order). The result
+is reordered into the question's order; a missing, duplicate, unknown or
+unlabeled (empty / non-string) id, a probability outside ``[0, 1]`` and
+a distribution not summing to 1 within :data:`PROBABILITY_TOLERANCE`
+raise :class:`InvalidDecisionResponse` — a malformed distribution is
+never renormalized. For a :class:`Boolean`, ``response`` is ``p_true``
+or ``{"true": p, "false": 1 - p}``. ``raw`` (the provider's own output)
+and ``vendor_score`` (a :class:`Score` provider's own number) are kept
+apart from the normalized fields.
+```
+
+
+#### `nnx.decisions.Capabilities`
+
+```python
+class nnx.decisions.Capabilities(primitives: 'frozenset[str]', modalities: 'frozenset[str]', dynamic_labels: 'bool' = False, labels: 'Optional[tuple[str, ...]]' = None, max_batch: 'Optional[int]' = None, inference: 'bool' = True, training: 'bool' = False, export: 'bool' = False) -> 'None'
+```
+
+What a provider declares it can do. :meth:`check` rejects anything else with :class:`UnsupportedCapability` before any model call or network I/O.
+
+**Details**
+
+```text
+Attributes:
+    primitives: the decision kinds it answers (``"choice"``,
+        ``"boolean"``, ``"score"``).
+    modalities: the input kinds it reads (e.g. ``"tensor"``,
+        ``"text"``).
+    dynamic_labels: whether a request may bring any option set; ``False``
+        means the options must map exactly onto ``labels``.
+    labels: the fixed label space when ``dynamic_labels`` is ``False``.
+    max_batch: the most inputs per call (``None``: unbounded).
+    inference / training / export: whether the backend can answer, be
+        trained and be exported. A hosted provider declares inference
+        only.
+```
+
+##### `nnx.decisions.Capabilities.check`
+
+```python
+nnx.decisions.Capabilities.check(self, question: 'Question', *, modality: 'str', batch_size: 'int', label_ids: 'Optional[Sequence[str]]' = None) -> 'None'
+```
+
+Raise :class:`UnsupportedCapability` unless this provider serves ``question`` for a batch of ``batch_size`` ``modality`` inputs.
+
+**Details**
+
+```text
+Without dynamic labels, a Choice's or Score's ids — or ``label_ids``,
+the provider's own mapping of them — must be exactly the declared
+``labels``, in any order.
+```
+
+
+#### `nnx.decisions.DecisionProvider`
+
+```python
+class nnx.decisions.DecisionProvider(*args, **kwargs)
+```
+
+Anything that answers typed decision questions: it declares :class:`Capabilities` and answers one question for a batch of inputs with validated results, one per input.
+
+##### `nnx.decisions.DecisionProvider.capabilities`
+
+```python
+nnx.decisions.DecisionProvider.capabilities(self) -> 'Capabilities'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.DecisionProvider.decide`
+
+```python
+nnx.decisions.DecisionProvider.decide(self, question: 'Question', inputs: 'Any') -> 'list[DecisionResult]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.FixedHeadProvider`
+
+```python
+class nnx.decisions.FixedHeadProvider(model: 'NNModel', labels: 'Optional[Sequence[str]]' = None, option_map: 'Optional[Mapping[str, str]]' = None, ordinal: 'bool' = False, max_batch: 'Optional[int]' = None, name: 'str' = 'nnx.fixed_head') -> 'None'
+```
+
+A trained NNx classifier as a decision provider.
+
+**Details**
+
+```text
+The head fixes the label space and the primitives it justifies: a
+categorical head (softmax over its classes) answers :class:`Choice` —
+and :class:`Score` when constructed with ``ordinal=True``, whose levels
+must then follow the head's class order — and a single-logit Bernoulli
+head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
+:class:`Boolean`. Probabilities come from the model's ``predict_proba``
+(FEAT-001), which evaluates in eval mode and restores every submodule's
+training mode; they are computed in float64 from the returned logits,
+so half-precision models meet the ``1e-6`` tolerance.
+
+A request's option ids must be exactly the head's ``labels`` (in any
+order), or ``option_map`` must map them one-to-one onto the labels; an
+unseen or missing label raises :class:`UnsupportedCapability` before
+:attr:`model_calls` advances. A label count that does not fit the head
+is rejected at construction when the head's width is known (a task's
+count or a built-in net's ``output_dim``), otherwise with
+:class:`InvalidDecisionRequest` on the first call. Results come back in
+the request's option order with each row's logits (a copy) as ``raw``;
+an empty batch returns ``[]`` without calling the model.
+
+Args:
+    model: the trained :class:`~nnx.NNModel`.
+    labels: one name per output class, in column order; defaults to the
+        model's ``TaskSpec`` labels, and must equal them when both exist.
+    option_map: request option id → head label (a bijection).
+    ordinal: whether the class order is meaningful (enables Score).
+    max_batch: the most inputs per call.
+    name: the provider name recorded on results.
+```
+
+##### `nnx.decisions.FixedHeadProvider.capabilities`
+
+```python
+nnx.decisions.FixedHeadProvider.capabilities(self) -> 'Capabilities'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.FixedHeadProvider.decide`
+
+```python
+nnx.decisions.FixedHeadProvider.decide(self, question: 'Question', inputs: 'Any') -> 'list[DecisionResult]'
+```
+
+Answer ``question`` for every row of ``inputs`` (a tensor, an array or a tuple of them).
+
+
+#### `nnx.decisions.DecisionError`
+
+```python
+class nnx.decisions.DecisionError
+```
+
+Base class of every decision-API error.
+
+
+#### `nnx.decisions.UnsupportedCapability`
+
+```python
+class nnx.decisions.UnsupportedCapability
+```
+
+A request the provider cannot serve — a primitive, modality, batch size or label space it does not declare. Raised before any model call or network I/O.
+
+
+#### `nnx.decisions.InvalidDecisionRequest`
+
+```python
+class nnx.decisions.InvalidDecisionRequest
+```
+
+A malformed question: too few options, duplicate or empty ids, empty text.
+
+
+#### `nnx.decisions.InvalidDecisionResponse`
+
+```python
+class nnx.decisions.InvalidDecisionResponse
+```
+
+A provider response that does not fit its question: missing, duplicate, unknown or unlabeled ids, or a probability outside ``[0, 1]`` or a distribution that does not sum to 1 (never renormalized).
+
+
+#### `nnx.decisions.ProviderFailure`
+
+```python
+class nnx.decisions.ProviderFailure
+```
+
+The provider's backend failed while answering a supported, valid request (the original error is the ``__cause__``).
 
 
 ## 3. Params

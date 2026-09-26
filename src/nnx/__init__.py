@@ -24,7 +24,20 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import components, embeddings, interop, models, monitors, objectives, optimizers, prediction, prune, tasks, viz
+from . import (
+    components,
+    decisions,
+    embeddings,
+    interop,
+    models,
+    monitors,
+    objectives,
+    optimizers,
+    prediction,
+    prune,
+    tasks,
+    viz,
+)
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
@@ -335,6 +348,8 @@ __all__ = [
     "load_pretrained",
     "LoadPretrainedResult",
     "NNParamGroupSpec",
+    # Provider-neutral typed decisions (FEAT-009)
+    "decisions",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

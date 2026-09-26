@@ -1,4 +1,4 @@
-# 14. Architecture
+# 15. Architecture
 
 ## 1. Package and lifecycle overview
 
@@ -6,7 +6,11 @@ NNx is organized around two public entry points (`NNModel` / `Trainer`), a
 training-hook family (`train_step_fn`, `eval_step_fn`, and
 `trainer_step_fn`), and content-addressed persistence under `runs/<id>/`.
 Hook-producing modules inject behavior into the orchestrators; model transforms,
-exporters, inference helpers, and diagnostics compose around them. The training
+exporters, inference helpers, and diagnostics compose around them. The
+inference branch, `nnx.decisions`, sits beside the training path: typed
+questions go to a `DecisionProvider` (for a trained classifier,
+`FixedHeadProvider` over `NNModel.predict_proba`) and come back as validated
+results ([Typed decisions](decisions.md)). The training
 loop owns callback dispatch, once-per-epoch scheduler updates, phase checkpoint
 cadence, and incremental `NNRun` persistence.
 
