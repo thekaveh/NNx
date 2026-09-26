@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ..enum.devices import Devices
 from ..enum.losses import Losses
 from ..enum.nets import Nets
 
 if TYPE_CHECKING:
+    from ...models import ModelSpec, RuntimeModule
     from ...tasks import TaskSpec
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNModelParams:
-    net: Nets
+    # What builds the network (FEAT-006): a built-in ``Nets`` member (with
+    # ``NNParams``), a registered ``nnx.models.ModelSpec``, or — filled in by
+    # ``NNModel(module=...)`` when left ``None`` — the ``RuntimeModule``
+    # descriptor of a caller-owned module.
+    net: Optional[Union[Nets, ModelSpec, RuntimeModule]] = None
     device: Devices = Devices.CPU
     loss: Losses = Losses.CROSS_ENTROPY
 
@@ -27,6 +32,14 @@ class NNModelParams:
     task: Optional[TaskSpec] = None
 
     def __post_init__(self) -> None:
+        if self.net is not None and not isinstance(self.net, Nets):
+            from ...models import ModelSpec, RuntimeModule
+
+            if not isinstance(self.net, (ModelSpec, RuntimeModule)):
+                raise TypeError(
+                    "NNModelParams.net must be a Nets member, an nnx.models.ModelSpec or a RuntimeModule, "
+                    f"got {type(self.net).__name__}"
+                )
         if self.task is not None:
             from ...tasks import TaskSpec
 
@@ -40,9 +53,19 @@ class NNModelParams:
     def is_valid(self) -> bool:
         return self.net is not None and self.device is not None and self.loss is not None
 
+    @property
+    def builtin(self) -> bool:
+        """Whether the net is a built-in ``Nets`` member (FEAT-006)."""
+        return isinstance(self.net, Nets)
+
     def state(self) -> dict:
+        if self.net is None:
+            raise ValueError("NNModelParams.net is unset; NNModel(module=...) fills it in for a wrapped module")
+        # Built-in nets keep their plain string (run ids unchanged); a
+        # registered or runtime descriptor is a mapping tagged by `kind`.
+        net: Any = str(self.net) if isinstance(self.net, Nets) else self.net.state()
         d: dict[str, object] = dict(
-            net=str(self.net),
+            net=net,
             loss=str(self.loss),
             device=str(self.device),
         )
@@ -66,8 +89,15 @@ class NNModelParams:
             from ...tasks import TaskSpec
 
             task = TaskSpec.from_state(task_state)
+        raw_net = state["net"]
+        if isinstance(raw_net, str):
+            net: Union[Nets, ModelSpec, RuntimeModule] = Nets(raw_net)
+        else:
+            from ...models import descriptor_from_state
+
+            net = descriptor_from_state(raw_net)
         return NNModelParams(
-            net=Nets(state["net"]),
+            net=net,
             loss=Losses(state["loss"]),
             device=Devices(state["device"]),
             mixed_precision=state.get("mixed_precision", False),

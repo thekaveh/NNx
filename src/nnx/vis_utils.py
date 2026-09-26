@@ -237,6 +237,9 @@ class VisUtils:
         title_size: int = TITLE_SIZE,
         label_size: int = LABEL_SIZE,
         margin_size=MARGIN_SIZE,
+        *,
+        module: Any = None,
+        batch_adapter: Any = None,
     ):
         """Project the first `n_samples` test logits of `checkpoint` to 2D
         via t-SNE and render them colored by ground-truth class.
@@ -244,11 +247,22 @@ class VisUtils:
         Useful for eyeballing class separability of an intermediate
         checkpoint — pass the BEST checkpoint to see how well-trained the
         decision space ended up. Returns the Plotly Figure.
+
+        FEAT-006: a registered module is rebuilt through its factory and
+        batches are split by its batch adapter (``batch_adapter=`` overrides
+        it). A runtime-only checkpoint needs ``module=`` — the weights are
+        loaded into it (its identity, state keys and training modes are
+        kept) — and fails with ``MissingModelFactoryError`` before any data
+        is read otherwise.
         """
         if n_samples < 2:
             raise ValueError("two_dim_tsne_checkpoint_logits requires n_samples >= 2")
 
-        model = cast(Any, NNModel.from_checkpoint(checkpoint=checkpoint))
+        # Passed only when set, so duck-typed NNModel stand-ins keep working.
+        reload_kwargs = {
+            key: value for key, value in (("module", module), ("batch_adapter", batch_adapter)) if value is not None
+        }
+        model = cast(Any, NNModel.from_checkpoint(checkpoint=checkpoint, **reload_kwargs))
 
         ts = [t for t in range(ds.output_dim)]
         cs = VisUtils.generate_colors(n=ds.output_dim)
@@ -261,10 +275,18 @@ class VisUtils:
         remaining = n_samples
         test_loader = cast(Any, ds.test_loader)
         for test_batch in test_loader:
-            test_X, test_Y = model.net.unpack_batch(test_batch)
-            test_Y_hat = model.predict(X=test_X)
-            take = min(remaining, len(test_Y_hat.logits))
-            logits_chunks.append(np.asarray(test_Y_hat.logits)[:take])
+            if getattr(model, "_batch_adapter", None) is None:
+                test_X, test_Y = model.net.unpack_batch(test_batch)  # built-in nets
+                batch_logits = np.asarray(model.predict(X=test_X).logits)
+            else:
+                # FEAT-006: the adapter splits the batch (positional and / or
+                # keyword inputs) inside the shared, mode-restoring predict path.
+                test_Y = model._split_batch(test_batch)[2]
+                batch_logits, _ = model._predict_logits(
+                    [test_batch], caller="two_dim_tsne_checkpoint_logits()", batches=True
+                )
+            take = min(remaining, len(batch_logits))
+            logits_chunks.append(batch_logits[:take])
             target_chunks.append(test_Y.detach().cpu().numpy()[:take])
             remaining -= take
             if remaining == 0:

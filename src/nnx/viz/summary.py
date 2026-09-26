@@ -12,7 +12,7 @@ already rely on.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import torch
 from torch import nn
@@ -27,7 +27,8 @@ def summary(
     model: Union[nn.Module, NNModel],
     *,
     input_size: tuple[int, ...] | None = None,
-    input_data: Union[torch.Tensor, tuple, list, None] = None,
+    input_data: Union[torch.Tensor, tuple, list, dict, None] = None,
+    batch: Any = None,
     depth: int = 4,
     col_names: tuple[str, ...] = ("output_size", "num_params", "mult_adds"),
 ) -> ModelStatistics:
@@ -37,9 +38,12 @@ def summary(
         model: An `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`.
         input_size: Shape tuple for a synthetic dummy input, e.g. `(1, 3, 224, 224)`.
             Mutually exclusive with `input_data`.
-        input_data: An actual tensor / tuple / list to forward through the model.
-            Useful when the model takes multiple positional arguments or a non-tensor
-            input (graphs, dicts) that `input_size` can't describe.
+        input_data: An actual tensor / tuple / list to forward through the model, or a
+            dict of keyword inputs. Useful when the model takes multiple positional
+            arguments or a non-tensor input (graphs, dicts) that `input_size` can't describe.
+        batch: A training batch, split into the forward's inputs by the model's batch
+            adapter (FEAT-006: an `NNModel`'s adapter, else the module's `unpack_batch`,
+            else one positional input). Mutually exclusive with `input_size` / `input_data`.
         depth: Maximum module-nesting depth to expand in the table.
         col_names: Which torchinfo columns to include. Defaults to the three most
             useful ones for spotting parameter / FLOP regressions across runs.
@@ -51,6 +55,12 @@ def summary(
 
     Raises:
         ImportError: If `torchinfo` isn't installed. Install with `pip install thekaveh-nnx[viz]`.
+        ValueError: Before the module is touched, when `batch` is combined with
+            `input_size` / `input_data`, or when `input_size` is given for a model whose
+            adapter takes keyword inputs (a synthetic tensor cannot describe them).
+
+    The module's identity, state and every submodule's training mode are left as they
+    were (torchinfo itself only restores the top-level mode).
     """
     try:
         from torchinfo import summary as _ti_summary
@@ -62,9 +72,45 @@ def summary(
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel
 
+    adapter = None
     if isinstance(model, NNModel):
+        adapter = getattr(model, "_batch_adapter", None)
         model = model.net
 
+    from ..models import KeywordInputs, default_batch_adapter
+
+    kwargs: dict[str, Any] = {}
+    if batch is not None:
+        if input_size is not None or input_data is not None:
+            raise ValueError("pass batch= or input_size= / input_data=, not both")
+        args, kwargs, _ = (adapter or default_batch_adapter(model)).split(batch)
+        input_data = list(args) if args else None
+        if input_data is None and kwargs:
+            input_data, kwargs = dict(kwargs), {}
+    elif input_size is not None and isinstance(adapter, KeywordInputs):
+        raise ValueError(
+            f"the model's batch adapter takes keyword inputs {adapter.inputs}; input_size= cannot describe them — "
+            "pass batch= or input_data={name: tensor}"
+        )
+
+    from ..utils import _capture_training_modes, _restore_training_modes
+
+    training_modes = _capture_training_modes(model)
+    try:
+        return _run_summary(_ti_summary, model, input_size, input_data, depth, col_names, kwargs)
+    finally:
+        _restore_training_modes(training_modes)
+
+
+def _run_summary(
+    _ti_summary: Any,
+    model: nn.Module,
+    input_size: tuple[int, ...] | None,
+    input_data: Any,
+    depth: int,
+    col_names: tuple[str, ...],
+    kwargs: dict[str, Any],
+) -> ModelStatistics:
     if input_size is None:
         return _ti_summary(
             model,
@@ -73,6 +119,7 @@ def summary(
             depth=depth,
             col_names=col_names,
             verbose=0,
+            **kwargs,
         )
 
     # torchinfo synthesizes the input_size= dummy via torch.rand — an

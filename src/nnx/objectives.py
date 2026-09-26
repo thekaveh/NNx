@@ -38,7 +38,7 @@ import numbers
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
@@ -261,15 +261,14 @@ class KDObjective(Objective):
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         from ._step_helpers import softened_kl
-        from .nn.nn_model import _classification_edp_for_loss
+        from .nn.nn_model import _classification_edp_for_loss, _single_input_batch
 
         model = ctx.model
         model.net.train()
-        (X,), Y = cast(Any, model.net).unpack_batch(ctx.batch)
-        X, Y = X.to(model.device), Y.to(model.device)
-        student = model.net(X)
+        X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
+        student = model._net_forward((X,), {})
         with torch.no_grad():
-            teacher_logits = self.teacher.net(X.to(self.teacher.device)).to(model.device)
+            teacher_logits = self.teacher._net_forward((X.to(self.teacher.device),), {}).to(model.device)
         rows = int(student.shape[0])
         soft = LossTerm(
             "distillation",

@@ -681,11 +681,12 @@ def _check_metric_inputs(
                     f"needs config={{'average': 'binary'}} (the positive-decision F1 pooled over every output, "
                     f"i.e. multilabel micro F1), not {average!r}"
                 )
-            if domain == "categorical" and average == "binary" and n_classes != 2:
+            # The class count is unknown before the first batch for registered
+            # and runtime modules (FEAT-006); the metric itself then checks it.
+            if domain == "categorical" and average == "binary" and n_classes is not None and n_classes != 2:
                 raise ValueError(
-                    f"metric {spec.label!r}: f1 average='binary' needs exactly 2 classes"
-                    f"{f', this model has {n_classes}' if n_classes is not None else ''}; use 'macro', 'micro' "
-                    "or 'weighted'"
+                    f"metric {spec.label!r}: f1 average='binary' needs exactly 2 classes, this model has "
+                    f"{n_classes}; use 'macro', 'micro' or 'weighted'"
                 )
 
 

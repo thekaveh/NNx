@@ -2159,3 +2159,74 @@ def test_a_reset_hook_that_changes_the_network_does_not_mask_a_failed_restore(tm
                 callbacks=[Rewire()],
                 components=[Breaks()],
             )
+
+
+class _CustomEncoder(torch.nn.Module):
+    """A caller-defined encoder + head (FEAT-006): dropout exercises the RNG
+    state a resume restores."""
+
+    def __init__(self, width: int) -> None:
+        super().__init__()
+        self.encoder = torch.nn.Sequential(torch.nn.Linear(8, width), torch.nn.ReLU(), torch.nn.Dropout(0.2))
+        self.head = torch.nn.Linear(width, 3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.encoder(x))
+
+
+def test_registered_custom_encoder_saves_reloads_and_resumes_like_the_continuous_run(tmp_path, monkeypatch):
+    from nnx import ModelSpec, register_model_factory, unregister_model_factory
+    from nnx.nn.callbacks import EarlyStopping
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    register_model_factory("tests.custom_encoder", 1, lambda config: _CustomEncoder(**config))
+    try:
+        base_loader, val_loader = _make_tiny_loaders()
+        spec = ModelSpec("tests.custom_encoder", 1, {"width": 16}, seed=5)
+        model_params = NNModelParams(net=spec, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+
+        def loader(seed: int) -> DataLoader:
+            return DataLoader(
+                base_loader.dataset, batch_size=8, shuffle=True, generator=torch.Generator().manual_seed(seed)
+            )
+
+        def params(n_epochs: int, data_id: str, train_loader: DataLoader, **resume) -> NNTrainParams:
+            return NNTrainParams(
+                n_epochs=n_epochs,
+                data_id=data_id,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.9, weight_decay=0.0),
+                **resume,
+            )
+
+        def stopper() -> EarlyStopping:
+            return EarlyStopping(monitor="val_edp.error", patience=10)  # checkpointed component state
+
+        torch.manual_seed(7)
+        continuous = NNModel(params=model_params)
+        continuous.train(params=params(4, "full", loader(1234)), callbacks=[stopper()])
+
+        torch.manual_seed(7)
+        first = NNModel(params=model_params)
+        first_run = first.train(params=params(2, "split", loader(1234)), callbacks=[stopper()])
+        resumed = NNModel(params=model_params)
+        resumed_run = resumed.train(
+            params=params(2, "split", loader(9999), resume_from_run_id=first_run.id), callbacks=[stopper()]
+        )
+
+        assert resumed_run.resume_status is not None and resumed_run.resume_status.mode == "stateful"
+        assert "early_stopping" in resumed_run.resume_status.restored_components
+        assert resumed_run.idps[0].epoch_idx == 2
+        for name, tensor in continuous.net.state_dict().items():
+            torch.testing.assert_close(resumed.net.state_dict()[name], tensor, rtol=0, atol=0, msg=name)
+
+        checkpoint = NNCheckpoint.load(run=resumed_run.id, type=Checkpoints.LAST)
+        assert checkpoint is not None and checkpoint.net_params is None and checkpoint.model_params.net == spec
+        reloaded = NNModel.from_checkpoint(checkpoint)
+        X = torch.randn(6, 8)
+        np.testing.assert_array_equal(reloaded.predict(X).logits, resumed.predict(X).logits)
+        assert NNRun.load(resumed_run.id).model.net == spec
+    finally:
+        unregister_model_factory("tests.custom_encoder", 1)

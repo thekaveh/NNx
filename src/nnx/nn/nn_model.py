@@ -20,6 +20,17 @@ from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..components import ComponentRegistry, ResumeStatus
+from ..models import (
+    BatchAdapter,
+    MissingModelFactoryError,
+    ModelSpec,
+    RuntimeModule,
+    _as_inputs,
+    _UnpackBatch,
+    build_module,
+    check_state_schema,
+    default_batch_adapter,
+)
 from ..monitors import (
     MetricSpec,
     MonitorRecord,
@@ -108,10 +119,18 @@ def _component_type(value: Any) -> str:
 
 
 def _optimizer_topology(optimizer: torch.optim.Optimizer, net: torch.nn.Module) -> list[list[dict[str, Any]]]:
-    """Describe optimizer groups by model parameter identity, not position."""
+    """Describe optimizer groups by model parameter identity, not position.
+    An uninitialized lazy parameter (a wrapped module's ``nn.LazyLinear``
+    before its first forward, FEAT-006) has no shape yet: ``None``."""
     names = {id(param): name for name, param in net.named_parameters()}
     return [
-        [{"name": names.get(id(param), "<external>"), "shape": list(param.shape)} for param in group["params"]]
+        [
+            {
+                "name": names.get(id(param), "<external>"),
+                "shape": None if torch.nn.parameter.is_lazy(param) else list(param.shape),
+            }
+            for param in group["params"]
+        ]
         for group in optimizer.param_groups
     ]
 
@@ -827,6 +846,32 @@ def _reset_accumulation(accumulation_state: Optional[GradientAccumulationState])
         accumulation_state.normalization_required = True
 
 
+def _single_input_batch(model: Any, batch: Any, *, who: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(X, Y)`` of a supervised batch with exactly one positional input,
+    split by the model's batch adapter (a built-in net's own
+    ``unpack_batch``, FEAT-006) and moved to the model's device. Shared by
+    the paradigm steps that transform ``X`` (Mixup / CutMix, KD, MoE)."""
+    args, kwargs, target = model._split_batch(batch)
+    if kwargs or len(args) != 1 or target is None:
+        raise ValueError(
+            f"{who} needs batches of one positional input and a target; the model's batch adapter gave "
+            f"{len(args)} positional and {len(kwargs)} keyword input(s)"
+            f"{' and no target' if target is None else ''} — use a custom train_step_fn for other layouts"
+        )
+    return args[0].to(model.device), target.to(model.device)
+
+
+def _tensor_keys(state: Mapping[str, Any]) -> set[str]:
+    return {key for key, value in state.items() if isinstance(value, torch.Tensor)}
+
+
+def _to_device(value: Any, device: torch.device) -> Any:
+    """Move a tensor (or anything with ``.to``, e.g. a graph batch) to the
+    device; other values pass through."""
+    to = getattr(value, "to", None)
+    return to(device) if callable(to) else value
+
+
 def _enumerate_with_last(iterable: Iterable[Any]) -> Iterator[tuple[int, Any, bool]]:
     iterator = iter(iterable)
     try:
@@ -868,8 +913,9 @@ def _batch_sample_count(net: Any, batch: Any) -> int:
         if n_seed is not None:
             return int(cast(int, n_seed))
     first = batch
-    while isinstance(first, (tuple, list)) and first:
-        first = first[0]
+    while (isinstance(first, (tuple, list)) and first) or (isinstance(first, Mapping) and first):
+        # Mapping batches (keyword-input modules, FEAT-006): the first value.
+        first = first[0] if isinstance(first, (tuple, list)) else next(iter(first.values()))
     if isinstance(first, torch.Tensor) and first.ndim:
         return int(first.shape[0])
     return 1
@@ -1176,6 +1222,51 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     )
 
 
+def _resolve_net_descriptor(
+    net_params: Optional[NNParams], params: NNModelParams, module: Optional[torch.nn.Module]
+) -> NNModelParams:
+    """Check how a model's network is described (FEAT-006) and return the
+    params to keep — with a wrapped module's :class:`RuntimeModule`
+    descriptor filled in."""
+    net = params.net
+    if module is not None:
+        if not isinstance(module, torch.nn.Module):
+            raise TypeError(f"module must be a torch.nn.Module, got {type(module).__name__}")
+        if net_params is not None:
+            raise ValueError("pass net_params (a built-in net) or module= (a caller-owned module), not both")
+        descriptor = RuntimeModule.of(module)
+        if net is None:
+            return replace(params, net=descriptor)
+        if isinstance(net, RuntimeModule):
+            if net != descriptor:
+                raise ValueError(
+                    f"module {descriptor.module} (topology {descriptor.topology}) does not match the descriptor "
+                    f"{net.module} (topology {net.topology})"
+                )
+            return params
+        raise ValueError(
+            f"module= wraps a caller-owned module, so NNModelParams.net must be None (or that module's "
+            f"RuntimeModule descriptor), got {net}"
+        )
+    if isinstance(net, Nets):
+        if net_params is None:
+            raise ValueError("net_params must not be None")
+        return params
+    if isinstance(net, ModelSpec):
+        if net_params is not None:
+            raise ValueError(f"a registered ModelSpec ({net}) builds from its own config; pass net_params=None")
+        return params
+    if isinstance(net, RuntimeModule):
+        raise MissingModelFactoryError(
+            f"{net} is a runtime-only module (reconstructible=False) that no factory can build; pass module= "
+            f"(a {net.module} with the same topology)"
+        )
+    raise ValueError(
+        "NNModelParams.net is required: a Nets member, a registered nnx.models.ModelSpec, or pass module= to "
+        "wrap a torch.nn.Module"
+    )
+
+
 class NNModel(_HubMixinBase):
     """Top-level training/eval/predict wrapper around an ``nn.Module``.
 
@@ -1188,14 +1279,37 @@ class NNModel(_HubMixinBase):
 
     net: torch.nn.Module
 
-    def __init__(self, net_params: NNParams, params: NNModelParams):
+    def __init__(
+        self,
+        net_params: Optional[NNParams] = None,
+        params: Optional[NNModelParams] = None,
+        *,
+        module: Optional[torch.nn.Module] = None,
+        batch_adapter: Optional[BatchAdapter] = None,
+    ):
+        """Build the network from ``params.net`` (FEAT-006):
+
+        - a built-in ``Nets`` member builds from ``net_params`` (the default);
+        - a registered :class:`~nnx.models.ModelSpec` builds through its
+          factory (``net_params`` must be ``None``);
+        - ``module=`` wraps a caller-owned ``nn.Module`` as is — never cloned
+          or re-initialized — and fills ``params.net`` with its
+          :class:`~nnx.models.RuntimeModule` descriptor.
+
+        ``batch_adapter`` (runtime-only) says how a non-built-in module sees
+        a batch; the default uses the module's ``unpack_batch`` when it has
+        one, else one positional input (:mod:`nnx.models`).
+        """
         # NOTE: we deliberately do NOT call super().__init__() — the
         # PyTorchModelHubMixin base has no __init__ of its own (it's a
         # mixin that only contributes class-level methods), and even if
         # it grew one in a future hub release, the only side effect we'd
         # want is config-attribute initialization which we handle below.
-        if net_params is None:
-            raise ValueError("net_params must not be None")
+        if params is None:
+            raise ValueError("params must not be None")
+        params = _resolve_net_descriptor(net_params, params, module)
+        if batch_adapter is not None and not isinstance(batch_adapter, BatchAdapter):
+            raise TypeError(f"batch_adapter must be an nnx.models.BatchAdapter, got {type(batch_adapter).__name__}")
 
         # FEAT-002: a declared task is checked against the loss, net type and
         # output width before any module is built.
@@ -1212,7 +1326,23 @@ class NNModel(_HubMixinBase):
 
         self.device = self.params.device()
         self.loss_fn = self.params.loss().to(self.device)
-        self.net = self.params.net(params=net_params).to(self.device)
+        net = self.params.net
+        if module is not None:
+            # Module.to moves in place and returns the same object.
+            self.net = module.to(self.device)
+        elif isinstance(net, ModelSpec):
+            self.net = build_module(net).to(self.device)
+            self._reference_state_keys = tuple(_tensor_keys(self.net.state_dict()))
+        else:
+            assert isinstance(net, Nets) and net_params is not None
+            self.net = net(params=net_params).to(self.device)
+        # Built-in nets keep their own unpack_batch (the legacy path); other
+        # modules see batches through an adapter (FEAT-006).
+        self._batch_adapter: Optional[BatchAdapter] = (
+            batch_adapter
+            if batch_adapter is not None
+            else (None if isinstance(net, Nets) else default_batch_adapter(self.net))
+        )
 
     @property
     def task_adapter(self) -> Optional[TaskAdapter]:
@@ -1233,23 +1363,28 @@ class NNModel(_HubMixinBase):
     def _assert_reconstructible_topology(self) -> None:
         if self._topology_transforms:
             return
-        rng_state = _capture_rng_state(None)
-        try:
-            expected = self.params.net(params=self.net_params).state_dict()
-        finally:
-            _restore_rng_state(rng_state, None)
-        actual = self.net.state_dict()
-        expected_schema = {
-            key: tuple(value.shape) for key, value in expected.items() if isinstance(value, torch.Tensor)
-        }
-        actual_schema = {key: tuple(value.shape) for key, value in actual.items() if isinstance(value, torch.Tensor)}
+        net = self.params.net
+        if isinstance(net, ModelSpec):
+            # The factory's own layout, recorded when it built the module —
+            # never a second construction (FEAT-006).
+            expected_keys = set(getattr(self, "_reference_state_keys", ()))
+        elif isinstance(net, Nets):
+            assert self.net_params is not None
+            rng_state = _capture_rng_state(None)
+            try:
+                expected_keys = _tensor_keys(net(params=self.net_params).state_dict())
+            finally:
+                _restore_rng_state(rng_state, None)
+        else:
+            return  # a runtime module is marked reconstructible=False instead
+        actual_keys = _tensor_keys(self.net.state_dict())
         low_rank_replacements = [
             key
-            for key in expected_schema
+            for key in expected_keys
             if key.endswith(".weight")
-            and key not in actual_schema
-            and f"{key[:-7]}.0.weight" in actual_schema
-            and f"{key[:-7]}.1.weight" in actual_schema
+            and key not in actual_keys
+            and f"{key[:-7]}.0.weight" in actual_keys
+            and f"{key[:-7]}.1.weight" in actual_keys
         ]
         if low_rank_replacements:
             raise ValueError(
@@ -1396,21 +1531,55 @@ class NNModel(_HubMixinBase):
         return path
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: NNCheckpoint, device: Optional[Devices] = None, **model_kwargs: Any) -> Self:
+    def from_checkpoint(
+        cls,
+        checkpoint: NNCheckpoint,
+        device: Optional[Devices] = None,
+        *,
+        module: Optional[torch.nn.Module] = None,
+        batch_adapter: Optional[BatchAdapter] = None,
+        **model_kwargs: Any,
+    ) -> Self:
         """Rebuild a model, replay topology transforms, and load its weights.
 
         Ordinary and legacy FP32 checkpoints have no transforms. Converted
         QAT checkpoints replay their persisted torchao recipe before state
         loading; unsupported recipes fail explicitly rather than constructing
         a model with the wrong topology.
+
+        FEAT-006: a registered :class:`~nnx.models.ModelSpec` is rebuilt
+        through its factory — an unregistered one raises
+        :class:`~nnx.models.MissingModelFactoryError`, and a rebuilt topology
+        that differs from the saved weights raises ``ValueError``, both
+        before any weight is loaded. A runtime-only module
+        (``reconstructible=False``) needs ``module=`` — a module of the same
+        topology, into which the weights are loaded.
         """
         model_params = checkpoint.model_params if device is None else replace(checkpoint.model_params, device=device)
-        model = cls(params=model_params, net_params=checkpoint.net_params, **model_kwargs)
+        net = model_params.net
+        if batch_adapter is not None:
+            # Only passed when set: subclasses keep their own constructors.
+            model_kwargs["batch_adapter"] = batch_adapter
+        if module is not None or isinstance(net, RuntimeModule):
+            if not isinstance(net, RuntimeModule):
+                raise ValueError(f"module= only applies to runtime-module checkpoints; this one is built from {net}")
+            if module is None:
+                raise MissingModelFactoryError(
+                    f"the checkpoint holds weights of the runtime-only module {net} (reconstructible=False): no "
+                    f"factory can rebuild it — pass module= (a {net.module} with the same topology)"
+                )
+            model = cls(params=model_params, module=module, **model_kwargs)
+        elif isinstance(net, ModelSpec):
+            model = cls(params=model_params, **model_kwargs)
+        else:
+            model = cls(params=model_params, net_params=checkpoint.net_params, **model_kwargs)
 
         transforms = getattr(checkpoint, "transforms", ())
         for transform in transforms:
             _apply_checkpoint_transform(model, transform)
         model._topology_transforms = tuple(transforms)
+        if not isinstance(net, Nets):
+            check_state_schema(model.net, checkpoint.net_state, what=f"checkpoint of {net}")
 
         try:
             model.net.load_state_dict(checkpoint.net_state)
@@ -1440,6 +1609,24 @@ class NNModel(_HubMixinBase):
     # hash-grouping form.
     # ------------------------------------------------------------------
 
+    def save_pretrained(self, save_directory, *args: Any, **kwargs: Any) -> Any:
+        """Hub save (``huggingface_hub.PyTorchModelHubMixin.save_pretrained``).
+
+        FEAT-006: a runtime-only module has no factory to rebuild it from,
+        so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
+        before any file or directory is written."""
+        self._require_portable("save_pretrained")
+        return super().save_pretrained(save_directory, *args, **kwargs)
+
+    def _require_portable(self, operation: str) -> None:
+        net = self.params.net
+        if isinstance(net, RuntimeModule):
+            raise MissingModelFactoryError(
+                f"{operation} needs a rebuildable module, but {net} is runtime-only (reconstructible=False); "
+                "register a model factory (nnx.models.register_model_factory) and build the model from a "
+                "ModelSpec to save it portably"
+            )
+
     def _save_pretrained(self, save_directory) -> None:
         """Write the network weights + params config under ``save_directory``.
 
@@ -1456,6 +1643,7 @@ class NNModel(_HubMixinBase):
         """
         from pathlib import Path
 
+        self._require_portable("save_pretrained")
         try:
             from safetensors.torch import save_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
@@ -1475,11 +1663,13 @@ class NNModel(_HubMixinBase):
         tensors = _tensor_state_dict(self.net.state_dict(), operation="Hugging Face Hub export")
         save_file(tensors, str(save_dir / _HUB_MODEL_FILENAME))
 
-        config = {
-            "net_params": self.net_params.state(),
+        config: dict[str, Any] = {
             "params": self.params.state(),
             "transforms": [transform.state() for transform in self._topology_transforms],
         }
+        if self.net_params is not None:
+            # A registered ModelSpec is fully described by `params.net`.
+            config["net_params"] = self.net_params.state()
         config.update(self._hub_reconstruction_config(save_dir))
         # Explicit utf-8 — Hub config files round-trip through HuggingFace's
         # repo download path and can be read on any platform; relying on
@@ -1539,6 +1729,8 @@ class NNModel(_HubMixinBase):
         model_kwargs.pop("params", None)
         model_kwargs.pop("tokenizer", None)
         model_kwargs.pop("transforms", None)
+        # FEAT-006: a runtime-only adapter for a registered module's batches.
+        batch_adapter = model_kwargs.pop("batch_adapter", None)
         if model_kwargs:
             raise TypeError(
                 f"from_pretrained got unexpected model kwargs {sorted(model_kwargs)!r} — "
@@ -1575,10 +1767,22 @@ class NNModel(_HubMixinBase):
         net_params_state = config.get("net_params", config)
         model_params_state = config.get("params", config)
 
-        # resolve_from_state dispatches transformer configs to
-        # NNTransformerParams so LM models round-trip through the Hub.
-        net_params = NNParams.resolve_from_state(net_params_state)
         params = NNModelParams.from_state(model_params_state)
+        net_params: Optional[NNParams] = None
+        if isinstance(params.net, RuntimeModule):
+            raise MissingModelFactoryError(
+                f"{model_id!r} describes the runtime-only module {params.net} (reconstructible=False); "
+                "it cannot be rebuilt"
+            )
+        if isinstance(params.net, ModelSpec):
+            # Fail before anything is built when the factory is unknown.
+            from ..models import resolve_model_factory
+
+            resolve_model_factory(params.net)
+        else:
+            # resolve_from_state dispatches transformer configs to
+            # NNTransformerParams so LM models round-trip through the Hub.
+            net_params = NNParams.resolve_from_state(net_params_state)
         try:
             torch_load_device = torch.device(map_location)
             load_device = Devices(torch_load_device.type)
@@ -1590,11 +1794,15 @@ class NNModel(_HubMixinBase):
 
         transforms = tuple(NNCheckpointTransform.from_state(item) for item in config.get("transforms", []))
         reconstruction_kwargs = cls._hub_reconstruction_kwargs(config, os.path.dirname(config_path))
+        if batch_adapter is not None:
+            reconstruction_kwargs["batch_adapter"] = batch_adapter
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
         for transform in transforms:
             _apply_checkpoint_transform(model, transform)
         model._topology_transforms = transforms
         state_dict = load_file(weights_path, device=str(torch_load_device))
+        if net_params is None and strict:
+            check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
         model.net.load_state_dict(state_dict, strict=strict)
         return model
 
@@ -2435,34 +2643,48 @@ class NNModel(_HubMixinBase):
         return prediction_from_logits(logits, explicit, sample_ids=sample_ids)
 
     def _predict_logits(
-        self, X, *, caller: str, check_first: Optional[Callable[[np.ndarray], object]] = None
+        self,
+        X,
+        *,
+        caller: str,
+        check_first: Optional[Callable[[np.ndarray], object]] = None,
+        batches: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Shared inference path of :meth:`predict` / :meth:`predict_proba`:
         raw logits (numpy) plus an ``int64`` sample id per row, computed in
         eval mode under ``no_grad`` with every submodule's training mode
         restored on exit (success or failure). ``check_first`` sees the
         first loader batch's logits, so a caller can reject them before the
-        rest of the loader is run."""
+        rest of the loader is run. ``batches=True`` treats any iterable of
+        batches like a ``DataLoader``."""
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
 
         try:
-            if isinstance(X, DataLoader):
+            if batches or isinstance(X, DataLoader):
                 logits_chunks: list[np.ndarray] = []
                 id_chunks: list[np.ndarray] = []
                 offset = 0
                 with torch.no_grad():
                     for batch in X:
-                        if isinstance(batch, torch.Tensor):
+                        kw_in: dict[str, Any] = {}
+                        adapter = getattr(self, "_batch_adapter", None)
+                        if adapter is not None and not isinstance(adapter, _UnpackBatch):
+                            # FEAT-006: a positional / keyword adapter splits
+                            # every batch; labels are ignored.
+                            X_in, kw_in, _ = adapter.split(batch)
+                        elif isinstance(batch, torch.Tensor):
                             X_in = (batch,)
                         elif isinstance(batch, (tuple, list)) and len(batch) == 1:
                             X_in = (batch[0],)
                         else:
                             # Supervised tuples and graph batches retain their
-                            # model-specific unpacking; predict discards labels.
-                            X_in, _ = cast(Any, self.net).unpack_batch(batch)
-                        X_in = tuple(x.to(self.device) for x in X_in)
-                        logits = self.net(*X_in).cpu().numpy()
+                            # model-specific unpacking (a built-in net's or the
+                            # module's own unpack_batch); predict discards labels.
+                            X_in, kw_in, _ = self._split_batch(batch)
+                        X_in = tuple(_to_device(x, self.device) for x in X_in)
+                        kw_in = {name: _to_device(value, self.device) for name, value in kw_in.items()}
+                        logits = self._net_forward(X_in, kw_in).cpu().numpy()
                         ids: Optional[np.ndarray] = None
                         # NeighborLoader subgraphs: only the leading seed
                         # rows are this batch's nodes (see
@@ -2496,23 +2718,43 @@ class NNModel(_HubMixinBase):
                     raise ValueError(f"{caller} loader produced zero batches")
                 return np.concatenate(logits_chunks), np.concatenate(id_chunks)
 
-            # Single input (any of: ndarray, Tensor, or a tuple thereof).
-            if not isinstance(X, tuple):
-                X = (X,)
-
             def _to_tensor(x):
                 if isinstance(x, torch.Tensor):
                     return x.to(self.device)
                 # Fall through to numpy → tensor for arrays and array-likes.
                 return torch.from_numpy(np.asarray(x)).to(self.device)
 
-            X_t = tuple(_to_tensor(x) for x in X)
+            # FEAT-006: a mapping holds a keyword-input module's inputs.
+            if isinstance(X, Mapping):
+                args_t: tuple[Any, ...] = ()
+                kwargs_t = {name: _to_tensor(value) for name, value in X.items()}
+            else:
+                # Single input (any of: ndarray, Tensor, or a tuple thereof).
+                if not isinstance(X, tuple):
+                    X = (X,)
+                args_t, kwargs_t = tuple(_to_tensor(x) for x in X), {}
 
             with torch.no_grad():
-                Y_hat_logits = self.net(*X_t).cpu().numpy()
+                Y_hat_logits = self._net_forward(args_t, kwargs_t).cpu().numpy()
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
+
+    def _split_batch(self, batch: Any) -> tuple[tuple[Any, ...], dict[str, Any], Any]:
+        """``(args, kwargs, target)`` of a batch: a built-in net's own
+        ``unpack_batch``, else the model's batch adapter (FEAT-006)."""
+        adapter = getattr(self, "_batch_adapter", None)
+        if adapter is None:
+            inputs, target = cast(Any, self.net).unpack_batch(batch)
+            return _as_inputs(inputs), {}, target
+        return adapter.split(batch)
+
+    def _net_forward(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> torch.Tensor:
+        """Call the net on device-placed inputs; an adapter turns the raw
+        return value into the output tensor."""
+        raw = self.net(*args, **kwargs)
+        adapter = getattr(self, "_batch_adapter", None)
+        return raw if adapter is None else adapter.output(raw)
 
     def _fwd_pass(self, batch):
         """Standard supervised forward pass: unpack batch, move to device,
@@ -2534,12 +2776,16 @@ class NNModel(_HubMixinBase):
         ``(X, Y, logits)`` with transformer outputs flattened to rows and
         graph outputs sliced to their seed rows — no decoding. Shared by
         `_fwd_pass` and the task-adapter path (FEAT-002)."""
-        X, Y = cast(Any, self.net).unpack_batch(batch)
+        args, kwargs, Y = self._split_batch(batch)
+        if Y is None:
+            raise ValueError("the batch has no target to train or evaluate against (see the model's batch adapter)")
 
-        X = tuple(x.to(self.device) for x in X)
+        X = tuple(_to_device(x, self.device) for x in args)
+        inputs = {name: _to_device(value, self.device) for name, value in kwargs.items()}
         Y = Y.to(self.device)
 
-        Y_hat_logits = self.net(*X)
+        Y_hat_logits = self._net_forward(X, inputs)
+        X = (*X, *inputs.values())
         if self.params.net is Nets.TRANSFORMER and Y_hat_logits.ndim > 2:
             if tuple(Y_hat_logits.shape) == tuple(Y.shape):
                 Y_hat_logits = Y_hat_logits.reshape(-1, Y_hat_logits.size(-1))
