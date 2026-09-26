@@ -110,6 +110,26 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.monitors.registered_metrics
 
+### 2.9. Objectives and the shared update engine (`nnx.objectives`)
+
+@api nnx.objectives.LossTerm
+
+@api nnx.objectives.ObjectiveContext
+
+@api nnx.objectives.ObjectiveResult
+
+@api nnx.objectives.Objective
+
+@api nnx.objectives.SupervisedObjective
+
+@api nnx.objectives.KDObjective
+
+@api nnx.objectives.supervised_objective
+
+@api nnx.objectives.kd_objective
+
+@api nnx.objectives.UpdateEvent
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

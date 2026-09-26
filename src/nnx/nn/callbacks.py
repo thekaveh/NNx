@@ -45,6 +45,14 @@ class Callback:
     def on_train_end(self, ctx: _CallbackContext) -> None:
         pass
 
+    def on_optimizer_update(self, ctx: _CallbackContext, event: Any) -> None:
+        """Called once per committed optimizer update of an objective run
+        (FEAT-004) — never per microbatch, for an all-masked window or a
+        skipped step. ``event`` is a detached ``nnx.objectives.UpdateEvent``
+        (optimizer name, its update index, epoch / batch, microbatches,
+        loss values); ``ctx.update_count`` is the run's committed-update
+        count."""
+
     def checkpoint_transforms(self) -> tuple[NNCheckpointTransform, ...]:
         """Completed topology transforms to persist on the final checkpoint."""
         return ()

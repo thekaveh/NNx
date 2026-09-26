@@ -23,7 +23,12 @@ the built-in path or `eval_step_fn`, updates the scheduler once, and dispatches
 whole-epoch training summary and the monitor's decision before the scheduler
 update; that one decision drives the plateau scheduler, BEST and any
 `EarlyStopping` given the same monitor
-([Concepts §6.4](concepts.md#64-named-metrics-and-monitors)). Durable state then commits in order: run history, LAST,
+([Concepts §6.4](concepts.md#64-named-metrics-and-monitors)). In an objective
+run the shared update engine accumulates each microbatch's loss terms and, at
+the end of every update window, runs unscale → clip → step and dispatches
+`on_optimizer_update` once per committed update — before the epoch's
+validation and the commit order above
+([Concepts §6.5](concepts.md#65-objectives-and-the-shared-update-engine)). Durable state then commits in order: run history, LAST,
 phase/BEST, and deferred callback checkpoints. Finalization calls `on_train_end`
 in reverse callback order. Both `NNModel` and `Trainer` refresh LAST after
 finalization so callback mutations and topology-transform metadata are present
