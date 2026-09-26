@@ -32,7 +32,7 @@ stratified membership instead:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Union, cast
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader, Subset, TensorDataset, random_split
 
 from ..._validation import require_batch_sizes
 from ...data_splits import SplitIndices, SplitManifest
+from ...preprocessing import PreprocessingError, Standardizer, check_frame, dtype_name
 from ...provenance import IdentityRef
 from .nn_dataset_base import NNDatasetBase
 
@@ -118,7 +119,10 @@ class NNTabularDataset(NNDatasetBase):
     dtypes; so does a finite value that overflows a narrower floating /
     complex ``feature_dtype`` or floating ``target_dtype`` during conversion.
     All checks, the classification label check included, run before the
-    split, so a rejection leaves the DataFrame and the global RNG untouched.
+    split, so a rejection leaves the DataFrame and the global RNG untouched
+    (the one exception: with ``standardize``, a standardized feature that
+    overflows ``feature_dtype`` can only be detected after the split, once
+    the training statistics exist).
 
     Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
     (``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
@@ -135,6 +139,20 @@ class NNTabularDataset(NNDatasetBase):
     at their defaults; the train loader still shuffles, and validation /
     test follow the manifest's order. ``state()`` gains ``split`` (the
     manifest digest) only then.
+
+    Train-only standardization (FEAT-018): ``standardize=True`` fits a
+    ``nnx.preprocessing.Standardizer`` on the training split's rows of the
+    feature columns only — after the split, so validation and test values
+    never reach the statistics — and applies those frozen statistics to
+    every split. ``standardize=<fitted Standardizer>`` reuses one without
+    refitting; its columns must equal ``feature_cols`` (same order) and its
+    dtype ``feature_dtype``, checked before the split. Either way the
+    standardizer in use is ``ds.standardizer`` (save it to serve the model).
+    Standardizing needs a floating ``feature_dtype`` and unique
+    ``feature_cols``; the raw features are never converted, targets are never
+    transformed, and the split membership (and RNG draw) is the same as
+    without standardization. ``state()`` gains ``standardizer`` (its digest)
+    only then.
     """
 
     df: pd.DataFrame
@@ -171,6 +189,12 @@ class NNTabularDataset(NNDatasetBase):
     id_col: Optional[str] = None
     # Must equal the manifest's recorded source identity, when it has one.
     source_identity: Optional[Union[IdentityRef, str]] = None
+    # FEAT-018: False (default) keeps raw features, the existing behavior;
+    # True fits a Standardizer on the training split only; a fitted
+    # Standardizer is applied as is (never refitted).
+    standardize: Union[bool, Standardizer] = False
+    # The standardizer in use after construction (None for raw features).
+    standardizer: Optional[Standardizer] = field(init=False, default=None)
 
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
@@ -184,6 +208,35 @@ class NNTabularDataset(NNDatasetBase):
         # Validate the batch-size request before any tensor conversion or
         # split (FIX-022): `None` is the only full-split sentinel.
         requested = require_batch_sizes(self.batch_sizes, owner="NNTabularDataset")
+        # FEAT-018: every standardization check that needs no statistics runs
+        # here, before any conversion or split.
+        if not isinstance(self.standardize, (bool, Standardizer)):
+            raise TypeError(
+                f"standardize must be True, False or a fitted nnx.preprocessing.Standardizer, got {self.standardize!r}"
+            )
+        scaling = self.standardize is not False
+        if scaling:
+            if not self.feature_dtype.is_floating_point:
+                raise ValueError(f"standardized features need a floating feature_dtype, got {self.feature_dtype}")
+            if len(set(self.feature_cols)) != len(self.feature_cols):
+                raise ValueError("standardize needs unique feature_cols (one statistic per column)")
+            output_dtype = dtype_name(self.feature_dtype)
+            if isinstance(self.standardize, Standardizer):
+                supplied = self.standardize
+                if supplied.n_features != len(self.feature_cols):
+                    raise PreprocessingError(
+                        f"the standardizer has {supplied.n_features} features but feature_cols has "
+                        f"{len(self.feature_cols)}"
+                    )
+                if supplied.columns is not None and list(supplied.columns) != list(self.feature_cols):
+                    raise PreprocessingError(
+                        f"the standardizer's columns {list(supplied.columns)} differ from feature_cols "
+                        f"{list(self.feature_cols)}; pass feature_cols in the fitted order"
+                    )
+                if supplied.dtype != output_dtype:
+                    raise ValueError(
+                        f"the standardizer's dtype {supplied.dtype!r} differs from feature_dtype={self.feature_dtype}"
+                    )
         # target_dtype is a tri-state: None = classification (the existing
         # contract), a floating-point dtype = regression. An integer dtype
         # is rejected because it's an unambiguous footgun: torch.long is
@@ -298,7 +351,11 @@ class NNTabularDataset(NNDatasetBase):
                 )
 
         features = cast(pd.DataFrame, frame[self.feature_cols])
-        X = torch.tensor(np.ascontiguousarray(features.to_numpy()), dtype=self.feature_dtype)
+        if scaling:
+            check_frame(features, self.feature_cols)  # schema problems surface before the split
+        # With standardization the raw features are never converted: X is
+        # built from the training statistics after the split.
+        X = None if scaling else torch.tensor(np.ascontiguousarray(features.to_numpy()), dtype=self.feature_dtype)
         y = torch.tensor(
             target_values,
             dtype=self.target_dtype if self.target_dtype is not None else torch.long,
@@ -314,7 +371,12 @@ class NNTabularDataset(NNDatasetBase):
         # A finite source can still overflow a narrower floating dtype (e.g.
         # 1e5 → float16 inf). Checked after conversion and before the split,
         # so a rejection consumes no RNG and leaves nothing half-built.
-        if (X.is_floating_point() or X.is_complex()) and X.numel() and not bool(torch.isfinite(X).all()):
+        if (
+            X is not None
+            and (X.is_floating_point() or X.is_complex())
+            and X.numel()
+            and not bool(torch.isfinite(X).all())
+        ):
             finite_per_column = torch.isfinite(X).all(dim=0).tolist()
             # ``features.columns`` matches X column for column, duplicate labels included.
             overflowed = list(
@@ -331,11 +393,13 @@ class NNTabularDataset(NNDatasetBase):
             )
         if self.target_dtype is not None:
             y = y.unsqueeze(-1)
-        n_total = len(X)
+        n_total = len(y)
         if n_total == 0:
             raise ValueError("NNTabularDataset requires a non-empty DataFrame")
 
-        full_dataset = TensorDataset(X, y)
+        # Standardizing splits positions first (the same RNG draw), then
+        # builds the features from the training statistics.
+        full_dataset: Any = TensorDataset(X, y) if X is not None else range(n_total)
 
         if indices is not None:
             # The manifest fixes membership: no random_split, no RNG draw.
@@ -358,6 +422,26 @@ class NNTabularDataset(NNDatasetBase):
             # every unseeded split bit-identical and deaf to torch.manual_seed.
             gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
             train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test], generator=gen)
+
+        if scaling:
+            # FEAT-018: statistics come from the training rows of the feature
+            # columns only; the same frozen standardizer then prepares every
+            # split (transform raises if a value overflows feature_dtype).
+            members = [np.asarray(train_ds.indices), np.asarray(val_ds.indices), np.asarray(test_ds.indices)]
+            fitted = (
+                self.standardize
+                if isinstance(self.standardize, Standardizer)
+                else Standardizer.fit(
+                    features,
+                    rows=members[0],
+                    columns=list(self.feature_cols),
+                    dtype=dtype_name(self.feature_dtype),
+                    membership=self.split,
+                )
+            )
+            full_dataset = TensorDataset(fitted.transform(features), y)
+            train_ds, val_ds, test_ds = (Subset(full_dataset, rows.tolist()) for rows in members)
+            object.__setattr__(self, "standardizer", fitted)
 
         object.__setattr__(self, "name", self.name_override or "NNTabularDataset")
 
@@ -409,6 +493,8 @@ class NNTabularDataset(NNDatasetBase):
         )
         if self.split is not None:
             state["split"] = self.split.digest()  # omitted for the default random split
+        if self.standardizer is not None:
+            state["standardizer"] = self.standardizer.digest()  # omitted for raw features
         object.__setattr__(self, "_state", state)
 
     def _resolve_split(self) -> Optional[SplitIndices]:

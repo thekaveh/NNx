@@ -226,6 +226,16 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.data_splits.SplitError
 
+### 2.14. Train-fitted preprocessing (`nnx.preprocessing`)
+
+@api nnx.preprocessing.Standardizer
+
+@api nnx.preprocessing.SplitView
+
+@api nnx.preprocessing.describe_transform
+
+@api nnx.preprocessing.PreprocessingError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
