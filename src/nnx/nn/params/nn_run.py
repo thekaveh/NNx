@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import PurePath
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import pandas as pd
 import yaml
@@ -306,7 +306,8 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
     history protocol marker is present — whose BEST epoch is not beyond
     the committed LAST epoch (speculative history after a kill is not a
     winner). Legacy runs without the marker stay on their compatibility
-    path. Reads are lockless snapshots, so this can run while holding
+    path. Runs that select BEST with a named monitor (FEAT-003) are never
+    eligible: their ranking is not comparable with other runs'. Reads are lockless snapshots, so this can run while holding
     `.best.lock` without touching any other run's lease or run lock.
     """
     run_path = os.path.join(runs_root, run_id)
@@ -316,6 +317,11 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
         NNRun.load(id=run_id, root=root)
         best = NNCheckpoint.load(run=run_id, type=Checkpoints.BEST, root=root)
         if best is None:
+            return None
+        if best.idp.selection is not None:
+            # FEAT-003: a named-monitor run ranks BEST by its own monitor,
+            # which is not comparable with other runs' error/loss — it is
+            # never elected into runs/best.
             return None
         if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
             last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
@@ -430,6 +436,7 @@ class NNRun:
             f", n_epochs={self.train.n_epochs}"
             f"{_optim_summary(self.train.optim)}"
             f", scheduler={self.train.scheduler}"
+            f"{''.join(f', {name}={value}' for name, value in self._monitoring_rows())}"
             "}"
         )
 
@@ -505,6 +512,7 @@ class NNRun:
             ("activation", str(self.net.activation)),
             ("n_epochs", str(self.train.n_epochs)),
             ("optim", f"{_optim_label(self.train.optim)} (max_lr={self.train.optim.max_lr})"),
+            *self._monitoring_rows(),
         ]
         rows_html = "".join(
             f'<tr><td style="padding:2px 8px;font-weight:600;">{k}</td>'
@@ -513,46 +521,81 @@ class NNRun:
         )
         return f'<table style="border-collapse:collapse;border:1px solid #ddd;margin-bottom:8px;">{rows_html}</table>'
 
+    def _monitoring_rows(self) -> list[tuple[str, str]]:
+        """Config-table rows for declared metrics and the monitor (FEAT-003)."""
+        source = self.trainer if self.trainer is not None else self.train
+        rows: list[tuple[str, str]] = []
+        metrics = getattr(source, "metrics", ())
+        if metrics:
+            rows.append(("metrics", ", ".join(spec.label for spec in metrics)))
+        monitor = getattr(source, "monitor", None)
+        if monitor is not None:
+            # A declared metric's direction is resolved when training starts;
+            # the epoch records carry it.
+            mode = monitor.mode
+            if mode is None:
+                record = next((i.selection for i in reversed(self.idps or []) if i.selection is not None), None)
+                mode = record.monitor.mode if record is not None else None
+            direction = f"{mode}, " if mode is not None else ""
+            rows.append(("monitor", f"{monitor.key} ({direction}min_delta={monitor.min_delta})"))
+        return rows
+
+    def _epoch_series(self) -> dict[str, list[Any]]:
+        """Per-epoch chart series: ``epochs``, train / val loss and error
+        and — for runs with a monitor (FEAT-003) — the monitored value and
+        whether each epoch improved. The training series come from each
+        epoch's whole-epoch summary when recorded (full-epoch denominators,
+        so a short last batch weighs no more than its samples), else from
+        the mean of the per-batch records."""
+        from collections import defaultdict
+
+        epoch_buckets: dict[int, list[NNIterationDataPoint]] = defaultdict(list)
+        for idp in cast(list[NNIterationDataPoint], self.idps or []):
+            epoch_buckets[idp.epoch_idx].append(idp)
+        nan = float("nan")
+        series: dict[str, list[Any]] = {
+            name: [] for name in ("epochs", "train_loss", "train_err", "val_loss", "val_err", "monitor", "improved")
+        }
+        for epoch_idx in sorted(epoch_buckets):
+            idp_list = epoch_buckets[epoch_idx]
+            series["epochs"].append(epoch_idx)
+            summary = next((i.train_summary for i in reversed(idp_list) if i.train_summary is not None), None)
+            if summary is not None:
+                series["train_loss"].append(summary.loss if summary.loss is not None else nan)
+                series["train_err"].append(summary.error if summary.error is not None else nan)
+            else:
+                losses = [
+                    i.train_edp.loss for i in idp_list if i.train_edp is not None and i.train_edp.loss is not None
+                ]
+                errs = [
+                    i.train_edp.error for i in idp_list if i.train_edp is not None and i.train_edp.error is not None
+                ]
+                series["train_loss"].append(sum(losses) / len(losses) if losses else nan)
+                series["train_err"].append(sum(errs) / len(errs) if errs else nan)
+            # val_edp is set only on the last idp of each epoch (when a
+            # val_loader was supplied). Use the last non-None val_edp found.
+            val_idp = next((i for i in reversed(idp_list) if i.val_edp is not None), None)
+            val_edp = val_idp.val_edp if val_idp is not None else None
+            series["val_loss"].append(val_edp.loss if val_edp is not None and val_edp.loss is not None else nan)
+            series["val_err"].append(val_edp.error if val_edp is not None and val_edp.error is not None else nan)
+            record = next((i.selection for i in reversed(idp_list) if i.selection is not None), None)
+            series["monitor"].append(record.value if record is not None and record.value is not None else nan)
+            series["improved"].append(bool(record is not None and record.improved))
+        return series
+
     def _render_metric_chart_html(self) -> str:
         """Plotly per-epoch metric chart embedded as HTML."""
         # Lazy-import plotly so test collection stays fast and
         # non-Jupyter callers who never trigger _repr_html_ don't pay
         # the import cost.
-        # Group idps by epoch_idx. Each idp carries its epoch index
-        # directly; the last idp per epoch may also carry val_edp.
-        from collections import defaultdict
-
         import plotly.graph_objects as go
 
-        epoch_buckets: dict[int, list[NNIterationDataPoint]] = defaultdict(list)
-        for idp in cast(list[NNIterationDataPoint], self.idps):
-            epoch_buckets[idp.epoch_idx].append(idp)
-
-        epochs: list[int] = sorted(epoch_buckets.keys())
+        series = self._epoch_series()
+        epochs = series["epochs"]
         if not epochs:
             return ""  # No data at all.
-
-        train_losses: list[float] = []
-        train_errs: list[float] = []
-        val_losses: list[float] = []
-        val_errs: list[float] = []
-
-        for epoch_idx in epochs:
-            idp_list = epoch_buckets[epoch_idx]
-            losses = [
-                idp.train_edp.loss for idp in idp_list if idp.train_edp is not None and idp.train_edp.loss is not None
-            ]
-            errs = [
-                idp.train_edp.error for idp in idp_list if idp.train_edp is not None and idp.train_edp.error is not None
-            ]
-            train_losses.append(sum(losses) / len(losses) if losses else float("nan"))
-            train_errs.append(sum(errs) / len(errs) if errs else float("nan"))
-            # val_edp is set only on the last idp of each epoch (when a
-            # val_loader was supplied). Use the last non-None val_edp found.
-            val_idp = next((idp for idp in reversed(idp_list) if idp.val_edp is not None), None)
-            val_edp = val_idp.val_edp if val_idp is not None else None
-            val_losses.append(val_edp.loss if val_edp is not None and val_edp.loss is not None else float("nan"))
-            val_errs.append(val_edp.error if val_edp is not None and val_edp.error is not None else float("nan"))
+        train_losses, train_errs = series["train_loss"], series["train_err"]
+        val_losses, val_errs = series["val_loss"], series["val_err"]
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=epochs, y=train_losses, name="train_loss", mode="lines+markers"))
@@ -563,6 +606,23 @@ class NNRun:
             fig.add_trace(go.Scatter(x=epochs, y=train_errs, name="train_err", mode="lines+markers", yaxis="y2"))
         if any(v == v for v in val_errs):
             fig.add_trace(go.Scatter(x=epochs, y=val_errs, name="val_err", mode="lines+markers", yaxis="y2"))
+        record = next((i.selection for i in reversed(cast(list, self.idps)) if i.selection is not None), None)
+        if record is not None:
+            # FEAT-003: the monitored series and the epochs that improved
+            # it (the last marked epoch is BEST).
+            key = record.monitor.key
+            fig.add_trace(go.Scatter(x=epochs, y=series["monitor"], name=f"monitor: {key}", mode="lines+markers"))
+            improved = [(e, v) for e, v, ok in zip(epochs, series["monitor"], series["improved"], strict=True) if ok]
+            if improved:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[e for e, _ in improved],
+                        y=[v for _, v in improved],
+                        name=f"improved {key}",
+                        mode="markers",
+                        marker=dict(symbol="star", size=11),
+                    )
+                )
         fig.update_layout(
             title=f"NNRun {self.id[:8]}… — {len(epochs)} epoch{'s' if len(epochs) != 1 else ''}",
             xaxis_title="Epoch",

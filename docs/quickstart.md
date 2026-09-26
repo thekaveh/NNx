@@ -238,6 +238,27 @@ explicit size, since the whole graph is always one batch.
 
 ### 2.6. Custom metrics
 
+Declared, registered metrics receive the input they declare — decoded labels,
+probabilities or continuous outputs — and are computed over the full sample of
+each epoch; a named monitor makes BEST selection, `ReduceLROnPlateau` and
+`EarlyStopping` agree on one decision
+([Concepts §6.4](concepts.md#64-named-metrics-and-monitors)):
+
+```python
+from nnx import EarlyStopping, MetricSpec, MonitorSpec
+
+monitor = MonitorSpec(metric="nll", min_delta=0.01)   # validation NLL, lower is better
+run = model.train(
+    params=NNTrainParams(..., metrics=[MetricSpec("nll"), MetricSpec("accuracy")], monitor=monitor),
+    callbacks=[EarlyStopping(monitor=monitor, patience=5)],
+)
+run.idps[-1].val_edp.metrics["nll"]      # the whole validation set
+run.idps[-1].train_summary              # the whole training epoch (full-epoch denominators)
+run.idps[-1].selection                  # MonitorRecord: value, status, improved
+```
+
+Plain callables still work beside them:
+
 ```python
 from sklearn.metrics import f1_score
 

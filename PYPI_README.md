@@ -65,7 +65,7 @@ See [docs/concepts.md §1](https://github.com/thekaveh/NNx/blob/main/docs/concep
 
 ### 1.2. Capabilities at a glance
 
-- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics.
+- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics, and declared metrics with one named monitor shared by BEST selection, plateau scheduling and early stopping (`MetricSpec` / `MonitorSpec`).
 - **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`). LAST is the epoch commit marker: failed LAST writes roll history back, while failures in later ancillary tags retain the committed history/LAST pair. `NNRun.load()` truncates history newer than LAST after an interrupted process. `NNCheckpoint` saves FIRST / Q1 / Q2 / Q3 / LAST / BEST with generation-addressed training-state sidecars for warm resume.
 - **Task adapters** — declare `NNModelParams(task=TaskSpec.regression(n))` (or `.multilabel(n, threshold=...)` / `.categorical(n, ignore_index=...)`) and the default training step, `evaluate()` and `predict()` validate batches before any update, mask NaN / ignored targets out of loss and metrics alike, average the loss over valid targets (exact under uneven batches and gradient accumulation) and report `mse` / `mae` (or subset / element accuracy) without fabricated classification fields. See `examples/regression_task.py`.
 - **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms without modifying NNx internals.
@@ -236,7 +236,14 @@ NNTrainParams(
     },
 )
 # Available on idp.train_edp.extra / idp.val_edp.extra and survives NNRun.load.
+
+# Declared metrics (labels / probabilities / continuous inputs, full-sample values)
+# and one monitor for BEST, ReduceLROnPlateau and EarlyStopping:
+monitor = MonitorSpec(metric="nll", min_delta=0.01)
+NNTrainParams(..., metrics=[MetricSpec("nll"), MetricSpec("brier")], monitor=monitor)
 ```
+
+See [Concepts §6.4](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#64-named-metrics-and-monitors): custom metrics register with `nnx.register_metric`, training records carry a whole-epoch `train_summary` and the epoch's monitor `selection`, and named-monitor runs never claim `runs/best`.
 
 ### 4.5. Visualization
 

@@ -46,24 +46,30 @@ from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
 from ..components import ComponentRegistry, ResumeStatus
+from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
     CallbackLike,
     NNModel,
+    _batch_sample_count,
     _CallbackContext,
     _CallbackFinalizer,
     _capture_rng_state,
+    _check_plateau_resume,
     _check_resume_horizon,
     _collect_checkpoint_transforms,
     _component_type,
     _load_resume_source,
     _loader_num_workers,
+    _monitored_plateau,
+    _monitoring_preflight,
     _named_training_state,
     _optimizer_topology,
     _plan_component_restore,
     _restore_rng_state,
     _restore_weights_only,
     _rollback_resume,
+    _step_monitored_plateau,
 )
 from ..nn.params.nn_checkpoint import NNCheckpoint, _snapshot_state_dict
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -161,7 +167,7 @@ def _build_scheduler(opt, sched_params, n_epochs):
     return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs)
 
 
-def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int) -> None:
+def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int, record: Optional[MonitorRecord] = None) -> None:
     """ReduceLROnPlateau wants a metric; other schedulers step on epoch.
     Uses the shared finite-only val→train, error→loss resolver in
     nnx._metrics so the NNModel and Trainer paths can't drift. The
@@ -171,7 +177,11 @@ def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int) -> None:
     plateau_metric: Optional[float] = None
     resolved = False
     for sched in scheds:
-        if isinstance(sched, lr_scheduler.ReduceLROnPlateau):
+        if record is not None and isinstance(sched, lr_scheduler.ReduceLROnPlateau):
+            # FEAT-003: monitor-aligned plateau schedulers step on the
+            # epoch's monitor decision (see _step_monitored_plateau).
+            _step_monitored_plateau(sched, record)
+        elif isinstance(sched, lr_scheduler.ReduceLROnPlateau):
             if not resolved:
                 plateau_metric = _resolve_scheduler_metric(val_edp, train_edp, epoch_idx=epoch_idx)
                 resolved = True
@@ -294,6 +304,19 @@ class Trainer:
         # FEAT-002: a declared task must be able to score the model's current
         # loss_fn — checked before any loader is iterated or run reserved.
         self.model._check_task_preflight()
+        # FEAT-003: declared metrics and monitors are resolved before any run
+        # is reserved; Trainer steps are custom, so only validation metrics
+        # (computed by evaluate()) and training loss / error can be tracked.
+        _monitoring_preflight(
+            self.model,
+            metrics=params.metrics,
+            monitor=params.monitor,
+            callbacks=callbacks,
+            default_train_step=False,
+            default_eval_step=True,
+            has_val_loader=params.val_loader is not None,
+            owner="NNTrainerParams",
+        )
 
         optimizers = {
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
@@ -335,11 +358,17 @@ class Trainer:
         train_loader = params.train_loader
         validate = params.val_loader is not None
 
+        monitor = params.monitor.resolve(params.metrics) if params.monitor is not None else None
+        tracker = MonitorTracker(monitor, warn_missing=True) if monitor is not None else None
         schedulers = {
-            name: _build_scheduler(
-                opt=optimizers[name],
-                sched_params=params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
-                n_epochs=params.n_epochs,
+            name: _monitored_plateau(
+                _build_scheduler(
+                    opt=optimizers[name],
+                    sched_params=params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
+                    n_epochs=params.n_epochs,
+                ),
+                optimizers[name],
+                monitor,
             )
             for name in optimizers
         }
@@ -348,7 +377,14 @@ class Trainer:
 
         optimizer_factories = {name: optimizer_factory_state(params.optims[name]) for name in optimizers}
         normalized_callbacks = NNModel._normalize_callbacks(callbacks)
+        summarize = (
+            bool(params.metrics)
+            or monitor is not None
+            or any(isinstance(getattr(cb, "monitor", None), MonitorSpec) for cb in normalized_callbacks)
+        )
         registry = ComponentRegistry.discover(normalized_callbacks, trainer_step_fn, explicit=list(components or []))
+        if tracker is not None:
+            registry.register(tracker)  # its best continues across a stateful resume
         start_epoch, component_plan, resume_status, rollback = self._resume(
             params, optimizers, schedulers, registry, train_loader
         )
@@ -412,6 +448,9 @@ class Trainer:
                     cb.on_epoch_begin(ctx)
 
                 n_idps_before_epoch = len(idps)
+                # FEAT-003 whole-epoch summary of the step's records (no named
+                # training metrics: Trainer steps are custom).
+                epoch_summary = _TrainEpochSummary((), None, None) if summarize else None
                 for idx_batch, batch in enumerate(params.train_loader):
                     step_ctx = TrainerStepContext(
                         model=self.model,
@@ -423,6 +462,8 @@ class Trainer:
                         epoch_idx=idx_epoch,
                     )
                     train_edp = trainer_step_fn(step_ctx)
+                    if epoch_summary is not None:
+                        epoch_summary.add(train_edp, _batch_sample_count(self.model.net, batch))
 
                     idps.append(
                         NNIterationDataPoint(
@@ -447,13 +488,25 @@ class Trainer:
 
                 if validate:
                     assert params.val_loader is not None
-                    val_edp = self.model.evaluate(
-                        loader=params.val_loader,
-                        extra_metrics=params.extra_metrics,
+                    # `metrics=` only when declared, as in NNModel.train.
+                    val_edp = (
+                        self.model.evaluate(
+                            loader=params.val_loader, extra_metrics=params.extra_metrics, metrics=params.metrics
+                        )
+                        if params.metrics
+                        else self.model.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
                     )
                 else:
                     val_edp = None
                 idps[-1] = idps[-1].with_val_edp(val_edp)
+                record: Optional[MonitorRecord] = None
+                if epoch_summary is not None:
+                    train_summary = epoch_summary.result()
+                    if tracker is not None:
+                        assert monitor is not None
+                        value = monitor.value(train=train_summary or train_edp, val=val_edp)
+                        record = tracker.observe(value, epoch=idx_epoch)
+                    idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
 
                 # Each scheduler steps on its own optimizer's signal.
                 # We feed the SAME (val_edp, train_edp) pair to all of
@@ -463,7 +516,7 @@ class Trainer:
                 # clear benefit. Custom hooks can own scheduler timing by
                 # setting auto_step_schedulers=False.
                 if params.auto_step_schedulers:
-                    _step_schedulers(schedulers.values(), val_edp, train_edp, epoch_idx=idx_epoch)
+                    _step_schedulers(schedulers.values(), val_edp, train_edp, epoch_idx=idx_epoch, record=record)
 
                 ctx.idp = idps[-1]
                 ctx.idps = idps
@@ -489,6 +542,7 @@ class Trainer:
                         train_loader=train_loader,
                         components=registry.collect(),
                         optimizer_factories=optimizer_factories,
+                        is_best=record.improved if record is not None else None,
                     )
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
@@ -497,12 +551,15 @@ class Trainer:
                     raise
                 for deferred_checkpoint in ctx.deferred_checkpoint_writes:
                     deferred_checkpoint()
-                if best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
+                if record is not None:
+                    if record.improved:
+                        best_checkpoint = checkpoint
+                elif best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
                     best_checkpoint = checkpoint
 
                 # Verbatim-shared with the NNModel.train loop — one
                 # implementation, so the postfix format can't drift.
-                self.model._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp)
+                self.model._update_tqdm_postfix(tqdm_bar, optimizers[primary], val_edp, train_edp, record)
 
                 if ctx.should_stop:
                     break
@@ -556,6 +613,7 @@ class Trainer:
         train_loader: Optional[Any] = None,
         components: Optional[dict[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
+        is_best: Optional[bool] = None,
     ) -> NNCheckpoint:
         """Delegates to NNModel._save_checkpoints — the same
         FIRST/Q1/Q2/Q3/LAST/BEST cadence — with the named optimizers and
@@ -575,6 +633,7 @@ class Trainer:
             optimizers=optimizers,
             schedulers=schedulers,
             optimizer_factories=optimizer_factories,
+            is_best=is_best,
         )
 
     def _resume(
@@ -658,6 +717,9 @@ class Trainer:
             expected_topology = saved_topologies.get(name)
             if expected_topology is not None and expected_topology != _optimizer_topology(optimizer, net):
                 raise ValueError(f"resume optimizer parameter topology for {name!r} does not match the checkpoint")
+        monitor = params.monitor.resolve(params.metrics) if params.monitor is not None else None
+        for name, scheduler in schedulers.items():
+            _check_plateau_resume(saved_schedulers.get(name), scheduler, monitor)
         completed = training_state.get("completed_epoch")
         start_epoch = int(completed) + 1 if completed is not None else source.checkpoint.idp.epoch_idx + 1
         for name, sched_params in scheduler_params.items():

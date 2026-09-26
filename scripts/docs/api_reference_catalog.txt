@@ -90,6 +90,26 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.components.ResumeStatus
 
+### 2.8. Named metrics and monitors (`nnx.monitors`)
+
+@api nnx.monitors.MetricSpec
+
+@api nnx.monitors.MonitorSpec
+
+@api nnx.monitors.MonitorRecord
+
+@api nnx.monitors.MonitorTracker
+
+@api nnx.monitors.MonitorUnavailableError
+
+@api nnx.monitors.MetricAccumulator
+
+@api nnx.monitors.register_metric
+
+@api nnx.monitors.unregister_metric
+
+@api nnx.monitors.registered_metrics
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
