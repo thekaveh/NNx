@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import embeddings, interop, optimizers, prediction, prune, viz
+from . import embeddings, interop, optimizers, prediction, prune, tasks, viz
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -175,6 +175,7 @@ from .surgery import (
     low_rank_factorize,
     widen,
 )
+from .tasks import TaskAdapter, TaskMetricAccumulator, TaskSpec, TaskValidationError, task_adapter
 from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .trainer.params_builder import NNTrainerParamsBuilder
 from .utils import Utils
@@ -190,6 +191,13 @@ __all__ = [
     "PredictionResult",
     "PredictionValidationError",
     "prediction_from_logits",
+    # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
+    "tasks",
+    "TaskSpec",
+    "TaskAdapter",
+    "TaskMetricAccumulator",
+    "TaskValidationError",
+    "task_adapter",
     "TrainStepContext",
     "TrainStepFn",
     "EvalStepContext",

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
 
 from ..enum.devices import Devices
 from ..enum.losses import Losses
 from ..enum.nets import Nets
+
+if TYPE_CHECKING:
+    from ...tasks import TaskSpec
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -17,8 +21,21 @@ class NNModelParams:
     # silently bypassed on CPU/MPS where torch.cuda.amp is a no-op or unavailable.
     mixed_precision: bool = False
 
+    # Opt-in task declaration (FEAT-002): categorical / multilabel /
+    # regression adapters own validation, masking, loss units, decoding and
+    # metrics. None keeps the legacy classification path and serialization.
+    task: Optional[TaskSpec] = None
+
+    def __post_init__(self) -> None:
+        if self.task is not None:
+            from ...tasks import TaskSpec
+
+            if not isinstance(self.task, TaskSpec):
+                raise TypeError(f"NNModelParams.task must be a TaskSpec or None, got {type(self.task).__name__}")
+
     def __str__(self) -> str:
-        return f"[net={self.net}, device={self.device}, loss={self.loss}, mixed_precision={self.mixed_precision}]"
+        task = f", task={self.task}" if self.task is not None else ""
+        return f"[net={self.net}, device={self.device}, loss={self.loss}, mixed_precision={self.mixed_precision}{task}]"
 
     def is_valid(self) -> bool:
         return self.net is not None and self.device is not None and self.loss is not None
@@ -35,13 +52,24 @@ class NNModelParams:
         # as NNTrainParams.seed / NNOptimParams.param_groups.
         if self.mixed_precision:
             d["mixed_precision"] = True
+        # `task` (FEAT-002) follows the same rule: absent for legacy models, so
+        # their state() and run.id are unchanged; a versioned mapping when set.
+        if self.task is not None:
+            d["task"] = self.task.state()
         return d
 
     @staticmethod
     def from_state(state: dict) -> NNModelParams:
+        task_state = state.get("task")
+        task = None
+        if task_state is not None:
+            from ...tasks import TaskSpec
+
+            task = TaskSpec.from_state(task_state)
         return NNModelParams(
             net=Nets(state["net"]),
             loss=Losses(state["loss"]),
             device=Devices(state["device"]),
             mixed_precision=state.get("mixed_precision", False),
+            task=task,
         )

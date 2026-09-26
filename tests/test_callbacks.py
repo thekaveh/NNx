@@ -630,3 +630,122 @@ def test_early_stopping_default_stops_regression_training(tmp_path, monkeypatch)
     epochs = sorted({idp.epoch_idx for idp in run.idps})
     assert epochs == [0, 1]
     assert es.selected_monitor == "val_edp.loss"
+
+
+# --- FEAT-002: task records through the metric writers ----------------------
+
+
+class _FakeSummaryWriter:
+    """Stands in for torch.utils.tensorboard.SummaryWriter (injected)."""
+
+    instances: list[_FakeSummaryWriter] = []
+
+    def __init__(self, log_dir=None):
+        self.scalars: list[tuple[str, float, int]] = []
+        _FakeSummaryWriter.instances.append(self)
+
+    def add_scalar(self, name, value, step):
+        self.scalars.append((name, float(value), step))
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _FakeWandbRun:
+    def __init__(self):
+        self.logs: list[tuple[dict, int]] = []
+
+    def log(self, values, step):
+        self.logs.append((dict(values), step))
+
+    def finish(self):  # pragma: no cover - the callback does not own this run
+        raise AssertionError("an injected run must not be finished by the callback")
+
+
+def test_regression_task_records_reach_tensorboard_and_wandb_without_classification_fields(tmp_path, monkeypatch):
+    import math
+    import sys
+
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import (
+        Activations,
+        Losses,
+        Nets,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNParams,
+        NNRun,
+        NNTrainParams,
+        TaskSpec,
+        set_seed,
+    )
+    from nnx.nn.callbacks import TensorBoardCallback, WandbCallback
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.setitem(sys.modules, "torch.utils.tensorboard", SimpleNamespace(SummaryWriter=_FakeSummaryWriter))
+    _FakeSummaryWriter.instances.clear()
+
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)),
+    )
+    x = torch.randn(10, 3)
+    y = x.sum(dim=1, keepdim=True)
+    y[3, 0] = math.nan
+    loader = DataLoader(TensorDataset(x, y), batch_size=4)
+    wandb_run = _FakeWandbRun()
+    run = model.train(
+        params=NNTrainParams(n_epochs=2, optim=NNOptimParams.builder().sgd(max_lr=0.01).build())
+        .with_train_loader(loader)
+        .with_val_loader(loader),
+        callbacks=[TensorBoardCallback(), WandbCallback(wandb_run=wandb_run)],
+    )
+
+    classification = {"accuracy", "f1", "precision", "recall", "error"}
+    (writer,) = _FakeSummaryWriter.instances
+    tb = {(name, step): value for name, value, step in writer.scalars}
+    for epoch, idp in enumerate(idp for idp in run.idps if idp.val_edp is not None):
+        assert tb[("val/mse", epoch)] == pytest.approx(idp.val_edp.metrics["mse"])
+        assert tb[("val/mae", epoch)] == pytest.approx(idp.val_edp.metrics["mae"])
+        assert tb[("train/mse", epoch)] == pytest.approx(idp.train_edp.metrics["mse"])
+    assert not {name.split("/")[-1] for name, _ in tb} & classification
+    assert all(value != 0.0 for (name, _), value in tb.items() if name.endswith(("mse", "mae")))
+
+    logged = [values for values, _ in wandb_run.logs]
+    assert len(logged) == 2 and all({"val/mse", "val/mae", "train/mse", "train/loss"} <= set(v) for v in logged)
+    assert not {key.split("/")[-1] for values in logged for key in values} & classification
+
+    reloaded = NNRun.load(run.id)
+    for rendered in (str(run), str(reloaded)):
+        assert "task=regression[1]" in rendered
+    html = reloaded._repr_html_()
+    assert "regression[1]" in html and "val_err" not in html and "train_err" not in html
+    _assert_same_records(reloaded.idps, run.idps)
+
+
+def _assert_same_records(loaded, expected):
+    """Reloaded idps.csv records equal the originals up to pandas' float
+    parsing (the CSV reader is not bit-exact for every double)."""
+    assert len(loaded) == len(expected)
+    for got, want in zip(loaded, expected, strict=True):
+        for edp_got, edp_want in ((got.train_edp, want.train_edp), (got.val_edp, want.val_edp)):
+            assert (edp_got is None) == (edp_want is None)
+            if edp_got is None:
+                continue
+            state_got, state_want = edp_got.state(), edp_want.state()
+            assert state_got.keys() == state_want.keys()
+            for key, value in state_want.items():
+                if isinstance(value, float):
+                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
+                elif isinstance(value, dict):
+                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
+                else:
+                    assert state_got[key] == value, key

@@ -66,6 +66,18 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.optimizers.optim_params_from_state
 
+### 2.6. Task adapters (`nnx.tasks`)
+
+@api nnx.tasks.TaskSpec
+
+@api nnx.tasks.TaskAdapter
+
+@api nnx.tasks.TaskMetricAccumulator
+
+@api nnx.tasks.TaskValidationError
+
+@api nnx.tasks.task_adapter
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

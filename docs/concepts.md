@@ -161,7 +161,7 @@ The factory lifecycle:
 
 Built-in nets return **raw logits**; `predict().logits` is always that raw output. Native `torch.nn.NLLLoss` (`Losses.NEGATIVE_LOG_LIKELIHOOD`) requires log-probabilities, so the supervised loop, `evaluate()` and the NNx-owned classifier step factories (KD, feature-KD, MoE, Mixup, CutMix, and Born-Again through KD) apply `log_softmax` over the class axis internally before calling the exact native loss — the reported loss is the normalized NLL and the backpropagated gradient carries the competing-class term, matching cross-entropy from the same weights. The loss object's class weights, `ignore_index` and reduction remain authoritative. Any other loss module — including an `NLLLoss` *subclass* with its own `forward`, a custom `train_step_fn`, or the standalone `lr_finder` callable — receives the raw output unchanged and owns its own normalization.
 
-**Probability-aware prediction.** `predict()` and `PredictResult` stay logits + classes. `NNModel.predict_proba(X, spec)` is the opt-in alternative: a `ProbabilitySpec(kind, class_axis, labels)` *declares* the task — `"categorical"` (softmax over `class_axis`, rows sum to 1, argmax decoding) or `"bernoulli"` (independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators) — rather than inferring it from the loss or the output shape. The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values, the spec (class axis and ordered labels) and `sample_ids` (the input row index for arrays and tensors, the iteration position for an ordinary loader — a shuffling loader warns — and the global node index for graph seed rows). It runs through the same inference path as `predict()` — the same inputs, graph seed-row slicing, `no_grad`, and non-destructive mode handling (§13.2) — and never touches parameters or gradients. `class_indices` exists only for categorical results, so Bernoulli indicators cannot be fed to class-index consumers such as `VisUtils.confusion_matrix` by mistake; `prediction_from_logits(logits, spec)` exposes the same computation for logits obtained elsewhere.
+**Probability-aware prediction.** `predict()` and `PredictResult` stay logits + classes (for a model with a task, §6.3, `classes` holds the task's decoded values). `NNModel.predict_proba(X, spec)` is the opt-in alternative — `spec` may be omitted when the model declares a task, and a regression task returns `probabilities=None`, `spec=None` with its continuous values in `decoded`: a `ProbabilitySpec(kind, class_axis, labels)` *declares* the task — `"categorical"` (softmax over `class_axis`, rows sum to 1, argmax decoding) or `"bernoulli"` (independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators) — rather than inferring it from the loss or the output shape. The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values, the spec (class axis and ordered labels) and `sample_ids` (the input row index for arrays and tensors, the iteration position for an ordinary loader — a shuffling loader warns — and the global node index for graph seed rows). It runs through the same inference path as `predict()` — the same inputs, graph seed-row slicing, `no_grad`, and non-destructive mode handling (§13.2) — and never touches parameters or gradients. `class_indices` exists only for categorical results, so Bernoulli indicators cannot be fed to class-index consumers such as `VisUtils.confusion_matrix` by mistake; `prediction_from_logits(logits, spec)` exposes the same computation for logits obtained elsewhere.
 
 ## 4. What lands on disk
 
@@ -325,8 +325,86 @@ classification accuracy.
 This supports regression and other non-classification validation without
 replacing the training loop. See
 [`examples/26_custom_eval_step.py`](https://github.com/thekaveh/NNx/blob/main/examples/26_custom_eval_step.py).
-Standalone `evaluate()` and `predict()` still use the built-in supervised
-classification path; there is no `predict_fn` hook yet.
+Standalone `evaluate()` and `predict()` use the built-in supervised
+classification path unless the model declares a task (§6.3); there is no
+`predict_fn` hook yet.
+
+### 6.3. Task adapters (categorical, multilabel, regression)
+
+Without further declaration the default training step, `evaluate()` and
+`predict()` assume categorical classification: they decode by argmax (or the
+`BCEWithLogitsLoss` threshold) and every record carries accuracy / f1 /
+recall / precision. Plain regression and multilabel problems no longer need
+the custom hooks above — declare the task on the model instead:
+
+```python
+from nnx import Losses, Nets, NNModelParams, TaskSpec
+
+NNModelParams(net=Nets.FEED_FWD, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(2))
+NNModelParams(net=Nets.FEED_FWD, loss=Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(5, threshold=0.4))
+NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(3, ignore_index=-100))
+```
+
+The task's adapter (`model.task_adapter`) then owns four things for the
+default step, `evaluate()`, `predict()` and `predict_proba()`:
+
+- **Validation.** Each batch's outputs and targets are checked for the
+  declared shape, dtype and value range — categorical integer class indices
+  in `[0, C)` (or `ignore_index`), multilabel 0/1 targets shaped like the
+  output, regression floating targets shaped like the output (an `(N,)`
+  target is accepted only for an `(N, 1)` output; nothing broadcasts) —
+  before any backward pass or optimizer update, raising
+  `TaskValidationError` (a `ValueError`). The model itself is checked at
+  construction: the loss must suit the task (`CROSS_ENTROPY` /
+  `NEGATIVE_LOG_LIKELIHOOD`, `BINARY_CROSS_ENTROPY`, `MEAN_SQUARED_ERROR`),
+  a declared width must equal `output_dim`, and `Nets.TRANSFORMER` is out of
+  scope (language-model, ranking, link and structured-prediction tasks are
+  separate work). `NNModel.train` and `Trainer.train` re-check the live
+  `loss_fn` before touching any loader.
+- **Masking and loss units.** Categorical targets equal to `ignore_index`
+  and NaN multilabel / regression targets are excluded from the loss and
+  every metric alike. The loss is averaged over the valid targets with the
+  same normalization weights the default step already uses for gradient
+  accumulation, so uneven batches and an accumulated window reduce exactly
+  like one full batch. A window whose every target is masked takes no
+  optimizer update. Masked multilabel / regression losses are evaluated
+  element-wise at full shape (so a `BCEWithLogitsLoss` `pos_weight` still
+  lines up with its labels) and need an elementwise loss (`MSELoss`,
+  `L1Loss`, `SmoothL1Loss`, `HuberLoss`, `BCEWithLogitsLoss`); any other loss
+  module scores complete batches unchanged and rejects a masked one.
+  Targets keep their own dtype (no cast to a reduced-precision output).
+- **Decoding.** Argmax over axis 1 (categorical), `sigmoid >= threshold`
+  (multilabel), or the values themselves (regression). `predict().classes`
+  holds these decoded values; `predict_proba(X)` may omit its spec (the task
+  supplies it), and a regression result carries `probabilities=None` and
+  `spec=None` with the values in `decoded`.
+- **Records and metrics.** Metrics are computed over the whole loader, not
+  averaged per batch. Every task record carries its `kind`, the `count` of
+  valid targets and a `status` (`"ok"`, or `"empty"` when every target was
+  masked — an empty record has no loss and no metrics, and `evaluate()`
+  returns it instead of raising). Categorical records keep the legacy
+  accuracy / f1 / recall / precision (macro) and `error = 1 - accuracy`;
+  multilabel records report subset accuracy as `accuracy`, macro f1 /
+  recall / precision over labels, and both `subset_accuracy` and
+  `element_accuracy` in `edp.metrics`; regression records carry `mse` /
+  `mae` in `edp.metrics` and leave the classification fields and `error` as
+  `None`, so BEST selection, `ReduceLROnPlateau` and `EarlyStopping` track
+  the loss. TensorBoard / W&B receive `mse`, `mae`, … directly and never a
+  fabricated or zero-filled classification field. User `extra_metrics` are
+  called as `fn(y_true, y_pred)` on the valid targets only — the class
+  indices of the unmasked rows (categorical, as before) or the unmasked
+  values flattened to 1-D (multilabel, regression) — never on a masked
+  position.
+
+The spec is a versioned mapping on `NNModelParams.state()` (`task:
+{version: 1, kind: ..., ...}`), so it persists in `run.yaml`, checkpoints and
+Hub configs and participates in the run id; models without a task omit the
+key and keep their historical run ids. Task records add `kind` / `count` /
+`status` / `metrics` to `NNEvaluationDataPoint.state()` only when set, so
+legacy `idps.csv` columns are unchanged. Custom training steps can call
+`model.task_adapter.record(output, target, loss=...)` to write the same
+record the default step writes. Runnable walkthrough:
+[`examples/regression_task.py`](https://github.com/thekaveh/NNx/blob/main/examples/regression_task.py).
 
 ## 7. Fine-tuning (transfer learning)
 

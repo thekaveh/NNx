@@ -367,14 +367,19 @@ class LRMonitor(Callback):
 
 
 def _edp_metric_iter(edp):
-    """Yield (name, value) pairs for the standard EDP fields plus any
-    user-supplied extras. Skips None values."""
+    """Yield (name, value) pairs for the standard EDP fields, a task
+    record's own metrics (``mse`` / ``mae``, ``subset_accuracy`` /
+    ``element_accuracy`` — FEAT-002) and any user-supplied extras. Skips
+    None values, so a regression record emits no classification fields and
+    an all-masked record emits nothing rather than zeros."""
     if edp is None:
         return
     for name in ("loss", "error", "accuracy", "f1", "precision", "recall"):
         v = getattr(edp, name, None)
         if v is not None:
             yield name, v
+    for name, v in (getattr(edp, "metrics", None) or {}).items():
+        yield name, v
     for name, v in (getattr(edp, "extra", None) or {}).items():
         yield f"extra/{name}", v
 

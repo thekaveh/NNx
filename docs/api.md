@@ -191,6 +191,14 @@ those three methods raise a clear ImportError pointing at the extra;
 no other NNModel functionality is affected.
 ```
 
+##### `nnx.nn.nn_model.NNModel.task_adapter`
+
+```python
+property nnx.nn.nn_model.NNModel.task_adapter
+```
+
+The adapter for ``params.task`` (FEAT-002), or ``None`` for a legacy classification model. Custom steps can call ``task_adapter.record(output, target, loss=...)`` to write the same task record the default step writes.
+
 ##### `nnx.nn.nn_model.NNModel.to_onnx`
 
 ```python
@@ -382,7 +390,7 @@ in ``.eval()`` mode.
 ##### `nnx.nn.nn_model.NNModel.predict_proba`
 
 ```python
-nnx.nn.nn_model.NNModel.predict_proba(self, X, spec: 'ProbabilitySpec') -> 'PredictionResult'
+nnx.nn.nn_model.NNModel.predict_proba(self, X, spec: 'Optional[ProbabilitySpec]' = None) -> 'PredictionResult'
 ```
 
 Probability-aware prediction declared by an explicit ``spec``.
@@ -390,6 +398,13 @@ Probability-aware prediction declared by an explicit ``spec``.
 **Details**
 
 ```text
+``spec`` may be omitted for a model with a task (FEAT-002): the task
+supplies it — softmax over axis 1 for ``categorical``, sigmoid
+decoded at the task's ``threshold`` for ``multilabel`` — and a
+``regression`` task returns its continuous values with
+``probabilities=None`` and ``spec=None`` (``decoded`` holds the
+values). An explicit ``spec`` always wins.
+
 Accepts the same inputs as :meth:`predict` (arrays, tensors, tuples
 and ``DataLoader``s, including graph loaders whose rows are sliced
 to seed nodes) with the same non-destructive eval-mode contract,
@@ -1052,7 +1067,7 @@ No public description is currently available.
 #### `nnx.prediction.PredictionResult`
 
 ```python
-class nnx.prediction.PredictionResult(logits: 'np.ndarray', probabilities: 'np.ndarray', decoded: 'np.ndarray', sample_ids: 'np.ndarray', spec: 'ProbabilitySpec') -> 'None'
+class nnx.prediction.PredictionResult(logits: 'np.ndarray', probabilities: 'Optional[np.ndarray]', decoded: 'np.ndarray', sample_ids: 'np.ndarray', spec: 'Optional[ProbabilitySpec]') -> 'None'
 ```
 
 Probability-aware prediction for ``N`` samples.
@@ -1065,14 +1080,18 @@ Attributes:
         returns for the same input.
     probabilities: same shape as ``logits``; softmax over the class
         axis (categorical, rows sum to 1) or element-wise sigmoid
-        (bernoulli, not normalized).
+        (bernoulli, not normalized). ``None`` for a continuous
+        (regression-task) result, which has no probabilities.
     decoded: categorical — argmax class indices (``logits`` without
         the class axis); bernoulli — 0/1 indicators shaped like
-        ``logits`` (``logit >= 0``).
+        ``logits`` (``logit >= 0``, or the task's threshold);
+        continuous — the predicted values themselves.
     sample_ids: ``int64[N]`` identity of each row: the input row index
         for arrays, tensors and ordinary loaders, and the global node
         index (``input_id``) for seed rows of a graph loader.
-    spec: the :class:`ProbabilitySpec` that produced the result.
+    spec: the :class:`ProbabilitySpec` that produced the result, or
+        ``None`` for a continuous result (``NNModel.predict_proba``
+        on a regression task, FEAT-002).
 ```
 
 ##### `nnx.prediction.PredictionResult.kind`
@@ -1081,7 +1100,7 @@ Attributes:
 property nnx.prediction.PredictionResult.kind
 ```
 
-No public description is currently available.
+``"categorical"``, ``"bernoulli"`` or ``"continuous"`` (no spec).
 
 ##### `nnx.prediction.PredictionResult.class_axis`
 
@@ -1289,6 +1308,229 @@ existed). Decoding never resolves or runs a factory.
 ```
 
 
+### 2.6. Task adapters (`nnx.tasks`)
+
+#### `nnx.tasks.TaskSpec`
+
+```python
+class nnx.tasks.TaskSpec(kind: 'str', num_outputs: 'Optional[int]' = None, ignore_index: 'Optional[int]' = None, threshold: 'float' = 0.5, labels: 'Optional[tuple[str, ...]]' = None) -> 'None'
+```
+
+Declaration of a supervised task (see the module docstring).
+
+**Details**
+
+```text
+Prefer the constructors :meth:`categorical`, :meth:`multilabel` and
+:meth:`regression`.
+
+Args:
+    kind: ``"categorical"``, ``"multilabel"`` or ``"regression"``.
+    num_outputs: classes / labels / targets along output axis 1, or
+        ``None`` to accept the net's width. When set, a model whose
+        ``output_dim`` differs is rejected at construction.
+    ignore_index: categorical only — the target value excluded from
+        the loss and every metric (e.g. ``-100`` for padding).
+    threshold: multilabel only — probability at or above which a label
+        is decoded as positive (default ``0.5``, i.e. ``logit >= 0``).
+    labels: optional ordered names, one per output.
+
+Serializes with :meth:`state` / :meth:`from_state` as a versioned
+mapping (``version`` = :data:`TASK_SPEC_VERSION`).
+```
+
+##### `nnx.tasks.TaskSpec.categorical`
+
+```python
+nnx.tasks.TaskSpec.categorical(num_classes: 'Optional[int]' = None, *, ignore_index: 'Optional[int]' = None, labels: 'Optional[Sequence[str]]' = None) -> 'TaskSpec'
+```
+
+Mutually exclusive classes along output axis 1.
+
+##### `nnx.tasks.TaskSpec.multilabel`
+
+```python
+nnx.tasks.TaskSpec.multilabel(num_labels: 'Optional[int]' = None, *, threshold: 'float' = 0.5, labels: 'Optional[Sequence[str]]' = None) -> 'TaskSpec'
+```
+
+Independent binary labels, decoded at ``probability >= threshold``.
+
+##### `nnx.tasks.TaskSpec.regression`
+
+```python
+nnx.tasks.TaskSpec.regression(num_targets: 'Optional[int]' = None, *, labels: 'Optional[Sequence[str]]' = None) -> 'TaskSpec'
+```
+
+Continuous targets shaped like the output.
+
+##### `nnx.tasks.TaskSpec.state`
+
+```python
+nnx.tasks.TaskSpec.state(self) -> 'dict[str, Any]'
+```
+
+Versioned, YAML-safe representation (defaults omitted).
+
+##### `nnx.tasks.TaskSpec.from_state`
+
+```python
+nnx.tasks.TaskSpec.from_state(state: 'Mapping[str, Any]') -> 'TaskSpec'
+```
+
+Rebuild a spec from :meth:`state`, rejecting an unknown version or key.
+
+##### `nnx.tasks.TaskSpec.probability_spec`
+
+```python
+nnx.tasks.TaskSpec.probability_spec(self) -> 'Optional[ProbabilitySpec]'
+```
+
+The :class:`~nnx.prediction.ProbabilitySpec` this task implies: categorical softmax or multilabel (bernoulli) sigmoid over axis 1, or ``None`` for regression (no probabilities).
+
+
+#### `nnx.tasks.TaskAdapter`
+
+```python
+class nnx.tasks.TaskAdapter(spec: 'TaskSpec') -> 'None'
+```
+
+Validation, masking, loss units, decoding and metrics for one :class:`TaskSpec` kind. Obtain one with :func:`task_adapter`.
+
+##### `nnx.tasks.TaskAdapter.check_model`
+
+```python
+nnx.tasks.TaskAdapter.check_model(self, *, net: 'Nets', loss: 'Losses', output_dim: 'Optional[int]') -> 'None'
+```
+
+Reject a model configuration this task cannot drive — before any net is built or loader is iterated.
+
+##### `nnx.tasks.TaskAdapter.check_loss_fn`
+
+```python
+nnx.tasks.TaskAdapter.check_loss_fn(self, loss_fn: 'torch.nn.Module') -> 'None'
+```
+
+Reject a runtime ``model.loss_fn`` that cannot score this task.
+
+##### `nnx.tasks.TaskAdapter.prepare`
+
+```python
+nnx.tasks.TaskAdapter.prepare(self, output: 'torch.Tensor', target: 'torch.Tensor') -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor]'
+```
+
+Validate one batch and return ``(output, target, valid)``: tensors shaped for the loss plus a boolean mask of the targets that count. Raises :class:`TaskValidationError` before any backward pass for a shape, dtype or value the task rejects.
+
+##### `nnx.tasks.TaskAdapter.loss_terms`
+
+```python
+nnx.tasks.TaskAdapter.loss_terms(self, loss_fn: 'torch.nn.Module', output: 'torch.Tensor', target: 'torch.Tensor', valid: 'torch.Tensor') -> 'tuple[torch.Tensor, torch.Tensor, Optional[float]]'
+```
+
+``(display loss, additive numerator, normalization weight)`` over the valid targets only — the same contract as the default step's loss terms, so accumulation windows normalize once by their valid count. An all-masked batch contributes a differentiable zero with weight 0 and a NaN display loss.
+
+##### `nnx.tasks.TaskAdapter.decode`
+
+```python
+nnx.tasks.TaskAdapter.decode(self, output: 'torch.Tensor') -> 'torch.Tensor'
+```
+
+Decoded predictions for a prepared ``output``.
+
+##### `nnx.tasks.TaskAdapter.decode_array`
+
+```python
+nnx.tasks.TaskAdapter.decode_array(self, logits: 'np.ndarray') -> 'np.ndarray'
+```
+
+Decoded predictions for raw ``predict()`` logits (numpy).
+
+##### `nnx.tasks.TaskAdapter.accumulator`
+
+```python
+nnx.tasks.TaskAdapter.accumulator(self, *, keep_arrays: 'bool' = False) -> 'TaskMetricAccumulator'
+```
+
+A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it.
+
+##### `nnx.tasks.TaskAdapter.record`
+
+```python
+nnx.tasks.TaskAdapter.record(self, output: 'torch.Tensor', target: 'torch.Tensor', *, loss: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'NNEvaluationDataPoint'
+```
+
+Validate one batch and return its task record — for custom training steps that want the same record the default step writes.
+
+##### `nnx.tasks.TaskAdapter.check_logits`
+
+```python
+nnx.tasks.TaskAdapter.check_logits(self, logits: 'np.ndarray') -> 'None'
+```
+
+Shape check for raw prediction logits (a loader's first batch), so a mismatched net fails before the rest of inference runs.
+
+##### `nnx.tasks.TaskAdapter.prediction`
+
+```python
+nnx.tasks.TaskAdapter.prediction(self, logits: 'np.ndarray', sample_ids: 'np.ndarray') -> 'PredictionResult'
+```
+
+The rich prediction this task implies (see ``predict_proba``).
+
+
+#### `nnx.tasks.TaskMetricAccumulator`
+
+```python
+class nnx.tasks.TaskMetricAccumulator(adapter: 'TaskAdapter', *, keep_arrays: 'bool' = False) -> 'None'
+```
+
+Mergeable per-task statistics over any number of batches.
+
+**Details**
+
+```text
+``update`` takes one prepared batch; ``result`` builds the
+:class:`~nnx.NNEvaluationDataPoint` for everything seen so far.
+Metrics are computed over the whole accumulation (not averaged per
+batch), so uneven batches give the same numbers as one full batch.
+``keep_arrays`` retains the valid targets and predictions for
+user ``extra_metrics``; it is off unless those are requested.
+```
+
+##### `nnx.tasks.TaskMetricAccumulator.update`
+
+```python
+nnx.tasks.TaskMetricAccumulator.update(self, output: 'torch.Tensor', target: 'torch.Tensor', valid: 'torch.Tensor') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.tasks.TaskMetricAccumulator.result`
+
+```python
+nnx.tasks.TaskMetricAccumulator.result(self, *, loss: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'NNEvaluationDataPoint'
+```
+
+No public description is currently available.
+
+
+#### `nnx.tasks.TaskValidationError`
+
+```python
+class nnx.tasks.TaskValidationError
+```
+
+An invalid :class:`TaskSpec`, a model the task cannot drive, or a batch whose outputs / targets do not satisfy the declared task.
+
+
+#### `nnx.tasks.task_adapter`
+
+```python
+nnx.tasks.task_adapter(spec: 'TaskSpec') -> 'TaskAdapter'
+```
+
+Return the adapter that drives ``spec``.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -1364,10 +1606,10 @@ different id, and net rebuilding crashes. Every loader
 #### `nnx.nn.params.nn_model_params.NNModelParams`
 
 ```python
-class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Nets', device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False) -> 'None'
+class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Nets', device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None) -> 'None'
 ```
 
-NNModelParams(*, net: 'Nets', device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False)
+NNModelParams(*, net: 'Nets', device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None)
 
 ##### `nnx.nn.params.nn_model_params.NNModelParams.is_valid`
 
@@ -2666,7 +2908,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint`
 
 ```python
-class nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint(*, f1: 'float', recall: 'float', accuracy: 'float', precision: 'float', loss: 'Optional[float]' = None, error: 'Optional[float]' = None, extra: 'Mapping[str, float]' = <factory>) -> 'None'
+class nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint(*, f1: 'Optional[float]' = None, recall: 'Optional[float]' = None, accuracy: 'Optional[float]' = None, precision: 'Optional[float]' = None, loss: 'Optional[float]' = None, error: 'Optional[float]' = None, extra: 'Mapping[str, float]' = <factory>, kind: 'Optional[str]' = None, count: 'Optional[int]' = None, status: 'Optional[str]' = None, metrics: 'Mapping[str, float]' = <factory>) -> 'None'
 ```
 
 Per-batch / per-epoch evaluation metrics.
@@ -2674,14 +2916,25 @@ Per-batch / per-epoch evaluation metrics.
 **Details**
 
 ```text
-The four core fields (f1, recall, accuracy, precision) are computed by
-`of()` via sklearn. `loss` and `error` are typically attached after the
-fact by NNModel during training / evaluation.
+The four classification fields (f1, recall, accuracy, precision) are
+computed by `of()` via sklearn. `loss` and `error` are typically
+attached after the fact by NNModel during training / evaluation.
 
 `extra` is a free-form dict of user-supplied custom metric names to
 floats. Populated when NNTrainParams.extra_metrics or evaluate(extra_metrics=)
 is set; empty by default (and omitted from state() when empty so that
 pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
+
+**Task records (FEAT-002).** A model with a ``TaskSpec`` writes records
+that also carry the task `kind` (``"categorical"`` / ``"multilabel"`` /
+``"regression"``), the `count` of valid (unmasked) targets they
+summarize, a `status` (``"ok"``, or ``"empty"`` when every target was
+masked) and the task's own `metrics` (``mse`` / ``mae`` for regression,
+``subset_accuracy`` / ``element_accuracy`` for multilabel). A
+regression record leaves the classification fields and `error` as
+``None`` rather than fabricating them; an empty record has no loss or
+metrics at all. All four task fields are omitted from `state()` on
+legacy records, whose serialization is unchanged.
 ```
 
 ##### `nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint.with_loss`

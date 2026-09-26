@@ -140,4 +140,5 @@ def classification_edp(
     keeps its own prediction rule.
     """
     edp = NNEvaluationDataPoint.of(Y=Y.cpu().numpy(), Y_hat=Y_hat.cpu().numpy(), extra_metrics=extra_metrics)
+    assert edp.accuracy is not None  # `of` always computes the classification fields
     return edp.with_loss(value=loss).with_error(value=float(1 - edp.accuracy))
