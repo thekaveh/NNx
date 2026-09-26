@@ -261,6 +261,70 @@ replicate = model.train(params=train_params, salt="replicate-2")
 stored with the run configuration and included in the ID hash, so save/load and
 resume retain the distinction. Non-string salt values are rejected.
 
+### 4.4. Provenance: fingerprint and attempts
+
+A run has four separate identities, and none of them stands in for another:
+
+| Identity | What it names | Where |
+|---|---|---|
+| `run.id` | the configuration (`md5` of `NNRun.state()`) | the `runs/<id>/` directory name |
+| experiment fingerprint | the declared intent — task, label order, model descriptor, data and split identities, objective version, config | `runs/<id>/provenance.json` |
+| attempt id | one execution: a fresh id for every `train()` call | `runs/<id>/attempt.json` |
+| environment snapshot | where it ran (library versions, GPU, OS, git commit) | `runs/<id>/metadata.yaml`, rewritten on every save |
+
+Provenance is opt-in (`nnx.provenance`, FEAT-019) and never changes a run id:
+
+```python
+from nnx.provenance import ExperimentManifest, compare, hash_file
+
+plan = ExperimentManifest.for_model(model, train=train_params,
+                                    data={"train": hash_file("train.csv")},    # verified digest
+                                    splits={"val": "val-2024-06"},             # declared: recorded, not verified
+                                    objective={"id": "supervised", "version": 1})
+run = model.train(params=train_params, provenance=plan)
+run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.attempt.status
+```
+
+- **The manifest** (`ExperimentManifest`) serializes to canonical bytes — UTF-8
+  JSON with sorted keys, arrays in order and the format version
+  (`nnx.provenance/1`) inside the hashed document — and its fingerprint is their
+  SHA-256. Changing the task, the label order, a split's digest or the
+  objective's version changes it. Only JSON-like values serialize: non-finite
+  floats, sets, bytes, callables and other objects are rejected by path, never
+  hashed through their `repr`. A manifest copies what it is given into immutable
+  form, and equality follows the canonical bytes. `ExperimentManifest.for_model(...)`
+  collects the model's task and labels (§6.3) and its model descriptor (§3.2).
+  When given the training configuration, it records it without `n_epochs` and
+  the resume lineage, which describe an attempt, so a resume of the same plan
+  keeps the fingerprint. It builds no model and reads no loader.
+- **Identity references** are `declared` (an id you supply — `data_id`, a
+  dataset name — recorded but never reported as verified), `digest` (from the
+  explicit `hash_file` / `hash_bytes` calls, the only ones that read data) or
+  `unknown`.
+- **Attempts.** Every fit writes a fresh `attempt.json`. It records the
+  fingerprint and `running` → `completed`, `failed` or `cancelled`
+  (`KeyboardInterrupt`), together with the last committed checkpoint (tag,
+  epoch and generation) and the error type and message. A failure to record
+  a failed attempt is a warning; it never replaces the training error.
+  A resume is a new attempt of the same plan that links its parent's
+  attempt and checkpoint generation; the parent's files are left untouched.
+  `NNRun.save` never rewrites them, and both files are written atomically,
+  so an interrupted write leaves the previous record. An attempt that fails
+  before its first committed epoch releases its reservation like any failed
+  fit, so no record remains. `Trainer.train(..., provenance=...)` records
+  attempts the same way.
+- **Comparing.** `compare(a, b)` takes manifests, runs or run ids. It reads
+  only the provenance files: no model is loaded, no loader iterated and no
+  file hashed. It reports each field by a stable path (`data.train`,
+  `labels[1]`, `config.lr`) as `equal`, `different`, `missing`, `unknown`,
+  `declared` (equal but unverified) or `verified` (equal digests).
+  Values compare by their canonical bytes, so `1` and `1.0` differ exactly as
+  their fingerprints do. `verified_equal` holds only when both sides have
+  provenance and every field is equal or verified. A run without a manifest
+  (`run.provenance is None`) is **absent**, never equal. Provenance files are
+  verified on read (format and fingerprint); unreadable ones are ignored with a
+  warning, so they never stop a run from loading or resuming.
+
 ## 5. Callbacks
 
 `Callback` has four hooks (`on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`) each receiving a `_CallbackContext`:
