@@ -2949,7 +2949,9 @@ Args:
     model: the model descriptor (e.g. ``NNModelParams.state()``).
     data: named data identities (:class:`IdentityRef`, a declared id
         string, or ``None`` for unknown).
-    splits: named split identities, likewise.
+    splits: named split identities, likewise; a
+        :class:`nnx.data_splits.SplitManifest` is recorded as its digest
+        (:meth:`~nnx.data_splits.SplitManifest.identity`).
     objective: the objective's identity, e.g. ``{"id": "kd", "version": 1}``.
     config: any other JSON-like configuration.
 ```
@@ -3181,6 +3183,188 @@ class nnx.provenance.FieldComparison(path: 'str', status: 'str', left: 'Any' = N
 ```
 
 One field of a comparison: a stable dotted ``path`` and a ``status`` — ``equal``, ``different``, ``missing`` (on one side only), ``unknown`` (an unknown identity), ``declared`` (equal *declared* identities: unverified), ``verified`` (equal digests) or ``absent`` (no provenance at all).
+
+
+### 2.13. Reproducible splits (`nnx.data_splits`)
+
+#### `nnx.data_splits.plan_split`
+
+```python
+nnx.data_splits.plan_split(ids: 'Optional[Iterable[Any]]' = None, *, strategy: 'str', groups: 'Optional[Iterable[Any]]' = None, times: 'Optional[Iterable[Any]]' = None, labels: 'Optional[Iterable[Any]]' = None, proportions: 'Optional[Iterable[float]]' = None, cutoffs: 'Optional[Iterable[Any]]' = None, gap: 'Any' = None, seed: 'Optional[int]' = None, insufficient: 'Optional[str]' = None, source: 'Union[IdentityRef, str, None]' = None) -> 'SplitManifest'
+```
+
+Plan a group, chronological or stratified split.
+
+**Details**
+
+```text
+Args:
+    ids: stable sample ids (str or int), one per row. ``None`` plans on
+        row positions, which needs ``source`` (row positions alone cannot
+        detect a reordered source) and replays only against it.
+    strategy: ``"group"``, ``"chronological"`` or ``"stratified"``.
+    groups: per-row group keys (``"group"``).
+    times: per-row numbers or dates / datetimes (``"chronological"``).
+    labels: per-row class labels (``"stratified"``).
+    proportions: ``(train, validation, test)`` shares summing to 1, train
+        > 0; a zero share leaves that split empty (``"group"``,
+        ``"stratified"``).
+    cutoffs: ``(validation_start, test_start)``; either may be ``None``
+        (``"chronological"``).
+    gap: rows within ``gap`` before a cutoff are excluded; a number, or a
+        ``timedelta`` for dates (``"chronological"``, default 0).
+    seed: orders groups / ids (``"group"``, ``"stratified"``); ``None``
+        draws one from the OS and records it. Chronological plans take
+        no seed.
+    insufficient: ``"raise"`` (default) or ``"train"`` for a class with
+        fewer rows than active splits (``"stratified"``).
+    source: the source's identity — an ``IdentityRef`` (e.g.
+        ``nnx.provenance.hash_file``), a declared id string, or ``None``.
+
+Raises:
+    SplitError: duplicate ids, too few groups or class rows, or no
+        training rows. ``TypeError`` / ``ValueError`` for malformed
+        arguments, including ones the strategy does not use.
+```
+
+
+#### `nnx.data_splits.SplitManifest`
+
+```python
+class nnx.data_splits.SplitManifest(strategy: 'str', train: 'tuple[SampleId, ...]', validation: 'tuple[SampleId, ...]', test: 'tuple[SampleId, ...]', excluded: 'tuple[SampleId, ...]' = (), ids: 'str' = 'sample', source: 'IdentityRef' = <factory>, parameters: 'Mapping[str, Any]' = <factory>, seed: 'Optional[int]' = None) -> 'None'
+```
+
+Who is in which split, and how that was decided.
+
+**Details**
+
+```text
+Memberships are sample ids (``ids="sample"``) or row positions
+(``ids="position"``, which can be replayed only against a recorded source
+identity). They are disjoint, stored in sorted order, and ``excluded``
+holds the rows a chronological ``gap`` left out. Equality and hashing
+follow :meth:`canonical_bytes`, computed once (the manifest is frozen).
+```
+
+##### `nnx.data_splits.SplitManifest.n_rows`
+
+```python
+property nnx.data_splits.SplitManifest.n_rows
+```
+
+Rows the plan covers, excluded ones included.
+
+##### `nnx.data_splits.SplitManifest.state`
+
+```python
+nnx.data_splits.SplitManifest.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.data_splits.SplitManifest.from_state`
+
+```python
+nnx.data_splits.SplitManifest.from_state(state: 'Mapping[str, Any]') -> 'SplitManifest'
+```
+
+No public description is currently available.
+
+##### `nnx.data_splits.SplitManifest.canonical_bytes`
+
+```python
+nnx.data_splits.SplitManifest.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.data_splits.SplitManifest.digest`
+
+```python
+nnx.data_splits.SplitManifest.digest(self) -> 'str'
+```
+
+``sha256:<hex>`` of the canonical manifest: the split identity.
+
+##### `nnx.data_splits.SplitManifest.identity`
+
+```python
+nnx.data_splits.SplitManifest.identity(self) -> 'IdentityRef'
+```
+
+The split identity as a verified provenance reference.
+
+##### `nnx.data_splits.SplitManifest.to_json`
+
+```python
+nnx.data_splits.SplitManifest.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.data_splits.SplitManifest.from_json`
+
+```python
+nnx.data_splits.SplitManifest.from_json(text: 'str') -> 'SplitManifest'
+```
+
+No public description is currently available.
+
+##### `nnx.data_splits.SplitManifest.save`
+
+```python
+nnx.data_splits.SplitManifest.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write the manifest as JSON, atomically.
+
+##### `nnx.data_splits.SplitManifest.load`
+
+```python
+nnx.data_splits.SplitManifest.load(path: 'Union[str, os.PathLike[str]]') -> 'SplitManifest'
+```
+
+No public description is currently available.
+
+##### `nnx.data_splits.SplitManifest.resolve`
+
+```python
+nnx.data_splits.SplitManifest.resolve(self, ids: 'Iterable[Any]', *, source: 'Union[IdentityRef, str, None]' = None) -> 'SplitIndices'
+```
+
+Map this manifest onto a source whose rows carry ``ids``.
+
+**Details**
+
+```text
+``ids`` are the source's sample ids in row order (``range(n)`` for a
+positional manifest). When the manifest records a source identity,
+``source`` must match it; passing one to a manifest that records none
+raises too, since nothing could be checked. Raises
+:class:`SplitError` on a changed identity, a positional-only
+manifest, ids of another type, and duplicate, missing or unexpected
+ids, and on an empty train split. Excluded sample ids may be absent
+(they are in no split); a positional manifest needs every position,
+since a dropped row would shift the rest.
+```
+
+
+#### `nnx.data_splits.SplitIndices`
+
+```python
+class nnx.data_splits.SplitIndices(train: 'tuple[int, ...]', validation: 'tuple[int, ...]', test: 'tuple[int, ...]', excluded: 'tuple[int, ...]' = ()) -> 'None'
+```
+
+Row positions of each split in the source a manifest was resolved on, in the manifest's membership order.
+
+
+#### `nnx.data_splits.SplitError`
+
+```python
+class nnx.data_splits.SplitError
+```
+
+A split that cannot be planned or replayed as asked.
 
 
 ## 3. Params
@@ -5562,7 +5746,7 @@ raises ``ValueError`` at construction. The caller's masks are only read.
 #### `nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset`
 
 ```python
-class nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset(*, df: 'pd.DataFrame', feature_cols: 'list[str]', target_col: 'str', batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.15, test_proportion: 'float' = 0.15, name_override: 'Optional[str]' = None, feature_dtype: 'torch.dtype' = torch.float32, target_dtype: 'Optional[torch.dtype]' = None, seed: 'Optional[int]' = None) -> 'None'
+class nnx.nn.dataset.nn_tabular_dataset.NNTabularDataset(*, df: 'pd.DataFrame', feature_cols: 'list[str]', target_col: 'str', batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.15, test_proportion: 'float' = 0.15, name_override: 'Optional[str]' = None, feature_dtype: 'torch.dtype' = torch.float32, target_dtype: 'Optional[torch.dtype]' = None, seed: 'Optional[int]' = None, split: 'Optional[SplitManifest]' = None, id_col: 'Optional[str]' = None, source_identity: 'Optional[Union[IdentityRef, str]]' = None) -> 'None'
 ```
 
 Wrap a pandas DataFrame as train/val/test DataLoaders.
@@ -5603,6 +5787,22 @@ dtypes; so does a finite value that overflows a narrower floating /
 complex ``feature_dtype`` or floating ``target_dtype`` during conversion.
 All checks, the classification label check included, run before the
 split, so a rejection leaves the DataFrame and the global RNG untouched.
+
+Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
+(``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
+matched to the plan by the sample ids in the ``id_col`` column (required;
+never inferred from the index), so reordered rows keep their split; a
+positional manifest matches row positions and needs its recorded
+``source_identity``. Duplicate, missing or unexpected ids, a changed
+``source_identity`` and an empty train split raise ``SplitError`` before
+any tensor or loader exists. Only the planned rows are admitted and
+counted (``output_dim`` included): rows the plan excluded (a
+chronological ``gap``) may be absent and are never inspected. An empty
+validation or test membership gives a ``None`` loader. ``seed``,
+``val_proportion`` and ``test_proportion`` do not apply and must be left
+at their defaults; the train loader still shuffles, and validation /
+test follow the manifest's order. ``state()`` gains ``split`` (the
+manifest digest) only then.
 ```
 
 

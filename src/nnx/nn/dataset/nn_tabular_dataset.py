@@ -18,20 +18,30 @@ Usage:
     ... )
 
 Validation and test slices are random samples from the source DataFrame.
-The remainder becomes train.
+The remainder becomes train. Pass ``split=`` (a ``SplitManifest`` from
+``nnx.data_splits.plan_split``) for explicit group, chronological or
+stratified membership instead:
+
+    >>> from nnx.data_splits import plan_split
+    >>> plan = plan_split(df["row_id"], strategy="group", groups=df["patient"],
+    ...                   proportions=(0.7, 0.15, 0.15), seed=7)
+    >>> ds = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="label",
+    ...                       split=plan, id_col="row_id")
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, cast
+from typing import Optional, Union, cast
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, Subset, TensorDataset, random_split
 
 from ..._validation import require_batch_sizes
+from ...data_splits import SplitIndices, SplitManifest
+from ...provenance import IdentityRef
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -66,6 +76,10 @@ def _feature_problem(column, dtype: torch.dtype) -> Optional[str]:
     # ``float(info.max) + 1`` rounds to the exclusive upper bound exactly.
     lo, hi = float(np.trunc(values.min())), float(np.trunc(values.max()))
     return None if lo >= float(info.min) and hi < float(info.max) + 1 else "out-of-range"
+
+
+_DEFAULT_VAL_PROPORTION = 0.15
+_DEFAULT_TEST_PROPORTION = 0.15
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -105,6 +119,22 @@ class NNTabularDataset(NNDatasetBase):
     complex ``feature_dtype`` or floating ``target_dtype`` during conversion.
     All checks, the classification label check included, run before the
     split, so a rejection leaves the DataFrame and the global RNG untouched.
+
+    Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
+    (``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
+    matched to the plan by the sample ids in the ``id_col`` column (required;
+    never inferred from the index), so reordered rows keep their split; a
+    positional manifest matches row positions and needs its recorded
+    ``source_identity``. Duplicate, missing or unexpected ids, a changed
+    ``source_identity`` and an empty train split raise ``SplitError`` before
+    any tensor or loader exists. Only the planned rows are admitted and
+    counted (``output_dim`` included): rows the plan excluded (a
+    chronological ``gap``) may be absent and are never inspected. An empty
+    validation or test membership gives a ``None`` loader. ``seed``,
+    ``val_proportion`` and ``test_proportion`` do not apply and must be left
+    at their defaults; the train loader still shuffles, and validation /
+    test follow the manifest's order. ``state()`` gains ``split`` (the
+    manifest digest) only then.
     """
 
     df: pd.DataFrame
@@ -114,8 +144,8 @@ class NNTabularDataset(NNDatasetBase):
     # Per-split batch size. None for any entry means "use the full split as
     # one batch" (resolved in __post_init__ once the split sizes are known).
     batch_sizes: tuple[Optional[int], Optional[int], Optional[int]] = (None, None, None)
-    val_proportion: float = 0.15
-    test_proportion: float = 0.15
+    val_proportion: float = _DEFAULT_VAL_PROPORTION
+    test_proportion: float = _DEFAULT_TEST_PROPORTION
     name_override: Optional[str] = None
     feature_dtype: torch.dtype = field(default=torch.float32)
     # None (default) = classification: target cast to int64 and validated
@@ -134,6 +164,13 @@ class NNTabularDataset(NNDatasetBase):
     # runs. Default None falls back to the global torch RNG (the pre-fix
     # behavior). Mirrors NNPreferenceDataset's seeded-split contract.
     seed: Optional[int] = None
+    # FEAT-017: explicit membership from a SplitManifest instead of
+    # random_split. None (default) keeps the seeded random split above.
+    split: Optional[SplitManifest] = None
+    # The column holding the plan's sample ids (required with a sample-id plan).
+    id_col: Optional[str] = None
+    # Must equal the manifest's recorded source identity, when it has one.
+    source_identity: Optional[Union[IdentityRef, str]] = None
 
     def __post_init__(self):
         if not 0.0 <= self.val_proportion < 1.0:
@@ -175,6 +212,14 @@ class NNTabularDataset(NNDatasetBase):
             raise ValueError(
                 f"target_col {self.target_col!r} must not appear in feature_cols — that trains on the label."
             )
+        # FEAT-017: resolve an explicit split before any conversion, so an id
+        # or identity problem fails fast and no loader is ever built. Only the
+        # planned rows are admitted, in split order: rows the plan excluded
+        # (a chronological gap) are never inspected, converted or counted.
+        indices = self._resolve_split()
+        frame = self.df
+        if indices is not None:
+            frame = self.df.iloc[[*indices.train, *indices.validation, *indices.test]]
 
         # NaN anywhere in the modeled columns is silent poison: NaN
         # features flow into NaN losses, and a NaN target's float→int64
@@ -183,7 +228,7 @@ class NNTabularDataset(NNDatasetBase):
         # because pandas min/max/nunique skip NaN.
         # dict.fromkeys dedupes (order-preserving) duplicates WITHIN
         # feature_cols — target/feature overlap is rejected above.
-        modeled = cast(pd.DataFrame, self.df[list(dict.fromkeys([*self.feature_cols, self.target_col]))])
+        modeled = cast(pd.DataFrame, frame[list(dict.fromkeys([*self.feature_cols, self.target_col]))])
         target_kind = self.target_dtype if self.target_dtype is not None else "int64 class labels"
         if bool(modeled.isna().to_numpy().any()):
             bad_cols = [c for c in modeled.columns if bool(modeled[c].isna().to_numpy().any())]
@@ -196,7 +241,7 @@ class NNTabularDataset(NNDatasetBase):
         # (int64 → an INT64 extreme, bool → True, int8 wraps 300 to 44).
         # Check the selected feature columns in source precision, before
         # any conversion; unselected columns are never inspected.
-        problems = {c: _feature_problem(self.df[c], self.feature_dtype) for c in dict.fromkeys(self.feature_cols)}
+        problems = {c: _feature_problem(frame[c], self.feature_dtype) for c in dict.fromkeys(self.feature_cols)}
         non_finite = [c for c, problem in problems.items() if problem == "non-finite"]
         if non_finite:
             raise ValueError(
@@ -217,8 +262,10 @@ class NNTabularDataset(NNDatasetBase):
         # validation, tensor construction, and classification metadata.
         # Reading the raw column again after pd.to_numeric would accept
         # numeric strings here but fail later inside torch.tensor.
-        target_series = cast(pd.Series, pd.to_numeric(self.df[self.target_col], errors="coerce"))
-        target_values = target_series.to_numpy()
+        target_series = cast(pd.Series, pd.to_numeric(frame[self.target_col], errors="coerce"))
+        # ascontiguousarray: a reversed / strided frame (df.iloc[::-1]) hands
+        # NumPy negative strides, which torch.tensor rejects.
+        target_values = np.ascontiguousarray(target_series.to_numpy())
         # Finiteness is required for both classification and regression —
         # NaN/Inf targets are poison either way. The integer check is
         # classification-only: a regression target (float) is expected to
@@ -250,8 +297,8 @@ class NNTabularDataset(NNDatasetBase):
                     "Remap labels (e.g. pd.factorize) before constructing the dataset."
                 )
 
-        features = cast(pd.DataFrame, self.df[self.feature_cols])
-        X = torch.tensor(features.to_numpy(), dtype=self.feature_dtype)
+        features = cast(pd.DataFrame, frame[self.feature_cols])
+        X = torch.tensor(np.ascontiguousarray(features.to_numpy()), dtype=self.feature_dtype)
         y = torch.tensor(
             target_values,
             dtype=self.target_dtype if self.target_dtype is not None else torch.long,
@@ -290,17 +337,27 @@ class NNTabularDataset(NNDatasetBase):
 
         full_dataset = TensorDataset(X, y)
 
-        # Sizes computed as (n_total - val - test, val, test) so the three
-        # sum exactly even with int truncation.
-        n_val = int(n_total * self.val_proportion)
-        n_test = int(n_total * self.test_proportion)
-        n_train = n_total - n_val - n_test
-        # seed=None must genuinely fall back to the global torch RNG (the
-        # documented contract): a fresh torch.Generator() is NOT that —
-        # it always carries the same fixed default seed, which would make
-        # every unseeded split bit-identical and deaf to torch.manual_seed.
-        gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
-        train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test], generator=gen)
+        if indices is not None:
+            # The manifest fixes membership: no random_split, no RNG draw.
+            # `frame` holds the train, validation and test rows in that order.
+            n_train, n_val, n_test = len(indices.train), len(indices.validation), len(indices.test)
+            train_ds, val_ds, test_ds = (
+                Subset(full_dataset, range(0, n_train)),
+                Subset(full_dataset, range(n_train, n_train + n_val)),
+                Subset(full_dataset, range(n_train + n_val, n_total)),
+            )
+        else:
+            # Sizes computed as (n_total - val - test, val, test) so the three
+            # sum exactly even with int truncation.
+            n_val = int(n_total * self.val_proportion)
+            n_test = int(n_total * self.test_proportion)
+            n_train = n_total - n_val - n_test
+            # seed=None must genuinely fall back to the global torch RNG (the
+            # documented contract): a fresh torch.Generator() is NOT that —
+            # it always carries the same fixed default seed, which would make
+            # every unseeded split bit-identical and deaf to torch.manual_seed.
+            gen = torch.Generator().manual_seed(int(self.seed)) if self.seed is not None else torch.default_generator
+            train_ds, val_ds, test_ds = random_split(full_dataset, [n_train, n_val, n_test], generator=gen)
 
         object.__setattr__(self, "name", self.name_override or "NNTabularDataset")
 
@@ -340,17 +397,50 @@ class NNTabularDataset(NNDatasetBase):
             # Regression: single continuous output.
             object.__setattr__(self, "output_dim", 1)
 
-        object.__setattr__(
-            self,
-            "_state",
-            dict(
-                name=self.name,
-                input_dim=self.input_dim,
-                output_dim=self.output_dim,
-                n_train=n_train,
-                n_val=n_val,
-                n_test=n_test,
-                feature_cols=list(self.feature_cols),
-                target_col=self.target_col,
-            ),
+        state = dict(
+            name=self.name,
+            input_dim=self.input_dim,
+            output_dim=self.output_dim,
+            n_train=n_train,
+            n_val=n_val,
+            n_test=n_test,
+            feature_cols=list(self.feature_cols),
+            target_col=self.target_col,
         )
+        if self.split is not None:
+            state["split"] = self.split.digest()  # omitted for the default random split
+        object.__setattr__(self, "_state", state)
+
+    def _resolve_split(self) -> Optional[SplitIndices]:
+        """Row positions of each split under ``split=``, or ``None`` for the
+        default random split. Raises before any tensor or loader exists."""
+        if self.split is None:
+            if self.id_col is not None or self.source_identity is not None:
+                raise ValueError(
+                    "id_col / source_identity only apply with split= (a SplitManifest from nnx.data_splits)"
+                )
+            return None
+        if not isinstance(self.split, SplitManifest):
+            raise TypeError(f"split must be a nnx.data_splits.SplitManifest, got {type(self.split).__name__}")
+        if self.seed is not None:
+            raise ValueError("seed does not apply with split=: the manifest fixes membership, nothing is drawn")
+        if (self.val_proportion, self.test_proportion) != (_DEFAULT_VAL_PROPORTION, _DEFAULT_TEST_PROPORTION):
+            raise ValueError(
+                "val_proportion / test_proportion do not apply with split=: the manifest fixes each split's rows"
+            )
+        if self.split.ids == "position":
+            if self.id_col is not None:
+                raise ValueError("a positional manifest matches row positions; id_col does not apply")
+            ids: list = list(range(len(self.df)))
+        else:
+            # Required, never inferred from the index: a plan made on a column
+            # would silently match the wrong rows through a same-valued index.
+            if self.id_col is None:
+                raise ValueError("split= needs id_col=: name the column holding the plan's sample ids")
+            if self.id_col not in self.df.columns:
+                raise KeyError(f"NNTabularDataset id_col {self.id_col!r} not in DataFrame")
+            column = self.df[self.id_col]
+            if isinstance(column, pd.DataFrame):
+                raise ValueError(f"id_col {self.id_col!r} names {column.shape[1]} DataFrame columns; it must name one")
+            ids = column.tolist()
+        return self.split.resolve(ids, source=self.source_identity)  # raises on an empty train split

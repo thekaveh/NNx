@@ -18,6 +18,7 @@ UNNUMBERED_EXAMPLES = [
     "graph_optional_splits.py",
     "optimizer_factories.py",
     "regression_task.py",
+    "split_replay.py",
     "tabular_validation.py",
 ]
 EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.py")) + [
@@ -41,6 +42,7 @@ def test_example_imports_without_running_main(example):
         "decision_fixed_head.py",
         "26_custom_eval_step.py",
         "regression_task.py",
+        "split_replay.py",
     ],
 )
 def test_representative_examples_run_end_to_end(name, tmp_path):
@@ -90,6 +92,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),
     ("optimizer_factories.py", "optimizer_factories_workflow"),
     ("regression_task.py", "regression_task_workflow"),
+    ("split_replay.py", "split_replay_workflow"),
     ("tabular_validation.py", "tabular_validation_workflow"),
     ("25_conv_classifier.py", "conv_integral_schema_roundtrip"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),

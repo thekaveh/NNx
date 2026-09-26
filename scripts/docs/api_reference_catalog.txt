@@ -216,6 +216,16 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.provenance.FieldComparison
 
+### 2.13. Reproducible splits (`nnx.data_splits`)
+
+@api nnx.data_splits.plan_split
+
+@api nnx.data_splits.SplitManifest
+
+@api nnx.data_splits.SplitIndices
+
+@api nnx.data_splits.SplitError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

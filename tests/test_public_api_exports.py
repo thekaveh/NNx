@@ -53,6 +53,7 @@ def test_core_public_exports_are_available_from_top_level():
 
 def test_specialized_public_facades_are_available_from_top_level():
     facades = [
+        "data_splits",
         "decisions",
         "diffusion",
         "embeddings",
@@ -97,3 +98,10 @@ def test_decision_api_is_public_and_complete():
     }
     assert expected <= set(decisions.__all__)
     assert all(getattr(decisions, name, None) is not None for name in decisions.__all__)
+
+
+def test_data_splits_api_is_public_and_complete():
+    from nnx import data_splits
+
+    assert {"plan_split", "SplitManifest", "SplitIndices", "SplitError", "FORMAT"} <= set(data_splits.__all__)
+    assert all(getattr(data_splits, name, None) is not None for name in data_splits.__all__)

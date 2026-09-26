@@ -300,7 +300,8 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
 - **Identity references** are `declared` (an id you supply — `data_id`, a
   dataset name — recorded but never reported as verified), `digest` (from the
   explicit `hash_file` / `hash_bytes` calls, the only ones that read data) or
-  `unknown`.
+  `unknown`. A `SplitManifest` passed under `splits` is recorded as its digest
+  (§13.3).
 - **Attempts.** Every fit writes a fresh `attempt.json`. It records the
   fingerprint and `running` → `completed`, `failed` or `cancelled`
   (`KeyboardInterrupt`), together with the last committed checkpoint (tag,
@@ -1093,6 +1094,95 @@ result.figure.show()
 - `NNModel.to_onnx` (joined in the post-PR-#50 pass — the last holdout)
 
 This means a common train → evaluate → train-more (or train → predict → train-more) loop no longer strands the model in `.eval()` mode after the helper returns — Dropout and BatchNorm pick up exactly where they left off on the next training step. Before the post-PR-#40 maintenance pass, `predict` / `evaluate` / `generate` / `sample` / `embed_texts` leaked `.eval()` state, silently disabling Dropout masking and BatchNorm running-stats updates on the next training step unless the caller remembered to call `model.net.train()` themselves.
+
+### 13.3. Reproducible splits: group, time and stratified
+
+`NNTabularDataset` and `NNDataset` split with a seeded `random_split` by
+default. That suits independent rows, but rows of one patient can straddle
+train and test, and future rows can leak into training.
+`nnx.data_splits.plan_split` (FEAT-017) decides membership explicitly and
+returns a `SplitManifest`:
+
+```python
+from nnx import NNTabularDataset
+from nnx.data_splits import SplitManifest, plan_split
+from nnx.provenance import hash_file
+
+source = hash_file("rows.csv")
+plan = plan_split(df["row_id"], strategy="group", groups=df["patient"],
+                  proportions=(0.7, 0.15, 0.15), seed=7, source=source)
+plan.save("split.json")
+dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="label",
+                           split=SplitManifest.load("split.json"), id_col="row_id",
+                           source_identity=source)
+```
+
+- **Sample ids.** Memberships are stable sample ids (`str` or `int`, one type
+  per plan), stored sorted and disjoint. Planning and
+  replay depend only on the ids and their groups, times or labels, so rows in
+  another order plan and replay into the same splits. `NNTabularDataset` reads
+  the ids from the required `id_col` column, never from the index, which could
+  match the wrong rows. A plan made without `ids` records row positions, so
+  `plan_split` requires a `source` identity for it and replay checks that
+  identity. A positional-only manifest (one with no identity) raises on
+  replay.
+- **Strategies.**
+  - `group`: every group lands in exactly one split. Groups are visited in a
+    seeded order and each goes to the active split furthest below its row
+    target. An active split that ends up empty takes the smallest group from
+    the split holding the most groups, and fewer groups than active splits
+    raise. Row counts approximate `proportions`.
+  - `chronological`: `cutoffs=(validation_start, test_start)`. Train is
+    `t < validation_start`, validation `validation_start <= t < test_start`,
+    test `t >= test_start`. A timestamp on a cutoff starts the later split, so
+    tied rows never separate. `gap` excludes the rows with
+    `cutoff - gap <= t < cutoff`. They are recorded in `excluded`, are in no
+    loader, and are never admitted or counted (a NaN or an extra label there
+    is ignored); a sample-id plan's excluded rows may also be absent from
+    the replayed source. Times are numbers, dates, or naive or tz-aware
+    datetimes (`numpy.datetime64` included), one kind per plan, with a
+    `timedelta` gap (whole days for dates). Either cutoff may be `None`.
+  - `stratified`: per class, ids are ranked by seed and cut by the largest
+    remainder, with the rounding carried across classes so the totals follow
+    `proportions`. Every class reaches every active split; that one-row
+    minimum is applied after the carry, so it can add a small class's rows to
+    validation / test but never skews other classes. A class with fewer
+    rows than active splits raises `SplitError` (`insufficient="raise"`, the
+    default) or stays in training only (`insufficient="train"`, recorded in
+    the parameters).
+- **Seeds, never global RNG.** Seeded order is the SHA-256 of the seed and
+  the id, stable across processes and library versions. `plan_split` reads
+  and advances no torch, NumPy or Python RNG, and `seed=None` draws a seed
+  from the OS and records it. Chronological plans take no seed.
+- **Source identity.** `source=` records an `IdentityRef`: a `hash_file`
+  digest, a declared name, or unknown. When a plan records one,
+  `SplitManifest.resolve` and `NNTabularDataset(source_identity=...)` require
+  the same identity back. Passing an identity to a plan that records none
+  raises too, since nothing could be checked. Duplicate, missing or
+  unexpected ids, ids of another type and a changed identity raise
+  `SplitError` before any tensor or loader exists.
+- **Empty optional splits.** A zero proportion, a `None` cutoff or a window
+  with no rows leaves validation or test empty; `NNTabularDataset` then
+  publishes a `None` loader, the same contract as `val_proportion=0.0`. An
+  empty train split always raises, in `plan_split` and when a hand-built
+  (`strategy="explicit"`) or edited manifest is replayed.
+- **Identity and serialization.** A manifest is JSON (`to_json` / `save` /
+  `load`, format `nnx.split/1`) and reloads equal. `digest()` covers the
+  memberships, strategy, parameters, seed and source.
+  `ExperimentManifest(splits={"main": plan})` (§4.4) records that digest as a
+  verified identity, which stays the same after reload and replay.
+- **Legacy defaults are unchanged.** Without `split=`, datasets call
+  `random_split` exactly as before. `NNTrainParams.state()` and run ids gain
+  nothing, and a dataset's `state()` gains `split` (the digest) only when a
+  manifest is used.
+- **Graph edges are excluded.** Plans split samples (rows, images, graph
+  nodes), never edges. `NNGraphDataset` keeps its node masks, and
+  link-prediction edge splitting (message-passing vs supervision edges) is a
+  separate feature (FEAT-027). For node classification, plan over node ids
+  and build masks from `resolve(...)`. For any other map-style dataset,
+  `plan.resolve(ids)` returns `SplitIndices` for `torch.utils.data.Subset`.
+
+See `examples/split_replay.py`.
 
 ## 14. Resuming training
 
