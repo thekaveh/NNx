@@ -146,34 +146,41 @@ class PredictionResult:
             returns for the same input.
         probabilities: same shape as ``logits``; softmax over the class
             axis (categorical, rows sum to 1) or element-wise sigmoid
-            (bernoulli, not normalized).
+            (bernoulli, not normalized). ``None`` for a continuous
+            (regression-task) result, which has no probabilities.
         decoded: categorical — argmax class indices (``logits`` without
             the class axis); bernoulli — 0/1 indicators shaped like
-            ``logits`` (``logit >= 0``).
+            ``logits`` (``logit >= 0``, or the task's threshold);
+            continuous — the predicted values themselves.
         sample_ids: ``int64[N]`` identity of each row: the input row index
             for arrays, tensors and ordinary loaders, and the global node
             index (``input_id``) for seed rows of a graph loader.
-        spec: the :class:`ProbabilitySpec` that produced the result.
+        spec: the :class:`ProbabilitySpec` that produced the result, or
+            ``None`` for a continuous result (``NNModel.predict_proba``
+            on a regression task, FEAT-002).
     """
 
     logits: np.ndarray
-    probabilities: np.ndarray
+    probabilities: Optional[np.ndarray]
     decoded: np.ndarray
     sample_ids: np.ndarray
-    spec: ProbabilitySpec
+    spec: Optional[ProbabilitySpec]
 
     @property
     def kind(self) -> str:
-        return self.spec.kind
+        """``"categorical"``, ``"bernoulli"`` or ``"continuous"`` (no spec)."""
+        return self.spec.kind if self.spec is not None else "continuous"
 
     @property
     def class_axis(self) -> int:
         """The class axis of :attr:`logits` / :attr:`probabilities`, non-negative."""
+        if self.spec is None:
+            raise TypeError("class_axis is only defined for probabilistic results; a continuous result has no classes")
         return self.spec.resolve_class_axis(self.logits.ndim)
 
     @property
     def labels(self) -> Optional[tuple[str, ...]]:
-        return self.spec.labels
+        return self.spec.labels if self.spec is not None else None
 
     @property
     def class_indices(self) -> np.ndarray:
@@ -183,7 +190,7 @@ class PredictionResult:
         mutually exclusive classes, so they are refused here (and must
         never be fed to class-index consumers such as
         ``VisUtils.confusion_matrix``)."""
-        if self.spec.kind != "categorical":
+        if self.spec is None or self.spec.kind != "categorical":
             raise TypeError(
                 "class_indices is only defined for categorical predictions; bernoulli `decoded` holds "
                 "independent 0/1 indicators per output, not class indices"
@@ -192,7 +199,7 @@ class PredictionResult:
 
     def decoded_labels(self) -> np.ndarray:
         """Decoded class names (categorical results with ``spec.labels``)."""
-        labels = self.spec.labels
+        labels = self.labels
         if labels is None:
             raise PredictionValidationError("decoded_labels() needs ProbabilitySpec.labels")
         return np.asarray(labels, dtype=object)[self.class_indices]

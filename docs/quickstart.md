@@ -134,13 +134,14 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 ### 2.5. Tabular regression targets
 
 `NNTabularDataset` treats targets as class labels by default. For regression,
-request a floating target dtype and use a one-output network with a regression
-loss:
+request a floating target dtype, use a one-output network with a regression
+loss, and declare the task so the default step, `evaluate()` and `predict()`
+score continuous values instead of argmax classes:
 
 ```python
 import pandas as pd
 import torch
-from nnx import Devices, Losses, Nets, NNModelParams, NNParams, NNTabularDataset
+from nnx import Devices, Losses, Nets, NNModelParams, NNParams, NNTabularDataset, TaskSpec
 
 frame = pd.DataFrame({"rooms": [1, 2, 3], "price": [95.0, 150.0, 220.0]})
 dataset = NNTabularDataset(
@@ -160,8 +161,20 @@ model_params = NNModelParams(
     net=Nets.FEED_FWD,
     device=Devices.CPU,
     loss=Losses.MEAN_SQUARED_ERROR,
+    task=TaskSpec.regression(dataset.output_dim),
 )
 ```
+
+With `task=TaskSpec.regression(...)` every training and validation record
+carries `mse` / `mae` in `edp.metrics` and the count of valid targets, leaves
+accuracy / f1 / recall / precision and `error` as `None` instead of
+fabricating them, and `model.predict(X).classes` holds the continuous
+predictions. A NaN target is masked out of the loss and every metric alike.
+`TaskSpec.multilabel(n, threshold=...)` does the same for independent binary
+labels (`Losses.BINARY_CROSS_ENTROPY`). See
+[Concepts §6.3](concepts.md#63-task-adapters-categorical-multilabel-regression)
+and `examples/regression_task.py`. Without a task the model keeps the
+legacy classification behaviour.
 
 Leave `target_dtype=None` for classification, where targets remain `torch.long`
 and `output_dim` is the number of classes.
@@ -375,6 +388,11 @@ result.decoded                              # argmax class indices == predict(X_
 result.decoded_labels()                     # array(['dog', 'cat', ...], dtype=object)
 result.sample_ids                           # identity of row i (input row index for arrays)
 ```
+
+A model that declares a task (`NNModelParams(task=TaskSpec...)`, §2.5) may omit
+the spec: `model.predict_proba(X_val)` derives it from the task, and a
+regression task returns its continuous values in `decoded` with
+`probabilities=None` and `spec=None`.
 
 `kind="bernoulli"` is for independent binary outputs (multi-label, or one
 binary logit trained with `Losses.BINARY_CROSS_ENTROPY`): element-wise sigmoid

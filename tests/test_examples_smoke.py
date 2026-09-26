@@ -15,6 +15,7 @@ UNNUMBERED_EXAMPLES = [
     "builder_branching.py",
     "graph_optional_splits.py",
     "optimizer_factories.py",
+    "regression_task.py",
     "tabular_validation.py",
 ]
 EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.py")) + [
@@ -34,6 +35,7 @@ def test_example_imports_without_running_main(example):
         "03_custom_metrics.py",
         "05_custom_train_step_autoencoder.py",
         "26_custom_eval_step.py",
+        "regression_task.py",
     ],
 )
 def test_representative_examples_run_end_to_end(name, tmp_path):
@@ -74,6 +76,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("builder_branching.py", "builder_branching_workflow"),
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),
     ("optimizer_factories.py", "optimizer_factories_workflow"),
+    ("regression_task.py", "regression_task_workflow"),
     ("tabular_validation.py", "tabular_validation_workflow"),
     ("25_conv_classifier.py", "conv_integral_schema_roundtrip"),
     ("26_custom_eval_step.py", "nonfinite_metric_workflow"),
