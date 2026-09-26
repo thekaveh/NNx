@@ -749,3 +749,51 @@ def _assert_same_records(loaded, expected):
                     assert state_got[key] == pytest.approx(value, rel=1e-12), key
                 else:
                     assert state_got[key] == value, key
+
+
+# --- FEAT-005: ModelCheckpoint files declare weights-only capability --------
+
+
+def test_model_checkpoint_files_are_weights_only_and_refuse_a_stateful_resume(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Activations, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNParams, NNTrainParams
+    from nnx.nn.callbacks import ModelCheckpoint
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def model():
+        torch.manual_seed(0)
+        return NNModel(
+            net_params=NNParams(
+                input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY),
+        )
+
+    loader = DataLoader(TensorDataset(torch.randn(6, 3), torch.randint(0, 2, (6,))), batch_size=3)
+    params = NNTrainParams(n_epochs=2, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()).with_train_loader(loader)
+    run = model().train(params=params, callbacks=[ModelCheckpoint(epochs=[0], tag="snap")])
+    snapshot = NNCheckpoint.from_file(str(tmp_path / "runs" / run.id / "checkpoints" / "snap_e0.pt"))
+    assert snapshot is not None and snapshot.training_state_present is False
+
+    target = model()
+    before = {k: v.clone() for k, v in target.net.state_dict().items()}
+    with pytest.raises(ValueError, match="weights-only"):
+        target.train(
+            params=replace(params, resume_from_run_id=run.id, resume_from_checkpoint="snap_e0", resume_mode="stateful")
+        )
+    for key, value in target.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+    warm = target.train(
+        params=replace(params, resume_from_run_id=run.id, resume_from_checkpoint="snap_e0", resume_mode="weights_only")
+    )
+    assert warm.resume_status is not None and warm.resume_status.mode == "weights_only"
+    assert warm.resume_status.source_checkpoint == "snap_e0"
+    assert warm.idps[0].epoch_idx == 1

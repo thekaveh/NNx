@@ -150,7 +150,17 @@ a signal to lock onto. The other classification fields stay zero.
   for the same reason. JEPA's reference recipe uses large batches
   rather than accumulation; if you need accumulation, write a
   custom step that calls `update_ema` only at the cycle boundary.
-* **Resume-from-checkpoint** only restores `model.net` — the EMA
-  target encoder is not persisted on the standard checkpoint path.
-  Use `torch.save(target_encoder.state_dict(), ...)` alongside the
-  NNx checkpoint if you need exact-resume continuity.
+* **Resume-from-checkpoint** restores the EMA target encoder too.
+  `jepa_train_step_factory` returns a `JEPATrainStep`, a
+  checkpointable component named `jepa.target_encoder`
+  ([Concepts §14.1](concepts.md#141-component-state)), so every
+  checkpoint's training state carries the target encoder's weights
+  and a stateful warm resume puts them back, frozen and in eval
+  mode. Four epochs and a 2 + 2 split with `resume_from_run_id`
+  end with identical encoder, predictor, target encoder, optimizer
+  and scheduler state. Build the resumed session's step with the
+  factory as usual; the restore overwrites the freshly copied
+  target. The component is required: a current checkpoint written
+  without it fails before anything is restored, and a checkpoint
+  written before component state existed resumes with a fresh target
+  copy and a warning.

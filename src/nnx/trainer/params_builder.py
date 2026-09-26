@@ -60,6 +60,10 @@ class NNTrainerParamsBuilder:
         "train_loader",
         "val_loader",
         "extra_metrics",
+        "resume_from_run_id",
+        "resume_from_checkpoint",
+        "parent_run_id",
+        "resume_mode",
     )
     # Configuration containers a branch owns (its items stay shared); the
     # `optims` / `schedulers` maps are the builder's own dicts.
@@ -148,6 +152,19 @@ class NNTrainerParamsBuilder:
         different data get distinct run directories. None at default.
         """
         self._fields["data_id"] = value
+        return self
+
+    def resume_from(self, run_id: str, checkpoint: str = "last", mode: str = "auto") -> NNTrainerParamsBuilder:
+        """Warm-resume from ``run_id``'s ``checkpoint`` (FEAT-005): the model,
+        every named optimizer and scheduler, the RNG and the registered
+        components (callbacks such as ``EarlyStopping``) continue where
+        that run stopped. ``mode`` is ``"auto"`` (stateful when the
+        checkpoint has training state, else weights-only), ``"stateful"``
+        (fail unless it has) or ``"weights_only"``. Serialized only as
+        parent lineage, so the resumed run gets its own id."""
+        self._fields["resume_from_run_id"] = run_id
+        self._fields["resume_from_checkpoint"] = checkpoint
+        self._fields["resume_mode"] = mode
         return self
 
     def overwrite_existing(self, value: bool) -> NNTrainerParamsBuilder:

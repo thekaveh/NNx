@@ -24,7 +24,8 @@ try:
 except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
-from . import embeddings, interop, optimizers, prediction, prune, tasks, viz
+from . import components, embeddings, interop, optimizers, prediction, prune, tasks, viz
+from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
     NoiseSchedule,
@@ -132,6 +133,7 @@ from .optimizers import (
 )
 from .paradigms import (
     JEPAPredictor,
+    JEPATrainStep,
     born_again_train,
     build_target_encoder,
     cutmix_train_step_factory,
@@ -191,6 +193,13 @@ __all__ = [
     "PredictionResult",
     "PredictionValidationError",
     "prediction_from_logits",
+    # Checkpointable component state and resume status (FEAT-005)
+    "components",
+    "ComponentSpec",
+    "ComponentRegistry",
+    "ComponentRestoreError",
+    "StatefulComponent",
+    "ResumeStatus",
     # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
     "tasks",
     "TaskSpec",
@@ -313,6 +322,7 @@ __all__ = [
     "update_ema",
     "random_block_mask",
     "JEPAPredictor",
+    "JEPATrainStep",
     "ViTNN",
     "ViTBlock",
     "dpo_train_step_factory",

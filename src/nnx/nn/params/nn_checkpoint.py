@@ -22,7 +22,10 @@ from ..params.nn_params import NNParams
 # breaks older readers. Newer readers stay backwards-compatible by sniffing
 # this version off the metadata dict.
 _SAFETENSORS_FORMAT_VERSION = "1"
-_TRAINING_STATE_FORMAT_VERSION = 3
+_TRAINING_STATE_FORMAT_VERSION = 4
+# Filename-safe slug a ModelCheckpoint tag must match; its files are
+# "<tag>_e<epoch>.pt", and a resume accepts that stem (FEAT-005).
+_MODEL_CHECKPOINT_TAG = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -270,8 +273,25 @@ class NNCheckpoint:
         scheduler_type: Optional[str] = None,
         optimizer_topology: Optional[list[list[dict[str, Any]]]] = None,
         optimizer_factory: Optional[dict[str, Any]] = None,
+        components: Optional[dict[str, Any]] = None,
+        optimizers_state: Optional[dict[str, Any]] = None,
+        schedulers_state: Optional[dict[str, Any]] = None,
+        optimizer_types: Optional[dict[str, str]] = None,
+        scheduler_types: Optional[dict[str, str]] = None,
+        optimizer_topologies: Optional[dict[str, list[list[dict[str, Any]]]]] = None,
+        optimizer_factories: Optional[dict[str, Optional[dict[str, Any]]]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
+
+        ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
+        mapping of every registered component's versioned state; it lives
+        in the same generation sidecar as the optimizer state, so a model
+        and component state from different generations are never paired.
+        ``optimizers_state`` / ``schedulers_state`` (with their
+        ``*_types``, ``optimizer_topologies`` and ``optimizer_factories``)
+        carry a multi-optimizer ``Trainer``'s name-keyed states; either
+        ``optimizer_state`` or ``optimizers_state`` makes the checkpoint
+        stateful.
 
         When `optimizer_state` is supplied, a generation-addressed sibling
         file holds the training state, plus a fixed-name compatibility copy.
@@ -286,7 +306,7 @@ class NNCheckpoint:
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
         sidecar_path = ckpt_path + ".opt.pt"
         with FileLock(ckpt_path + ".lock"):
-            if optimizer_state is None:
+            if optimizer_state is None and optimizers_state is None:
                 replace(self, training_state_id=None, training_state_present=False).to_file(path=ckpt_path)
                 if os.path.exists(sidecar_path):
                     os.remove(sidecar_path)
@@ -311,6 +331,15 @@ class NNCheckpoint:
                 "rng": rng_state,
                 "completed_epoch": self.idp.epoch_idx if completed_epoch is None else completed_epoch,
                 "model": resume_net_state,
+                # FEAT-005: checkpointable components and Trainer's named
+                # optimizers / schedulers (None when absent).
+                "components": components,
+                "optimizers": optimizers_state,
+                "optimizer_types": optimizer_types,
+                "optimizer_topologies": optimizer_topologies,
+                "optimizer_factories": optimizer_factories,
+                "schedulers": schedulers_state,
+                "scheduler_types": scheduler_types,
             }
             fd, checkpoint_tmp = tempfile.mkstemp(
                 prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)

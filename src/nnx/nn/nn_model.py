@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
 from dataclasses import dataclass, replace
@@ -18,12 +19,19 @@ from tqdm import tqdm
 from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
+from ..components import ComponentRegistry, ResumeStatus
 from ..tasks import TaskAdapter, task_adapter
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
 from .enum.nets import Nets
-from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict, _tensor_state_dict
+from .params.nn_checkpoint import (
+    _MODEL_CHECKPOINT_TAG,
+    NNCheckpoint,
+    NNCheckpointTransform,
+    _snapshot_state_dict,
+    _tensor_state_dict,
+)
 from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
@@ -97,6 +105,26 @@ def _optimizer_topology(optimizer: torch.optim.Optimizer, net: torch.nn.Module) 
     ]
 
 
+def _named_training_state(
+    net: torch.nn.Module,
+    optimizers: Mapping[str, torch.optim.Optimizer],
+    schedulers: Mapping[str, Any],
+    optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
+) -> dict[str, Any]:
+    """A ``Trainer``'s name-keyed optimizer / scheduler bundle, as
+    ``NNCheckpoint.save`` keyword arguments (FEAT-005): states, types,
+    parameter topologies and registered-factory identities, so a resume can
+    validate each optimizer as ``NNModel.train`` validates its one."""
+    return {
+        "optimizers_state": {name: opt.state_dict() for name, opt in optimizers.items()},
+        "optimizer_types": {name: _component_type(opt) for name, opt in optimizers.items()},
+        "optimizer_topologies": {name: _optimizer_topology(opt, net) for name, opt in optimizers.items()},
+        "optimizer_factories": {name: (optimizer_factories or {}).get(name) for name in optimizers},
+        "schedulers_state": {name: sch.state_dict() for name, sch in schedulers.items()},
+        "scheduler_types": {name: _component_type(sch) for name, sch in schedulers.items()},
+    }
+
+
 def _loader_num_workers(train_loader: Any) -> int:
     """Worker count of a batch source, treating absent metadata as zero.
 
@@ -109,6 +137,163 @@ def _loader_num_workers(train_loader: Any) -> int:
         return int(workers or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _resume_checkpoint_type(value: Any) -> Any:
+    """The checkpoint a resume reads: a :class:`Checkpoints` tag, or a
+    ``ModelCheckpoint`` file stem ``"<tag>_e<epoch>"`` such as
+    ``"custom_e3"`` (FEAT-005). Anything else — ``"LAST"`` included — is
+    rejected with the list of valid tags."""
+    try:
+        return Checkpoints(value)
+    except ValueError:
+        if isinstance(value, str) and re.fullmatch(rf"{_MODEL_CHECKPOINT_TAG}_e[0-9]+", value):
+            return value
+        raise ValueError(
+            f"resume_from_checkpoint must be a Checkpoints tag ({', '.join(c.value for c in Checkpoints)}) "
+            f"or a ModelCheckpoint file stem '<tag>_e<epoch>', got {value!r}"
+        ) from None
+
+
+_HORIZON_SCHEDULERS = frozenset({"one_cycle", "linear_warmup_decay"})
+
+
+def _check_resume_horizon(
+    scheduler_params: Any, *, n_epochs: int, start_epoch: Optional[int] = None, owner: str = ""
+) -> None:
+    """A resumed one-cycle / warmup-decay schedule needs one explicit
+    horizon covering the original and resumed epochs (checked before the
+    checkpoint is read, and again against its completed epoch)."""
+    kind = getattr(scheduler_params, "kind", None)
+    if kind is None or str(kind) not in _HORIZON_SCHEDULERS:
+        return
+    total_steps = scheduler_params.total_steps
+    if total_steps is None:
+        raise ValueError(
+            f"resuming {kind}{owner} requires scheduler.total_steps to be set explicitly "
+            "to one shared horizon covering the original and resumed epochs"
+        )
+    if start_epoch is not None and start_epoch + n_epochs > total_steps:
+        raise ValueError(
+            f"resumed {kind}{owner} would reach epoch {start_epoch + n_epochs}, beyond "
+            f"scheduler.total_steps={total_steps}; configure one shared horizon covering the original and "
+            "resumed epochs"
+        )
+
+
+@dataclass(frozen=True)
+class _ResumeSource:
+    checkpoint: NNCheckpoint
+    # The training-state bundle after ``resume_mode`` was applied (None:
+    # restore the weights only).
+    training_state: Optional[dict[str, Any]]
+    net_state: dict[str, Any]
+    label: str
+
+
+def _load_resume_source(run_id: str, checkpoint: Any, mode: str, *, trainer: bool) -> _ResumeSource:
+    """Read the checkpoint a resume starts from — shared by ``NNModel.train``
+    and ``Trainer.train`` — and reject, before anything is mutated, a
+    missing checkpoint, a transformed one without pre-transform state, and
+    a bundle ``resume_mode`` cannot use."""
+    ckpt_type = _resume_checkpoint_type(checkpoint)
+    ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+    if ckpt is None:
+        raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
+    resume_net_state = training_state.get("model") if training_state is not None else None
+    if ckpt.transforms and resume_net_state is None:
+        raise ValueError(
+            "this transformed checkpoint has no pre-transform training state and cannot be warm-resumed; "
+            "use NNModel.from_checkpoint() for inference or resume from an untransformed checkpoint"
+        )
+    label = str(ckpt_type)
+    training_state = _resume_training_state(training_state, mode, f"{run_id}/{label}", trainer=trainer)
+    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label)
+
+
+def _restore_weights_only(
+    net: torch.nn.Module, source: _ResumeSource, train_loader: Any, mode: str, *, fresh: str, stacklevel: int = 3
+) -> None:
+    """Load only the source weights (restoring the net on failure); warn
+    unless ``resume_mode="weights_only"`` asked for exactly this. The
+    warning is attributed ``stacklevel`` frames up (``train()`` by default)."""
+    net_snapshot = _snapshot_state_dict(net.state_dict())
+    rng_snapshot = _capture_rng_state(train_loader)
+    try:
+        net.load_state_dict(source.net_state)
+    except BaseException:
+        net.load_state_dict(net_snapshot)
+        _restore_rng_state(rng_snapshot, train_loader)
+        raise
+    if mode != "weights_only":
+        warnings.warn(
+            f"checkpoint has no training-state sidecar; model weights were restored, but {fresh} restart "
+            "from their configured defaults",
+            RuntimeWarning,
+            stacklevel=stacklevel,
+        )
+
+
+def _rollback_resume(
+    net: torch.nn.Module, net_state: dict[str, Any], rng_state: dict[str, Any], train_loader: Any
+) -> None:
+    """Put the model and RNG back after a failed component restore, which
+    runs after ``on_train_begin``. A callback may have changed the network
+    there (QAT preparation swaps modules); a rollback that cannot load is
+    reported as a warning instead of replacing the original error."""
+    try:
+        net.load_state_dict(net_state)
+    except Exception as error:
+        warnings.warn(
+            f"component restore failed and the model could not be rolled back ({type(error).__name__}: {error})",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    _restore_rng_state(rng_state, train_loader)
+
+
+def _resume_training_state(
+    training_state: Optional[dict[str, Any]], mode: str, source: str, *, trainer: bool
+) -> Optional[dict[str, Any]]:
+    """Apply ``resume_mode`` to a loaded training-state bundle (FEAT-005),
+    failing before anything is restored when it cannot be honoured."""
+    if mode == "weights_only":
+        return None
+    if training_state is None:
+        if mode == "stateful":
+            raise ValueError(
+                f"checkpoint {source} is weights-only (it carries no training state), so a stateful resume is "
+                "impossible; resume from a checkpoint written by train(), or pass resume_mode='weights_only'"
+            )
+        return None
+    written_by_trainer = training_state.get("optimizers") is not None and training_state.get("optimizer") is None
+    if written_by_trainer and not trainer:
+        raise ValueError(
+            f"checkpoint {source} was written by Trainer (named optimizers); resume it with Trainer.train, "
+            "or pass resume_mode='weights_only' to warm-start NNModel.train from its weights"
+        )
+    if trainer and not written_by_trainer:
+        raise ValueError(
+            f"checkpoint {source} was written by NNModel.train (one optimizer); resume it with NNModel.train, "
+            "or pass resume_mode='weights_only' to warm-start the Trainer from its weights"
+        )
+    return training_state
+
+
+def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping[str, Any]) -> Any:
+    """Validate saved component state against ``registry`` without mutating
+    anything. Sidecars written before FEAT-005 carry no component state:
+    every component then starts fresh (with a warning when there are any)."""
+    saved = training_state.get("components")
+    if saved is None:
+        if len(registry):
+            warnings.warn(
+                f"checkpoint predates component state (FEAT-005); {', '.join(registry.names)} start fresh",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        return registry.fresh_plan()
+    return registry.plan(saved)
 
 
 def _capture_rng_state(train_loader: Optional[Iterable[Any]] = None) -> dict[str, Any]:
@@ -1207,6 +1392,7 @@ class NNModel(_HubMixinBase):
         train_step_fn: Optional[TrainStepFn] = None,
         eval_step_fn: Optional[EvalStepFn] = None,
         salt: Optional[str] = None,
+        components: Optional[list[Any]] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -1222,6 +1408,12 @@ class NNModel(_HubMixinBase):
                 (model, net, train) configs run as distinct experiments
                 without altering modeled params. ``None`` (the default)
                 preserves existing run.id hashes exactly.
+            components: Extra checkpointable components (FEAT-005,
+                :class:`~nnx.StatefulComponent`) whose state is saved with
+                every checkpoint and restored on a stateful warm resume.
+                Callbacks and step functions that implement the protocol
+                (``EarlyStopping``, the JEPA step) are registered
+                automatically; names must be unique.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -1278,6 +1470,7 @@ class NNModel(_HubMixinBase):
                 callbacks=callbacks,
                 train_step_fn=train_step_fn,
                 eval_step_fn=eval_step_fn,
+                components=components,
             )
 
     def _train_impl(
@@ -1288,6 +1481,7 @@ class NNModel(_HubMixinBase):
         callbacks: Optional[list[CallbackLike]] = None,
         train_step_fn: Optional[TrainStepFn] = None,
         eval_step_fn: Optional[EvalStepFn] = None,
+        components: Optional[list[Any]] = None,
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -1331,19 +1525,24 @@ class NNModel(_HubMixinBase):
         validate: bool = params.val_loader is not None
         from ..optimizers import _canonical_factory_state, optimizer_factory_state
 
+        # FEAT-005: checkpointable components — callbacks, the step functions
+        # and explicit ones — are registered (names checked for uniqueness)
+        # before anything is restored or trained.
+        normalized_callbacks = self._normalize_callbacks(callbacks)
+        registry = ComponentRegistry.discover(
+            normalized_callbacks, train_step_fn, eval_step_fn, explicit=list(components or [])
+        )
+        component_plan = None
+        resume_status = ResumeStatus()
+        previous_net_state: Optional[dict[str, Any]] = None
+        previous_rng_state: Optional[dict[str, Any]] = None
+
         resume_optimizer_factory = optimizer_factory_state(params.optim)
         resume_optimizer_topology = _optimizer_topology(optimizer, self.net)
-        scheduler_kind = getattr(params.scheduler, "kind", None)
-        if (
-            params.resume_from_run_id is not None
-            and scheduler_kind is not None
-            and str(scheduler_kind) in {"one_cycle", "linear_warmup_decay"}
-            and params.scheduler.total_steps is None
-        ):
-            raise ValueError(
-                f"resuming {scheduler_kind} requires scheduler.total_steps to be set explicitly "
-                "to one shared horizon covering the original and resumed epochs"
-            )
+        # A weights-only resume starts a fresh schedule and needs no shared horizon.
+        stateful_resume = params.resume_from_run_id is not None and params.resume_mode != "weights_only"
+        if stateful_resume:
+            _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
         scheduler = self._build_scheduler(optimizer, params)
         scaler = self._build_grad_scaler()
         start_epoch = 0
@@ -1352,19 +1551,10 @@ class NNModel(_HubMixinBase):
         # source checkpoint has a versioned sidecar. Legacy optimizer-only
         # sidecars remain supported.
         if params.resume_from_run_id is not None:
-            ckpt_type = Checkpoints(params.resume_from_checkpoint)
-            resume_ckpt, training_state = NNCheckpoint.load_with_training_state(
-                run=params.resume_from_run_id,
-                type=ckpt_type,
+            source = _load_resume_source(
+                params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=False
             )
-            if resume_ckpt is None:
-                raise ValueError(f"resume_from_run_id={params.resume_from_run_id!r}/{ckpt_type} not found on disk")
-            resume_net_state = training_state.get("model") if training_state is not None else None
-            if resume_ckpt.transforms and resume_net_state is None:
-                raise ValueError(
-                    "this transformed checkpoint has no pre-transform training state and cannot be warm-resumed; "
-                    "use NNModel.from_checkpoint() for inference or resume from an untransformed checkpoint"
-                )
+            training_state = source.training_state
             if training_state is not None:
                 expected_optimizer = training_state.get("optimizer_type")
                 expected_scheduler = training_state.get("scheduler_type")
@@ -1397,28 +1587,21 @@ class NNModel(_HubMixinBase):
                 completed_epoch = training_state.get("completed_epoch")
                 if completed_epoch is not None:
                     start_epoch = int(completed_epoch) + 1
-                if (
-                    scheduler_kind is not None
-                    and str(scheduler_kind) in {"one_cycle", "linear_warmup_decay"}
-                    and params.scheduler.total_steps is not None
-                    and start_epoch + params.n_epochs > params.scheduler.total_steps
-                ):
-                    raise ValueError(
-                        f"resumed {scheduler_kind} would reach epoch {start_epoch + params.n_epochs}, "
-                        f"beyond scheduler.total_steps={params.scheduler.total_steps}; configure one shared "
-                        "horizon covering the original and resumed epochs"
-                    )
+                _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs, start_epoch=start_epoch)
                 # Worker capability is decided BEFORE any state is restored:
                 # ordinary training accepts any re-iterable batch source (a
                 # list, NNGraphDataset's one-element full-batch list, ...),
                 # which has no `num_workers`. Absent metadata means "no
                 # worker-local RNG to worry about"; a real DataLoader with
                 # workers keeps its warning. Nothing here iterates the source.
+                # Components are validated against the checkpoint before any
+                # state is mutated (one report listing every problem).
+                component_plan = _plan_component_restore(registry, training_state)
                 warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
-                previous_net_state = _snapshot_state_dict(self.net.state_dict())
-                previous_rng_state = _capture_rng_state(train_loader)
+                previous_net_state = net_snapshot = _snapshot_state_dict(self.net.state_dict())
+                previous_rng_state = rng_snapshot = _capture_rng_state(train_loader)
                 try:
-                    self.net.load_state_dict(resume_net_state or resume_ckpt.net_state)
+                    self.net.load_state_dict(source.net_state)
                     optimizer.load_state_dict(training_state["optimizer"])
                     if training_state.get("scheduler") is not None:
                         scheduler.load_state_dict(training_state["scheduler"])
@@ -1427,8 +1610,8 @@ class NNModel(_HubMixinBase):
                     if training_state.get("rng") is not None:
                         _restore_rng_state(training_state["rng"], train_loader)
                 except BaseException:
-                    self.net.load_state_dict(previous_net_state)
-                    _restore_rng_state(previous_rng_state, train_loader)
+                    self.net.load_state_dict(net_snapshot)
+                    _restore_rng_state(rng_snapshot, train_loader)
                     raise
                 if warn_worker_rng:
                     warnings.warn(
@@ -1437,24 +1620,29 @@ class NNModel(_HubMixinBase):
                         RuntimeWarning,
                         stacklevel=2,
                     )
-            else:
-                start_epoch = resume_ckpt.idp.epoch_idx + 1
-                previous_net_state = _snapshot_state_dict(self.net.state_dict())
-                previous_rng_state = _capture_rng_state(train_loader)
-                try:
-                    self.net.load_state_dict(resume_ckpt.net_state)
-                except BaseException:
-                    self.net.load_state_dict(previous_net_state)
-                    _restore_rng_state(previous_rng_state, train_loader)
-                    raise
-                warnings.warn(
-                    "checkpoint has no training-state sidecar; model weights were restored, but optimizer, "
-                    "scheduler, scaler, and RNG state restart from their configured defaults",
-                    RuntimeWarning,
-                    stacklevel=2,
+                resume_status = ResumeStatus(
+                    mode="stateful",
+                    source_run_id=params.resume_from_run_id,
+                    source_checkpoint=source.label,
+                    fresh_components=tuple(component_plan.fresh),
                 )
-
-        normalized_callbacks = self._normalize_callbacks(callbacks)
+            else:
+                # Epoch numbering continues after the checkpoint's epoch; the
+                # optimizer, scheduler, scaler and components start fresh.
+                start_epoch = source.checkpoint.idp.epoch_idx + 1
+                _restore_weights_only(
+                    self.net,
+                    source,
+                    train_loader,
+                    params.resume_mode,
+                    fresh="optimizer, scheduler, scaler, RNG and component state",
+                )
+                resume_status = ResumeStatus(
+                    mode="weights_only",
+                    source_run_id=params.resume_from_run_id,
+                    source_checkpoint=source.label,
+                    fresh_components=registry.names,
+                )
 
         idps: list[NNIterationDataPoint] = []
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
@@ -1489,6 +1677,19 @@ class NNModel(_HubMixinBase):
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
             callback_lifecycle.start()
+            # FEAT-005: reset hooks (on_train_begin) have run once; now the
+            # validated component states are restored, all-or-nothing, before
+            # the first resumed epoch.
+            if component_plan is not None:
+                try:
+                    restored = registry.restore(component_plan)
+                except BaseException:
+                    assert previous_net_state is not None and previous_rng_state is not None
+                    _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
+                    raise
+                resume_status = replace(resume_status, restored_components=restored)
+            run = run.with_resume_status(resume_status)
+            ctx.run = run
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
@@ -1582,6 +1783,7 @@ class NNModel(_HubMixinBase):
                         completed_epoch=idx_epoch,
                         train_loader=train_loader,
                         optimizer_factory=resume_optimizer_factory,
+                        components=registry.collect(),
                     )
                 except BaseException:
                     # LAST is the epoch commit marker. If it cannot be
@@ -1642,6 +1844,7 @@ class NNModel(_HubMixinBase):
                 scheduler_type=_component_type(scheduler),
                 optimizer_topology=resume_optimizer_topology,
                 optimizer_factory=resume_optimizer_factory,
+                components=registry.collect(),
             )
 
         saved = run.with_idps(idps).save()
@@ -2071,6 +2274,10 @@ class NNModel(_HubMixinBase):
         completed_epoch: Optional[int] = None,
         train_loader: Optional[Iterable[Any]] = None,
         optimizer_factory: Optional[dict[str, Any]] = None,
+        components: Optional[dict[str, Any]] = None,
+        optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
+        schedulers: Optional[Mapping[str, Any]] = None,
+        optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
     ) -> NNCheckpoint:
         checkpoint = NNCheckpoint(
             idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
@@ -2084,6 +2291,11 @@ class NNModel(_HubMixinBase):
         optimizer_type = _component_type(optimizer) if optimizer is not None else None
         scheduler_type = _component_type(scheduler) if scheduler is not None else None
         optimizer_topology = _optimizer_topology(optimizer, self.net) if optimizer is not None else None
+        # FEAT-005: a Trainer's named optimizers / schedulers and every
+        # component travel in the same generation sidecar.
+        stateful_extras: dict[str, Any] = {"components": components}
+        if optimizers is not None:
+            stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
 
         # LAST is the epoch commit marker, so publish it before ancillary
         # phase/BEST checkpoints.
@@ -2099,6 +2311,7 @@ class NNModel(_HubMixinBase):
             scheduler_type=scheduler_type,
             optimizer_topology=optimizer_topology,
             optimizer_factory=optimizer_factory,
+            **stateful_extras,
         )
 
         # Phase markers at epoch boundaries — fractions are nominal (1/4, 2/4,
@@ -2120,6 +2333,7 @@ class NNModel(_HubMixinBase):
                     scheduler_type=scheduler_type,
                     optimizer_topology=optimizer_topology,
                     optimizer_factory=optimizer_factory,
+                    **stateful_extras,
                 )
 
         # BEST tracking goes through the same _best_err helper used by
@@ -2140,6 +2354,7 @@ class NNModel(_HubMixinBase):
                 scheduler_type=scheduler_type,
                 optimizer_topology=optimizer_topology,
                 optimizer_factory=optimizer_factory,
+                **stateful_extras,
             )
 
         return checkpoint

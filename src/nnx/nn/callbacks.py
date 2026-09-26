@@ -16,12 +16,13 @@ import os
 import re
 import sys
 import warnings
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Optional
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, Optional
 
 from .._metrics import _resolve_metric_with_provenance
 from .._validation import require_count, require_finite_real
-from .params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
+from ..components import ComponentSpec
+from .params.nn_checkpoint import _MODEL_CHECKPOINT_TAG, NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
 if TYPE_CHECKING:
@@ -138,6 +139,18 @@ class EarlyStopping(Callback):
               rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
               explicit ``monitor``.
 
+        name: component name under which the patience state is checkpointed
+              (FEAT-005). By default ``"early_stopping"``, numbered
+              (``early_stopping.2`` …) in callback order when a run has
+              several; an explicit name must be unique within the run.
+
+    Checkpointable: the best value, the epochs waited and the selected
+    monitor are saved with every checkpoint's training state and restored
+    on a stateful warm resume *after* ``on_train_begin`` resets them, so a
+    resumed run stops at the same epoch an uninterrupted one would. It is
+    an optional component: resuming from a checkpoint written without it
+    starts with fresh patience.
+
     Example::
 
         EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)
@@ -149,6 +162,7 @@ class EarlyStopping(Callback):
         patience: int = 10,
         min_delta: float = 0.0,
         mode: str = "min",
+        name: Optional[str] = None,
     ):
         if mode not in ("min", "max"):
             raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
@@ -178,6 +192,11 @@ class EarlyStopping(Callback):
         self.patience = patience
         self.min_delta = min_delta
         self.mode = mode
+        self._component = (
+            ComponentSpec("early_stopping", version=1, required=False, numbered=True)
+            if name is None
+            else ComponentSpec(name, version=1, required=False)
+        )
         self._best: Optional[float] = None
         self._wait: int = 0
         # Field compared during the current run: the explicit monitor, or
@@ -256,6 +275,39 @@ class EarlyStopping(Callback):
             return None
         return self._selected, float(value)
 
+    # ---------- checkpointable component (FEAT-005) ----------
+
+    def component_spec(self) -> ComponentSpec:
+        return self._component
+
+    def component_state(self) -> dict[str, Any]:
+        return {
+            "monitor": self.monitor,
+            "mode": self.mode,
+            "best": self._best,
+            "wait": self._wait,
+            "selected": self._selected,
+        }
+
+    def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
+        """Reject, before anything is restored, patience tracked for a
+        different monitor or direction."""
+        if state.get("monitor") != self.monitor or state.get("mode") != self.mode:
+            return [
+                f"EarlyStopping tracked monitor={state.get('monitor')!r}, mode={state.get('mode')!r} in the "
+                f"checkpoint but is configured with monitor={self.monitor!r}, mode={self.mode!r}"
+            ]
+        return []
+
+    def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
+        problems = self.check_component_state(state, version=version)
+        if problems:
+            raise ValueError(problems[0])
+        best = state.get("best")
+        self._best = None if best is None else float(best)
+        self._wait = int(state["wait"])
+        self._selected = state.get("selected")
+
     def on_train_begin(self, ctx: _CallbackContext) -> None:
         # Fresh run, fresh patience: without this reset, reusing one
         # EarlyStopping instance across train() calls compares against
@@ -314,6 +366,12 @@ class ModelCheckpoint(Callback):
     prevents successive matches from overwriting each other when
     ``epochs`` has multiple entries.
 
+    Files are **weights-only** and say so (``training_state_present`` is
+    ``False``): pass ``resume_from_checkpoint="<tag>_e<epoch>"`` with
+    ``resume_mode="weights_only"`` (or the default ``"auto"``) to
+    warm-start from one; ``resume_mode="stateful"`` rejects it before
+    anything is restored.
+
     Args:
         epochs: list of 0-indexed epoch numbers at which to save. Empty /
             None means the callback never fires (and never saves anything).
@@ -321,7 +379,7 @@ class ModelCheckpoint(Callback):
     """
 
     def __init__(self, epochs: Optional[list[int]] = None, tag: str = "custom"):
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", tag) is None:
+        if re.fullmatch(_MODEL_CHECKPOINT_TAG, tag) is None:
             raise ValueError(
                 f"ModelCheckpoint tag must be a non-empty filename-safe slug "
                 f"containing only letters, digits, '.', '_', or '-'; got {tag!r}"
@@ -335,11 +393,16 @@ class ModelCheckpoint(Callback):
         # Build the NNCheckpoint inline — same shape as NNModel._save_checkpoints
         # but with a custom path so it doesn't collide with the Checkpoints enum
         # tags. Goes through NNCheckpoint.to_file for the atomic-write guarantee.
+        # Weights-only by declaration (FEAT-005): no training-state sidecar
+        # is written, so a stateful resume from this file fails before
+        # anything is restored; resume_mode="weights_only" (or "auto")
+        # warm-starts from its weights.
         ckpt = NNCheckpoint(
             idp=ctx.idp,
             model_params=ctx.model.params,
             net_params=ctx.model.net_params,
             net_state=_snapshot_state_dict(ctx.model.net.state_dict()),
+            training_state_present=False,
         )
         # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
         # uses through _checkpoint_path; we hand-build the path here because

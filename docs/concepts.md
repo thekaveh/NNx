@@ -250,6 +250,8 @@ ctx.should_stop   # writable — set True to break out of training
 
 Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
 
+`EarlyStopping` is also a checkpointable component (§14.1) named `early_stopping` — numbered `early_stopping.2`, `early_stopping.3`, … in callback order when a run has several, or given an explicit unique name with `EarlyStopping(name=...)`: its best value, patience counter and selected monitor are written into every checkpoint's training state, and a stateful warm resume restores them after `on_train_begin` has reset the callback, so a run split at an epoch boundary stops at the same epoch as the uninterrupted run. The component is optional — resuming from a checkpoint without it keeps the fresh patience — and a resumed callback configured with a different `monitor` or `mode` is reported before anything is restored. `ModelCheckpoint` files are weights-only: they record `training_state_present: false`; pass a file's `<tag>_e<epoch>` stem (e.g. `"custom_e3"`) as `resume_from_checkpoint` to warm-start from its weights, while `resume_mode="stateful"` rejects it before anything is restored.
+
 ## 6. Custom training paradigms
 
 `NNModel.train()` runs a supervised loop by default — for every batch, it does `loss_fn(net(X), Y)` → backward → step. If your task doesn't fit that shape (autoencoders, VAEs, link prediction with negative sampling, recommendation pairwise losses, diffusion noise prediction), pass a `train_step_fn`:
@@ -539,7 +541,23 @@ The Trainer writes the same `NNRun` + `NNCheckpoint` artifacts `NNModel.train()`
 
 Strict back-compat: `NNRun` built without a trainer (the standard `NNModel.train()` path) emits exactly the same `state()` as before — existing `run.id` hashes are unchanged.
 
-See [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py) for a tiny GAN on a 1D mixture-of-Gaussians distribution. Warm-resume from trainer-mode checkpoints (multi-optim sidecars) is a planned follow-up.
+See [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py) for a tiny GAN on a 1D mixture-of-Gaussians distribution.
+
+### 8.4. Warm resume
+
+Every Trainer checkpoint carries a training-state sidecar with each named optimizer's and scheduler's state, the completed epoch, the RNG streams and the registered components (§14.1), and the final LAST checkpoint — written after `on_train_end` — carries all of it too. Resume with the same controls `NNTrainParams` has:
+
+```python
+params = (NNTrainerParams.builder()
+          .n_epochs(2)
+          .optimizer("G", g_optim).optimizer("D", d_optim)
+          .train_loader(loader)
+          .resume_from(first.id, checkpoint="last", mode="auto")
+          .build())
+Trainer(model).train(params=params, trainer_step_fn=gan_step)
+```
+
+The resumed run's epochs continue from the saved epoch. Each named optimizer is validated exactly as `NNModel.train` validates its one — the optimizer and scheduler names, each optimizer's type, registered-factory identity (§3.1) and parameter topology, each scheduler's type, and a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs — and a mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update. `resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage and `resume_mode` is runtime-only, so a configuration without them keeps its `state()` and run id, and the controls survive `builder()`, `NNTrainerParamsBuilder.from_params`, `state()` / `from_state()` and the `with_*_loader` copies. A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`, and a Trainer checkpoint only through `Trainer.train`, unless `resume_mode="weights_only"` warm-starts from the weights alone.
 
 ## 9. Diffusion (DDPM)
 
@@ -814,6 +832,37 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ```
 
 Current checkpoints resume only when their generation-addressed sidecar matches the checkpoint's recorded generation and optimizer topology — and, for a registered optimizer factory, its recorded id, version and config (§3.1). Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle; their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
+
+### 14.1. Component state
+
+Anything else that carries state across epochs — a callback's patience, the I-JEPA EMA target encoder, a custom step's running statistics — registers as a **component** (`nnx.components`): an object with a `component_spec()` returning `ComponentSpec(name, version, required=True)` and a `component_state()` / `load_component_state(state, *, version)` pair.
+
+```python
+from nnx import ComponentSpec
+
+class RunningMean:
+    def component_spec(self):
+        return ComponentSpec("my.running_mean", version=1)
+    def component_state(self):
+        return {"mean": self.mean, "count": self.count}
+    def load_component_state(self, state, *, version):
+        self.mean, self.count = state["mean"], state["count"]
+
+model.train(params=..., callbacks=[EarlyStopping()], components=[running_mean])
+```
+
+`NNModel.train` and `Trainer.train` discover components among the callbacks and the step function and take further ones through `components=[...]` (an explicit entry that does not implement the protocol raises `TypeError`; one object passed twice registers once). Names must be unique, except that a spec marked `numbered=True` — the built-in callbacks' default names — is numbered `name.2`, `name.3`, … in registration order. A component may also define `check_component_state(state, *, version)`, returning a list of problems (a configuration that no longer matches the saved state, say); they join the pre-restore report below. Each component's state is written into the same sidecar generation as the checkpoint, so a model and component state from different generations are never combined. On resume:
+
+1. every saved component is validated against the registered ones **before anything is mutated** — a missing required component, an unknown required component in the checkpoint, a saved schema version newer than the component's and every `check_component_state` problem are all reported together in one `ComponentRestoreError`;
+2. reset hooks (`Callback.on_train_begin`) run once;
+3. the saved states are loaded transactionally — if any load fails, every component already restored returns to its pre-call state, the model and RNG streams are restored, and the original error propagates (a rollback that itself fails, for instance because a reset hook rewired the network, is reported as a `RuntimeWarning` instead of replacing it);
+4. the first resumed epoch runs.
+
+Built-in components are `EarlyStopping` (`early_stopping`, optional) and the step returned by `jepa_train_step_factory` (`jepa.target_encoder`, required). State must be `torch.load(weights_only=True)`-safe: tensors, numbers, strings, booleans, `None` and containers of those. Sidecars written before component state existed still load: the model, optimizer, scheduler, scaler, epoch and RNG resume as before, and every component starts fresh with a warning.
+
+### 14.2. Resume modes and status
+
+`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 

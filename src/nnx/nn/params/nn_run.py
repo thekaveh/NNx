@@ -17,6 +17,7 @@ import yaml
 from filelock import FileLock
 
 from ..._metrics import _resolve_metric
+from ...components import ResumeStatus
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
 from ..params.nn_iteration_data_point import NNIterationDataPoint
@@ -364,6 +365,26 @@ def _publish_best(runs_root: str, best_run_path: str, winner: Optional[str]) -> 
         shutil.rmtree(best_run_path)
 
 
+def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
+    """The :class:`~nnx.ResumeStatus` recorded in ``metadata.yaml``
+    (FEAT-005); ``None`` for runs written before it or when unreadable —
+    it is provenance, never needed to reload the run itself."""
+    if not os.path.isfile(metadata_path):
+        return None
+    try:
+        with open(metadata_path, encoding="utf-8") as f:
+            metadata = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    resume = metadata.get("resume") if isinstance(metadata, dict) else None
+    if not isinstance(resume, dict):
+        return None
+    try:
+        return ResumeStatus.from_state(resume)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
     net: NNParams
@@ -385,6 +406,11 @@ class NNRun:
     _id: str = field(init=False, repr=False)
     _state: dict[str, object] = field(init=False, repr=False)
     idps: Optional[list[NNIterationDataPoint]] = field(repr=False, default=None)
+    # How the training session started (FEAT-005): fresh, a stateful warm
+    # resume, or a weights-only warm start, plus the components restored.
+    # Runtime/provenance only — never part of state() or the run id; it is
+    # written to metadata.yaml and read back by NNRun.load.
+    resume_status: Optional[ResumeStatus] = field(repr=False, compare=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -547,6 +573,9 @@ class NNRun:
         )
         return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
+    def with_resume_status(self, value: Optional[ResumeStatus]) -> NNRun:
+        return replace(self, resume_status=value)
+
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
@@ -658,7 +687,10 @@ class NNRun:
         # debuggable even if the library has moved on.
         from ...seeding import env_snapshot
 
-        _atomic_write_text(metadata_path, yaml.safe_dump(env_snapshot(), sort_keys=True))
+        metadata = env_snapshot()
+        if self.resume_status is not None:
+            metadata["resume"] = self.resume_status.state()
+        _atomic_write_text(metadata_path, yaml.safe_dump(metadata, sort_keys=True))
 
         _atomic_write_text(
             csv_path,
@@ -777,6 +809,7 @@ class NNRun:
                 trainer=trainer,
                 salt=rep.get("salt"),
                 idps=idps,
+                resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
             )
         except KeyError as e:
             # A hand-edited / truncated run.yaml otherwise surfaces as a

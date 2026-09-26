@@ -30,6 +30,14 @@ configuration built earlier is unaffected by later builder calls.
 ``trainer_builder_snapshot`` below is a bounded, self-checking
 demonstration of that contract (two minibatches, temporary ``runs/``).
 
+Every checkpoint carries both optimizers, both schedulers, the RNG and each
+registered component (here an ``EarlyStopping``), so a two-optimizer run
+warm-resumes where it stopped (FEAT-005):
+``NNTrainerParams.builder().resume_from(run_id)``. ``two_optimizer_resume``
+below splits a run 1+1 epochs across a fresh "process" and checks it ends
+exactly where the continuous run does, with the step function still owning
+every update and the final LAST keeping every state.
+
 Run:
     python examples/09_gan_with_trainer.py
 """
@@ -44,9 +52,12 @@ from torch.utils.data import DataLoader, TensorDataset
 from nnx import (
     Activations,
     Callback,
+    Checkpoints,
     Devices,
+    EarlyStopping,
     Losses,
     Nets,
+    NNCheckpoint,
     NNEvaluationDataPoint,
     NNModel,
     NNModelParams,
@@ -265,6 +276,56 @@ def trainer_builder_snapshot() -> dict:
 
     summary = {"run_id": run.id, "optimizers": seen["names"], "iterations": len(run.idps)}
     print(f"builder-snapshot workflow: {summary}")
+    return summary
+
+
+def two_optimizer_resume() -> dict:
+    """Bounded demonstration of multi-optimizer warm resume (FEAT-005).
+
+    A continuous 2-epoch run and the same run split 1+1 (the second half in
+    a freshly initialised model under a different seed, as a new process
+    would build it) end with identical G / D weights: the resume restores
+    both named optimizers, both schedulers, the RNG and the EarlyStopping
+    patience. ``gan_step`` still owns every optimizer update. The final LAST
+    generation keeps every state, so the resumed run is itself resumable.
+    """
+    set_seed(0)
+    loader = _make_loader(128)  # one fixed dataset for every run below
+
+    def params(n_epochs: int, **resume) -> NNTrainerParams:
+        builder = NNTrainerParams.builder().n_epochs(n_epochs).train_loader(loader)
+        builder.optimizer("G", _scoped_adam("G.*")).optimizer("D", _scoped_adam("D.*"))
+        if resume:
+            builder.resume_from(**resume)
+        return builder.build()
+
+    def stopper() -> EarlyStopping:
+        return EarlyStopping(monitor="train_edp.loss", patience=5)
+
+    set_seed(1)
+    continuous_model = _make_gan_model()
+    Trainer(continuous_model).train(params=params(2), trainer_step_fn=gan_step, callbacks=[stopper()])
+
+    set_seed(1)
+    first = Trainer(_make_gan_model()).train(params=params(1), trainer_step_fn=gan_step, callbacks=[stopper()])
+    set_seed(2)  # a new process: different init and RNG — the resume restores both
+    resumed_model = _make_gan_model()
+    resumed = Trainer(resumed_model).train(
+        params=params(1, run_id=first.id), trainer_step_fn=gan_step, callbacks=[stopper()]
+    )
+    status = resumed.resume_status
+    assert status is not None and status.mode == "stateful" and status.restored_components == ("early_stopping",)
+    assert resumed.idps[0].epoch_idx == 1  # continues at the next epoch
+    for name, value in continuous_model.net.state_dict().items():
+        assert torch.allclose(resumed_model.net.state_dict()[name], value), name
+
+    final = NNCheckpoint.load_training_state(run=resumed.id, type=Checkpoints.LAST)
+    assert final is not None
+    assert set(final["optimizers"]) == set(final["schedulers"]) == {"D", "G"}
+    assert "early_stopping" in final["components"]
+
+    summary = {"source": first.id, "resumed": resumed.id, "restored": list(status.restored_components)}
+    print(f"two-optimizer resume: {summary}")
     return summary
 
 

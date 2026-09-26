@@ -296,7 +296,7 @@ Returns ``path`` so calls can be chained.
 ##### `nnx.nn.nn_model.NNModel.train`
 
 ```python
-nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None) -> 'NNRun'
+nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None) -> 'NNRun'
 ```
 
 Train the model and return its persisted run history.
@@ -316,6 +316,12 @@ Args:
         (model, net, train) configs run as distinct experiments
         without altering modeled params. ``None`` (the default)
         preserves existing run.id hashes exactly.
+    components: Extra checkpointable components (FEAT-005,
+        :class:`~nnx.StatefulComponent`) whose state is saved with
+        every checkpoint and restored on a stateful warm resume.
+        Callbacks and step functions that implement the protocol
+        (``EarlyStopping``, the JEPA step) are registered
+        automatically; names must be unique.
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
@@ -651,7 +657,7 @@ configuration on disk.
 ##### `nnx.trainer.trainer.Trainer.train`
 
 ```python
-nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'TrainerStepFn', callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None) -> 'NNRun'
+nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'TrainerStepFn', callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None) -> 'NNRun'
 ```
 
 Run the multi-optimizer training loop and return the resulting NNRun.
@@ -678,6 +684,9 @@ Args:
         (model, net, train) configs run as distinct experiments
         without altering modeled params. ``None`` (the default)
         preserves existing run.id hashes exactly.
+    components: extra checkpointable components (FEAT-005);
+        callbacks and a step function that implement
+        :class:`~nnx.StatefulComponent` register automatically.
 
 Returns:
     NNRun with per-iteration idps, persisted under runs/<run.id>/
@@ -726,7 +735,7 @@ Public type alias.
 #### `nnx.trainer.params.NNTrainerParams`
 
 ```python
-class nnx.trainer.params.NNTrainerParams(*, n_epochs: 'int', optims: 'Mapping[str, Union[NNOptimParams, NNOptimFactoryParams]]', schedulers: 'Mapping[str, NNSchedulerParams]' = <factory>, seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, auto_step_schedulers: 'bool' = True, overwrite_existing: 'bool' = False, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'None'
+class nnx.trainer.params.NNTrainerParams(*, n_epochs: 'int', optims: 'Mapping[str, Union[NNOptimParams, NNOptimFactoryParams]]', schedulers: 'Mapping[str, NNSchedulerParams]' = <factory>, seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, auto_step_schedulers: 'bool' = True, overwrite_existing: 'bool' = False, train_loader: 'Optional[DataLoader]' = None, val_loader: 'Optional[DataLoader]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'str' = 'last', parent_run_id: 'Optional[str]' = None, resume_mode: 'str' = 'auto') -> 'None'
 ```
 
 Configuration for `Trainer.train()` — the multi-optimizer parallel to `NNModel.train()` / `NNTrainParams`.
@@ -924,6 +933,14 @@ Part of `state()` and therefore of the run id, so two otherwise
 identical configurations (e.g. sibling builder branches) over
 different data get distinct run directories. None at default.
 ```
+
+##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.resume_from`
+
+```python
+nnx.trainer.params_builder.NNTrainerParamsBuilder.resume_from(self, run_id: 'str', checkpoint: 'str' = 'last', mode: 'str' = 'auto') -> 'NNTrainerParamsBuilder'
+```
+
+Warm-resume from ``run_id``'s ``checkpoint`` (FEAT-005): the model, every named optimizer and scheduler, the RNG and the registered components (callbacks such as ``EarlyStopping``) continue where that run stopped. ``mode`` is ``"auto"`` (stateful when the checkpoint has training state, else weights-only), ``"stateful"`` (fail unless it has) or ``"weights_only"``. Serialized only as parent lineage, so the resumed run gets its own id.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.overwrite_existing`
 
@@ -1531,6 +1548,195 @@ nnx.tasks.task_adapter(spec: 'TaskSpec') -> 'TaskAdapter'
 Return the adapter that drives ``spec``.
 
 
+### 2.7. Checkpointable component state (`nnx.components`)
+
+#### `nnx.components.ComponentSpec`
+
+```python
+class nnx.components.ComponentSpec(name: 'str', version: 'int' = 1, required: 'bool' = True, numbered: 'bool' = False) -> 'None'
+```
+
+Identity and schema version of a checkpointable component.
+
+**Details**
+
+```text
+Args:
+    name: unique within a training run — a filename-safe slug
+        (letters, digits, ``.``, ``_``, ``:``, ``-``).
+    version: schema version of ``component_state()`` (a positive
+        integer). A checkpoint written by a *newer* schema than the
+        component supports is rejected before anything is restored.
+    required: when ``True`` (default) a resume from a stateful
+        checkpoint that lacks this component's state fails; an optional
+        component simply keeps its fresh state.
+    numbered: ``name`` is a default the registry may number when several
+        components share it — ``name``, ``name.2``, ``name.3`` … in
+        registration order — instead of rejecting the duplicate
+        (built-in callbacks such as ``EarlyStopping`` use it, so two of
+        them in one run still work). A resume then maps state by that
+        order. Explicit names leave it ``False`` and must be unique.
+```
+
+
+#### `nnx.components.StatefulComponent`
+
+```python
+class nnx.components.StatefulComponent(*args, **kwargs)
+```
+
+The contract a checkpointable component implements.
+
+**Details**
+
+```text
+A component may also define ``check_component_state(state, *, version)
+-> Iterable[str]``: the registry calls it while validating a resume,
+before anything is mutated, and reports every string it returns (for
+example a configuration that no longer matches the saved state) in the
+same :class:`ComponentRestoreError` as the other problems.
+```
+
+##### `nnx.components.StatefulComponent.component_spec`
+
+```python
+nnx.components.StatefulComponent.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.components.StatefulComponent.component_state`
+
+```python
+nnx.components.StatefulComponent.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.components.StatefulComponent.load_component_state`
+
+```python
+nnx.components.StatefulComponent.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+
+#### `nnx.components.ComponentRegistry`
+
+```python
+class nnx.components.ComponentRegistry(components: 'Iterable[Any]' = ()) -> 'None'
+```
+
+Ordered, uniquely named set of the components of one training run.
+
+##### `nnx.components.ComponentRegistry.discover`
+
+```python
+nnx.components.ComponentRegistry.discover(*sources: 'Any', explicit: 'Iterable[Any]' = ()) -> 'ComponentRegistry'
+```
+
+Register every source that implements :class:`StatefulComponent` (callbacks, step functions), in order — ``None`` and lists are flattened, anything else is ignored — then every ``explicit`` component, which must implement the protocol (``TypeError`` otherwise). An object that appears more than once (say, a callback also passed through ``components=[...]``) is registered once.
+
+##### `nnx.components.ComponentRegistry.register`
+
+```python
+nnx.components.ComponentRegistry.register(self, component: 'Any') -> 'str'
+```
+
+Register ``component`` and return the name its state is saved under. Registering the same object again is a no-op; a different object with a taken name raises ``ValueError`` unless its spec is ``numbered``.
+
+##### `nnx.components.ComponentRegistry.names`
+
+```python
+property nnx.components.ComponentRegistry.names
+```
+
+No public description is currently available.
+
+##### `nnx.components.ComponentRegistry.collect`
+
+```python
+nnx.components.ComponentRegistry.collect(self) -> 'dict[str, dict[str, Any]]'
+```
+
+Every component's versioned state, for the training-state sidecar.
+
+##### `nnx.components.ComponentRegistry.fresh_plan`
+
+```python
+nnx.components.ComponentRegistry.fresh_plan(self) -> '_Plan'
+```
+
+A plan that restores nothing: every component keeps its fresh state (weights-only resumes, checkpoints written before FEAT-005).
+
+##### `nnx.components.ComponentRegistry.plan`
+
+```python
+nnx.components.ComponentRegistry.plan(self, saved: 'Optional[Mapping[str, Any]]') -> '_Plan'
+```
+
+Validate saved component metadata against the registered components **without mutating anything**; raise one :class:`ComponentRestoreError` listing every problem.
+
+##### `nnx.components.ComponentRegistry.restore`
+
+```python
+nnx.components.ComponentRegistry.restore(self, plan: '_Plan') -> 'tuple[str, ...]'
+```
+
+Load a validated plan transactionally: on any failure every component attempted — the failing one included — gets a deep copy of its pre-call state back, then the original error propagates. A component whose own rollback fails does not stop the others from being rolled back, nor replace the original error; it is reported in a ``RuntimeWarning``.
+
+
+#### `nnx.components.ComponentRestoreError`
+
+```python
+class nnx.components.ComponentRestoreError(problems: 'Iterable[str]') -> 'None'
+```
+
+Saved component state that cannot be restored: every problem found (missing, unknown or incompatible components) is listed in ``problems``, and nothing has been mutated when it is raised by validation.
+
+
+#### `nnx.components.ResumeStatus`
+
+```python
+class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = ()) -> 'None'
+```
+
+How a training session started.
+
+**Details**
+
+```text
+Attributes:
+    mode: ``"fresh"`` (no resume), ``"stateful"`` (model plus the
+        complete training-state bundle, components included) or
+        ``"weights_only"`` (model weights only — the checkpoint had no
+        training state, or ``resume_mode="weights_only"`` was asked).
+    source_run_id / source_checkpoint: where the resume came from.
+    restored_components: names of the components whose state was
+        restored, in registration order.
+    fresh_components: registered components that kept their fresh
+        state (optional components absent from the checkpoint, or every
+        component on a weights-only resume).
+```
+
+##### `nnx.components.ResumeStatus.state`
+
+```python
+nnx.components.ResumeStatus.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.components.ResumeStatus.from_state`
+
+```python
+nnx.components.ResumeStatus.from_state(state: 'Mapping[str, Any]') -> 'ResumeStatus'
+```
+
+No public description is currently available.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -1639,7 +1845,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_train_params.NNTrainParams`
 
 ```python
-class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False) -> 'None'
+class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto') -> 'None'
 ```
 
 Training configuration.
@@ -2566,10 +2772,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'NNParams', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'NNParams', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'NNParams', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None)
+NNRun(*, net: 'NNParams', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -2583,6 +2789,14 @@ No public description is currently available.
 
 ```python
 nnx.nn.params.nn_run.NNRun.state(self) -> 'dict'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_run.NNRun.with_resume_status`
+
+```python
+nnx.nn.params.nn_run.NNRun.with_resume_status(self, value: 'Optional[ResumeStatus]') -> 'NNRun'
 ```
 
 No public description is currently available.
@@ -2734,7 +2948,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.
@@ -2742,6 +2956,16 @@ Save the checkpoint to disk atomically.
 **Details**
 
 ```text
+``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
+mapping of every registered component's versioned state; it lives
+in the same generation sidecar as the optimizer state, so a model
+and component state from different generations are never paired.
+``optimizers_state`` / ``schedulers_state`` (with their
+``*_types``, ``optimizer_topologies`` and ``optimizer_factories``)
+carry a multi-optimizer ``Trainer``'s name-keyed states; either
+``optimizer_state`` or ``optimizers_state`` makes the checkpoint
+stateful.
+
 When `optimizer_state` is supplied, a generation-addressed sibling
 file holds the training state, plus a fixed-name compatibility copy.
 This sidecar is used by NNModel.train(resume_from=...) to warm-resume
@@ -4352,7 +4576,7 @@ Completed topology transforms to persist on the final checkpoint.
 #### `nnx.nn.callbacks.EarlyStopping`
 
 ```python
-class nnx.nn.callbacks.EarlyStopping(monitor: 'Optional[str]' = None, patience: 'int' = 10, min_delta: 'float' = 0.0, mode: 'str' = 'min')
+class nnx.nn.callbacks.EarlyStopping(monitor: 'Optional[str]' = None, patience: 'int' = 10, min_delta: 'float' = 0.0, mode: 'str' = 'min', name: 'Optional[str]' = None)
 ```
 
 Stop training when the monitored metric stops improving.
@@ -4394,6 +4618,18 @@ Args:
           rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
           explicit ``monitor``.
 
+    name: component name under which the patience state is checkpointed
+          (FEAT-005). By default ``"early_stopping"``, numbered
+          (``early_stopping.2`` …) in callback order when a run has
+          several; an explicit name must be unique within the run.
+
+Checkpointable: the best value, the epochs waited and the selected
+monitor are saved with every checkpoint's training state and restored
+on a stateful warm resume *after* ``on_train_begin`` resets them, so a
+resumed run stops at the same epoch an uninterrupted one would. It is
+an optional component: resuming from a checkpoint written without it
+starts with fresh patience.
+
 Example::
 
     EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)
@@ -4406,6 +4642,38 @@ property nnx.nn.callbacks.EarlyStopping.selected_monitor
 ```
 
 Field compared in the current run (``None`` until the automatic default has seen a validated epoch with a finite error or loss).
+
+##### `nnx.nn.callbacks.EarlyStopping.component_spec`
+
+```python
+nnx.nn.callbacks.EarlyStopping.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.callbacks.EarlyStopping.component_state`
+
+```python
+nnx.nn.callbacks.EarlyStopping.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.callbacks.EarlyStopping.check_component_state`
+
+```python
+nnx.nn.callbacks.EarlyStopping.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+Reject, before anything is restored, patience tracked for a different monitor or direction.
+
+##### `nnx.nn.callbacks.EarlyStopping.load_component_state`
+
+```python
+nnx.nn.callbacks.EarlyStopping.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
 
 ##### `nnx.nn.callbacks.EarlyStopping.on_train_begin`
 
@@ -4463,6 +4731,12 @@ use when called from inside :meth:`NNModel.train` (the train() entry
 point doesn't accept a ``root=`` parameter). The epoch suffix
 prevents successive matches from overwriting each other when
 ``epochs`` has multiple entries.
+
+Files are **weights-only** and say so (``training_state_present`` is
+``False``): pass ``resume_from_checkpoint="<tag>_e<epoch>"`` with
+``resume_mode="weights_only"`` (or the default ``"auto"``) to
+warm-start from one; ``resume_mode="stateful"`` rejects it before
+anything is restored.
 
 Args:
     epochs: list of 0-indexed epoch numbers at which to save. Empty /
@@ -6671,6 +6945,53 @@ Returns:
 Raises:
     ValueError: when ``ema_momentum`` is outside ``[0, 1)``.
 ```
+
+
+#### `nnx.paradigms.jepa.JEPATrainStep`
+
+```python
+class nnx.paradigms.jepa.JEPATrainStep(step: 'TrainStepFn', target_encoder: 'nn.Module', ema_momentum: 'float') -> 'None'
+```
+
+The I-JEPA step returned by :func:`jepa_train_step_factory`.
+
+**Details**
+
+```text
+Callable as a ``TrainStepFn`` and a checkpointable component
+(FEAT-005) named ``"jepa.target_encoder"``: every checkpoint's
+training state carries the EMA target encoder's weights, and a stateful
+warm resume restores them, so a run split at an epoch boundary
+continues with the same target encoder an uninterrupted run would
+have. The component is required — resuming from a current stateful
+checkpoint written without it fails before anything is restored, while a
+checkpoint written before component state existed resumes with a fresh
+target copy and a warning.
+```
+
+##### `nnx.paradigms.jepa.JEPATrainStep.component_spec`
+
+```python
+nnx.paradigms.jepa.JEPATrainStep.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.jepa.JEPATrainStep.component_state`
+
+```python
+nnx.paradigms.jepa.JEPATrainStep.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.jepa.JEPATrainStep.load_component_state`
+
+```python
+nnx.paradigms.jepa.JEPATrainStep.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
 
 
 #### `nnx.paradigms.jepa.JEPAPredictor`

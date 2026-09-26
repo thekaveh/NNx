@@ -1192,3 +1192,277 @@ def _assert_same_records(loaded, expected):
                     assert state_got[key] == pytest.approx(value, rel=1e-12), key
                 else:
                     assert state_got[key] == value, key
+
+
+# --- FEAT-005: two-optimizer Trainer warm resume ---------------------------
+
+
+def _gan_like_model() -> NNModel:
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    return model
+
+
+def _two_optimizer_params(n_epochs: int, **resume) -> NNTrainerParams:
+    from nnx import NNSchedulerParams
+
+    step_decay = (
+        NNSchedulerParams.builder()
+        .step(step_size=1, min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0)
+        .build()
+    )
+    builder = (
+        NNTrainerParams.builder()
+        .n_epochs(n_epochs)
+        .train_loader(_supervised_loader(16))
+        .optimizer(
+            "body",
+            NNOptimParams.builder()
+            .adam(max_lr=1e-2)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.*")])
+            .build(),
+        )
+        .optimizer(
+            "head",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.05)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.1.*")])
+            .build(),
+        )
+        .scheduler("head", step_decay)
+    )
+    if resume:
+        builder.resume_from(**resume)
+    return builder.build()
+
+
+def _two_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+    model = ctx.model
+    model.net.train()
+    for optimizer in ctx.optimizers.values():
+        optimizer.zero_grad()
+    (x,), y = model.net.unpack_batch(ctx.batch)
+    loss = model.loss_fn(model.net(x), y)
+    loss.backward()
+    for optimizer in ctx.optimizers.values():
+        optimizer.step()
+    return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+
+def test_two_optimizer_trainer_resume_matches_the_continuous_run(tmp_path, monkeypatch):
+    from nnx import Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    continuous_model = _gan_like_model()
+    continuous = Trainer(continuous_model).train(params=_two_optimizer_params(4), trainer_step_fn=_two_step)
+
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(2), trainer_step_fn=_two_step)
+    stored = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)
+    assert (
+        stored is not None
+        and set(stored["optimizers"]) == {"body", "head"}
+        and set(stored["schedulers"])
+        == {
+            "body",
+            "head",
+        }
+    )
+    resumed_model = _gan_like_model()
+    resumed = Trainer(resumed_model).train(params=_two_optimizer_params(2, run_id=first.id), trainer_step_fn=_two_step)
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+    assert resumed.trainer is not None and resumed.trainer.state()["parent_run_id"] == first.id
+    assert [idp.epoch_idx for idp in resumed.idps][0] == 2
+
+    for key, value in continuous_model.net.state_dict().items():
+        torch.testing.assert_close(resumed_model.net.state_dict()[key], value, msg=key)
+    state_a = NNCheckpoint.load_training_state(run=continuous.id, type=Checkpoints.LAST)
+    state_b = NNCheckpoint.load_training_state(run=resumed.id, type=Checkpoints.LAST)
+    assert state_a is not None and state_b is not None
+    assert state_a["schedulers"] == state_b["schedulers"]
+    for name in ("body", "head"):
+        assert state_a["optimizers"][name]["param_groups"] == state_b["optimizers"][name]["param_groups"]
+
+
+def test_trainer_resume_rejects_a_mismatched_optimizer_set_before_mutating(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    model = _gan_like_model()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    single = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(_supervised_loader(16))
+        .optimizer("main", NNOptimParams.builder().sgd(max_lr=0.05).build())
+        .resume_from(run_id=first.id)
+        .build()
+    )
+    with pytest.raises(ValueError, match="optimizer names"):
+        Trainer(model).train(params=single, trainer_step_fn=_two_step)
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+def test_trainer_resume_controls_round_trip_without_changing_default_serialization():
+    base = _two_optimizer_params(1)
+    assert "parent_run_id" not in base.state() and "resume_from_run_id" not in base.state()
+    resumed = _two_optimizer_params(1, run_id="a" * 32, checkpoint="best", mode="stateful")
+    state = resumed.state()
+    assert "resume_from_run_id" not in state and "resume_mode" not in state
+    assert state["parent_run_id"] == "a" * 32 and state["parent_checkpoint"] == "best"
+    reloaded = NNTrainerParams.from_state(state)
+    assert reloaded.parent_run_id == "a" * 32 and reloaded.resume_from_run_id is None
+    assert reloaded.state() == state
+    copied = resumed.with_train_loader(_supervised_loader(8)).with_val_loader(_supervised_loader(8))
+    assert copied.resume_from_run_id == "a" * 32 and copied.resume_mode == "stateful"
+    from nnx import NNTrainerParamsBuilder
+
+    rebuilt = NNTrainerParamsBuilder.from_params(resumed).build()
+    assert rebuilt.resume_from_run_id == "a" * 32 and rebuilt.state() == state
+
+
+def _one_cycle(total_steps):
+    from nnx import NNSchedulerParams, Schedulers
+
+    return NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=0.05,
+        total_steps=total_steps,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+    )
+
+
+def _with_head_scheduler(params: NNTrainerParams, scheduler, **resume) -> NNTrainerParams:
+    from nnx import NNTrainerParamsBuilder
+
+    builder = NNTrainerParamsBuilder.from_params(params).scheduler("head", scheduler)
+    if resume:
+        builder.resume_from(**resume)
+    return builder.build()
+
+
+def test_trainer_resume_checks_one_cycle_horizons_before_mutating(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(
+        params=_with_head_scheduler(_two_optimizer_params(2), _one_cycle(3)), trainer_step_fn=_two_step
+    )
+    model = _gan_like_model()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    # 2 completed + 2 resumed epochs overrun the shared 3-step horizon: the
+    # OneCycleLR would raise mid-run, so the resume is refused up front.
+    with pytest.raises(ValueError, match="resumed one_cycle for 'head' would reach epoch 4"):
+        Trainer(model).train(
+            params=_with_head_scheduler(_two_optimizer_params(2), _one_cycle(3), run_id=first.id),
+            trainer_step_fn=_two_step,
+        )
+    with pytest.raises(ValueError, match="resuming one_cycle for 'head' requires scheduler.total_steps"):
+        Trainer(model).train(
+            params=_with_head_scheduler(_two_optimizer_params(2), _one_cycle(None), run_id=first.id),
+            trainer_step_fn=_two_step,
+        )
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    resumed = Trainer(model).train(
+        params=_with_head_scheduler(_two_optimizer_params(1), _one_cycle(3), run_id=first.id),
+        trainer_step_fn=_two_step,
+    )
+    assert resumed.idps[-1].epoch_idx == 2
+    warm = Trainer(_gan_like_model()).train(
+        params=_with_head_scheduler(_two_optimizer_params(2), _one_cycle(None), run_id=first.id, mode="weights_only"),
+        trainer_step_fn=_two_step,
+    )
+    assert warm.resume_status is not None and warm.resume_status.mode == "weights_only"
+
+
+def test_trainer_resume_rejects_a_changed_parameter_topology(tmp_path, monkeypatch):
+    from nnx import Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    stored = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)
+    assert stored is not None and set(stored["optimizer_topologies"]) == {"body", "head"}
+    # Same names, types and group sizes, different parameters: torch would
+    # load the saved moments into the wrong tensors without complaint.
+    from nnx import NNTrainerParamsBuilder
+
+    swapped = (
+        NNTrainerParamsBuilder.from_params(_two_optimizer_params(1))
+        .optimizer(
+            "body",
+            NNOptimParams.builder()
+            .adam(max_lr=1e-2)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.1.*")])
+            .build(),
+        )
+        .optimizer(
+            "head",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.05)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.*")])
+            .build(),
+        )
+        .resume_from(run_id=first.id)
+        .build()
+    )
+    model = _gan_like_model()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(ValueError, match="topology for 'body' does not match"):
+        Trainer(model).train(params=swapped, trainer_step_fn=_two_step)
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+def test_trainer_resume_rejects_a_changed_optimizer_factory(tmp_path, monkeypatch):
+    from nnx import (
+        NNOptimFactoryParams,
+        OptimizerFactorySpec,
+        register_optimizer_factory,
+        unregister_optimizer_factory,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    register_optimizer_factory("tests.trainer_resume_sgd", 1, lambda groups, config: torch.optim.SGD(groups))
+    try:
+        factory_head = NNOptimFactoryParams(
+            factory=OptimizerFactorySpec(id="tests.trainer_resume_sgd", version=1, config={}),
+            max_lr=0.05,
+            param_groups=[NNParamGroupSpec(name_pattern="layers.1.*")],
+        )
+
+        def params(head, **resume):
+            builder = NNTrainerParams.builder().n_epochs(1).train_loader(_supervised_loader(16))
+            builder.optimizer(
+                "body",
+                NNOptimParams.builder()
+                .adam(max_lr=1e-2)
+                .param_groups([NNParamGroupSpec(name_pattern="layers.0.*")])
+                .build(),
+            ).optimizer("head", head)
+            if resume:
+                builder.resume_from(**resume)
+            return builder.build()
+
+        first = Trainer(_gan_like_model()).train(params=params(factory_head), trainer_step_fn=_two_step)
+        built_in_head = (
+            NNOptimParams.builder().sgd(max_lr=0.05).param_groups([NNParamGroupSpec(name_pattern="layers.1.*")]).build()
+        )
+        # Both build torch.optim.SGD, so only the recorded factory identity differs.
+        with pytest.raises(ValueError, match="factory mismatch for 'head'"):
+            Trainer(_gan_like_model()).train(params=params(built_in_head, run_id=first.id), trainer_step_fn=_two_step)
+        resumed = Trainer(_gan_like_model()).train(
+            params=params(factory_head, run_id=first.id), trainer_step_fn=_two_step
+        )
+        assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+    finally:
+        unregister_optimizer_factory("tests.trainer_resume_sgd", 1)

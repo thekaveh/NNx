@@ -221,7 +221,9 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ))
 ```
 
-> **Scope:** Loader and sampler generators are restored by stable seed identity. Exact continuation still requires `train_loader.num_workers=0`, because worker-local RNG state cannot be reconstructed. Warm-resume is supported for the supervised `NNModel.train()` path. `nnx.trainer.Trainer` (multi-optimizer) does not yet ship per-optimizer sidecars.
+Callback and step state continues too: `EarlyStopping`'s patience, the I-JEPA EMA target encoder and any object passed through `train(..., components=[...])` are versioned **components** (`nnx.components`), validated before anything is mutated and restored transactionally after the callbacks' reset hooks. `resume_mode` (`"auto"` / `"stateful"` / `"weights_only"`) chooses what is restored, and `run.resume_status` reports it. The multi-optimizer `nnx.trainer.Trainer` resumes every named optimizer and scheduler via `NNTrainerParams.builder().resume_from(run_id)`. See [Concepts §14](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#14-resuming-training).
+
+> **Scope:** Loader and sampler generators are restored by stable seed identity. Exact continuation still requires `train_loader.num_workers=0`, because worker-local RNG state cannot be reconstructed. Resume happens at completed-epoch boundaries.
 
 ### 4.4. Custom metrics
 
