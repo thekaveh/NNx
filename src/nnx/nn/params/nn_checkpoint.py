@@ -137,6 +137,14 @@ def _atomic_torch_save(obj, path: str) -> None:
             os.remove(tmp)
 
 
+def _net_params_from_json(raw: str) -> Optional[NNParams]:
+    """The metadata's built-in net params; ``null`` for a registered module
+    (FEAT-006). ``resolve_from_state``: transformer checkpoints round-trip as
+    NNTransformerParams instead of degrading to base NNParams."""
+    state = json.loads(raw)
+    return None if state is None else NNParams.resolve_from_state(state)
+
+
 def _idp_from_nested_state(state: dict) -> NNIterationDataPoint:
     """Reconstruct an NNIterationDataPoint from the nested form produced
     by :meth:`NNIterationDataPoint.state`.
@@ -176,13 +184,22 @@ class NNCheckpoint:
     recipes before loading ``net_state``.
     """
 
-    net_params: NNParams
+    # Built-in nets only; ``None`` for a registered or runtime module
+    # (FEAT-006), whose descriptor is ``model_params.net``.
+    net_params: Optional[NNParams]
     net_state: dict[str, Any]
     model_params: NNModelParams
     idp: NNIterationDataPoint
     transforms: tuple[NNCheckpointTransform, ...] = ()
     training_state_id: Optional[str] = None
     training_state_present: Optional[bool] = None
+
+    @property
+    def reconstructible(self) -> bool:
+        """Whether a model can be rebuilt from this checkpoint alone
+        (FEAT-006): ``False`` for a runtime-only module, whose weights need
+        the module again (``NNModel.from_checkpoint(ckpt, module=...)``)."""
+        return bool(getattr(self.model_params.net, "reconstructible", True))
 
     def to_file(self, path: str, format: Literal["pickle", "safetensors"] = "pickle") -> None:
         """Atomically write this NNCheckpoint to ``path``.
@@ -204,13 +221,18 @@ class NNCheckpoint:
                   per the safetensors spec). Safe to mmap, readable by
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
                   arbitrary-code-execution on load. Requires the
-                  ``thekaveh-nnx[hub]`` extra.
+                  ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
+                  module (``reconstructible=False``, FEAT-006) is rejected
+                  with ``MissingModelFactoryError`` before anything is
+                  written.
 
         Both formats write to ``<path>.tmp`` first and rename into place
         so a KeyboardInterrupt during the underlying save can never leave
         a half-written checkpoint at the destination — matching the
         atomicity guarantee NNRun.save offers for YAML/CSV.
         """
+        if format == "safetensors":
+            self._require_portable()  # before any directory or file is created
         dir_path = os.path.dirname(path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path)
@@ -223,8 +245,19 @@ class NNCheckpoint:
             return
         raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
 
+    def _require_portable(self) -> None:
+        if not self.reconstructible:
+            from ...models import MissingModelFactoryError
+
+            raise MissingModelFactoryError(
+                f"a safetensors checkpoint is portable, but {self.model_params.net} is a runtime-only module "
+                "(reconstructible=False) with no model factory to rebuild it; register one "
+                "(nnx.models.register_model_factory) and train from a ModelSpec, or keep format='pickle'"
+            )
+
     def _to_safetensors_file(self, path: str) -> None:
         """Atomic safetensors write. Requires the ``thekaveh-nnx[hub]`` extra."""
+        self._require_portable()
         try:
             from safetensors.torch import save_file
         except ImportError as e:  # pragma: no cover — gated by optional dep
@@ -238,7 +271,7 @@ class NNCheckpoint:
         metadata = {
             "nnx_format_version": _SAFETENSORS_FORMAT_VERSION,
             "model_params": json.dumps(self.model_params.state()),
-            "net_params": json.dumps(self.net_params.state()),
+            "net_params": json.dumps(self.net_params.state() if self.net_params is not None else None),
             "idp": json.dumps(self.idp.state()),
             "transforms": json.dumps([transform.state() for transform in self.transforms]),
             "training_state_id": self.training_state_id or "",
@@ -602,9 +635,7 @@ class NNCheckpoint:
         return NNCheckpoint(
             idp=_idp_from_nested_state(json.loads(meta["idp"])),
             model_params=NNModelParams.from_state(json.loads(meta["model_params"])),
-            # resolve_from_state: transformer checkpoints round-trip as
-            # NNTransformerParams instead of degrading to base NNParams.
-            net_params=NNParams.resolve_from_state(json.loads(meta["net_params"])),
+            net_params=_net_params_from_json(meta["net_params"]),
             net_state=net_state,
             transforms=tuple(
                 NNCheckpointTransform.from_state(state) for state in json.loads(meta.get("transforms", "[]"))

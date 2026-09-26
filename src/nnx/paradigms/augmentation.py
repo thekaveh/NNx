@@ -19,13 +19,11 @@ Requires 4D ``(B, C, H, W)`` image tensors; raises on lower-rank input.
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import numpy as np
 import torch
 
 from .._step_helpers import finalize_step
-from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input
+from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -34,15 +32,12 @@ def _unpack_supervised(ctx: TrainStepContext) -> tuple[torch.Tensor, torch.Tenso
     ``unpack_batch`` adapter and move both to the model's device.
     Both augmentation factories share this preamble.
 
-    The ``(X,), Y = unpack_batch(...)`` destructuring asserts a
-    single-tensor input — multi-input nets (e.g., PyG graph data
-    with multiple feature tensors) would unpack to more elements
-    and trip the implicit tuple-arity check here. Use a custom
-    train_step_fn for those.
+    The batch is split by the model's batch adapter (FEAT-006) and must
+    hold a single-tensor input — multi-input nets (e.g., PyG graph data
+    with multiple feature tensors) or keyword-input modules raise
+    ``ValueError`` here. Use a custom train_step_fn for those.
     """
-    m = ctx.model
-    (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
-    return X.to(m.device), Y.to(m.device)
+    return _single_input_batch(ctx.model, ctx.batch, who="mixup / cutmix")
 
 
 def _weighted_acc(Y_hat: torch.Tensor, Y_a: torch.Tensor, Y_b: torch.Tensor, lam: float) -> float:
@@ -93,7 +88,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Y_a = Y
         Y_b = Y[perm]
 
-        Y_hat_logits = m.net(X_mixed)
+        Y_hat_logits = m._net_forward((X_mixed,), {})
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
@@ -172,7 +167,7 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_a = Y
         Y_b = Y[perm]
 
-        Y_hat_logits = m.net(X_cut)
+        Y_hat_logits = m._net_forward((X_cut,), {})
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")

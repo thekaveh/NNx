@@ -128,7 +128,9 @@ This writes three files into `./my-model/`:
 
 - `model.safetensors` — `self.net.state_dict()` as safetensors.
 - `config.json` — `{"net_params": <state>, "params": <state>}`, using
-  the same public `state()` form NNRun hashes for `run.id` grouping.
+  the same public `state()` form NNRun hashes for `run.id` grouping. A
+  model built from a registered factory (§2.6) has no `net_params`; its
+  `params.net` is the `ModelSpec` descriptor.
 - `README.md` — auto-generated model card from the mixin.
 
 ### 2.3. Load from a local directory
@@ -164,6 +166,24 @@ model = NNModel.from_pretrained("your-user/your-model")
 Hugging Face's cache directory is used transparently — repeat loads
 hit the local cache, not the network.
 
+### 2.6. Registered and runtime-only modules
+
+A model built from a registered factory (`ModelSpec`, see
+[Concepts §3.2](concepts.md#32-arbitrary-modules-and-registered-model-factories))
+round-trips through the Hub like a built-in one: `config.json` stores the
+spec (`id`, `version`, `config`, `seed`) instead of `net_params`, and
+`from_pretrained` rebuilds the module through the factory registry — so
+the same `register_model_factory(...)` must have run in the loading
+process. An unregistered factory raises `MissingModelFactoryError` before
+anything is built, and a factory whose topology no longer matches the
+weights raises before they load. Pass `batch_adapter=` to
+`from_pretrained` for a module that needs one.
+
+A runtime-only module (`NNModel(module=...)`, `reconstructible=False`) has
+no factory to rebuild it, so `save_pretrained` / `push_to_hub` reject it
+with `MissingModelFactoryError` before any directory or file is written.
+Register a factory and train from a `ModelSpec` to publish it.
+
 ## 3. What this does NOT do
 
 - **`NNRun` is not Hub-published.** The Hub layout is per-model, not
@@ -175,5 +195,6 @@ hit the local cache, not the network.
   Hub-loaded model isn't supported. Use `NNCheckpoint` for warm-resume
   workflows.
 - **The Hub mixin doesn't rewrite `NNModel`'s constructor.** It still
-  takes `(net_params, params)` keyword args at `__init__` — the mixin
-  is purely additive. Existing code keeps working unchanged.
+  takes `(net_params, params)` keyword args at `__init__` (plus the
+  keyword-only `module=` / `batch_adapter=` for your own modules) — the
+  mixin is purely additive. Existing code keeps working unchanged.

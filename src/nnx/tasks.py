@@ -348,9 +348,11 @@ class TaskAdapter:
 
     # ---------- model preflight ----------
 
-    def check_model(self, *, net: Nets, loss: Losses, output_dim: Optional[int]) -> None:
+    def check_model(self, *, net: Any, loss: Losses, output_dim: Optional[int]) -> None:
         """Reject a model configuration this task cannot drive — before
-        any net is built or loader is iterated."""
+        any net is built or loader is iterated. ``net`` is a ``Nets`` member
+        or a registered / runtime descriptor (FEAT-006), whose output width
+        is unknown until the first batch (``output_dim=None``)."""
         if net is Nets.TRANSFORMER:
             raise TaskValidationError(
                 "task adapters drive (N, C) supervised outputs; language-model tasks on Nets.TRANSFORMER "

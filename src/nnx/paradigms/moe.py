@@ -24,14 +24,12 @@ as the KD / SimCLR / Mixup / CutMix paradigm factories.
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import torch
 
 from .._metrics import classification_edp
 from .._step_helpers import finalize_step
 from ..nn.moe import MoELinear
-from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input
+from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -72,12 +70,10 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         m.net.train()
         m.net.zero_grad()
 
-        # Single-input destructuring — same contract as the other
-        # supervised paradigm factories (Mixup / CutMix / KD).
-        # Multi-input nets need a custom step.
-        (X,), Y = cast(Any, m.net).unpack_batch(ctx.batch)
-        X = X.to(m.device)
-        Y = Y.to(m.device)
+        # Single-input batches — same contract as the other supervised
+        # paradigm factories (Mixup / CutMix / KD). Multi-input nets need a
+        # custom step.
+        X, Y = _single_input_batch(m, ctx.batch, who="moe_train_step_factory")
 
         # Clear stale aux losses BEFORE the forward: a MoELinear that's
         # registered but not exercised by this batch (conditional branch,
@@ -90,7 +86,7 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
 
         # The supervised forward populates each MoELinear's
         # ``.last_aux_loss`` as a side effect.
-        Y_hat_logits = m.net(X)
+        Y_hat_logits = m._net_forward((X,), {})
         supervised_loss = m.loss_fn(_loss_input(m.loss_fn, Y_hat_logits), Y)
 
         # Sum the per-layer aux losses across every MoE layer in the

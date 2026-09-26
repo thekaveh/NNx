@@ -293,3 +293,54 @@ def test_remote_hub_load_uses_one_atomic_snapshot(tmp_path, monkeypatch):
 
     assert isinstance(restored, NNModel)
     assert len(calls) == 1
+
+
+# ---------- FEAT-006: registered and runtime-only modules ----------
+
+
+class _HubEncoder(torch.nn.Module):
+    def __init__(self, width: int = 6) -> None:
+        super().__init__()
+        self.body = torch.nn.Sequential(torch.nn.Linear(4, width), torch.nn.Tanh(), torch.nn.Linear(width, 2))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.body(x)
+
+
+def test_hub_round_trips_registered_modules_through_the_factory_registry(tmp_path):
+    from nnx import MissingModelFactoryError, ModelSpec, register_model_factory, unregister_model_factory
+
+    register_model_factory("tests.hub_encoder", 1, lambda config: _HubEncoder(**config))
+    try:
+        spec = ModelSpec("tests.hub_encoder", 1, {"width": 6}, seed=2)
+        model = NNModel(params=NNModelParams(net=spec, loss=Losses.CROSS_ENTROPY))
+        with torch.no_grad():
+            model.net.body[0].weight.add_(1.0)  # trained-looking weights, not the seeded init
+        model.save_pretrained(str(tmp_path))
+        with open(tmp_path / "config.json") as f:
+            cfg = json.load(f)
+        assert "net_params" not in cfg and cfg["params"]["net"] == spec.state()
+        loaded = NNModel.from_pretrained(str(tmp_path))
+        assert loaded.params.net == spec and loaded.net_params is None and isinstance(loaded.net, _HubEncoder)
+        for key, value in model.net.state_dict().items():
+            assert torch.equal(loaded.net.state_dict()[key], value), key
+    finally:
+        unregister_model_factory("tests.hub_encoder", 1)
+    with pytest.raises(MissingModelFactoryError, match="not registered"):
+        NNModel.from_pretrained(str(tmp_path))  # unknown factory: rejected before anything is built
+
+
+def test_hub_rejects_runtime_modules_before_writing_files(tmp_path):
+    from nnx import MissingModelFactoryError
+
+    model = NNModel(module=_HubEncoder(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    target = tmp_path / "artifact"
+    with pytest.raises(MissingModelFactoryError, match="runtime-only"):
+        model.save_pretrained(str(target))
+    assert not target.exists()  # no directory, config or weights were written
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "config.json").write_text("{}")
+    with pytest.raises(MissingModelFactoryError):
+        model.save_pretrained(str(existing))
+    assert (existing / "config.json").read_text() == "{}"  # an existing artifact is untouched

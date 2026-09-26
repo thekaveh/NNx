@@ -130,6 +130,32 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.objectives.UpdateEvent
 
+### 2.10. Arbitrary modules and registered model factories (`nnx.models`)
+
+@api nnx.models.ModelSpec
+
+@api nnx.models.RuntimeModule
+
+@api nnx.models.register_model_factory
+
+@api nnx.models.unregister_model_factory
+
+@api nnx.models.registered_model_factories
+
+@api nnx.models.resolve_model_factory
+
+@api nnx.models.build_module
+
+@api nnx.models.MissingModelFactoryError
+
+@api nnx.models.BatchAdapter
+
+@api nnx.models.PositionalInputs
+
+@api nnx.models.KeywordInputs
+
+@api nnx.models.module_topology
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

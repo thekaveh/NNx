@@ -47,6 +47,11 @@ class GenerativeNNModel(NNModel):
         params: NNModelParams,
         tokenizer: Optional[NNTokenizerParams] = None,
     ):
+        if params is not None and not params.builtin:
+            # generate() relies on the built-in transformer's cache and
+            # max_seq_len; registered and runtime modules (FEAT-006) are
+            # NNModel-only.
+            raise TypeError(f"GenerativeNNModel builds a built-in Nets.TRANSFORMER, got {params.net}")
         super().__init__(net_params=net_params, params=params)
         self.tokenizer = tokenizer
 

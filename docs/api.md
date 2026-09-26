@@ -176,7 +176,7 @@ Raises:
 #### `nnx.nn.nn_model.NNModel`
 
 ```python
-class nnx.nn.nn_model.NNModel(net_params: 'NNParams', params: 'NNModelParams')
+class nnx.nn.nn_model.NNModel(net_params: 'Optional[NNParams]' = None, params: 'Optional[NNModelParams]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None)
 ```
 
 Top-level training/eval/predict wrapper around an ``nn.Module``.
@@ -234,7 +234,7 @@ Returns the path written. Network is put in eval mode for tracing.
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
 
 ```python
-nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, **model_kwargs: 'Any') -> 'Self'
+nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, **model_kwargs: 'Any') -> 'Self'
 ```
 
 Rebuild a model, replay topology transforms, and load its weights.
@@ -246,6 +246,30 @@ Ordinary and legacy FP32 checkpoints have no transforms. Converted
 QAT checkpoints replay their persisted torchao recipe before state
 loading; unsupported recipes fail explicitly rather than constructing
 a model with the wrong topology.
+
+FEAT-006: a registered :class:`~nnx.models.ModelSpec` is rebuilt
+through its factory — an unregistered one raises
+:class:`~nnx.models.MissingModelFactoryError`, and a rebuilt topology
+that differs from the saved weights raises ``ValueError``, both
+before any weight is loaded. A runtime-only module
+(``reconstructible=False``) needs ``module=`` — a module of the same
+topology, into which the weights are loaded.
+```
+
+##### `nnx.nn.nn_model.NNModel.save_pretrained`
+
+```python
+nnx.nn.nn_model.NNModel.save_pretrained(self, save_directory, *args: 'Any', **kwargs: 'Any') -> 'Any'
+```
+
+Hub save (``huggingface_hub.PyTorchModelHubMixin.save_pretrained``).
+
+**Details**
+
+```text
+FEAT-006: a runtime-only module has no factory to rebuild it from,
+so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
+before any file or directory is written.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.freeze`
@@ -1455,10 +1479,10 @@ Validation, masking, loss units, decoding and metrics for one :class:`TaskSpec` 
 ##### `nnx.tasks.TaskAdapter.check_model`
 
 ```python
-nnx.tasks.TaskAdapter.check_model(self, *, net: 'Nets', loss: 'Losses', output_dim: 'Optional[int]') -> 'None'
+nnx.tasks.TaskAdapter.check_model(self, *, net: 'Any', loss: 'Losses', output_dim: 'Optional[int]') -> 'None'
 ```
 
-Reject a model configuration this task cannot drive — before any net is built or loader is iterated.
+Reject a model configuration this task cannot drive — before any net is built or loader is iterated. ``net`` is a ``Nets`` member or a registered / runtime descriptor (FEAT-006), whose output width is unknown until the first batch (``output_dim=None``).
 
 ##### `nnx.tasks.TaskAdapter.check_loss_fn`
 
@@ -2277,6 +2301,232 @@ Attributes:
 ```
 
 
+### 2.10. Arbitrary modules and registered model factories (`nnx.models`)
+
+#### `nnx.models.ModelSpec`
+
+```python
+class nnx.models.ModelSpec(id: 'str', version: 'int' = 1, config: 'Optional[Mapping[str, Any]]' = None, *, seed: 'int' = 0)
+```
+
+Stable, serializable reference to a registered model factory.
+
+**Details**
+
+```text
+``id`` and ``version`` name the factory; ``config`` is handed to it
+read-only and must be JSON-like (``None``, ``bool``, ``int``, finite
+``float``, ``str``, lists and string-keyed mappings); ``seed`` is the
+``torch.manual_seed`` construction runs under. The spec never holds the
+callable, so it round-trips through ``run.yaml``, checkpoints and Hub
+configs. Immutable; equal specs have equal ``state()``.
+```
+
+##### `nnx.models.ModelSpec.state`
+
+```python
+nnx.models.ModelSpec.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.models.ModelSpec.from_state`
+
+```python
+nnx.models.ModelSpec.from_state(state: 'Mapping[str, Any]') -> 'ModelSpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.models.RuntimeModule`
+
+```python
+class nnx.models.RuntimeModule(module: 'str', topology: 'str') -> 'None'
+```
+
+Descriptor of a caller-owned module that no factory describes.
+
+**Details**
+
+```text
+``module`` is the class's qualified name and ``topology`` a fingerprint
+of its parameter and buffer names, shapes and dtypes and of its
+``repr`` (layer hyperparameters such as dropout rates) — never of
+weight values. Like a built-in net, the run id therefore reflects the
+architecture, not the weights: two differently-initialized instances of
+one architecture share a run id, so give them distinct ``data_id`` /
+``salt`` values. ``reconstructible`` is always ``False``: the weights
+can only be loaded back into a module the caller supplies again.
+```
+
+##### `nnx.models.RuntimeModule.of`
+
+```python
+nnx.models.RuntimeModule.of(module: 'nn.Module') -> 'RuntimeModule'
+```
+
+The descriptor of ``module`` (its class and topology).
+
+##### `nnx.models.RuntimeModule.state`
+
+```python
+nnx.models.RuntimeModule.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.models.RuntimeModule.from_state`
+
+```python
+nnx.models.RuntimeModule.from_state(state: 'Mapping[str, Any]') -> 'RuntimeModule'
+```
+
+No public description is currently available.
+
+
+#### `nnx.models.register_model_factory`
+
+```python
+nnx.models.register_model_factory(id: 'str', version: 'int', factory: 'ModelFactory', *, replace: 'bool' = False) -> 'None'
+```
+
+Register ``factory`` under ``(id, version)`` for this process.
+
+**Details**
+
+```text
+``factory(config)`` receives a :class:`ModelSpec`'s read-only config and
+must return a ``torch.nn.Module``. Registering an existing
+``(id, version)`` raises unless ``replace=True``; bump ``version`` when
+the factory's architecture changes, so saved weights are never loaded
+into a different topology.
+```
+
+
+#### `nnx.models.unregister_model_factory`
+
+```python
+nnx.models.unregister_model_factory(id: 'str', version: 'int') -> 'bool'
+```
+
+Remove ``(id, version)``; returns whether it was registered. Runs and checkpoints that reference it still load their metadata — only rebuilding the module needs the registration.
+
+
+#### `nnx.models.registered_model_factories`
+
+```python
+nnx.models.registered_model_factories() -> 'tuple[tuple[str, int], ...]'
+```
+
+Sorted ``(id, version)`` pairs currently registered.
+
+
+#### `nnx.models.resolve_model_factory`
+
+```python
+nnx.models.resolve_model_factory(spec: 'ModelSpec') -> 'ModelFactory'
+```
+
+Look ``spec`` up in the registry. Never imports anything: an unregistered id or version raises :class:`MissingModelFactoryError` naming what is registered.
+
+
+#### `nnx.models.build_module`
+
+```python
+nnx.models.build_module(spec: 'ModelSpec') -> 'nn.Module'
+```
+
+Build ``spec``'s module: resolve the factory (failing before anything runs when it is unknown), then call it with Python's ``random``, NumPy and torch all seeded from ``spec.seed`` and the ambient RNG states restored afterwards.
+
+
+#### `nnx.models.MissingModelFactoryError`
+
+```python
+class nnx.models.MissingModelFactoryError
+```
+
+A module cannot be rebuilt: its factory is not registered, or it is a runtime-only module (``reconstructible=False``) that no factory describes.
+
+
+#### `nnx.models.BatchAdapter`
+
+```python
+class nnx.models.BatchAdapter()
+```
+
+How a non-built-in module sees a batch.
+
+**Details**
+
+```text
+:meth:`split` returns ``(args, kwargs, target)``: the module is called as
+``module(*args, **kwargs)`` and ``target`` (``None`` when the batch has
+none, e.g. for prediction) is what the loss scores. :meth:`output`
+turns the module's raw return value into the output tensor; the default
+requires a tensor. Subclass either to support other layouts.
+```
+
+##### `nnx.models.BatchAdapter.split`
+
+```python
+nnx.models.BatchAdapter.split(self, batch: 'Any') -> 'tuple[tuple[Any, ...], dict[str, Any], Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.models.BatchAdapter.output`
+
+```python
+nnx.models.BatchAdapter.output(self, raw: 'Any') -> 'torch.Tensor'
+```
+
+No public description is currently available.
+
+
+#### `nnx.models.PositionalInputs`
+
+```python
+class nnx.models.PositionalInputs(n_inputs: 'int' = 1) -> 'None'
+```
+
+Positional inputs: a batch ``(x1, ..., xn, y)`` calls ``module(x1, ..., xn)`` and scores ``y``; ``(x1, ..., xn)`` or a bare tensor has no target.
+
+##### `nnx.models.PositionalInputs.split`
+
+```python
+nnx.models.PositionalInputs.split(self, batch: 'Any') -> 'tuple[tuple[Any, ...], dict[str, Any], Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.models.KeywordInputs`
+
+```python
+class nnx.models.KeywordInputs(inputs: 'Sequence[str]', target: 'Optional[str]' = 'labels') -> 'None'
+```
+
+Keyword inputs: a mapping batch calls ``module(**{name: batch[name] for name in inputs})`` and scores ``batch[target]`` (``None`` when the key is absent or ``target=None``).
+
+##### `nnx.models.KeywordInputs.split`
+
+```python
+nnx.models.KeywordInputs.split(self, batch: 'Any') -> 'tuple[tuple[Any, ...], dict[str, Any], Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.models.module_topology`
+
+```python
+nnx.models.module_topology(module: 'nn.Module') -> 'str'
+```
+
+Fingerprint of ``module``'s state-dict names, shapes and dtypes plus its ``repr`` (layer hyperparameters). Uninitialized lazy parameters (``nn.LazyLinear`` before its first forward) count by name only.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -2352,10 +2602,10 @@ different id, and net rebuilding crashes. Every loader
 #### `nnx.nn.params.nn_model_params.NNModelParams`
 
 ```python
-class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Nets', device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None) -> 'None'
+class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None) -> 'None'
 ```
 
-NNModelParams(*, net: 'Nets', device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None)
+NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None)
 
 ##### `nnx.nn.params.nn_model_params.NNModelParams.is_valid`
 
@@ -2364,6 +2614,14 @@ nnx.nn.params.nn_model_params.NNModelParams.is_valid(self) -> 'bool'
 ```
 
 No public description is currently available.
+
+##### `nnx.nn.params.nn_model_params.NNModelParams.builtin`
+
+```python
+property nnx.nn.params.nn_model_params.NNModelParams.builtin
+```
+
+Whether the net is a built-in ``Nets`` member (FEAT-006).
 
 ##### `nnx.nn.params.nn_model_params.NNModelParams.state`
 
@@ -3321,10 +3579,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'NNParams', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'NNParams', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -3444,7 +3702,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_checkpoint.NNCheckpoint`
 
 ```python
-class nnx.nn.params.nn_checkpoint.NNCheckpoint(*, net_params: 'NNParams', net_state: 'dict[str, Any]', model_params: 'NNModelParams', idp: 'NNIterationDataPoint', transforms: 'tuple[NNCheckpointTransform, ...]' = (), training_state_id: 'Optional[str]' = None, training_state_present: 'Optional[bool]' = None) -> 'None'
+class nnx.nn.params.nn_checkpoint.NNCheckpoint(*, net_params: 'Optional[NNParams]', net_state: 'dict[str, Any]', model_params: 'NNModelParams', idp: 'NNIterationDataPoint', transforms: 'tuple[NNCheckpointTransform, ...]' = (), training_state_id: 'Optional[str]' = None, training_state_present: 'Optional[bool]' = None) -> 'None'
 ```
 
 Model state plus the recipes needed to rebuild its module topology.
@@ -3457,6 +3715,14 @@ callbacks that replace modules at ``on_train_end`` can persist ordered,
 versioned recipes here; :meth:`NNModel.from_checkpoint` replays recognized
 recipes before loading ``net_state``.
 ```
+
+##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.reconstructible`
+
+```python
+property nnx.nn.params.nn_checkpoint.NNCheckpoint.reconstructible
+```
+
+Whether a model can be rebuilt from this checkpoint alone (FEAT-006): ``False`` for a runtime-only module, whose weights need the module again (``NNModel.from_checkpoint(ckpt, module=...)``).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.to_file`
 
@@ -3486,7 +3752,10 @@ Args:
           per the safetensors spec). Safe to mmap, readable by
           ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
           arbitrary-code-execution on load. Requires the
-          ``thekaveh-nnx[hub]`` extra.
+          ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
+          module (``reconstructible=False``, FEAT-006) is rejected
+          with ``MissingModelFactoryError`` before anything is
+          written.
 
 Both formats write to ``<path>.tmp`` first and rename into place
 so a KeyboardInterrupt during the underlying save can never leave
@@ -8512,7 +8781,7 @@ category. Honors `renderer` the same way as `multi_line_plot`.
 ##### `nnx.vis_utils.two_dim_tsne_checkpoint_logits`
 
 ```python
-nnx.vis_utils.two_dim_tsne_checkpoint_logits(checkpoint: 'NNCheckpoint', ds: 'NNDataset', n_samples: 'int', random_state: 'int | None' = 0, renderer: 'str | None' = None, fig_size: 'tuple' = (1000, 600), title_size: 'int' = 14, label_size: 'int' = 12, margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0})
+nnx.vis_utils.two_dim_tsne_checkpoint_logits(checkpoint: 'NNCheckpoint', ds: 'NNDataset', n_samples: 'int', random_state: 'int | None' = 0, renderer: 'str | None' = None, fig_size: 'tuple' = (1000, 600), title_size: 'int' = 14, label_size: 'int' = 12, margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0}, *, module: 'Any' = None, batch_adapter: 'Any' = None)
 ```
 
 Project the first `n_samples` test logits of `checkpoint` to 2D via t-SNE and render them colored by ground-truth class.
@@ -8523,6 +8792,13 @@ Project the first `n_samples` test logits of `checkpoint` to 2D via t-SNE and re
 Useful for eyeballing class separability of an intermediate
 checkpoint — pass the BEST checkpoint to see how well-trained the
 decision space ended up. Returns the Plotly Figure.
+
+FEAT-006: a registered module is rebuilt through its factory and
+batches are split by its batch adapter (``batch_adapter=`` overrides
+it). A runtime-only checkpoint needs ``module=`` — the weights are
+loaded into it (its identity, state keys and training modes are
+kept) — and fails with ``MissingModelFactoryError`` before any data
+is read otherwise.
 ```
 
 
@@ -8688,7 +8964,7 @@ Raises:
 #### `nnx.viz.summary.summary`
 
 ```python
-nnx.viz.summary.summary(model: 'Union[nn.Module, NNModel]', *, input_size: 'tuple[int, ...] | None' = None, input_data: 'Union[torch.Tensor, tuple, list, None]' = None, depth: 'int' = 4, col_names: 'tuple[str, ...]' = ('output_size', 'num_params', 'mult_adds')) -> 'ModelStatistics'
+nnx.viz.summary.summary(model: 'Union[nn.Module, NNModel]', *, input_size: 'tuple[int, ...] | None' = None, input_data: 'Union[torch.Tensor, tuple, list, dict, None]' = None, batch: 'Any' = None, depth: 'int' = 4, col_names: 'tuple[str, ...]' = ('output_size', 'num_params', 'mult_adds')) -> 'ModelStatistics'
 ```
 
 Return a `torchinfo.ModelStatistics` summary for `model`.
@@ -8700,9 +8976,12 @@ Args:
     model: An `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`.
     input_size: Shape tuple for a synthetic dummy input, e.g. `(1, 3, 224, 224)`.
         Mutually exclusive with `input_data`.
-    input_data: An actual tensor / tuple / list to forward through the model.
-        Useful when the model takes multiple positional arguments or a non-tensor
-        input (graphs, dicts) that `input_size` can't describe.
+    input_data: An actual tensor / tuple / list to forward through the model, or a
+        dict of keyword inputs. Useful when the model takes multiple positional
+        arguments or a non-tensor input (graphs, dicts) that `input_size` can't describe.
+    batch: A training batch, split into the forward's inputs by the model's batch
+        adapter (FEAT-006: an `NNModel`'s adapter, else the module's `unpack_batch`,
+        else one positional input). Mutually exclusive with `input_size` / `input_data`.
     depth: Maximum module-nesting depth to expand in the table.
     col_names: Which torchinfo columns to include. Defaults to the three most
         useful ones for spotting parameter / FLOP regressions across runs.
@@ -8714,6 +8993,12 @@ Returns:
 
 Raises:
     ImportError: If `torchinfo` isn't installed. Install with `pip install thekaveh-nnx[viz]`.
+    ValueError: Before the module is touched, when `batch` is combined with
+        `input_size` / `input_data`, or when `input_size` is given for a model whose
+        adapter takes keyword inputs (a synthetic tensor cannot describe them).
+
+The module's identity, state and every submodule's training mode are left as they
+were (torchinfo itself only restores the top-level mode).
 ```
 
 
