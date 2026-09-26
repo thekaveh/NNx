@@ -53,6 +53,7 @@ def test_core_public_exports_are_available_from_top_level():
 
 def test_specialized_public_facades_are_available_from_top_level():
     facades = [
+        "decisions",
         "diffusion",
         "embeddings",
         "finetune",
@@ -71,3 +72,27 @@ def test_specialized_public_facades_are_available_from_top_level():
 
     missing = [name for name in facades if name not in nnx.__all__ or getattr(nnx, name, None) is None]
     assert missing == []
+
+
+def test_decision_api_is_public_and_complete():
+    from nnx import decisions
+
+    expected = {
+        "Choice",
+        "Boolean",
+        "Score",
+        "Option",
+        "ChoiceResult",
+        "BooleanResult",
+        "ScoreResult",
+        "Capabilities",
+        "DecisionProvider",
+        "FixedHeadProvider",
+        "validate_response",
+        "UnsupportedCapability",
+        "InvalidDecisionRequest",
+        "InvalidDecisionResponse",
+        "ProviderFailure",
+    }
+    assert expected <= set(decisions.__all__)
+    assert all(getattr(decisions, name, None) is not None for name in decisions.__all__)

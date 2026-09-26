@@ -442,3 +442,29 @@ def test_every_train_step_factory_is_top_level():
     missing_all = sorted(n for n in defined if n not in nnx.__all__)
     assert not missing_attr, f"not reachable at top-level nnx.*: {missing_attr}"
     assert not missing_all, f"missing from nnx.__all__: {missing_all}"
+
+
+def test_decisions_import_starts_no_provider_backend_or_hosted_sdk():
+    """FEAT-009: importing nnx and nnx.decisions in a fresh process builds no
+    provider or model, starts no thread and loads no hosted-SDK package."""
+    code = r"""
+import gc
+import sys
+import threading
+
+before = threading.active_count()
+import nnx
+from nnx import decisions
+from nnx.decisions import FixedHeadProvider
+
+assert "decisions" in nnx.__all__ and nnx.decisions is decisions
+hosted = sorted(
+    name for name in sys.modules
+    if name.split(".")[0] in {"openai", "anthropic", "jev", "typesafe", "cohere", "mistralai", "groq"}
+    or name.startswith(("google.generativeai", "google.genai"))
+)
+assert hosted == [], hosted
+assert not any(isinstance(obj, (nnx.NNModel, FixedHeadProvider)) for obj in gc.get_objects())
+assert threading.active_count() == before, threading.enumerate()
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)

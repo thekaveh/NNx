@@ -13,18 +13,19 @@ sections:
       - {number: "8", title: I-JEPA, source: docs/jepa.md}
       - {number: "9", title: Experimental GGUF export, source: docs/gguf.md}
       - {number: "10", title: DPO, source: docs/dpo.md}
+      - {number: "11", title: Typed decisions, source: docs/decisions.md}
   - title: Reference
     children:
-      - {number: "11", title: API reference, source: docs/api.md}
-      - {number: "12", title: External dependency contracts, source: docs/external-contracts.md}
-      - {number: "13", title: Framework comparison, source: docs/comparison.md}
-      - {number: "14", title: Architecture, source: docs/architecture.md}
+      - {number: "12", title: API reference, source: docs/api.md}
+      - {number: "13", title: External dependency contracts, source: docs/external-contracts.md}
+      - {number: "14", title: Framework comparison, source: docs/comparison.md}
+      - {number: "15", title: Architecture, source: docs/architecture.md}
   - title: Project
     children:
-      - {number: "15", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
-      - {number: "16", title: Examples, source: examples/README.md}
-      - {number: "17", title: Contributing, source: CONTRIBUTING.md}
-      - {number: "18", title: Security policy, source: SECURITY.md, slug: Security-Policy}
-      - {number: "19", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
-      - {number: "20", title: Changelog, source: CHANGELOG.md}
-      - {number: "21", title: License, source: LICENSE}
+      - {number: "16", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
+      - {number: "17", title: Examples, source: examples/README.md}
+      - {number: "18", title: Contributing, source: CONTRIBUTING.md}
+      - {number: "19", title: Security policy, source: SECURITY.md, slug: Security-Policy}
+      - {number: "20", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
+      - {number: "21", title: Changelog, source: CHANGELOG.md}
+      - {number: "22", title: License, source: LICENSE}
