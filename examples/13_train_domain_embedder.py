@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import zlib
 
 import torch
 from torch import nn
@@ -50,7 +51,10 @@ class HashEmbedder(nn.Module):
     """Bag-of-words hash embedder — minimal text encoder for demos.
 
     Hash each whitespace-split token into a vocab slot, look it up in an
-    :class:`nn.Embedding`, mean-pool per text. The embedding table is
+    :class:`nn.Embedding`, mean-pool per text. CRC-32 keeps the slots the
+    same in every run; Python's ``hash()`` is salted per process, so it
+    would change the vocab slots — and the printed losses — each run
+    despite ``nnx.set_seed``. The embedding table is
     the only trainable parameter — small enough that contrastive
     training visibly moves it in a few epochs.
     """
@@ -70,7 +74,7 @@ class HashEmbedder(nn.Module):
         device = self.embed.weight.device
         rows: list[torch.Tensor] = []
         for t in texts:
-            ids = [hash(w) % self.vocab_size for w in t.split()] or [0]
+            ids = [zlib.crc32(w.encode("utf-8")) % self.vocab_size for w in t.split()] or [0]
             v = self.embed(torch.tensor(ids, dtype=torch.long, device=device)).mean(dim=0)
             rows.append(v)
         return torch.stack(rows, dim=0)

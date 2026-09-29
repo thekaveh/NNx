@@ -12,6 +12,7 @@ the package is missing.
 from __future__ import annotations
 
 import importlib.util
+import zlib
 
 import pytest
 import torch
@@ -31,7 +32,10 @@ HAS_SAFETENSORS = importlib.util.find_spec("safetensors") is not None
 
 # Same tiny encoder as the contrastive trainer tests — no network, no
 # HF Hub download. Kept inline (rather than imported across files) so
-# the two test modules stay independent.
+# the two test modules stay independent. Tokens are bucketed with CRC-32,
+# not ``hash()``: string hashing is salted per process (PYTHONHASHSEED),
+# so ``hash()`` made the token ids — and any collision between two
+# corpus rows — change from run to run.
 class _HashEmbedder(nn.Module):
     def __init__(self, vocab_size: int = 4096, dim: int = 32):
         super().__init__()
@@ -39,11 +43,14 @@ class _HashEmbedder(nn.Module):
         self.dim = dim
         self.embed = nn.Embedding(vocab_size, dim)
 
+    def token_ids(self, text: str) -> list[int]:
+        return [zlib.crc32(w.encode("utf-8")) % self.vocab_size for w in text.split()] or [0]
+
     def forward(self, texts: list[str]) -> torch.Tensor:
         device = self.embed.weight.device
         out: list[torch.Tensor] = []
         for t in texts:
-            ids = [hash(w) % self.vocab_size for w in t.split()] or [0]
+            ids = self.token_ids(t)
             v = self.embed(torch.tensor(ids, dtype=torch.long, device=device)).mean(dim=0)
             out.append(v)
         return torch.stack(out, dim=0)
@@ -96,6 +103,11 @@ def test_export_to_faiss_creates_searchable_index(tmp_path):
     set_seed(0)
     backbone = _HashEmbedder(vocab_size=8192, dim=32)
     corpus = [f"document number {i} with unique words {i * 7 + 13} foo bar" for i in range(100)]
+    # Precondition for a unique top-1: no two rows may share a bag of token
+    # ids (row 6 holds "6 … 55" and row 55 "55 … 398", so one colliding pair
+    # of buckets would make them identical and tie).
+    bags = {tuple(sorted(backbone.token_ids(text))) for text in corpus}
+    assert len(bags) == len(corpus), "corpus rows collide in the hash vocab; the top-1 check would tie"
 
     out = tmp_path / "index.faiss"
     path = export_to_faiss(backbone, corpus, str(out))
