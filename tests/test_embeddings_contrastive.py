@@ -17,6 +17,7 @@ Two layers of coverage:
 from __future__ import annotations
 
 import importlib.util
+import zlib
 
 import pytest
 import torch
@@ -80,8 +81,10 @@ def test_pair_collate_splits_lists():
 class _HashEmbedder(nn.Module):
     """Minimal text encoder for tests.
 
-    Hashes each (word) token into a fixed-size vocab via ``hash``,
-    looks it up in an :class:`nn.Embedding`, and mean-pools per text.
+    Hashes each (word) token into a fixed-size vocab via CRC-32 (not
+    ``hash()``, which is salted per process and made results vary from
+    run to run), looks it up in an :class:`nn.Embedding`, and mean-pools
+    per text.
     Trainable: the embedding table itself. Just enough capacity for
     the test to demonstrate that NT-Xent actually pulls paired vectors
     together in cosine space.
@@ -99,7 +102,7 @@ class _HashEmbedder(nn.Module):
             self.embed.weight.mul_(0.1)
 
     def _tokenize(self, text: str) -> list[int]:
-        return [hash(w) % self.vocab_size for w in text.split()] or [0]
+        return [zlib.crc32(w.encode("utf-8")) % self.vocab_size for w in text.split()] or [0]
 
     def forward(self, texts: list[str]) -> torch.Tensor:
         device = self.embed.weight.device
