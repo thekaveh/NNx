@@ -53,6 +53,7 @@ def test_core_public_exports_are_available_from_top_level():
 
 def test_specialized_public_facades_are_available_from_top_level():
     facades = [
+        "calibration",
         "data_splits",
         "decisions",
         "diffusion",
@@ -114,3 +115,29 @@ def test_preprocessing_api_is_public_and_complete():
     expected = {"Standardizer", "SplitView", "describe_transform", "PreprocessingError", "FORMAT"}
     assert expected <= set(preprocessing.__all__)
     assert all(getattr(preprocessing, name, None) is not None for name in preprocessing.__all__)
+
+
+def test_calibration_api_is_public_and_complete():
+    from nnx import calibration
+
+    expected = {
+        "fit_temperature",
+        "TemperatureCalibrator",
+        "CalibrationFit",
+        "CalibratedPrediction",
+        "CalibrationReport",
+        "CalibrationMetrics",
+        "ReliabilityBin",
+        "negative_log_likelihood",
+        "brier_score",
+        "reliability_bins",
+        "expected_calibration_error",
+        "model_fingerprint",
+        "CalibrationError",
+        "CalibrationFitError",
+        "CalibrationMismatchError",
+        "DEFAULT_EPSILON",
+        "FORMAT",
+    }
+    assert expected <= set(calibration.__all__)
+    assert all(getattr(calibration, name, None) is not None for name in calibration.__all__)

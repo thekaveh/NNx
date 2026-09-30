@@ -236,6 +236,38 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.preprocessing.PreprocessingError
 
+### 2.15. Fitted classifier calibration (`nnx.calibration`)
+
+@api nnx.calibration.fit_temperature
+
+@api nnx.calibration.CalibrationFit
+
+@api nnx.calibration.TemperatureCalibrator
+
+@api nnx.calibration.CalibratedPrediction
+
+@api nnx.calibration.CalibrationReport
+
+@api nnx.calibration.CalibrationMetrics
+
+@api nnx.calibration.ReliabilityBin
+
+@api nnx.calibration.negative_log_likelihood
+
+@api nnx.calibration.brier_score
+
+@api nnx.calibration.reliability_bins
+
+@api nnx.calibration.expected_calibration_error
+
+@api nnx.calibration.model_fingerprint
+
+@api nnx.calibration.CalibrationError
+
+@api nnx.calibration.CalibrationFitError
+
+@api nnx.calibration.CalibrationMismatchError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

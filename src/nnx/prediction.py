@@ -34,7 +34,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
-import torch
+
+from ._probability import softmax_, to_numpy
 
 __all__ = [
     "PredictionResult",
@@ -206,12 +207,7 @@ class PredictionResult:
 
 
 def _as_array(logits: Any) -> np.ndarray:
-    if isinstance(logits, torch.Tensor):
-        logits = logits.detach()
-        if logits.dtype == torch.bfloat16:  # no NumPy equivalent: upcast losslessly
-            logits = logits.float()
-        logits = logits.cpu().numpy()
-    array = np.asarray(logits)
+    array = to_numpy(logits, copy=False)  # shared with nnx.calibration
     if array.dtype.kind not in "fiu":
         raise PredictionValidationError(f"logits must be a real numeric array, got dtype {array.dtype}")
     return array
@@ -276,9 +272,7 @@ def prediction_from_logits(
         compute = np.dtype(np.float64)
     work = array.astype(compute, copy=True)
     if spec.kind == "categorical":
-        work -= work.max(axis=axis, keepdims=True)
-        np.exp(work, out=work)
-        work /= work.sum(axis=axis, keepdims=True)
+        softmax_(work, axis)  # shared with nnx.calibration: one max-shifted softmax
         decoded = array.argmax(axis=axis).astype(np.int64)
     else:
         positive = work >= 0
@@ -295,9 +289,7 @@ def prediction_from_logits(
     if sample_ids is None:
         ids = np.arange(n_samples, dtype=np.int64)
     else:
-        if isinstance(sample_ids, torch.Tensor):
-            sample_ids = sample_ids.detach().cpu().numpy()
-        ids = np.asarray(sample_ids)
+        ids = to_numpy(sample_ids, copy=False)
         if ids.ndim != 1 or ids.shape[0] != n_samples or ids.dtype.kind not in "iu":
             raise PredictionValidationError(
                 f"sample_ids must be one integer id per sample ({n_samples}), got shape {ids.shape} "
