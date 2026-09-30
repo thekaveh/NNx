@@ -1734,8 +1734,9 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
   `close()`, an error inside the stream) finalizes its generator and drops
   its references to the loader's iterator and the model. Like a closed
   generator, a closed stream is exhausted, so `close()` inside a `for` loop
-  ends the loop; iterating a closed or consumed stream again, or entering it
-  again, raises `StreamClosedError` — ask `iter_predict()` for a new one. The
+  ends the loop; iterating a closed, consumed or partly consumed stream again
+  (after a `break`), or entering a closed one, raises `StreamClosedError` —
+  ask `iter_predict()` for a new one. The
   loader is never closed: it stays the caller's and can be iterated again.
 - **Consumer-retained memory.** The stream holds at most the batch in
   flight, so its memory does not grow with the dataset. What the consumer

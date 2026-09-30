@@ -49,7 +49,7 @@ import numbers
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
 
 import numpy as np
 import torch
@@ -365,23 +365,60 @@ def _check_no_config(metric: str) -> Callable[[Mapping[str, Any]], None]:
 
 
 class _F1:
-    """F1 over every label of the epoch, from confusion counts: memory bounded
-    by the number of classes, mergeable (FEAT-020), and equal to
-    scikit-learn's ``f1_score(..., zero_division=0)`` on the same labels."""
+    """F1 over every label of the epoch, equal to scikit-learn's
+    ``f1_score(..., zero_division=0)`` on the same labels. Integer class
+    labels — everything NNx derives — are kept as confusion counts: memory
+    bounded by the number of classes, mergeable (FEAT-020). Other labels
+    (e.g. strings, from a custom step) are kept and scored by scikit-learn,
+    as before."""
 
     def __init__(self, average: str = "macro") -> None:
         self._average = average
         self._counts = ConfusionCounts()
+        self._targets: list[np.ndarray] = []
+        self._predictions: list[np.ndarray] = []
 
     def update(self, target: np.ndarray, prediction: np.ndarray) -> None:
-        self._counts.update(target, prediction)
+        target, prediction = np.asarray(target).reshape(-1), np.asarray(prediction).reshape(-1)
+        if not self._targets and _integer_labels(target) and _integer_labels(prediction):
+            self._counts.update(target, prediction)
+            return
+        if self._counts.count:
+            raise ValueError("f1 got integer class labels and then other labels; score one kind per accumulation")
+        self._targets.append(target.copy())
+        self._predictions.append(prediction.copy())
 
     def result(self) -> Optional[float]:
+        if self._targets:
+            from sklearn.metrics import f1_score
+
+            return float(
+                f1_score(
+                    np.concatenate(self._targets),
+                    np.concatenate(self._predictions),
+                    average=self._average,
+                    zero_division=cast(Any, 0),
+                )
+            )
         scores = self._counts.scores(self._average)
         return None if scores is None else scores[2]
 
     def merge(self, other: _F1) -> None:
+        if (self._counts.count and other._targets) or (self._targets and other._counts.count):
+            raise ValueError("cannot merge f1 over integer class labels with f1 over other labels")
         self._counts.merge(other._counts)
+        self._targets.extend(other._targets)
+        self._predictions.extend(other._predictions)
+
+
+def _integer_labels(values: np.ndarray) -> bool:
+    """Integer class labels: an integer / bool array, or floats with integral values."""
+    if values.dtype.kind in "iub":
+        return True
+    if values.dtype.kind != "f":
+        return False
+    with np.errstate(invalid="ignore"):
+        return bool(np.array_equal(values, np.round(values)) and np.isfinite(values).all())
 
 
 for _id, _input, _mode, _factory, _check in (

@@ -132,6 +132,7 @@ class PredictionStream:
     def __init__(self, batches: Iterator[Any]) -> None:
         self._batches: Optional[Iterator[Any]] = batches
         self._state = "open"  # "open" | "consumed" | "closed"
+        self._started = False  # a batch was handed out: a second pass would silently skip it
 
     @property
     def closed(self) -> bool:
@@ -147,12 +148,17 @@ class PredictionStream:
 
     def __iter__(self) -> PredictionStream:
         self._require_open()
+        if self._started:
+            raise StreamClosedError(
+                "this prediction stream is partly consumed; iterate a stream once from its first batch, or call "
+                "iter_predict() again"
+            )
         return self
 
     def __next__(self) -> Union[PredictionBatch, PredictionResult]:
         if self._state != "open":
             raise StopIteration  # like a closed generator: close() inside a for loop ends it
-
+        self._started = True
         assert self._batches is not None
         try:
             return next(self._batches)
@@ -412,6 +418,7 @@ class StreamingMetrics:
                 self._accumulators[spec.label] = _Stored(spec)
         self._count = 0
         self._broken = False
+        self._seen_width: Optional[int] = None
 
     @classmethod
     def for_task(cls, metrics: Sequence[MetricSpec], task: TaskSpec, *, materialize: bool = False) -> StreamingMetrics:
@@ -501,6 +508,7 @@ class StreamingMetrics:
             "continuous": None if values is None else to_numpy(values, copy=False),
         }
         needed = {spec.input for spec in self._specs}
+        width: Optional[int] = None  # the batch's classes / outputs, when it shows them
         if self._semantics == "categorical":
             if target_np.ndim != 1:
                 raise ValueError(f"categorical targets must be class indices shaped (N,), got {target_np.shape}")
@@ -511,10 +519,7 @@ class StreamingMetrics:
                     raise ValueError(
                         f"categorical probabilities must be (N, C) with N={target_np.shape[0]}, got {probs.shape}"
                     )
-                if self._num_outputs is not None and probs.shape[1] != self._num_outputs:
-                    raise ValueError(
-                        f"probabilities have {probs.shape[1]} classes but the declared classes are {self._num_outputs}"
-                    )
+                width = self._check_width(probs.shape[1], "probabilities")
                 inputs["probabilities"] = probs[mask]
             if given["labels"] is not None:
                 inputs["labels"] = integers(_same_rows(given["labels"], target_np, "labels")[mask], "labels")
@@ -529,10 +534,7 @@ class StreamingMetrics:
             if "labels" in inputs:
                 _check_class_range(inputs["labels"], n_classes, "decoded labels")
         else:
-            if self._num_outputs is not None:
-                width = target_np.shape[1] if target_np.ndim >= 2 else 1
-                if width != self._num_outputs:
-                    raise ValueError(f"targets have {width} outputs along axis 1 but {self._num_outputs} are declared")
+            width = self._check_width(target_np.shape[1] if target_np.ndim >= 2 else 1, "targets")
             for name in ("probabilities", "labels", "continuous"):
                 array = given[name]
                 if array is not None:
@@ -548,7 +550,7 @@ class StreamingMetrics:
             if spec.input not in inputs:
                 keyword = "values" if spec.input == "continuous" else spec.input
                 raise ValueError(f"metric {spec.label!r} needs {spec.input} inputs: pass update(..., {keyword}=...)")
-        return self._feed(truth, inputs)
+        return self._feed(truth, inputs, width)
 
     def update_logits(self, target: Any, logits: Any, *, valid: Any = None) -> int:
         """Add one batch of raw model outputs (class axis 1): softmax
@@ -557,11 +559,7 @@ class StreamingMetrics:
         number of valid samples scored."""
         target_t = _tensor(target)
         logits_t = _tensor(logits)
-        declared = self._num_outputs
-        if declared is not None:
-            width = int(logits_t.shape[1]) if logits_t.ndim >= 2 else 1
-            if width != declared:
-                raise ValueError(f"logits have {width} outputs along axis 1 but {declared} are declared")
+        width = self._check_width(int(logits_t.shape[1]) if logits_t.ndim >= 2 else 1, "logits")
         categorical = self._semantics == "categorical"
         soft = categorical and target_t.is_floating_point() and target_t.shape == logits_t.shape
         rows = (logits_t.shape[0], *logits_t.shape[2:]) if logits_t.ndim >= 2 else None
@@ -597,7 +595,7 @@ class StreamingMetrics:
         )
         if categorical and logits_t.ndim >= 2:
             _check_class_range(truth, int(logits_t.shape[1]))  # on the host copy _batch_inputs made
-        return self._feed(truth, inputs)
+        return self._feed(truth, inputs, width)
 
     def _target_mask(self, target: torch.Tensor, valid: Any) -> torch.Tensor:
         """:meth:`update_logits`'s mask: ``valid`` (every entry by default),
@@ -612,8 +610,19 @@ class StreamingMetrics:
                 )
         return _target_rule(target, mask, self._ignore_index)
 
-    def _feed(self, target: np.ndarray, inputs: Mapping[str, np.ndarray]) -> int:
+    def _check_width(self, width: int, what: str) -> int:
+        """The batch's classes / outputs along axis 1 must be the declared
+        ``num_outputs`` — or, undeclared, the width of every earlier batch."""
+        expected = self._num_outputs if self._num_outputs is not None else self._seen_width
+        if expected is not None and width != expected:
+            source = "are declared" if self._num_outputs is not None else "came in earlier batches"
+            raise ValueError(f"{what} have {width} outputs along axis 1 but {expected} {source}")
+        return width
+
+    def _feed(self, target: np.ndarray, inputs: Mapping[str, np.ndarray], width: Optional[int] = None) -> int:
         self._require_intact()
+        if width is not None and self._seen_width is None:
+            self._seen_width = width  # an accepted batch fixes the width of an undeclared accumulation
         n = int(target.shape[0])
         if not n:
             return 0
@@ -657,9 +666,14 @@ class StreamingMetrics:
                     "other's state to the accumulator in place and return None"
                 )
         merged._count += other._count
+        merged._seen_width = self._seen_width if self._seen_width is not None else other._seen_width
         return merged
 
     def _check_schema(self, other: StreamingMetrics) -> None:
+        if self._seen_width is not None and other._seen_width is not None and self._seen_width != other._seen_width:
+            raise MetricMergeError(
+                f"cannot merge accumulations of different widths: {self._seen_width} vs {other._seen_width} outputs"
+            )
         mine = [(spec.label, spec.id, spec.version, dict(spec.state())) for spec in self._specs]
         theirs = [(spec.label, spec.id, spec.version, dict(spec.state())) for spec in other._specs]
         if mine != theirs:

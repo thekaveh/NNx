@@ -10,6 +10,7 @@ than the batch in flight.
 from __future__ import annotations
 
 import gc
+import warnings
 import weakref
 from types import SimpleNamespace
 
@@ -357,3 +358,26 @@ def test_review_round_seven_a_failing_cleanup_still_closes_the_stream():
         next(stream)
     with pytest.raises(TypeError, match="wrap it in a DataLoader"):
         _model().iter_predict(np.zeros((2, 4), dtype=np.float32))
+
+
+def test_review_round_twelve_a_partly_consumed_stream_is_not_iterated_again():
+    model = _model()
+    with model.iter_predict(_loader(n=7)) as stream:
+        for _batch in stream:
+            break
+        with pytest.raises(StreamClosedError, match="partly consumed"):
+            list(stream)  # would silently skip the first batch
+
+
+def test_review_round_twelve_graph_loaders_never_warn_about_shuffled_ids():
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    shuffled = DataLoader(
+        list(range(4)), batch_size=2, shuffle=True
+    )  # a RandomSampler, as NeighborLoader(shuffle=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model.iter_predict(shuffled).close()  # graph seed-row ids are global node indices

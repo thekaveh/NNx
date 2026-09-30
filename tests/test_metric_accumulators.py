@@ -138,7 +138,7 @@ def test_bernoulli_and_continuous_semantics_and_logit_updates():
 
 def test_updates_are_validated():
     acc = _probability_metrics(labels=("a", "b"))
-    with pytest.raises(ValueError, match="2 classes"):
+    with pytest.raises(ValueError, match="2 outputs along axis 1 but 3 are declared"):
         StreamingMetrics([MetricSpec("nll")], "categorical", labels=("a", "b", "c")).update(
             TARGETS, probabilities=PROBABILITIES
         )
@@ -455,3 +455,25 @@ def test_review_round_eleven_thresholds_only_split_bernoulli_merges():
     a = StreamingMetrics([MetricSpec("accuracy")], "categorical", threshold=0.7)
     b = StreamingMetrics([MetricSpec("accuracy")], "categorical")
     assert a.merge(b).count == 0  # the threshold decides nothing for categorical labels
+
+
+def test_review_round_twelve_string_labels_and_undeclared_widths():
+    f1 = MetricSpec("f1").accumulator()
+    target, decided = np.array(["a", "b", "a"]), np.array(["a", "a", "a"])
+    f1.update(target, decided)  # labels that are not class indices: scored by scikit-learn, as before
+    assert f1.result() == pytest.approx(sk.f1_score(target, decided, average="macro", zero_division=0))
+    with pytest.raises(ValueError, match="one kind"):
+        mixed = MetricSpec("f1").accumulator()
+        mixed.update(np.array([0, 1]), np.array([0, 1]))
+        mixed.update(target, decided)
+    counted = MetricSpec("f1").accumulator()
+    counted.update(np.array([0, 1]), np.array([0, 1]))
+    with pytest.raises(ValueError, match="cannot merge"):
+        counted.merge(f1)
+    three, five = (StreamingMetrics([MetricSpec("nll")], "categorical") for _ in range(2))
+    three.update(np.array([0, 2]), probabilities=np.full((2, 3), 1 / 3))
+    five.update(np.array([0, 4]), probabilities=np.full((2, 5), 0.2))
+    with pytest.raises(MetricMergeError, match="different widths"):
+        three.merge(five)
+    with pytest.raises(ValueError, match="came in earlier batches"):
+        three.update(np.array([0]), probabilities=np.full((1, 5), 0.2))

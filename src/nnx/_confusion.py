@@ -207,17 +207,21 @@ class MultilabelCounts:
 LabelCounts = Union[ConfusionCounts, MultilabelCounts]
 
 
-def label_counts(target: np.ndarray) -> LabelCounts:
-    """The counts for a label array shaped like ``target``: multilabel
-    indicators for ``(N, K)`` with ``K > 1``, class labels otherwise
-    (``(N,)`` and column vectors ``(N, 1)``). Other shapes are refused, as
-    scikit-learn refuses them."""
+def label_kind(target: np.ndarray) -> str:
+    """``"indicators"`` for ``(N, K)`` label rows with ``K > 1``, ``"classes"``
+    for ``(N,)`` labels and column vectors ``(N, 1)``. Other shapes are
+    refused, as scikit-learn refuses them."""
     shape = np.shape(target)
     if len(shape) <= 1 or (len(shape) == 2 and shape[1] == 1):
-        return ConfusionCounts()
+        return "classes"
     if len(shape) == 2:
-        return MultilabelCounts()
+        return "indicators"
     raise ValueError(f"classification labels must be (N,) classes or (N, K) indicators, got shape {shape}")
+
+
+def label_counts(target: np.ndarray) -> LabelCounts:
+    """The counts for a label array shaped like ``target`` (see :func:`label_kind`)."""
+    return MultilabelCounts() if label_kind(target) == "indicators" else ConfusionCounts()
 
 
 def record_scores(counts: LabelCounts) -> tuple[float, float, float, float]:

@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing_extensions import Self
 
-from .._confusion import LabelCounts, label_counts, record_scores
+from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
@@ -1232,6 +1232,7 @@ def _evaluate(
     model.net.eval()
 
     counts: Optional[LabelCounts] = None  # bounded: chosen by the first batch's label shape
+    kind = ""
     all_Y: list[np.ndarray] = []
     all_Y_hat: list[np.ndarray] = []
     loss_numerator = 0.0
@@ -1253,10 +1254,9 @@ def _evaluate(
                 if metric_Y.numel():
                     if bounded:
                         labels = metric_Y.cpu().numpy()
-                        kind = label_counts(labels)
                         if counts is None:
-                            counts = kind
-                        elif type(kind) is not type(counts):  # the eager path's concatenate refuses it too
+                            counts, kind = label_counts(labels), label_kind(labels)
+                        elif label_kind(labels) != kind:  # the eager path's concatenate refuses it too
                             raise ValueError(
                                 f"{who}: label batches changed shape between class labels and indicator rows"
                             )
@@ -1395,10 +1395,11 @@ def _is_streaming_eval_step(eval_step_fn: Any) -> bool:
     return eval_step_fn is streaming_eval_step
 
 
-def _warn_shuffled_ids(X: Any, caller: str) -> None:
+def _warn_shuffled_ids(X: Any, caller: str, *, graph: bool = False) -> None:
     """Sample ids over a shuffling DataLoader are iteration positions that
-    cannot be joined back to the dataset."""
-    if isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
+    cannot be joined back to the dataset — except for a graph net, whose
+    seed-row ids are global node indices."""
+    if not graph and isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
         warnings.warn(
             f"{caller} over a shuffling DataLoader: sample_ids are iteration positions, not "
             "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
@@ -2716,7 +2717,7 @@ class NNModel(_HubMixinBase):
                 "iter_predict(rich=True) needs a ProbabilitySpec for a model without a task "
                 "(or declare NNModelParams(task=TaskSpec...))"
             )
-        _warn_shuffled_ids(X, "iter_predict()")  # every batch carries sample_ids
+        _warn_shuffled_ids(X, "iter_predict()", graph=self._graph_ids)  # every batch carries sample_ids
 
         def batches() -> Iterator[Any]:
             if explicit is not None:
@@ -2766,7 +2767,7 @@ class NNModel(_HubMixinBase):
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
 
-        _warn_shuffled_ids(X, "predict_proba()")
+        _warn_shuffled_ids(X, "predict_proba()", graph=self._graph_ids)
         if spec is None:
             adapter = getattr(self, "task_adapter", None)
             if adapter is None:
@@ -2832,6 +2833,12 @@ class NNModel(_HubMixinBase):
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
+
+    @property
+    def _graph_ids(self) -> bool:
+        """Whether loader sample ids are global node indices (a graph net's
+        seed rows), which a shuffling loader cannot scramble."""
+        return getattr(self.net, "seed_count", None) is not None
 
     def _logit_batches(
         self,
