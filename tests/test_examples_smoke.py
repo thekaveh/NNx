@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # they are imported (without running main) and, below, executed.
 UNNUMBERED_EXAMPLES = [
     "builder_branching.py",
+    "calibration_offline.py",
     "custom_module.py",
     "decision_fixed_head.py",
     "graph_optional_splits.py",
@@ -38,6 +39,7 @@ def test_example_imports_without_running_main(example):
         "01_synthetic_classification.py",
         "03_custom_metrics.py",
         "05_custom_train_step_autoencoder.py",
+        "calibration_offline.py",
         "10_knowledge_distillation.py",
         "custom_module.py",
         "decision_fixed_head.py",
@@ -89,6 +91,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("20_low_rank_surgery_ffn.py", "named_deepen_workflow"),
     ("22_dpo_synthetic_preferences.py", "dpo_sample_batch_sizes"),
     ("builder_branching.py", "builder_branching_workflow"),
+    ("calibration_offline.py", "calibration_offline_workflow"),
     ("custom_module.py", "custom_module_workflow"),
     ("decision_fixed_head.py", "decision_fixed_head_workflow"),
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),

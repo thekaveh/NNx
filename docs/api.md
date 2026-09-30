@@ -3579,6 +3579,440 @@ class nnx.preprocessing.PreprocessingError
 Preprocessing that cannot be fitted, loaded or applied as declared.
 
 
+### 2.15. Fitted classifier calibration (`nnx.calibration`)
+
+#### `nnx.calibration.fit_temperature`
+
+```python
+nnx.calibration.fit_temperature(logits: 'Any', targets: 'Any', *, model_id: 'str', split_id: 'str', labels: 'Optional[Sequence[str]]' = None, train_split_id: 'Optional[str]' = None, test_split_id: 'Optional[str]' = None, min_temperature: 'float' = 0.001, max_temperature: 'float' = 1000.0, tolerance: 'float' = 1e-10, max_iterations: 'int' = 200) -> 'CalibrationFit'
+```
+
+Fit a scalar temperature on the calibration split ``split_id``.
+
+**Details**
+
+```text
+``logits`` are categorical ``(N, C)`` raw scores (array, tensor, or a
+categorical ``nnx.prediction.PredictionResult``, whose spec supplies the
+``labels``) and ``targets`` their integer class indices. The NLL of
+``softmax(logits / T)`` is minimized over ``T`` in
+``[min_temperature, max_temperature]`` in float64 on a copy of the
+logits, by bisection on its (monotone) slope in ``1 / T`` until the
+log-temperature bracket is narrower than ``tolerance``.
+
+Raises :class:`CalibrationError` for non-finite logits, ``C < 2``,
+out-of-range targets, labels that do not name each class once, and a
+``split_id`` equal to ``train_split_id`` or ``test_split_id``. Returns a
+failed :class:`CalibrationFit` — never a calibrator with a NaN or
+boundary temperature — when the optimum lies outside the search range (a
+separable split, logits no better than uniform), the NLL does not depend
+on ``T`` (constant logits), or the search does not converge.
+```
+
+
+#### `nnx.calibration.CalibrationFit`
+
+```python
+class nnx.calibration.CalibrationFit(status: 'str', calibrator: 'Optional[TemperatureCalibrator]', reason: 'Optional[str]', config: 'Mapping[str, Any]', split: 'Mapping[str, Any]') -> 'None'
+```
+
+The outcome of :func:`fit_temperature`: ``status == "ok"`` with a ``calibrator``, or ``"failed"`` with ``calibrator=None`` and a ``reason``. ``config`` and ``split`` are recorded either way (read-only). Compared and hashed by identity; compare the calibrators themselves.
+
+##### `nnx.calibration.CalibrationFit.ok`
+
+```python
+property nnx.calibration.CalibrationFit.ok
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationFit.require`
+
+```python
+nnx.calibration.CalibrationFit.require(self) -> 'TemperatureCalibrator'
+```
+
+The calibrator, or :class:`CalibrationFitError` with the reason.
+
+
+#### `nnx.calibration.TemperatureCalibrator`
+
+```python
+class nnx.calibration.TemperatureCalibrator(temperature: 'float', labels: 'tuple[str, ...]', model_id: 'str', split_id: 'str', train_split_id: 'Optional[str]' = None, test_split_id: 'Optional[str]' = None, fit_config: 'Mapping[str, Any]' = <factory>, fit_result: 'Mapping[str, Any]' = <factory>) -> 'None'
+```
+
+A fitted scalar temperature bound to its label schema and model.
+
+**Details**
+
+```text
+Build one with :func:`fit_temperature`; reload one with :meth:`load` /
+:meth:`from_state`. ``labels`` are the ordered class names the logits'
+columns must carry, ``model_id`` the model they must come from,
+``split_id`` the calibration split it was fitted on (and, when declared,
+``train_split_id`` / ``test_split_id``, which must differ from it).
+``fit_config`` / ``fit_result`` record how it was fitted (the result's
+``nll_before`` / ``nll_after`` are the calibration split's exact,
+unfloored NLL, computed in the log domain). Equality,
+hashing and :attr:`id` follow the canonical state.
+```
+
+##### `nnx.calibration.TemperatureCalibrator.split`
+
+```python
+property nnx.calibration.TemperatureCalibrator.split
+```
+
+The split ids, and that their disjointness is unverified.
+
+##### `nnx.calibration.TemperatureCalibrator.id`
+
+```python
+property nnx.calibration.TemperatureCalibrator.id
+```
+
+The calibrator id: :meth:`digest`.
+
+##### `nnx.calibration.TemperatureCalibrator.transform`
+
+```python
+nnx.calibration.TemperatureCalibrator.transform(self, logits: 'Any', *, model_id: 'str', labels: 'Optional[Sequence[str]]' = None, override: 'Optional[str]' = None) -> 'CalibratedPrediction'
+```
+
+Calibrate ``logits`` — an ``(N, C)`` array or tensor, or a categorical ``nnx.prediction.PredictionResult``.
+
+**Details**
+
+```text
+``model_id`` and the column ``labels`` (taken from the prediction's
+spec when omitted) must equal the fitted ones; otherwise
+:class:`CalibrationMismatchError` is raised before the logits are
+read, unless ``override`` names the exception — then the result
+records the name and each mismatch. An override exists only to accept
+a mismatch: with none, the name is validated and nothing is recorded.
+Non-finite logits or a width that differs from the labels raise
+:class:`CalibrationError`. The input is never modified.
+```
+
+##### `nnx.calibration.TemperatureCalibrator.report`
+
+```python
+nnx.calibration.TemperatureCalibrator.report(self, logits: 'Any', targets: 'Any', *, model_id: 'str', split_id: 'str', labels: 'Optional[Sequence[str]]' = None, override: 'Optional[str]' = None, n_bins: 'int' = 10, epsilon: 'Optional[float]' = 1e-12) -> 'CalibrationReport'
+```
+
+Held-out NLL, Brier, ECE and reliability bins before and after calibration.
+
+**Details**
+
+```text
+``split_id`` names the held-out split and must differ from the
+calibration and training split ids. Identity checks match
+:meth:`transform`. The report's :attr:`CalibrationReport.outcome` is
+``"improved"`` only when neither NLL nor Brier got worse and one got
+better; a worse result is reported as ``"worsened"`` / ``"mixed"``.
+```
+
+##### `nnx.calibration.TemperatureCalibrator.state`
+
+```python
+nnx.calibration.TemperatureCalibrator.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.TemperatureCalibrator.from_state`
+
+```python
+nnx.calibration.TemperatureCalibrator.from_state(state: 'Mapping[str, Any]') -> 'TemperatureCalibrator'
+```
+
+Rebuild from :meth:`state`, rejecting anything malformed with :class:`CalibrationError`.
+
+##### `nnx.calibration.TemperatureCalibrator.digest`
+
+```python
+nnx.calibration.TemperatureCalibrator.digest(self) -> 'str'
+```
+
+``sha256:<hex>`` of the canonical state.
+
+##### `nnx.calibration.TemperatureCalibrator.from_json`
+
+```python
+nnx.calibration.TemperatureCalibrator.from_json(text: 'str') -> 'TemperatureCalibrator'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.TemperatureCalibrator.load`
+
+```python
+nnx.calibration.TemperatureCalibrator.load(path: 'Union[str, os.PathLike[str]]') -> 'TemperatureCalibrator'
+```
+
+No public description is currently available.
+
+
+#### `nnx.calibration.CalibratedPrediction`
+
+```python
+class nnx.calibration.CalibratedPrediction(logits: 'np.ndarray', probabilities: 'np.ndarray', calibrated_probabilities: 'np.ndarray', decoded: 'np.ndarray', labels: 'tuple[str, ...]', sample_ids: 'np.ndarray', calibrator_id: 'str', model_id: 'str', temperature: 'float', override: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+Raw and calibrated views of one categorical prediction, kept apart.
+
+**Details**
+
+```text
+Attributes:
+    logits: the raw logits as given (a copy; tensors become arrays).
+    probabilities: uncalibrated float64 ``softmax(logits)``.
+    calibrated_probabilities: float64 ``softmax(logits / temperature)``.
+    decoded: argmax class indices of the raw logits — calibration never
+        changes the argmax.
+    labels: the ordered class names of the columns.
+    sample_ids: ``int64[N]`` row identities (a ``PredictionResult``'s
+        own ids, else ``0..N-1``).
+    calibrator_id: :meth:`TemperatureCalibrator.digest` of the calibrator.
+    model_id: the model id the logits were declared to come from.
+    temperature: the calibrator's temperature.
+    override: ``None``, or the named override and the label / model-id
+        mismatches it accepted.
+```
+
+##### `nnx.calibration.CalibratedPrediction.decoded_labels`
+
+```python
+nnx.calibration.CalibratedPrediction.decoded_labels(self) -> 'np.ndarray'
+```
+
+Decoded class names.
+
+
+#### `nnx.calibration.CalibrationReport`
+
+```python
+class nnx.calibration.CalibrationReport(calibrator_id: 'str', model_id: 'str', labels: 'tuple[str, ...]', temperature: 'float', split_id: 'str', calibration_split_id: 'str', n_samples: 'int', n_bins: 'int', epsilon: 'Optional[float]', before: 'CalibrationMetrics', after: 'CalibrationMetrics', outcome: 'str', override: 'Optional[Mapping[str, Any]]' = None, train_split_id: 'Optional[str]' = None, test_split_id: 'Optional[str]' = None) -> 'None'
+```
+
+Held-out metrics before and after calibration.
+
+**Details**
+
+```text
+``outcome`` is ``"improved"`` (neither NLL nor Brier worse, one better),
+``"worsened"`` (neither better, one worse), ``"unchanged"`` or
+``"mixed"``; :attr:`improved` is true only for ``"improved"``.
+``override`` is the named override that accepted a label / model-id
+mismatch, or ``None``. Equality follows the canonical state, so a
+reloaded calibrator reproduces an equal report.
+```
+
+##### `nnx.calibration.CalibrationReport.improved`
+
+```python
+property nnx.calibration.CalibrationReport.improved
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.summary`
+
+```python
+nnx.calibration.CalibrationReport.summary(self) -> 'str'
+```
+
+One line that states the outcome — never success when the calibrated probabilities are worse.
+
+##### `nnx.calibration.CalibrationReport.state`
+
+```python
+nnx.calibration.CalibrationReport.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.from_state`
+
+```python
+nnx.calibration.CalibrationReport.from_state(state: 'Mapping[str, Any]') -> 'CalibrationReport'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.from_json`
+
+```python
+nnx.calibration.CalibrationReport.from_json(text: 'str') -> 'CalibrationReport'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.load`
+
+```python
+nnx.calibration.CalibrationReport.load(path: 'Union[str, os.PathLike[str]]') -> 'CalibrationReport'
+```
+
+No public description is currently available.
+
+
+#### `nnx.calibration.CalibrationMetrics`
+
+```python
+class nnx.calibration.CalibrationMetrics(nll: 'float', brier: 'float', ece: 'Optional[float]', bins: 'tuple[ReliabilityBin, ...]') -> 'None'
+```
+
+NLL, Brier, expected calibration error and reliability bins of one set of probabilities.
+
+##### `nnx.calibration.CalibrationMetrics.of`
+
+```python
+nnx.calibration.CalibrationMetrics.of(probabilities: 'Any', targets: 'Any', *, n_bins: 'int' = 10, epsilon: 'Optional[float]' = 1e-12) -> 'CalibrationMetrics'
+```
+
+All four metrics of ``probabilities``, validated once.
+
+##### `nnx.calibration.CalibrationMetrics.state`
+
+```python
+nnx.calibration.CalibrationMetrics.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationMetrics.from_state`
+
+```python
+nnx.calibration.CalibrationMetrics.from_state(state: 'Mapping[str, Any]') -> 'CalibrationMetrics'
+```
+
+Rebuild from :meth:`state`; malformed entries raise :class:`CalibrationError`.
+
+
+#### `nnx.calibration.ReliabilityBin`
+
+```python
+class nnx.calibration.ReliabilityBin(lower: 'float', upper: 'float', count: 'int', confidence: 'Optional[float]', accuracy: 'Optional[float]') -> 'None'
+```
+
+One confidence bin: ``[lower, upper)`` (the last bin is closed at 1), the rows whose top-1 confidence falls in it, their mean ``confidence`` and top-1 ``accuracy``. An empty bin has ``count == 0`` and ``None`` means.
+
+##### `nnx.calibration.ReliabilityBin.state`
+
+```python
+nnx.calibration.ReliabilityBin.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.ReliabilityBin.from_state`
+
+```python
+nnx.calibration.ReliabilityBin.from_state(state: 'Mapping[str, Any]') -> 'ReliabilityBin'
+```
+
+Rebuild from :meth:`state`; malformed entries raise :class:`CalibrationError`.
+
+
+#### `nnx.calibration.negative_log_likelihood`
+
+```python
+nnx.calibration.negative_log_likelihood(probabilities: 'Any', targets: 'Any', *, epsilon: 'Optional[float]' = 1e-12) -> 'float'
+```
+
+Mean ``-log p[target]`` over the rows of categorical ``(N, C)`` probabilities.
+
+**Details**
+
+```text
+``epsilon`` floors the true-class probability (default
+:data:`DEFAULT_EPSILON`, the named ``nll`` metric's floor); ``epsilon=None``
+is the exact value, which is ``+inf`` when any true-class probability is 0.
+```
+
+
+#### `nnx.calibration.brier_score`
+
+```python
+nnx.calibration.brier_score(probabilities: 'Any', targets: 'Any') -> 'float'
+```
+
+Mean over rows of the class-summed squared error ``sum_c (p_c - 1[c == target])^2`` (range ``[0, 2]``).
+
+
+#### `nnx.calibration.reliability_bins`
+
+```python
+nnx.calibration.reliability_bins(probabilities: 'Any', targets: 'Any', *, n_bins: 'int' = 10) -> 'tuple[ReliabilityBin, ...]'
+```
+
+Equal-width top-1 reliability bins over ``[0, 1]``.
+
+**Details**
+
+```text
+Bin ``i`` covers ``[i / n_bins, (i + 1) / n_bins)``; the last bin is
+closed at 1, and a confidence exactly on an inner edge belongs to the
+upper bin. The prediction is the first class of maximal probability, and
+empty bins are kept with ``count == 0``.
+```
+
+
+#### `nnx.calibration.expected_calibration_error`
+
+```python
+nnx.calibration.expected_calibration_error(bins: 'Iterable[ReliabilityBin]') -> 'Optional[float]'
+```
+
+Count-weighted mean ``|accuracy - confidence|`` over the bins; ``None`` when the bins hold no rows.
+
+
+#### `nnx.calibration.model_fingerprint`
+
+```python
+nnx.calibration.model_fingerprint(model: 'Any') -> 'str'
+```
+
+``sha256:<hex>`` of a model's weights: every ``state_dict()`` entry's name, dtype, shape and little-endian bytes, in name order (the same on every host).
+
+**Details**
+
+```text
+``model`` is an ``nn.Module`` or anything with a ``.net`` module (an
+``NNModel``). Use it as a ``model_id`` so a calibrator refuses logits
+from a model whose weights changed; a declared id such as
+``f"{run.id}:BEST"`` works too, but is only as reliable as its naming.
+```
+
+
+#### `nnx.calibration.CalibrationError`
+
+```python
+class nnx.calibration.CalibrationError
+```
+
+Calibration inputs, configuration or a serialized state that cannot be used as declared.
+
+
+#### `nnx.calibration.CalibrationFitError`
+
+```python
+class nnx.calibration.CalibrationFitError
+```
+
+:meth:`CalibrationFit.require` on a failed fit.
+
+
+#### `nnx.calibration.CalibrationMismatchError`
+
+```python
+class nnx.calibration.CalibrationMismatchError
+```
+
+Logits whose label schema or model id differ from the calibrator's, without a named ``override``.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
