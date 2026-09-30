@@ -467,6 +467,8 @@ raised. The stream holds only the batch in flight; closing it drops
 its references to the loader's iterator and the model and ends the
 iteration, and a closed or consumed stream cannot be iterated again.
 An empty loader yields no batches (the eager calls raise instead).
+Over a shuffling ``DataLoader``, the first batch whose sample ids are
+iteration positions warns (graph seed rows carry global node indices).
 ```
 
 ##### `nnx.nn.nn_model.NNModel.predict_proba`

@@ -1306,13 +1306,13 @@ def _bounded_task_accumulator(adapter: TaskAdapter, who: str) -> Any:
     """``adapter.accumulator(bounded=True)``, refusing an adapter that cannot
     build one (a ``TaskAdapter`` subclass written before FEAT-020) or returns
     one that keeps arrays — before any batch is read."""
-    try:
-        accumulator = adapter.accumulator(bounded=True)
-    except TypeError as exc:
+    parameters = inspect.signature(adapter.accumulator).parameters
+    if "bounded" not in parameters and not any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
         raise ValueError(
             f"{who} needs the model's task adapter ({type(adapter).__name__}) to build a bounded accumulator "
-            f"with accumulator(bounded=True): {exc}"
-        ) from exc
+            "with accumulator(bounded=True); its accumulator() takes no bounded argument"
+        )
+    accumulator = adapter.accumulator(bounded=True)  # an error of the adapter's own is its own
     if not getattr(accumulator, "bounded", False):
         raise ValueError(
             f"the model's task adapter ({type(adapter).__name__}) returned an accumulator that is not bounded from "
@@ -1395,18 +1395,20 @@ def _is_streaming_eval_step(eval_step_fn: Any) -> bool:
     return eval_step_fn is streaming_eval_step
 
 
-def _warn_shuffled_ids(X: Any, caller: str, *, graph: bool = False) -> None:
-    """Sample ids over a shuffling DataLoader are iteration positions that
-    cannot be joined back to the dataset — except for a graph net, whose
-    seed-row ids are global node indices."""
-    if not graph and isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
-        warnings.warn(
-            f"{caller} over a shuffling DataLoader: sample_ids are iteration positions, not "
-            "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
-            "loader (graph loaders are exempt: their ids are global node indices)",
-            UserWarning,
-            stacklevel=3,
-        )
+def _shuffles(X: Any) -> bool:
+    """Whether ``X`` is a shuffling DataLoader, whose positional sample ids
+    cannot be joined back to the dataset."""
+    return isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler)
+
+
+def _warn_positional_ids(caller: str) -> None:
+    warnings.warn(
+        f"{caller} over a shuffling DataLoader: sample_ids are iteration positions, not "
+        "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
+        "loader (graph seed rows are exempt: their ids are global node indices)",
+        UserWarning,
+        stacklevel=5,  # past the batch loop and its caller: the consumer's line
+    )
 
 
 def _resolve_net_descriptor(
@@ -2705,6 +2707,8 @@ class NNModel(_HubMixinBase):
         its references to the loader's iterator and the model and ends the
         iteration, and a closed or consumed stream cannot be iterated again.
         An empty loader yields no batches (the eager calls raise instead).
+        Over a shuffling ``DataLoader``, the first batch whose sample ids are
+        iteration positions warns (graph seed rows carry global node indices).
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
         from ..streaming import PredictionBatch, PredictionStream, _as_probability_spec, _check_stream_source
@@ -2717,19 +2721,22 @@ class NNModel(_HubMixinBase):
                 "iter_predict(rich=True) needs a ProbabilitySpec for a model without a task "
                 "(or declare NNModelParams(task=TaskSpec...))"
             )
-        _warn_shuffled_ids(X, "iter_predict()", graph=self._graph_ids)  # every batch carries sample_ids
+
+        warn_as = "iter_predict()" if _shuffles(X) else None  # every batch carries sample_ids
 
         def batches() -> Iterator[Any]:
             if explicit is not None:
                 declared = explicit
-                for logits, ids in self._logit_batches(X, check_first=lambda first: _check_spec_fits(first, declared)):
+                for logits, ids in self._logit_batches(
+                    X, check_first=lambda first: _check_spec_fits(first, declared), positional_warning=warn_as
+                ):
                     yield prediction_from_logits(logits, declared, sample_ids=ids)
             elif rich:
                 assert adapter is not None
-                for logits, ids in self._logit_batches(X, check_first=adapter.check_logits):
+                for logits, ids in self._logit_batches(X, check_first=adapter.check_logits, positional_warning=warn_as):
                     yield adapter.prediction(logits, ids)
             else:
-                for logits, ids in self._logit_batches(X):
+                for logits, ids in self._logit_batches(X, positional_warning=warn_as):
                     yield PredictionBatch(logits=logits, classes=self._decode_classes(logits), sample_ids=ids)
 
         return PredictionStream(batches())
@@ -2767,7 +2774,6 @@ class NNModel(_HubMixinBase):
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
 
-        _warn_shuffled_ids(X, "predict_proba()", graph=self._graph_ids)
         if spec is None:
             adapter = getattr(self, "task_adapter", None)
             if adapter is None:
@@ -2775,11 +2781,16 @@ class NNModel(_HubMixinBase):
                     "predict_proba() needs a ProbabilitySpec for a model without a task "
                     "(or declare NNModelParams(task=TaskSpec...))"
                 )
-            logits, sample_ids = self._predict_logits(X, caller="predict_proba()", check_first=adapter.check_logits)
+            logits, sample_ids = self._predict_logits(
+                X, caller="predict_proba()", check_first=adapter.check_logits, warn_positional=True
+            )
             return adapter.prediction(logits, sample_ids)
         explicit = spec
         logits, sample_ids = self._predict_logits(
-            X, caller="predict_proba()", check_first=lambda first: _check_spec_fits(first, explicit)
+            X,
+            caller="predict_proba()",
+            check_first=lambda first: _check_spec_fits(first, explicit),
+            warn_positional=True,
         )
         return prediction_from_logits(logits, explicit, sample_ids=sample_ids)
 
@@ -2790,6 +2801,7 @@ class NNModel(_HubMixinBase):
         caller: str,
         check_first: Optional[Callable[[np.ndarray], object]] = None,
         batches: bool = False,
+        warn_positional: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Shared inference path of :meth:`predict` / :meth:`predict_proba`:
         raw logits (numpy) plus an ``int64`` sample id per row, computed in
@@ -2805,7 +2817,10 @@ class NNModel(_HubMixinBase):
                 logits_chunks: list[np.ndarray] = []
                 id_chunks: list[np.ndarray] = []
                 # Eval mode once for the whole call; a stream restores it per batch.
-                for logits, ids in self._logit_batches(X, check_first=check_first, restore_each_batch=False):
+                warn_as = caller if warn_positional and _shuffles(X) else None
+                for logits, ids in self._logit_batches(
+                    X, check_first=check_first, restore_each_batch=False, positional_warning=warn_as
+                ):
                     logits_chunks.append(logits)
                     id_chunks.append(ids)
                 if not logits_chunks:
@@ -2834,18 +2849,13 @@ class NNModel(_HubMixinBase):
         finally:
             _restore_training_modes(training_modes)
 
-    @property
-    def _graph_ids(self) -> bool:
-        """Whether loader sample ids are global node indices (a graph net's
-        seed rows), which a shuffling loader cannot scramble."""
-        return getattr(self.net, "seed_count", None) is not None
-
     def _logit_batches(
         self,
         X: Iterable[Any],
         *,
         check_first: Optional[Callable[[np.ndarray], object]] = None,
         restore_each_batch: bool = True,
+        positional_warning: Optional[str] = None,
     ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         """``(logits, sample_ids)`` for each batch of ``X``, in order — the
         one batch path of :meth:`predict`, :meth:`predict_proba` and
@@ -2889,6 +2899,9 @@ class NNModel(_HubMixinBase):
                         ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
             if ids is None:
                 ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
+                if positional_warning is not None:  # a shuffling loader: these positions cannot be joined back
+                    _warn_positional_ids(positional_warning)
+                    positional_warning = None
             offset += logits.shape[0]
             if not checked:
                 assert check_first is not None

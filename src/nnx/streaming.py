@@ -61,6 +61,7 @@ import torch
 from ._confusion import integers
 from ._probability import to_numpy
 from .monitors import (
+    _DOMAIN_INPUTS,
     MetricAccumulator,
     MetricSpec,
     _batch_inputs,
@@ -86,7 +87,7 @@ __all__ = [
     "streaming_eval_step",
 ]
 
-SEMANTICS = ("categorical", "bernoulli", "continuous")
+SEMANTICS = tuple(_DOMAIN_INPUTS)  # "categorical", "bernoulli", "continuous"
 
 
 class StreamClosedError(RuntimeError):
@@ -285,6 +286,7 @@ class _Stored:
         self._predictions: list[np.ndarray] = []
 
     def update(self, target: np.ndarray, prediction: np.ndarray) -> None:
+        self._spec.accumulator().update(target, prediction)  # malformed inputs fail on their own batch
         self._targets.append(np.array(target, copy=True))
         self._predictions.append(np.array(prediction, copy=True))
 
@@ -528,8 +530,8 @@ class StreamingMetrics:
             # Class indices address the declared classes, else the probabilities'
             # columns; with neither known they are at least never negative.
             n_classes = self._num_outputs
-            if n_classes is None and probs is not None:
-                n_classes = probs.shape[1]
+            if n_classes is None:  # this batch's probabilities, else the width earlier batches fixed
+                n_classes = probs.shape[1] if probs is not None else self._seen_width
             _check_class_range(truth, n_classes)
             if "labels" in inputs:
                 _check_class_range(inputs["labels"], n_classes, "decoded labels")
@@ -580,6 +582,7 @@ class StreamingMetrics:
             valid_t = valid_t.to(dtype=torch.bool, device=target_t.device)
             if tuple(valid_t.shape) != rows:
                 raise ValueError(f"valid must be shaped like the target rows {rows}, got {tuple(valid_t.shape)}")
+            valid_t = valid_t & ~torch.isnan(target_t).any(dim=1)  # a NaN row is never scored
         else:
             valid_t = self._target_mask(target_t, valid)
             if categorical and target_t.is_floating_point():

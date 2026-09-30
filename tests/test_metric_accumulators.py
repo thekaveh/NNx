@@ -477,3 +477,37 @@ def test_review_round_twelve_string_labels_and_undeclared_widths():
         three.merge(five)
     with pytest.raises(ValueError, match="came in earlier batches"):
         three.update(np.array([0]), probabilities=np.full((1, 5), 0.2))
+
+
+def test_review_round_thirteen_masked_soft_rows_seen_widths_and_stored_batches():
+    soft = torch.tensor([[0.9, 0.1], [float("nan"), float("nan")], [0.2, 0.8]])
+    logits = torch.log(torch.tensor([[0.9, 0.1], [0.5, 0.5], [0.2, 0.8]]))
+    nll = StreamingMetrics([MetricSpec("nll")], "categorical")
+    assert nll.update_logits(soft, logits) == 2  # a NaN soft row is masked, never scored
+    without = StreamingMetrics([MetricSpec("nll")], "categorical")
+    without.update_logits(soft[[0, 2]], logits[[0, 2]])
+    assert nll.finalize().values == without.finalize().values  # as if the row were never there
+
+    accuracy = StreamingMetrics([MetricSpec("accuracy")], "categorical")  # no declared width
+    accuracy.update(np.array([0, 2]), probabilities=np.full((2, 3), 1 / 3))
+    with pytest.raises(ValueError, match=r"class indices in \[0, 3\)"):
+        accuracy.update(np.array([5]), labels=np.array([5]))  # the width earlier batches fixed
+
+    empty = MetricSpec("f1").accumulator()
+    empty.update(np.array([], dtype=str), np.array([], dtype=str))
+    assert empty.result() is None  # nothing scored, as for integer labels
+
+    class _Finite(_Scores):
+        def update(self, target, prediction):
+            if not np.isfinite(prediction).all():
+                raise ValueError("scores must be finite")
+            super().update(target, prediction)
+
+    register_metric("tests.finite", 1, lambda config: _Finite(), input="probabilities", mode="max")
+    try:
+        stored = StreamingMetrics([MetricSpec("tests.finite")], "bernoulli", materialize=True)
+        stored.update(np.array([0, 1]), probabilities=np.array([0.2, 0.7]))
+        with pytest.raises(ValueError, match="scores must be finite"):
+            stored.update(np.array([0, 1]), probabilities=np.array([np.nan, 0.7]))  # fails on its own batch
+    finally:
+        unregister_metric("tests.finite", 1)

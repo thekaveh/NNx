@@ -1067,3 +1067,16 @@ def test_feat020_review_round_eleven_bounded_checks_travel_with_the_evaluation(t
         streaming_eval_step(
             EvalStepContext(model=stand_in, val_loader=[None, None], extra_metrics=None, epoch_idx=0)  # type: ignore[arg-type]
         )
+
+
+def test_feat020_review_round_thirteen_an_adapters_own_type_error_is_not_rewrapped():
+    from nnx import TaskSpec
+    from nnx.nn.nn_model import _bounded_task_accumulator
+    from nnx.tasks import task_adapter
+
+    class _Broken(type(task_adapter(TaskSpec.regression(1)))):
+        def accumulator(self, *, keep_arrays=False, bounded=False):
+            raise TypeError("the adapter's own bug")
+
+    with pytest.raises(TypeError, match="the adapter's own bug"):  # not reported as a missing bounded argument
+        _bounded_task_accumulator(_Broken(TaskSpec.regression(1)), "streaming_eval_step()")

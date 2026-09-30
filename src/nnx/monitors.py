@@ -55,7 +55,7 @@ import numpy as np
 import torch
 
 from ._config import _SLUG, _freeze_config, _thaw_config
-from ._confusion import ConfusionCounts
+from ._confusion import AVERAGES, ConfusionCounts
 
 # One implementation of the probability terms, shared with nnx.calibration.
 from ._probability import brier_terms as _brier_terms
@@ -342,7 +342,7 @@ def _squared_terms(target: np.ndarray, prediction: np.ndarray) -> np.ndarray:
     return (prediction.astype(np.float64) - target.astype(np.float64)) ** 2
 
 
-_F1_AVERAGES = ("macro", "micro", "weighted", "binary")
+_F1_AVERAGES = AVERAGES  # the averages the confusion counts implement
 
 
 def _check_f1(config: Mapping[str, Any]) -> None:
@@ -364,6 +364,9 @@ def _check_no_config(metric: str) -> Callable[[Mapping[str, Any]], None]:
     return check
 
 
+_NUMERIC = "iubf"  # label dtypes counted as class indices; any other (e.g. strings) is scored by scikit-learn
+
+
 class _F1:
     """F1 over every label of the epoch, equal to scikit-learn's
     ``f1_score(..., zero_division=0)`` on the same labels. Integer class
@@ -380,8 +383,8 @@ class _F1:
 
     def update(self, target: np.ndarray, prediction: np.ndarray) -> None:
         target, prediction = np.asarray(target).reshape(-1), np.asarray(prediction).reshape(-1)
-        if not self._targets and _integer_labels(target) and _integer_labels(prediction):
-            self._counts.update(target, prediction)
+        if not self._targets and target.dtype.kind in _NUMERIC and prediction.dtype.kind in _NUMERIC:
+            self._counts.update(target, prediction)  # integer class labels; the counts reject any other number
             return
         if self._counts.count:
             raise ValueError("f1 got integer class labels and then other labels; score one kind per accumulation")
@@ -392,6 +395,8 @@ class _F1:
         if self._targets:
             from sklearn.metrics import f1_score
 
+            if not sum(target.size for target in self._targets):
+                return None  # nothing was scored
             return float(
                 f1_score(
                     np.concatenate(self._targets),
@@ -409,16 +414,6 @@ class _F1:
         self._counts.merge(other._counts)
         self._targets.extend(other._targets)
         self._predictions.extend(other._predictions)
-
-
-def _integer_labels(values: np.ndarray) -> bool:
-    """Integer class labels: an integer / bool array, or floats with integral values."""
-    if values.dtype.kind in "iub":
-        return True
-    if values.dtype.kind != "f":
-        return False
-    with np.errstate(invalid="ignore"):
-        return bool(np.array_equal(values, np.round(values)) and np.isfinite(values).all())
 
 
 for _id, _input, _mode, _factory, _check in (

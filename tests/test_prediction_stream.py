@@ -316,9 +316,10 @@ def test_review_round_two_every_stream_warns_about_shuffled_sample_ids():
     shuffled = DataLoader(
         TensorDataset(torch.randn(4, 4), torch.zeros(4, dtype=torch.long)), batch_size=2, shuffle=True
     )
-    with pytest.warns(UserWarning, match="shuffling DataLoader"):
-        stream = model.iter_predict(shuffled)  # plain batches carry sample_ids too
-    stream.close()
+    with pytest.warns(UserWarning, match="shuffling DataLoader") as record:
+        with model.iter_predict(shuffled) as stream:
+            next(stream)  # plain batches carry positional sample_ids too
+    assert [w.filename for w in record] == [__file__]  # once, pointing at the consumer
 
 
 def test_review_round_five_one_graph_is_not_a_stream_of_batches():
@@ -369,15 +370,35 @@ def test_review_round_twelve_a_partly_consumed_stream_is_not_iterated_again():
             list(stream)  # would silently skip the first batch
 
 
-def test_review_round_twelve_graph_loaders_never_warn_about_shuffled_ids():
+def test_review_round_thirteen_graph_batches_warn_only_when_their_ids_are_positions():
     torch.manual_seed(0)
     model = NNModel(
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
-    shuffled = DataLoader(
-        list(range(4)), batch_size=2, shuffle=True
-    )  # a RandomSampler, as NeighborLoader(shuffle=True)
+
+    class Shuffled(_GraphLoader):  # a RandomSampler, as NeighborLoader(shuffle=True)
+        def __init__(self, batches):
+            self._batches = batches
+            DataLoader.__init__(self, dataset=[0], shuffle=True)
+
+    def graph(n_nodes: int, **ids) -> SimpleNamespace:
+        return SimpleNamespace(
+            x=torch.randn(n_nodes, 4),
+            edge_index=torch.tensor([list(range(n_nodes)), [(i + 1) % n_nodes for i in range(n_nodes)]]),
+            y=torch.zeros(n_nodes, dtype=torch.long),
+            **ids,
+        )
+
+    seeded = Shuffled([graph(4, batch_size=2, input_id=torch.arange(2), n_id=torch.tensor([7, 3, 100, 101]))])
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        model.iter_predict(shuffled).close()  # graph seed-row ids are global node indices
+        assert _collect(model.iter_predict(seeded))[0].sample_ids.tolist() == [7, 3]  # global node indices
+        model.predict_proba(seeded, spec=ProbabilitySpec(kind="categorical", class_axis=1))
+    whole = Shuffled([graph(3), graph(3)])  # no seed rows: every node, identified by its position
+    with pytest.warns(UserWarning, match="shuffling DataLoader") as record:
+        _collect(model.iter_predict(whole))
+    assert len(record) == 1
+    with pytest.warns(UserWarning, match="shuffling DataLoader") as record:
+        model.predict_proba(whole, spec=ProbabilitySpec(kind="categorical", class_axis=1))
+    assert [w.filename for w in record] == [__file__]

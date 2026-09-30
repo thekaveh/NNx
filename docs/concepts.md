@@ -1724,7 +1724,10 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
   same categorical, multilabel (the task's threshold) and continuous
   decoding. With a `ProbabilitySpec`, or `rich=True` for a model with a task,
   each batch is the `PredictionResult` `predict_proba()` would build for it.
-  An empty loader yields no batches, where the eager calls raise.
+  An empty loader yields no batches, where the eager calls raise. Over a
+  shuffling `DataLoader`, the first batch whose sample ids are iteration
+  positions warns, as `predict_proba()` does; graph seed rows carry global
+  node indices and never warn.
 - **Mode restoration.** Each batch's forward pass runs in eval mode under
   `no_grad`, and every submodule's training mode is restored right after it,
   before the batch is yielded or its error raised. Between batches the
