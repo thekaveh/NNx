@@ -974,10 +974,21 @@ def test_round_twelve_margins_are_float64_differences():
     assert chosen.require().apply(rows, labels=LABELS, model_id="m").accepted[0]  # selection uses actual scores
 
 
-def test_round_thirteen_malformed_files_and_states_raise_module_errors():
-    for text in ('{"a": 1' + "0" * 5000 + "}", "[" * 100000 + "]" * 100000):
-        with pytest.raises(AbstentionError, match="JSON"):
-            AbstentionPolicy.from_json(text)
+def test_round_thirteen_malformed_files_and_states_raise_module_errors(monkeypatch):
+    with pytest.raises(AbstentionError, match="JSON"):
+        AbstentionPolicy.from_json('{"a": 1' + "0" * 5000 + "}")  # an integer past the digit limit
+    # Deep nesting overflows the parser's recursion on some Pythons and parses
+    # on others (3.14); either way the loader raises the module's error.
+    with pytest.raises(AbstentionError):
+        AbstentionPolicy.from_json("[" * 100000 + "]" * 100000)
+    import nnx._artifacts as artifacts
+
+    def too_deep(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(artifacts.json, "loads", too_deep)
+    with pytest.raises(AbstentionError, match="JSON: maximum recursion depth"):
+        AbstentionPolicy.from_json("[]")
     state = _policy().state()
     state[1] = 2  # a non-string key beside string ones
     with pytest.raises(AbstentionError, match="unknown keys"):
