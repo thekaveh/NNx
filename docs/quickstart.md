@@ -570,6 +570,32 @@ argmax. Logits with a different label order or from another model are refused
 unless you pass a named `override=...`, which is recorded. See
 [Concepts §18](concepts.md#18-fitted-calibration-nnxcalibration).
 
+### 2.19. Declining uncertain predictions
+
+Choose an abstention threshold on validation, then apply it to new rows:
+
+```python
+from nnx.abstention import select_threshold
+
+selection = select_threshold(val_probabilities, y_val, kind="max_probability", risk_ceiling=0.05,
+                             split_id="val", test_split_id="test", labels=labels, model_id=model_id)
+policy = selection.require()                 # AbstentionError when no threshold meets the ceiling
+policy.save("policy.json")
+
+result = policy.apply(test_probabilities, labels=labels, model_id=model_id, sample_ids=test_ids)
+result.accepted_ids, result.abstained_ids    # every row is one or the other
+report = result.report(y_test)
+report.coverage, report.risk                 # accepted/total and incorrect/accepted
+```
+
+A row is accepted when its top probability (`kind="margin"`: the top-two
+gap) is at or above the threshold. Abstained rows keep their prediction,
+distribution and reason. With nothing accepted, `report.risk` is `None`
+(status `"no_accepted"`), not 0. The risk ceiling is measured on the
+validation split, not guaranteed. Pass a `CalibratedPrediction` (§2.18) to
+apply a policy declared on calibrated probabilities. See
+[Concepts §19](concepts.md#19-abstention-and-risk-coverage-nnxabstention).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

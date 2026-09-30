@@ -295,5 +295,7 @@ def prediction_from_logits(
                 f"sample_ids must be one integer id per sample ({n_samples}), got shape {ids.shape} "
                 f"and dtype {ids.dtype}"
             )
+        if ids.dtype.kind == "u" and ids.size and int(ids.max()) > np.iinfo(np.int64).max:
+            raise PredictionValidationError("sample_ids above 2**63 - 1 do not fit int64 ids")  # never wrapped
         ids = ids.astype(np.int64)
     return PredictionResult(logits=array, probabilities=probabilities, decoded=decoded, sample_ids=ids, spec=spec)

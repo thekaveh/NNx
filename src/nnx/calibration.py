@@ -40,20 +40,32 @@ NNx's atomic file writer, as the other JSON artifacts do, and
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
 from typing import Any, Optional, Union, cast
 
 import numpy as np
 
+from ._artifacts import JsonArtifact, check_keys, frozen_json, override_record, parse_json, read_text
 from ._config import _canonical_json, _freeze_config, _FrozenConfig, _thaw_config
-from ._probability import NLL_EPSILON, brier_terms, is_tensor, nll_terms, softmax_, to_numpy
-from ._validation import require_count, require_finite_real
+from ._probability import (
+    NLL_EPSILON,
+    brier_terms,
+    categorical_probabilities,
+    class_labels,
+    class_targets,
+    is_prediction,
+    nll_terms,
+    prediction_labels,
+    read_array,
+    row_ids,
+    same_ids,
+    softmax_,
+)
+from ._validation import checked, require_count, require_finite_real, required_id
 
 __all__ = [
     "DEFAULT_EPSILON",
@@ -87,7 +99,6 @@ _DISJOINTNESS_NOTE = (
     "disjoint from the training and test rows; keep the calibration split separate yourself"
 )
 _OUTCOMES = ("improved", "worsened", "unchanged", "mixed")
-_SUM_TOLERANCE = 1e-6
 
 
 class CalibrationError(ValueError):
@@ -108,9 +119,7 @@ class CalibrationMismatchError(CalibrationError):
 
 
 def _id(value: Any, what: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise CalibrationError(f"{what} must be a non-empty string, got {value!r}")
-    return value
+    return required_id(value, what, error=CalibrationError)
 
 
 def _optional_id(value: Any, what: str) -> Optional[str]:
@@ -118,17 +127,9 @@ def _optional_id(value: Any, what: str) -> Optional[str]:
 
 
 def _labels(labels: Any) -> tuple[str, ...]:
-    if not isinstance(labels, (str, bytes, Mapping)) and hasattr(labels, "tolist"):
-        labels = labels.tolist()  # NumPy arrays, pandas Index / Series
-    if isinstance(labels, (str, bytes)) or not isinstance(labels, Sequence):
-        raise CalibrationError(f"labels must be an ordered sequence of class names, got {labels!r}")
-    bad = [label for label in labels if not isinstance(label, str) or not label]
-    if bad:
-        raise CalibrationError(f"labels must be non-empty strings, got {bad!r}")
-    out = tuple(str(label) for label in labels)  # NumPy str_ → str
-    if len(set(out)) != len(out):
-        raise CalibrationError(f"labels must be unique, got {list(out)}")
-    return out
+    # No minimum here: a wrong label count is an identity mismatch, checked
+    # against the calibrator's own labels.
+    return class_labels(labels, error=CalibrationError, minimum=0)
 
 
 def _check_held_out(split_id: str, calibration_split_id: str, train_split_id: Optional[str]) -> None:
@@ -159,32 +160,14 @@ def _split_record(calibration: str, train: Optional[str], test: Optional[str], *
     return record
 
 
-_OVERRIDE_FIELDS = ("labels", "model_id")
-
-
 def _override_record(value: Any) -> Optional[Mapping[str, Any]]:
-    """Validate a serialized override record: ``None``, or a name plus the
-    label / model-id mismatches it accepted, each ``{expected, actual}``."""
-    if value is None:
-        return None
-    if not isinstance(value, Mapping) or set(value) != {"name", "mismatches"}:
-        raise CalibrationError(f"an override record has exactly 'name' and 'mismatches', got {value!r}")
-    _id(value["name"], "override name")
-    mismatches = value["mismatches"]
-    if not isinstance(mismatches, Mapping) or not mismatches or not set(mismatches) <= set(_OVERRIDE_FIELDS):
-        raise CalibrationError(f"override mismatches must name some of {_OVERRIDE_FIELDS}, got {mismatches!r}")
-    for name, pair in mismatches.items():
-        if not isinstance(pair, Mapping) or set(pair) != {"expected", "actual"}:
-            raise CalibrationError(f"override mismatch {name!r} must hold 'expected' and 'actual', got {pair!r}")
-    return _frozen(value, "override")
+    """Validate a serialized override record (shared with ``nnx.abstention``)."""
+    return override_record(value, error=CalibrationError)
 
 
 def _checked(check: Any, value: Any, what: str, **domain: Any) -> Any:
     """Run a shared ``nnx._validation`` check, raising :class:`CalibrationError`."""
-    try:
-        return check(value, what, owner="nnx.calibration", **domain)
-    except ValueError as exc:
-        raise CalibrationError(str(exc)) from exc
+    return checked(check, value, what, owner="nnx.calibration", error=CalibrationError, **domain)
 
 
 def _positive_float(value: Any, what: str) -> float:
@@ -225,12 +208,7 @@ def _epsilon(epsilon: Any) -> Optional[float]:
 
 
 def _numpy(value: Any, *, copy: bool = True) -> np.ndarray:
-    """A NumPy array of an array-like or torch tensor (the conversion
-    ``nnx.prediction`` uses); ``copy=False`` for inputs that are only read."""
-    try:
-        return to_numpy(value, copy=copy)
-    except (TypeError, ValueError, RuntimeError) as exc:  # ragged lists, unconvertible tensor dtypes
-        raise CalibrationError(f"cannot read {type(value).__name__} as a numeric array: {exc}") from exc
+    return read_array(value, copy=copy, error=CalibrationError)
 
 
 def _logits(value: Any, *, copy: bool = True, allow_empty: bool = False) -> np.ndarray:
@@ -254,57 +232,11 @@ def _logits(value: Any, *, copy: bool = True, allow_empty: bool = False) -> np.n
 
 
 def _targets(value: Any, n_rows: int, n_classes: int) -> np.ndarray:
-    array = _numpy(value, copy=False)  # only read; the int64 cast below is a fresh array
-    if array.size == 0 and array.ndim == 1:  # an empty list is float64 in NumPy
-        array = array.astype(np.int64)
-    if array.dtype.kind not in "iu":
-        raise CalibrationError(f"targets must be integer class indices, got dtype {array.dtype}")
-    if array.ndim != 1 or array.shape[0] != n_rows:
-        raise CalibrationError(f"targets need one target per row ({n_rows}), got shape {array.shape}")
-    if array.dtype.kind == "u" and array.size and int(array.max()) >= n_classes:  # before an int64 cast can wrap
-        raise CalibrationError(
-            f"targets {sorted(set(array[array >= n_classes][:5].tolist()))} are out of range for {n_classes} "
-            f"classes (0..{n_classes - 1})"
-        )
-    array = array.astype(np.int64)
-    outside = array[(array < 0) | (array >= n_classes)]
-    if outside.size:
-        raise CalibrationError(
-            f"targets {sorted(set(outside[:5].tolist()))} are out of range for {n_classes} classes (0..{n_classes - 1})"
-        )
-    return array
+    return class_targets(value, n_rows, n_classes, error=CalibrationError)
 
 
 def _probabilities(value: Any, *, allow_empty: bool = False) -> np.ndarray:
-    # bfloat16 tensors arrive upcast to float32; their rounding is bfloat16's.
-    source_eps = 2.0**-7 if is_tensor(value) and str(value.dtype) == "torch.bfloat16" else None
-    array = _numpy(value, copy=False)  # only read, never modified
-    if array.dtype.kind not in "fiu":
-        raise CalibrationError(f"probabilities must be a real numeric array, got dtype {array.dtype}")
-    if array.ndim != 2:
-        raise CalibrationError(f"probabilities must be 2-D (N, C), got shape {array.shape}")
-    if array.shape[1] < 2:
-        raise CalibrationError(f"categorical probabilities need at least 2 classes, got {array.shape[1]}")
-    if array.shape[0] == 0 and not allow_empty:
-        raise CalibrationError("probabilities hold no rows")
-    # Row sums carry the input's own rounding: the entries' own rounding (eps/2
-    # overall) plus the normalizing sum's, which grows like eps * log2(C) for a
-    # pairwise sum. 4 eps (1 + log2 C) allows for both and stays far below 1
-    # (float16 at C = 1e9 still rejects rows off by 0.12).
-    eps = source_eps if source_eps is not None else float(np.finfo(array.dtype).eps) if array.dtype.kind == "f" else 0.0
-    tolerance = max(_SUM_TOLERANCE, 4 * eps * (1 + math.log2(max(array.shape[1], 1))))
-    array = array.astype(np.float64, copy=False)
-    if not np.isfinite(array).all():
-        raise CalibrationError("probabilities contain non-finite values")
-    if ((array < 0) | (array > 1)).any():
-        raise CalibrationError("probabilities must lie in [0, 1]")
-    sums = array.sum(axis=1)
-    if array.shape[0] and np.abs(sums - 1.0).max() > tolerance:
-        raise CalibrationError(
-            f"categorical probability rows must sum to 1 (within {tolerance:g}), got sums up to "
-            f"{float(sums[np.abs(sums - 1.0).argmax()])!r}"
-        )
-    return array
+    return categorical_probabilities(value, error=CalibrationError, allow_empty=allow_empty)
 
 
 # --- metrics -------------------------------------------------------------------------------------
@@ -509,70 +441,9 @@ class _Slope:
 
 
 def _frozen(value: Any, what: str) -> _FrozenConfig:
-    """An immutable, picklable JSON-like copy of a mapping (nested mappings
-    frozen, lists as tuples), so a calibrator's state cannot drift from its
-    digest."""
-    if not isinstance(value, Mapping):
-        raise CalibrationError(f"{what} must be a mapping, got {value!r}")
-    try:
-        return _freeze_config(value, "", owner=what)
-    except (TypeError, ValueError) as exc:
-        raise CalibrationError(
-            f"{what} must be JSON-like with finite numbers: None, bool, int, float, str, lists and str-keyed mappings"
-        ) from exc
-
-
-def _atomic_write(path: Union[str, os.PathLike[str]], text: str) -> None:
-    from .nn.params.nn_run import _atomic_write_text
-
-    _atomic_write_text(os.fspath(path), text)
-
-
-def _read_text(path: Union[str, os.PathLike[str]], what: str) -> str:
-    with open(path, "rb") as handle:
-        data = handle.read()
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise CalibrationError(f"a {what} file is UTF-8 JSON; {os.fspath(path)!r} is not text: {exc}") from exc
-
-
-def _parse_json(text: str, what: str) -> Any:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise CalibrationError(f"a {what} file is JSON: {exc}") from exc
-
-
-class _Serialized:
-    """Canonical bytes (the digest encoding shared with provenance),
-    equality, hashing, JSON text and atomic saving, all from ``state()``.
-    Subclasses are frozen, so the canonical bytes are computed once."""
-
-    def state(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @cached_property
-    def _canonical(self) -> bytes:
-        return _canonical_json(self.state())
-
-    def canonical_bytes(self) -> bytes:
-        return self._canonical
-
-    def __eq__(self, other: object) -> bool:
-        if type(other) is not type(self):
-            return NotImplemented
-        return self.canonical_bytes() == cast(_Serialized, other).canonical_bytes()
-
-    def __hash__(self) -> int:
-        return hash(self.canonical_bytes())
-
-    def to_json(self) -> str:
-        return json.dumps(self.state(), indent=2, sort_keys=True, allow_nan=False) + "\n"
-
-    def save(self, path: Union[str, os.PathLike[str]]) -> None:
-        """Write :meth:`to_json` to ``path`` atomically."""
-        _atomic_write(path, self.to_json())
+    """An immutable, picklable JSON-like copy of a mapping, so a calibrator's
+    state cannot drift from its digest."""
+    return frozen_json(value, what, CalibrationError)
 
 
 @dataclass(frozen=True, eq=False)
@@ -587,7 +458,7 @@ class CalibratedPrediction:
             changes the argmax.
         labels: the ordered class names of the columns.
         sample_ids: ``int64[N]`` row identities (a ``PredictionResult``'s
-            own ids, else ``0..N-1``).
+            own ids, else ``transform``'s ``sample_ids=``, else ``0..N-1``).
         calibrator_id: :meth:`TemperatureCalibrator.digest` of the calibrator.
         model_id: the model id the logits were declared to come from.
         temperature: the calibrator's temperature.
@@ -619,20 +490,15 @@ def _source(value: Any, labels: Any) -> tuple[Any, Optional[tuple[str, ...]], Op
             "this prediction is already calibrated; pass its raw .logits (with labels=...) or the original "
             "PredictionResult"
         )
-    if hasattr(value, "logits") and hasattr(value, "spec") and hasattr(value, "sample_ids"):
-        spec = value.spec
-        if spec is None or getattr(spec, "kind", None) != "categorical":
-            kind = "continuous" if spec is None else getattr(spec, "kind", None)
-            raise CalibrationError(f"temperature scaling needs a categorical prediction, got a {kind} one")
-        declared = getattr(spec, "labels", None)
-        if labels is None:
-            resolved = None if declared is None else _labels(declared)
-        else:
-            resolved = _labels(labels)
-            if declared is not None and tuple(declared) != resolved:
-                raise CalibrationError(
-                    f"labels {list(resolved)} disagree with the prediction's own labels {list(declared)}"
-                )
+    if is_prediction(value):
+        resolved = prediction_labels(
+            value,
+            labels,
+            error=CalibrationError,
+            conflict_error=CalibrationError,
+            what="temperature scaling",
+            minimum=0,
+        )
         return value.logits, resolved, value.sample_ids
     return value, None if labels is None else _labels(labels), None
 
@@ -680,7 +546,7 @@ def _fit_config(min_temperature: Any, max_temperature: Any, tolerance: Any, max_
 
 
 @dataclass(frozen=True, eq=False)
-class TemperatureCalibrator(_Serialized):
+class TemperatureCalibrator(JsonArtifact):
     """A fitted scalar temperature bound to its label schema and model.
 
     Build one with :func:`fit_temperature`; reload one with :meth:`load` /
@@ -778,9 +644,14 @@ class TemperatureCalibrator(_Serialized):
         model_id: str,
         labels: Optional[Sequence[str]] = None,
         override: Optional[str] = None,
+        sample_ids: Any = None,
     ) -> CalibratedPrediction:
         """Calibrate ``logits`` — an ``(N, C)`` array or tensor, or a
         categorical ``nnx.prediction.PredictionResult``.
+
+        ``sample_ids`` names the rows of an array (``0..N-1`` by default); a
+        prediction keeps its own ids, and ``sample_ids=`` must then equal
+        them.
 
         ``model_id`` and the column ``labels`` (taken from the prediction's
         spec when omitted) must equal the fitted ones; otherwise
@@ -791,38 +662,59 @@ class TemperatureCalibrator(_Serialized):
         Non-finite logits or a width that differs from the labels raise
         :class:`CalibrationError`. The input is never modified.
         """
-        array, resolved, sample_ids, record = self._checked_logits(
+        array, resolved, ids, record = self._checked_logits(
             logits,
             labels,
             model_id,
             override,
             copy=True,
             allow_empty=True,  # the result keeps these logits
+            sample_ids=sample_ids,
         )
-        return self._calibrate(array, resolved, sample_ids, model_id, record)
+        return self._calibrate(array, resolved, ids, model_id, record)
 
     def _checked_logits(
-        self, logits: Any, labels: Any, model_id: Any, override: Any, *, copy: bool, allow_empty: bool
-    ) -> tuple[np.ndarray, tuple[str, ...], Any, Optional[Mapping[str, Any]]]:
-        """Resolve the labels and check the declared identity **before** the
-        logits are read; then read and validate them."""
-        raw, resolved, sample_ids = _labelled(logits, labels)
+        self,
+        logits: Any,
+        labels: Any,
+        model_id: Any,
+        override: Any,
+        *,
+        copy: bool,
+        allow_empty: bool,
+        sample_ids: Any = None,
+        with_ids: bool = True,
+    ) -> tuple[np.ndarray, tuple[str, ...], Optional[np.ndarray], Optional[Mapping[str, Any]]]:
+        """Resolve the labels and sample ids and check the declared identity
+        **before** the logits are read; then read and validate them. Given
+        ``sample_ids`` name an array's rows and must equal a prediction's
+        own; ``with_ids=False`` (a report) skips the ids and returns
+        ``None`` for them."""
+        raw, resolved, own_ids = _labelled(logits, labels)
         record = self._identity(resolved, model_id, override)
-        return _read_logits(raw, resolved, copy=copy, allow_empty=allow_empty), resolved, sample_ids, record
+        ids = None
+        if with_ids:
+            if own_ids is not None and not same_ids(sample_ids, own_ids, error=CalibrationError):
+                raise CalibrationError("sample_ids= contradicts the prediction's own sample_ids")
+            given = own_ids if own_ids is not None else sample_ids
+            ids = None if given is None else row_ids(given, None, error=CalibrationError)  # before the logits
+        array = _read_logits(raw, resolved, copy=copy, allow_empty=allow_empty)
+        if ids is not None and ids.shape[0] != array.shape[0]:
+            raise CalibrationError(
+                f"sample_ids must be one integer id per row ({array.shape[0]}), got shape {ids.shape} and dtype "
+                f"{ids.dtype}"
+            )
+        return array, resolved, ids, record
 
     def _calibrate(
         self,
         array: np.ndarray,
         labels: tuple[str, ...],
-        sample_ids: Any,
+        sample_ids: Optional[np.ndarray],
         model_id: str,
         record: Optional[Mapping[str, Any]],
     ) -> CalibratedPrediction:
-        ids = np.arange(array.shape[0], dtype=np.int64) if sample_ids is None else _numpy(sample_ids, copy=False)
-        if ids.ndim != 1 or ids.shape[0] != array.shape[0] or ids.dtype.kind not in "iu":
-            raise CalibrationError(f"sample_ids must be one integer id per row, got shape {ids.shape}")
-        if ids.dtype.kind == "u" and ids.size and int(ids.max()) > np.iinfo(np.int64).max:
-            raise CalibrationError("sample_ids above 2**63 - 1 do not fit int64 ids")
+        ids = np.arange(array.shape[0], dtype=np.int64) if sample_ids is None else sample_ids  # validated
         shifted = _shifted(array)
         calibrated = _softmax(shifted, self.temperature)  # a new array, so...
         raw = softmax_(shifted, 1)  # ...the raw softmax can reuse `shifted` in place
@@ -832,7 +724,7 @@ class TemperatureCalibrator(_Serialized):
             calibrated_probabilities=calibrated,
             decoded=array.argmax(axis=1).astype(np.int64),
             labels=labels,
-            sample_ids=ids.astype(np.int64),
+            sample_ids=ids,
             calibrator_id=self.id,
             model_id=model_id,
             temperature=self.temperature,
@@ -864,16 +756,16 @@ class TemperatureCalibrator(_Serialized):
         _check_held_out(held_out, self.split_id, self.train_split_id)  # before any work
         floor = _epsilon(epsilon)
         bins = _n_bins(n_bins)
-        array, resolved, sample_ids, record = self._checked_logits(
+        array, resolved, _, record = self._checked_logits(
             logits,
             labels,
             model_id,
             override,
             copy=False,
             allow_empty=False,  # only read
+            with_ids=False,  # a report scores rows; their ids play no part
         )
         y = _targets(targets, array.shape[0], array.shape[1])  # before any softmax work
-        del sample_ids  # a report scores rows; their ids play no part
         shifted = _shifted(array)
         decoded = array.argmax(axis=1)
         # This calibrator's own float64 softmax output: no re-validation.
@@ -920,20 +812,24 @@ class TemperatureCalibrator(_Serialized):
             raise CalibrationError(f"unsupported calibration format {state.get('format')!r}; expected {FORMAT!r}")
         if state.get("kind") != "temperature":
             raise CalibrationError(f"unsupported calibrator kind {state.get('kind')!r}")
-        missing = [key for key in ("temperature", "labels", "model_id", "split") if key not in state]
-        if missing:
-            raise CalibrationError(f"the calibrator state lacks {missing}")
+        check_keys(
+            state,
+            required=("format", "kind", "temperature", "labels", "model_id", "split"),
+            optional=("fit",),
+            what="calibrator state",
+            error=CalibrationError,
+        )
         split, fit = state["split"], state.get("fit", {})
         if not isinstance(split, Mapping) or not isinstance(fit, Mapping):
             raise CalibrationError("the calibrator state's 'split' and 'fit' must be mappings")
-        for where, mapping, known in (
-            ("calibrator state", state, {"format", "kind", "temperature", "labels", "model_id", "split", "fit"}),
-            ("split", split, {"calibration", "train", "test", "disjointness"}),
-            ("fit", fit, {"config", "result"}),
-        ):
-            unknown = sorted(set(mapping) - known)
-            if unknown:
-                raise CalibrationError(f"the {where} has unknown keys {unknown}; expected {sorted(known)}")
+        check_keys(
+            split,
+            required=("calibration",),
+            optional=("train", "test", "disjointness"),
+            what="split",
+            error=CalibrationError,
+        )
+        check_keys(fit, required=(), optional=("config", "result"), what="fit", error=CalibrationError)
         if split.get("disjointness", "unverified") != "unverified":
             raise CalibrationError(f"unsupported split disjointness {split.get('disjointness')!r}")
         with _malformed("calibrator state"):
@@ -952,17 +848,13 @@ class TemperatureCalibrator(_Serialized):
         """``sha256:<hex>`` of the canonical state."""
         return self._digest
 
-    @cached_property
-    def _digest(self) -> str:
-        return f"sha256:{hashlib.sha256(self.canonical_bytes()).hexdigest()}"
-
     @staticmethod
     def from_json(text: str) -> TemperatureCalibrator:
-        return TemperatureCalibrator.from_state(_parse_json(text, "calibrator"))
+        return TemperatureCalibrator.from_state(parse_json(text, "calibrator", CalibrationError))
 
     @staticmethod
     def load(path: Union[str, os.PathLike[str]]) -> TemperatureCalibrator:
-        return TemperatureCalibrator.from_json(_read_text(path, "calibrator"))
+        return TemperatureCalibrator.from_json(read_text(path, "calibrator", CalibrationError))
 
 
 # --- fitting -------------------------------------------------------------------------------------
@@ -1231,7 +1123,7 @@ _REPORT_KEYS = frozenset(
 
 
 @dataclass(frozen=True, eq=False)
-class CalibrationReport(_Serialized):
+class CalibrationReport(JsonArtifact):
     """Held-out metrics before and after calibration.
 
     ``outcome`` is ``"improved"`` (neither NLL nor Brier worse, one better),
@@ -1343,10 +1235,13 @@ class CalibrationReport(_Serialized):
     def from_state(state: Mapping[str, Any]) -> CalibrationReport:
         if not isinstance(state, Mapping) or state.get("format") != FORMAT or state.get("kind") != "report":
             raise CalibrationError(f"not a {FORMAT} calibration report")
-        unknown = sorted(set(state) - _REPORT_KEYS)
-        missing = sorted(_REPORT_KEYS - {"override"} - set(state))  # epsilon: null is exact, absent is malformed
-        if unknown or missing:
-            raise CalibrationError(f"the calibration report has unknown keys {unknown} / lacks {missing}")
+        check_keys(  # epsilon: null is exact, absent is malformed
+            state,
+            required=_REPORT_KEYS - {"override"},
+            optional=("override",),
+            what="calibration report",
+            error=CalibrationError,
+        )
         split = state["split"]
         if not isinstance(split, Mapping) or set(split) != {"evaluation", "calibration", "train", "test"}:
             raise CalibrationError(
@@ -1373,11 +1268,11 @@ class CalibrationReport(_Serialized):
 
     @staticmethod
     def from_json(text: str) -> CalibrationReport:
-        return CalibrationReport.from_state(_parse_json(text, "calibration report"))
+        return CalibrationReport.from_state(parse_json(text, "calibration report", CalibrationError))
 
     @staticmethod
     def load(path: Union[str, os.PathLike[str]]) -> CalibrationReport:
-        return CalibrationReport.from_json(_read_text(path, "calibration report"))
+        return CalibrationReport.from_json(read_text(path, "calibration report", CalibrationError))
 
 
 # --- model identity ------------------------------------------------------------------------------

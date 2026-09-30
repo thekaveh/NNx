@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover — Python <3.8.
     __version__ = "0.2.3"  # x-release-please-version
 
 from . import (
+    abstention,
     calibration,
     components,
     data_splits,
@@ -362,6 +363,8 @@ __all__ = [
     "preprocessing",
     # Fitted classifier calibration (FEAT-007)
     "calibration",
+    # Abstention policies and risk-coverage evaluation (FEAT-008)
+    "abstention",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",
