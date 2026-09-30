@@ -629,7 +629,9 @@ def test_feat020_review_validate_checks_metric_inputs_for_the_streaming_step():
         .with_step_fns(train_step_fn=lambda ctx: None, eval_step_fn=streaming_eval_step)
         .with_metrics([MetricSpec("nll")])  # probabilities a continuous model cannot provide
     )
-    assert "train.metrics" in plan.validate().paths  # as train()'s preflight would refuse it
+    report = plan.validate()
+    assert "train.metrics" in report.paths  # as train()'s preflight would refuse it
+    assert any("streaming_eval_step()" in d.message for d in report.diagnostics)  # named as train() names it
 
 
 def test_feat020_review_round_four_plan_checks_follow_train():

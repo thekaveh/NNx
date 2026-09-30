@@ -1253,8 +1253,13 @@ def _evaluate(
                 if metric_Y.numel():
                     if bounded:
                         labels = metric_Y.cpu().numpy()
+                        kind = label_counts(labels)
                         if counts is None:
-                            counts = label_counts(labels)
+                            counts = kind
+                        elif type(kind) is not type(counts):  # the eager path's concatenate refuses it too
+                            raise ValueError(
+                                f"{who}: label batches changed shape between class labels and indicator rows"
+                            )
                         counts.update(labels, metric_Y_hat.cpu().numpy())
                     else:
                         all_Y.append(metric_Y.cpu().numpy())
@@ -1297,6 +1302,25 @@ def _evaluate(
     ).with_error(value=float(1 - accuracy))
 
 
+def _bounded_task_accumulator(adapter: TaskAdapter, who: str) -> Any:
+    """``adapter.accumulator(bounded=True)``, refusing an adapter that cannot
+    build one (a ``TaskAdapter`` subclass written before FEAT-020) or returns
+    one that keeps arrays — before any batch is read."""
+    try:
+        accumulator = adapter.accumulator(bounded=True)
+    except TypeError as exc:
+        raise ValueError(
+            f"{who} needs the model's task adapter ({type(adapter).__name__}) to build a bounded accumulator "
+            f"with accumulator(bounded=True): {exc}"
+        ) from exc
+    if not getattr(accumulator, "bounded", False):
+        raise ValueError(
+            f"the model's task adapter ({type(adapter).__name__}) returned an accumulator that is not bounded from "
+            f"accumulator(bounded=True); {who} would keep every target"
+        )
+    return accumulator
+
+
 def _evaluate_task(
     model: Any,
     loader: Iterable[Any],
@@ -1316,7 +1340,7 @@ def _evaluate_task(
     model.net.eval()
     # `bounded=` only when asked: a TaskAdapter subclass written before FEAT-020 keeps working.
     accumulator = (
-        adapter.accumulator(bounded=True)  # extra_metrics were refused above
+        _bounded_task_accumulator(adapter, who)  # extra_metrics were refused above
         if bounded
         else adapter.accumulator(keep_arrays=bool(extra_metrics))
     )

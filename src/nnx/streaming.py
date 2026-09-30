@@ -673,7 +673,7 @@ class StreamingMetrics:
             )
         if self._labels != other._labels:
             raise MetricMergeError(f"cannot merge different task labels: {self._labels!r} vs {other._labels!r}")
-        if self._threshold != other._threshold:
+        if self._semantics == "bernoulli" and self._threshold != other._threshold:  # the only semantics it decides
             raise MetricMergeError(
                 f"cannot merge different decision thresholds: {self._threshold!r} vs {other._threshold!r}"
             )
@@ -818,18 +818,9 @@ def _streaming_preflight(model: Any, params: NNTrainParams) -> None:
     _check_metric_inputs(tuple(params.metrics), domain, where="streaming_eval_step()", n_classes=n_classes)
     adapter = getattr(model, "task_adapter", None)
     if adapter is not None:
-        try:
-            probe = adapter.accumulator(bounded=True)
-        except TypeError as exc:
-            raise ValueError(
-                f"streaming_eval_step() needs the model's task adapter ({type(adapter).__name__}) to build a "
-                f"bounded accumulator with accumulator(bounded=True): {exc}"
-            ) from exc
-        if not getattr(probe, "bounded", False):
-            raise ValueError(
-                f"the model's task adapter ({type(adapter).__name__}) returned an accumulator that is not bounded "
-                "from accumulator(bounded=True); streaming_eval_step() would keep every target"
-            )
+        from .nn.nn_model import _bounded_task_accumulator
+
+        _bounded_task_accumulator(adapter, "streaming_eval_step()")  # the check the step repeats per epoch
 
 
 def _as_probability_spec(spec: Any) -> Optional[ProbabilitySpec]:

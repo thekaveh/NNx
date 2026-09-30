@@ -45,9 +45,9 @@ class ConfusionCounts:
     """Per-class counts of class labels: true positives, true (support) and
     predicted totals. Labels in ``[0, 262144)`` — class indices, up to a
     very large vocabulary — are counted in dense arrays grown on demand
-    (``np.bincount``); any other label in sorted sparse arrays. Both are
-    vectorized. Memory grows with the classes seen, never
-    with the samples."""
+    (``np.bincount``) to the largest such label (at most about 6 MB); any
+    other label in sorted sparse arrays. Both are vectorized, and memory
+    never grows with the samples."""
 
     __slots__ = ("_dense", "_keys", "_sparse", "count", "correct")
 
@@ -139,7 +139,7 @@ class ConfusionCounts:
                 return 0.0, 0.0, 0.0  # class 1 never appears: nothing to score
             table = table[:, [labels.index(1)]]
         true, predicted, tp = table
-        return _average(tp, predicted, true, average)
+        return average_scores(tp, predicted, true, average)
 
 
 class MultilabelCounts:
@@ -201,7 +201,7 @@ class MultilabelCounts:
                 "average='binary' does not apply to multilabel indicators; use 'macro', 'micro' or 'weighted'"
             )
         assert self.tp is not None and self.predicted is not None and self.true is not None
-        return _average(self.tp, self.predicted, self.true, average)
+        return average_scores(self.tp, self.predicted, self.true, average)
 
 
 LabelCounts = Union[ConfusionCounts, MultilabelCounts]
@@ -238,10 +238,6 @@ def _check_average(average: str) -> None:
 def average_scores(tp: np.ndarray, predicted: np.ndarray, true: np.ndarray, average: str) -> tuple[float, float, float]:
     """``(precision, recall, f1)`` from per-label true positives, predicted
     and true totals, averaged as scikit-learn does with ``zero_division=0``."""
-    return _average(tp, predicted, true, average)
-
-
-def _average(tp: np.ndarray, predicted: np.ndarray, true: np.ndarray, average: str) -> tuple[float, float, float]:
     if average == "micro":
         tp, predicted, true = tp.sum(keepdims=True), predicted.sum(keepdims=True), true.sum(keepdims=True)
     precision = _divide(tp, predicted)

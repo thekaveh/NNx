@@ -1019,3 +1019,51 @@ def test_feat020_review_round_eight_the_preflight_checks_the_task_adapter(tmp_pa
     with pytest.raises(ValueError, match="bounded accumulator"):
         model.train(params=params, eval_step_fn=streaming_eval_step)
     assert not os.path.exists("runs")
+
+
+def test_feat020_review_round_eleven_bounded_checks_travel_with_the_evaluation(tmp_path, monkeypatch):
+    from nnx import EvalStepContext, NNTrainParams, TaskSpec
+    from nnx.streaming import streaming_eval_step
+    from nnx.tasks import task_adapter
+
+    class _Unbounded(type(task_adapter(TaskSpec.regression(1)))):
+        def accumulator(self, *, keep_arrays=False, **ignored):  # never bounded
+            return super().accumulator(keep_arrays=keep_arrays)
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)
+        ),
+    )
+    model._task_adapter = _Unbounded(TaskSpec.regression(1))  # type: ignore[attr-defined]
+    batches = [(torch.randn(2, 4), torch.randn(2, 1))]
+    params = NNTrainParams(
+        n_epochs=1, train_loader=batches, val_loader=batches, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+    )
+    with pytest.raises(ValueError, match="not bounded"):  # a wrapped step skips the preflight, not the check
+        model.train(params=params, eval_step_fn=lambda ctx: streaming_eval_step(ctx))
+
+    class _ShapeShifter:
+        """A legacy BCE stand-in whose label batches change rank."""
+
+        evaluate = NNModel.evaluate
+
+        def __init__(self):
+            self.net = torch.nn.Identity()
+            self.loss_fn = torch.nn.BCEWithLogitsLoss()
+            self.device = torch.device("cpu")
+            self._calls = 0
+
+        def _fwd_pass(self, batch):
+            self._calls += 1
+            shape = (2,) if self._calls == 1 else (2, 3)
+            logits, target = torch.zeros(shape), torch.ones(shape)
+            return logits, target, logits, (logits >= 0).long()
+
+    stand_in = _ShapeShifter()
+    with pytest.raises(ValueError, match="changed shape"):
+        streaming_eval_step(
+            EvalStepContext(model=stand_in, val_loader=[None, None], extra_metrics=None, epoch_idx=0)  # type: ignore[arg-type]
+        )

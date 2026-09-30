@@ -449,3 +449,9 @@ def test_review_round_nine_output_widths_strides_and_sparse_labels():
     wide.update(labels[:2], decided[:2])
     wide.update(labels[2:], decided[2:])  # large and negative ids use the sparse table
     assert wide.result() == pytest.approx(sk.f1_score(labels, decided, average="macro"))
+
+
+def test_review_round_eleven_thresholds_only_split_bernoulli_merges():
+    a = StreamingMetrics([MetricSpec("accuracy")], "categorical", threshold=0.7)
+    b = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    assert a.merge(b).count == 0  # the threshold decides nothing for categorical labels

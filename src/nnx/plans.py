@@ -745,7 +745,14 @@ class ExperimentPlan:
         # in its own eval step, which train() checks only when there is validation data.
         nnx_eval = self.eval_step_fn is None or self._streaming_validation(has_val)
         if train.metrics and not broken and (default_step or nnx_eval):
-            problem = self._metric_input_problem(train, default_train=default_step)
+            where = (
+                "the default training step"
+                if default_step
+                else "streaming_eval_step()"
+                if self._streaming_validation(has_val)
+                else "evaluate()"
+            )
+            problem = self._metric_input_problem(train, where=where)
             if problem is not None:
                 report(*problem)
         if isinstance(train.monitor, MonitorSpec):
@@ -799,7 +806,7 @@ class ExperimentPlan:
                 if problem is not None:
                     report(path, problem)
 
-    def _metric_input_problem(self, train: NNTrainParams, *, default_train: bool) -> Optional[tuple[str, str]]:
+    def _metric_input_problem(self, train: NNTrainParams, *, where: str) -> Optional[tuple[str, str]]:
         """``train()``'s check that the model can provide every declared
         metric's input, run on the model's parameters alone: the loss, the
         task adapter and the output width — no model is built."""
@@ -816,7 +823,6 @@ class ExperimentPlan:
             return None  # the model's own diagnostic (model.loss / model.task) says why
         try:
             domain, _, _, n_classes = _metric_context_of(loss_fn, adapter, self.net)
-            where = "the default training step" if default_train else "evaluate()"
             _check_metric_inputs(train.metrics, domain, where=where, n_classes=n_classes)
         except (KeyError, TypeError, ValueError) as exc:
             return "train.metrics", str(exc)
