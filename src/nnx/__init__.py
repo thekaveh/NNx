@@ -31,6 +31,7 @@ from . import (
     data_splits,
     decisions,
     embeddings,
+    history,
     interop,
     models,
     monitors,
@@ -367,6 +368,8 @@ __all__ = [
     "calibration",
     # Abstention policies and risk-coverage evaluation (FEAT-008)
     "abstention",
+    # Bounded training history with an append journal (FEAT-036)
+    "history",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",

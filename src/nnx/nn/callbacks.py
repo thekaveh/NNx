@@ -505,7 +505,11 @@ class ModelCheckpoint(Callback):
 
 
 class LRMonitor(Callback):
-    """Logs the current LR each epoch. History exposed at `.history`."""
+    """Logs the current LR each epoch. History exposed at `.history`.
+
+    In a run with a history journal (FEAT-036, ``nnx.history``) the log keeps
+    the journal's ``retention`` most recent epochs, like ``ctx.idps``.
+    """
 
     def __init__(self):
         self.history: list[float] = []
@@ -513,6 +517,9 @@ class LRMonitor(Callback):
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
+        retention = getattr(ctx, "history_retention", None)
+        if retention is not None and len(self.history) > retention:
+            del self.history[:-retention]
 
 
 def _edp_metric_iter(edp):

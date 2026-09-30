@@ -21,6 +21,7 @@ from filelock import FileLock
 
 from ..._metrics import _resolve_metric
 from ...components import ResumeStatus
+from ...history import HISTORY_DIR, _journal_epoch_series, _JournalReader, has_journal
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
@@ -242,12 +243,39 @@ def _release_empty_reservation(run_path: str) -> None:
     bookkeeping = (_HISTORY_PROTOCOL_FILE, _PROVENANCE_MANIFEST_FILE, _PROVENANCE_ATTEMPT_FILE)
     temps = tuple(f".{name}." for name in bookkeeping)
     entries = os.listdir(run_path)
-    if not all(name in bookkeeping or name.startswith(temps) for name in entries):
+    # A history journal (FEAT-036) written before the first run.yaml holds no
+    # committed epoch either: it goes with the reservation.
+    if not all(name in bookkeeping or name.startswith(temps) or name == HISTORY_DIR for name in entries):
         return
     for name in entries:
-        _quietly(os.remove, os.path.join(run_path, name))
+        path = os.path.join(run_path, name)
+        if name == HISTORY_DIR and os.path.isdir(path) and not os.path.islink(path):
+            _quietly(shutil.rmtree, path)
+        else:
+            _quietly(os.remove, path)
     if not os.listdir(run_path):
         os.rmdir(run_path)
+
+
+def _read_idps_csv(csv_path: str, *, exact: bool = False) -> list[NNIterationDataPoint]:
+    """Every record of an ``idps.csv``. ``exact`` parses floats round-trip
+    (``migrate_history``, FEAT-036); ``NNRun.load`` keeps pandas' default
+    parser, as it always has."""
+    try:
+        frame = pd.read_csv(csv_path, float_precision="round_trip") if exact else pd.read_csv(csv_path)
+        raw_idps = frame.to_dict(orient="records")
+    except pd.errors.EmptyDataError as e:
+        # A zero-byte file (external truncation — our own atomic
+        # writes never produce one; even an idps-less run writes the
+        # frame header) raises a pandas error with no file context.
+        raise ValueError(f"malformed idps.csv at {csv_path}: {e}") from e
+    # Separate try-scopes per source file so a missing key names the
+    # FILE that's actually corrupt (a dropped CSV column must not be
+    # reported as a run.yaml problem, and vice versa).
+    try:
+        return [NNIterationDataPoint.from_state(idp) for idp in raw_idps]
+    except KeyError as e:
+        raise ValueError(f"malformed idps.csv at {csv_path}: missing column/key {e}") from e
 
 
 def _point_best(best_run_path: str, run_path: str) -> None:
@@ -357,7 +385,9 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
     if run_id == "best" or not os.path.isdir(run_path) or not os.path.isfile(os.path.join(run_path, "run.yaml")):
         return None
     try:
-        NNRun.load(id=run_id, root=root)
+        # A journal run (FEAT-036) is checked through its manifest and index;
+        # no history record is read to elect a winner.
+        NNRun._load(run_id, root, records=False)
         best = NNCheckpoint.load(run=run_id, type=Checkpoints.BEST, root=root)
         if best is None:
             return None
@@ -481,6 +511,11 @@ class NNRun:
     # runs/<id>/provenance.json and attempt.json. Opt-in and never part of
     # state() or the run id; None means absent — never "equal".
     provenance: Optional[ProvenanceRecord] = field(repr=False, compare=False, default=None)
+    # The run's history journal directory (FEAT-036, ``nnx.history``) when it
+    # keeps a bounded window in ``idps`` and every record in
+    # ``runs/<id>/history/`` instead of ``idps.csv``. Runtime only — never
+    # part of state() or the run id; ``None`` for an ordinary (CSV) run.
+    history: Optional[str] = field(repr=False, compare=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -609,7 +644,12 @@ class NNRun:
         whether each epoch improved. The training series come from each
         epoch's whole-epoch summary when recorded (full-epoch denominators,
         so a short last batch weighs no more than its samples), else from
-        the mean of the per-batch records."""
+        the mean of the per-batch records. A journal run (FEAT-036) reads
+        the per-epoch rows its journal wrote — never the records — up to the
+        epoch of its last record."""
+        if self.history is not None:
+            last_epoch = self.idps[-1].epoch_idx if self.idps else -1
+            return _journal_epoch_series(self.history, last_epoch)
         from collections import defaultdict
 
         epoch_buckets: dict[int, list[NNIterationDataPoint]] = defaultdict(list)
@@ -704,6 +744,9 @@ class NNRun:
 
     def with_provenance(self, value: Optional[ProvenanceRecord]) -> NNRun:
         return replace(self, provenance=value)
+
+    def with_history(self, value: Optional[str]) -> NNRun:
+        return replace(self, history=value)
 
     def ensure_writable(self, root: Optional[str] = None, *, overwrite: bool = False) -> None:
         runs_root = _runs_root(root)
@@ -818,12 +861,15 @@ class NNRun:
             metadata["resume"] = self.resume_status.state()
         _atomic_write_text(metadata_path, yaml.safe_dump(metadata, sort_keys=True))
 
-        _atomic_write_text(
-            csv_path,
-            # `or []`: idps defaults to None on the dataclass; an empty
-            # frame round-trips cleanly through read_csv on load.
-            pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
-        )
+        if self.history is None:
+            _atomic_write_text(
+                csv_path,
+                # `or []`: idps defaults to None on the dataclass; an empty
+                # frame round-trips cleanly through read_csv on load.
+                pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
+            )
+        # A journal run (FEAT-036) has written and published its records in
+        # runs/<id>/history/ already; `idps` is only its window.
 
         if update_best:
             self._update_best_pointer(runs_root, run_path, best_run_path, root)
@@ -863,6 +909,14 @@ class NNRun:
 
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
+        """Load a saved run. Its history is ``idps.csv`` read whole — or, for
+        a run with a history journal (FEAT-036), the journal's committed tail:
+        the last ``retention`` records, from the chunks that hold them. Either
+        way records past the LAST checkpoint's epoch are left out."""
+        return NNRun._load(id, root)
+
+    @staticmethod
+    def _load(id: str, root: Optional[str] = None, *, records: bool = True) -> NNRun:
         # Reject path-traversal identifiers before joining; see
         # `_validate_run_id` for the threat model. Internal callers pass
         # md5 hex (always safe), so this is a defense-in-depth guard on
@@ -889,28 +943,23 @@ class NNRun:
             # would otherwise die on rep.get(...) with no file context.
             raise ValueError(f"malformed run.yaml at {yaml_path}: expected a mapping, got {type(rep).__name__}")
 
-        try:
-            raw_idps = pd.read_csv(csv_path).to_dict(orient="records")
-        except pd.errors.EmptyDataError as e:
-            # A zero-byte file (external truncation — our own atomic
-            # writes never produce one; even an idps-less run writes the
-            # frame header) raises a pandas error with no file context.
-            raise ValueError(f"malformed idps.csv at {csv_path}: {e}") from e
-        # Separate try-scopes per source file so a missing key names the
-        # FILE that's actually corrupt (a dropped CSV column must not be
-        # reported as a run.yaml problem, and vice versa).
-        try:
-            idps = [NNIterationDataPoint.from_state(idp) for idp in raw_idps]
-        except KeyError as e:
-            raise ValueError(f"malformed idps.csv at {csv_path}: missing column/key {e}") from e
+        journal = _JournalReader(os.path.join(run_path, HISTORY_DIR)) if has_journal(run_path) else None
+        idps: list[NNIterationDataPoint] = []
+        if journal is None:
+            idps = _read_idps_csv(csv_path)
 
+        committed_epoch: Optional[int] = None
         if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
             last = NNCheckpoint.load(run=id, type=Checkpoints.LAST, root=root)
             last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
             if os.path.isfile(last_path) and last is None:
                 raise ValueError(f"malformed LAST checkpoint at {last_path}")
             committed_epoch = -1 if last is None else last.idp.epoch_idx
-            idps = [idp for idp in idps if idp.epoch_idx <= committed_epoch]
+            if journal is None:
+                idps = [idp for idp in idps if idp.epoch_idx <= committed_epoch]
+        if journal is not None and records:
+            # FEAT-036: only the committed tail, from the chunks holding it.
+            idps = journal.tail(journal.retention, committed_epoch)
 
         try:
             # Lazy import for trainer params — keeps `nnx.nn.params`
@@ -938,6 +987,7 @@ class NNRun:
                 idps=idps,
                 resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
                 provenance=_load_provenance_tolerantly(id, root),
+                history=journal.directory if journal is not None else None,
             )
         except KeyError as e:
             # A hand-edited / truncated run.yaml otherwise surfaces as a

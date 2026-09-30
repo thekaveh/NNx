@@ -356,6 +356,18 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
 
+### 3.1. Bounded history journal (`nnx.history`)
+
+@api nnx.history.HistoryJournal
+
+@api nnx.history.iter_history
+
+@api nnx.history.export_history_csv
+
+@api nnx.history.migrate_history
+
+@api nnx.history.HistoryCorruptionError
+
 ## 4. Networks
 
 @api nnx.nn.net.feed_fwd_nn.FeedFwdNN
