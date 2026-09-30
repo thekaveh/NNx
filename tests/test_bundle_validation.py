@@ -332,11 +332,18 @@ def _fifo(path):
     os.mkfifo(target)  # opening it for reading must not block
 
 
-def _deep_state(path):
+def _deep_state(path, depth=100_000):
     target = os.path.join(_generation_dir(path), "state.json")
     with open(target, "w", encoding="utf-8") as handle:
-        handle.write("[" * 100_000 + "]" * 100_000)
+        handle.write("[" * depth + "]" * depth)
     _rehash(path, "state.json")
+
+
+def _shallow_deep_state(path):
+    # Deep enough to refuse, shallow enough that every Python's JSON decoder
+    # parses it (3.14 parses the 100,000-level case too): the refusal must
+    # not depend on the decoder's recursion limit.
+    _deep_state(path, depth=200)
 
 
 def _components_not_a_mapping(path):
@@ -448,6 +455,7 @@ TAMPERING = {
     "oversized payload": (_oversized, "the manifest says"),
     "fifo payload": (_fifo, "not a regular file"),
     "deeply nested state": (_deep_state, "nested too deeply"),
+    "nested state the decoder parses": (_shallow_deep_state, "nested too deeply"),
     "components not a mapping": (_components_not_a_mapping, "components must map names"),
     "boolean state version": (_boolean_state_version, "another format or version"),
     "negative epoch": (_negative_epoch, "malformed checkpoint epoch"),
@@ -604,7 +612,7 @@ def test_a_staged_generation_readers_would_reject_is_never_published(bundle):
     before = validate_bundle(bundle)
     model = _classifier()
     run = _train(model, "deep", callbacks=[_Deep()])
-    with pytest.raises(BundleIntegrityError, match="nested more than"):
+    with pytest.raises(BundleIntegrityError, match="nested too deeply"):
         export_bundle(run.id, bundle)
     assert validate_bundle(bundle).generation == before.generation  # the previous bundle is still published
     assert sorted(entry for entry in os.listdir(bundle) if entry.startswith("g-")) == [f"g-{before.generation}"]
