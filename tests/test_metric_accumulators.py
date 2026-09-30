@@ -511,3 +511,74 @@ def test_review_round_thirteen_masked_soft_rows_seen_widths_and_stored_batches()
             stored.update(np.array([0, 1]), probabilities=np.array([np.nan, 0.7]))  # fails on its own batch
     finally:
         unregister_metric("tests.finite", 1)
+
+
+def test_review_round_fourteen_class_axes_order_free_ranges_and_empty_batches():
+    streamed = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    with pytest.raises(ValueError, match="class axis"):
+        streamed.update_logits(torch.tensor([0.5, float("nan")]), torch.tensor([0.1, 0.2]))
+
+    late = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    late.update(np.array([5]), labels=np.array([5]))  # no width known yet
+    with pytest.raises(ValueError, match="class index 5 was scored before any width was known"):
+        late.update(np.array([0, 2]), probabilities=np.full((2, 3), 1 / 3))  # either order is refused
+    labels_only = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    labels_only.update(np.array([5]), labels=np.array([5]))
+    three = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    three.update(np.array([0, 2]), probabilities=np.full((2, 3), 1 / 3))
+    for left, right in ((labels_only, three), (three, labels_only)):
+        with pytest.raises(MetricMergeError, match="class index 5 was scored"):
+            left.merge(right)
+
+    empty_first = MetricSpec("f1", config={"average": "binary"}).accumulator()
+    empty_first.update(np.array([], dtype=str), np.array([], dtype=str))  # decides nothing, not the label kind
+    empty_first.update(np.array([0, 1, 1]), np.array([0, 1, 0]))
+    counted = MetricSpec("f1", config={"average": "binary"}).accumulator()
+    counted.update(np.array([1]), np.array([1]))
+    empty_first.merge(counted)
+    assert empty_first.result() == pytest.approx(sk.f1_score([0, 1, 1, 1], [0, 1, 0, 1]))
+
+
+def test_review_round_fifteen_schema_first_sized_f1_batches_and_one_semantics_list():
+    from nnx import monitors, streaming
+
+    assert set(streaming.SEMANTICS) == set(monitors._DOMAIN_INPUTS)  # the public list names every domain
+    labels_only = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    labels_only.update(np.array([5]), labels=np.array([5]))
+    decisions = StreamingMetrics([MetricSpec("accuracy")], "bernoulli")
+    decisions.update(np.array([1.0]), labels=np.array([1]))  # a width of 1
+    with pytest.raises(MetricMergeError, match="different probability semantics"):
+        labels_only.merge(decisions)  # the real mismatch, not a class range
+    three = StreamingMetrics([MetricSpec("accuracy")], "categorical")
+    three.update(np.array([0, 2]), probabilities=np.full((2, 3), 1 / 3))
+    with pytest.raises(MetricMergeError, match="different probability semantics"):
+        three.merge(decisions)  # not a width mismatch
+    with pytest.raises(ValueError, match="differ in size"):
+        MetricSpec("f1").accumulator().update(np.array([], dtype=str), np.array(["a"]))
+
+
+def test_review_round_eighteen_a_broken_accumulation_says_so_first():
+    class _Failing:
+        def update(self, target, prediction):
+            raise RuntimeError("metric failed")
+
+        def merge(self, other):
+            return None
+
+        def result(self):
+            return None
+
+    register_metric("tests.fails", 1, lambda config: _Failing(), input="labels", mode="max")
+    try:
+        broken = StreamingMetrics([MetricSpec("accuracy"), MetricSpec("tests.fails")], "categorical")
+        with pytest.raises(RuntimeError, match="metric failed"):
+            broken.update(np.array([7]), labels=np.array([7]))  # accuracy took it, tests.fails did not
+        five = StreamingMetrics([MetricSpec("accuracy"), MetricSpec("tests.fails")], "categorical")
+        five._seen_width = 5  # a shard whose batches fixed 5 classes
+        with pytest.raises(RuntimeError, match="inconsistent"):  # not a class range of an unscored batch
+            broken.merge(five)
+        with pytest.raises(RuntimeError, match="inconsistent"):
+            broken.update(np.array([0]), probabilities=np.full((1, 5), 0.2))
+        assert broken._top_class == -1  # the failed batch recorded no class
+    finally:
+        unregister_metric("tests.fails", 1)

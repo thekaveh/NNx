@@ -1752,8 +1752,11 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
   - `update(target, probabilities=..., labels=..., values=..., valid=...)`
     takes a batch's inputs, and `update_logits(target, logits)` derives them
     from raw outputs as `evaluate()` does. Masked entries (`valid=False`, a
-    NaN target, or a categorical target equal to the task's `ignore_index`)
-    are not scored.
+    NaN target — a one-hot / soft row holding a NaN included — or a
+    categorical target equal to the task's `ignore_index`) are not scored.
+    This is the standalone accumulator's own rule: `evaluate()` records, and
+    `streaming_eval_step` with them, mask what the task (or, without one, the
+    loss's `ignore_index`) masks, as before.
   - The built-ins keep sufficient statistics: sums and counts for
     `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
     `f1` (the same values as scikit-learn with `zero_division=0`). Memory is

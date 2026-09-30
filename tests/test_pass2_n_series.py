@@ -1080,3 +1080,73 @@ def test_feat020_review_round_thirteen_an_adapters_own_type_error_is_not_rewrapp
 
     with pytest.raises(TypeError, match="the adapter's own bug"):  # not reported as a missing bounded argument
         _bounded_task_accumulator(_Broken(TaskSpec.regression(1)), "streaming_eval_step()")
+
+
+def test_feat020_review_round_fourteen_the_adapter_probe_survives_opaque_callables():
+    from nnx import TaskSpec
+    from nnx.nn.nn_model import _bounded_task_accumulator
+    from nnx.tasks import task_adapter
+
+    base = type(task_adapter(TaskSpec.regression(1)))
+
+    class _Positional(base):
+        def accumulator(self, *args):  # no bounded keyword
+            return super().accumulator()
+
+    with pytest.raises(ValueError, match="takes no bounded keyword"):
+        _bounded_task_accumulator(_Positional(TaskSpec.regression(1)), "streaming_eval_step()")
+    opaque = base(TaskSpec.regression(1))
+    opaque.accumulator = dict  # type: ignore[method-assign]  # inspect.signature(dict) raises
+    with pytest.raises(ValueError, match="not bounded"):  # the call decides, with the usual message
+        _bounded_task_accumulator(opaque, "streaming_eval_step()")
+
+
+def test_feat020_review_round_fifteen_opaque_adapters_get_the_bounded_message():
+    from nnx import TaskSpec
+    from nnx.nn.nn_model import _bounded_task_accumulator
+    from nnx.tasks import task_adapter
+
+    class _Opaque:  # no introspectable signature, and no bounded keyword
+        @property
+        def __signature__(self):
+            raise ValueError("no signature")
+
+        def __call__(self):
+            return None
+
+    adapter = type(task_adapter(TaskSpec.regression(1)))(TaskSpec.regression(1))
+    adapter.accumulator = _Opaque()  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match=r"accumulator\(bounded=True\) raised TypeError"):
+        _bounded_task_accumulator(adapter, "streaming_eval_step()")
+
+
+def test_feat020_review_round_eighteen_kwargs_forwarding_adapters_get_the_bounded_message():
+    from nnx import TaskSpec
+    from nnx.nn.nn_model import _bounded_task_accumulator
+    from nnx.tasks import task_adapter
+
+    base = type(task_adapter(TaskSpec.regression(1)))
+
+    class _PreFeat020(base):
+        def accumulator(self, *, keep_arrays=False):  # no bounded keyword
+            return super().accumulator(keep_arrays=keep_arrays)
+
+    class _Forwarding(_PreFeat020):
+        def accumulator(self, **options):  # forwards everything to the older base
+            return super().accumulator(**options)
+
+    with pytest.raises(ValueError, match=r"accumulator\(bounded=True\) raised TypeError"):
+        _bounded_task_accumulator(_Forwarding(TaskSpec.regression(1)), "streaming_eval_step()")
+
+
+def test_feat020_review_round_nineteen_a_positional_only_bounded_is_no_keyword():
+    from nnx import TaskSpec
+    from nnx.nn.nn_model import _bounded_task_accumulator
+    from nnx.tasks import task_adapter
+
+    class _PositionalOnly(type(task_adapter(TaskSpec.regression(1)))):
+        def accumulator(self, bounded=False, /):
+            return super().accumulator(bounded=bounded)
+
+    with pytest.raises(ValueError, match="takes no bounded keyword"):
+        _bounded_task_accumulator(_PositionalOnly(TaskSpec.regression(1)), "streaming_eval_step()")

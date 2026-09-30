@@ -61,7 +61,6 @@ import torch
 from ._confusion import integers
 from ._probability import to_numpy
 from .monitors import (
-    _DOMAIN_INPUTS,
     MetricAccumulator,
     MetricSpec,
     _batch_inputs,
@@ -87,7 +86,7 @@ __all__ = [
     "streaming_eval_step",
 ]
 
-SEMANTICS = tuple(_DOMAIN_INPUTS)  # "categorical", "bernoulli", "continuous"
+SEMANTICS = ("categorical", "bernoulli", "continuous")
 
 
 class StreamClosedError(RuntimeError):
@@ -421,6 +420,7 @@ class StreamingMetrics:
         self._count = 0
         self._broken = False
         self._seen_width: Optional[int] = None
+        self._top_class = -1  # the largest categorical class index scored (-1: none yet)
 
     @classmethod
     def for_task(cls, metrics: Sequence[MetricSpec], task: TaskSpec, *, materialize: bool = False) -> StreamingMetrics:
@@ -497,6 +497,7 @@ class StreamingMetrics:
         ``valid`` (boolean, shaped like ``target``) excludes entries; a NaN
         target, or a categorical target equal to ``ignore_index``, is
         excluded too. Arrays and tensors are accepted."""
+        self._require_intact()  # before any check of the batch
         target_np = to_numpy(target, copy=False)
         if valid is None:
             mask = np.ones(target_np.shape, dtype=bool)
@@ -559,8 +560,11 @@ class StreamingMetrics:
         (categorical), sigmoid decided at ``threshold`` (bernoulli) or the
         values (continuous) — the inputs ``evaluate()`` derives. Returns the
         number of valid samples scored."""
+        self._require_intact()  # before any check of the batch
         target_t = _tensor(target)
         logits_t = _tensor(logits)
+        if self._semantics == "categorical" and logits_t.ndim < 2:
+            raise ValueError(f"categorical logits need a class axis 1, (N, C, ...), got {tuple(logits_t.shape)}")
         width = self._check_width(int(logits_t.shape[1]) if logits_t.ndim >= 2 else 1, "logits")
         categorical = self._semantics == "categorical"
         soft = categorical and target_t.is_floating_point() and target_t.shape == logits_t.shape
@@ -575,14 +579,15 @@ class StreamingMetrics:
                 f"logits must be shaped like the targets {tuple(target_t.shape)}, got {tuple(logits_t.shape)}"
             )
         if soft:
-            # One-hot / soft class targets: whole rows decided by their argmax, masked
-            # only by valid (shaped like the rows) — never by ignore_index, a class index rule.
+            # One-hot / soft class targets: whole rows decided by their argmax, masked by
+            # valid (shaped like the rows) and — as every NaN target here — a row holding a
+            # NaN; never by ignore_index, a class index rule.
             rows = (target_t.shape[0], *target_t.shape[2:])
             valid_t = torch.ones(rows, dtype=torch.bool, device=target_t.device) if valid is None else _tensor(valid)
             valid_t = valid_t.to(dtype=torch.bool, device=target_t.device)
             if tuple(valid_t.shape) != rows:
                 raise ValueError(f"valid must be shaped like the target rows {rows}, got {tuple(valid_t.shape)}")
-            valid_t = valid_t & ~torch.isnan(target_t).any(dim=1)  # a NaN row is never scored
+            valid_t = valid_t & ~torch.isnan(target_t).any(dim=1)
         else:
             valid_t = self._target_mask(target_t, valid)
             if categorical and target_t.is_floating_point():
@@ -596,7 +601,7 @@ class StreamingMetrics:
             frozenset(spec.input for spec in self._specs),
             self._logit_threshold,
         )
-        if categorical and logits_t.ndim >= 2:
+        if categorical:
             _check_class_range(truth, int(logits_t.shape[1]))  # on the host copy _batch_inputs made
         return self._feed(truth, inputs, width)
 
@@ -615,11 +620,15 @@ class StreamingMetrics:
 
     def _check_width(self, width: int, what: str) -> int:
         """The batch's classes / outputs along axis 1 must be the declared
-        ``num_outputs`` — or, undeclared, the width of every earlier batch."""
+        ``num_outputs`` — or, undeclared, the width of every earlier batch.
+        The first width of an undeclared categorical accumulation must hold
+        every class index earlier (labels-only) batches brought."""
         expected = self._num_outputs if self._num_outputs is not None else self._seen_width
         if expected is not None and width != expected:
             source = "are declared" if self._num_outputs is not None else "came in earlier batches"
             raise ValueError(f"{what} have {width} outputs along axis 1 but {expected} {source}")
+        if expected is None:
+            _check_top_class(self._top_class, width, f"these {what}")  # -1 unless categorical
         return width
 
     def _feed(self, target: np.ndarray, inputs: Mapping[str, np.ndarray], width: Optional[int] = None) -> int:
@@ -629,6 +638,9 @@ class StreamingMetrics:
         n = int(target.shape[0])
         if not n:
             return 0
+        # Categorical classes range-checked against no width yet: kept for the
+        # width a later batch or a merge fixes, once the batch is scored.
+        unchecked = self._semantics == "categorical" and self._num_outputs is None and self._seen_width is None
         try:
             for spec in self._specs:
                 self._accumulators[spec.label].update(target, inputs[spec.input])
@@ -637,6 +649,10 @@ class StreamingMetrics:
             # the accumulation no longer describes one set of samples.
             self._broken = True
             raise
+        if unchecked:
+            labels = inputs.get("labels")
+            top = int(target.max()) if labels is None else max(int(target.max()), int(labels.max()))
+            self._top_class = max(self._top_class, top)
         self._count += n
         return n
 
@@ -655,9 +671,9 @@ class StreamingMetrics:
         Raises :class:`MetricMergeError` for different declarations."""
         if not isinstance(other, StreamingMetrics):
             raise TypeError(f"merge() needs StreamingMetrics, got {type(other).__name__}")
-        self._check_schema(other)
         self._require_intact()
         other._require_intact()
+        self._check_schema(other)
         merged = copy.copy(self)
         # Copy only this side: an accumulator's merge() reads the other side and
         # keeps nothing of it that a later update could change.
@@ -670,13 +686,12 @@ class StreamingMetrics:
                 )
         merged._count += other._count
         merged._seen_width = self._seen_width if self._seen_width is not None else other._seen_width
+        merged._top_class = max(self._top_class, other._top_class)
         return merged
 
     def _check_schema(self, other: StreamingMetrics) -> None:
-        if self._seen_width is not None and other._seen_width is not None and self._seen_width != other._seen_width:
-            raise MetricMergeError(
-                f"cannot merge accumulations of different widths: {self._seen_width} vs {other._seen_width} outputs"
-            )
+        """Declarations first, then what the batches fixed (widths, class
+        indices), so a merge names the real mismatch."""
         mine = [(spec.label, spec.id, spec.version, dict(spec.state())) for spec in self._specs]
         theirs = [(spec.label, spec.id, spec.version, dict(spec.state())) for spec in other._specs]
         if mine != theirs:
@@ -702,6 +717,14 @@ class StreamingMetrics:
             raise MetricMergeError(
                 f"cannot merge different ignore indices: {self._ignore_index!r} vs {other._ignore_index!r}"
             )
+        if self._seen_width is not None and other._seen_width is not None and self._seen_width != other._seen_width:
+            raise MetricMergeError(
+                f"cannot merge accumulations of different widths: {self._seen_width} vs {other._seen_width} outputs"
+            )
+        width = self._seen_width if self._seen_width is not None else other._seen_width
+        top = max(self._top_class, other._top_class)  # one side's classes, the other side's width
+        if self._semantics == "categorical" and width is not None and top >= width:
+            raise MetricMergeError(f"cannot merge: {_top_class_problem(top, width, 'the merged accumulation')}")
 
     def finalize(self) -> MetricSnapshot:
         """The metrics over every sample seen, as a read-only snapshot.
@@ -748,6 +771,17 @@ def _tensor(value: Any) -> torch.Tensor:
     if isinstance(value, np.ndarray) and (not value.flags.writeable or any(stride < 0 for stride in value.strides)):
         value = value.copy()
     return torch.as_tensor(value)
+
+
+def _top_class_problem(top: int, width: int, where: str) -> str:
+    return f"class index {top} was scored before any width was known, but {where}: {width} classes"
+
+
+def _check_top_class(top: int, width: int, where: str) -> None:
+    """Class indices scored before any width was known must fit the width
+    that ``where`` now fixes."""
+    if top >= width:
+        raise ValueError(_top_class_problem(top, width, where))
 
 
 def _check_class_range(values: np.ndarray, n_classes: Optional[int], what: str = "categorical targets") -> None:

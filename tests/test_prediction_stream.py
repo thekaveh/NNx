@@ -402,3 +402,18 @@ def test_review_round_thirteen_graph_batches_warn_only_when_their_ids_are_positi
     with pytest.warns(UserWarning, match="shuffling DataLoader") as record:
         model.predict_proba(whole, spec=ProbabilitySpec(kind="categorical", class_axis=1))
     assert [w.filename for w in record] == [__file__]
+
+
+def test_review_round_fourteen_the_shuffle_warning_skips_every_nnx_frame():
+    model = _model()
+    shuffled = DataLoader(
+        TensorDataset(torch.randn(4, 4), torch.zeros(4, dtype=torch.long)), batch_size=2, shuffle=True
+    )
+    namespace = {"__name__": "nnx.decisions.stand_in"}  # an NNx caller of predict_proba, like a decision provider
+    exec("def provide(model, loader, spec):\n    return model.predict_proba(loader, spec)\n", namespace)
+    spec = ProbabilitySpec(kind="categorical", class_axis=1)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("default")
+        for _ in range(3):
+            namespace["provide"](model, shuffled, spec)  # one user call site: warned once, as warnings.warn would
+    assert [(w.filename, w.category) for w in record] == [(__file__, UserWarning)]

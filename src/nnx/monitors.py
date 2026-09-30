@@ -383,6 +383,10 @@ class _F1:
 
     def update(self, target: np.ndarray, prediction: np.ndarray) -> None:
         target, prediction = np.asarray(target).reshape(-1), np.asarray(prediction).reshape(-1)
+        if target.size != prediction.size:
+            raise ValueError(f"f1 targets and predictions differ in size: {target.size} vs {prediction.size}")
+        if not target.size:
+            return  # an empty batch decides nothing, not even the label kind
         if not self._targets and target.dtype.kind in _NUMERIC and prediction.dtype.kind in _NUMERIC:
             self._counts.update(target, prediction)  # integer class labels; the counts reject any other number
             return
@@ -395,8 +399,6 @@ class _F1:
         if self._targets:
             from sklearn.metrics import f1_score
 
-            if not sum(target.size for target in self._targets):
-                return None  # nothing was scored
             return float(
                 f1_score(
                     np.concatenate(self._targets),

@@ -1302,17 +1302,29 @@ def _evaluate(
     ).with_error(value=float(1 - accuracy))
 
 
+_BY_KEYWORD = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
 def _bounded_task_accumulator(adapter: TaskAdapter, who: str) -> Any:
     """``adapter.accumulator(bounded=True)``, refusing an adapter that cannot
     build one (a ``TaskAdapter`` subclass written before FEAT-020) or returns
     one that keeps arrays — before any batch is read."""
-    parameters = inspect.signature(adapter.accumulator).parameters
-    if "bounded" not in parameters and not any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
-        raise ValueError(
-            f"{who} needs the model's task adapter ({type(adapter).__name__}) to build a bounded accumulator "
-            "with accumulator(bounded=True); its accumulator() takes no bounded argument"
-        )
-    accumulator = adapter.accumulator(bounded=True)  # an error of the adapter's own is its own
+    needs = f"{who} needs the model's task adapter ({type(adapter).__name__}) to build a bounded accumulator"
+    try:
+        parameters: Any = inspect.signature(adapter.accumulator).parameters
+    except (TypeError, ValueError):
+        parameters = None  # not introspectable: the call decides
+    keyword = parameters is not None and getattr(parameters.get("bounded"), "kind", None) in _BY_KEYWORD
+    if parameters is not None and not (keyword or any(p.kind is p.VAR_KEYWORD for p in parameters.values())):
+        raise ValueError(f"{needs} with accumulator(bounded=True); its accumulator() takes no bounded keyword")
+    try:
+        accumulator = adapter.accumulator(bounded=True)
+    except TypeError as exc:
+        if keyword:
+            raise  # it names bounded: an error of the adapter's own is its own
+        # Opaque or **kwargs (perhaps forwarded to a pre-FEAT-020 base): a missing
+        # keyword and the adapter's own error look alike, so say both.
+        raise ValueError(f"{needs}, but accumulator(bounded=True) raised TypeError: {exc}") from exc
     if not getattr(accumulator, "bounded", False):
         raise ValueError(
             f"the model's task adapter ({type(adapter).__name__}) returned an accumulator that is not bounded from "
@@ -1402,12 +1414,14 @@ def _shuffles(X: Any) -> bool:
 
 
 def _warn_positional_ids(caller: str) -> None:
-    warnings.warn(
+    from .callbacks import _warn_at_user_frame  # at the first caller outside nnx, whoever called predict
+
+    _warn_at_user_frame(
         f"{caller} over a shuffling DataLoader: sample_ids are iteration positions, not "
         "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
         "loader (graph seed rows are exempt: their ids are global node indices)",
         UserWarning,
-        stacklevel=5,  # past the batch loop and its caller: the consumer's line
+        once_per_location=True,  # like warnings.warn: a loop over one call site warns once
     )
 
 
