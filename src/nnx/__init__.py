@@ -36,6 +36,7 @@ from . import (
     monitors,
     objectives,
     optimizers,
+    plans,
     prediction,
     preprocessing,
     provenance,
@@ -215,6 +216,7 @@ from .peft import (
     save_prefix_weights,
     save_prompt_weights,
 )
+from .plans import ExperimentPlan, FitResult
 from .prediction import PredictionResult, PredictionValidationError, ProbabilitySpec, prediction_from_logits
 from .quantize import QATLifecycleCallback, qat_train_step_factory, quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
@@ -365,6 +367,10 @@ __all__ = [
     "calibration",
     # Abstention policies and risk-coverage evaluation (FEAT-008)
     "abstention",
+    # Immutable fluent experiment plans (FEAT-012)
+    "plans",
+    "ExperimentPlan",
+    "FitResult",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

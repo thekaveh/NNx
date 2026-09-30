@@ -300,6 +300,22 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.abstention.AbstentionSchemaError
 
+### 2.17. Experiment plans (`nnx.plans`)
+
+@api nnx.plans.ExperimentPlan
+
+@api nnx.plans.FitResult
+
+@api nnx.plans.SplitMetrics
+
+@api nnx.plans.ProbeResult
+
+@api nnx.plans.PlanValidation
+
+@api nnx.plans.Diagnostic
+
+@api nnx.plans.PlanError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

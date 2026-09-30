@@ -596,6 +596,33 @@ validation split, not guaranteed. Pass a `CalibratedPrediction` (§2.18) to
 apply a policy declared on calibrated probabilities. See
 [Concepts §19](concepts.md#19-abstention-and-risk-coverage-nnxabstention).
 
+### 2.20. Branch, validate, probe and fit a plan
+
+An `ExperimentPlan` is an immutable configuration you branch instead of copy:
+
+```python
+from nnx import ExperimentPlan
+
+base = (ExperimentPlan()
+        .with_net(net_params).with_model(model_params).with_train(train_params)
+        .with_data(make_train_loader, val=make_val_loader, identity="toy")  # factories: fresh loaders per fit
+        .with_seed(7))
+short, long = base.with_epochs(2), base.with_epochs(10)   # base, short and long stay unchanged
+
+base.validate().raise_for_errors()   # every problem at once; reads no loader, builds no model
+base.probe(next(iter(make_train_loader())))  # one no-grad forward pass on a temporary model
+result = base.fit()                  # FitResult(model, run, metrics, attempt_id)
+result.metrics["val"].values["loss"] # from the run's final epoch; no second loader pass
+child = base.with_epochs(20).resuming(result.run.id).fit()  # a new run; the parent stays intact
+```
+
+`fit()` seeds, calls the factories once, builds the model and calls
+`NNModel.train`, the same loop as the equally seeded imperative script.
+Every fit is a distinct attempt with its own run directory. Loader and
+callback instances you pass are borrowed and shared by every fit; pass
+factories for fresh ones. See
+[Concepts §20](concepts.md#20-experiment-plans-nnxplans).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

@@ -54,7 +54,6 @@ from ..nn.nn_model import (
     _batch_sample_count,
     _CallbackContext,
     _CallbackFinalizer,
-    _capture_rng_state,
     _check_plateau_resume,
     _check_provenance,
     _check_resume_horizon,
@@ -71,7 +70,6 @@ from ..nn.nn_model import (
     _objective_microbatch,
     _optimizer_topology,
     _plan_component_restore,
-    _restore_rng_state,
     _restore_weights_only,
     _rollback_resume,
     _step_monitored_plateau,
@@ -84,6 +82,7 @@ from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
 from ..provenance import ExperimentManifest
+from ..seeding import _capture_rng_state, _restore_rng_state
 from ..utils import Utils
 from .params import NNTrainerParams
 
