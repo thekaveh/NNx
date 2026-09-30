@@ -541,6 +541,35 @@ or reordered columns, a width mismatch and non-finite values. For image data,
 evaluation their own transforms. See
 [Concepts §13.4](concepts.md#134-preprocessing-raw-and-transformed-views).
 
+### 2.18. Calibrated probabilities
+
+Fit one temperature on a calibration split, then report on held-out data:
+
+```python
+from nnx.calibration import TemperatureCalibrator, fit_temperature, model_fingerprint
+
+spec = ProbabilitySpec(kind="categorical", class_axis=1, labels=("cat", "dog", "fox"))
+model_id = model_fingerprint(model)                       # changes whenever the weights change
+fit = fit_temperature(model.predict_proba(X_calib, spec), y_calib, model_id=model_id,
+                      split_id="calibration", train_split_id="train", test_split_id="test")
+calibrator = fit.require()                                # CalibrationFitError with the reason if it failed
+calibrator.save("calibrator.json")
+
+calibrator = TemperatureCalibrator.load("calibrator.json")
+result = calibrator.transform(model.predict_proba(X_test, spec), model_id=model_id)
+result.probabilities, result.calibrated_probabilities     # raw vs calibrated, same label order
+report = calibrator.report(model.predict_proba(X_test, spec), y_test, model_id=model_id, split_id="test")
+print(report.summary())                                   # "improved" only if held-out NLL and Brier did not get worse
+```
+
+Use a calibration split that is neither the training nor the test split:
+`fit_temperature` rejects equal ids, and the calibrator records that ids cannot
+prove the rows are disjoint. The fitted temperature is unrelated to the
+sampling `temperature=` of `GenerativeNNModel.generate`; it never changes the
+argmax. Logits with a different label order or from another model are refused
+unless you pass a named `override=...`, which is recorded. See
+[Concepts §18](concepts.md#18-fitted-calibration-nnxcalibration).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

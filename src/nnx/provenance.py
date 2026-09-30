@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Union
 
+from ._config import _canonical_json
+
 if TYPE_CHECKING:
     from .nn.params.nn_run import NNRun
 
@@ -113,9 +115,7 @@ def canonical_bytes(value: Any) -> bytes:
     """Canonical UTF-8 JSON of a JSON-like ``value``: sorted keys, arrays in
     order, compact separators, Unicode kept as UTF-8. Raises ``TypeError`` /
     ``ValueError`` (naming the path) for anything else."""
-    return json.dumps(
-        _canonical(value, "$"), sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    return _canonical_json(_canonical(value, "$"))
 
 
 def _sha256(data: bytes) -> str:

@@ -133,6 +133,11 @@ model.generate(prompt="...", temperature=0.0)
 `temperature=0` short-circuits to argmax. Two calls with the same prompt
 produce identical output — this is the regression-test contract.
 
+The sampling `temperature` is chosen, not fitted. Classifier calibration fits
+its own temperature on a held-out split (`nnx.calibration`, see
+[Concepts §18](concepts.md#18-fitted-calibration-nnxcalibration)); the two are
+unrelated.
+
 ### 4.2. Sampling with top-k
 
 ```python

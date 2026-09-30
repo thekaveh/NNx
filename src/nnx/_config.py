@@ -4,6 +4,7 @@ thawed to plain YAML-safe dicts / lists for ``state()``. Internal."""
 
 from __future__ import annotations
 
+import json
 import math
 import numbers
 import re
@@ -86,3 +87,11 @@ def _thaw_config(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_thaw_config(item) for item in value]
     return value
+
+
+def _canonical_json(value: Any) -> bytes:
+    """Canonical UTF-8 JSON of an already JSON-like value — sorted keys,
+    arrays in order, compact separators, Unicode kept, no NaN / ±inf. The
+    encoding behind the provenance-fingerprint, split-manifest and calibrator
+    ``sha256:`` digests."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")

@@ -1372,3 +1372,87 @@ question (Choice / Boolean / Score, digest) ──► DecisionProvider.capabilit
 ```
 
 An option's `id` is bookkeeping and its `description` the model-facing text, and a question's `digest()` changes when options are reordered or reworded. `validate_response` is the single validator every provider shares: it reorders keyed output into the question's order and rejects missing, duplicate, unknown or unlabeled ids and malformed distributions instead of renormalizing them. `ScoreResult.expected_index` (`sum(i * p_i)`) is ordinal, and a vendor's own score stays in `vendor_score`. `FixedHeadProvider` turns a trained classifier into a provider for exactly what its head justifies: `Choice` (or `Score` when ordinal) from a categorical head over its exact label space or a bijection onto it, and `Boolean` from a one-logit head. It restores the model's modes and raises typed errors (`UnsupportedCapability`, `InvalidDecisionRequest`, `InvalidDecisionResponse`, `ProviderFailure`). Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs it end to end.
+
+## 18. Fitted calibration (`nnx.calibration`)
+
+A classifier's softmax probabilities are often over- or under-confident.
+`nnx.calibration` (FEAT-007) fits a **scalar temperature** `T > 0` on a
+calibration split and serves `softmax(logits / T)`: the argmax never changes,
+only the confidence. It is a fitted artifact bound to one model and label
+order. It is not the generation temperature of `GenerativeNNModel.generate` /
+`TemperatureScaling` ([`docs/lm.md` §4](lm.md#4-when-to-use-what)), which
+you choose for sampling and which fits nothing.
+
+```text
+calibration split logits + targets ──► fit_temperature(split_id=..., train_split_id=..., test_split_id=...)
+                                        └──► CalibrationFit (ok → TemperatureCalibrator | failed → reason)
+held-out logits ──► calibrator.transform(..., labels=..., model_id=...) ──► CalibratedPrediction
+                └──► calibrator.report(..., split_id="test") ──► CalibrationReport (before / after, outcome)
+```
+
+- **Split separation.** Fit on a split that is neither the training split
+  (the model already fits it) nor the final test split (the report needs it
+  untouched). `fit_temperature` rejects a `split_id` equal to
+  `train_split_id` or `test_split_id`, and `report` rejects the calibration
+  or training split as held-out data. Different ids do not prove the rows
+  are disjoint: arrays and loaders carry no such guarantee, so the
+  calibrator records `split["disjointness"] == "unverified"` with that note.
+- **Fitting.** Categorical `(N, C)` logits, `C >= 2`, integer targets in
+  range, and one label per class; non-finite logits are rejected, never
+  masked. The NLL of `softmax(logits / T)` is minimized in float64 on a copy
+  of the logits by bisection on its slope in `1 / T`, over
+  `[min_temperature, max_temperature]` (default `[1e-3, 1e3]`). When there is
+  no interior optimum (a separable split, constant logits, logits no better
+  than uniform), or the search does not converge, `fit_temperature` returns a
+  failed `CalibrationFit` with the reason. It never returns a NaN or boundary
+  temperature; `fit.require()` raises `CalibrationFitError`.
+- **Identity binding.** A `TemperatureCalibrator` stores the temperature,
+  the ordered `labels`, the `model_id`, the fit config and result, and the
+  split ids. `transform` and `report` compare the declared labels and model id
+  with the fitted ones **before** reading any logits. A reordered or renamed
+  label list or another model raises `CalibrationMismatchError`, unless a
+  named `override="..."` accepts it; the override and each mismatch
+  (expected vs actual) are then recorded in the result and the report. A
+  different class count is never accepted.
+  `model_fingerprint(model)` (a SHA-256 of the weights) makes a `model_id`
+  that changes whenever the weights do; a declared id such as
+  `f"{run.id}:BEST"` also works.
+- **Raw and calibrated views.** `transform` accepts arrays, tensors or a
+  categorical `PredictionResult`
+  ([Quickstart §2.13](quickstart.md#213-probabilities-decoded-labels-and-sample-ids)), whose spec supplies the labels and
+  whose `sample_ids` are kept. It returns a `CalibratedPrediction` with the
+  raw `logits`, raw `probabilities` (float64 softmax, identical to a
+  temperature-1 calibrator), `calibrated_probabilities`, `decoded` (the raw
+  argmax), the ordered `labels`, `sample_ids` and the `calibrator_id` (the
+  calibrator's digest) as separate fields. The model, `predict()` and the run
+  are never touched.
+- **Metrics.** `negative_log_likelihood` (mean `-log p[target]`; the default
+  floor `epsilon=1e-12` matches the named `nll` metric of §6.4, and
+  `epsilon=None` is exact, so a zero true-class probability gives `+inf`),
+  `brier_score` (the mean over rows of the class-summed squared error, so the
+  range is `[0, 2]`, matching the named `brier` metric) and
+  `reliability_bins` (equal-width `[lo, hi)` top-1 confidence bins, the last
+  closed at 1, a value on an inner edge in the upper bin, empty bins kept with
+  count 0 and no means), plus `expected_calibration_error`.
+- **Reports.** `calibrator.report(logits, targets, split_id="test", ...)`
+  puts held-out NLL, Brier, ECE and bins before and after calibration side by
+  side. `outcome` is `"improved"` only when neither NLL nor Brier got worse
+  and one got better; otherwise it is `"worsened"`, `"mixed"` or
+  `"unchanged"`, and `summary()` says so (a worsened report tells you to keep
+  the uncalibrated probabilities). A reloaded calibrator reproduces an equal
+  report.
+- **Serialization.** Calibrators and reports are primitive JSON
+  (`nnx.calibration/1`, `to_json` / `save` / `load`, written atomically). The
+  temperature reloads float64-exact, so probabilities are identical after a
+  reload. Loading rejects a non-positive or non-finite temperature,
+  duplicate labels, a missing model id and a calibration split equal to the
+  train or test split.
+- **Scope.** Categorical temperature scaling only. Conformal guarantees,
+  vector / matrix scaling, provider-confidence calibration and online
+  adaptation are out of scope. The module's own imports are NumPy, the
+  standard library and NumPy-only internal helpers: it imports none of its
+  consumers (predictions, monitors, provenance, decisions). The NLL / Brier
+  terms and the softmax are the same code the named metrics and
+  `predict_proba` use.
+
+See [`examples/calibration_offline.py`](../examples/calibration_offline.py).

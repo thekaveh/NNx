@@ -55,6 +55,10 @@ import numpy as np
 import torch
 
 from ._config import _SLUG, _freeze_config, _thaw_config
+
+# One implementation of the probability terms, shared with nnx.calibration.
+from ._probability import brier_terms as _brier_terms
+from ._probability import nll_terms as _nll_terms
 from ._validation import require_count
 
 if TYPE_CHECKING:
@@ -312,33 +316,8 @@ class _Mean:
         return self._sum / self._count if self._count else None
 
 
-_EPS = 1e-12
-
-
-def _categorical(target: np.ndarray, probabilities: np.ndarray) -> bool:
-    return probabilities.ndim == target.ndim + 1
-
-
 def _accuracy_terms(target: np.ndarray, prediction: np.ndarray) -> np.ndarray:
     return (target == prediction).astype(np.float64)
-
-
-def _nll_terms(target: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
-    p = np.clip(probabilities.astype(np.float64), _EPS, 1.0)
-    if _categorical(target, probabilities):
-        return -np.log(np.take_along_axis(p, target.astype(np.int64)[..., None], axis=-1)[..., 0])
-    t = target.astype(np.float64)
-    q = np.clip(1.0 - probabilities.astype(np.float64), _EPS, 1.0)
-    return -(t * np.log(p) + (1.0 - t) * np.log(q))
-
-
-def _brier_terms(target: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
-    p = probabilities.astype(np.float64)
-    if _categorical(target, probabilities):
-        onehot = np.zeros_like(p)
-        np.put_along_axis(onehot, target.astype(np.int64)[..., None], 1.0, axis=-1)
-        return ((p - onehot) ** 2).sum(axis=-1)
-    return (p - target.astype(np.float64)) ** 2
 
 
 def _abs_terms(target: np.ndarray, prediction: np.ndarray) -> np.ndarray:
