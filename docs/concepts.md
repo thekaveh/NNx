@@ -1692,3 +1692,96 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+## 21. Run bundles (`nnx.bundles`)
+
+A run's checkpoints are pickles (`torch.load(weights_only=False)`), safe to
+read only when you produced them, and a safetensors checkpoint holds one
+weights dict without the training state. A **run bundle** (FEAT-015) holds
+one run checkpoint — its weights, its training state and optional
+calibrators — as data only:
+
+```text
+<bundle>/bundle.json            manifest: format, version, generation id, every payload's SHA-256 and size
+<bundle>/g-<generation>/
+    state.json                  primitive state, schema-validated JSON
+    model.safetensors           the network's tensors
+    training.safetensors        the training state's tensors ("resume" bundles only)
+    calibrator-<n>.json         TemperatureCalibrator records (§18)
+
+export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bundle(dir) ──► reconstruct_bundle(dir, factories=...)
+                                                                                     └── ReconstructedBundle.resume(params)
+```
+
+- **Export** reads one of your runs' checkpoints (`checkpoint="last"`, any
+  `Checkpoints` tag, or a `ModelCheckpoint` stem such as `"snap_e3"`) and
+  publishes it as a new generation. A checkpoint written by `train()` gives a
+  `"resume"` bundle; a weights-only one (a `ModelCheckpoint` snapshot) an
+  `"inference"` bundle. Calibrators ship alongside: they must calibrate a
+  categorical model with their class count and the task's labels, and a
+  fingerprint `model_id` (`model_fingerprint`) must be the bundled weights'
+  (checked again by every validation).
+- **Format v1.** Tensors are stored in the safetensors format, which NNx
+  writes and reads itself (no optional dependency; any safetensors reader
+  opens the payloads). Everything else is strict JSON with typed encodings:
+  `$tuple`, integer-keyed `$intdict` (optimizer state), non-finite `$float`
+  (a plateau scheduler's `inf`) and `$tensor` references. Module extra state
+  that is not a tensor, a custom object in optimizer or component state and
+  a runtime-only module are refused at export, with no pickle fallback.
+- **Inspect and validate.** `inspect_bundle` summarizes a bundle
+  (`BundleInfo`: capability, source run and checkpoint, epoch, model,
+  components, calibrators) from the manifest and `state.json`.
+  `validate_bundle` checks every payload before any tensor is read: size and
+  SHA-256 (the size checked before a file is read, and no file opened
+  through a symlink or as a FIFO or device), one generation id throughout,
+  nothing missing, unlisted, symlinked or outside the bundle, strict JSON
+  without duplicate keys or runaway nesting, calibrator labels matching the
+  task's, and safetensors headers holding exactly the tensors `state.json`
+  references. Only then is a calibrator's fingerprint `model_id` checked,
+  against the weights hashed straight from the payload (no tensor is
+  built). An export runs the same checks on its staged generation before
+  publishing it.
+  Neither unpickles, calls a model factory or downloads — even beside a
+  legacy `last.pt`.
+- **Reconstruct.** `reconstruct_bundle(path, factories=..., components=...)`
+  validates, then rebuilds the model. A registered module is built from the
+  caller-supplied `factories` (`{(id, version): factory}`; the process
+  registry when omitted), with `batch_adapter=` for its inputs as with
+  `NNModel` (runtime-only, never stored). Passing the resumed run's
+  `components` (e.g. the same callbacks) checks their saved state too. Every missing factory or
+  component is named in one `BundleReconstructionError` before any model is
+  allocated — a model saved on CUDA or MPS on a host without it included
+  (pass `device=Devices.CPU`). The rebuilt model predicts bit-for-bit like
+  the source; to serve it, keep `.model` and drop the `ReconstructedBundle`,
+  which holds a `"resume"` bundle's training state for `resume()`. Bundles
+  hold `NNModel` runs: artifacts a subclass keeps outside the checkpoint (a
+  `GenerativeNNModel` tokenizer) are not bundled. Like
+  `from_pretrained` with a `config.json`, reconstruction builds the
+  architecture the bundle's parameters describe: read an untrusted bundle's
+  `inspect_bundle(...).model_params` before reconstructing it.
+- **Resume.** `ReconstructedBundle.resume(params, **train_kwargs)` runs
+  `model.train` as a stateful resume of the bundle's run: the optimizer,
+  scheduler, GradScaler, RNG and component state come from the bundle, held
+  in memory (it never becomes a pickle), and the resumed run records
+  `resume_checkpoint` (`"bundle-<generation>_e<epoch>"`) as its parent
+  checkpoint — with `provenance=...`, its attempt links the bundle's run,
+  epoch and generation without reading anything from disk. One resumed epoch equals the uninterrupted run. An
+  `"inference"` bundle raises `BundleCapabilityError` before anything
+  changes, and so does a `Trainer` run's bundle (named optimizers) or a
+  transformed topology (a converted QAT checkpoint): `resume` continues
+  `NNModel.train` runs from an untransformed model, while these models
+  rebuild for inference like any other.
+- **Publication.** A new generation directory is written first and
+  `bundle.json` is replaced atomically, so an export interrupted at any
+  point leaves the previous bundle usable. The replaced generation stays
+  until the next export, so a reader that started before an export can
+  finish; older generations and an interrupted export's leftovers are
+  cleared. An export never touches a directory that is neither empty nor a
+  run bundle, nor a `bundle.json` that is not a readable NNx manifest.
+- **Three formats, three readers.** Pickle checkpoints, safetensors
+  checkpoints / Hub distributions and run bundles each have their own
+  reader, and none opens another's files (see [Hub integration
+  §3](hub.md#3-three-artifact-formats-and-their-trust-boundaries) and
+  `SECURITY.md`).
+
+See [`examples/run_bundle.py`](../examples/run_bundle.py).

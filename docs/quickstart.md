@@ -623,6 +623,27 @@ callback instances you pass are borrowed and shared by every fit; pass
 factories for fresh ones. See
 [Concepts §20](concepts.md#20-experiment-plans-nnxplans).
 
+### 2.21. Share a run as a data-only bundle
+
+A run bundle carries a checkpoint's weights, training state and calibrators
+as safetensors plus JSON, so it can be checked and rebuilt without
+unpickling anything:
+
+```python
+from nnx.bundles import export_bundle, inspect_bundle, reconstruct_bundle, validate_bundle
+
+export_bundle(run.id, "bundle", calibrators=[calibrator])  # reads your own run's LAST checkpoint
+inspect_bundle("bundle")                                    # BundleInfo: capability, epoch, model, calibrators
+validate_bundle("bundle")                                   # every payload's SHA-256, before any tensor is read
+rebuilt = reconstruct_bundle("bundle", factories={("my.encoder", 1): my_factory})  # a registered module
+rebuilt.model.predict(X)                                    # bit-for-bit the source model
+rebuilt.resume(train_params)                                # continues the run from the bundle's training state
+```
+
+A weights-only checkpoint (a `ModelCheckpoint` snapshot) exports an
+`"inference"` bundle, which rebuilds the model but refuses `resume()`. See
+[Concepts §21](concepts.md#21-run-bundles-nnxbundles).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

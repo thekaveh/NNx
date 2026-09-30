@@ -54,6 +54,7 @@ def test_core_public_exports_are_available_from_top_level():
 def test_specialized_public_facades_are_available_from_top_level():
     facades = [
         "abstention",
+        "bundles",
         "calibration",
         "data_splits",
         "decisions",
@@ -117,6 +118,28 @@ def test_preprocessing_api_is_public_and_complete():
     expected = {"Standardizer", "SplitView", "describe_transform", "PreprocessingError", "FORMAT"}
     assert expected <= set(preprocessing.__all__)
     assert all(getattr(preprocessing, name, None) is not None for name in preprocessing.__all__)
+
+
+def test_bundles_api_is_public_and_complete():
+    from nnx import bundles
+
+    expected = {
+        "BUNDLE_FORMAT",
+        "BUNDLE_VERSION",
+        "BundleCapabilityError",
+        "BundleError",
+        "BundleInfo",
+        "BundleIntegrityError",
+        "BundleReconstructionError",
+        "ReconstructedBundle",
+        "export_bundle",
+        "inspect_bundle",
+        "reconstruct_bundle",
+        "validate_bundle",
+    }
+    assert set(bundles.__all__) == expected
+    assert all(getattr(bundles, name, None) is not None for name in bundles.__all__)
+    assert "bundles" in nnx.__all__
 
 
 def test_calibration_api_is_public_and_complete():

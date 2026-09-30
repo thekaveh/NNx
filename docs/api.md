@@ -4948,6 +4948,197 @@ catches it.
 ```
 
 
+### 2.18. Run bundles (`nnx.bundles`)
+
+#### `nnx.bundles.export_bundle`
+
+```python
+nnx.bundles.export_bundle(run_id: 'str', destination: 'Union[str, os.PathLike[str]]', *, checkpoint: 'str' = 'last', root: 'Optional[str]' = None, calibrators: 'Iterable[TemperatureCalibrator]' = ()) -> 'BundleInfo'
+```
+
+Publish ``run_id``'s ``checkpoint`` as a run bundle at ``destination``.
+
+**Details**
+
+```text
+Args:
+    run_id: a run under ``<root>/runs`` (the current directory by default)
+        — your own run: its pickle checkpoint is read locally.
+    destination: an empty or missing directory, or an existing bundle,
+        whose generation this export replaces.
+    checkpoint: a ``Checkpoints`` tag (``"last"``, ``"best"``, …) or a
+        ``ModelCheckpoint`` file stem ``"<tag>_e<epoch>"``.
+    calibrators: ``TemperatureCalibrator`` records to ship with the
+        model. Their labels must match the task's, and a fingerprint
+        ``model_id`` (``nnx.calibration.model_fingerprint``) must be the
+        bundled weights'.
+
+Returns the published bundle's :class:`BundleInfo` (``verified=True``).
+A checkpoint written by ``train()`` gives a ``"resume"`` bundle; a
+weights-only one an ``"inference"`` bundle. A runtime-only module, module
+extra state that is not a tensor, and training state that is not tensors
+and JSON primitives are refused before anything is written.
+```
+
+
+#### `nnx.bundles.inspect_bundle`
+
+```python
+nnx.bundles.inspect_bundle(path: 'Union[str, os.PathLike[str]]') -> 'BundleInfo'
+```
+
+Summarize the bundle at ``path`` from its manifest, ``state.json`` and calibrator records (each checked against its manifest size and SHA-256). Tensor payloads are not read or checked — :func:`validate_bundle` checks them. Never unpickles, calls a factory or downloads.
+
+
+#### `nnx.bundles.validate_bundle`
+
+```python
+nnx.bundles.validate_bundle(path: 'Union[str, os.PathLike[str]]') -> 'BundleInfo'
+```
+
+Check the whole bundle at ``path`` and summarize it: every listed payload present, a regular file inside the published generation directory with the manifest's size and SHA-256, nothing unlisted, one generation id throughout, strict JSON without duplicate keys, and safetensors headers holding exactly the tensors ``state.json`` references. No tensor is read before all of that passes (a calibrator with a fingerprint ``model_id`` is then checked against the weights); nothing is unpickled, and no factory is called. Raises :class:`BundleIntegrityError` (or :class:`BundleError` for a path that is not a bundle).
+
+
+#### `nnx.bundles.reconstruct_bundle`
+
+```python
+nnx.bundles.reconstruct_bundle(path: 'Union[str, os.PathLike[str]]', *, factories: 'Optional[Mapping[tuple[str, int], ModelFactory]]' = None, components: 'Optional[Iterable[Any]]' = None, device: 'Any' = None, batch_adapter: 'Optional[BatchAdapter]' = None) -> 'ReconstructedBundle'
+```
+
+Validate the bundle at ``path`` and rebuild its model.
+
+**Details**
+
+```text
+Args:
+    factories: the model factories to rebuild a registered ``ModelSpec``
+        from, ``{(id, version): factory}`` — used instead of the process
+        registry. ``None`` uses the process registry
+        (``nnx.models.register_model_factory``). A built-in net needs none.
+    components: for a ``"resume"`` bundle, the stateful components the
+        resumed run will register (e.g. the same callbacks): their saved
+        state is checked against them. ``None`` skips the check (for
+        inference use; :meth:`ReconstructedBundle.resume` checks again).
+    device: a ``Devices`` member to build the model on instead of the
+        saved one.
+    batch_adapter: how a registered module sees a batch
+        (``nnx.models.BatchAdapter``), as passed to ``NNModel`` — it is
+        runtime-only, never stored.
+
+Everything missing — the model factory, a required or incompatible
+component — is reported in one :class:`BundleReconstructionError` before
+any model is allocated. Calibrators with a fingerprint ``model_id`` are
+checked against the rebuilt weights.
+```
+
+
+#### `nnx.bundles.BundleInfo`
+
+```python
+class nnx.bundles.BundleInfo(path: 'str', version: 'int', generation: 'str', capability: 'str', source_run_id: 'str', source_checkpoint: 'str', epoch: 'int', model: 'str', model_params: 'Mapping[str, Any]', components: 'Mapping[str, Any]' = <factory>, calibrators: 'tuple[Mapping[str, Any], ...]' = (), payloads: 'Mapping[str, Any]' = <factory>, verified: 'bool' = False) -> 'None'
+```
+
+A bundle's summary, from :func:`inspect_bundle` (``verified=False``: only the manifest and ``state.json`` were checked) or :func:`validate_bundle` / :func:`reconstruct_bundle` (``verified=True``).
+
+**Details**
+
+```text
+Attributes:
+    path: the bundle directory.
+    version: the bundle format version.
+    generation: the published generation id.
+    capability: ``"resume"`` (weights and training state) or
+        ``"inference"`` (weights only).
+    source_run_id / source_checkpoint: the run and checkpoint it came from.
+    epoch: the checkpoint's epoch.
+    model: the network descriptor (a built-in ``Nets`` name or a
+        registered ``ModelSpec``).
+    model_params: ``NNModelParams.state()`` of the checkpoint.
+    components: saved component metadata, ``{name: {"version", "required"}}``.
+    calibrators: each calibrator's ``{"payload", "id", "labels", "model_id"}``.
+    payloads: ``{name: {"sha256", "size"}}`` from the manifest.
+    verified: whether every payload was checked.
+```
+
+
+#### `nnx.bundles.ReconstructedBundle`
+
+```python
+class nnx.bundles.ReconstructedBundle(model: 'NNModel', info: 'BundleInfo', calibrators: 'tuple[TemperatureCalibrator, ...]', _checkpoint: 'NNCheckpoint', _training_state: 'Optional[dict[str, Any]]') -> 'None'
+```
+
+A model rebuilt from a validated bundle, its calibrators and — for a ``"resume"`` bundle — the training state :meth:`resume` continues from.
+
+##### `nnx.bundles.ReconstructedBundle.capability`
+
+```python
+property nnx.bundles.ReconstructedBundle.capability
+```
+
+No public description is currently available.
+
+##### `nnx.bundles.ReconstructedBundle.resume_checkpoint`
+
+```python
+property nnx.bundles.ReconstructedBundle.resume_checkpoint
+```
+
+The checkpoint label a resumed run records as its parent checkpoint (``"bundle-<generation>_e<epoch>"``).
+
+##### `nnx.bundles.ReconstructedBundle.resume`
+
+```python
+nnx.bundles.ReconstructedBundle.resume(self, params: 'NNTrainParams', **train_kwargs: 'Any') -> 'NNRun'
+```
+
+Continue training :attr:`model` from the bundle's training state: ``model.train(params, **train_kwargs)`` as a stateful resume of the bundle's run and checkpoint — the optimizer, scheduler, GradScaler, RNG and component state are restored and epoch numbering continues, exactly as resuming the original run on disk would. ``params`` must not name a resume source of its own.
+
+**Details**
+
+```text
+An ``"inference"`` bundle raises :class:`BundleCapabilityError`
+before anything changes, and so does a ``Trainer`` run's bundle (named
+optimizers): this continues ``NNModel.train`` runs. ``resume_mode`` is
+always ``"stateful"`` here.
+```
+
+
+#### `nnx.bundles.BundleError`
+
+```python
+class nnx.bundles.BundleError
+```
+
+A run bundle that cannot be written, read or used.
+
+
+#### `nnx.bundles.BundleIntegrityError`
+
+```python
+class nnx.bundles.BundleIntegrityError
+```
+
+A bundle that fails validation: a missing, extra, altered, symlinked or out-of-root payload, a generation mismatch, duplicate JSON keys, an unknown format or version, or malformed state.
+
+
+#### `nnx.bundles.BundleCapabilityError`
+
+```python
+class nnx.bundles.BundleCapabilityError
+```
+
+An operation the bundle's capability does not support — resuming an ``"inference"`` bundle, which has no training state.
+
+
+#### `nnx.bundles.BundleReconstructionError`
+
+```python
+class nnx.bundles.BundleReconstructionError(problems: 'Iterable[str]') -> 'None'
+```
+
+What a reconstruction needs and was not given (a model factory, a component), every problem listed in ``problems``; raised before any model is allocated.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`

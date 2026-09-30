@@ -22,6 +22,7 @@ UNNUMBERED_EXAMPLES = [
     "optimizer_factories.py",
     "preprocessing_offline.py",
     "regression_task.py",
+    "run_bundle.py",
     "split_replay.py",
     "tabular_validation.py",
 ]
@@ -50,6 +51,7 @@ def test_example_imports_without_running_main(example):
         "26_custom_eval_step.py",
         "preprocessing_offline.py",
         "regression_task.py",
+        "run_bundle.py",
         "split_replay.py",
     ],
 )
@@ -104,6 +106,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("optimizer_factories.py", "optimizer_factories_workflow"),
     ("preprocessing_offline.py", "preprocessing_offline_workflow"),
     ("regression_task.py", "regression_task_workflow"),
+    ("run_bundle.py", "run_bundle_workflow"),
     ("split_replay.py", "split_replay_workflow"),
     ("tabular_validation.py", "tabular_validation_workflow"),
     ("25_conv_classifier.py", "conv_integral_schema_roundtrip"),

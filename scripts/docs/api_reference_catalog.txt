@@ -316,6 +316,28 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
+### 2.18. Run bundles (`nnx.bundles`)
+
+@api nnx.bundles.export_bundle
+
+@api nnx.bundles.inspect_bundle
+
+@api nnx.bundles.validate_bundle
+
+@api nnx.bundles.reconstruct_bundle
+
+@api nnx.bundles.BundleInfo
+
+@api nnx.bundles.ReconstructedBundle
+
+@api nnx.bundles.BundleError
+
+@api nnx.bundles.BundleIntegrityError
+
+@api nnx.bundles.BundleCapabilityError
+
+@api nnx.bundles.BundleReconstructionError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
