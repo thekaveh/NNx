@@ -1420,7 +1420,8 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
 - **Raw and calibrated views.** `transform` accepts arrays, tensors or a
   categorical `PredictionResult`
   ([Quickstart §2.13](quickstart.md#213-probabilities-decoded-labels-and-sample-ids)), whose spec supplies the labels and
-  whose `sample_ids` are kept. It returns a `CalibratedPrediction` with the
+  whose `sample_ids` are kept; `sample_ids=` names an array's rows (default
+  `0..N-1`) and must equal a prediction's own. It returns a `CalibratedPrediction` with the
   raw `logits`, raw `probabilities` (float64 softmax, identical to a
   temperature-1 calibrator), `calibrated_probabilities`, `decoded` (the raw
   argmax), the ordered `labels`, `sample_ids` and the `calibrator_id` (the
@@ -1456,3 +1457,94 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
   `predict_proba` use.
 
 See [`examples/calibration_offline.py`](../examples/calibration_offline.py).
+
+## 19. Abstention and risk-coverage (`nnx.abstention`)
+
+A classifier that must answer every row cannot decline an uncertain one.
+`nnx.abstention` (FEAT-008) adds **policies** that accept a row only when its
+score reaches a threshold, and report what that costs and buys.
+
+```text
+validation probabilities + targets ──► select_threshold(kind, risk_ceiling, split_id="val", test_split_id="test")
+                                        └──► ThresholdSelection (candidates + counts; ok → AbstentionPolicy | no_feasible_policy)
+test probabilities ──► policy.apply(...) ──► AbstentionResult (accepted / abstained per row)
+                                              ├──► .report(targets)        ──► CoverageReport (coverage, selective risk)
+                                              └──► .accepted_rows(targets) ──► hard-label reports (accepted rows only)
+```
+
+- **Policies.** `AbstentionPolicy(kind="max_probability" | "margin",
+  threshold=..., labels=..., model_id=..., tuning_split_id=...)`. The score
+  is the top probability, or the gap between the top two (a tied top two
+  gives 0). A row is accepted when its score is **at or above** the
+  threshold, so 1.0 still accepts a score of exactly 1. Scores are float64,
+  so a margin of `0.7 - 0.2` is `0.49999999999999994` and a hand-picked
+  threshold of 0.5 abstains on it; thresholds from `select_threshold` are
+  actual scores. For arrays, the
+  prediction is the first class of maximal probability, so ties break by
+  label order. Policies are pure functions over categorical `[N, C]`
+  probabilities (`C >= 2`) with ordered labels and stable sample ids. As
+  in a `PredictionResult`, ids may repeat (an oversampled split, say): each
+  row is decided on its own.
+- **Three kinds of outcome.** *Accepted*: the prediction stands.
+  *Abstained*: the policy declined the row, which is a success. The row
+  keeps its prediction, distribution, score and sample id, and a reason
+  (`"below_probability_threshold"` or `"small_margin"`). *Invalid*:
+  malformed probabilities (non-finite, outside `[0, 1]`, rows not summing
+  to 1, `C < 2`) or another schema raise `AbstentionError`, and are never
+  quietly abstained on. The input is never modified.
+- **Declared field and schema.** A policy records the probability field it
+  reads: `"probabilities"`, or a calibrator's `"calibrated_probabilities"`
+  together with that calibrator's id (§18). It also records the label order,
+  the model id and the tuning split id. It is JSON (`nnx.abstention/1`),
+  and loading rejects a threshold outside `[0, 1]`.
+  - `apply` accepts a `CalibratedPrediction` (the policy's field picks the
+    raw or calibrated view), a categorical `PredictionResult`, or arrays
+    with `labels=` / `model_id=`.
+  - Another label order, model, field or calibrator raises
+    `AbstentionSchemaError` before any probability is read.
+  - For a prediction, the predicted class is its own `decoded` argmax of the
+    raw logits (never a rounding tie in the probabilities). It must be a
+    class of maximal probability in every row, else `AbstentionError`. A
+    calibration override (§18) travels, as `calibration_override`, with the
+    result and with a `ThresholdSelection` tuned on the calibrated view.
+  - `decide(choice_result, policy, model_id=...)` applies a policy to a
+    typed decision (§17). It returns the provider's result unchanged inside
+    a `SelectiveDecision`, with abstention a success and the distribution
+    and its raw field kept.
+- **Two denominators.** `CoverageReport` gives `coverage = accepted /
+  total` over **every** row, and selective `risk = incorrect / accepted`
+  over the **accepted** rows only. With nothing accepted, risk is
+  unavailable: `None`, status `"no_accepted"`, never 0. The report keeps
+  every original sample id and the total count. Only `accepted_rows(targets)`
+  should reach a hard-label report (accuracy, confusion matrix,
+  `VisUtils.classification_report`); an abstention never becomes a pseudo
+  class. `CoverageAccumulator` aggregates chunks to exactly the eager
+  report, zero accepted included. Give each chunk its own `sample_ids=`
+  (a prediction's when it is made, as `TemperatureCalibrator.transform`
+  also accepts): by default an id seen before, in its chunk or an earlier
+  one, is refused, since the default `0..n-1` repeats from chunk to chunk. For a split whose ids
+  legitimately repeat, pass `CoverageAccumulator(allow_repeated_ids=True)`.
+- **Threshold selection.** `select_threshold` runs on a **named validation
+  split**, never the test split: a `split_id` equal to `test_split_id` is
+  refused, and a `CalibratedPrediction` needs `input_field=` to say which
+  view to tune on. It evaluates every candidate threshold and reports each
+  one's counts, coverage and risk. The default candidates are every distinct
+  score, or, beyond `MAX_DEFAULT_CANDIDATES` (1001) of them, that many evenly
+  spaced order statistics of the scores (coverage steps of about 0.1%); pass
+  `candidates=` for any other set. The selection records the labels, model
+  id, field and calibrator it was tuned on, even when nothing is feasible. It then picks the
+  highest coverage whose risk is at or below the ceiling, or returns
+  `"no_feasible_policy"`. The ceiling is **empirical**: it held on the
+  validation split, which does not guarantee it anywhere else. Split ids
+  are declared, not verified: tune on rows used neither for training nor
+  for fitting the calibrator (§18), or the risk is optimistic.
+- **Risk-coverage curve.** `risk_coverage_curve` lists the candidates in
+  ascending order. It reads bare probabilities, or a prediction's own
+  `decoded` classes as `select_threshold` does (a `CalibratedPrediction`
+  with `input_field=`). Coverage never rises as the threshold rises; risk is
+  measured at each point, never assumed monotone. The curve ends in an
+  **accept-none** endpoint (coverage 0, risk unavailable). That endpoint
+  exists only on the curve: it is not deployable, and no policy can hold or
+  load it.
+
+See [`examples/abstention_offline.py`](../examples/abstention_offline.py).

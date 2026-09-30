@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 import numbers
-from typing import Optional
+from typing import Any, Optional
 
 
 def require_finite_real(
@@ -164,3 +164,24 @@ def _domain(minimum, maximum, exclusive_min, exclusive_max) -> str:
     if maximum is not None:
         parts.append(f"{'<' if exclusive_max else '<='} {maximum:g}")
     return f" {' and '.join(parts)}" if parts else ""
+
+
+def checked(check: Any, value: object, field: str, *, owner: str, error: type[Exception], **domain: Any) -> Any:
+    """Run ``check`` (``require_finite_real`` / ``require_count``) and raise
+    its ``ValueError`` — or the ``OverflowError`` of an integer too large for
+    a float (``10**400``) — as ``error``, so a module keeps its own error type."""
+    try:
+        return check(value, field, owner=owner, **domain)
+    except ValueError as exc:
+        raise error(str(exc)) from exc
+    except OverflowError as exc:
+        raise error(
+            f"{owner} requires {field} to be a finite real number, got an integer too large for a float"
+        ) from exc
+
+
+def required_id(value: Any, what: str, *, error: type[Exception]) -> str:
+    """A non-empty string id, or ``error``."""
+    if not isinstance(value, str) or not value:
+        raise error(f"{what} must be a non-empty string, got {value!r}")
+    return value

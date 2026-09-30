@@ -549,7 +549,7 @@ def test_calibration_imports_no_optional_consumer():
         "typing",
     }
     assert top_level <= stdlib | {"numpy"}, top_level
-    assert internal == {"_config", "_probability", "_validation"}, internal
+    assert internal == {"_artifacts", "_config", "_probability", "_validation"}, internal
     code = f"""
 import sys, types
 package = types.ModuleType("nnx")
@@ -562,7 +562,8 @@ fit = module.fit_temperature(np.array([[2.0, 0.0]] * 3 + [[0.0, 2.0]]), np.array
 report = fit.require().report(np.array([[1.0, 0.0]]), np.array([0]), labels=("n", "p"), model_id="m", split_id="t")
 module.TemperatureCalibrator.from_json(fit.require().to_json())
 nnx_modules = sorted(name for name in sys.modules if name.split(".")[0] == "nnx")
-assert nnx_modules == ["nnx", "nnx._config", "nnx._probability", "nnx._validation", "nnx.calibration"], nnx_modules
+expected = ["nnx", "nnx._artifacts", "nnx._config", "nnx._probability", "nnx._validation", "nnx.calibration"]
+assert nnx_modules == expected, nnx_modules
 heavy = sorted(name for name in sys.modules if name.split(".")[0] in {{"torch", "sklearn", "pandas"}})
 assert heavy == [], heavy
 """
@@ -1134,3 +1135,63 @@ def test_final_consistency_checks():
     calibrated = _calibrator().transform(K_LOGITS, labels=BINARY, model_id="run-1:BEST")
     with pytest.raises(CalibrationError, match="already calibrated"):
         _calibrator().transform(calibrated, model_id="run-1:BEST")
+
+
+def test_transform_names_array_rows_with_sample_ids():
+    calibrator = _calibrator()
+    logits = np.array([[0.0, 1.0], [2.0, 0.0]])
+    named = calibrator.transform(logits, labels=BINARY, model_id="run-1:BEST", sample_ids=[7, 9])
+    assert named.sample_ids.tolist() == [7, 9]
+    assert calibrator.transform(logits, labels=BINARY, model_id="run-1:BEST").sample_ids.tolist() == [0, 1]
+    with pytest.raises(CalibrationError, match="sample_ids"):
+        calibrator.transform(logits, labels=BINARY, model_id="run-1:BEST", sample_ids=[7])
+    from nnx.prediction import ProbabilitySpec, prediction_from_logits
+
+    prediction = prediction_from_logits(logits, ProbabilitySpec("categorical", labels=BINARY), sample_ids=[3, 4])
+    assert calibrator.transform(prediction, model_id="run-1:BEST", sample_ids=[3, 4]).sample_ids.tolist() == [3, 4]
+    with pytest.raises(CalibrationError, match="contradicts"):
+        calibrator.transform(prediction, model_id="run-1:BEST", sample_ids=[4, 3])
+
+
+def test_transform_checks_array_ids_before_reading_the_logits():
+    class Logits:
+        reads = 0
+
+        def __array__(self, dtype=None, copy=None):
+            Logits.reads += 1
+            return np.zeros((2, 2))
+
+    with pytest.raises(CalibrationError, match="sample_ids"):
+        _calibrator().transform(Logits(), labels=BINARY, model_id="run-1:BEST", sample_ids=[[1, 2]])
+    assert Logits.reads == 0
+
+
+def test_empty_labels_are_an_identity_mismatch_and_state_errors_name_the_problem():
+    calibrator = _calibrator()
+    with pytest.raises(CalibrationMismatchError):
+        calibrator.transform(np.zeros((1, 2)), labels=[], model_id="run-1:BEST")
+    state = calibrator.state()
+    state.pop("split")
+    with pytest.raises(CalibrationError) as caught:
+        TemperatureCalibrator.from_state(state)
+    assert str(caught.value) == "the calibrator state lacks ['split']"
+    state = dict(calibrator.state(), extra=1)
+    with pytest.raises(CalibrationError, match=r"unknown keys \['extra'\] \(expected \[") as caught:
+        TemperatureCalibrator.from_state(state)
+    assert "lacks" not in str(caught.value)
+
+
+def test_report_ignores_the_ids_it_never_uses():
+    from types import SimpleNamespace
+
+    from nnx.prediction import ProbabilitySpec
+
+    duck = SimpleNamespace(
+        logits=np.array([[0.0, 1.0], [2.0, 0.0]]),
+        spec=ProbabilitySpec("categorical", labels=BINARY),
+        sample_ids=np.array([[1, 2]]),  # malformed, and unused by a report
+    )
+    report = _calibrator().report(duck, [1, 0], model_id="run-1:BEST", split_id="test")
+    assert report.outcome in ("improved", "worsened", "mixed", "unchanged")
+    with pytest.raises(CalibrationError, match="sample_ids"):
+        _calibrator().transform(duck, model_id="run-1:BEST")
