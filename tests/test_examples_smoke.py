@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Unnumbered scripts are outside the numbered glob: register them here so
 # they are imported (without running main) and, below, executed.
 UNNUMBERED_EXAMPLES = [
+    "abstention_offline.py",
     "builder_branching.py",
     "calibration_offline.py",
     "custom_module.py",
@@ -39,6 +40,7 @@ def test_example_imports_without_running_main(example):
         "01_synthetic_classification.py",
         "03_custom_metrics.py",
         "05_custom_train_step_autoencoder.py",
+        "abstention_offline.py",
         "calibration_offline.py",
         "10_knowledge_distillation.py",
         "custom_module.py",
@@ -90,6 +92,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("20_low_rank_surgery_ffn.py", "deepen_override_workflow"),
     ("20_low_rank_surgery_ffn.py", "named_deepen_workflow"),
     ("22_dpo_synthetic_preferences.py", "dpo_sample_batch_sizes"),
+    ("abstention_offline.py", "abstention_offline_workflow"),
     ("builder_branching.py", "builder_branching_workflow"),
     ("calibration_offline.py", "calibration_offline_workflow"),
     ("custom_module.py", "custom_module_workflow"),

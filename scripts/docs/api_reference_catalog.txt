@@ -268,6 +268,38 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.calibration.CalibrationMismatchError
 
+### 2.16. Abstention and risk-coverage (`nnx.abstention`)
+
+@api nnx.abstention.AbstentionPolicy
+
+@api nnx.abstention.AbstentionResult
+
+@api nnx.abstention.Outcome
+
+@api nnx.abstention.AcceptedRows
+
+@api nnx.abstention.CoverageReport
+
+@api nnx.abstention.CoverageAccumulator
+
+@api nnx.abstention.select_threshold
+
+@api nnx.abstention.ThresholdSelection
+
+@api nnx.abstention.risk_coverage_curve
+
+@api nnx.abstention.CurvePoint
+
+@api nnx.abstention.scores
+
+@api nnx.abstention.decide
+
+@api nnx.abstention.SelectiveDecision
+
+@api nnx.abstention.AbstentionError
+
+@api nnx.abstention.AbstentionSchemaError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

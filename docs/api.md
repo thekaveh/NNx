@@ -3676,7 +3676,7 @@ The calibrator id: :meth:`digest`.
 ##### `nnx.calibration.TemperatureCalibrator.transform`
 
 ```python
-nnx.calibration.TemperatureCalibrator.transform(self, logits: 'Any', *, model_id: 'str', labels: 'Optional[Sequence[str]]' = None, override: 'Optional[str]' = None) -> 'CalibratedPrediction'
+nnx.calibration.TemperatureCalibrator.transform(self, logits: 'Any', *, model_id: 'str', labels: 'Optional[Sequence[str]]' = None, override: 'Optional[str]' = None, sample_ids: 'Any' = None) -> 'CalibratedPrediction'
 ```
 
 Calibrate ``logits`` — an ``(N, C)`` array or tensor, or a categorical ``nnx.prediction.PredictionResult``.
@@ -3684,6 +3684,10 @@ Calibrate ``logits`` — an ``(N, C)`` array or tensor, or a categorical ``nnx.p
 **Details**
 
 ```text
+``sample_ids`` names the rows of an array (``0..N-1`` by default); a
+prediction keeps its own ids, and ``sample_ids=`` must then equal
+them.
+
 ``model_id`` and the column ``labels`` (taken from the prediction's
 spec when omitted) must equal the fitted ones; otherwise
 :class:`CalibrationMismatchError` is raised before the logits are
@@ -3772,7 +3776,7 @@ Attributes:
         changes the argmax.
     labels: the ordered class names of the columns.
     sample_ids: ``int64[N]`` row identities (a ``PredictionResult``'s
-        own ids, else ``0..N-1``).
+        own ids, else ``transform``'s ``sample_ids=``, else ``0..N-1``).
     calibrator_id: :meth:`TemperatureCalibrator.digest` of the calibrator.
     model_id: the model id the logits were declared to come from.
     temperature: the calibrator's temperature.
@@ -4011,6 +4015,537 @@ class nnx.calibration.CalibrationMismatchError
 ```
 
 Logits whose label schema or model id differ from the calibrator's, without a named ``override``.
+
+
+### 2.16. Abstention and risk-coverage (`nnx.abstention`)
+
+#### `nnx.abstention.AbstentionPolicy`
+
+```python
+class nnx.abstention.AbstentionPolicy(kind: 'str', threshold: 'float', labels: 'tuple[str, ...]', model_id: 'str', tuning_split_id: 'str', input_field: 'str' = 'probabilities', calibrator_id: 'Optional[str]' = None) -> 'None'
+```
+
+Accept a row when its score reaches ``threshold``; abstain otherwise.
+
+**Details**
+
+```text
+Args:
+    kind: ``"max_probability"`` or ``"margin"``.
+    threshold: a finite number in ``[0, 1]``; a row is accepted when its
+        score is at or above it.
+    labels: the ordered class names the probabilities' columns carry.
+    model_id: the model the probabilities must come from.
+    tuning_split_id: the validation split the threshold was chosen on.
+    input_field: ``"probabilities"`` (raw) or
+        ``"calibrated_probabilities"``.
+    calibrator_id: the calibrator of a calibrated field (required
+        then, and ``None`` for raw probabilities).
+
+Equality, hashing and :attr:`id` follow the canonical state.
+```
+
+##### `nnx.abstention.AbstentionPolicy.id`
+
+```python
+property nnx.abstention.AbstentionPolicy.id
+```
+
+``sha256:<hex>`` of the canonical state.
+
+##### `nnx.abstention.AbstentionPolicy.reason`
+
+```python
+property nnx.abstention.AbstentionPolicy.reason
+```
+
+The reason an abstained row carries.
+
+##### `nnx.abstention.AbstentionPolicy.apply`
+
+```python
+nnx.abstention.AbstentionPolicy.apply(self, source: 'Any', *, labels: 'Optional[Sequence[str]]' = None, model_id: 'Optional[str]' = None, sample_ids: 'Any' = None, input_field: 'Optional[str]' = None, calibrator_id: 'Optional[str]' = None) -> 'AbstentionResult'
+```
+
+Accept or abstain on every row of ``source``.
+
+**Details**
+
+```text
+``source`` is a ``CalibratedPrediction`` (the policy's
+``input_field`` picks its raw or calibrated view), a categorical
+``PredictionResult`` (raw; pass ``model_id=``), or ``(N, C)``
+probabilities with ``labels=`` / ``model_id=`` (and
+``input_field=`` / ``calibrator_id=`` for calibrated ones). The
+declared schema must equal the policy's — otherwise
+:class:`AbstentionSchemaError`, before any probability is read.
+Malformed probabilities raise :class:`AbstentionError`. The input is
+never modified.
+```
+
+##### `nnx.abstention.AbstentionPolicy.state`
+
+```python
+nnx.abstention.AbstentionPolicy.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionPolicy.from_state`
+
+```python
+nnx.abstention.AbstentionPolicy.from_state(state: 'Mapping[str, Any]') -> 'AbstentionPolicy'
+```
+
+Rebuild from :meth:`state`; anything malformed — including a non-deployable threshold such as a curve's accept-none endpoint — raises :class:`AbstentionError`.
+
+##### `nnx.abstention.AbstentionPolicy.from_json`
+
+```python
+nnx.abstention.AbstentionPolicy.from_json(text: 'str') -> 'AbstentionPolicy'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionPolicy.load`
+
+```python
+nnx.abstention.AbstentionPolicy.load(path: 'Any') -> 'AbstentionPolicy'
+```
+
+No public description is currently available.
+
+
+#### `nnx.abstention.AbstentionResult`
+
+```python
+class nnx.abstention.AbstentionResult(policy_id: 'str', kind: 'str', threshold: 'float', input_field: 'str', calibrator_id: 'Optional[str]', model_id: 'str', labels: 'tuple[str, ...]', sample_ids: 'np.ndarray', probabilities: 'np.ndarray', prediction: 'np.ndarray', score: 'np.ndarray', accepted: 'np.ndarray', calibration_override: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+A policy applied to ``N`` rows.
+
+**Details**
+
+```text
+``probabilities`` is a float64 copy of the field the policy read;
+``prediction`` the first class of maximal probability (a prediction's
+own ``decoded`` class, for a prediction); ``score`` the
+policy score; ``accepted`` whether the row was accepted. The policy's
+identity (``policy_id``, ``kind``, ``threshold``, ``input_field``,
+``calibrator_id``, ``model_id``, ``labels``) travels with the result, and
+so does ``calibration_override``: the named override under which a
+calibrated prediction was produced, if any (``nnx.calibration``).
+```
+
+##### `nnx.abstention.AbstentionResult.abstained`
+
+```python
+property nnx.abstention.AbstentionResult.abstained
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionResult.reasons`
+
+```python
+property nnx.abstention.AbstentionResult.reasons
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionResult.accepted_ids`
+
+```python
+property nnx.abstention.AbstentionResult.accepted_ids
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionResult.abstained_ids`
+
+```python
+property nnx.abstention.AbstentionResult.abstained_ids
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionResult.outcomes`
+
+```python
+nnx.abstention.AbstentionResult.outcomes(self) -> 'tuple[Outcome, ...]'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionResult.accepted_rows`
+
+```python
+nnx.abstention.AbstentionResult.accepted_rows(self, targets: 'Any') -> 'AcceptedRows'
+```
+
+Sample ids, targets and predictions of the accepted rows only.
+
+##### `nnx.abstention.AbstentionResult.report`
+
+```python
+nnx.abstention.AbstentionResult.report(self, targets: 'Any') -> 'CoverageReport'
+```
+
+Coverage and selective risk against integer class ``targets``.
+
+
+#### `nnx.abstention.Outcome`
+
+```python
+class nnx.abstention.Outcome(sample_id: 'Optional[int]', status: 'str', prediction: 'str', prediction_index: 'int', distribution: 'tuple[tuple[str, float], ...]', score: 'float', reason: 'Optional[str]') -> 'None'
+```
+
+One row: ``status`` ``"accepted"`` or ``"abstained"`` (with its ``reason``); the ``prediction`` (label) and its index, the ordered ``distribution``, the ``score`` and the ``sample_id`` are kept either way.
+
+##### `nnx.abstention.Outcome.accepted`
+
+```python
+property nnx.abstention.Outcome.accepted
+```
+
+No public description is currently available.
+
+
+#### `nnx.abstention.AcceptedRows`
+
+```python
+class nnx.abstention.AcceptedRows(sample_ids: 'np.ndarray', targets: 'np.ndarray', predictions: 'np.ndarray') -> 'None'
+```
+
+The accepted rows only — what a hard-label report (accuracy, a confusion matrix, ``VisUtils.classification_report``) may receive. An abstention is never turned into a pseudo-class.
+
+
+#### `nnx.abstention.CoverageReport`
+
+```python
+class nnx.abstention.CoverageReport(policy_id: 'Optional[str]', total: 'int', accepted: 'int', incorrect: 'int', sample_ids: 'np.ndarray', accepted_ids: 'np.ndarray') -> 'None'
+```
+
+Coverage over every row and selective risk over the accepted rows.
+
+**Details**
+
+```text
+``coverage = accepted / total`` and ``risk = incorrect / accepted``.
+With nothing accepted, ``risk`` is ``None`` and ``status`` is
+``"no_accepted"`` — never a risk of 0; with no rows at all both are
+``None`` and ``status`` is ``"empty"``. ``sample_ids`` keeps every
+original id and ``accepted_ids`` the accepted ones, in row order, as
+read-only int64 arrays.
+```
+
+##### `nnx.abstention.CoverageReport.status`
+
+```python
+property nnx.abstention.CoverageReport.status
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.summary`
+
+```python
+nnx.abstention.CoverageReport.summary(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.state`
+
+```python
+nnx.abstention.CoverageReport.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.from_state`
+
+```python
+nnx.abstention.CoverageReport.from_state(state: 'Mapping[str, Any]') -> 'CoverageReport'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.from_json`
+
+```python
+nnx.abstention.CoverageReport.from_json(text: 'str') -> 'CoverageReport'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.load`
+
+```python
+nnx.abstention.CoverageReport.load(path: 'Any') -> 'CoverageReport'
+```
+
+No public description is currently available.
+
+
+#### `nnx.abstention.CoverageAccumulator`
+
+```python
+class nnx.abstention.CoverageAccumulator(*, allow_repeated_ids: 'bool' = False) -> 'None'
+```
+
+Coverage and selective risk aggregated over chunks.
+
+**Details**
+
+```text
+``update(result, targets)`` adds one chunk; :meth:`report` equals the
+eager ``AbstentionResult.report`` over the concatenated rows — the same
+accepted / incorrect / total counts and the same risk, including when
+nothing is accepted. Every chunk must come from the same policy, and by
+default every id must be new — within its chunk and across chunks —
+since the default ``0..n-1`` repeats from chunk to chunk: pass each
+chunk its own ``sample_ids=``. For a split whose ids legitimately repeat
+(oversampled), pass ``allow_repeated_ids=True``; ids are then not
+checked.
+A ``PredictionResult`` or ``CalibratedPrediction`` chunk carries the ids
+it was made with (``prediction_from_logits(sample_ids=...)``,
+``TemperatureCalibrator.transform(sample_ids=...)``). Ids are kept as
+int64 arrays — in row order, the accepted ones, and sorted for the repeat
+check, which costs ``O(k log² n)`` for ``k`` new ids among ``n`` so far.
+```
+
+##### `nnx.abstention.CoverageAccumulator.update`
+
+```python
+nnx.abstention.CoverageAccumulator.update(self, result: 'AbstentionResult', targets: 'Any') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageAccumulator.report`
+
+```python
+nnx.abstention.CoverageAccumulator.report(self) -> 'CoverageReport'
+```
+
+The aggregated report over every chunk added so far.
+
+
+#### `nnx.abstention.select_threshold`
+
+```python
+nnx.abstention.select_threshold(source: 'Any', targets: 'Any', *, kind: 'str', risk_ceiling: 'float', split_id: 'str', test_split_id: 'Optional[str]' = None, labels: 'Optional[Sequence[str]]' = None, model_id: 'Optional[str]' = None, input_field: 'Optional[str]' = None, calibrator_id: 'Optional[str]' = None, sample_ids: 'Any' = None, candidates: 'Optional[Iterable[float]]' = None) -> 'ThresholdSelection'
+```
+
+Choose a ``kind`` threshold on the validation split ``split_id``.
+
+**Details**
+
+```text
+``source`` is declared as for :meth:`AbstentionPolicy.apply`; a
+``CalibratedPrediction`` needs ``input_field=`` to say which of its two
+views to tune on. Every candidate threshold is evaluated: by default
+every distinct score, or, beyond :data:`MAX_DEFAULT_CANDIDATES` of them,
+that many evenly spaced order statistics of the scores (pass
+``candidates=`` for another set). The feasible ones accept at least one
+row with ``risk <= risk_ceiling``; among them the highest coverage wins
+(equal coverage is the same accepted set, so the same risk), then the
+higher, more conservative threshold.
+Nothing feasible gives ``status="no_feasible_policy"``. A ``split_id``
+equal to ``test_split_id`` is refused: tuning on the test split would
+leak it. The ceiling is empirical — met on this split, not guaranteed.
+```
+
+
+#### `nnx.abstention.ThresholdSelection`
+
+```python
+class nnx.abstention.ThresholdSelection(status: 'str', policy: 'Optional[AbstentionPolicy]', points: 'tuple[CurvePoint, ...]', kind: 'str', risk_ceiling: 'float', split_id: 'str', labels: 'tuple[str, ...]', model_id: 'str', input_field: 'str' = 'probabilities', calibrator_id: 'Optional[str]' = None, test_split_id: 'Optional[str]' = None, basis: 'str' = 'empirical', calibration_override: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+The outcome of :func:`select_threshold`.
+
+**Details**
+
+```text
+``status`` is ``"ok"`` with the chosen ``policy`` or
+``"no_feasible_policy"`` with ``policy=None``. ``points`` lists every
+candidate threshold with its counts, coverage and risk, then the
+accept-none endpoint. ``basis`` is ``"empirical"``: the ceiling was met
+on ``split_id``, which does not guarantee it anywhere else.
+``labels``, ``model_id``, ``input_field`` and ``calibrator_id`` record
+what was tuned on — a chosen policy carries the same — so even a
+``"no_feasible_policy"`` selection says which model and view failed.
+``calibration_override`` is the named override (``nnx.calibration``)
+under which the calibrated probabilities tuned on were produced, if any.
+```
+
+##### `nnx.abstention.ThresholdSelection.require`
+
+```python
+nnx.abstention.ThresholdSelection.require(self) -> 'AbstentionPolicy'
+```
+
+The chosen policy, or :class:`AbstentionError`.
+
+##### `nnx.abstention.ThresholdSelection.state`
+
+```python
+nnx.abstention.ThresholdSelection.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.ThresholdSelection.from_state`
+
+```python
+nnx.abstention.ThresholdSelection.from_state(state: 'Mapping[str, Any]') -> 'ThresholdSelection'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.ThresholdSelection.from_json`
+
+```python
+nnx.abstention.ThresholdSelection.from_json(text: 'str') -> 'ThresholdSelection'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.ThresholdSelection.load`
+
+```python
+nnx.abstention.ThresholdSelection.load(path: 'Any') -> 'ThresholdSelection'
+```
+
+No public description is currently available.
+
+
+#### `nnx.abstention.risk_coverage_curve`
+
+```python
+nnx.abstention.risk_coverage_curve(source: 'Any', targets: 'Any', *, kind: 'str', candidates: 'Optional[Iterable[float]]' = None, input_field: 'Optional[str]' = None) -> 'tuple[CurvePoint, ...]'
+```
+
+Coverage and selective risk at each candidate threshold, ascending.
+
+**Details**
+
+```text
+``source`` is ``(N, C)`` probabilities (the prediction is each row's
+first class of maximal probability), a categorical ``PredictionResult``
+or a ``CalibratedPrediction`` with ``input_field=`` (their own
+``decoded`` classes, as :func:`select_threshold` reads them). By default
+the candidates are the distinct scores (bounded by
+:data:`MAX_DEFAULT_CANDIDATES`). Coverage never rises as the threshold
+rises; risk is measured at each point, never assumed monotone. The last
+point is the accept-none endpoint.
+```
+
+
+#### `nnx.abstention.CurvePoint`
+
+```python
+class nnx.abstention.CurvePoint(threshold: 'Optional[float]', accepted: 'int', incorrect: 'int', total: 'int') -> 'None'
+```
+
+One point of a risk-coverage curve: rows with a score at or above ``threshold`` are accepted. The final ``"accept_none"`` point (``threshold=None``, coverage 0, risk unavailable) exists only on the curve and is not ``deployable``.
+
+##### `nnx.abstention.CurvePoint.status`
+
+```python
+property nnx.abstention.CurvePoint.status
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CurvePoint.deployable`
+
+```python
+property nnx.abstention.CurvePoint.deployable
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CurvePoint.state`
+
+```python
+nnx.abstention.CurvePoint.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.abstention.scores`
+
+```python
+nnx.abstention.scores(probabilities: 'Any', *, kind: 'str') -> 'tuple[np.ndarray, np.ndarray]'
+```
+
+``(prediction, score)`` per row of categorical ``(N, C)`` probabilities: the first class of maximal probability and the policy score (the top probability, or the top-two margin). A prediction's own ``decoded`` class is kept by :meth:`AbstentionPolicy.apply` and :func:`select_threshold` instead.
+
+
+#### `nnx.abstention.decide`
+
+```python
+nnx.abstention.decide(result: 'Any', policy: 'AbstentionPolicy', *, model_id: 'str') -> 'SelectiveDecision'
+```
+
+Apply ``policy`` to a typed decision (``nnx.decisions``).
+
+**Details**
+
+```text
+``result`` is a ``ChoiceResult`` or ``ScoreResult``; its option ids, in
+order, are the labels. A provider's distribution is raw, so the policy
+must read ``"probabilities"``; labels and ``model_id`` must equal the
+policy's (:class:`AbstentionSchemaError` otherwise). The result is
+returned unchanged inside a :class:`SelectiveDecision`, accepted or not.
+```
+
+
+#### `nnx.abstention.SelectiveDecision`
+
+```python
+class nnx.abstention.SelectiveDecision(result: 'Any', outcome: 'Outcome', policy_id: 'str', input_field: 'str', calibrator_id: 'Optional[str]') -> 'None'
+```
+
+A typed decision with a policy's verdict: ``result`` is the provider's ``ChoiceResult`` / ``ScoreResult``, unchanged — abstaining is a success, not an error — and ``outcome`` says whether it was accepted. ``input_field`` / ``calibrator_id`` record which probabilities the verdict read (a provider's distribution is raw).
+
+##### `nnx.abstention.SelectiveDecision.accepted`
+
+```python
+property nnx.abstention.SelectiveDecision.accepted
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.SelectiveDecision.abstained`
+
+```python
+property nnx.abstention.SelectiveDecision.abstained
+```
+
+No public description is currently available.
+
+
+#### `nnx.abstention.AbstentionError`
+
+```python
+class nnx.abstention.AbstentionError
+```
+
+Malformed probabilities, targets, configuration or serialized state.
+
+
+#### `nnx.abstention.AbstentionSchemaError`
+
+```python
+class nnx.abstention.AbstentionSchemaError
+```
+
+A declared schema — labels, model id, probability field, calibrator or sample ids — that contradicts the policy's, the prediction's own, or itself (calibrated probabilities without their calibrator, say).
 
 
 ## 3. Params
