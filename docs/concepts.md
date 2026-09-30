@@ -1548,3 +1548,147 @@ test probabilities ──► policy.apply(...) ──► AbstentionResult (accep
   load it.
 
 See [`examples/abstention_offline.py`](../examples/abstention_offline.py).
+
+
+## 20. Experiment plans (`nnx.plans`)
+
+Branching a configuration used to mean copying dataclasses by hand.
+`ExperimentPlan` (FEAT-012) holds the pieces of one experiment:
+
+- `NNParams`, `NNModelParams` and `NNTrainParams`;
+- the data;
+- the seed;
+- the callbacks.
+
+It compiles them to the existing loop, `NNModel(net, model).train(train, ...)`.
+There is no third loop and no hidden model cloning, and the mutable builders
+are unchanged.
+
+```text
+ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged)
+      │
+      ├── validate() ──► PlanValidation (every Diagnostic(path, message); pure)
+      ├── probe(batch) ──► ProbeResult (temporary model, no-grad forward + loss; ambient state restored)
+      └── fit(attempt=None) ──► FitResult(model, run, metrics, attempt_id)
+                                 └── set_seed → factories → NNModel(...) → model.train(..., salt="plan-attempt:<id>")
+```
+
+- **Branching.** Each `with_*` method returns a new plan: `with_net`,
+  `with_model`, `with_train`, `with_epochs`, `with_optim`, `with_scheduler`,
+  `with_metrics`, `with_extra_metrics`, `with_data`, `with_seed`,
+  `with_callbacks`, `with_callback_factories`, `with_step_fns`,
+  `with_objective`, `with_components`, `with_provenance`,
+  `with_batch_adapter` (a registered module's inputs) and `resuming`.
+  - A method keeps what it is not given. `with_data(train)` keeps the
+    validation source and identity (pass `val=None` or `identity=...` to
+    change them), and `with_metrics(monitor=m)` keeps the metrics. The
+    plan's seed overrides the training parameters' `seed`.
+  - The parameter objects are immutable and shared between branches.
+  - Collections are copied into tuples and read-only mappings, so a sibling
+    or a later edit to the caller's own dict cannot reach another plan.
+- **Validate: pure.** `validate()` returns every problem as a field-path
+  `Diagnostic`: `model`, `net`, `model.net`, `train`, `data.train`,
+  `data.val`, `data.identity`, `seed`, `callbacks[i]`,
+  `callback_factories[i]`, `objective`, `resume.*`,
+  `train.overwrite_existing`, `train.metrics[i]` and `train.monitor`.
+  - It reports conflicts statically, such as a resume alongside
+    `train.parent_run_id`, or a validation monitor with no validation data.
+  - It checks, with no model built, the task against the loss and output
+    width, and that a `ModelSpec` is registered. It also checks that data
+    and callback factories take no arguments, and that components implement
+    `StatefulComponent`.
+  - It checks a borrowed callback's declared monitor (for example
+    `EarlyStopping(monitor=...)`) as `NNModel.train` would, on a copy so the
+    callback is never bound. It also checks that the model can provide
+    every declared metric's input, using the model's parameters alone (loss,
+    task, output width).
+  - It never iterates a loader, calls a factory, builds a model, reads
+    weights or writes a directory. A data source must be re-iterable
+    batches: a one-shot iterator, a mapping (which iterates its keys), a
+    map-style `Dataset` and a bare tensor or array (which yield single
+    samples; wrap them in a `DataLoader`) are reported. What factories
+    return is checked the same way when a fit starts, before a model is
+    built — a factory-made callback's monitor included — and raises
+    `PlanError`.
+  - `raise_for_errors()` raises `PlanError` listing them all. `fit()` calls
+    it first (an invalid `attempt` id is listed with the rest); `probe()`
+    checks the model, network and seed it needs.
+- **Probe: effectful, restored.** `probe(example_batch)` seeds, builds a
+  temporary model and runs one forward pass in eval mode under
+  `torch.no_grad()`.
+  - With a target and the default training step, it reports the loss that
+    step would compute on the batch: train mode (dropout, batch statistics),
+    no gradient. A plan with its own `train_step_fn` or objective gets
+    `loss=None`, since a probe cannot know that loss, and so does an
+    all-masked task batch, which the default step records no loss for. `output_shape` is
+    always the network's raw output in eval mode, as `predict()` sees it.
+  - A bare tensor or a 1-tuple is inputs only, read as `predict()` reads a
+    loader batch.
+  - Afterwards, succeeding or failing, it restores the Python / NumPy /
+    torch RNG streams, the cuDNN `deterministic` / `benchmark` flags, the
+    deterministic-algorithms setting, `PYTHONHASHSEED` and
+    `CUBLAS_WORKSPACE_CONFIG`.
+  - It touches no callback, factory or loader, and writes nothing. A CPU
+    model's probe seeds no CUDA stream, so on a GPU host nothing waits for
+    CUDA's first use either. A CUDA model's probe starts CUDA first when it
+    is not yet in use (running any seed queued for its first use), so its
+    streams are restored like the others.
+    A registered factory's module is built as `NNModel` builds it, saving
+    and restoring every RNG stream around the factory call; on a GPU host
+    that initializes CUDA even for a CPU model, though its streams are
+    restored.
+- **Fit: the imperative loop.** `fit()` takes the steps an equally seeded
+  script would:
+  1. validate;
+  2. `set_seed(seed)`, which governs the initial weights (a built-in net
+     draws them from the ambient RNG);
+  3. call each data and callback factory once;
+  4. build `NNModel(net, model)`;
+  5. call `model.train(...)` with the plan's seed, data, data identity
+     (`NNTrainParams.data_id`) and resume.
+
+  So it matches `set_seed(s); NNModel(...).train(NNTrainParams(seed=s, ...))`
+  on weights, history and callback order. `NNModel.train` still returns an
+  `NNRun`, and no params class gained a field.
+- **Attempts.** Every fit is a distinct attempt. Its id (random unless
+  `fit(attempt="...")` names it) is folded into the run's `salt` as
+  `"plan-attempt:<id>"`.
+  - Repeated fits of one plan get distinct run ids and directories.
+  - A plan never sets `overwrite_existing`, and `validate()` rejects it, so
+    reusing an attempt id for the same configuration raises
+    `FileExistsError`.
+  - `resuming(run_id, checkpoint="last", mode=None)` warm-restarts into a
+    new run that records the source as `parent_run_id` and leaves the
+    parent's artifacts untouched.
+- **Metrics.** `FitResult.metrics["train"]` and `["val"]` are
+  `SplitMetrics(split, available, epoch, source, values, reason)`, read from
+  the run's final epoch. No loader is iterated a second time.
+  - A train-only plan reports `val` as unavailable, with the reason. It
+    invents no validation.
+  - `source` is `"epoch"` for validation or a declared training summary, and
+    `"last_batch"` otherwise.
+  - `values` keys are the names the callbacks log: `loss`, `error`, the
+    classification fields, declared metrics, and `extra/<name>` for extra
+    metrics. A non-finite value (a diverged loss) is kept, not dropped.
+  - A whole-epoch training summary carries declared metrics but not extra
+    metrics, which the loop computes per batch (`run.idps` has them).
+
+**Ownership.** Everything that is not an immutable parameter object is
+**borrowed**: shared by every branch and every fit, never copied or reset by
+the plan. That covers loader instances, callback instances, the
+`extra_metrics` callables, step functions, the objective, components and the
+provenance manifest.
+
+- A stateful borrowed object carries its state across fits. `EarlyStopping`
+  resets itself in `on_train_begin`, but `LRMonitor.history` accumulates.
+- Pass zero-argument **factories** for fresh objects per fit:
+  `with_data(train=make_loader, val=make_val_loader)` and
+  `with_callback_factories(lambda: LRMonitor())`. Factories run after
+  seeding, exactly once per fit. A callable passed to `with_callbacks` is a
+  legacy `fn(idps)` callback only when its one parameter is required; one
+  that can be called with no arguments reads as a factory and `validate()`
+  reports it.
+- Each fit builds its own model; `FitResult.model` is the trained one.
+- Runs are written under `<cwd>/runs`, as by `NNModel.train`.
+
+See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
