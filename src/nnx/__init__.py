@@ -41,6 +41,7 @@ from . import (
     preprocessing,
     provenance,
     prune,
+    streaming,
     tasks,
     viz,
 )
@@ -220,6 +221,7 @@ from .plans import ExperimentPlan, FitResult
 from .prediction import PredictionResult, PredictionValidationError, ProbabilitySpec, prediction_from_logits
 from .quantize import QATLifecycleCallback, qat_train_step_factory, quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
+from .streaming import MetricSnapshot, PredictionBatch, PredictionStream, StreamingMetrics, streaming_eval_step
 from .surgery import (
     deepen,
     drop_layer,
@@ -371,6 +373,13 @@ __all__ = [
     "plans",
     "ExperimentPlan",
     "FitResult",
+    # Streaming prediction and mergeable metrics (FEAT-020)
+    "streaming",
+    "PredictionStream",
+    "PredictionBatch",
+    "StreamingMetrics",
+    "MetricSnapshot",
+    "streaming_eval_step",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

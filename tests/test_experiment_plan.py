@@ -592,3 +592,76 @@ def test_round_twenty_four_a_list_of_callbacks_is_told_to_spread():
     report = _plan().with_callbacks([EarlyStopping(), EarlyStopping()]).validate()
     assert report.paths == ("callbacks[0]",) and "separate arguments" in report.diagnostics[0].message
     assert "with_callback_factories" not in report.diagnostics[0].message
+
+
+def test_feat020_a_streaming_eval_step_reports_what_it_cannot_bound():
+    from nnx.streaming import streaming_eval_step
+
+    class _Scores:  # no merge(): not provably bounded
+        def update(self, target, prediction):
+            pass
+
+        def result(self):
+            return 0.5
+
+    plans_metrics = (MetricSpec("accuracy"), MetricSpec("tests.plan-rank"))
+    nnx.register_metric("tests.plan-rank", 1, lambda config: _Scores(), input="probabilities", mode="max")
+    try:
+        plan = (
+            _plan(val=_loader())
+            .with_step_fns(eval_step_fn=streaming_eval_step)
+            .with_metrics(plans_metrics)
+            .with_extra_metrics({"n": lambda y, y_hat: 0.0})
+        )
+        assert set(plan.validate().paths) == {"train.extra_metrics", "train.metrics[1]"}
+        assert plan.with_step_fns(eval_step_fn=None).validate().ok  # the default step computes both
+    finally:
+        nnx.unregister_metric("tests.plan-rank", 1)
+
+
+def test_feat020_review_validate_checks_metric_inputs_for_the_streaming_step():
+    from nnx.streaming import streaming_eval_step
+
+    regression = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR)
+    plan = (
+        _plan(val=_loader())
+        .with_model(regression)
+        .with_step_fns(train_step_fn=lambda ctx: None, eval_step_fn=streaming_eval_step)
+        .with_metrics([MetricSpec("nll")])  # probabilities a continuous model cannot provide
+    )
+    assert "train.metrics" in plan.validate().paths  # as train()'s preflight would refuse it
+
+
+def test_feat020_review_round_four_plan_checks_follow_train():
+    from nnx.streaming import streaming_eval_step
+
+    regression = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR)
+    no_val = (
+        _plan()
+        .with_model(regression)
+        .with_step_fns(train_step_fn=lambda ctx: None, eval_step_fn=streaming_eval_step)
+        .with_metrics([MetricSpec("nll")])
+    )
+    assert "train.metrics" not in no_val.validate().paths  # no validation data: train() never checks it either
+
+    class _Broken(Exception):
+        pass
+
+    def factory(config):
+        raise _Broken("optional dependency missing")
+
+    nnx.register_metric("tests.broken-factory", 1, factory, input="labels", mode="max")
+    try:
+        plan = _plan(val=_loader()).with_step_fns(eval_step_fn=streaming_eval_step)
+        report = plan.with_metrics([MetricSpec("tests.broken-factory")]).validate()  # a diagnostic, not a crash
+        assert report.paths == ("train.metrics[0]",) and "optional dependency missing" in report.diagnostics[0].message
+    finally:
+        nnx.unregister_metric("tests.broken-factory", 1)
+
+
+def test_feat020_review_round_eight_only_the_streaming_step_itself_is_checked():
+    from unittest import mock
+
+    step = mock.Mock()  # exposes every attribute, _problems included
+    plan = _plan(val=_loader()).with_step_fns(eval_step_fn=step).with_extra_metrics({"n": lambda y, y_hat: 0.0})
+    assert plan.validate().ok  # a custom step computes what it declares; nothing is sniffed from it

@@ -19,7 +19,7 @@ mse      ``continuous``   mean squared error
 ======== ================ =====================================================
 
 Values are accumulated over **every** sample the epoch saw — additive
-metrics as running sums, non-additive ones (F1) over the full sample — so a
+metrics as running sums, F1 from confusion counts over the full sample — so a
 short last batch is weighted exactly like a full one, never averaged as a
 batch mean. Categorical models feed one row per sample (labels are the
 argmax, probabilities the softmax over the class axis); multilabel
@@ -49,12 +49,13 @@ import numbers
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 import numpy as np
 import torch
 
 from ._config import _SLUG, _freeze_config, _thaw_config
+from ._confusion import ConfusionCounts
 
 # One implementation of the probability terms, shared with nnx.calibration.
 from ._probability import brier_terms as _brier_terms
@@ -97,7 +98,15 @@ class MetricAccumulator(Protocol):
 
     ``update`` receives one batch's valid targets and the declared
     prediction input as NumPy arrays (sample axis first); ``result``
-    returns the metric over everything seen, or ``None`` if nothing was."""
+    returns the metric over everything seen, or ``None`` if nothing was,
+    without changing the accumulation.
+
+    Optional, for bounded streaming (FEAT-020, ``nnx.streaming``):
+    ``merge(other)`` adds another accumulator's state in place, keeping
+    nothing of ``other`` that a later update could change, and returns
+    ``None``; ``stores_scores = True`` marks an accumulator that keeps every
+    score (such as a rank metric), which bounded streaming refuses. The
+    built-in metrics implement ``merge``."""
 
     def update(self, target: np.ndarray, prediction: np.ndarray) -> None: ...
 
@@ -315,6 +324,11 @@ class _Mean:
     def result(self) -> Optional[float]:
         return self._sum / self._count if self._count else None
 
+    def merge(self, other: _Mean) -> None:
+        """Add ``other``'s sums (FEAT-020): the two cover disjoint samples."""
+        self._sum += other._sum
+        self._count += other._count
+
 
 def _accuracy_terms(target: np.ndarray, prediction: np.ndarray) -> np.ndarray:
     return (target == prediction).astype(np.float64)
@@ -351,28 +365,23 @@ def _check_no_config(metric: str) -> Callable[[Mapping[str, Any]], None]:
 
 
 class _F1:
-    """Non-additive: computed once over every label of the epoch."""
+    """F1 over every label of the epoch, from confusion counts: memory bounded
+    by the number of classes, mergeable (FEAT-020), and equal to
+    scikit-learn's ``f1_score(..., zero_division=0)`` on the same labels."""
 
     def __init__(self, average: str = "macro") -> None:
         self._average = average
-        self._targets: list[np.ndarray] = []
-        self._predictions: list[np.ndarray] = []
+        self._counts = ConfusionCounts()
 
     def update(self, target: np.ndarray, prediction: np.ndarray) -> None:
-        self._targets.append(np.asarray(target).reshape(-1))
-        self._predictions.append(np.asarray(prediction).reshape(-1))
+        self._counts.update(target, prediction)
 
     def result(self) -> Optional[float]:
-        if not self._targets:
-            return None
-        from sklearn.metrics import f1_score
+        scores = self._counts.scores(self._average)
+        return None if scores is None else scores[2]
 
-        target = np.concatenate(self._targets)
-        if target.size == 0:
-            return None
-        return float(
-            f1_score(target, np.concatenate(self._predictions), average=self._average, zero_division=cast(Any, 0))
-        )
+    def merge(self, other: _F1) -> None:
+        self._counts.merge(other._counts)
 
 
 for _id, _input, _mode, _factory, _check in (
@@ -723,13 +732,16 @@ class _MetricSet:
         domain: Optional[str],
         ignore_index: Optional[int] = None,
         logit_threshold: float = 0.0,
+        accumulator: Callable[[MetricSpec], MetricAccumulator] = MetricSpec.accumulator,
     ):
+        """``accumulator(spec)`` builds each metric's accumulator (the
+        registered one by default; bounded ones for a streaming evaluation)."""
         self._specs = tuple(metrics)
         self._domain = domain
         self._ignore_index = ignore_index
         self._logit_threshold = logit_threshold
         self._needed = frozenset(spec.input for spec in self._specs)
-        self._accumulators = {spec.label: spec.accumulator() for spec in self._specs}
+        self._accumulators = {spec.label: accumulator(spec) for spec in self._specs}
 
     def update(self, target: torch.Tensor, output: torch.Tensor, valid: Optional[torch.Tensor] = None) -> int:
         """Feed one batch; returns the number of samples scored."""

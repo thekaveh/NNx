@@ -438,6 +438,37 @@ train → predict → train-more pattern silently leaves the net
 in ``.eval()`` mode.
 ```
 
+##### `nnx.nn.nn_model.NNModel.iter_predict`
+
+```python
+nnx.nn.nn_model.NNModel.iter_predict(self, X: 'Iterable[Any]', spec: 'Optional[ProbabilitySpec]' = None, *, rich: 'bool' = False) -> 'PredictionStream'
+```
+
+Stream predictions one loader batch at a time (FEAT-020).
+
+**Details**
+
+```text
+Returns a :class:`~nnx.streaming.PredictionStream` — use it as a
+context manager — over ``X``, a ``DataLoader`` or another iterable of
+batches (in-memory arrays and tensors go to :meth:`predict`). Each
+item is a :class:`~nnx.streaming.PredictionBatch` of ``logits``,
+``classes`` and ``sample_ids``, or, with a ``spec`` (or ``rich=True``
+for a model with a task), a :class:`~nnx.prediction.PredictionResult`
+as :meth:`predict_proba` builds it. The batches follow loader order,
+and concatenated they are exactly the eager result for the same
+``DataLoader`` (the eager calls read other iterables as one in-memory
+input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
+sample ids, graph seed-row slicing included.
+
+Each batch runs in eval mode under ``no_grad``, and every submodule's
+training mode is restored before the batch is yielded or its error
+raised. The stream holds only the batch in flight; closing it drops
+its references to the loader's iterator and the model and ends the
+iteration, and a closed or consumed stream cannot be iterated again.
+An empty loader yields no batches (the eager calls raise instead).
+```
+
 ##### `nnx.nn.nn_model.NNModel.predict_proba`
 
 ```python
@@ -559,7 +590,7 @@ forward/backward dance.
 #### `nnx.nn.nn_model.EvalStepContext`
 
 ```python
-class nnx.nn.nn_model.EvalStepContext(model: 'NNModel', val_loader: 'Iterable[Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', epoch_idx: 'int') -> 'None'
+class nnx.nn.nn_model.EvalStepContext(model: 'NNModel', val_loader: 'Iterable[Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', epoch_idx: 'int', metrics: 'tuple[MetricSpec, ...]' = ()) -> 'None'
 ```
 
 Frozen bundle of state passed into a validation-step function (#86).
@@ -1536,10 +1567,10 @@ Decoded predictions for raw ``predict()`` logits (numpy).
 ##### `nnx.tasks.TaskAdapter.accumulator`
 
 ```python
-nnx.tasks.TaskAdapter.accumulator(self, *, keep_arrays: 'bool' = False) -> 'TaskMetricAccumulator'
+nnx.tasks.TaskAdapter.accumulator(self, *, keep_arrays: 'bool' = False, bounded: 'bool' = False) -> 'TaskMetricAccumulator'
 ```
 
-A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it.
+A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it. ``bounded=True`` (FEAT-020) keeps only counts and sums, so memory does not grow with the number of samples; it cannot keep arrays.
 
 ##### `nnx.tasks.TaskAdapter.record`
 
@@ -1569,7 +1600,7 @@ The rich prediction this task implies (see ``predict_proba``).
 #### `nnx.tasks.TaskMetricAccumulator`
 
 ```python
-class nnx.tasks.TaskMetricAccumulator(adapter: 'TaskAdapter', *, keep_arrays: 'bool' = False) -> 'None'
+class nnx.tasks.TaskMetricAccumulator(adapter: 'TaskAdapter', *, keep_arrays: 'bool' = False, bounded: 'bool' = False) -> 'None'
 ```
 
 Mergeable per-task statistics over any number of batches.
@@ -2099,7 +2130,15 @@ Accumulates one metric over an epoch's full sample.
 ```text
 ``update`` receives one batch's valid targets and the declared
 prediction input as NumPy arrays (sample axis first); ``result``
-returns the metric over everything seen, or ``None`` if nothing was.
+returns the metric over everything seen, or ``None`` if nothing was,
+without changing the accumulation.
+
+Optional, for bounded streaming (FEAT-020, ``nnx.streaming``):
+``merge(other)`` adds another accumulator's state in place, keeping
+nothing of ``other`` that a later update could change, and returns
+``None``; ``stores_scores = True`` marks an accumulator that keeps every
+score (such as a rank metric), which bounded streaming refuses. The
+built-in metrics implement ``merge``.
 ```
 
 ##### `nnx.monitors.MetricAccumulator.update`
@@ -4778,7 +4817,9 @@ writes no directory. Declared metrics and the monitor are resolved
 against their registries, as ``NNModel.train`` does before
 reserving a run. It constructs the built-in loss module, as
 ``NNModel`` does first, and resolves each borrowed callback's monitor
-on a shallow copy.
+on a shallow copy; with ``nnx.streaming.streaming_eval_step`` it also
+builds each declared metric's accumulator to check that it is
+bounded.
 ```
 
 ##### `nnx.plans.ExperimentPlan.probe`
@@ -4946,6 +4987,291 @@ It is a ``ValueError`` and a ``TypeError``, the two errors the params
 classes raise, so code catching either around a configuration still
 catches it.
 ```
+
+
+### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+#### `nnx.streaming.PredictionStream`
+
+```python
+class nnx.streaming.PredictionStream(batches: 'Iterator[Any]') -> 'None'
+```
+
+A context-managed iterator of prediction batches; see the module docstring. Obtain one with ``NNModel.iter_predict``.
+
+##### `nnx.streaming.PredictionStream.closed`
+
+```python
+property nnx.streaming.PredictionStream.closed
+```
+
+Whether the stream is closed or consumed (it cannot be iterated again).
+
+##### `nnx.streaming.PredictionStream.close`
+
+```python
+nnx.streaming.PredictionStream.close(self) -> 'None'
+```
+
+Stop the stream and drop its references to the loader's iterator and the model. Idempotent; the loader itself is left to the caller.
+
+
+#### `nnx.streaming.PredictionBatch`
+
+```python
+class nnx.streaming.PredictionBatch(logits: 'np.ndarray', classes: 'np.ndarray', sample_ids: 'np.ndarray') -> 'None'
+```
+
+One loader batch of :meth:`NNModel.iter_predict <nnx.NNModel.iter_predict>`.
+
+**Details**
+
+```text
+Attributes:
+    logits: the raw network output for the batch's rows (graph loaders:
+        seed rows only), as ``predict()`` returns them.
+    classes: the decoded predictions, as ``predict().classes``: argmax
+        classes, 0/1 indicators for a multilabel or ``BCEWithLogitsLoss``
+        model, the values themselves for a regression task.
+    sample_ids: ``int64`` identity of each row, as ``predict_proba()``
+        reports it: the position in iteration order, or the global node
+        index for graph seed rows.
+```
+
+
+#### `nnx.streaming.concatenate_predictions`
+
+```python
+nnx.streaming.concatenate_predictions(batches: 'Iterable[Union[PredictionBatch, PredictionResult]]') -> 'Union[PredictionBatch, PredictionResult]'
+```
+
+Concatenate streamed batches into one result, in order — what the eager ``predict()`` / ``predict_proba()`` returns for the same loader. Materializes every batch (O(N) memory).
+
+
+#### `nnx.streaming.StreamingMetrics`
+
+```python
+class nnx.streaming.StreamingMetrics(metrics: 'Sequence[MetricSpec]', semantics: 'str', *, labels: 'Optional[Sequence[str]]' = None, threshold: 'float' = 0.5, materialize: 'bool' = False, ignore_index: 'Optional[int]' = None, num_outputs: 'Optional[int]' = None) -> 'None'
+```
+
+Mergeable accumulators for declared metrics (see the module docstring).
+
+**Details**
+
+```text
+Args:
+    metrics: the :class:`~nnx.MetricSpec` s to accumulate (unique names).
+    semantics: how predictions are read — ``"categorical"`` (class
+        probabilities over the last axis of ``probabilities``, argmax
+        labels), ``"bernoulli"`` (independent per-output probabilities,
+        labels at ``threshold``) or ``"continuous"`` (values). Every
+        metric's input must be one these semantics provide.
+    labels: optional ordered class / output names; a categorical
+        ``probabilities`` width must match them. Part of the merge schema.
+    threshold: the bernoulli decision threshold for labels derived from
+        probabilities (default 0.5).
+    materialize: store every score of a metric that has no bounded form
+        (O(N) memory) instead of rejecting it.
+    ignore_index: categorical only — the target value that is never
+        scored (e.g. ``-100`` for padding).
+    num_outputs: the class count (categorical) or the output width along
+        axis 1 (bernoulli, continuous), when no ``labels`` name them;
+        batches of another width are refused.
+
+Two accumulators merge only when their metrics (id, version, config and
+name), semantics, labels, output count, threshold and ignore index are
+equal. If a
+metric's update raises part-way through a batch, the accumulation no
+longer describes one set of samples and refuses further use.
+```
+
+##### `nnx.streaming.StreamingMetrics.for_task`
+
+```python
+nnx.streaming.StreamingMetrics.for_task(metrics: 'Sequence[MetricSpec]', task: 'TaskSpec', *, materialize: 'bool' = False) -> 'StreamingMetrics'
+```
+
+Accumulators for a model's :class:`~nnx.TaskSpec`: categorical (with the task's ``ignore_index``), multilabel (bernoulli at the task's threshold) or regression (continuous), with the task's labels.
+
+##### `nnx.streaming.StreamingMetrics.metrics`
+
+```python
+property nnx.streaming.StreamingMetrics.metrics
+```
+
+No public description is currently available.
+
+##### `nnx.streaming.StreamingMetrics.semantics`
+
+```python
+property nnx.streaming.StreamingMetrics.semantics
+```
+
+No public description is currently available.
+
+##### `nnx.streaming.StreamingMetrics.labels`
+
+```python
+property nnx.streaming.StreamingMetrics.labels
+```
+
+No public description is currently available.
+
+##### `nnx.streaming.StreamingMetrics.threshold`
+
+```python
+property nnx.streaming.StreamingMetrics.threshold
+```
+
+No public description is currently available.
+
+##### `nnx.streaming.StreamingMetrics.ignore_index`
+
+```python
+property nnx.streaming.StreamingMetrics.ignore_index
+```
+
+No public description is currently available.
+
+##### `nnx.streaming.StreamingMetrics.num_outputs`
+
+```python
+property nnx.streaming.StreamingMetrics.num_outputs
+```
+
+The class count (categorical) or output width, if declared (``num_outputs``, else the labels').
+
+##### `nnx.streaming.StreamingMetrics.count`
+
+```python
+property nnx.streaming.StreamingMetrics.count
+```
+
+The valid samples scored so far.
+
+##### `nnx.streaming.StreamingMetrics.bounded`
+
+```python
+property nnx.streaming.StreamingMetrics.bounded
+```
+
+Whether no metric stores its scores (memory independent of N).
+
+##### `nnx.streaming.StreamingMetrics.update`
+
+```python
+nnx.streaming.StreamingMetrics.update(self, target: 'Any', *, probabilities: 'Any' = None, labels: 'Any' = None, values: 'Any' = None, valid: 'Any' = None) -> 'int'
+```
+
+Add one batch and return the number of valid samples scored.
+
+**Details**
+
+```text
+``target`` holds class indices ``(N,)`` (categorical), 0/1 outcomes
+(bernoulli; soft targets count as 1 from 0.5) or values (continuous).
+Give each input a declared metric reads: ``probabilities`` —
+``(N, C)`` class probabilities (categorical) or per-output
+probabilities shaped like ``target`` (bernoulli); ``labels`` — the
+decoded predictions (derived from ``probabilities`` when omitted);
+``values`` — continuous predictions shaped like ``target``.
+``valid`` (boolean, shaped like ``target``) excludes entries; a NaN
+target, or a categorical target equal to ``ignore_index``, is
+excluded too. Arrays and tensors are accepted.
+```
+
+##### `nnx.streaming.StreamingMetrics.update_logits`
+
+```python
+nnx.streaming.StreamingMetrics.update_logits(self, target: 'Any', logits: 'Any', *, valid: 'Any' = None) -> 'int'
+```
+
+Add one batch of raw model outputs (class axis 1): softmax (categorical), sigmoid decided at ``threshold`` (bernoulli) or the values (continuous) — the inputs ``evaluate()`` derives. Returns the number of valid samples scored.
+
+##### `nnx.streaming.StreamingMetrics.merge`
+
+```python
+nnx.streaming.StreamingMetrics.merge(self, other: 'StreamingMetrics') -> 'StreamingMetrics'
+```
+
+A new accumulation covering both inputs' samples; neither input changes, and later updates to either never reach the result. Raises :class:`MetricMergeError` for different declarations.
+
+##### `nnx.streaming.StreamingMetrics.finalize`
+
+```python
+nnx.streaming.StreamingMetrics.finalize(self) -> 'MetricSnapshot'
+```
+
+The metrics over every sample seen, as a read-only snapshot. Repeatable, and never changes the accumulation.
+
+
+#### `nnx.streaming.MetricSnapshot`
+
+```python
+class nnx.streaming.MetricSnapshot(count: 'int', values: 'Mapping[str, float]' = <factory>, unavailable: 'tuple[str, ...]' = ()) -> 'None'
+```
+
+A finalized :class:`StreamingMetrics`: read-only values that later updates never change.
+
+**Details**
+
+```text
+Attributes:
+    count: the valid samples scored (categorical rows; multilabel and
+        continuous entries). ``0`` for an empty or fully masked stream.
+    values: each available metric's value, by name.
+    unavailable: the declared metrics with no value (every one when
+        ``count`` is 0).
+```
+
+##### `nnx.streaming.MetricSnapshot.available`
+
+```python
+property nnx.streaming.MetricSnapshot.available
+```
+
+No public description is currently available.
+
+
+#### `nnx.streaming.streaming_eval_step`
+
+```python
+nnx.streaming.streaming_eval_step(ctx: 'EvalStepContext') -> 'NNEvaluationDataPoint'
+```
+
+An ``eval_step_fn`` for ``NNModel.train`` that builds the default validation record from counts and sums (FEAT-020).
+
+**Details**
+
+```text
+The record is the one NNx's own ``evaluate()`` returns — the same task
+counts and status, loss (each batch's numerator over the summed loss
+denominators), classification or task metrics and declared metrics —
+without storing a target or prediction per sample, so memory does not
+grow with the validation set. A model subclass that overrides
+``evaluate()`` keeps its override only on the default validation step. It cannot compute ``extra_metrics`` (callables on the
+full arrays) or a declared metric that needs every stored score; both are
+rejected when training starts. ``evaluate()`` and the default validation
+step are unchanged.
+```
+
+
+#### `nnx.streaming.StreamClosedError`
+
+```python
+class nnx.streaming.StreamClosedError
+```
+
+A closed or already consumed :class:`PredictionStream` was used again.
+
+
+#### `nnx.streaming.MetricMergeError`
+
+```python
+class nnx.streaming.MetricMergeError
+```
+
+Two :class:`StreamingMetrics` with different declarations were merged: other metrics (id, version or config), other probability semantics, other task labels, another decision threshold or another ignore index.
 
 
 ## 3. Params

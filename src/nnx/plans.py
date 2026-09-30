@@ -467,7 +467,9 @@ class ExperimentPlan:
         against their registries, as ``NNModel.train`` does before
         reserving a run. It constructs the built-in loss module, as
         ``NNModel`` does first, and resolves each borrowed callback's monitor
-        on a shallow copy.
+        on a shallow copy; with ``nnx.streaming.streaming_eval_step`` it also
+        builds each declared metric's accumulator to check that it is
+        bounded.
         """
         found: list[Diagnostic] = []
 
@@ -483,7 +485,24 @@ class ExperimentPlan:
         self._check_resume(report, train)
         if train is not None:
             self._check_monitoring(report, train, has_val)
+            self._check_eval_step(report, train, has_val)
         return PlanValidation(tuple(found))
+
+    def _streaming_validation(self, has_val: bool) -> bool:
+        """Whether the fit validates with ``nnx.streaming.streaming_eval_step``
+        (checked only with validation data, as ``NNModel.train`` checks it)."""
+        from .nn.nn_model import _is_streaming_eval_step
+
+        return has_val and _is_streaming_eval_step(self.eval_step_fn)
+
+    def _check_eval_step(self, report: Callable[[str, str], None], train: NNTrainParams, has_val: bool) -> None:
+        """What the streaming validation step reports it cannot compute, as
+        ``NNModel.train`` checks before reserving a run."""
+        if self._streaming_validation(has_val):
+            from .streaming import _streaming_problems
+
+            for path, message in _streaming_problems(train):
+                report(path, message)
 
     def _check_model(self, report: Callable[[str, str], None]) -> None:
         from .models import MissingModelFactoryError
@@ -722,7 +741,10 @@ class ExperimentPlan:
                 report(f"train.metrics[{index}]", str(exc))
                 broken = True
         default_step = self._default_step
-        if train.metrics and not broken and (default_step or self.eval_step_fn is None):
+        # NNx derives the declared metrics' inputs itself on its default steps and
+        # in its own eval step, which train() checks only when there is validation data.
+        nnx_eval = self.eval_step_fn is None or self._streaming_validation(has_val)
+        if train.metrics and not broken and (default_step or nnx_eval):
             problem = self._metric_input_problem(train, default_train=default_step)
             if problem is not None:
                 report(*problem)

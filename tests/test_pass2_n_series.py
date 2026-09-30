@@ -708,3 +708,314 @@ def test_n7_nll_transformer_token_logits_use_class_axis():
         else torch.as_tensor(nll.predict(tokens).logits),
         torch.as_tensor(ce.predict(tokens).logits),
     )
+
+
+# --- FEAT-020: an opt-in bounded validation step ---------------------------------------------------------
+
+
+def _masked_task_run(tmp_path, monkeypatch, task, targets, *, eval_step_fn=None, metrics=(), monitor=None):
+    """Train the same seeded model on uneven [2, 2, 1] batches whose targets
+    are partly masked; return the run and its BEST checkpoint."""
+    from nnx import Checkpoints, MonitorSpec, NNCheckpoint, NNTrainParams, set_seed
+    from nnx.nn.params.nn_optim_params import NNOptimParams as OptimParams
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    set_seed(0)
+    loss = Losses.MEAN_SQUARED_ERROR if task.kind == "regression" else Losses.CROSS_ENTROPY
+    output_dim = task.num_outputs
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=4, output_dim=output_dim, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=loss, task=task),
+    )
+    X = torch.randn(5, 4, generator=torch.Generator().manual_seed(1))
+    batches = [(X[0:2], targets[0:2]), (X[2:4], targets[2:4]), (X[4:5], targets[4:5])]
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=4,
+            train_loader=batches,
+            val_loader=batches,
+            optim=OptimParams.builder().sgd(max_lr=0.2).build(),
+            metrics=list(metrics),
+            monitor=monitor if monitor is not None else MonitorSpec(metric="loss"),
+            seed=0,
+        ),
+        eval_step_fn=eval_step_fn,
+    )
+    return run, NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param("regression", id="regression-masked"),
+        pytest.param("categorical", id="categorical-ignored"),
+    ],
+)
+def test_feat020_streaming_eval_step_matches_the_eager_validation_record(tmp_path, monkeypatch, case):
+    from nnx import MetricSpec, MonitorSpec, TaskSpec
+    from nnx.streaming import streaming_eval_step
+
+    if case == "regression":
+        task = TaskSpec.regression(2)
+        nan = float("nan")
+        targets = torch.tensor([[1.0, nan], [0.5, -1.0], [nan, nan], [2.0, 0.0], [0.0, nan]])
+        metrics, monitor = [MetricSpec("mae")], MonitorSpec(metric="mae")
+    else:
+        task = TaskSpec.categorical(3, ignore_index=-100)
+        targets = torch.tensor([0, -100, 2, 1, -100])
+        metrics = [MetricSpec("nll"), MetricSpec("f1"), MetricSpec("accuracy")]
+        monitor = MonitorSpec(metric="nll")
+    eager, eager_best = _masked_task_run(
+        tmp_path / "eager", monkeypatch, task, targets, metrics=metrics, monitor=monitor
+    )
+    stream, stream_best = _masked_task_run(
+        tmp_path / "stream",
+        monkeypatch,
+        task,
+        targets,
+        eval_step_fn=streaming_eval_step,
+        metrics=metrics,
+        monitor=monitor,
+    )
+    eager_val = [idp.val_edp for idp in eager.idps if idp.val_edp is not None]
+    stream_val = [idp.val_edp for idp in stream.idps if idp.val_edp is not None]
+    assert len(eager_val) == len(stream_val) == 4
+    for expected, actual in zip(eager_val, stream_val, strict=True):
+        assert (actual.kind, actual.count, actual.status) == (expected.kind, expected.count, expected.status)
+        assert actual.count == (6 if case == "regression" else 3)  # masked targets are not counted
+        assert actual.loss == pytest.approx(expected.loss, rel=1e-12)  # summed numerators / summed denominators
+        for field in ("accuracy", "f1", "recall", "precision", "error"):
+            assert getattr(actual, field) == pytest.approx(getattr(expected, field), rel=1e-12)
+        assert dict(actual.metrics) == pytest.approx(dict(expected.metrics), rel=1e-12)
+    selections = [(idp.selection.value, idp.selection.improved) for idp in eager.idps if idp.selection is not None]
+    streamed = [(idp.selection.value, idp.selection.improved) for idp in stream.idps if idp.selection is not None]
+    assert [improved for _, improved in streamed] == [improved for _, improved in selections]
+    assert [value for value, _ in streamed] == pytest.approx([value for value, _ in selections], rel=1e-12)
+    assert eager_best is not None and stream_best is not None
+    assert stream_best.idp.epoch_idx == eager_best.idp.epoch_idx  # the same BEST choice
+
+
+def test_feat020_streaming_eval_step_matches_legacy_classification_and_keeps_evaluate_eager():
+    from nnx import EvalStepContext, MetricSpec
+    from nnx.streaming import streaming_eval_step
+
+    model = _model()
+    X = torch.randn(5, 4, generator=torch.Generator().manual_seed(2))
+    Y = torch.tensor([0, 1, 1, 0, 1])
+    loader = DataLoader(TensorDataset(X, Y), batch_size=2)
+    declared = (MetricSpec("f1"), MetricSpec("nll"))
+    eager = model.evaluate(loader, metrics=declared)
+    streamed = streaming_eval_step(
+        EvalStepContext(model=model, val_loader=loader, extra_metrics=None, epoch_idx=0, metrics=declared)
+    )
+    for field in ("accuracy", "f1", "recall", "precision", "loss", "error"):
+        assert getattr(streamed, field) == pytest.approx(getattr(eager, field), rel=1e-12)
+    assert dict(streamed.metrics) == pytest.approx(dict(eager.metrics), rel=1e-12)
+    empty = DataLoader(TensorDataset(torch.zeros(0, 4), torch.zeros(0, dtype=torch.long)), batch_size=2)
+    with pytest.raises(ValueError, match=r"evaluate\(\) loader produced zero samples"):
+        model.evaluate(empty)  # the default path keeps its empty-input exception
+    with pytest.raises(ValueError, match="zero samples"):
+        streaming_eval_step(EvalStepContext(model=model, val_loader=empty, extra_metrics=None, epoch_idx=0))
+
+
+def test_feat020_streaming_eval_step_refuses_what_it_cannot_bound_before_training(tmp_path, monkeypatch):
+    import os
+    from dataclasses import replace
+
+    import numpy as np
+
+    from nnx import MetricSpec, NNTrainParams, register_metric, unregister_metric
+    from nnx.streaming import streaming_eval_step
+
+    class _Scores:  # no merge(): needs every stored score
+        def update(self, target, prediction):
+            pass
+
+        def result(self):
+            return 0.5
+
+    monkeypatch.chdir(tmp_path)
+    X = torch.randn(4, 4)
+    Y = torch.tensor([0, 1, 0, 1])
+    batches = [(X[:2], Y[:2]), (X[2:], Y[2:])]
+    base = NNTrainParams(
+        n_epochs=1, train_loader=batches, val_loader=batches, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+    )
+    with pytest.raises(ValueError, match="extra_metrics"):
+        _model().train(
+            params=replace(base, extra_metrics={"n": lambda y, y_hat: float(np.size(y))}),
+            eval_step_fn=streaming_eval_step,
+        )
+    register_metric("tests.rank", 1, lambda config: _Scores(), input="probabilities", mode="max")
+    try:
+        with pytest.raises(ValueError, match="no bounded, mergeable form"):
+            _model().train(params=replace(base, metrics=(MetricSpec("tests.rank"),)), eval_step_fn=streaming_eval_step)
+    finally:
+        unregister_metric("tests.rank", 1)
+    assert not os.path.exists("runs")  # refused before any run was reserved
+
+
+def test_feat020_review_multi_output_bce_without_a_task_scores_like_evaluate():
+    from nnx import EvalStepContext
+    from nnx.streaming import streaming_eval_step
+
+    class _Indicators:
+        """A BCE model without a task whose decisions are fixed indicator rows."""
+
+        evaluate = NNModel.evaluate
+
+        def __init__(self):
+            self.net = torch.nn.Identity()
+            self.loss_fn = torch.nn.BCEWithLogitsLoss()
+            self.device = torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            return X, Y, X, (X >= 0).to(torch.long)
+
+    logits = torch.tensor([[1.0, -1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, -1.0, 1.0]])
+    targets = torch.tensor([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0], [0.0, 0.0, 0.0]])
+    loader = DataLoader(TensorDataset(logits, targets), batch_size=3)  # uneven [3, 1]
+    model = _Indicators()
+    eager = model.evaluate(loader)
+    streamed = streaming_eval_step(
+        EvalStepContext(model=model, val_loader=loader, extra_metrics=None, epoch_idx=0)  # type: ignore[arg-type]
+    )
+    assert eager.accuracy == pytest.approx(0.25)  # exact-row (subset) accuracy, averaged over the 3 labels
+    for field in ("accuracy", "f1", "recall", "precision", "loss", "error"):
+        assert getattr(streamed, field) == pytest.approx(getattr(eager, field), rel=1e-12)
+
+
+def test_feat020_review_eager_predict_holds_eval_mode_once_while_a_stream_restores_per_batch(monkeypatch):
+    import nnx.nn.nn_model as nn_model_module
+
+    calls = {"n": 0}
+    capture = nn_model_module._capture_training_modes
+
+    def counting(module):
+        calls["n"] += 1
+        return capture(module)
+
+    monkeypatch.setattr(nn_model_module, "_capture_training_modes", counting)
+    model = _model()
+    loader = DataLoader(TensorDataset(torch.randn(5, 4), torch.zeros(5, dtype=torch.long)), batch_size=2)
+    model.predict(loader)
+    assert calls["n"] == 1  # one snapshot for the whole eager call
+    calls["n"] = 0
+    with model.iter_predict(loader) as stream:
+        assert len(list(stream)) == 3
+    assert calls["n"] == 3  # a stream restores the modes around every batch
+
+
+def test_feat020_review_the_preflight_survives_functools_wrappers(tmp_path, monkeypatch):
+    import functools
+    import os
+
+    from nnx import NNTrainParams
+    from nnx.streaming import streaming_eval_step
+
+    @functools.wraps(streaming_eval_step)
+    def wrapped(ctx):
+        return streaming_eval_step(ctx)
+
+    monkeypatch.chdir(tmp_path)
+    batches = [(torch.randn(2, 4), torch.tensor([0, 1]))]
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=batches,
+        val_loader=batches,
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        extra_metrics={"n": lambda y, y_hat: 0.0},
+    )
+    with pytest.raises(ValueError, match="extra_metrics"):
+        _model().train(params=params, eval_step_fn=functools.partial(streaming_eval_step))
+    assert not os.path.exists("runs")  # a partial of the step is the step: refused before any run
+    with pytest.raises(ValueError, match="extra_metrics"):
+        _model().train(params=params, eval_step_fn=wrapped)  # a wrapper is a step of its own ...
+    assert os.path.exists("runs")  # ... so the streaming step refuses at its first call instead
+
+
+def test_feat020_review_round_six_old_task_adapters_and_bounded_extra_metrics():
+    from nnx import TaskSpec
+    from nnx.tasks import TaskAdapter, task_adapter
+
+    class _Legacy(type(task_adapter(TaskSpec.regression(1)))):  # a subclass written before FEAT-020
+        def accumulator(self, *, keep_arrays=False):
+            return super().accumulator(keep_arrays=keep_arrays)
+
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)
+        ),
+    )
+    legacy = _Legacy(TaskSpec.regression(1))
+    assert isinstance(legacy, TaskAdapter)
+    model._task_adapter = legacy  # type: ignore[attr-defined]
+    loader = DataLoader(TensorDataset(torch.randn(3, 4), torch.randn(3, 1)), batch_size=2)
+    assert model.evaluate(loader).count == 3  # the default path never passes bounded=
+    for spec in (TaskSpec.multilabel(2), TaskSpec.regression(1)):
+        bounded = task_adapter(spec).accumulator(bounded=True)
+        with pytest.raises(ValueError, match="keeps no arrays"):
+            bounded.result(loss=0.0, extra_metrics={"n": lambda y, y_hat: 0.0})
+
+
+def test_feat020_review_round_seven_train_and_plans_refuse_a_broken_factory_alike(tmp_path, monkeypatch):
+    import os
+
+    from nnx import MetricSpec, NNTrainParams, register_metric, unregister_metric
+    from nnx.streaming import _streaming_problems, streaming_eval_step
+
+    def factory(config):
+        raise ImportError("optional dependency missing")
+
+    monkeypatch.chdir(tmp_path)
+    batches = [(torch.randn(2, 4), torch.tensor([0, 1]))]
+    register_metric("tests.broken", 1, factory, input="labels", mode="max")
+    try:
+        params = NNTrainParams(
+            n_epochs=1,
+            train_loader=batches,
+            val_loader=batches,
+            optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            metrics=(MetricSpec("tests.broken"),),
+        )
+        [(_, message)] = _streaming_problems(params)
+        with pytest.raises(ValueError) as refused:
+            _model().train(params=params, eval_step_fn=streaming_eval_step)
+        assert str(refused.value) == message and "optional dependency missing" in message
+    finally:
+        unregister_metric("tests.broken", 1)
+    assert not os.path.exists("runs")
+
+
+def test_feat020_review_round_eight_the_preflight_checks_the_task_adapter(tmp_path, monkeypatch):
+    import os
+
+    from nnx import NNTrainParams, TaskSpec
+    from nnx.streaming import streaming_eval_step
+    from nnx.tasks import task_adapter
+
+    class _Legacy(type(task_adapter(TaskSpec.regression(1)))):  # accumulator() without bounded=
+        def accumulator(self, *, keep_arrays=False):
+            return super().accumulator(keep_arrays=keep_arrays)
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)
+        ),
+    )
+    model._task_adapter = _Legacy(TaskSpec.regression(1))  # type: ignore[attr-defined]
+    batches = [(torch.randn(2, 4), torch.randn(2, 1))]
+    params = NNTrainParams(
+        n_epochs=1, train_loader=batches, val_loader=batches, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+    )
+    with pytest.raises(ValueError, match="bounded accumulator"):
+        model.train(params=params, eval_step_fn=streaming_eval_step)
+    assert not os.path.exists("runs")
