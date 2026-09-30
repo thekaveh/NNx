@@ -170,7 +170,7 @@ def test_validate_checks_the_network_descriptor():
         assert _plan().with_model(spec).validate().paths == ("net",)
         assert _plan().with_model(spec).with_net(None).validate().ok
     runtime = nnx.nn.nn_model.NNModel(params=NNModelParams(loss=Losses.CROSS_ENTROPY), module=torch.nn.Linear(4, 3))
-    assert "model.net" in _plan().with_model(runtime.params).validate().paths  # never a wrapped module
+    assert {"model.net"} <= set(_plan().with_model(runtime.params).validate().paths)  # never a wrapped module
 
 
 def test_validate_consumes_no_loader_calls_no_factory_builds_no_model_and_writes_nothing(tmp_path, monkeypatch):
@@ -271,7 +271,7 @@ def test_round_two_data_edits_and_paths():
         _plan().with_metrics([MetricSpec("accuracy", name="acc")], monitor="val.acc")
     assert caught.value.diagnostics[0].path == "train.monitor"  # the changed field the error names
     with_val_only = ExperimentPlan().with_net(NET).with_model(MODEL).with_train(TRAIN).with_data(None, val=_loader())
-    assert "data.train" in with_val_only.validate().paths
+    assert {"data.train"} <= set(with_val_only.validate().paths)
 
 
 def test_round_two_read_only_mappings_copy_and_pickle():
@@ -289,7 +289,7 @@ def test_round_three_the_effective_seed_and_orphan_identity_are_checked():
     inherited = _plan().with_train(NNTrainParams(n_epochs=1, seed=-5))
     assert inherited.validate().paths == ("train.seed",)  # the seed set_seed would receive
     identity_only = ExperimentPlan().with_net(NET).with_model(MODEL).with_train(TRAIN).with_data(None, identity="x")
-    assert "data.train" in identity_only.validate().paths
+    assert {"data.train"} <= set(identity_only.validate().paths)
 
 
 def test_round_three_resume_mode_defaults_to_the_training_parameters():
