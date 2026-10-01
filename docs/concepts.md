@@ -1748,11 +1748,17 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   from the stored observations and refuses a file whose results disagree.
 - **Reading runs.** `observations_from_runs(run_ids, metric=..., split=,
   selection=)` reads `run.yaml`, `idps.csv` and the provenance files once
-  each. The value is the epoch record of the last committed epoch
-  (`selection="last"`) or of the epoch the run's monitor last elected
-  (`"best"`; unknown without a monitor), on the validation record or the
-  training summary. The configuration identity is a digest of the run's
-  configuration without its seed and salt (or a label you pass).
+  each. Train the runs with `provenance=` (FEAT-019): the attempt record
+  gives the status, the attempt id and the committed epoch, without which
+  the value is unknown. The value is the epoch record of the last committed
+  epoch (`selection="last"`) or of the epoch the run's monitor last elected
+  (`"best"`, whose rule names the declared monitor; unknown without one or
+  when it elected nothing), on the validation record or the whole-epoch
+  training summary (recorded only by runs that declare metrics or a
+  monitor — never a last batch). The configuration identity is a digest of
+  the run's configuration without its salt, seed and resume lineage, for
+  `NNModel.train` and `Trainer` runs alike (or a label you pass); the text
+  view counts attempts that did not complete as `not_completed`.
 
 This is about **your own runs**. The comparison against other toolkits is a
 separate page: [`docs/comparison.md`](comparison.md). See

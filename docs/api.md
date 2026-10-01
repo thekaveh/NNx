@@ -5326,20 +5326,25 @@ Args:
         built-in field (``loss``, ``error``, ``accuracy``, ``f1``,
         ``recall``, ``precision``) or an ``extra_metrics`` name.
     split: ``"validation"`` (the epoch's validation record) or
-        ``"train"`` (its training summary).
+        ``"train"`` (its whole-epoch training summary — recorded only by
+        runs that declare metrics or a monitor; never a last batch).
     selection: ``"last"`` (the last committed epoch) or ``"best"`` (the
-        last committed epoch the run's monitor elected; unknown for a
-        run without one).
-    replicate: ``"seed"`` keys each observation ``seed=<train.seed>``
-        (unknown for an unseeded run); ``None`` leaves it unknown.
+        last committed epoch the run's monitor elected; the rule names
+        the declared monitor, and the value is unknown for a run without
+        one or whose monitor elected nothing).
+    replicate: ``"seed"`` keys each observation ``seed=<seed>`` (the
+        training or ``Trainer`` seed; unknown for an unseeded run);
+        ``None`` leaves it unknown.
     config: run id → declared configuration label; by default, a digest
-        of the run's configuration without its seed and salt.
+        of the run's configuration without its salt, seed and resume
+        lineage.
 
-The status and attempt id come from the run's attempt record
-(FEAT-019; ``"unknown"`` without one), the data and split identities
-from its manifest. When the run's history is committed by its LAST
-checkpoint and no attempt record names that checkpoint's epoch, the
-committed epoch is unknown and so is the value.
+Runs should be trained with ``provenance=`` (FEAT-019): the status and
+attempt id come from the run's attempt record (``"unknown"`` without
+one) and the data and split identities from its manifest. A run's
+history is committed by its LAST checkpoint, so without an attempt
+record naming that checkpoint's epoch the committed epoch — and so the
+value — is unknown.
 ```
 
 

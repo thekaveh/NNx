@@ -302,12 +302,20 @@ def _fit(lr: float, seed: int, *, fail: bool = False):
 
 
 def _tree_digest(root: str) -> dict[str, str]:
+    """Every entry under ``root``: file digests, symlink targets (the
+    ``runs/best`` pointer) and directories."""
     digests = {}
-    for folder, _, files in os.walk(root):
-        for name in files:
+    for folder, dirs, files in os.walk(root):
+        for name in [*dirs, *files]:
             path = os.path.join(folder, name)
-            with open(path, "rb") as handle:
-                digests[os.path.relpath(path, root)] = hashlib.sha256(handle.read()).hexdigest()
+            key = os.path.relpath(path, root)
+            if os.path.islink(path):
+                digests[key] = "link:" + os.readlink(path)
+            elif os.path.isdir(path):
+                digests[key] = "dir"
+            else:
+                with open(path, "rb") as handle:
+                    digests[key] = hashlib.sha256(handle.read()).hexdigest()
     return digests
 
 
@@ -390,3 +398,147 @@ def test_the_module_is_public_and_complete():
     }
     assert all(getattr(comparison, name, None) is not None for name in comparison.__all__)
     np.testing.assert_allclose(summarize(replicates([1.0, 3.0])).pooled().std, math.sqrt(2.0))
+
+
+# --- review hardening -----------------------------------------------------------------------------------
+
+
+def _fit_params(seed: int, **overrides):
+    X = torch.randn(32, 4, generator=torch.Generator().manual_seed(0))
+    y = (X[:, 0] > 0).long()
+    fields = dict(
+        n_epochs=2,
+        train_loader=DataLoader(TensorDataset(X[:24], y[:24]), batch_size=8),
+        val_loader=DataLoader(TensorDataset(X[24:], y[24:]), batch_size=8),
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        seed=seed,
+    )
+    fields.update(overrides)
+    return NNTrainParams(**fields)
+
+
+def _model():
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+MANIFEST = ExperimentManifest(data={"train": hash_bytes(b"toy-32")})
+
+
+def test_trainer_and_resumed_runs_pool_across_seeds(tmp_path, monkeypatch):
+    from nnx.objectives import supervised_objective
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(0))
+    loader = DataLoader(TensorDataset(X, (X[:, 0] > 0).long()), batch_size=8)
+    runs = []
+    for seed in (0, 1):
+        params = (
+            NNTrainerParams.builder()
+            .n_epochs(1)
+            .seed(seed)
+            .train_loader(loader)
+            .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+            .save_phase_checkpoints(False)
+            .build()
+        )
+        runs.append(Trainer(_model()).train(params=params, objective=supervised_objective(), provenance=MANIFEST))
+    found = observations_from_runs([run.id for run in runs], metric=Metric("loss", "minimize"), split="train")
+    assert len({item.config for item in found}) == 1 and [item.replicate for item in found] == ["seed=0", "seed=1"]
+
+    parents = [_model().train(params=_fit_params(seed, n_epochs=1), provenance=MANIFEST) for seed in (3, 4)]
+    children = [
+        _model().train(params=_fit_params(seed, n_epochs=1, resume_from_run_id=parent.id), provenance=MANIFEST)
+        for seed, parent in zip((3, 4), parents, strict=True)
+    ]
+    resumed = observations_from_runs([run.id for run in children], metric=Metric("loss", "minimize"))
+    assert len(summarize(resumed).groups) == 1  # the resume lineage is per replicate, not configuration
+
+
+def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
+    from nnx import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monitor = MonitorSpec("loss", split="val")
+    runs = [_model().train(params=_fit_params(seed, monitor=monitor), provenance=MANIFEST) for seed in (0, 1)]
+    attempt = os.path.join("runs", runs[1].id, "attempt.json")
+    state = json.loads(open(attempt).read())
+    state.update(status="running", last_committed=None)  # as a killed run leaves it
+    with open(attempt, "w") as handle:
+        json.dump(state, handle)
+    found = observations_from_runs([run.id for run in runs], metric=Metric("loss", "minimize"), selection="best")
+    assert {item.selection for item in found} == {"best:loss(val,min)"}
+    assert len(summarize(found).groups) == 1 and found[1].value is None and found[1].status == "running"
+    plain = _model().train(params=_fit_params(5), provenance=MANIFEST)
+    (no_monitor,) = observations_from_runs([plain.id], metric=Metric("loss", "minimize"), selection="best")
+    assert no_monitor.selection == "best" and no_monitor.value is None
+    assert no_monitor.evaluation == "unknown: the run's monitor elected no epoch"
+
+
+def test_train_split_reads_only_a_whole_epoch_summary(tmp_path, monkeypatch):
+    from nnx import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    plain = _model().train(params=_fit_params(0), provenance=MANIFEST)
+    summarized = _model().train(params=_fit_params(1, monitor=MonitorSpec("loss", split="train")), provenance=MANIFEST)
+    without, with_summary = observations_from_runs(
+        [plain.id, summarized.id],
+        metric=Metric("loss", "minimize"),
+        split="train",
+        config={plain.id: "c", summarized.id: "c"},
+    )
+    assert without.value is None and "no whole-epoch training summary" in without.evaluation  # never a last batch
+    assert with_summary.value == pytest.approx(summarized.idps[-1].train_summary.loss)
+
+
+def test_a_report_compares_only_its_own_observations():
+    a = replicates([0.3, 0.4], config="cfg-a")
+    b = replicates([0.5, 0.6], config="cfg-b")
+    altered = replicates([0.9, 0.9], config="cfg-b")  # same attempt ids, other values
+    with pytest.raises(ComparisonError, match="report's own observations"):
+        ComparisonReport.build([*a, *b], [(a, altered, "same seed")])
+    elsewhere = [obs(item.value, config="cfg-b", replicate=item.replicate, split="train") for item in b]
+    with pytest.raises(ComparisonError, match="report's own observations"):
+        ComparisonReport.build([*a, *b], [(a, elsewhere, "same seed")])
+
+
+def test_malformed_report_files_are_comparison_errors(tmp_path):
+    good = json.loads(_report(0).to_json())
+    path = tmp_path / "report.json"
+    cases = []
+    broken = json.loads(json.dumps(good))
+    del broken["comparisons"][0]["metric"]
+    cases.append(broken)
+    broken = json.loads(json.dumps(good))
+    broken["comparisons"] = ["x"]
+    cases.append(broken)
+    broken = json.loads(json.dumps(good))
+    broken["observations"] = [1]
+    cases.append(broken)
+    for state in cases:
+        path.write_text(json.dumps(state))
+        with pytest.raises(ComparisonError):
+            ComparisonReport.load(path)
+
+
+def test_numpy_scalars_huge_values_and_declared_unknown_identities():
+    item = obs(np.float32(0.25), replicate="seed=0")
+    assert item.value == 0.25 and isinstance(item.value, float)
+    assert obs(np.int64(1)).value == 1.0
+    huge = summarize(replicates([1e200, -1e200, 1e200])).pooled()
+    assert huge.std == math.inf
+    a = replicates([-1e308, 0.0], config="cfg-a")
+    b = replicates([1e308, 1.0], config="cfg-b")
+    report = ComparisonReport.build([*a, *b], [(a, b, "same seed")])
+    assert report.comparisons[0].pairs[0].delta == math.inf and report.comparisons[0].n == 1
+    assert json.loads(report.to_json())["comparisons"][0]["pairs"][0]["delta"] == "Infinity"
+    from nnx.comparison import _identities
+    from nnx.provenance import IdentityRef
+
+    assert _identities({"train": IdentityRef.unknown()}) is None

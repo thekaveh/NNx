@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import numbers
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -99,7 +100,7 @@ def _text(value: Any, what: str, *, optional: bool = False) -> Optional[str]:
 def _number(value: Any) -> Optional[float]:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise ComparisonError(f"an observation's value must be a number or None, got {value!r}")
     return float(value)
 
@@ -286,10 +287,13 @@ def _mean_std(values: Sequence[float]) -> tuple[Optional[float], Optional[float]
     n = len(values)
     if n == 0:
         return None, None
-    mean = math.fsum(values) / n
-    if n == 1:
-        return mean, None
-    return mean, math.sqrt(math.fsum((v - mean) ** 2 for v in values) / (n - 1))
+    try:
+        mean = math.fsum(values) / n
+        if n == 1:
+            return mean, None
+        return mean, math.sqrt(math.fsum((v - mean) ** 2 for v in values) / (n - 1))
+    except OverflowError:  # finite values whose spread overflows a float
+        return (math.inf if n == 1 else math.fsum(v / n for v in values)), math.inf
 
 
 @dataclass(frozen=True)
@@ -352,8 +356,8 @@ class GroupSummary:
             "n_attempts": self.n_attempts,
             "n_failed": self.n_failed,
             "n_nonfinite": self.n_nonfinite,
-            "mean": self.mean,
-            "std": self.std,
+            "mean": _encode(self.mean),
+            "std": _encode(self.std),
         }
 
 
@@ -481,7 +485,7 @@ class Pair:
     delta: Optional[float]
 
     def state(self) -> dict[str, Any]:
-        return {"replicate": self.replicate, "a": self.a, "b": self.b, "delta": self.delta}
+        return {"replicate": self.replicate, "a": self.a, "b": self.b, "delta": _encode(self.delta)}
 
 
 @dataclass(frozen=True)
@@ -515,7 +519,7 @@ class PairedComparison:
             left, right = by_a[key], by_b[key]
             delta = _value_of(right.value) - _value_of(left.value) if left.finite and right.finite else None
             pairs.append(Pair(str(key), left.id, right.id, delta))
-        deltas = [pair.delta for pair in pairs if pair.delta is not None]
+        deltas = [pair.delta for pair in pairs if pair.delta is not None and math.isfinite(pair.delta)]
         mean, std = _mean_std(deltas)
         object.__setattr__(self, "pairs", tuple(pairs))
         object.__setattr__(
@@ -546,10 +550,10 @@ class PairedComparison:
             "unmatched_a": [list(item) for item in self.unmatched_a],
             "unmatched_b": [list(item) for item in self.unmatched_b],
             "n": self.n,
-            "mean": self.mean,
-            "std": self.std,
+            "mean": _encode(self.mean),
+            "std": _encode(self.std),
             "bootstrap": None if self.bootstrap is None else self.bootstrap.state(),
-            "interval": None if self.interval is None else list(self.interval),
+            "interval": None if self.interval is None else [_encode(v) for v in self.interval],
         }
 
 
@@ -629,13 +633,20 @@ class ComparisonReport:
         """Summarize ``observations`` and run each ``(a, b, pairing)``
         comparison (every compared observation must be among them)."""
         summary = summarize(observations)
-        known = {(item.metric.name, item.id) for item in summary.observations}
+        known = {(item.metric.name, item.id): item for item in summary.observations}
         results = []
         for a, b, pairing in comparisons:
             a, b = tuple(a), tuple(b)
-            stray = sorted(item.id for item in (*a, *b) if (item.metric.name, item.id) not in known)
+            stray = sorted(
+                getattr(item, "id", repr(item))
+                for item in (*a, *b)
+                if not isinstance(item, Observation) or known.get((item.metric.name, item.id)) != item
+            )
             if stray:
-                raise ComparisonError(f"compared observations must be in the report's observations; not found: {stray}")
+                raise ComparisonError(
+                    f"compared observations must be the report's own observations (same id and every field); "
+                    f"not found or different: {stray}"
+                )
             results.append(compare(a, b, pairing=pairing, bootstrap=bootstrap))
         return ComparisonReport(summary, tuple(results))
 
@@ -670,7 +681,7 @@ class ComparisonReport:
             lines.append(f"[{index}] {group.label()}")
             lines.append(
                 f"    data={group.data or 'unknown'} split_id={group.split_id or 'unknown'}"
-                f" n={group.n}/{group.n_attempts} failed={group.n_failed} nonfinite={group.n_nonfinite}"
+                f" n={group.n}/{group.n_attempts} not_completed={group.n_failed} nonfinite={group.n_nonfinite}"
                 f" mean={_fmt(group.mean)} sd(n-1)={_fmt(group.std)}"
             )
             for item in group.observations:
@@ -725,26 +736,33 @@ class ComparisonReport:
         )
         if state["format"] != FORMAT:
             raise ComparisonError(f"unsupported comparison report format {state['format']!r} (expected {FORMAT!r})")
-        observations = [Observation.from_state(item) for item in state["observations"]]
-        by_id = {(item.metric.name, item.id): item for item in observations}
-        specs = []
-        bootstrap_states = []
-        for result in state["comparisons"]:
-            metric = result["metric"]["name"]
-            try:
-                a = [by_id[(metric, attempt)] for attempt in result["a"]]
-                b = [by_id[(metric, attempt)] for attempt in result["b"]]
-            except KeyError as error:
-                raise ComparisonError(f"a comparison names an attempt the report does not hold: {error}") from error
-            specs.append((a, b, result["pairing"]))
-            bootstrap_states.append(result["bootstrap"])
-        rebuilt = ComparisonReport(
-            summarize(observations),
-            tuple(
-                compare(a, b, pairing=pairing, bootstrap=_bootstrap_from_state(boot))
-                for (a, b, pairing), boot in zip(specs, bootstrap_states, strict=True)
-            ),
-        )
+        try:
+            if not isinstance(state["observations"], list) or not isinstance(state["comparisons"], list):
+                raise TypeError("observations and comparisons are lists")
+            observations = [Observation.from_state(item) for item in state["observations"]]
+            by_id = {(item.metric.name, item.id): item for item in observations}
+            specs = []
+            bootstrap_states = []
+            for result in state["comparisons"]:
+                metric = result["metric"]["name"]
+                try:
+                    a = [by_id[(metric, attempt)] for attempt in result["a"]]
+                    b = [by_id[(metric, attempt)] for attempt in result["b"]]
+                except KeyError as error:
+                    raise ComparisonError(f"a comparison names an attempt the report does not hold: {error}") from error
+                specs.append((a, b, result["pairing"]))
+                bootstrap_states.append(result["bootstrap"])
+            rebuilt = ComparisonReport(
+                summarize(observations),
+                tuple(
+                    compare(a, b, pairing=pairing, bootstrap=_bootstrap_from_state(boot))
+                    for (a, b, pairing), boot in zip(specs, bootstrap_states, strict=True)
+                ),
+            )
+        except ComparisonError:
+            raise
+        except (KeyError, TypeError, AttributeError, ValueError) as error:
+            raise ComparisonError(f"malformed comparison report: {type(error).__name__}: {error}") from error
         if json.loads(json.dumps(rebuilt.state(), sort_keys=True)) != json.loads(
             json.dumps(dict(state), sort_keys=True)
         ):
@@ -772,20 +790,32 @@ def _canonical_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+_PER_REPLICATE = ("seed", "parent_run_id", "parent_checkpoint")
+
+
 def _config_identity(run_state: Mapping[str, Any]) -> str:
     """The run's configuration without what varies per replicate: the run
-    id, the seed and the salt."""
+    id, the salt, and the seed and resume lineage of its training (or
+    ``Trainer``) parameters."""
     state = {key: value for key, value in run_state.items() if key not in ("id", "salt")}
-    train = dict(state.get("train") or {})
-    train.pop("seed", None)
-    state["train"] = train
+    for section in ("train", "trainer"):
+        if isinstance(state.get(section), Mapping):
+            state[section] = {k: v for k, v in state[section].items() if k not in _PER_REPLICATE}
     return "sha256:" + hashlib.sha256(_canonical_text(state).encode("utf-8")).hexdigest()[:16]
+
+
+def _declared_monitor(run_state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    for section in ("train", "trainer"):
+        monitor = (run_state.get(section) or {}).get("monitor") if isinstance(run_state.get(section), Mapping) else None
+        if isinstance(monitor, Mapping):
+            return monitor
+    return None
 
 
 def _identities(refs: Mapping[str, Any]) -> Optional[str]:
     """``name=kind:value`` per identity (``name=unknown`` when unknown), or
     ``None`` when the manifest declares none."""
-    if not refs:
+    if not refs or all(ref.kind == "unknown" for ref in refs.values()):
         return None
     return ";".join(
         f"{name}={ref.kind}" + ("" if ref.value is None else f":{ref.value}") for name, ref in sorted(refs.items())
@@ -848,20 +878,25 @@ def observations_from_runs(
             built-in field (``loss``, ``error``, ``accuracy``, ``f1``,
             ``recall``, ``precision``) or an ``extra_metrics`` name.
         split: ``"validation"`` (the epoch's validation record) or
-            ``"train"`` (its training summary).
+            ``"train"`` (its whole-epoch training summary — recorded only by
+            runs that declare metrics or a monitor; never a last batch).
         selection: ``"last"`` (the last committed epoch) or ``"best"`` (the
-            last committed epoch the run's monitor elected; unknown for a
-            run without one).
-        replicate: ``"seed"`` keys each observation ``seed=<train.seed>``
-            (unknown for an unseeded run); ``None`` leaves it unknown.
+            last committed epoch the run's monitor elected; the rule names
+            the declared monitor, and the value is unknown for a run without
+            one or whose monitor elected nothing).
+        replicate: ``"seed"`` keys each observation ``seed=<seed>`` (the
+            training or ``Trainer`` seed; unknown for an unseeded run);
+            ``None`` leaves it unknown.
         config: run id → declared configuration label; by default, a digest
-            of the run's configuration without its seed and salt.
+            of the run's configuration without its salt, seed and resume
+            lineage.
 
-    The status and attempt id come from the run's attempt record
-    (FEAT-019; ``"unknown"`` without one), the data and split identities
-    from its manifest. When the run's history is committed by its LAST
-    checkpoint and no attempt record names that checkpoint's epoch, the
-    committed epoch is unknown and so is the value.
+    Runs should be trained with ``provenance=`` (FEAT-019): the status and
+    attempt id come from the run's attempt record (``"unknown"`` without
+    one) and the data and split identities from its manifest. A run's
+    history is committed by its LAST checkpoint, so without an attempt
+    record naming that checkpoint's epoch the committed epoch — and so the
+    value — is unknown.
     """
     if not isinstance(metric, Metric):
         raise ComparisonError(f"metric must be a Metric, got {type(metric).__name__}")
@@ -892,6 +927,12 @@ def observations_from_runs(
                 epochs[idp.epoch_idx] = idp  # the epoch's last record
         chosen = None
         rule = selection
+        unknown_reason = "unknown: the committed epoch is not recorded" if not known else None
+        if selection == "best":
+            # The rule is the run's declared monitor, whether or not any epoch was elected.
+            monitor = _declared_monitor(run_state)
+            if monitor is not None:
+                rule = f"best:{monitor.get('metric')}({monitor.get('split')},{monitor.get('mode') or 'metric default'})"
         if known and epochs:
             ordered = [epochs[epoch] for epoch in sorted(epochs)]
             if selection == "last":
@@ -899,22 +940,29 @@ def observations_from_runs(
             else:
                 elected = [idp for idp in ordered if idp.selection is not None and idp.selection.improved]
                 chosen = elected[-1] if elected else None
-                if elected:
-                    monitor = elected[-1].selection.monitor
-                    rule = f"best:{monitor.metric}({monitor.split},{monitor.mode or 'metric default'})"
+                if chosen is None:
+                    unknown_reason = "unknown: the run's monitor elected no epoch"
         value = None
-        evaluation = None
+        evaluation = unknown_reason
         if chosen is not None:
-            edp = chosen.val_edp if split == "validation" else chosen.monitored_train_edp()
+            if split == "validation":
+                edp = chosen.val_edp
+            else:  # the whole-epoch summary only: a last batch is not an epoch's value
+                edp = chosen.train_summary
             value = _metric_value(edp, metric.name)
             evaluation = f"epoch {chosen.epoch_idx} {split} record (idps.csv)"
+            if edp is None:
+                evaluation = (
+                    "unknown: no whole-epoch training summary (declare metrics or a monitor)"
+                    if split == "train"
+                    else f"unknown: epoch {chosen.epoch_idx} has no validation record"
+                )
             last = None if attempt is None else attempt.last_committed
             if last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
-        elif not known:
-            evaluation = "unknown: the committed epoch is not recorded"
         train = run_state.get("train") or {}
-        seed = train.get("seed")
+        trainer = run_state.get("trainer") or {}
+        seed = train.get("seed") if train.get("seed") is not None else trainer.get("seed")
         manifest = None if provenance is None else provenance.manifest
         data = None if manifest is None else _identities(manifest.data)
         if data is None and train.get("data_id") is not None:
