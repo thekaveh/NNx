@@ -710,3 +710,79 @@ def test_the_legacy_flag_beside_an_fp16_policy_keeps_the_policys_run_id():
     both = params(mixed_precision=True, precision=PrecisionPolicy("fp16"))
     assert not both.mixed_precision
     assert both.state() == params(precision=PrecisionPolicy("fp16")).state()
+
+
+# --- review round 8 ------------------------------------------------------------------------------------------
+
+
+def test_born_again_refuses_a_reduced_policy_before_generation_zero(tmp_path):
+    from nnx import born_again_train
+
+    with pytest.raises(PrecisionUnsupportedError, match="born_again_train distills generations 1"):
+        born_again_train(_model(PrecisionPolicy("bf16")), generations=2, train_params=_train_params(n_epochs=1))
+    assert not os.path.exists(tmp_path / "runs")
+    runs = born_again_train(_model(PrecisionPolicy("bf16")), generations=1, train_params=_train_params(n_epochs=1))
+    assert len(runs) == 1 and runs[0].precision is not None and runs[0].precision.effective == "bf16"
+
+
+def test_a_scaler_hook_refusal_keeps_an_existing_run(monkeypatch, tmp_path):
+    from nnx import precision as precision_module
+
+    model = _model()
+    first = model.train(_train_params(n_epochs=1))
+    real = precision_module._unsupported
+    monkeypatch.setattr(
+        precision_module, "_unsupported", lambda mode, *device: None if mode == "fp16" else real(mode, *device)
+    )
+    monkeypatch.setattr(NNModel, "_build_grad_scaler", lambda _self: None)
+    fp16 = _model(PrecisionPolicy("fp16"))
+    params = _train_params(n_epochs=1)  # overwrite_existing=True
+    run_id = nn_model_module.NNRun(train=params, model=fp16.params, net=fp16.net_params).id
+    os.makedirs(tmp_path / "runs" / run_id, exist_ok=True)
+    (tmp_path / "runs" / run_id / "keep.txt").write_text("history")
+    with pytest.raises(ValueError, match="_build_grad_scaler returned none"):
+        fp16.train(params)
+    assert (tmp_path / "runs" / run_id / "keep.txt").read_text() == "history"  # refused before the lease
+    assert (tmp_path / "runs" / first.id).exists()
+
+
+def test_the_cached_resolution_follows_the_cuda_ordinal():
+    from nnx.nn.nn_model import _precision_key
+
+    params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    assert _precision_key(params, "cuda:0") != _precision_key(params, "cuda:1")
+
+
+def test_a_legacy_trainer_run_and_its_model_report_the_same_precision(monkeypatch):
+    model = NNModel(
+        net_params=_NET,
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, mixed_precision=True),
+    )
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_batches(2),
+        optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0)},
+        save_phase_checkpoints=False,
+    )
+    run = Trainer(model).train(params, objective=supervised_objective())
+    assert run.precision is not None and model.resolved_precision == run.precision
+
+
+def test_the_legacy_trainer_warning_points_at_the_caller():
+    import inspect
+
+    from nnx.trainer import trainer as trainer_module
+
+    model = NNModel(
+        net_params=_NET,
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, mixed_precision=True),
+    )
+    model.device = torch.device("cuda")  # where the legacy flag would apply; nothing runs on it
+
+    def train(model):  # stands in for Trainer.train, which resolves the run's precision first
+        return trainer_module._trainer_precision(model, supervised_objective())
+
+    with pytest.warns(RuntimeWarning, match=r"set NNModelParams.precision=PrecisionPolicy\('fp16'\)") as caught:
+        line = inspect.currentframe().f_lineno + 1  # type: ignore[union-attr]
+        train(model)
+    assert (caught[0].filename, caught[0].lineno) == (__file__, line)

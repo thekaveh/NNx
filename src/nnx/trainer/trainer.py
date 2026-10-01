@@ -50,6 +50,7 @@ from ..components import ComponentRegistry, ResumeStatus
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
+    _UNSET,
     CallbackLike,
     NNModel,
     _batch_sample_count,
@@ -59,6 +60,7 @@ from ..nn.nn_model import (
     _check_provenance,
     _check_resume_horizon,
     _check_resume_precision,
+    _check_scaler_hook,
     _collect_checkpoint_transforms,
     _component_type,
     _dispatch_update,
@@ -72,6 +74,7 @@ from ..nn.nn_model import (
     _objective_microbatch,
     _optimizer_topology,
     _plan_component_restore,
+    _precision_key,
     _restore_weights_only,
     _rollback_resume,
     _step_monitored_plateau,
@@ -163,7 +166,7 @@ def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) ->
         return resolved
     if objective is not None:
         _warn_full_precision_objective(model)
-    return replace(
+    trainer_run = replace(
         resolved,
         effective="fp32",
         fallback_reason=(
@@ -172,6 +175,9 @@ def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) ->
         ),
         covers=(),
     )
+    # The model reports what this run used (its scaler hook included).
+    model._precision = (_precision_key(model.params, model.device), trainer_run)
+    return trainer_run
 
 
 def _warn_full_precision_objective(model: Any) -> None:
@@ -182,10 +188,11 @@ def _warn_full_precision_objective(model: Any) -> None:
     apply."""
     if getattr(model.params, "mixed_precision", False) and model.device.type == "cuda":
         warnings.warn(
-            "Trainer.train(objective=...) runs in full precision: Trainer has no mixed-precision setting, so "
-            "the model's mixed_precision=True is not applied (NNModel.train(objective=...) applies it)",
+            "Trainer.train(objective=...) runs in full precision: Trainer never applies the legacy "
+            "mixed_precision=True (NNModel.train(objective=...) does); set "
+            "NNModelParams.precision=PrecisionPolicy('fp16') to train the objective in fp16",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=4,  # Trainer.train -> _trainer_precision -> here
         )
 
 
@@ -421,6 +428,10 @@ class Trainer:
         }
         if precision.uses_scaler:  # only an objective runs a reduced policy here
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
+        # The fp16 loss scaler, through the model's hook as NNModel.train builds
+        # it, checked against the policy before any run is reserved.
+        scaler = self.model._build_grad_scaler() if precision.uses_scaler else None
+        _check_scaler_hook(precision, scaler, self.model.device.type)
 
         run = NNRun(
             train=_representative_train_params(params),
@@ -447,6 +458,7 @@ class Trainer:
                     objective=objective,
                     objective_window=objective_window,
                     precision=precision,
+                    scaler=scaler,
                 ),
             )
 
@@ -462,6 +474,7 @@ class Trainer:
         objective: Optional[Callable[[Any], Any]] = None,
         objective_window: int = 1,
         precision: Optional[ResolvedPrecision] = None,
+        scaler: Any = _UNSET,
     ) -> NNRun:
         """Execute a validated multi-optimizer training session."""
         if precision is None:
@@ -503,9 +516,9 @@ class Trainer:
         # steps every named optimizer once per committed update; its counters
         # are component state, so they continue across a stateful resume.
         engine = None
-        # The fp16 loss scaler (an objective under PrecisionPolicy("fp16")),
-        # through the model's hook as NNModel.train builds it.
-        scaler = self.model._build_grad_scaler() if precision.uses_scaler else None
+        if scaler is _UNSET:  # the fp16 loss scaler (an objective under PrecisionPolicy("fp16"))
+            scaler = self.model._build_grad_scaler() if precision.uses_scaler else None
+            _check_scaler_hook(precision, scaler, self.model.device.type)
         if objective is not None:
             engine = _objective_engine(
                 objective,

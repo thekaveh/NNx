@@ -29,6 +29,7 @@ from typing import Any
 from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
 from ..nn.params.nn_train_params import NNTrainParams
+from ..precision import PrecisionUnsupportedError
 from .distillation import kd_train_step_factory
 
 
@@ -74,9 +75,19 @@ def born_again_train(
 
     Raises:
         ValueError: if ``generations < 1``.
+        PrecisionUnsupportedError: if ``generations > 1`` and the model's
+            precision is reduced (FEAT-028): the KD generations run in full
+            precision only, so nothing is trained.
     """
     if generations < 1:
         raise ValueError(f"generations must be >= 1, got {generations}")
+    if generations > 1 and model.resolved_precision.reduced:
+        # Generations 1+ distill with kd_train_step_factory, a full-precision
+        # step (FEAT-028): refuse before generation 0 spends its compute.
+        raise PrecisionUnsupportedError(
+            f"born_again_train distills generations 1+ with kd_train_step_factory, which runs in full precision "
+            f"only, but this model resolves to {model.resolved_precision.effective}; train it in fp32"
+        )
 
     runs: list[NNRun] = []
     teacher: NNModel | None = None

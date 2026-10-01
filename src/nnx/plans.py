@@ -475,11 +475,12 @@ class ExperimentPlan:
             found.append(Diagnostic(path, message))
 
         self._check_model(report)
+        precision = self._check_precision(report)
         train = self._check_train(report)
         has_val = self._check_data(report, train)
         self._check_seed(report, train)
         self._check_callbacks(report)
-        self._check_steps(report)
+        self._check_steps(report, precision)
         self._check_resume(report, train)
         if train is not None:
             self._check_monitoring(report, train, has_val)
@@ -521,10 +522,6 @@ class ExperimentPlan:
                 self.model.loss()  # NNModel builds it first, whatever else the plan declares
             except Exception as exc:  # building the loss runs its own code: any failure is the model's diagnostic
                 report("model.loss", str(exc))
-            try:  # NNModel resolves the policy on its device next (FEAT-028), before building anything
-                resolve_precision(self.model, self.model.device())
-            except PrecisionUnsupportedError as exc:
-                report("model.precision", str(exc))
         if self.batch_adapter is not None and not isinstance(self.batch_adapter, BatchAdapter):
             report("batch_adapter", f"must be an nnx.models.BatchAdapter, got {type(self.batch_adapter).__name__}")
         net_typed = self.net is None or isinstance(self.net, NNParams)
@@ -664,17 +661,20 @@ class ExperimentPlan:
                     f"{spread('components', component)}",
                 )
 
-    def _precision(self) -> Optional[ResolvedPrecision]:
-        """The precision the plan's model resolves to on its device, or
-        ``None`` when the model is unusable or its policy unsupported."""
+    def _check_precision(self, report: Callable[[str, str], None]) -> Optional[ResolvedPrecision]:
+        """Resolve the model's policy on its device, as ``NNModel`` does
+        before building anything (FEAT-028): the resolution, or ``None``
+        (reported as ``model.precision``) when the device cannot run it, or
+        when the model is unusable (reported by the model checks)."""
         if not isinstance(self.model, NNModelParams) or not self._model_usable:
             return None
         try:
             return resolve_precision(self.model, self.model.device())
-        except PrecisionUnsupportedError:
+        except PrecisionUnsupportedError as exc:
+            report("model.precision", str(exc))
             return None
 
-    def _check_steps(self, report: Callable[[str, str], None]) -> None:
+    def _check_steps(self, report: Callable[[str, str], None], precision: Optional[ResolvedPrecision]) -> None:
         from .nn.nn_model import _check_provenance, _check_step_precision
 
         for path, value in (
@@ -686,7 +686,6 @@ class ExperimentPlan:
                 report(path, f"must be callable, got {value!r}")
         if self.objective is not None and self.train_step_fn is not None:
             report("objective", "pass train_step_fn or objective, not both: one owner per optimizer update")
-        precision = self._precision()
         if precision is not None:
             try:
                 _check_step_precision(self.train_step_fn, precision)  # train()'s own rule (FEAT-028)
@@ -962,6 +961,7 @@ class ExperimentPlan:
             found.append(Diagnostic(path, message))
 
         self._check_model(report)
+        self._check_precision(report)
         self._check_seed(report, self.train if isinstance(self.train, NNTrainParams) else None)
         return PlanValidation(tuple(found))
 

@@ -692,13 +692,15 @@ def _check_resume_precision(
         )
 
 
-def _precision_key(params: Any, device: Any) -> tuple[Any, bool, str]:
+def _precision_key(params: Any, device: Any) -> tuple[Any, bool, str, Optional[int]]:
     """What a cached resolution depends on: the whole policy, the legacy
-    flag and the device type."""
+    flag and the device (type and index: bf16 support is per CUDA device)."""
+    torch_device = torch.device(device)
     return (
         getattr(params, "precision", None),
         bool(getattr(params, "mixed_precision", False)),
-        torch.device(device).type,
+        torch_device.type,
+        torch_device.index,
     )
 
 
@@ -781,6 +783,8 @@ def _step_loss_terms(
         backward_loss = train_loss / accumulate_grad_batches
     return _StepLossTerms(output, target, None, valid, train_loss, backward_loss, weight)
 
+
+_UNSET: Any = object()  # "not passed", for an argument whose None is meaningful
 
 # The legacy rule for a step context without a precision (FEAT-028): FP16
 # for a scaler on CUDA, full precision otherwise. TF32 is never read here.
@@ -2086,6 +2090,10 @@ class NNModel(_HubMixinBase):
         # optimizer over exactly the resolved parameters, fails here with no
         # run reserved (nnx.optimizers.build_optimizer is the shared hook).
         optimizer = build_optimizer(self.net, params.optim)
+        # The fp16 scaler, through the override hook and checked against the
+        # policy (FEAT-028) before any run is reserved.
+        scaler = self._build_grad_scaler()
+        _check_scaler_hook(precision, scaler, self.device.type)
         run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
@@ -2102,6 +2110,7 @@ class NNModel(_HubMixinBase):
                     components=components,
                     objective=objective,
                     precision=precision,
+                    scaler=scaler,
                 ),
             )
 
@@ -2139,6 +2148,7 @@ class NNModel(_HubMixinBase):
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         precision: Optional[ResolvedPrecision] = None,
+        scaler: Any = _UNSET,
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -2219,8 +2229,9 @@ class NNModel(_HubMixinBase):
         scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
         if precision is None:
             precision = self.resolved_precision
-        scaler = self._build_grad_scaler()
-        _check_scaler_hook(precision, scaler, self.device.type)
+        if scaler is _UNSET:
+            scaler = self._build_grad_scaler()
+            _check_scaler_hook(precision, scaler, self.device.type)
         # FEAT-004: an objective's updates belong to the shared engine; its
         # committed-update counters are component state (nnx.update_engine),
         # so they continue across a stateful resume.
