@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Union
 
 import torch
+from torch.utils.checkpoint import checkpoint
 
 from .components import ComponentSpec
 from .objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
@@ -199,7 +200,7 @@ def pairwise_logistic_loss(
                 chunk = high[start : start + block]
                 if torch.is_grad_enabled() and (chunk.requires_grad or low.requires_grad):
                     # Recomputed in backward: autograd keeps the block's inputs, never its pair matrix.
-                    part = torch.utils.checkpoint.checkpoint(_block_loss, chunk, low, use_reentrant=False)
+                    part = checkpoint(_block_loss, chunk, low, use_reentrant=False)
                 else:
                     part = _block_loss(chunk, low)
                 total = total + part
