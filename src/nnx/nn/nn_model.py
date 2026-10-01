@@ -246,10 +246,12 @@ def _load_resume_source(
             f"{[t.state() for t in saved_recipe]}, but this model carries {[t.state() for t in live_recipe]}: "
             "materialize the same nnx.transforms.TransformRecipe on the model before resuming"
         )
-    # A checkpoint whose only transforms are the recipe the model already
-    # carries holds weights of the live topology, which load directly.
-    is_live_recipe = saved_recipe == tuple(ckpt.transforms) == tuple(live_transforms)
-    if ckpt.transforms and resume_net_state is None and not is_live_recipe:
+    # A checkpoint whose transforms are exactly the ones the model already
+    # carries (its recipe, or a recipe and the conversion of a converted
+    # model trained again) holds weights of the live topology, which load
+    # directly; any other transformed checkpoint needs its pre-transform
+    # state.
+    if ckpt.transforms and resume_net_state is None and tuple(ckpt.transforms) != tuple(live_transforms):
         raise ValueError(
             "this transformed checkpoint has no pre-transform training state and cannot be warm-resumed; "
             "use NNModel.from_checkpoint() for inference or resume from an untransformed checkpoint"

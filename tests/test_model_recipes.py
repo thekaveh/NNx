@@ -509,7 +509,9 @@ def test_a_live_train_end_transform_does_not_bypass_the_pre_transform_guard():
     )
     with mock.patch.object(NNCheckpoint, "load_with_training_state", return_value=(converted, {})):
         with pytest.raises(ValueError, match="no pre-transform training state"):
-            module._load_resume_source("a" * 32, "last", "auto", trainer=False, live_transforms=(qat,))
+            module._load_resume_source("a" * 32, "last", "auto", trainer=False, live_transforms=())
+        # The same converted model trained again resumes its own in-loop tags.
+        module._load_resume_source("a" * 32, "last", "auto", trainer=False, live_transforms=(qat,))
 
 
 def test_a_lora_rebuild_leaves_the_random_streams_alone():
