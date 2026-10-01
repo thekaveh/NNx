@@ -842,3 +842,38 @@ def test_round_three_report_edges(tmp_path):
     for execution in ([], 0, ""):
         with pytest.raises(BenchmarkError, match="execution"):
             Record.from_state({**records[0].state(), "execution": execution})
+
+
+def test_round_four_edges(tmp_path):
+    class ImageOnly(KeywordProvider):  # no check(): its declared capabilities decide what NNx can tell
+        def capabilities(self):
+            return Capabilities(primitives=frozenset({"choice"}), modalities=frozenset({"image"}), dynamic_labels=True)
+
+        def decide(self, question, inputs):
+            return super().decide(question, [str(item["caption"]) for item in inputs])
+
+    samples = [Sample(f"i{i}", TOPIC, {"caption": f"goal {i}"}, "sport") for i in range(2)]
+    collection = collect(ImageOnly(), samples, provider_id="img", budget=Budget(max_calls=1))
+    assert [r.status for r in collection.records] == ["answered", "answered"]  # never refused on a guess
+
+    class MappingAnswer(KeywordProvider):
+        def decide(self, question, texts):
+            class Loose:
+                question_digest = question.digest()
+                distribution = {"sport": 0.7, "economy": 0.3}
+
+            return [Loose() for _ in texts]
+
+    mapped = collect(
+        MappingAnswer(), [Sample("m", TOPIC, "goal", "sport")], provider_id="m", budget=Budget(max_calls=1)
+    )
+    assert mapped.records[0].status == "answered"
+    samples, records = fixture()
+    lines = tmp_path / "records.jsonl"
+    write_records(lines, records)
+    text = lines.read_text().replace('"reason": null', '"reason": null, "x": "a\\u2028b"', 1)
+    lines.write_text(text.replace("\\u2028", " "), encoding="utf-8")
+    with pytest.raises(BenchmarkError, match="unknown keys"):  # the line is parsed whole, not split at U+2028
+        read_records(lines)
+    infinite = [Record("s0", AB.digest(), "stub", "answered", distribution=(("a", 0.0), ("b", 1.0))), *records[1:]]
+    assert "nll: Infinity" in evaluate(samples, infinite, split="x").text()

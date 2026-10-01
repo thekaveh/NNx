@@ -451,9 +451,10 @@ class Record:
 
 def write_records(path: Union[str, os.PathLike[str]], records: Iterable[Record]) -> None:
     """One JSON object per line (strict JSON, sorted keys)."""
+    from .._artifacts import atomic_write
+
     lines = [json.dumps(record.state(), sort_keys=True, allow_nan=False) for record in records]
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("".join(line + "\n" for line in lines))
+    atomic_write(path, "".join(line + "\n" for line in lines))  # an interrupted write never leaves half a file
 
 
 def read_records(path: Union[str, os.PathLike[str]]) -> list[Record]:
@@ -462,7 +463,7 @@ def read_records(path: Union[str, os.PathLike[str]]) -> list[Record]:
     from .._artifacts import parse_json, read_text
 
     records = []
-    for number, line in enumerate(read_text(path, "records", BenchmarkError).splitlines(), start=1):
+    for number, line in enumerate(read_text(path, "records", BenchmarkError).split("\n"), start=1):
         if not line.strip():
             continue
         try:
@@ -552,7 +553,8 @@ def _answer(sample: Sample, result: Any, provider_id: str) -> dict[str, Any]:
     pairs = getattr(result, "distribution", None)
     if pairs is None:
         raise InvalidDecisionResponse(f"sample {sample.id!r}: the result carries no distribution")
-    reordered: Any = validate_response(sample.question, tuple(pairs), provider=provider_id)  # duplicates are seen
+    pairs = pairs if isinstance(pairs, Mapping) else tuple(pairs)  # pairs keep duplicates for the validator to see
+    reordered: Any = validate_response(sample.question, pairs, provider=provider_id)
     return {"distribution": tuple((option_id, float(p)) for option_id, p in reordered.distribution)}
 
 
@@ -679,6 +681,19 @@ def collect(
     return Collection(tuple(records), calls, complete, stopped)
 
 
+def _modality(inputs: Any) -> Optional[str]:
+    """``"text"`` for a list of strings, ``"tensor"`` for a tensor or an
+    array (the first part of several inputs), else ``None``: unknown."""
+    import numpy as np
+
+    first = inputs[0] if isinstance(inputs, tuple) and inputs else inputs
+    if isinstance(first, list) and first and all(isinstance(item, str) for item in first):
+        return "text"
+    if isinstance(first, np.ndarray) or (hasattr(first, "detach") and hasattr(first, "dtype")):
+        return "tensor"
+    return None
+
+
 def _batch_cap(provider: Any, batch_size: int) -> int:
     """``batch_size``, lowered to the provider's declared ``max_batch``."""
     capabilities = getattr(provider, "capabilities", None)
@@ -703,9 +718,8 @@ def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optio
             check(question, inputs)
             return None
         capabilities = getattr(provider, "capabilities", None)
-        if callable(capabilities):
-            first = inputs[0] if isinstance(inputs, tuple) and inputs else inputs  # several inputs: the first part
-            modality = "text" if isinstance(first, list) and first and isinstance(first[0], str) else "tensor"
+        modality = _modality(inputs)
+        if callable(capabilities) and modality is not None:  # a modality NNx cannot tell is the provider's to judge
             declared: Any = capabilities()
             declared.check(question, modality=modality, batch_size=rows)
     except (UnsupportedCapability, InvalidDecisionRequest) as error:
@@ -1008,12 +1022,13 @@ def _selective(rows: Sequence[_Row], policy: Any, model_id: Optional[str]) -> di
             accepted.append(row)
     applied = len(eligible) - skipped
     if applied == 0:
-        reason = "the policy fits no eligible row (labels or model_id differ, or only Boolean rows)"
+        reason = "the policy fits no eligible row (its labels, model_id or input_field differ, or only Boolean rows)"
         return {
             "selective_coverage": MetricValue("selective_coverage", None, 0, reason),
             "selective_risk": MetricValue("selective_risk", None, 0, reason),
         }
-    coverage = MetricValue("selective_coverage", len(accepted) / applied, applied)
+    note = f"{skipped} eligible row(s) the policy does not fit are not counted" if skipped else None
+    coverage = MetricValue("selective_coverage", len(accepted) / applied, applied, note)
     if not accepted:
         return {
             "selective_coverage": coverage,
@@ -1371,7 +1386,7 @@ class BenchmarkReport:
                 if value.value is None:
                     lines.append(f"    {metric}: unavailable ({value.reason}; n={value.denominator}) [{value.unit}]")
                 else:
-                    lines.append(f"    {metric}: {value.value!r} (n={value.denominator}) [{value.unit}]")
+                    lines.append(f"    {metric}: {_csv_number(value.value)} (n={value.denominator}) [{value.unit}]")
         resources = {k: v for k, v in self.resources.state().items() if v is not None}
         lines.append(f"resources: {resources or 'not measured'}")
         return "\n".join(lines) + "\n"
