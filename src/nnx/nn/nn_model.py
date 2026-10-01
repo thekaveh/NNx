@@ -383,10 +383,10 @@ class _CallbackFinalizer:
         # FEAT-036: a journal run lends history_access="full" callbacks the
         # whole history (read back once); everyone else sees ctx.idps as is.
         history = getattr(self._ctx, "history_records", None)
+        view = history.lender(tolerant=True) if history is not None else (lambda callback: None)
         for cb in reversed(self._started):
             try:
-                view = history.lend_view(cb, tolerant=True) if history is not None else None
-                _lend_idps(self._ctx, view, lambda cb=cb: cb.on_train_end(self._ctx))
+                _lend_idps(self._ctx, view(cb), lambda cb=cb: cb.on_train_end(self._ctx))
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
 

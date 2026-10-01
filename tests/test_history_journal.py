@@ -744,7 +744,7 @@ def test_on_train_end_reads_the_history_back_once(monkeypatch):
     monkeypatch.setattr(history_module._JournalHistory, "full", counted)
     first, second = _Full(), _Full()
     _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[first, second])
-    assert len(calls) == 3  # once per epoch; on_train_end reuses the last one — never once per callback
+    assert len(calls) == 3 + 1  # once per dispatch (each epoch, then the end) — never once per callback
     assert first.lengths == second.lengths == [5, 10, 15, 15]
 
 
@@ -1117,3 +1117,22 @@ def test_ctx_idps_is_the_live_running_list_during_an_epoch(journal):
     assert seen == [(0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1)]
     if journal:
         assert len(held["idps"]) == 4  # and stays within the window
+
+
+def test_ctx_idps_is_read_only_in_a_journal_run():
+    class _Edit(Callback):
+        def __init__(self) -> None:
+            self.errors: list[str] = []
+
+        def on_epoch_end(self, ctx) -> None:
+            try:
+                ctx.idps[-1] = ctx.idps[-1].with_val_edp(None)
+            except TypeError as exc:
+                self.errors.append(type(exc).__name__)
+            assert ctx.idps[-2:] == list(ctx.idps)[-2:] and isinstance(ctx.idps[-2:], list)
+
+    edit = _Edit()
+    run = _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[edit], n_epochs=2)
+    assert edit.errors == ["TypeError", "TypeError"]
+    last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert last is not None and last.idp.state() == list(iter_history(run.id))[-1].state()
