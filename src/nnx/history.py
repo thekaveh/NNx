@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -418,13 +419,13 @@ class _JournalWriter:
         _atomic_write_text(os.path.join(self.directory, _MANIFEST), previous)
 
     def materialize(self) -> list[NNIterationDataPoint]:
-        """Every record this writer has seen, read back from its chunks,
-        plus those still waiting for one."""
-        records: list[NNIterationDataPoint] = []
-        for seq in range(self.chunks):
-            with open(os.path.join(self.directory, _chunk_name(seq)), "rb") as handle:
-                records.extend(_record(line) for line in handle if line.strip())
-        return records + list(self._pending)
+        """Every record this writer has seen, read back from its chunks —
+        each checked against the index, as every reader does — plus those
+        still waiting for one."""
+        if not self.chunks:
+            return list(self._pending)
+        written = _JournalReader(self.directory, manifest=self.manifest()).records(None)
+        return [*written, *self._pending]
 
 
 # --- reading ---------------------------------------------------------------------------------
@@ -772,8 +773,10 @@ class _WindowView(Sequence):
     """``ctx.idps`` in a journal run: a live, read-only sequence over the
     window — it grows with each record (trimmed to ``retention``) as an
     eager run's list does, and supports ``len``, indexing, slicing (a new
-    list) and iteration, but no in-place change: the journal, LAST and
-    ``NNRun.idps`` keep the records exactly as they were recorded."""
+    list), iteration and ``reversed``, but no in-place change (item
+    assignment raises ``TypeError``; it has no ``append`` or other list
+    mutator): the journal, LAST and ``NNRun.idps`` keep the records exactly
+    as they were recorded."""
 
     __slots__ = ("_records",)
 
@@ -784,12 +787,23 @@ class _WindowView(Sequence):
         return len(self._records)
 
     def __getitem__(self, index: Any) -> Any:
-        if isinstance(index, slice):
-            return list(self._records)[index]
-        return self._records[index]
+        if not isinstance(index, slice):
+            return self._records[index]
+        size = len(self._records)
+        start, stop, step = index.indices(size)
+        if step == 1 and start >= size // 2:  # a tail (ctx.idps[-k:]): walk from the right end
+            tail = list(itertools.islice(reversed(self._records), size - stop, size - start))
+            tail.reverse()
+            return tail
+        if step > 0:
+            return list(itertools.islice(self._records, start, stop, step))
+        return list(self._records)[index]
 
     def __iter__(self) -> Iterator[NNIterationDataPoint]:
         return iter(self._records)
+
+    def __reversed__(self) -> Iterator[NNIterationDataPoint]:
+        return reversed(self._records)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, (_WindowView, list, tuple)):

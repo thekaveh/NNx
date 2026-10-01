@@ -1136,3 +1136,44 @@ def test_ctx_idps_is_read_only_in_a_journal_run():
     assert edit.errors == ["TypeError", "TypeError"]
     last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert last is not None and last.idp.state() == list(iter_history(run.id))[-1].state()
+
+
+def test_the_window_view_behaves_like_the_list_it_shows():
+    import collections
+
+    records = collections.deque(range(10), maxlen=10)
+    view = history_module._WindowView(records)  # type: ignore[arg-type]
+    plain = list(range(10))
+    for index in [
+        slice(None),
+        slice(-1, None),
+        slice(-3, None),
+        slice(2, 5),
+        slice(7, 3),
+        slice(None, None, 2),
+        slice(None, None, -1),
+        slice(-4, -1),
+        slice(5, None),
+        slice(0, 0),
+        slice(20, None),
+    ]:
+        assert view[index] == plain[index], index
+    assert list(reversed(view)) == plain[::-1] and view[-1] == 9 and len(view) == 10 and view == plain
+    with pytest.raises(TypeError):
+        view[0] = 5  # type: ignore[index]
+    assert not hasattr(view, "append")
+
+
+def test_a_full_read_back_checks_the_committed_chunks():
+    class _Corrupt(_Full):
+        def on_epoch_end(self, ctx) -> None:
+            if ctx.epoch == 0:
+                path = os.path.join("runs", ctx.run.id, "history", "chunk-00000000.jsonl")
+                data = open(path, "rb").read()
+                with open(path, "wb") as handle:
+                    handle.write(data.replace(b'"batch_idx":0', b'"batch_idx":9', 1))
+            else:
+                super().on_epoch_end(ctx)
+
+    with pytest.raises(HistoryCorruptionError, match="chunk 0 .* is corrupt"):
+        _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[_Corrupt(), _Full()], n_epochs=2)
