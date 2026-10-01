@@ -53,7 +53,9 @@ class Schedulers(Enum):
                     "optimizer updates): NNx plans the updates only when it owns the update windows (the default "
                     "step or an objective) over a loader with a length"
                 )
-            return horizon
+            # An empty loader plans no update: keep the budget positive so the
+            # loop reports the empty loader itself.
+            return max(1, horizon)
 
         match self:
             case Schedulers.REDUCE_LR_ON_PLATEAU:

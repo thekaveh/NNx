@@ -536,3 +536,72 @@ def test_a_custom_step_without_a_budget_is_told_why():
             ),
             train_step_fn=custom,
         )
+
+
+# --- review round 2 ----------------------------------------------------------------------------------------
+
+
+def test_an_optimizer_name_that_is_not_a_slug_still_gets_a_clock():
+    from nnx._scheduler_clock import component_name
+
+    assert component_name("a b") != component_name("a_b")  # replaced characters never collide
+    params = _two_optimizer_params()
+    renamed = NNTrainerParams(
+        n_epochs=1,
+        train_loader=params.train_loader,
+        optims={"main opt": params.optims["a"], "b": params.optims["b"]},
+        schedulers={"main opt": _sched(Schedulers.STEP, step_size=1)},
+        save_phase_checkpoints=False,
+    )
+
+    def step(ctx):
+        x, y = ctx.batch
+        loss = ctx.model.loss_fn(ctx.model.net(x), y)
+        for optimizer in ctx.optimizers.values():
+            optimizer.zero_grad()
+        loss.backward()
+        ctx.optimizers["main opt"].step()
+        ctx.report_update("main opt")
+        return NNEvaluationDataPoint(loss=float(loss.detach()))
+
+    Trainer(_model()).train(renamed, trainer_step_fn=step)
+
+
+def test_iteration_records_keep_the_learning_rate_each_batch_trained_with():
+    seen_by_callbacks = []
+
+    class Seen(Callback):
+        def on_optimizer_update(self, ctx, event):
+            seen_by_callbacks.append(ctx.optimizer.param_groups[0]["lr"])
+
+    run = _train(_model(), epochs=1, loader=_batches(3), accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1))
+    assert [idp.lr for idp in run.idps] == pytest.approx([0.1, 0.05, 0.025])  # not the next update's rate
+    objective_run = _train(
+        _model(),
+        epochs=1,
+        loader=_batches(3),
+        accumulate=1,
+        scheduler=_sched(Schedulers.STEP, step_size=1),
+        objective=supervised_objective(),
+        callbacks=[Seen()],
+    )
+    assert [idp.lr for idp in objective_run.idps] == pytest.approx([0.1, 0.05, 0.025])
+    assert seen_by_callbacks == pytest.approx([0.1, 0.05, 0.025])  # callbacks run before the clock steps
+
+
+class _UnderReported(_Unsized):
+    """A loader whose ``len()`` reports fewer batches than it yields."""
+
+    def __len__(self) -> int:
+        return len(self.batches) - 2
+
+
+def test_a_default_budget_is_guarded_too():
+    # len() says 3 batches (2 updates per epoch); 5 are yielded (3 updates).
+    with pytest.raises(ValueError, match="committed update 3, beyond its scheduler's budget of 2"):
+        _train(_model(), epochs=1, loader=_UnderReported(_batches()), scheduler=_sched(Schedulers.ONE_CYCLE))
+
+
+def test_an_empty_loader_reports_itself_on_the_update_clock():
+    with pytest.raises(ValueError, match="train_loader yielded no batches"):
+        _train(_model(), loader=[], scheduler=_sched(Schedulers.ONE_CYCLE))

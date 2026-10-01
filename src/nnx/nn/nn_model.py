@@ -195,9 +195,6 @@ def _resume_checkpoint_type(value: Any) -> Any:
         ) from None
 
 
-_HORIZON_SCHEDULERS = HORIZON_KINDS
-
-
 def _check_resume_horizon(
     scheduler_params: Any, *, n_epochs: int, start_epoch: Optional[int] = None, owner: str = ""
 ) -> None:
@@ -205,7 +202,7 @@ def _check_resume_horizon(
     horizon covering the original and resumed epochs (checked before the
     checkpoint is read, and again against its completed epoch)."""
     kind = getattr(scheduler_params, "kind", None)
-    if kind is None or str(kind) not in _HORIZON_SCHEDULERS:
+    if kind is None or str(kind) not in HORIZON_KINDS:
         return
     total_steps = scheduler_params.total_steps
     if total_steps is None:
@@ -2061,7 +2058,9 @@ class NNModel(_HubMixinBase):
         scheduler = _monitored_plateau(self._build_scheduler(optimizer, params, **extra), optimizer, monitor)
         clock: Optional[SchedulerClock] = None
         if update_clock:
-            clock = SchedulerClock("default", scheduler, horizon=update_horizon(params.scheduler), planned=n_updates)
+            clock = SchedulerClock(
+                "default", scheduler, horizon=update_horizon(params.scheduler, n_updates), planned=n_updates
+            )
             registry.register(clock)
         scaler = self._build_grad_scaler()
         # FEAT-004: an objective's updates belong to the shared engine; its
@@ -2077,8 +2076,6 @@ class NNModel(_HubMixinBase):
                 device=self.device,
             )
             registry.register(engine)
-            if clock is not None:
-                engine.listeners.append(lambda event: clock.committed(event.optimizer))
         start_epoch = 0
 
         # Warm resume restores every stateful training component when the
@@ -2207,6 +2204,10 @@ class NNModel(_HubMixinBase):
             assert objective is not None
             # Committed updates are announced to every callback.
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            if clock is not None:
+                # After the callbacks: they see the learning rate the update
+                # was taken with; the clock then steps the schedule.
+                engine.listeners.append(lambda event: clock.committed(event.optimizer))
             step_fn = _ObjectiveStep(objective, engine)
             ctx.update_count = engine.commits
 
@@ -2270,6 +2271,9 @@ class NNModel(_HubMixinBase):
                         epoch_summary=epoch_summary,
                         report_update=report_update,
                     )
+                    # The learning rate this batch trains with — an update
+                    # clock may step the schedule inside the step (FEAT-014).
+                    lr_used = optimizer.param_groups[0]["lr"]
                     train_edp = step_fn(step_ctx)
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
@@ -2280,7 +2284,7 @@ class NNModel(_HubMixinBase):
                             epoch_idx=idx_epoch,
                             batch_idx=idx_batch,
                             train_edp=train_edp,
-                            lr=optimizer.param_groups[0]["lr"],
+                            lr=lr_used if clock is not None else optimizer.param_groups[0]["lr"],
                             update_count=engine.commits if engine is not None else None,
                         )
                     )

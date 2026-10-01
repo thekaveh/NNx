@@ -48,6 +48,7 @@ from .._metrics import _resolve_scheduler_metric
 from .._scheduler_clock import (
     NO_UPDATE_LISTENER,
     SchedulerClock,
+    component_name,
     planned_updates,
     update_horizon,
     uses_update_clock,
@@ -461,10 +462,10 @@ class Trainer:
             name: SchedulerClock(
                 name,
                 schedulers[name],
-                horizon=update_horizon(params.schedulers[name]),
+                horizon=update_horizon(params.schedulers[name], planned),
                 planned=planned,
                 attached=params.auto_step_schedulers,
-                component_name=f"nnx.scheduler_clock.{name}",
+                component_name=component_name(name),
             )
             for name in optimizers
             if uses_update_clock(params.schedulers.get(name))
@@ -499,9 +500,6 @@ class Trainer:
                 device=self.model.device,
             )
             registry.register(engine)
-            engine.listeners.append(
-                lambda event: clocks[event.optimizer].committed() if event.optimizer in clocks else None
-            )
         start_epoch, component_plan, resume_status, rollback = self._resume(
             params, optimizers, schedulers, registry, train_loader
         )
@@ -519,7 +517,14 @@ class Trainer:
         ctx.trainer = self
         if engine is not None:
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            # After the callbacks, which see the learning rate the update was
+            # taken with; each optimizer's clock then steps its schedule.
+            engine.listeners.append(
+                lambda event: clocks[event.optimizer].committed() if event.optimizer in clocks else None
+            )
             ctx.update_count = engine.commits
+
+        primary_steps_on_updates = primary in clocks and clocks[primary].attached
 
         def report_update(name: str) -> None:
             if name not in optimizers:
@@ -596,6 +601,7 @@ class Trainer:
                 for idx_batch, batch, is_last_batch in batches:
                     if engine is not None:
                         assert objective is not None
+                        lr_used = optimizers[primary].param_groups[0]["lr"]
                         train_edp = _objective_microbatch(
                             engine,
                             objective,
@@ -609,6 +615,7 @@ class Trainer:
                         )
                     else:
                         assert trainer_step_fn is not None
+                        lr_used = optimizers[primary].param_groups[0]["lr"]
                         step_ctx = TrainerStepContext(
                             model=self.model,
                             batch=batch,
@@ -629,7 +636,9 @@ class Trainer:
                             epoch_idx=idx_epoch,
                             batch_idx=idx_batch,
                             train_edp=train_edp,
-                            lr=optimizers[primary].param_groups[0]["lr"],
+                            # The rate this batch trained with when the primary
+                            # schedule steps on updates inside the step (FEAT-014).
+                            lr=lr_used if primary_steps_on_updates else optimizers[primary].param_groups[0]["lr"],
                             update_count=engine.commits if engine is not None else None,
                         )
                     )

@@ -20,7 +20,9 @@ resume refuses a mismatched configuration before anything steps.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import re
 from collections.abc import Mapping
 from typing import Any, Optional
 
@@ -60,14 +62,28 @@ def planned_updates(loader: Any, window: int, n_epochs: int) -> Optional[int]:
     return n_epochs * math.ceil(batches / max(1, window))
 
 
-def update_horizon(scheduler_params: Any) -> Optional[int]:
+def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Optional[int]:
     """The hard budget an update-clock scheduler may not step past: a
-    one-cycle / warmup-decay schedule's ``total_steps`` (``None`` for the
-    open-ended kinds)."""
+    one-cycle / warmup-decay schedule's ``total_steps``, or the planned
+    updates it defaults to (``None`` for the open-ended kinds)."""
     kind = getattr(scheduler_params, "kind", None)
     if kind is None or str(kind) not in HORIZON_KINDS:
         return None
-    return scheduler_params.total_steps
+    if scheduler_params.total_steps is not None:
+        return scheduler_params.total_steps
+    return None if planned is None else max(1, planned)
+
+
+def component_name(owner: Optional[str] = None) -> str:
+    """The checkpointed component name of an optimizer's clock: a
+    filename-safe slug of its name, with a short hash of the original when
+    characters had to be replaced (so two names never collide)."""
+    if owner is None:
+        return "nnx.scheduler_clock"
+    slug = re.sub(r"[^A-Za-z0-9._:-]", "_", owner)
+    if slug != owner:
+        slug = f"{slug}-{hashlib.sha256(owner.encode()).hexdigest()[:8]}"
+    return f"nnx.scheduler_clock.{slug}"
 
 
 class SchedulerClock:
