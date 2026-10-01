@@ -10,11 +10,12 @@ all-masked window or a skipped AMP step. The update source is explicit:
   or ``ctx.report_update(name)`` (``Trainer``) after each update — NNx
   never infers updates around an opaque step.
 
-A :class:`SchedulerClock` counts its optimizer's committed updates and, when
-attached (``Trainer``'s ``auto_step_schedulers=False`` detaches it), steps
-the scheduler after each. Its owner, clock, count and horizon are
-checkpointed component state, so a stateful resume continues the count and
-refuses a mismatched configuration before anything steps.
+A :class:`SchedulerClock` steps the scheduler after each committed update of
+its optimizer while attached (``Trainer``'s ``auto_step_schedulers=False``
+detaches it: the step function then owns every scheduler step). Its position
+is the scheduler's own step count, restored with the scheduler's state; its
+owner, clock and budget are checkpointed component state, so a stateful
+resume refuses a mismatched configuration before anything steps.
 """
 
 from __future__ import annotations
@@ -24,7 +25,9 @@ from collections.abc import Mapping
 from typing import Any, Optional
 
 CLOCK = "optimizer_update"
-_HORIZON_KINDS = frozenset({"one_cycle", "linear_warmup_decay"})
+# Scheduler kinds with a hard ``total_steps`` budget (shared with the
+# resume-horizon check in ``nn_model``).
+HORIZON_KINDS = frozenset({"one_cycle", "linear_warmup_decay"})
 
 
 class _NoUpdateListener:
@@ -62,14 +65,14 @@ def update_horizon(scheduler_params: Any) -> Optional[int]:
     one-cycle / warmup-decay schedule's ``total_steps`` (``None`` for the
     open-ended kinds)."""
     kind = getattr(scheduler_params, "kind", None)
-    if kind is None or str(kind) not in _HORIZON_KINDS:
+    if kind is None or str(kind) not in HORIZON_KINDS:
         return None
     return scheduler_params.total_steps
 
 
 class SchedulerClock:
     """Steps one optimizer's scheduler once per committed update of that
-    optimizer, and persists the count (component state)."""
+    optimizer. Its position is the scheduler's own step count."""
 
     def __init__(
         self,
@@ -87,24 +90,27 @@ class SchedulerClock:
         self.planned = planned
         self.attached = attached
         self.component_name = component_name
-        self.count = 0
-        # (update count, learning rate after the step) since the epoch began.
+        # (scheduler step, learning rate after it) since the epoch began.
         self.trace: list[tuple[int, float]] = []
+
+    @property
+    def count(self) -> int:
+        """The scheduler steps taken — one per committed update while the
+        clock is attached — restored with the scheduler's own state."""
+        return int(self.scheduler.last_epoch)
 
     def committed(self, optimizer: Optional[str] = None) -> None:
         """One committed update of ``optimizer`` (this clock's owner when
-        ``None``): count it and, when attached, step the scheduler."""
-        if optimizer is not None and optimizer != self.owner:
+        ``None``): step the scheduler, unless the clock is detached."""
+        if not self.attached or (optimizer is not None and optimizer != self.owner):
             return
-        if self.attached and self.horizon is not None and self.count >= self.horizon:
+        if self.horizon is not None and self.count >= self.horizon:
             raise ValueError(
                 f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's budget of "
                 f"{self.horizon} optimizer updates (total_steps); set total_steps to cover every update of the run"
             )
-        self.count += 1
-        if self.attached:
-            self.scheduler.step()
-            self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
+        self.scheduler.step()
+        self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
 
     # ---------- checkpointable component (FEAT-005) ----------
 
@@ -139,4 +145,6 @@ class SchedulerClock:
         return problems
 
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
-        self.count = int(state["count"])
+        # The position is the scheduler's own step count, restored with the
+        # scheduler state; this component only guards the configuration.
+        return None

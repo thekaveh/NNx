@@ -50,7 +50,8 @@ class Schedulers(Enum):
             if horizon is None:
                 raise ValueError(
                     f"an optimizer_update-clock {self.value} scheduler needs an explicit {field} (its budget in "
-                    "optimizer updates): the number of updates cannot be planned for a loader without a length"
+                    "optimizer updates): NNx plans the updates only when it owns the update windows (the default "
+                    "step or an objective) over a loader with a length"
                 )
             return horizon
 
@@ -87,8 +88,12 @@ class Schedulers(Enum):
                 )
             case Schedulers.LINEAR_WARMUP_DECAY:
                 total_steps = budget(params.total_steps, "total_steps")
-                planned = horizon if horizon is not None else total_steps
-                warmup_steps = params.warmup_steps if params.warmup_steps is not None else max(1, planned // 10)
+                # The default warm-up is a tenth of the schedule: of its
+                # epochs on the epoch clock (unchanged), of its total_steps
+                # updates on the update clock — never of one run's length,
+                # so a split run warms up exactly as the whole one.
+                default_warmup = max(1, (total_steps if updates else n_epochs) // 10)
+                warmup_steps = params.warmup_steps if params.warmup_steps is not None else default_warmup
                 _reject_short_total_steps(total_steps, horizon, updates=updates)
 
                 def _lr_lambda(step: int) -> float:

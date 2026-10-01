@@ -19,12 +19,14 @@ from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from .._scheduler_clock import (
+    HORIZON_KINDS,
     NO_UPDATE_LISTENER,
     SchedulerClock,
     planned_updates,
     update_horizon,
     uses_update_clock,
 )
+from .._update_engine import scaler_step
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
     BatchAdapter,
@@ -193,7 +195,7 @@ def _resume_checkpoint_type(value: Any) -> Any:
         ) from None
 
 
-_HORIZON_SCHEDULERS = frozenset({"one_cycle", "linear_warmup_decay"})
+_HORIZON_SCHEDULERS = HORIZON_KINDS
 
 
 def _check_resume_horizon(
@@ -211,8 +213,6 @@ def _check_resume_horizon(
             f"resuming {kind}{owner} requires scheduler.total_steps to be set explicitly "
             "to one shared horizon covering the original and resumed epochs"
         )
-    from .._scheduler_clock import uses_update_clock
-
     # An optimizer_update clock counts updates, not epochs: its horizon is
     # checked against the restored update count (SchedulerClock).
     if start_epoch is not None and not uses_update_clock(scheduler_params) and start_epoch + n_epochs > total_steps:
@@ -1099,16 +1099,6 @@ def _objective_engine(
     )
 
 
-def _scaler_step(scaler: Any, optimizer: torch.optim.Optimizer) -> bool:
-    """``scaler.step`` + ``update``; whether the update was committed. A
-    lowered scale means the scaler found inf/NaN gradients and skipped the
-    step (FEAT-014: such a step never advances an optimizer_update clock)."""
-    scale_before = float(scaler.get_scale())
-    scaler.step(optimizer)
-    scaler.update()
-    return float(scaler.get_scale()) >= scale_before
-
-
 def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     """Standard supervised training step: forward → loss → backward → step.
 
@@ -1186,7 +1176,14 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
         if amp_enabled:
             assert scaler is not None
-            committed = _scaler_step(scaler, ctx.optimizer)
+            if ctx.report_update is NO_UPDATE_LISTENER:
+                # Nothing listens for updates: skip the scale comparison's
+                # host syncs.
+                scaler.step(ctx.optimizer)
+                scaler.update()
+                committed = False
+            else:
+                committed = scaler_step(scaler, (ctx.optimizer,))
         else:
             ctx.optimizer.step()
             committed = True
@@ -2058,13 +2055,10 @@ class NNModel(_HubMixinBase):
             if update_clock and train_step_fn is None
             else None
         )
-        scheduler = _monitored_plateau(
-            self._build_scheduler(optimizer, params, n_updates=n_updates)
-            if update_clock
-            else self._build_scheduler(optimizer, params),
-            optimizer,
-            monitor,
-        )
+        # n_updates is passed only to an update-clock schedule, so a subclass
+        # override of _build_scheduler(optimizer, params) keeps working.
+        extra = {"n_updates": n_updates} if update_clock else {}
+        scheduler = _monitored_plateau(self._build_scheduler(optimizer, params, **extra), optimizer, monitor)
         clock: Optional[SchedulerClock] = None
         if update_clock:
             clock = SchedulerClock("default", scheduler, horizon=update_horizon(params.scheduler), planned=n_updates)

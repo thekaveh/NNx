@@ -9,7 +9,7 @@ from ..enum.schedulers import Schedulers
 if TYPE_CHECKING:
     from .nn_scheduler_params_builder import NNSchedulerParamsBuilder
 
-SchedulerClock = Literal["epoch", "optimizer_update"]
+SchedulerClockUnit = Literal["epoch", "optimizer_update"]
 SCHEDULER_CLOCKS: tuple[str, ...] = ("epoch", "optimizer_update")
 
 
@@ -37,7 +37,7 @@ class NNSchedulerParams:
     # committed update of the optimizer the scheduler belongs to (never per
     # microbatch, masked window or skipped AMP step), so its horizons —
     # step_size, T_max, total_steps, warmup_steps — count updates.
-    clock: SchedulerClock = "epoch"
+    clock: SchedulerClockUnit = "epoch"
 
     def __post_init__(self):
         if self.clock not in SCHEDULER_CLOCKS:

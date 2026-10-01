@@ -338,8 +338,8 @@ def manual_scheduler_ownership() -> dict:
     scheduler step to the step function (FEAT-014): neither the epoch
     boundary (D's epoch-clock schedule) nor reported updates (G's
     ``optimizer_update``-clock schedule) advance a scheduler — only the
-    step's own ``scheduler.step()`` calls do. Reported updates are still
-    counted, so attaching the schedules later resumes from the true count.
+    step's own ``scheduler.step()`` calls do, so each schedule's position is
+    exactly the steps the hook took.
     """
     set_seed(0)
     loader = _make_loader(128, batch_size=64)  # 2 batches per epoch
@@ -362,7 +362,7 @@ def manual_scheduler_ownership() -> dict:
     def owning_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
         result = gan_step(ctx)
         ctx.report_update("D")
-        ctx.report_update("G")  # counted for G's update clock, never stepped while detached
+        ctx.report_update("G")  # G's update clock is detached: this never steps it
         seen["schedulers"] = ctx.schedulers
         if ctx.batch_idx == 0:  # the hook's own timing: D's schedule, once per epoch
             ctx.schedulers["D"].step()

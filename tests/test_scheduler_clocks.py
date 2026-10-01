@@ -193,7 +193,7 @@ def test_a_skipped_update_does_not_advance_the_clock():
 
 
 def test_a_skipped_amp_step_is_not_a_committed_update():
-    from nnx.nn.nn_model import _scaler_step
+    from nnx._update_engine import scaler_step
 
     class FakeScaler:
         """A CPU stand-in for GradScaler: the second step finds inf gradients."""
@@ -219,7 +219,7 @@ def test_a_skipped_amp_step_is_not_a_committed_update():
     committed = []
     for _ in range(3):
         param.grad = torch.ones(1)
-        committed.append(_scaler_step(scaler, optimizer))
+        committed.append(scaler_step(scaler, (optimizer,)))
     assert committed == [True, False, True]
 
 
@@ -314,7 +314,7 @@ def test_an_unknown_length_loader_needs_an_explicit_budget_and_overrun_is_refuse
 # --- Trainer: independent clocks -------------------------------------------------------------------------
 
 
-def _two_optimizer_params(*, auto_step=True, epochs=1, **trainer):
+def _two_optimizer_params(*, auto_step=True, epochs=1, schedulers=None, **trainer):
     def optim(pattern):
         return NNOptimParams(
             name=Optims.SGD,
@@ -328,7 +328,8 @@ def _two_optimizer_params(*, auto_step=True, epochs=1, **trainer):
         n_epochs=epochs,
         train_loader=_batches(6),
         optims={"a": optim("layers.0.*"), "b": optim("layers.1.*")},
-        schedulers={
+        schedulers=schedulers
+        or {
             "a": _sched(Schedulers.STEP, step_size=1),
             "b": _sched(Schedulers.STEP, step_size=1, factor=0.25),
         },
@@ -384,7 +385,7 @@ def test_auto_step_schedulers_false_detaches_both_subscriptions_even_after_resto
     state = NNCheckpoint.load_training_state(resumed.id, Checkpoints.LAST)
     assert state is not None
     counts = {name: entry["state"]["count"] for name, entry in state["components"].items() if "clock" in name}
-    assert counts == {"nnx.scheduler_clock.a": 12, "nnx.scheduler_clock.b": 6}  # counted across the resume
+    assert counts == {"nnx.scheduler_clock.a": 0, "nnx.scheduler_clock.b": 0}  # a detached schedule never moved
 
 
 def test_report_update_names_a_real_optimizer():
@@ -457,3 +458,81 @@ def test_an_epoch_run_cannot_be_resumed_on_the_update_clock():
     )
     with pytest.raises(ComponentRestoreError, match="missing required component 'nnx.scheduler_clock'"):
         _train(_model(), epochs=1, scheduler=_one_cycle(), resume_from_run_id=parent.id)
+
+
+# --- review round 1 ----------------------------------------------------------------------------------------
+
+
+def test_the_default_warmup_follows_total_steps_not_one_runs_length():
+    def trace(n_updates):
+        param = torch.nn.Parameter(torch.zeros(1))
+        optimizer = torch.optim.SGD([param], lr=1.0)
+        scheduler = Schedulers.LINEAR_WARMUP_DECAY(
+            optimizer, _sched(Schedulers.LINEAR_WARMUP_DECAY, total_steps=100), n_epochs=1, n_updates=n_updates
+        )
+        lrs = []
+        for _ in range(12):
+            lrs.append(optimizer.param_groups[0]["lr"])
+            optimizer.step()
+            scheduler.step()
+        return lrs
+
+    whole = trace(100)
+    assert whole[:2] == pytest.approx([0.1, 0.2])  # a tenth of total_steps: 10 warm-up updates
+    assert trace(50) == pytest.approx(whole) and trace(None) == pytest.approx(whole)
+
+
+def test_a_detached_schedule_does_not_move_and_reattaches_from_its_own_position():
+    schedulers = {
+        "a": _sched(Schedulers.ONE_CYCLE, max_lr=0.5, total_steps=8),
+        "b": _sched(Schedulers.STEP, step_size=1),
+    }
+    captured = {}
+
+    def step(ctx):
+        captured["schedulers"] = ctx.schedulers
+        return _two_rate_step(ctx)
+
+    detached = Trainer(_model()).train(
+        _two_optimizer_params(auto_step=False, schedulers=schedulers), trainer_step_fn=step
+    )  # six reports of "a", none of which steps its schedule
+    assert captured["schedulers"]["a"].last_epoch == 0
+    Trainer(_model(seed=3)).train(
+        _two_optimizer_params(schedulers=schedulers, resume_from_run_id=detached.id), trainer_step_fn=step
+    )
+    assert captured["schedulers"]["a"].last_epoch == 6  # from its own position, within its budget of 8
+
+
+def test_a_detached_clock_is_not_warned_about():
+    import warnings
+
+    def manual(ctx):
+        x, y = ctx.batch
+        loss = ctx.model.loss_fn(ctx.model.net(x), y)
+        ctx.optimizers["a"].zero_grad()
+        loss.backward()
+        ctx.optimizers["a"].step()
+        ctx.schedulers["a"].step()  # the step function owns its schedule: nothing to report
+        return NNEvaluationDataPoint(loss=float(loss.detach()))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        Trainer(_model()).train(_two_optimizer_params(auto_step=False), trainer_step_fn=manual)
+    assert not [w for w in caught if "reported no update" in str(w.message)]
+
+
+def test_a_custom_step_without_a_budget_is_told_why():
+    def custom(ctx):
+        return NNEvaluationDataPoint(loss=0.0)
+
+    with pytest.raises(ValueError, match="needs an explicit T_max .*only when it owns the update windows"):
+        _model().train(
+            NNTrainParams(
+                n_epochs=1,
+                train_loader=_batches(),
+                optim=_sgd(),
+                scheduler=_sched(Schedulers.COSINE_ANNEALING),
+                overwrite_existing=True,
+            ),
+            train_step_fn=custom,
+        )

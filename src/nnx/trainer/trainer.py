@@ -207,9 +207,7 @@ def _build_scheduler(opt, sched_params, n_epochs, n_updates=None):
             patience=sched_params.patience,
             threshold=sched_params.threshold,
         )
-    if n_updates is not None:
-        return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs, n_updates=n_updates)
-    return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs)
+    return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs, n_updates=n_updates)
 
 
 def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int, record: Optional[MonitorRecord] = None) -> None:
@@ -681,7 +679,11 @@ class Trainer:
                     # updates instead (FEAT-014).
                     epoch_scheds = [sched for name, sched in schedulers.items() if name not in clocks]
                     _step_schedulers(epoch_scheds, val_edp, train_edp, epoch_idx=idx_epoch, record=record)
-                silent = [name for name, clock in clocks.items() if clock.count == updates_before_epoch[name]]
+                silent = [
+                    name
+                    for name, clock in clocks.items()
+                    if clock.attached and clock.count == updates_before_epoch[name]
+                ]
                 if silent and engine is None:
                     warnings.warn(
                         f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
