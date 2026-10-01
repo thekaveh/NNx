@@ -1175,15 +1175,10 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
         if amp_enabled:
             assert scaler is not None
-            if listens(ctx.report_update):
-                # An update clock listens: report only a step the scaler
-                # did not skip (a lowered scale, fused optimizers included).
-                committed = scaler_step(scaler, (ctx.optimizer,))
-            else:
-                # Nothing listens: skip the scale comparison's host syncs.
-                scaler.step(ctx.optimizer)
-                scaler.update()
-                committed = False
+            # Report only a step the scaler did not skip (a lowered scale,
+            # fused optimizers included); judged only when a clock listens,
+            # sparing the comparison's host syncs otherwise.
+            committed = scaler_step(scaler, (ctx.optimizer,), judge=listens(ctx.report_update))
         else:
             ctx.optimizer.step()
             committed = True
@@ -2067,8 +2062,13 @@ class NNModel(_HubMixinBase):
         scheduler = _monitored_plateau(built, optimizer, monitor)
         clock: Optional[SchedulerClock] = None
         if update_clock:
+            horizon = update_horizon(params.scheduler, n_updates)
             clock = SchedulerClock(
-                "default", scheduler, horizon=update_horizon(params.scheduler, n_updates), planned=n_updates
+                "default",
+                scheduler,
+                horizon=horizon,
+                planned=n_updates,
+                default_budget=horizon is not None and params.scheduler.total_steps is None,
             )
             registry.register(clock)
         scaler = self._build_grad_scaler()
@@ -2280,8 +2280,6 @@ class NNModel(_HubMixinBase):
                         epoch_summary=epoch_summary,
                         report_update=report_update,
                     )
-                    # The learning rate this batch trains with — an update
-                    # clock may step the schedule inside the step (FEAT-014).
                     # The rate this batch trains with, for an update clock
                     # (its scheduler may step inside the step function).
                     lr_used = float(optimizer.param_groups[0]["lr"]) if clock is not None else None

@@ -609,7 +609,9 @@ class _UnderReported(_Unsized):
 
 def test_a_default_budget_is_guarded_too():
     # len() says 3 batches (2 updates per epoch); 5 are yielded (3 updates).
-    with pytest.raises(ValueError, match="committed update 3, beyond its scheduler's budget of 2"):
+    with pytest.raises(
+        ValueError, match=r"committed update 3, beyond its scheduler's default budget of 2 .*len\(train_loader\)"
+    ):
         _train(_model(), epochs=1, loader=_UnderReported(_batches()), scheduler=_sched(Schedulers.ONE_CYCLE))
 
 

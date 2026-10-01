@@ -448,7 +448,7 @@ class Trainer:
                     opt=optimizers[name],
                     sched_params=params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
                     n_epochs=params.n_epochs,
-                    n_updates=planned if uses_update_clock(params.schedulers.get(name)) else None,
+                    n_updates=planned,  # used by an optimizer_update-clock schedule only
                 ),
                 optimizers[name],
                 monitor,
@@ -466,6 +466,7 @@ class Trainer:
                 planned=planned,
                 attached=params.auto_step_schedulers,
                 component_name=component_name(name),
+                default_budget=params.schedulers[name].total_steps is None,
             )
             for name in optimizers
             if uses_update_clock(params.schedulers.get(name))

@@ -332,17 +332,19 @@ class UpdateEngine:
         self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
 
 
-def scaler_step(scaler: Any, optimizers: Iterable[torch.optim.Optimizer]) -> bool:
+def scaler_step(scaler: Any, optimizers: Iterable[torch.optim.Optimizer], *, judge: bool = True) -> bool:
     """``scaler.step`` every optimizer, then ``update``; whether the update
     was committed. A lowered scale means the scaler found inf/NaN gradients
     and skipped the step (a fused optimizer included) — shared by the
     engine and ``default_train_step``, so both agree on what a committed
-    update is (FEAT-004 / FEAT-014)."""
-    scale_before = float(scaler.get_scale())
+    update is (FEAT-004 / FEAT-014). ``judge=False`` (nothing needs the
+    answer) skips reading the scale and its host syncs, and returns
+    ``True``."""
+    scale_before = float(scaler.get_scale()) if judge else None
     for optimizer in optimizers:
         scaler.step(optimizer)
     scaler.update()
-    return float(scaler.get_scale()) >= scale_before
+    return scale_before is None or float(scaler.get_scale()) >= scale_before
 
 
 def _is_count(value: Any) -> bool:

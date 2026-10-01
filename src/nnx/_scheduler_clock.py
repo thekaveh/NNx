@@ -130,6 +130,7 @@ class SchedulerClock:
         planned: Optional[int] = None,
         attached: bool = True,
         component_name: str = "nnx.scheduler_clock",
+        default_budget: bool = False,
     ) -> None:
         self.owner = owner
         self.scheduler = scheduler
@@ -137,6 +138,9 @@ class SchedulerClock:
         self.planned = planned
         self.attached = attached
         self.component_name = component_name
+        # Whether the horizon is the planned updates (no explicit
+        # total_steps), so an overrun names len(train_loader) as its source.
+        self.default_budget = default_budget
         # (scheduler step, learning rate after it) since the epoch began.
         self.trace: list[tuple[int, float]] = []
 
@@ -152,6 +156,13 @@ class SchedulerClock:
         if not self.attached:
             return
         if self.horizon is not None and self.count >= self.horizon:
+            if self.default_budget:
+                raise ValueError(
+                    f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's default "
+                    f"budget of {self.horizon} optimizer updates, planned from len(train_loader); the loader "
+                    "yielded more batches than its len() reports (an IterableDataset read by several workers "
+                    "can), so set total_steps to cover every update of the run"
+                )
             raise ValueError(
                 f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's budget of "
                 f"{self.horizon} optimizer updates (total_steps); set total_steps to cover every update of the run"
