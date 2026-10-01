@@ -81,6 +81,7 @@ from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
+from ..objectives import _check_objective_run, _check_update_owner
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
 from ..utils import Utils
@@ -303,8 +304,7 @@ class Trainer:
                 "pass trainer_step_fn or objective, not both: a step function owns its optimizer updates, an "
                 "objective hands them to NNx's shared update engine"
             )
-        if objective is not None and not callable(objective):
-            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
         _check_provenance(provenance)
         if params is None:
             raise ValueError("trainer params must not be None")
@@ -378,6 +378,8 @@ class Trainer:
         }
         if objective is not None:
             _warn_full_precision_objective(self.model)
+            # FEAT-040: the objective's own refusals, before any run exists.
+            _check_objective_run(objective, self.model, optimizers=optimizers, callbacks=callbacks)
 
         run = NNRun(
             train=_representative_train_params(params),

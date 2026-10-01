@@ -2236,6 +2236,22 @@ for a non-finite loss term or gradient. Any callable
 function uses ``"fail"``.
 ```
 
+##### `nnx.objectives.Objective.check_run`
+
+```python
+nnx.objectives.Objective.check_run(self, model: 'NNModel', *, optimizers: 'Mapping[str, torch.optim.Optimizer]', callbacks: 'Sequence[Any]') -> 'None'
+```
+
+Refuse a run this objective cannot train — called by ``NNModel.train`` and ``Trainer.train`` with the built optimizers and the callbacks, before any run is reserved or parameter changes. Raise to refuse; the default accepts every run.
+
+##### `nnx.objectives.Objective.after_update`
+
+```python
+nnx.objectives.Objective.after_update(self, events: 'tuple[UpdateEvent, ...]') -> 'None'
+```
+
+Called once per committed update — after every named optimizer stepped, never for a microbatch or a skipped window — with its events (one per optimizer), before callbacks see them. The default does nothing.
+
 
 #### `nnx.objectives.SupervisedObjective`
 
@@ -9894,6 +9910,94 @@ Returns:
 ```
 
 
+#### `nnx.diffusion.objective.diffusion_objective`
+
+```python
+nnx.diffusion.objective.diffusion_objective(schedule: 'NoiseSchedule', *, seed: 'Optional[int]' = None, noise_fn: 'Optional[NoiseFn]' = None, nonfinite: 'str' = 'fail') -> 'DiffusionObjective'
+```
+
+DDPM noise prediction as an objective (see :class:`DiffusionObjective`) — the objective counterpart of :func:`diffusion_train_step_factory`, which stays available (and unchanged) as the imperative step.
+
+
+#### `nnx.diffusion.objective.DiffusionObjective`
+
+```python
+class nnx.diffusion.objective.DiffusionObjective(schedule: 'NoiseSchedule', *, seed: 'Optional[int]' = None, noise_fn: 'Optional[NoiseFn]' = None, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+DDPM noise prediction as an objective — see the module docstring.
+
+**Details**
+
+```text
+Callable as an objective and a checkpointable component (FEAT-005)
+named ``"diffusion.objective"``: its state is the objective spec (the
+schedule's length and fingerprint, the loss term) and the generator's
+state, so a stateful resume draws the timesteps and noise an
+uninterrupted run would have drawn. A resume with a different schedule
+is rejected before anything is restored.
+
+Args:
+    schedule: the :class:`NoiseSchedule` (any device; the coefficients
+        are indexed on the model's device).
+    seed: seeds the objective's generator; ``None`` draws one seed from
+        the global RNG at first use (reproducible under ``set_seed``).
+    noise_fn: optional ``(x_0, generator) -> (t, eps)``: ``t`` a
+        ``LongTensor[B]`` in ``[0, T)``, ``eps`` shaped like ``x_0``.
+        Defaults to ``t ~ Uniform{0..T-1}``, ``eps ~ N(0, I)`` from the
+        objective's generator.
+    nonfinite: the engine's non-finite policy (``"fail"`` / ``"skip"``).
+```
+
+##### `nnx.diffusion.objective.DiffusionObjective.generator`
+
+```python
+property nnx.diffusion.objective.DiffusionObjective.generator
+```
+
+The objective's own CPU generator (created at first use).
+
+##### `nnx.diffusion.objective.DiffusionObjective.draw`
+
+```python
+nnx.diffusion.objective.DiffusionObjective.draw(self, x_0: 'torch.Tensor') -> 'tuple[torch.Tensor, torch.Tensor]'
+```
+
+This microbatch's timesteps and noise, on ``x_0``'s device.
+
+##### `nnx.diffusion.objective.DiffusionObjective.component_spec`
+
+```python
+nnx.diffusion.objective.DiffusionObjective.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.diffusion.objective.DiffusionObjective.component_state`
+
+```python
+nnx.diffusion.objective.DiffusionObjective.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.diffusion.objective.DiffusionObjective.check_component_state`
+
+```python
+nnx.diffusion.objective.DiffusionObjective.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.diffusion.objective.DiffusionObjective.load_component_state`
+
+```python
+nnx.diffusion.objective.DiffusionObjective.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+
 #### `nnx.diffusion.sampling.sample`
 
 ```python
@@ -10331,6 +10435,112 @@ No public description is currently available.
 
 ```python
 nnx.paradigms.jepa.JEPATrainStep.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+
+#### `nnx.paradigms.jepa_objective.jepa_objective`
+
+```python
+nnx.paradigms.jepa_objective.jepa_objective(target_encoder: 'nn.Module', predictor: 'nn.Module', mask_fn: 'MaskFn', *, ema_momentum: 'float' = 0.996, nonfinite: 'str' = 'fail') -> 'JEPAObjective'
+```
+
+I-JEPA latent prediction as an objective (see :class:`JEPAObjective`) — the objective counterpart of :func:`jepa_train_step_factory`, which stays available (and unchanged) as the imperative step.
+
+
+#### `nnx.paradigms.jepa_objective.JEPAObjective`
+
+```python
+class nnx.paradigms.jepa_objective.JEPAObjective(target_encoder: 'nn.Module', predictor: 'nn.Module', mask_fn: 'MaskFn', *, ema_momentum: 'float' = 0.996, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+I-JEPA latent prediction as an objective — see the module docstring.
+
+**Details**
+
+```text
+Callable as an objective and a checkpointable component (FEAT-005)
+named ``"jepa.objective"``: its state is the objective spec (loss term,
+EMA momentum), the predictor's **reference** (its name inside
+``model.net`` — its weights are saved once, with the net), the EMA
+target encoder's weights and the EMA update counter, so a stateful
+resume continues exactly where an uninterrupted run would be. A saved
+state carrying a second copy of the predictor's weights, a different
+predictor reference or a different spec is rejected before anything is
+restored.
+
+Before any run is reserved (:meth:`check_run`) the objective refuses:
+a net without the ViT patch contract (``n_patches``,
+``patch_positions()``); a predictor that is not a submodule of
+``model.net`` or whose trainable parameters are not owned exactly once
+by the run's optimizers; a target encoder inside ``model.net``,
+sharing its parameters or owned by an optimizer; a target parameter
+without a same-named, same-shaped online parameter; and callbacks that
+change the net's topology (``checkpoint_transforms``, e.g. QAT), which
+would break the EMA's name correspondence and the predictor reference.
+
+Args:
+    target_encoder: the EMA copy of ``model.net``
+        (:func:`~nnx.paradigms.build_target_encoder`); frozen and put in
+        eval mode here.
+    predictor: the predictor (:class:`~nnx.paradigms.JEPAPredictor` or
+        the same ``forward(context_embeds, context_positions,
+        target_positions)`` contract), registered under ``model.net``.
+    mask_fn: ``(n_patches, device) -> (context_mask, target_mask)``,
+        complementary ``BoolTensor[n_patches]``, sampled once per
+        microbatch (shared across its rows). Masks drawn from the global
+        RNG (:func:`~nnx.paradigms.random_block_mask`'s default) continue
+        across a stateful resume, which restores that RNG.
+    ema_momentum: fixed EMA decay in ``[0, 1)``:
+        ``target ← momentum · target + (1 − momentum) · online``.
+    nonfinite: the engine's non-finite policy (``"fail"`` / ``"skip"``).
+```
+
+##### `nnx.paradigms.jepa_objective.JEPAObjective.check_run`
+
+```python
+nnx.paradigms.jepa_objective.JEPAObjective.check_run(self, model: 'Any', *, optimizers: 'Mapping[str, torch.optim.Optimizer]', callbacks: 'Sequence[Any]') -> 'None'
+```
+
+Refuse a run this objective cannot train — called by ``NNModel.train`` and ``Trainer.train`` with the built optimizers and the callbacks, before any run is reserved or parameter changes. Raise to refuse; the default accepts every run.
+
+##### `nnx.paradigms.jepa_objective.JEPAObjective.after_update`
+
+```python
+nnx.paradigms.jepa_objective.JEPAObjective.after_update(self, events: 'tuple[UpdateEvent, ...]') -> 'None'
+```
+
+Advance the EMA target from the updated online weights — once per committed update, whatever the number of named optimizers.
+
+##### `nnx.paradigms.jepa_objective.JEPAObjective.component_spec`
+
+```python
+nnx.paradigms.jepa_objective.JEPAObjective.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.jepa_objective.JEPAObjective.component_state`
+
+```python
+nnx.paradigms.jepa_objective.JEPAObjective.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.jepa_objective.JEPAObjective.check_component_state`
+
+```python
+nnx.paradigms.jepa_objective.JEPAObjective.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.jepa_objective.JEPAObjective.load_component_state`
+
+```python
+nnx.paradigms.jepa_objective.JEPAObjective.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
 ```
 
 No public description is currently available.

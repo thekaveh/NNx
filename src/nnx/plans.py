@@ -672,6 +672,14 @@ class ExperimentPlan:
                 report(path, f"must be callable, got {value!r}")
         if self.objective is not None and self.train_step_fn is not None:
             report("objective", "pass train_step_fn or objective, not both: one owner per optimizer update")
+        elif callable(self.objective) or callable(self.train_step_fn):
+            from .objectives import _check_update_owner
+
+            path = "objective" if self.objective is not None else "train_step_fn"
+            try:  # train()'s own rule: each update owner passed as what it is (FEAT-040)
+                _check_update_owner(self.train_step_fn, self.objective)
+            except ValueError as exc:
+                report(path, str(exc))
         try:
             _check_provenance(self.provenance)  # train()'s own rule
         except TypeError as exc:

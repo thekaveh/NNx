@@ -118,7 +118,8 @@ full-batch list — and the worker warning only appears for a real loader with
 `num_workers > 0`.
 
 Callback and step state resumes too. `EarlyStopping`'s best value and
-patience counter, the I-JEPA target encoder and any object registered through
+patience counter, the I-JEPA target encoder (and the `jepa_objective` /
+`diffusion_objective` state: EMA target and counter, generator) and any object registered through
 `train(..., components=[...])` are written into every checkpoint and restored
 after the callbacks' reset hooks, so a split run stops at the same epoch as
 the uninterrupted one
@@ -651,7 +652,7 @@ When per-batch updates need multiple optimizers (G + D for GANs, policy + value 
 
 ### 3.3. Diffusion (DDPM)
 
-For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
+For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. `diffusion_objective(schedule)` is the same loss as an objective (`model.train(..., objective=...)`): the shared update engine adds gradient accumulation (exact for uneven microbatches), mixed precision and clipping, and the timesteps and noise come from the objective's own checkpointed generator, which a `sample(..., generator=...)` preview never perturbs; `jepa_objective` does the same for I-JEPA, advancing its EMA target once per committed update ([I-JEPA §5](jepa.md#5-objective-mode)). See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
 
 ### 3.4. Training paradigms (KD, SimCLR, Mixup, CutMix)
 

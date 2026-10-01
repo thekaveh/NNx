@@ -15,11 +15,27 @@ coupling beyond the TrainStepContext type.
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from .nn.nn_model import TrainStepContext
+
+# Marks an imperative paradigm step (it steps the optimizer itself) with its
+# paradigm's name, so passing it as ``objective=`` is refused before any run
+# is reserved (FEAT-040) instead of being stepped twice.
+IMPERATIVE_STEP = "__nnx_imperative_step__"
+
+_StepT = TypeVar("_StepT")
+
+
+def imperative_step(step: _StepT, *, paradigm: str) -> _StepT:
+    """Mark ``step`` as an imperative ``paradigm`` step (see
+    :data:`IMPERATIVE_STEP`) and return it."""
+    setattr(step, IMPERATIVE_STEP, paradigm)
+    return step
 
 
 def finalize_step(

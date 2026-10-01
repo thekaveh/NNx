@@ -530,6 +530,10 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 
 @api nnx.diffusion.training.diffusion_train_step_factory
 
+@api nnx.diffusion.objective.diffusion_objective
+
+@api nnx.diffusion.objective.DiffusionObjective
+
 @api nnx.diffusion.sampling.sample
 
 ## 14. Training paradigms (`nnx.paradigms`)
@@ -569,6 +573,10 @@ Walkthrough at [I-JEPA](jepa.md). The `ViTNN` encoder is documented in §4.
 @api nnx.paradigms.jepa.jepa_train_step_factory
 
 @api nnx.paradigms.jepa.JEPATrainStep
+
+@api nnx.paradigms.jepa_objective.jepa_objective
+
+@api nnx.paradigms.jepa_objective.JEPAObjective
 
 @api nnx.paradigms.jepa.JEPAPredictor
 

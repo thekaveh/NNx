@@ -37,7 +37,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -461,6 +461,8 @@ class JEPATrainStep:
         self._step = step
         self.target_encoder = target_encoder
         self.ema_momentum = ema_momentum
+        # Marked so objective= refuses it: it steps the optimizer itself (FEAT-040).
+        imperative_step(self, paradigm="jepa")
 
     def __call__(self, ctx: TrainStepContext) -> NNEvaluationDataPoint:
         return self._step(ctx)

@@ -47,8 +47,10 @@ from . import (
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
+    DiffusionObjective,
     NoiseSchedule,
     NoiseSchedulers,
+    diffusion_objective,
     diffusion_train_step_factory,
     sample,
 )
@@ -181,6 +183,7 @@ from .optimizers import (
     unregister_optimizer_factory,
 )
 from .paradigms import (
+    JEPAObjective,
     JEPAPredictor,
     JEPATrainStep,
     born_again_train,
@@ -188,6 +191,7 @@ from .paradigms import (
     cutmix_train_step_factory,
     dpo_train_step_factory,
     feature_kd_train_step_factory,
+    jepa_objective,
     jepa_train_step_factory,
     kd_train_step_factory,
     mixup_train_step_factory,
@@ -401,6 +405,8 @@ __all__ = [
     "NoiseSchedule",
     "NoiseSchedulers",
     "diffusion_train_step_factory",
+    "diffusion_objective",
+    "DiffusionObjective",
     "sample",
     # Training paradigms
     "paradigms",
@@ -413,6 +419,8 @@ __all__ = [
     "cutmix_train_step_factory",
     # I-JEPA (joint embedding predictive architecture)
     "jepa_train_step_factory",
+    "jepa_objective",
+    "JEPAObjective",
     "build_target_encoder",
     "update_ema",
     "random_block_mask",

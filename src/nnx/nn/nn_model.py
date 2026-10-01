@@ -1074,12 +1074,15 @@ def _objective_engine(
     from .._update_engine import UpdateEngine
 
     amp = scaler is not None and device.type == "cuda"
+    after_update = getattr(objective, "after_update", None)
     return UpdateEngine(
         optimizers=optimizers,
         scaler=scaler if amp else None,
         clip_norms=clip_norms,
         nonfinite=getattr(objective, "nonfinite", "fail"),
         autocast=(lambda: torch.amp.autocast(device_type="cuda")) if amp else None,
+        # FEAT-040: the objective's own once-per-commit work (a JEPA EMA).
+        commit_hooks=(cast(Callable[[tuple[Any, ...]], None], after_update),) if callable(after_update) else (),
     )
 
 
@@ -1867,14 +1870,10 @@ class NNModel(_HubMixinBase):
         The run lease prevents another process using ``overwrite_existing``
         from deleting or interleaving artifacts until final persistence ends.
         """
-        if objective is not None and train_step_fn is not None:
-            # Checked before anything else: one owner per optimizer update.
-            raise ValueError(
-                "pass train_step_fn or objective, not both: a step function owns its own optimizer updates, "
-                "an objective hands them to NNx's shared update engine"
-            )
-        if objective is not None and not callable(objective):
-            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        from ..objectives import _check_objective_run, _check_update_owner
+
+        # Checked before anything else: one owner per optimizer update.
+        _check_update_owner(train_step_fn, objective)
         _check_provenance(provenance)
         if train_step_fn is None:
             # NNx owns the update (default step or objective): the run's
@@ -1916,6 +1915,10 @@ class NNModel(_HubMixinBase):
         # optimizer over exactly the resolved parameters, fails here with no
         # run reserved (nnx.optimizers.build_optimizer is the shared hook).
         optimizer = build_optimizer(self.net, params.optim)
+        if objective is not None:
+            # FEAT-040: an objective refuses what it cannot train (say, a JEPA
+            # predictor the optimizer does not own) before any run exists.
+            _check_objective_run(objective, self, optimizers={"default": optimizer}, callbacks=callbacks)
         run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
