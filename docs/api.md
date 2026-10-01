@@ -3095,6 +3095,14 @@ class nnx.decisions.JobError(message: 'str', *, outcomes: 'Optional[Mapping[str,
 
 Base of the decision-job errors. ``outcomes`` maps question ids to every :class:`QuestionOutcome` known when the error was raised (answered, failed, skipped or cancelled — a request already sent says so), in scheduling order; ``completed`` is the answered subset. Both are empty when the job was refused before any call.
 
+**Details**
+
+```text
+The error pickles (a process-pool worker's error reaches its parent): a
+provider error that would not survive the round trip — on its own or as
+a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it.
+```
+
 
 #### `nnx.decisions.InvalidJob`
 
@@ -3111,7 +3119,7 @@ A job that cannot run as described: duplicate question ids, an unsupported quest
 class nnx.decisions.JobFailed(message: 'str', *, outcomes: 'Mapping[str, QuestionOutcome]', failed: 'Sequence[str]', skipped: 'Sequence[str]') -> 'None'
 ```
 
-A provider call failed (fail-fast): ``failed`` names the questions of that call, ``skipped`` the ready questions that were never sent; the provider's error is the ``__cause__``.
+A provider call failed (fail-fast): ``failed`` names the questions of that call, ``skipped`` the known questions that were never sent (none when the job was refused before any call); the provider's error is the ``__cause__``.
 
 
 #### `nnx.decisions.JobLimitExceeded`

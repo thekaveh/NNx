@@ -74,7 +74,7 @@ import numbers
 import sys
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union, cast
 
 from .schema import (
@@ -117,7 +117,11 @@ class JobError(DecisionError):
     every :class:`QuestionOutcome` known when the error was raised (answered,
     failed, skipped or cancelled — a request already sent says so), in
     scheduling order; ``completed`` is the answered subset. Both are empty
-    when the job was refused before any call."""
+    when the job was refused before any call.
+
+    The error pickles (a process-pool worker's error reaches its parent): a
+    provider error that would not survive the round trip — on its own or as
+    a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it."""
 
     def __init__(self, message: str, *, outcomes: Optional[Mapping[str, QuestionOutcome]] = None) -> None:
         super().__init__(message)
@@ -128,16 +132,39 @@ class JobError(DecisionError):
 
     def __reduce__(self) -> Any:
         # Keyword-only fields would break Exception's default pickling (a
-        # process-pool worker's error must reach its parent intact), and so
-        # would dropping the provider's error (the __cause__) when it pickles.
+        # process-pool worker's error must reach its parent intact); provider
+        # errors that do not round-trip are replaced, never dropped silently.
+        portable: dict[int, Optional[BaseException]] = {}
+        fields = dict(self.__dict__)
+        fields["outcomes"] = {
+            question_id: outcome
+            if outcome.error is None
+            else replace(outcome, error=_portable(outcome.error, portable))
+            for question_id, outcome in self.outcomes.items()
+        }
+        fields["completed"] = {k: v for k, v in fields["outcomes"].items() if v.kind == "answered"}
+        cause = _portable(self.__cause__, portable)
+        return (_restore_error, (type(self), str(self), fields, cause))
+
+
+def _portable(error: Optional[BaseException], seen: dict[int, Optional[BaseException]]) -> Optional[BaseException]:
+    """``error`` when it survives a pickle round trip, else a
+    :class:`ProviderFailure` that names it."""
+    if error is None:
+        return None
+    if id(error) not in seen:
         import pickle
 
-        cause = self.__cause__
         try:
-            pickle.dumps(cause)
+            pickle.loads(pickle.dumps(error))
+            seen[id(error)] = error
         except Exception:
-            cause = None
-        return (_restore_error, (type(self), str(self), dict(self.__dict__), cause))
+            try:
+                text = str(error)
+            except Exception:
+                text = "<unprintable>"
+            seen[id(error)] = ProviderFailure(f"{type(error).__name__}: {text}")
+    return seen[id(error)]
 
 
 def _restore_error(
@@ -158,7 +185,8 @@ class InvalidJob(JobError, ValueError):
 
 class JobFailed(JobError):
     """A provider call failed (fail-fast): ``failed`` names the questions of
-    that call, ``skipped`` the ready questions that were never sent; the
+    that call, ``skipped`` the known questions that were never sent (none
+    when the job was refused before any call); the
     provider's error is the ``__cause__``."""
 
     def __init__(
@@ -560,7 +588,7 @@ class _Runner:
                 f"the provider's pre-call check failed ({type(wrapped.error).__name__}: {wrapped.error})",
                 outcomes={},
                 failed=(),
-                skipped=tuple(self.registered),
+                skipped=(),  # refused before any call: nothing was scheduled
             )
             raise failure from wrapped.error
 
@@ -649,10 +677,17 @@ class _Runner:
         """The job's value (or pending) and this round's provider calls."""
         ready: list[_Ready] = []
 
-        def skip_ready() -> None:  # questions already ready are reported, never sent
-            for item in ready:
-                self.order.setdefault(item.ask.id, None)
-                self.outcomes.setdefault(item.ask.id, QuestionOutcome(item.ask.id, "skipped"))
+        def skip_known() -> list[str]:
+            """Every known question without an outcome is reported skipped
+            (never sent) — none when no call was made: the job was then
+            refused before any call, with no outcomes."""
+            if not self.calls:
+                return []
+            skipped = [question_id for question_id in self.registered if question_id not in self.outcomes]
+            for question_id in skipped:
+                self.order.setdefault(question_id, None)
+                self.outcomes[question_id] = QuestionOutcome(question_id, "skipped")
+            return skipped
 
         try:
             value = self._evaluate(self.job, 0, 0, (), ready)
@@ -663,29 +698,36 @@ class _Runner:
                 groups.setdefault(item.group, []).append(item)  # stable: first appearance
             chunks = [chunk for items in groups.values() for chunk in self._chunks(items)]
         except JobError as error:
-            skip_ready()
+            skip_known()
             error.outcomes = self._ordered()
             error.completed = {k: v for k, v in error.outcomes.items() if v.kind == "answered"}
             raise
         except _ProviderError as wrapped:  # fail-fast: answers already received are kept
-            skip_ready()
+            skipped = skip_known()
             failure = JobFailed(
                 f"a provider hook failed ({type(wrapped.error).__name__}: {wrapped.error}); "
-                f"{len(ready)} ready question(s) skipped",
+                f"{len(skipped)} question(s) skipped",
                 outcomes=self._ordered(),
                 failed=(),
-                skipped=[item.ask.id for item in ready],
+                skipped=skipped,
             )
             raise failure from wrapped.error
         for chunk in chunks:
             self.order.update(dict.fromkeys(item.ask.id for item in chunk))
         return value, chunks
 
-    def _count_tokens(self, questions: list[Question], state: Any) -> Any:
+    def _count_tokens(self, questions: list[Question], state: Any) -> float:
         try:
-            return self.provider.count_tokens(questions, state)
+            tokens = self.provider.count_tokens(questions, state)
         except Exception as error:  # the provider's token count failed: a provider failure
             raise _ProviderError(error) from error
+        try:
+            value = float(tokens) if isinstance(tokens, numbers.Real) and not isinstance(tokens, bool) else float("nan")
+        except OverflowError:  # an integer beyond float range: over any cap
+            value = float("inf")
+        if not value >= 0:
+            raise _ProviderError(InvalidDecisionResponse(f"count_tokens() must return a number >= 0, got {tokens!r}"))
+        return value
 
     def _chunks(self, items: list[_Ready]) -> list[list[_Ready]]:
         """``ceil(len / cap)`` calls of up to ``cap`` questions, in order,
@@ -872,6 +914,8 @@ class _Runner:
             raise InvalidJob(f"cancel must be an asyncio.Event, got {type(cancel).__name__}")
         # Set at any point (even if cleared again), the event cancels the run.
         stop: Optional[asyncio.Future[Any]] = None if cancel is None else asyncio.ensure_future(cancel.wait())
+        if stop is not None:
+            await asyncio.sleep(0)  # the watcher starts: an unusable event is refused before any call
         launches = 0
 
         def cancelled() -> bool:

@@ -760,3 +760,124 @@ def test_pickled_job_errors_keep_their_cause():
         Job.ask(Boolean("boom"), id="b").run(TextProvider(fail_on={"boom"}), state=TEXTS)
     restored = pickle.loads(pickle.dumps(caught.value))
     assert isinstance(restored.__cause__, RuntimeError) and str(restored.__cause__) == str(caught.value.__cause__)
+
+
+class _LockedError(RuntimeError):
+    """A provider error that cannot be pickled (it holds a lock)."""
+
+    def __init__(self, message):
+        import threading
+
+        super().__init__(message)
+        self.lock = threading.Lock()
+
+
+class _KeywordOnlyError(RuntimeError):
+    """Pickles, but cannot be unpickled (like httpx.HTTPStatusError)."""
+
+    def __init__(self, message, *, status):
+        super().__init__(message)
+        self.status = status
+
+
+def test_job_errors_cross_a_process_boundary_whatever_the_provider_raised():
+    from concurrent.futures import ProcessPoolExecutor
+
+    from nnx.decisions import ProviderFailure
+
+    for error, name in (
+        (_LockedError("socket closed"), "_LockedError"),
+        (_KeywordOnlyError("503", status=503), "_KeywordOnlyError"),
+    ):
+
+        class Raising(TextProvider):
+            def decide_many(self, questions, texts, error=error):
+                raise error
+
+        with pytest.raises(JobFailed) as caught:
+            Job.collect(_questions(2)).run(Raising(), state=TEXTS)
+        restored = pickle.loads(pickle.dumps(caught.value))
+        assert type(restored) is JobFailed and restored.failed == ("q0", "q1")
+        assert isinstance(restored.__cause__, ProviderFailure) and name in str(restored.__cause__)
+        assert all(isinstance(restored.outcomes[q].error, ProviderFailure) for q in ("q0", "q1"))
+        assert caught.value.outcomes["q0"].error is error  # the live error is untouched
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        with pytest.raises(JobFailed) as remote:
+            pool.submit(_fail_in_a_worker).result(timeout=120)
+    assert "_LockedError: socket closed" in str(remote.value.__cause__)
+
+
+def _fail_in_a_worker():
+    class Raising(TextProvider):
+        def decide_many(self, questions, texts):
+            raise _LockedError("socket closed")
+
+    Job.collect(_questions(2)).run(Raising(), state=TEXTS)
+
+
+def test_an_event_bound_to_another_loop_is_refused_before_any_call():
+    event = asyncio.Event()
+
+    async def bind():
+        waiter = asyncio.ensure_future(event.wait())
+        await asyncio.sleep(0)
+        event.set()
+        await waiter
+        event.clear()
+
+    asyncio.run(bind())
+    for provider in (SlowAsyncProvider(), TextProvider()):
+        with pytest.raises(InvalidJob, match="cannot be awaited in this event loop") as caught:
+            asyncio.run(
+                Job.collect(_questions(3)).arun(
+                    provider, state=TEXTS, cancel=event, limits=Limits(max_concurrency=3, max_questions=1)
+                )
+            )
+        assert provider.calls == [] and caught.value.outcomes == {}
+
+
+def test_refusals_and_hook_failures_report_skipped_questions_one_way():
+    class CheckFails(TextProvider):
+        def __init__(self, bad):
+            super().__init__()
+            self.bad = bad
+
+        def check(self, question, inputs):
+            if question.prompt == self.bad:
+                raise RuntimeError("capability service down")
+
+    # Refused before any call: no outcomes, nothing skipped.
+    with pytest.raises(JobFailed) as caught:
+        Job.collect(_questions(4)).run(CheckFails("Mentions word1"), state=TEXTS)
+    assert caught.value.outcomes == {} and caught.value.skipped == () and caught.value.failed == ()
+
+    class Counting(TextProvider):
+        def count_tokens(self, questions, texts):
+            return 100 * len(questions)
+
+    with pytest.raises(InvalidJob, match="alone exceeds") as refused:
+        Job.collect(_questions(2)).run(Counting(), state=TEXTS, limits=Limits(max_tokens=5))
+    assert refused.value.outcomes == {} and refused.value.completed == {}
+    # After a call: a continuation whose question the check refuses is reported skipped.
+    job = Job.collect(
+        {
+            "x": Job.ask(TOPIC, id="a").then(lambda _: Follow(Job.ask(Boolean("Mentions y"), id="y"), TEXTS)),
+            "b": Job.ask(Boolean("Mentions bank"), id="b"),
+        }
+    )
+    with pytest.raises(JobFailed) as mid:
+        job.run(CheckFails("Mentions y"), state=TEXTS)
+    assert mid.value.skipped == ("y",) and mid.value.outcomes["y"].kind == "skipped"
+    assert set(mid.value.completed) == {"a", "b"}
+
+
+def test_a_token_count_that_is_not_a_number_is_a_typed_failure():
+    for bad in (None, "3", float("nan"), -1, True):
+
+        class Bad(TextProvider):
+            def count_tokens(self, questions, texts, bad=bad):
+                return bad
+
+        with pytest.raises(JobFailed, match="count_tokens") as caught:
+            Job.collect(_questions(2)).run(Bad(), state=TEXTS, limits=Limits(max_tokens=5))
+        assert type(caught.value.__cause__).__name__ == "InvalidDecisionResponse"

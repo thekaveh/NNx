@@ -186,8 +186,11 @@ result.calls                                           # provider calls made
   declared refusal — nothing more is scheduled. `JobFailed`
   carries `outcomes` (every outcome so far, in scheduling order),
   `completed` (the answered ones), `failed` (the questions of that call) and
-  `skipped` (ready questions never sent); continuations
+  `skipped` (known questions never sent); continuations
   waiting on a failed answer never run, and nothing completed is re-run.
+  A job refused before any call has no outcomes and nothing skipped. The
+  error pickles across a process boundary: a provider error that does not
+  survive the round trip is replaced by a `ProviderFailure` naming it.
   The job never retries: retries belong to the provider. A **partial
   result** is only what the error carries: `JobFailed` has no `value`.
 - **Async and cancellation.** `await job.arun(provider, state=..., limits=...,
