@@ -66,7 +66,7 @@ import numbers
 import string
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 
@@ -130,9 +130,10 @@ def _class_id(value: Any, what: str, n_labels: Optional[int], names: Mapping[str
         return names[key]
     if isinstance(value, bool) or not isinstance(value, numbers.Integral):
         raise InvalidDecisionRequest(f"{what} must be a class id (int) or a label name (str), got {value!r}")
-    if value < 0 or (n_labels is not None and value >= n_labels):
-        raise InvalidDecisionRequest(f"{what} {value} is out of range for a model with {n_labels} classes")
-    return int(value)
+    class_id = int(value)
+    if class_id < 0 or (n_labels is not None and class_id >= n_labels):
+        raise InvalidDecisionRequest(f"{what} {class_id} is out of range for a model with {n_labels} classes")
+    return class_id
 
 
 def _positive(value: Any, what: str) -> int:
@@ -290,15 +291,16 @@ class NLIProvider:
         logits = self._pair_logits(premises, pair_hypotheses)
         per_input = len(hypotheses)
         record = self.record()
+        entail, contra = cast(int, self.entailment_id), cast(int, self.contradiction_id)  # resolved at construction
         results: list[DecisionResult] = []
         for row in range(len(texts)):
             block = logits[row * per_input : (row + 1) * per_input]
             cut = truncated[row * per_input : (row + 1) * per_input]
             raw = {"logits": block.tolist(), "truncated": cut, **record}
             if isinstance(question, Choice):
-                answer: Any = dict(zip(question.option_ids, _softmax(block[:, self.entailment_id]), strict=True))
+                answer: Any = dict(zip(question.option_ids, _softmax(block[:, entail]), strict=True))
             else:
-                pair = block[0, [self.contradiction_id, self.entailment_id]]
+                pair = block[0, [contra, entail]]
                 answer = float(_softmax(pair)[1])
             results.append(validate_response(question, answer, provider=self.name, raw=raw))
         return results
@@ -354,7 +356,7 @@ class NLIProvider:
         finally:
             _restore_training_modes(modes)
         logits = np.concatenate(chunks, axis=0)
-        width = max(self.entailment_id, self.contradiction_id) + 1
+        width = max(cast(int, self.entailment_id), cast(int, self.contradiction_id)) + 1
         if logits.ndim != 2 or logits.shape[0] != len(premises) or logits.shape[1] < width:
             raise ProviderFailure(
                 f"{self.name}: the NLI model returned logits of shape {tuple(logits.shape)} for {len(premises)} pairs; "
