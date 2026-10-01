@@ -797,6 +797,9 @@ def _check_scaler_hook(precision: ResolvedPrecision, scaler: Any, device_type: s
     paradigm steps refuse it)."""
     if precision.uses_scaler and scaler is None:
         raise ValueError("fp16 trains through a GradScaler, and _build_grad_scaler returned none")
+    if precision.uses_scaler and not getattr(scaler, "is_enabled", lambda: True)():
+        # A disabled scaler scales nothing: the float16 backward would underflow.
+        raise ValueError("fp16 trains through an enabled GradScaler, and _build_grad_scaler returned a disabled one")
     if scaler is not None and not precision.uses_scaler and device_type == "cuda":
         raise ValueError(
             f"_build_grad_scaler returned a GradScaler, but this run resolves to {precision.effective}: AMP is "

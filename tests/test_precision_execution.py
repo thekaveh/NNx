@@ -823,3 +823,32 @@ def test_a_cuda_request_without_cuda_says_so(monkeypatch):
 def test_a_resolution_is_hashable():
     resolved = PrecisionPolicy("bf16").resolve("cpu")
     assert {resolved: 1}[resolved] == 1 and hash(resolved) == hash(PrecisionPolicy("bf16").resolve("cpu"))
+
+
+# --- review round 10 -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("teacher_mode", "expected"), [("bf16", torch.bfloat16), (None, torch.float16)])
+def test_a_teacher_with_its_own_policy_never_shares_a_legacy_students_autocast(teacher_mode, expected):
+    from nnx import ObjectiveContext
+    from nnx.objectives import _own_precision
+
+    # The legacy flag's CUDA fp16 autocast, simulated on CPU.
+    legacy = ResolvedPrecision(requested="fp16", effective="fp16", device_type="cpu", source="legacy")
+    student = _model()
+    teacher = _model(PrecisionPolicy(teacher_mode) if teacher_mode else None, seed=3)
+    ctx = ObjectiveContext(model=student, batch=_batches(1)[0], epoch_idx=0, batch_idx=0, precision=legacy)
+    with torch.no_grad(), legacy.autocast(), _own_precision(ctx, teacher):
+        logits = teacher.net(_batches(1)[0][0])
+    assert logits.dtype is expected  # its own bf16 policy, or (no policy) the shared legacy autocast
+
+
+def test_a_disabled_scaler_from_the_hook_is_refused_for_fp16():
+    class Disabled:
+        def is_enabled(self) -> bool:
+            return False
+
+    fp16 = ResolvedPrecision(requested="fp16", effective="fp16", device_type="cuda", source="policy")
+    with pytest.raises(ValueError, match="returned a disabled one"):
+        nn_model_module._check_scaler_hook(fp16, Disabled(), "cuda")
+    nn_model_module._check_scaler_hook(fp16, _RecordingScaler([]), "cuda")  # no is_enabled: taken as enabled

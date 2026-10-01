@@ -694,7 +694,9 @@ autocast, so a reduced run's forward outputs are float16 / bfloat16:
 before task preparation, the loss's bookkeeping or a record converts it to
 NumPy — the built-in objectives (and the default step) do. `kd_objective`'s
 frozen teacher runs in its own inference precision (its explicit policy, or
-full precision), never in the student's. As
+full precision), never in the student's policy; only a teacher without a
+policy of its own still shares the autocast the legacy `mixed_precision`
+flag gives a CUDA student, as it always has. As
 with the default step, `NNModel.train` rejects an objective run on a
 low-rank-surgery topology it cannot reconstruct. Imperative step functions and
 `finalize_step` are unchanged.
