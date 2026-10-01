@@ -635,3 +635,81 @@ def test_the_loader_seed_is_validated():
             task.loader("train", x, batch_size=8, seed=seed)
     with pytest.raises(LinkTaskError, match="candidates are fixed"):
         task.loader("val", x, batch_size=8, seed=0)
+
+
+# --- review round 4 ------------------------------------------------------------------------------------------
+
+
+class _NoEpochWrapper:  # a prefetch-style wrapper that does not forward set_epoch
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __iter__(self):
+        return iter(self.inner)
+
+    def __len__(self):
+        return len(self.inner)
+
+
+def _fit(loader, objective, epochs, salt=None, callbacks=(), **resume):
+    model = _model()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=epochs,
+            train_loader=loader,
+            optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+            seed=0,
+            **resume,
+        ),
+        objective=objective,
+        salt=salt,
+        callbacks=list(callbacks),
+    )
+    return model, run
+
+
+def test_a_loader_that_stopped_following_the_epoch_is_refused_whatever_its_pass():
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    # A one-epoch source (pass 0) resumed through a wrapper that restarts at pass 0.
+    _, one = _fit(task.loader("train", x, batch_size=32, seed=0), task.objective(), 1)
+    with pytest.raises(LinkTaskError, match="not following the epoch"):
+        _fit(
+            _NoEpochWrapper(task.loader("train", x, batch_size=32, seed=0)),
+            task.objective(),
+            1,
+            resume_from_run_id=one.id,
+        )
+    # The source's own loader, stuck on its last announced epoch, wrapped for the resume.
+    loader = task.loader("train", x, batch_size=32, seed=0)
+    _, two = _fit(loader, task.objective(), 2, salt="stuck")
+    with pytest.raises(LinkTaskError, match="forward set_epoch"):
+        _fit(_NoEpochWrapper(loader), task.objective(), 1, resume_from_run_id=two.id)
+
+
+def test_a_list_spanning_two_passes_resumes_and_a_failed_resume_leaves_nothing_armed():
+    from nnx.components import ComponentRestoreError
+    from nnx.nn.callbacks import Callback
+
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    loader = task.loader("train", x, batch_size=32, seed=0)
+    twice = [*loader, *loader]  # passes 0 and 1, every epoch
+    _, listed = _fit(twice, task.objective(), 2, salt="twice")
+    _fit(twice, task.objective(), 1, resume_from_run_id=listed.id)
+
+    class Boom(Callback):
+        def on_epoch_begin(self, ctx):
+            raise RuntimeError("boom")
+
+    objective = task.objective()
+    with pytest.raises(RuntimeError, match="boom"):
+        _fit(twice, objective, 1, salt="boom", callbacks=[Boom()], resume_from_run_id=listed.id)
+    _fit(task.loader("train", x, batch_size=32, seed=7), objective, 1, salt="fresh")  # another seed: a new fit
+
+    state = NNCheckpoint.load_training_state(run=listed.id, type=Checkpoints.LAST)["components"]["link.task"]["state"]
+    for bad in ({"negatives_seed": "0"}, {"last_pass": [1.0, 1.0, True]}):
+        problems = task.objective().check_component_state({**state, **bad}, version=1)
+        assert problems and "malformed" in problems[0]
+    assert task.objective().check_component_state(state, version=1) == []
+    assert ComponentRestoreError  # the registry raises it for these problems before anything is restored

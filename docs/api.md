@@ -5262,7 +5262,9 @@ Args:
 
 Training negatives are drawn per epoch from ``(seed, epoch)``, so a
 stateful resume continues them as if uninterrupted; the objective
-checkpoints the seed and refuses a resumed loader with another one.
+checkpoints the seed and each epoch's first training pass, and refuses
+a resumed loader with another seed or one that stopped following the
+epoch.
 ```
 
 ##### `nnx.link_tasks.LinkTask.state`
@@ -5279,7 +5281,7 @@ No public description is currently available.
 nnx.link_tasks.LinkTask.loader(self, name: 'str', x: 'torch.Tensor', batch_size: 'int', *, seed: 'Optional[int]' = None) -> '_Loader'
 ```
 
-Batches of ``name``'s candidates over the message graph, in a fixed order. Training negatives are re-drawn every pass from ``(seed, pass)`` (``seed`` defaults to the split's).
+Batches of ``name``'s candidates over the message graph. Training negatives and order are re-drawn every pass from ``(seed, pass)`` (``seed``, an integer >= 0, defaults to the split's); a seed on a ``val`` / ``test`` loader, whose candidates are fixed, is refused.
 
 ##### `nnx.link_tasks.LinkTask.check_batch`
 
