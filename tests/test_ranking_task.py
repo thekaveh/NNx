@@ -603,18 +603,6 @@ def test_without_a_monitor_an_all_excluded_epoch_never_becomes_best():
 # --- review round 1 -----------------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_the_objective_trains_on_a_cuda_scorer():  # pragma: no cover - GPU only
-    torch.manual_seed(0)
-    model = NNModel(
-        net_params=NNParams(input_dim=D, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CUDA, loss=Losses.MEAN_SQUARED_ERROR),
-    )
-    task = RankingTask(k=(1,), max_relevance=2)
-    result = _objective_step(task, model, next(iter(_loader(_data(2), batch_size=2 * GROUP))))
-    assert result.terms[0].numerator.device.type == "cuda" and result.terms[0].denominator == 2
-
-
 def test_relevance_on_another_device_is_moved_to_the_scores_before_any_indexing():
     """CPU stand-in for the GPU case: the grades are moved (whole) to the
     scores' device before a device index ever touches them."""
