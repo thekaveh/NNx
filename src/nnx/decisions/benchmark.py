@@ -197,18 +197,41 @@ class Sample:
 
 
 def _fingerprint(value: Any) -> str:
-    if isinstance(value, str):
-        data = value.encode("utf-8")
-    else:
-        try:
-            import numpy as np
+    """A digest of an input that is the same in every process: text as
+    UTF-8, a numeric array or tensor as its dtype, shape and bytes, a tuple
+    (several inputs) part by part, other JSON-able values as canonical JSON.
+    Anything else has no stable digest: the caller must name the derived
+    sample (``id=``)."""
+    import numpy as np
 
-            data = np.ascontiguousarray(
-                np.asarray(value.detach().cpu() if hasattr(value, "detach") else value)
-            ).tobytes()
-        except Exception:  # an input of another kind: its repr
-            data = repr(value).encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
+    if isinstance(value, str):
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    if isinstance(value, tuple):
+        parts = ",".join(_fingerprint(part) for part in value)
+        return hashlib.sha256(f"tuple:{parts}".encode()).hexdigest()
+    if hasattr(value, "detach") and hasattr(value, "dtype"):  # a tensor
+        tensor = value.detach().cpu().contiguous()
+        header = f"tensor:{tensor.dtype}:{tuple(tensor.shape)}:".encode()
+        raw = tensor.reshape(-1).view(_byte_dtype()).numpy().tobytes() if tensor.numel() else b""
+        return hashlib.sha256(header + raw).hexdigest()
+    if isinstance(value, np.ndarray) and value.dtype != object:
+        array = np.ascontiguousarray(value)
+        return hashlib.sha256(f"array:{array.dtype.str}:{array.shape}:".encode() + array.tobytes()).hexdigest()
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    try:
+        text = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise BenchmarkError(
+            f"an input of type {type(value).__name__} has no stable digest to derive a sample id from; pass id="
+        ) from error
+    return hashlib.sha256(f"json:{text}".encode()).hexdigest()
+
+
+def _byte_dtype() -> Any:
+    import torch
+
+    return torch.uint8
 
 
 def _derived(sample: Sample, kind: str, id: Optional[str] = None, **changes: Any) -> Sample:
@@ -305,10 +328,22 @@ def rewrite_input(sample: Sample, text: str, *, kind: str, id: Optional[str] = N
 # --- records ------------------------------------------------------------------------------------
 
 
+def _real(value: Any) -> Optional[float]:
+    """``float(value)`` for a real number (never a bool), else ``None`` —
+    including an integer too large for a float."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return None
+    try:
+        return float(value)
+    except (OverflowError, ValueError):
+        return None
+
+
 def _finite_probability(value: Any, what: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, numbers.Real) or not 0.0 <= float(value) <= 1.0:
+    number = _real(value)
+    if number is None or not 0.0 <= number <= 1.0:
         raise BenchmarkError(f"{what} must be a probability in [0, 1], got {value!r}")
-    return float(value)
+    return number
 
 
 @dataclass(frozen=True)
@@ -350,7 +385,17 @@ class Record:
             if self.distribution is not None or self.p_true is not None:
                 raise BenchmarkError(f"record {self.sample_id!r}: a {self.status} record has no answer")
         if self.distribution is not None:
-            pairs = tuple((str(k), _finite_probability(p, "a record probability")) for k, p in self.distribution)
+            try:
+                pairs = tuple((k, _finite_probability(p, "a record probability")) for k, p in self.distribution)
+            except BenchmarkError:
+                raise
+            except (TypeError, ValueError) as error:
+                raise BenchmarkError(
+                    f"record {self.sample_id!r}: a distribution is (option id, probability) pairs, "
+                    f"got {self.distribution!r}"
+                ) from error
+            if not all(isinstance(k, str) and k for k, _ in pairs):
+                raise BenchmarkError(f"record {self.sample_id!r}: option ids are non-empty strings")
             if len({k for k, _ in pairs}) != len(pairs) or len(pairs) < 2:
                 raise BenchmarkError(f"record {self.sample_id!r}: a distribution needs 2+ distinct option ids")
             total = math.fsum(p for _, p in pairs)
@@ -395,7 +440,7 @@ class Record:
             question_digest=state.get("question_digest"),  # type: ignore[arg-type]
             provider=state.get("provider"),  # type: ignore[arg-type]
             status=state.get("status"),  # type: ignore[arg-type]
-            distribution=None if distribution is None else tuple((k, p) for k, p in distribution),
+            distribution=distribution,
             p_true=state.get("p_true"),
             reason=state.get("reason"),
             revision=state.get("revision"),
@@ -426,7 +471,10 @@ def read_records(path: Union[str, os.PathLike[str]]) -> list[Record]:
                 state = json.loads(line, parse_constant=reject)
             except json.JSONDecodeError as error:
                 raise BenchmarkError(f"{os.fspath(path)}:{number}: not JSON: {error}") from error
-            records.append(Record.from_state(state))
+            try:
+                records.append(Record.from_state(state))
+            except BenchmarkError as error:
+                raise BenchmarkError(f"{os.fspath(path)}:{number}: {error}") from error
     return records
 
 
@@ -466,6 +514,10 @@ def _batch_input(inputs: list[Any]) -> Any:
     first = inputs[0]
     if isinstance(first, str):
         return list(inputs)
+    if isinstance(first, tuple):  # several inputs per sample: batch each part
+        if any(not isinstance(item, tuple) or len(item) != len(first) for item in inputs):
+            raise BenchmarkError("samples with several inputs need tuples of one length")
+        return tuple(_batch_input(list(part)) for part in zip(*inputs, strict=True))
     try:
         import torch
 
@@ -485,8 +537,8 @@ def _identity(provider: Any) -> Optional[str]:
     if not callable(record):
         return None
     try:
-        text = json.dumps(record(), sort_keys=True, separators=(",", ":"), default=str)
-    except (TypeError, ValueError):
+        text = json.dumps(record(), sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):  # not plain JSON: no stable identity
         return None
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -563,13 +615,15 @@ def collect(
         raise BenchmarkError(f"collect() needs an explicit Budget, got {budget!r}")
     if isinstance(batch_size, bool) or not isinstance(batch_size, numbers.Integral) or batch_size < 1:
         raise BenchmarkError(f"batch_size must be a positive integer, got {batch_size!r}")
+    samples = list(samples)  # iterated twice: a generator is read once
     identity = prompt_identity if prompt_identity is not None else _identity(provider)
     batches: dict[str, list[Sample]] = {}
     for sample in samples:
         if not isinstance(sample, Sample):
             raise BenchmarkError(f"collect() needs Samples, got {type(sample).__name__}")
         batches.setdefault(sample.digest, []).append(sample)
-    plan = [group[i : i + batch_size] for group in batches.values() for i in range(0, len(group), batch_size)]
+    size = _batch_cap(provider, batch_size)
+    plan = [group[i : i + size] for group in batches.values() for i in range(0, len(group), size)]
     records: list[Record] = []
     calls = sent = 0
     stopped = None
@@ -579,16 +633,6 @@ def collect(
             stopped = f"budget exhausted: max_calls={budget.max_calls}"
             break
         question = planned[0].question
-        execution = {"batch": index, "batch_size": len(planned), "partial_batch": False, "attempt": 1}
-        try:
-            inputs = _batch_input([sample.input for sample in planned])
-        except Exception as error:  # inputs that cannot form one batch: no call is made
-            records += _records(planned, "failed", f"{type(error).__name__}: {error}", None, execution, common)
-            continue
-        refusal = _refusal(provider, question, inputs, len(planned))
-        if refusal is not None:  # declared before any call: the whole planned batch, no budget spent
-            records += _records(planned, "unsupported", refusal, None, execution, common)
-            continue
         batch = planned
         if budget.max_samples is not None:
             room = budget.max_samples - sent
@@ -597,9 +641,17 @@ def collect(
                 break
             batch = planned[:room]
         partial = len(batch) < len(planned)
-        execution = {**execution, "batch_size": len(batch), "partial_batch": partial}
-        if partial:
+        execution = {"batch": index, "batch_size": len(planned), "partial_batch": False, "attempt": 1}
+        try:
             inputs = _batch_input([sample.input for sample in batch])
+        except Exception as error:  # inputs that cannot form one batch: no call is made
+            records += _records(planned, "failed", f"{type(error).__name__}: {error}", None, execution, common)
+            continue
+        refusal = _refusal(provider, question, inputs, len(batch))
+        if refusal is not None:  # before any call: the whole planned batch, no budget spent
+            records += _records(planned, refusal[0], refusal[1], None, execution, common)
+            continue
+        execution = {**execution, "batch_size": len(batch), "partial_batch": partial}
         calls += 1
         sent += len(batch)
         started = time.perf_counter()
@@ -607,15 +659,21 @@ def collect(
             results = list(provider.decide(question, inputs))
             if len(results) != len(batch):
                 raise DecisionError(f"the provider returned {len(results)} results for {len(batch)} inputs")
-            answers = [_answer(sample, result, provider_id) for sample, result in zip(batch, results, strict=True)]
-            timed = {**execution, "seconds": time.perf_counter() - started}
-            records += _records(batch, "answered", None, answers, timed, common)
         except UnsupportedCapability as error:
             timed = {**execution, "seconds": time.perf_counter() - started}
             records += _records(batch, "unsupported", f"UnsupportedCapability: {error}", None, timed, common)
         except Exception as error:  # one attempt per batch; retries are the provider's
             timed = {**execution, "seconds": time.perf_counter() - started}
             records += _records(batch, "failed", f"{type(error).__name__}: {error}", None, timed, common)
+        else:
+            timed = {**execution, "seconds": time.perf_counter() - started}
+            for sample, result in zip(batch, results, strict=True):  # each answer checked on its own
+                try:
+                    answer = _answer(sample, result, provider_id)
+                except Exception as error:
+                    records += _records([sample], "failed", f"{type(error).__name__}: {error}", None, timed, common)
+                else:
+                    records += _records([sample], "answered", None, [answer], timed, common)
         if partial:  # the sample budget cut this batch short, whatever its outcome
             stopped = f"budget exhausted: max_samples={budget.max_samples}"
             break
@@ -624,10 +682,24 @@ def collect(
     return Collection(tuple(records), calls, complete, stopped)
 
 
-def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optional[str]:
-    """The provider's own refusal before any call — its ``check(question,
-    inputs)`` when it has one, else its declared ``capabilities()`` — or
-    ``None``."""
+def _batch_cap(provider: Any, batch_size: int) -> int:
+    """``batch_size``, lowered to the provider's declared ``max_batch``."""
+    capabilities = getattr(provider, "capabilities", None)
+    if callable(capabilities):
+        try:
+            limit = getattr(capabilities(), "max_batch", None)
+        except Exception:  # each batch's own pre-call check records the error
+            return int(batch_size)
+        if isinstance(limit, numbers.Integral) and not isinstance(limit, bool) and int(limit) >= 1:
+            return min(int(batch_size), int(limit))
+    return int(batch_size)
+
+
+def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optional[tuple[str, str]]:
+    """``(status, reason)`` when the provider refuses before any call — its
+    ``check(question, inputs)`` when it has one, else its declared
+    ``capabilities()``: ``"unsupported"`` for a declared refusal,
+    ``"failed"`` when the check itself raises — or ``None``."""
     try:
         check = getattr(provider, "check", None)
         if callable(check):
@@ -639,7 +711,9 @@ def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optio
             declared: Any = capabilities()
             declared.check(question, modality=modality, batch_size=rows)
     except (UnsupportedCapability, InvalidDecisionRequest) as error:
-        return f"{type(error).__name__}: {error}"
+        return "unsupported", f"{type(error).__name__}: {error}"
+    except Exception as error:  # the check itself failed: no call, no budget spent
+        return "failed", f"{type(error).__name__}: {error}"
     return None
 
 
@@ -661,10 +735,20 @@ class MetricValue:
         return UNITS[self.name]
 
     def state(self) -> dict[str, Any]:
-        value = self.value
-        if value is not None and not math.isfinite(value):
-            value = "Infinity" if value > 0 else ("-Infinity" if value < 0 else "NaN")  # strict JSON
-        return {"value": value, "denominator": self.denominator, "reason": self.reason, "unit": self.unit}
+        return {
+            "value": _json_number(self.value),
+            "denominator": self.denominator,
+            "reason": self.reason,
+            "unit": self.unit,
+        }
+
+
+def _json_number(value: Optional[float]) -> Any:
+    """A number for strict JSON (and the CSV): a non-finite value as the
+    string ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"``."""
+    if value is None or math.isfinite(value):
+        return value
+    return "Infinity" if value > 0 else ("-Infinity" if value < 0 else "NaN")
 
 
 @dataclass(frozen=True)
@@ -810,12 +894,8 @@ class Resources:
         if self.seconds is not None:
             if self.source is None:
                 raise BenchmarkError("a time needs its source: 'measured' or 'supplied'")
-            seconds = self.seconds
-            if (
-                isinstance(seconds, bool)
-                or not isinstance(seconds, numbers.Real)
-                or not (math.isfinite(seconds) and seconds >= 0)
-            ):
+            seconds = _real(self.seconds)
+            if seconds is None or not (math.isfinite(seconds) and seconds >= 0):
                 raise BenchmarkError(f"Resources.seconds must be a finite number >= 0, got {seconds!r}")
         for name in ("warmup", "concurrency", "batch_count"):
             value = getattr(self, name)
@@ -1003,9 +1083,8 @@ def _for_provider(records: Sequence[Record], provider: Optional[str]) -> tuple[l
 
 
 def _check_epsilon(epsilon: Optional[float]) -> None:
-    if epsilon is not None and (
-        isinstance(epsilon, bool) or not isinstance(epsilon, numbers.Real) or not 0 < float(epsilon) < 1
-    ):
+    value = _real(epsilon)
+    if epsilon is not None and (value is None or not 0 < value < 1):
         raise BenchmarkError(f"epsilon must be in (0, 1) or None, got {epsilon!r}")
 
 
@@ -1051,6 +1130,8 @@ def evaluate(
         if not isinstance(policy, AbstentionPolicy):
             raise BenchmarkError(f"policy must be an nnx.abstention.AbstentionPolicy, got {type(policy).__name__}")
         _text(model_id, "model_id")
+    if resources is not None and not isinstance(resources, Resources):
+        raise BenchmarkError(f"resources must be a Resources, got {type(resources).__name__}")
     joined, extra = _join(samples, records)
     settings = {"epsilon": epsilon, "n_bins": int(n_bins), "policy": policy, "model_id": model_id}
     slices = {name: _slice(name, members, joined, **settings) for name, members in _slice_members(samples).items()}
@@ -1068,7 +1149,15 @@ def evaluate(
         slices=slices,
         resources=resources if resources is not None else Resources(),
         extra=extra,
+        sample_set=_sample_set(samples),
     )
+
+
+def _sample_set(samples: Sequence[Sample]) -> str:
+    """Which samples a report scored: their ids, question digests and labels,
+    order-free."""
+    rows = sorted(f"{sample.id}|{sample.digest}|{sample.true_label}" for sample in samples)
+    return "sha256:" + hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
 # --- intervals ------------------------------------------------------------------------------------------
@@ -1095,7 +1184,11 @@ class Interval:
     reason: Optional[str] = None
 
     def state(self) -> dict[str, Any]:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        """Strict JSON: a non-finite bound is written as MetricValue writes it."""
+        state = {name: getattr(self, name) for name in self.__dataclass_fields__}
+        for name in ("estimate", "low", "high"):
+            state[name] = _json_number(state[name])
+        return state
 
 
 def bootstrap_interval(
@@ -1185,6 +1278,7 @@ class BenchmarkReport:
     slices: Mapping[str, SliceReport]
     resources: Resources = field(default_factory=Resources)
     extra: int = 0  # records for no sample (benchmark-wide)
+    sample_set: Optional[str] = None  # a digest of the samples' ids, questions and labels
 
     def state(self) -> dict[str, Any]:
         return {
@@ -1193,6 +1287,7 @@ class BenchmarkReport:
             "provider": self.provider,
             "metric_identity": dict(self.metric_identity),
             "extra": self.extra,
+            "sample_set": self.sample_set,
             "resources": self.resources.state(),
             "slices": {name: report.state() for name, report in self.slices.items()},
         }
@@ -1202,9 +1297,10 @@ class BenchmarkReport:
 
     def csv_rows(self) -> list[dict[str, Any]]:
         """One row per slice and metric: value, unit, denominator, the
-        unavailable reason, and every coverage count of the slice (samples,
+        unavailable reason, every coverage count of the slice (samples,
         eligible, failed, unsupported, missing, duplicate, mismatched,
-        invalid), so the counts add up to the slice's samples."""
+        invalid — they add up to the slice's samples) and the report's
+        ``extra`` records. A non-finite value is written as in the JSON."""
         rows = []
         for name, report in self.slices.items():
             coverage = report.coverage
@@ -1214,7 +1310,7 @@ class BenchmarkReport:
                     {
                         "slice": name,
                         "metric": metric,
-                        "value": "" if value.value is None else repr(float(value.value)),
+                        "value": "" if value.value is None else _csv_number(value.value),
                         "unit": value.unit,
                         "denominator": value.denominator,
                         "unavailable": value.reason or "",
@@ -1226,6 +1322,7 @@ class BenchmarkReport:
                         "duplicate": coverage.duplicate,
                         "mismatched": coverage.mismatched,
                         "invalid": coverage.invalid,
+                        "extra": self.extra,
                     }
                 )
         return rows
@@ -1233,7 +1330,7 @@ class BenchmarkReport:
     def to_csv(self) -> str:
         buffer = io.StringIO()
         fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "samples", "eligible", "failed"]
-        fields += ["unsupported", "missing", "duplicate", "mismatched", "invalid"]
+        fields += ["unsupported", "missing", "duplicate", "mismatched", "invalid", "extra"]
         writer = csv.DictWriter(buffer, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(self.csv_rows())
@@ -1277,30 +1374,50 @@ class BenchmarkReport:
         return dict(state)
 
 
+def _csv_number(value: float) -> str:
+    encoded = _json_number(value)
+    return encoded if isinstance(encoded, str) else repr(float(value))
+
+
+def _report_state(report: Any) -> dict[str, Any]:
+    state = report.state() if isinstance(report, BenchmarkReport) else report
+    if not isinstance(state, Mapping) or state.get("format") != FORMAT:
+        raise BenchmarkError(f"not a {FORMAT} report")
+    missing = sorted({"split", "metric_identity", "slices"} - set(state))
+    if missing or not isinstance(state["slices"], Mapping):
+        raise BenchmarkError(f"a {FORMAT} report needs split, metric_identity and slices; missing {missing}")
+    return dict(state)
+
+
 def compare_reports(
     a: Union[BenchmarkReport, Mapping[str, Any]], b: Union[BenchmarkReport, Mapping[str, Any]]
 ) -> dict[str, dict[str, Optional[float]]]:
     """``b - a`` per slice and metric, for two reports of the same split and
-    metric identity (a :class:`BenchmarkReport` or a saved report's state);
-    anything else raises :class:`BenchmarkError`. A metric unavailable on
+    metric identity and — when both record it — the same sample set (a
+    :class:`BenchmarkReport` or a saved report's state); anything else
+    raises :class:`BenchmarkError`. A metric unavailable on
     either side has no delta."""
-    left = a.state() if isinstance(a, BenchmarkReport) else dict(a)
-    right = b.state() if isinstance(b, BenchmarkReport) else dict(b)
-    for state in (left, right):
-        if state.get("format") != FORMAT:
-            raise BenchmarkError(f"not a {FORMAT} report")
+    left, right = _report_state(a), _report_state(b)
     if left["split"] != right["split"]:
         raise BenchmarkError(f"the reports cover different splits: {left['split']!r} and {right['split']!r}")
     if left["metric_identity"] != right["metric_identity"]:
         raise BenchmarkError(
             f"the reports use different metric identities: {left['metric_identity']} and {right['metric_identity']}"
         )
+    sets = (left.get("sample_set"), right.get("sample_set"))
+    if None not in sets and sets[0] != sets[1]:
+        raise BenchmarkError(
+            f"the reports scored different samples of split {left['split']!r}: {sets[0]} and {sets[1]}"
+        )
     deltas: dict[str, dict[str, Optional[float]]] = {}
     for name in sorted(set(left["slices"]) & set(right["slices"])):
         row = {}
         for metric in METRICS:
-            x = left["slices"][name]["metrics"][metric]["value"]
-            y = right["slices"][name]["metrics"][metric]["value"]
+            try:
+                x = left["slices"][name]["metrics"][metric]["value"]
+                y = right["slices"][name]["metrics"][metric]["value"]
+            except (KeyError, TypeError) as error:
+                raise BenchmarkError(f"slice {name!r} has no {metric!r} value in one of the reports") from error
             finite = all(isinstance(v, (int, float)) and math.isfinite(v) for v in (x, y))
             row[metric] = float(y) - float(x) if finite else None
         deltas[name] = row

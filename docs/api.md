@@ -2871,6 +2871,14 @@ nnx.decisions.FixedHeadProvider.capabilities(self) -> 'Capabilities'
 
 No public description is currently available.
 
+##### `nnx.decisions.FixedHeadProvider.check`
+
+```python
+nnx.decisions.FixedHeadProvider.check(self, question: 'Question', inputs: 'Any') -> 'None'
+```
+
+Every check :meth:`decide` makes before calling the model — the question, the inputs' modality and batch size, and the label space (through ``option_map``) — so a caller (a decision job) can validate a request without calling the model.
+
 ##### `nnx.decisions.FixedHeadProvider.decide`
 
 ```python
@@ -3099,7 +3107,7 @@ Args:
 #### `nnx.decisions.benchmark.BenchmarkReport`
 
 ```python
-class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0) -> 'None'
+class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0, sample_set: 'Optional[str]' = None) -> 'None'
 ```
 
 A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared :class:`Resources`.
@@ -3126,7 +3134,7 @@ No public description is currently available.
 nnx.decisions.benchmark.BenchmarkReport.csv_rows(self) -> 'list[dict[str, Any]]'
 ```
 
-One row per slice and metric: value, unit, denominator, the unavailable reason, and every coverage count of the slice (samples, eligible, failed, unsupported, missing, duplicate, mismatched, invalid), so the counts add up to the slice's samples.
+One row per slice and metric: value, unit, denominator, the unavailable reason, every coverage count of the slice (samples, eligible, failed, unsupported, missing, duplicate, mismatched, invalid — they add up to the slice's samples) and the report's ``extra`` records. A non-finite value is written as in the JSON.
 
 ##### `nnx.decisions.benchmark.BenchmarkReport.to_csv`
 
@@ -3268,7 +3276,7 @@ A percentile bootstrap interval of one metric, resampling the declared grouping 
 nnx.decisions.benchmark.Interval.state(self) -> 'dict[str, Any]'
 ```
 
-No public description is currently available.
+Strict JSON: a non-finite bound is written as MetricValue writes it.
 
 
 #### `nnx.decisions.benchmark.compare_reports`
@@ -3277,7 +3285,7 @@ No public description is currently available.
 nnx.decisions.benchmark.compare_reports(a: 'Union[BenchmarkReport, Mapping[str, Any]]', b: 'Union[BenchmarkReport, Mapping[str, Any]]') -> 'dict[str, dict[str, Optional[float]]]'
 ```
 
-``b - a`` per slice and metric, for two reports of the same split and metric identity (a :class:`BenchmarkReport` or a saved report's state); anything else raises :class:`BenchmarkError`. A metric unavailable on either side has no delta.
+``b - a`` per slice and metric, for two reports of the same split and metric identity and — when both record it — the same sample set (a :class:`BenchmarkReport` or a saved report's state); anything else raises :class:`BenchmarkError`. A metric unavailable on either side has no delta.
 
 
 #### `nnx.decisions.benchmark.permute_options`

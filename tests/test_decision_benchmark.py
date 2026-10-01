@@ -581,3 +581,192 @@ def test_exports_carry_every_count_and_inputs_are_bounded():
         Resources(seconds=float("nan"), source="supplied")
     with pytest.raises(BenchmarkError, match="seconds"):
         Resources(seconds=-1.0, source="supplied")
+
+
+# --- review hardening ---------------------------------------------------------------------------------------
+
+
+def _pets(n: int, question=None, wrap=lambda row: row):
+    question = question or Choice("Which animal?", (("cat", "A cat"), ("dog", "A dog"), ("fox", "A fox")))
+    rows = torch.tensor([[1.5, 0.0], [0.5, 2.0], [-1.0, 1.0]])
+    labels = [o.id for o in question.options]
+    return [Sample(f"p{i}", question, wrap(rows[i % 3]), labels[i % 3]) for i in range(n)]
+
+
+def test_an_option_map_and_the_declared_max_batch_are_honoured():
+    renamed = Choice("Which animal?", (("feline", "A cat"), ("canine", "A dog"), ("vulpine", "A fox")))
+    head = FixedHeadProvider(_species_head(), option_map={"feline": "cat", "canine": "dog", "vulpine": "fox"})
+    mapped = collect(head, _pets(3, renamed), provider_id="head", budget=Budget(max_calls=1))
+    assert [r.status for r in mapped.records] == ["answered"] * 3 and mapped.calls == 1
+    small = FixedHeadProvider(_species_head(), max_batch=8)
+    capped = collect(small, _pets(40), provider_id="head", budget=Budget(max_calls=10))  # batch_size=16
+    assert capped.complete and capped.calls == 5 and {r.status for r in capped.records} == {"answered"}
+    assert {r.execution["batch_size"] for r in capped.records} == {8}
+
+
+def test_a_sample_budget_cut_is_checked_as_the_batch_actually_sent():
+    class AtMostTwo(KeywordProvider):
+        def check(self, question, inputs):
+            if len(inputs) > 2:
+                raise UnsupportedCapability(f"batch of {len(inputs)} exceeds 2")
+
+    texts = [f"goal {i}" for i in range(5)]
+    samples = [Sample(f"g{i}", TOPIC, text, "sport") for i, text in enumerate(texts)]
+    cut = collect(AtMostTwo(), samples, provider_id="kw", budget=Budget(max_calls=3, max_samples=2), batch_size=5)
+    assert [r.status for r in cut.records] == ["answered", "answered"] and cut.calls == 1
+    assert cut.records[0].execution["partial_batch"] and "max_samples=2" in cut.stopped
+
+
+def test_a_failing_check_keeps_the_paid_records_and_spends_nothing():
+    class Transient(KeywordProvider):
+        checks = 0
+
+        def check(self, question, inputs):
+            Transient.checks += 1
+            if Transient.checks == 2:
+                raise RuntimeError("transient")
+
+    other = Choice("Other?", (("x", "x"), ("y", "y")))
+    samples = [Sample("g0", TOPIC, "goal", "sport"), Sample("o0", other, "x", "x")]
+    provider = Transient()
+    collection = collect(provider, samples, provider_id="t", budget=Budget(max_calls=5))
+    assert [r.status for r in collection.records] == ["answered", "failed"] and collection.calls == 1
+    assert collection.records[1].reason == "RuntimeError: transient" and collection.complete
+
+
+def test_samples_with_several_inputs_are_batched_part_by_part():
+    head = FixedHeadProvider(_species_head())
+    collection = collect(head, _pets(3, wrap=lambda row: (row,)), provider_id="head", budget=Budget(max_calls=1))
+    assert [r.status for r in collection.records] == ["answered"] * 3 and head.model_calls == 1
+    report = evaluate(_pets(3, wrap=lambda row: (row,)), collection.records, split="x")
+    assert metric(report, "accuracy").value == 1.0
+
+
+def test_one_malformed_result_fails_only_its_own_sample():
+    other = Choice("Other?", (("x", "x"), ("y", "y")))
+
+    class OneWrong(KeywordProvider):
+        def decide(self, question, texts):
+            results = super().decide(question, texts)
+            results[-1] = validate_response(other, {"x": 0.5, "y": 0.5})
+            return results
+
+    samples = [Sample(f"g{i}", TOPIC, f"goal {i}", "sport") for i in range(4)]
+    collection = collect(OneWrong(), samples, provider_id="kw", budget=Budget(max_calls=1))
+    assert [r.status for r in collection.records] == ["answered", "answered", "answered", "failed"]
+    assert "answers question" in collection.records[-1].reason
+
+
+STABLE_INPUTS = (
+    "{'text': 'x', 'lang': 'en'}",
+    "np.array([3.5, 'red'], dtype=object)",
+    "torch.tensor([1.0, 2.0])",
+    "(torch.tensor([1, 2]), 'caption')",
+    "'plain text'",
+)
+
+
+def _derived_ids_in_a_new_process() -> list[str]:
+    import subprocess
+    import sys
+
+    code = (
+        "import numpy as np, torch\n"
+        "from nnx.decisions import Choice\n"
+        "from nnx.decisions.benchmark import Sample, permute_options\n"
+        "q = Choice('Topic?', (('sport', 'goal'), ('economy', 'bank')))\n"
+        f"for value in ({', '.join(STABLE_INPUTS)},):\n"
+        "    print(permute_options(Sample('s1', q, value, 'sport'), ['economy', 'sport']).id)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    return out.split()
+
+
+def test_derived_ids_are_the_same_in_every_process():
+    first, second = _derived_ids_in_a_new_process(), _derived_ids_in_a_new_process()
+    assert first == second and len(set(first)) == len(STABLE_INPUTS)
+
+
+def test_inputs_without_a_stable_digest_need_an_id():
+    sample = Sample("s1", TOPIC, object(), "sport")
+    with pytest.raises(BenchmarkError, match="pass id="):
+        permute_options(sample, ["economy", "sport"])
+    assert permute_options(sample, ["economy", "sport"], id="s1-swapped").id == "s1-swapped"
+    # dtype and shape are part of a tensor's digest
+    a = permute_options(Sample("t", TOPIC, torch.zeros(4, dtype=torch.int32), "sport"), ["economy", "sport"])
+    b = permute_options(Sample("t", TOPIC, torch.zeros(2, dtype=torch.int64), "sport"), ["economy", "sport"])
+    assert a.id != b.id
+
+
+def test_malformed_records_and_numbers_raise_benchmark_errors(tmp_path):
+    base = {"sample_id": "s", "question_digest": "d", "provider": "p", "status": "answered"}
+    for distribution in (5, [["a", 0.5, "x"], ["b", 0.5]], [[1, 0.5], ["b", 0.5]]):
+        with pytest.raises(BenchmarkError, match="distribution|option ids"):
+            Record.from_state({"format": "nnx.decision-record/1", **base, "distribution": distribution})
+    with pytest.raises(BenchmarkError, match="p_true"):
+        Record(**base, p_true=10**400)
+    with pytest.raises(BenchmarkError, match="seconds"):
+        Resources(seconds=10**400, source="supplied")
+    samples, records = fixture()
+    with pytest.raises(BenchmarkError, match="epsilon"):
+        evaluate(samples, records, split="x", epsilon=10**400)
+    with pytest.raises(BenchmarkError, match="resources must be a Resources"):
+        evaluate(samples, records, split="x", resources={"seconds": 1.0})  # type: ignore[arg-type]
+    path = tmp_path / "records.jsonl"
+    write_records(path, records)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"format": "nnx.decision-record/1", **base, "distribution": 5}) + "\n")
+    with pytest.raises(BenchmarkError, match=r"records\.jsonl:5: "):
+        read_records(path)
+    report = evaluate(samples, records, split="x")
+    with pytest.raises(BenchmarkError, match="needs split, metric_identity and slices"):
+        compare_reports(report, {"format": report.state()["format"]})
+
+
+def test_the_default_prompt_identity_is_stable_or_absent():
+    class Opaque(KeywordProvider):
+        def record(self):
+            return {"tokenizer": object()}
+
+    class Plain(KeywordProvider):
+        def record(self):
+            return {"template": "{}", "revision": "r1"}
+
+    samples = [Sample("g0", TOPIC, "goal", "sport")]
+    opaque = collect(Opaque(), samples, provider_id="o", budget=Budget(max_calls=1))
+    plain = [collect(Plain(), samples, provider_id="p", budget=Budget(max_calls=1)) for _ in range(2)]
+    assert opaque.records[0].prompt_identity is None
+    assert plain[0].records[0].prompt_identity == plain[1].records[0].prompt_identity is not None
+
+
+def test_generators_exports_and_sample_sets():
+    samples, records = fixture()
+    collection = collect(
+        KeywordProvider(),
+        (Sample(f"g{i}", TOPIC, f"goal {i}", "sport") for i in range(4)),
+        provider_id="kw",
+        budget=Budget(max_calls=1),
+    )
+    assert collection.complete and len(collection.records) == 4
+    infinite = [
+        Record("s0", AB.digest(), "stub", "answered", distribution=(("a", 0.0), ("b", 1.0))),
+        *records[1:],
+    ]
+    report = evaluate(samples, infinite, split="x")
+    rows = {row["metric"]: row for row in csv.DictReader(io.StringIO(report.to_csv()))}
+    assert (
+        rows["nll"]["value"]
+        == "Infinity"
+        == json.loads(report.to_json())["slices"]["in_family"]["metrics"]["nll"]["value"]
+    )
+    assert all(row["extra"] == "0" for row in rows.values())
+    interval = bootstrap_interval(
+        [Sample(s.id, s.question, s.input, s.label, group=s.id) for s in samples], infinite, metric="nll", seed=0
+    )
+    json.dumps(interval.state(), allow_nan=False)  # strict JSON with an infinite bound
+    # Reports over different samples of one split are never compared.
+    fewer = evaluate(samples[:3], records[:3], split="x")
+    with pytest.raises(BenchmarkError, match="different samples"):
+        compare_reports(report, fewer)
+    base = evaluate(samples, records, split="x")
+    assert compare_reports(base, evaluate(list(reversed(samples)), records, split="x"))["in_family"]["accuracy"] == 0

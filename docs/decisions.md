@@ -149,7 +149,9 @@ print(report.text())
   `redescribe` (new label descriptions), `add_distractors`,
   `add_none_of_the_above`, `add_context` (long irrelevant context) and
   `rewrite_input` (multilingual or adversarial state) derive perturbed
-  samples that keep their original's grouping unit.
+  samples that keep their original's grouping unit. A sample's input is a
+  text, a tensor or array, or a tuple of them (several inputs per sample,
+  batched part by part).
 - **Replay format.** One `Record` per provider output, one JSON object per
   line (`nnx.decision-record/1`, strict JSON): sample id, question digest,
   provider, status, the answer (`distribution` or `p_true`) or the
@@ -164,10 +166,12 @@ print(report.text())
   are the report's `extra` count. The CSV carries every count, so they add
   up to each slice's samples.
 - **Capabilities.** A provider that declares it cannot serve a request —
-  `FixedHeadProvider` outside its label space, for instance, through its
-  declared `capabilities()` (or its own `check(question, inputs)`) — gives
-  `unsupported` records with its own reason, before any call and without
-  spending budget. They are counted in the slice's coverage, never in a
+  `FixedHeadProvider` outside its label space (or its `option_map`), for
+  instance, through its own `check(question, inputs)` (or, without one, its
+  declared `capabilities()`) — gives `unsupported` records with its own
+  reason, before any call and without spending budget; a check that itself
+  raises gives `failed` records, also without a call. Batches never exceed
+  the provider's declared `max_batch`. They are counted in the slice's coverage, never in a
   metric's denominator, and never scored as wrong.
 - **Budgets.** `collect` needs an explicit provider, provider id and
   `Budget(max_calls, max_samples=None)`. It attempts each batch once
@@ -175,8 +179,9 @@ print(report.text())
   rest is `missing`, and `Collection.stopped` says why) and marks a batch
   the sample budget cut short as `partial_batch`. Each answer is checked
   against its sample's question (digest) and put into the question's
-  option order; a provider error, a malformed answer or inputs that cannot
-  form one batch give `failed` records rather than ending the collection.
+  option order, one by one: a malformed answer fails its own sample only;
+  a provider error or inputs that cannot form one batch fail the batch.
+  Neither ends the collection.
 - **Metrics,** per slice (`in_family`, `heldout`, `family:<name>`,
   `perturbation:<name>`): accuracy, macro-F1, NLL (exact by default:
   `+inf` when a true label has probability 0; `epsilon=` floors it), Brier,
@@ -194,11 +199,15 @@ print(report.text())
   provider's records `evaluate` scores, and flags a degenerate sample
   (fewer than two units, no variation, or a non-finite bound such as an
   exact NLL of `+inf`). Perturbation helpers give each variant a distinct id
-  (the kind plus a digest of the change), or the `id=` you pass.
+  (the kind plus a digest of the change — the same in every process for
+  text, numeric arrays and tensors, tuples of them and JSON-able values), or
+  the `id=` you pass; an input with no stable digest needs `id=`.
 - **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
-  eligible and failure counts and unavailable states. `compare_reports`
-  gives `b - a` per slice and metric only for reports of the same split and
-  metric identity (metric set, `epsilon`, `n_bins`, policy).
+  eligible, failure and `extra` counts and unavailable states (a non-finite
+  value is `"Infinity"` in the JSON and the CSV). `compare_reports` gives
+  `b - a` per slice and metric only for reports of the same split, metric
+  identity (metric set, `epsilon`, `n_bins`, policy) and sample set (a
+  digest of the samples' ids, questions and labels).
 
 It is not a leaderboard: no paid remote run is a default, and it never
 tunes a threshold or a prompt on test outcomes.
