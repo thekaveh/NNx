@@ -124,8 +124,103 @@ answer:
   training mode, on success and on failure.
 - **Failures.** An exception from the model itself becomes `ProviderFailure`,
   with the original error as `__cause__`.
+- **Checking without calling.** `check(question, inputs)` runs every check
+  `decide` makes before the model call (question, modality, batch size and
+  label space) and calls nothing; a decision job (§5) uses it to refuse a
+  request up front.
 
-## 5. Errors
+## 5. Decision jobs: batching and chaining
+
+A `DecisionJob` is an **immutable, deferred description** of decision work.
+Building one calls no provider, runs no callback and draws no RNG; `run` and
+`arun` are the only effect boundaries.
+
+```python
+from nnx.decisions import DecisionJob as Job, Follow, Limits
+
+flags = Job.collect({                                   # independent questions, keyed
+    "goal": Job.ask(Boolean("Mentions goal"), id="goal"),
+    "bank": Job.ask(Boolean("Mentions bank"), id="bank"),
+})
+routed = Job.ask(topic, id="topic").then(               # a dependent question
+    lambda answers: Follow(Job.ask(keeper, id="keeper"), state=sports_texts(answers))
+)
+result = Job.collect({"flags": flags, "routed": routed}).run(provider, state=texts, limits=Limits(max_questions=8))
+result.value["flags"]["goal"]                          # one result per text
+result.outcomes["keeper"].kind                         # "answered"
+result.calls                                           # provider calls made
+```
+
+| Builder | Value |
+|---|---|
+| `Job.ask(question, id=..., policy=None, model_id=None)` | the provider's results, one per input row; with an abstention `policy` ([concepts §19](concepts.md)), the selective decisions |
+| `Job.collect({key: job, ...})` | a mapping of each key to its job's value, in the given key order |
+| `job.map(fn)` | `fn(value)`: a pure function, no provider call |
+| `job.then(fn)` | `fn(value)` returns `Follow(next_job, state=...)`; the value is the next job's |
+
+- **Batching.** Independent questions over the same state are sent in the
+  fewest calls: `ceil(count / cap)` per state, in the order they were
+  collected, keeping their ids and the `collect` key order. `cap` is the
+  provider's: a provider with `decide_many(questions, inputs)` declares
+  `max_questions` (`None`: any number per call); a provider with only
+  `decide`, such as `FixedHeadProvider`, answers one question per call.
+  `Limits.max_questions` lowers it.
+- **Refused before any call.** Duplicate question ids, a question the
+  provider cannot serve (its `check(question, inputs)` when it has one, else
+  `capabilities().check(...)`) and a `Limits.max_tokens` cap the provider
+  cannot enforce (it needs `count_tokens(questions, inputs)`) raise
+  `InvalidJob` with no call made. A continuation's questions are checked
+  when the continuation runs, before they are sent.
+- **Dependent questions.** A `then` continuation runs **once**, after its
+  prerequisite succeeded, and maps the answer explicitly into the follow-up
+  `state`; it never feeds a sibling question. `Limits.max_depth` bounds
+  nesting and `Limits.max_requests` the run's calls (`JobLimitExceeded`).
+- **Fail-fast.** When a call raises, nothing more is scheduled. `JobFailed`
+  carries `outcomes` (every outcome so far, in scheduling order),
+  `completed` (the answered ones), `failed` (the questions of that call) and
+  `skipped` (ready questions never sent); continuations
+  waiting on a failed answer never run, and nothing completed is re-run.
+  The job never retries: retries belong to the provider. A **partial
+  result** is only what the error carries: `JobFailed` has no `value`.
+- **Async and cancellation.** `await job.arun(provider, state=..., limits=...,
+  cancel=None)` runs up to `Limits.max_concurrency` calls at once through
+  the provider's `adecide_many` / `adecide`. A provider with only
+  synchronous methods is called in a worker thread, one call at a time (its
+  methods need not be thread-safe); a running thread cannot be interrupted,
+  so the run waits for it before returning. Setting the `cancel` event stops
+  scheduling and returns a `JobResult` with `status="cancelled"` and no
+  value. Cancelling the task cancels only the job's own tasks and re-raises.
+  `Limits.timeout` raises `JobTimeout`. A request already sent is reported
+  with `sent=True`, never as rolled back: whatever the provider did with it
+  stays done.
+- **Outcomes.** `result.outcomes[id].kind` is `"answered"` (rows may still
+  be `"abstained"` under a policy), `"failed"` (with `error`), `"skipped"` or
+  `"cancelled"` (with `sent`); the three never blur.
+- **The provider is borrowed.** `run` and `arun` never close it, and it
+  stays usable after a failure or a cancellation.
+- **Serialisation.** A job of `ask` and `collect` only pickles as plain data
+  (`job.state()`). A job holding a runtime function (`map`, `then`) refuses
+  to pickle: rebuild it where it runs.
+
+**Limits of value equivalence.** `job.map(lambda x: x)` and `job` have the
+same value, and `job.map(f).map(g)` equals `job.map(lambda x: g(f(x)))`,
+**when the provider is deterministic and answers a question the same way
+whatever it is batched with**. A sampling provider, or one whose answer
+depends on the other questions in its call, keeps the job's call structure
+but not that equality. Batching is computational, not statistical: answers
+asked together are separate marginals, and the job never multiplies them
+into a joint probability.
+
+**What it is not.** It is not `LogitsChainBuilder`: that is a mutable
+builder of LM-decoding processors that `build()` sorts into a canonical
+order, while a job is immutable and describes provider requests. It is not
+an `ExperimentPlan` (`nnx.plans`): a plan compiles a training run, while a
+job only asks questions of an already-trained or hosted provider.
+
+[`examples/decision_jobs.py`](../examples/decision_jobs.py) runs batching, a
+continuation, fail-fast and the async path end to end.
+
+## 6. Errors
 
 All are `nnx.decisions.DecisionError`s, and their names are stable:
 
@@ -135,8 +230,13 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `InvalidDecisionResponse` (also a `ValueError`) | responses that do not fit their question (see §2) |
 | `UnsupportedCapability` | undeclared primitives, modalities, batch sizes or label spaces — before any model call |
 | `ProviderFailure` (also a `RuntimeError`) | the backend failing on a valid, supported request |
+| `JobError` | the base of the decision-job errors (§5); `outcomes` holds every outcome so far, `completed` the answered ones |
+| `InvalidJob` (also a `ValueError`) | a job that cannot run as described — before any call |
+| `JobFailed` | a provider call failing inside a job (fail-fast): `failed`, `skipped`, `__cause__` |
+| `JobLimitExceeded` | a job's `max_depth` or `max_requests` stopping it before the next call |
+| `JobTimeout` (also a `TimeoutError`) | a job's `timeout` elapsing |
 
-## 6. Consumers
+## 7. Consumers
 
 Planned decision features share this digest, the `kind` discriminators and
 `validate_response` rather than defining their own: the optional Jev SDK
@@ -145,13 +245,13 @@ label-conditioned baseline adapter
 ([#234](https://github.com/thekaveh/NNx/issues/234)), a reproducible
 decision-provider benchmark ([#243](https://github.com/thekaveh/NNx/issues/243)),
 offline teacher-distribution datasets
-([#244](https://github.com/thekaveh/NNx/issues/244)), applicative batching for
-independent decisions ([#245](https://github.com/thekaveh/NNx/issues/245)) and an
-optional `Result` at fallible boundaries
-([#263](https://github.com/thekaveh/NNx/issues/263)). None of them has landed;
-`nnx.decisions` does not depend on any of them.
+([#244](https://github.com/thekaveh/NNx/issues/244)) and an optional `Result`
+at fallible boundaries ([#263](https://github.com/thekaveh/NNx/issues/263)).
+`nnx.decisions` does not depend on any of them. Decision jobs (§5, from
+[#245](https://github.com/thekaveh/NNx/issues/245)) are the first consumer to
+land.
 
-## 7. What this does not do
+## 8. What this does not do
 
 - It does not claim every classifier is a universal decision-maker: the
   fixed-head adapter answers only what its head justifies.

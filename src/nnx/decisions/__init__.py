@@ -24,6 +24,11 @@ that declares it can answer:
   limits, inference / training / export) checked before any model call or
   network I/O, and ``decide(question, inputs)``.
   :class:`FixedHeadProvider` adapts a trained NNx classifier.
+- **Jobs** (FEAT-024) — :class:`DecisionJob`: an immutable, deferred
+  description of decision work (``ask`` / ``collect`` / ``map`` / ``then``)
+  whose ``run`` / ``arun`` batch independent questions into the fewest
+  provider calls and chain dependent ones, fail-fast under explicit
+  :class:`Limits`.
 - **Errors** — :class:`UnsupportedCapability`,
   :class:`InvalidDecisionRequest`, :class:`InvalidDecisionResponse` and
   :class:`ProviderFailure`, all :class:`DecisionError`\\ s.
@@ -33,6 +38,19 @@ hosted-SDK extra; inference only — nothing here trains, exports or executes
 actions.
 """
 
+from .jobs import (
+    DecisionJob,
+    Follow,
+    InvalidJob,
+    JobError,
+    JobFailed,
+    JobLimitExceeded,
+    JobResult,
+    JobTimeout,
+    Limits,
+    QuestionOutcome,
+    RowOutcome,
+)
 from .providers import Capabilities, DecisionProvider, FixedHeadProvider
 from .schema import (
     PROBABILITY_TOLERANCE,
@@ -62,14 +80,25 @@ __all__ = [
     "Choice",
     "ChoiceResult",
     "DecisionError",
+    "DecisionJob",
     "DecisionProvider",
     "DecisionResult",
     "FixedHeadProvider",
+    "Follow",
     "InvalidDecisionRequest",
     "InvalidDecisionResponse",
+    "InvalidJob",
+    "JobError",
+    "JobFailed",
+    "JobLimitExceeded",
+    "JobResult",
+    "JobTimeout",
+    "Limits",
     "Option",
     "ProviderFailure",
     "Question",
+    "QuestionOutcome",
+    "RowOutcome",
     "Score",
     "ScoreResult",
     "UnsupportedCapability",

@@ -1373,6 +1373,18 @@ question (Choice / Boolean / Score, digest) ──► DecisionProvider.capabilit
 
 An option's `id` is bookkeeping and its `description` the model-facing text, and a question's `digest()` changes when options are reordered or reworded. `validate_response` is the single validator every provider shares: it reorders keyed output into the question's order and rejects missing, duplicate, unknown or unlabeled ids and malformed distributions instead of renormalizing them. `ScoreResult.expected_index` (`sum(i * p_i)`) is ordinal, and a vendor's own score stays in `vendor_score`. `FixedHeadProvider` turns a trained classifier into a provider for exactly what its head justifies: `Choice` (or `Score` when ordinal) from a categorical head over its exact label space or a bijection onto it, and `Boolean` from a one-logit head. It restores the model's modes and raises typed errors (`UnsupportedCapability`, `InvalidDecisionRequest`, `InvalidDecisionResponse`, `ProviderFailure`). Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs it end to end.
 
+**Decision jobs** (FEAT-024) describe several questions before asking any. `DecisionJob.ask`, `collect`, `map` and `then` build an immutable tree that calls no provider, runs no callback and draws no RNG; `run(provider, state=..., limits=...)` and `await arun(...)` are the only effect boundaries, and they borrow the provider without closing it:
+
+```text
+Job.collect({"a": Job.ask(q1, id="a"), "b": Job.ask(q2, id="b").then(follow)}).map(f)
+   │ run / arun (the only effects)
+   ├── round 1: q1 + q2 over the run's state ──► ceil(2 / cap) provider calls, in order
+   ├── round 2: follow(answer_b) ──► Follow(job, state=…) ──► its questions over that state
+   └── JobResult(value=f({...}), outcomes={id: answered | failed | skipped | cancelled}, calls)
+```
+
+Independent questions over one state share calls (`ceil(count / cap)`, `cap` from the provider's `max_questions` and `Limits.max_questions`). A `then` continuation runs once, after its prerequisite succeeded, with the answer mapped explicitly into follow-up state. Duplicate ids, unsupported questions and an unenforceable token cap are refused before any call. The job is fail-fast: `JobFailed` carries the completed outcomes plus the failed and skipped ids, and has no partial value. Cancellation (`arun(cancel=event)`) stops scheduling and reports requests already sent as `sent`, never as rolled back. `map`'s identity and composition laws hold only for a deterministic provider that answers each question the same whatever it is batched with. The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §5](decisions.md) and [`examples/decision_jobs.py`](../examples/decision_jobs.py).
+
 ## 18. Fitted calibration (`nnx.calibration`)
 
 A classifier's softmax probabilities are often over- or under-confident.

@@ -251,9 +251,11 @@ class FixedHeadProvider:
             raise UnsupportedCapability(f"unseen option ids {unseen}: option_map maps {sorted(self.option_map)}")
         return [self.option_map[option_id] for option_id in question.option_ids]
 
-    def decide(self, question: Question, inputs: Any) -> list[DecisionResult]:
-        """Answer ``question`` for every row of ``inputs`` (a tensor, an
-        array or a tuple of them)."""
+    def check(self, question: Question, inputs: Any) -> None:
+        """Every check :meth:`decide` makes before calling the model — the
+        question, the inputs' modality and batch size, and the label space
+        (through ``option_map``) — so a caller (a decision job) can validate
+        a request without calling the model."""
         if not isinstance(question, (Choice, Boolean, Score)):
             raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
         modality, batch_size = _batch(inputs)
@@ -264,6 +266,14 @@ class FixedHeadProvider:
             raise UnsupportedCapability(
                 f"a Score's levels must follow the head's class order {list(caps.labels or ())}; got {head_labels}"
             )
+
+    def decide(self, question: Question, inputs: Any) -> list[DecisionResult]:
+        """Answer ``question`` for every row of ``inputs`` (a tensor, an
+        array or a tuple of them)."""
+        self.check(question, inputs)
+        _, batch_size = _batch(inputs)
+        head_labels = self._head_labels(question)
+        caps = self.capabilities()
         if batch_size == 0:
             return []
 
