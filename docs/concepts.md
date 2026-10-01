@@ -1726,7 +1726,9 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
   query's candidates with unequal grades (relevance `[1, 0]`, scores
   `[2, 0]` → `log(1 + e^-2) = 0.126928`). Ties contribute nothing, and a
   query without an unequal pair is skipped. Pairs are formed within a
-  microbatch, so keep a query's candidates in one batch when training.
+  microbatch, so keep a query's candidates in one batch when training. The
+  scorer takes the features as its one input, and every row — masked ones
+  too — goes through it, so pad masked rows with finite features.
 - **The evaluation** buffers the whole validation stream (at most
   `max_buffered` rows), so a query split across batches — in any order —
   is joined, and the same candidate arriving twice is refused. Each query's

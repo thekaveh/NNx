@@ -5115,9 +5115,11 @@ nnx.ranking.pairwise_logistic_loss(scores: 'torch.Tensor', relevance: 'torch.Ten
 ```text
 Pairs are formed grade by grade (each grade's candidates against every
 lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
-query's full pair matrix is ever held — in training too: each block is
-recomputed in backward (``torch.utils.checkpoint``) rather than kept. ``relevance`` may live on any
-device; it is moved to the scores'.
+query's full pair matrix is ever held — in training too: a block of at
+least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
+(``torch.utils.checkpoint``) rather than kept, while a smaller one costs
+less to keep than to recompute. ``relevance`` may live on any device; it
+is moved to the scores'.
 ```
 
 
@@ -5127,7 +5129,7 @@ device; it is moved to the scores'.
 nnx.ranking.rank(scores: 'Sequence[float]', candidate_ids: 'Sequence[Id]') -> 'list[int]'
 ```
 
-Positions of the candidates in ranked order: by score, highest first, ties broken by candidate id (ascending) — a stable, documented order.
+Positions of the candidates in ranked order: by score, highest first, ties broken by candidate id (ascending) — a stable, documented order. A non-finite score has no place in that order and is refused.
 
 
 #### `nnx.ranking.mrr_at_k`

@@ -92,9 +92,12 @@ def _count(value: Any, what: str, *, minimum: int) -> int:
 
 def rank(scores: Sequence[float], candidate_ids: Sequence[Id]) -> list[int]:
     """Positions of the candidates in ranked order: by score, highest first,
-    ties broken by candidate id (ascending) — a stable, documented order."""
+    ties broken by candidate id (ascending) — a stable, documented order.
+    A non-finite score has no place in that order and is refused."""
     if len(scores) != len(candidate_ids):
         raise RankingError(f"{len(scores)} scores for {len(candidate_ids)} candidate ids")
+    if not all(math.isfinite(float(score)) for score in scores):
+        raise RankingError("a query has a non-finite score; it cannot be ranked")
     kinds = {type(c) for c in candidate_ids}
     if len(kinds) > 1:
         raise RankingError("candidate ids of one query must all be integers or all strings")
@@ -161,6 +164,7 @@ def ndcg_at_k(relevance: Sequence[int], scores: Sequence[float], candidate_ids: 
 
 
 PAIR_BLOCK = 1 << 20  # pairs scored at once: memory stays linear in a query's size
+CHECKPOINT_PAIRS = 1 << 16  # a block this large is recomputed in backward rather than kept
 
 
 def _block_loss(high: torch.Tensor, low: torch.Tensor) -> torch.Tensor:
@@ -175,9 +179,11 @@ def pairwise_logistic_loss(
 
     Pairs are formed grade by grade (each grade's candidates against every
     lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
-    query's full pair matrix is ever held — in training too: each block is
-    recomputed in backward (``torch.utils.checkpoint``) rather than kept. ``relevance`` may live on any
-    device; it is moved to the scores'."""
+    query's full pair matrix is ever held — in training too: a block of at
+    least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
+    (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
+    less to keep than to recompute. ``relevance`` may live on any device; it
+    is moved to the scores'."""
     if weighting not in WEIGHTINGS:
         raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {weighting!r}")
     if len(query_ids) != scores.shape[0] or relevance.shape[0] != scores.shape[0]:
@@ -198,13 +204,18 @@ def pairwise_logistic_loss(
             block = max(1, PAIR_BLOCK // max(1, low.shape[0]))
             for start in range(0, high.shape[0], block):
                 chunk = high[start : start + block]
-                if torch.is_grad_enabled() and (chunk.requires_grad or low.requires_grad):
+                n_pairs = chunk.shape[0] * low.shape[0]
+                if (
+                    n_pairs >= CHECKPOINT_PAIRS
+                    and torch.is_grad_enabled()
+                    and (chunk.requires_grad or low.requires_grad)
+                ):
                     # Recomputed in backward: autograd keeps the block's inputs, never its pair matrix.
                     part = checkpoint(_block_loss, chunk, low, use_reentrant=False)
                 else:
                     part = _block_loss(chunk, low)
                 total = total + part
-                pairs += chunk.shape[0] * low.shape[0]
+                pairs += n_pairs
         if pairs == 0:
             continue  # no unequal-relevance pair: the query teaches nothing
         if weighting == "pair":

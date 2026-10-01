@@ -761,3 +761,38 @@ def test_round_two_settings_and_streams():
     with pytest.raises(RankingError, match="max_buffered=4"):
         small.eval_step()(_Ctx(model, Spy()))
     assert calls == []  # refused before the batch was scored or buffered
+
+
+# --- review round 3 ------------------------------------------------------------------------------
+
+
+def test_rank_refuses_a_non_finite_score():
+    with pytest.raises(RankingError, match="non-finite score"):
+        rank([math.nan, 0.5, 0.9], [1, 2, 3])
+    with pytest.raises(RankingError, match="non-finite score"):
+        rank([0.5, math.inf, 0.9], ["a", "b", "c"])
+
+
+def test_only_blocks_worth_it_are_recomputed_in_backward(monkeypatch):
+    import nnx.ranking as ranking
+
+    calls = []
+    original = ranking.checkpoint
+
+    def spy(*args, **kwargs):
+        calls.append(args[1].shape[0] * args[2].shape[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ranking, "checkpoint", spy)
+    scores = torch.randn(40, requires_grad=True)
+    grades = (torch.arange(40) % 3).long()
+    small, _ = pairwise_logistic_loss(scores, grades, ["q"] * 40, weighting="pair")
+    (small_grad,) = torch.autograd.grad(small, scores)
+    assert calls == []  # 20 x 13 pairs per query: cheaper to keep than to recompute
+
+    monkeypatch.setattr(ranking, "CHECKPOINT_PAIRS", 1)
+    every, _ = pairwise_logistic_loss(scores, grades, ["q"] * 40, weighting="pair")
+    (every_grad,) = torch.autograd.grad(every, scores)
+    assert calls and min(calls) >= 1
+    assert float(every.detach()) == pytest.approx(float(small.detach()), rel=1e-12)
+    assert torch.allclose(every_grad, small_grad, rtol=1e-6, atol=1e-7)
