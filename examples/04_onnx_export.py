@@ -87,10 +87,11 @@ def conformance(model: NNModel, onnx_path: str, X: torch.Tensor, *, rtol: float 
     except ImportError:
         return result
     session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-    (outputs,) = session.run(None, {session.get_inputs()[0].name: X.numpy()})
+    produced = session.run(None, {session.get_inputs()[0].name: X.numpy()})
     reference = np.asarray(model.predict(X).logits)
     result.update(level="executed", provider=session.get_providers()[0], parity=False)
-    if outputs.shape == reference.shape:  # a shape mismatch is a failed comparison, not a crash
+    outputs = np.asarray(produced[0]) if len(produced) == 1 else None  # one output, or a failed comparison
+    if outputs is not None and outputs.shape == reference.shape:  # a shape mismatch is a failed comparison, not a crash
         result.update(
             parity=bool(np.allclose(outputs, reference, rtol=rtol, atol=atol)),
             max_abs_error=float(np.abs(outputs - reference).max()),

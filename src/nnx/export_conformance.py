@@ -48,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import hashlib
+import importlib
 import importlib.util
 import io
 import json
@@ -155,6 +156,19 @@ class Profile:
             raise ConformanceError(f"a profile name is a plain directory name ([A-Za-z0-9._-]), got {self.name!r}")
         if self.exporter not in ("torchscript", "dynamo"):
             raise ConformanceError(f"exporter must be 'torchscript' or 'dynamo', got {self.exporter!r}")
+        # The record states what ran, so a profile may only declare what this module runs.
+        if self.runtime != "onnxruntime" or self.dtype != "float32":
+            raise ConformanceError(
+                f"profiles run FP32 inputs in ONNX Runtime; got runtime={self.runtime!r}, dtype={self.dtype!r}"
+            )
+        batches = tuple(self.batches)
+        if not batches or not all(isinstance(b, int) and not isinstance(b, bool) and b >= 1 for b in batches):
+            raise ConformanceError(f"batches must be a non-empty list of positive batch sizes, got {self.batches!r}")
+        object.__setattr__(self, "batches", batches)
+        for name in ("rtol", "atol"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ConformanceError(f"{name} must be finite and non-negative, got {value!r}")
 
     @property
     def requires(self) -> tuple[str, ...]:
@@ -176,6 +190,19 @@ class Profile:
         cases = [{"name": f"batch-{b}", "shape": [b, width], "seed": 1000 + b, "expect": "match"} for b in self.batches]
         cases.append({"name": f"width-{width + 1}", "shape": [3, width + 1], "seed": 2000, "expect": "rejected"})
         return cases
+
+
+def _blank(case: Mapping[str, Any]) -> dict[str, Any]:
+    """An input case before parity ran: its spec, and no outcome."""
+    return {
+        **{key: case[key] for key in ("name", "shape", "seed", "expect")},
+        "outcome": None,
+        "passed": False,
+        "failure": None,
+        "max_abs_error": None,
+        "max_rel_error": None,
+        "detail": None,
+    }
 
 
 PROFILES: Mapping[str, Profile] = {
@@ -233,6 +260,17 @@ def _inputs(case: Mapping[str, Any]) -> torch.Tensor:
 
 
 # --- provenance ---------------------------------------------------------------------------------------------
+
+
+def _importable(name: str) -> bool:
+    """Present and importable: a broken install is a missing dependency."""
+    if importlib.util.find_spec(name) is None:
+        return False
+    try:
+        importlib.import_module(name)
+    except Exception:  # any failure to import is the dependency's, not the export's
+        return False
+    return True
 
 
 def _version(distribution: str) -> Optional[str]:
@@ -333,8 +371,9 @@ def _external_locations(model: Any) -> set[str]:
 def _files(directory: str) -> list[str]:
     """Every file under ``directory``, as sorted ``/``-separated relative paths."""
     found = []
-    for folder, _, names in os.walk(directory):
-        for name in names:
+    for folder, folders, names in os.walk(directory):
+        linked = [name for name in folders if os.path.islink(os.path.join(folder, name))]
+        for name in [*names, *linked]:  # a symlinked directory is an entry, never followed
             found.append(os.path.relpath(os.path.join(folder, name), directory).replace(os.sep, "/"))
     return sorted(found)
 
@@ -357,6 +396,8 @@ def _manifest(directory: str) -> list[dict[str, Any]]:
     files = []
     for name in _files(directory):
         path = os.path.join(directory, *name.split("/"))
+        if os.path.islink(path) or not os.path.isfile(path):
+            raise ConformanceError(f"the exporter wrote {name!r}, which is not a regular file")
         role = "model" if name == MODEL_FILE else "external-data" if name in external else "sidecar"
         files.append({"path": name, "role": role, "bytes": os.path.getsize(path), "sha256": _sha256(path)})
     missing = sorted(external - {entry["path"] for entry in files})
@@ -512,8 +553,8 @@ def _session_options() -> dict[str, Any]:
 def _load(record: Mapping[str, Any], directory: str, provider: str) -> tuple[dict[str, Any], Any]:
     try:
         verify_artifacts(record, directory)
-    except ConformanceError as error:
-        return _stage("failed", "hash-mismatch", str(error)), None
+    except (ConformanceError, OSError) as error:  # unreadable is unverified
+        return _stage("failed", "hash-mismatch", f"{type(error).__name__}: {error}"), None
     try:
         import onnxruntime as ort
 
@@ -621,6 +662,10 @@ def run_profile(
         if profile not in PROFILES:
             raise ConformanceError(f"unknown profile {profile!r}; tested profiles are {sorted(PROFILES)}")
         profile = PROFILES[profile]
+    elif profile.name in PROFILES and profile != PROFILES[profile.name]:
+        raise ConformanceError(
+            f"{profile.name!r} names a tested profile; a profile with other settings needs its own name"
+        )
     root = os.path.join(os.fspath(directory), profile.name)
     if os.path.exists(root) and (not os.path.isdir(root) or os.listdir(root)):
         raise ConformanceError(f"{root!r} must be a new or empty directory: a profile owns its artifacts")
@@ -646,12 +691,12 @@ def run_profile(
             "session": _session_options(),
         },
         "dtype": profile.dtype,
-        "input_cases": [{**case, "outcome": None, "passed": False} for case in profile.cases()],
+        "input_cases": [_blank(case) for case in profile.cases()],
         "tolerances": {"rtol": profile.rtol, "atol": profile.atol},
         "model_state": None,
         "stages": {stage: _not_run() for stage in STAGES},
     }
-    missing = [name for name in profile.requires if importlib.util.find_spec(name) is None]
+    missing = [name for name in profile.requires if not _importable(name)]
     if missing:
         record["stages"]["dependencies"] = _stage(
             "failed",
@@ -673,6 +718,7 @@ def run_profile(
 
 
 def _execute(record: dict[str, Any], directory: str, model: Any) -> dict[str, Any]:
+    record["input_cases"] = [_blank(case) for case in record["input_cases"]]  # no outcome survives a re-run
     record["stages"]["load"], session = _load(record, directory, record["runtime"]["provider"])
     if session is None:
         record["stages"]["parity"] = _not_run()
@@ -698,7 +744,14 @@ def execute(record: Mapping[str, Any], directory: Union[str, os.PathLike[str]]) 
             "install thekaveh-nnx[onnx-runtime]"
         )
     config = {key: value for key, value in replay["config"].items() if key != "weights_sha256"}
-    model = build_model(config)
+    try:
+        model = build_model(config)
+    except ConformanceError:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise ConformanceError(
+            f"the recorded config cannot rebuild the model: {type(error).__name__}: {error}"
+        ) from error
     if _weights_digest(model.net) != replay["config"]["weights_sha256"]:
         raise ConformanceError("the recorded config no longer rebuilds the recorded weights")
     replay["versions"] = _versions()
@@ -743,6 +796,18 @@ def save_report(report: Mapping[str, Any], path: Union[str, os.PathLike[str]]) -
 
 # --- the record schema -----------------------------------------------------------------------------------------
 
+_CASE_KEYS = {
+    "name",
+    "shape",
+    "seed",
+    "expect",
+    "outcome",
+    "passed",
+    "failure",
+    "max_abs_error",
+    "max_rel_error",
+    "detail",
+}
 _KEYS = {
     "format",
     "profile",
@@ -828,6 +893,21 @@ def validate_record(record: Any) -> None:
         problems.append("input_cases need at least one valid case to compare")
     if any(case.get("expect") not in ("match", "rejected") for case in cases):
         problems.append("every input case expects 'match' or 'rejected'")
+    for case in cases:
+        if set(case) != _CASE_KEYS:
+            problems.append(f"input case {case.get('name')!r} must hold exactly {sorted(_CASE_KEYS)}")
+        elif not (
+            isinstance(case["name"], str)
+            and isinstance(case["seed"], int)
+            and not isinstance(case["seed"], bool)
+            and isinstance(case["shape"], list)
+            and len(case["shape"]) == 2
+            and all(isinstance(d, int) and not isinstance(d, bool) and d >= 1 for d in case["shape"])
+        ):
+            problems.append(f"input case {case.get('name')!r} has a malformed name, seed or shape")
+    if status("parity") != "passed" and status("parity") != "failed":
+        if any(case.get("passed") is not False or case.get("outcome") is not None for case in cases):
+            problems.append("parity did not run, so no input case may carry an outcome")
     if status("parity") == "passed" and not all(
         case.get("passed") is True and case.get("outcome") == ("match" if case.get("expect") == "match" else "rejected")
         for case in cases
@@ -848,6 +928,9 @@ def validate_record(record: Any) -> None:
     ):
         problems.append("artifacts must hold directory, model and a list of files")
         files = []
+    paths = [entry.get("path") for entry in files if isinstance(entry, Mapping)]
+    if len(paths) != len(set(map(str, paths))):
+        problems.append("artifacts list a file more than once")
     for entry in files:
         if not isinstance(entry, Mapping) or set(entry) != {"path", "role", "bytes", "sha256"}:
             problems.append(f"artifact entry {entry!r} must hold path, role, bytes and sha256")
@@ -888,6 +971,38 @@ def validate_record(record: Any) -> None:
             problems.append(f"{key} must be a mapping")
     if isinstance(record["runtime"], Mapping) and not {"name", "version", "provider"} <= set(record["runtime"]):
         problems.append("runtime must name its name, version and provider")
+    tested = PROFILES.get(record["profile"]) if isinstance(record["profile"], str) else None
+    if tested is not None:  # a tested profile's name stands for its exact settings
+        config = record["config"]
+        expected = {
+            "tolerances": {"rtol": tested.rtol, "atol": tested.atol},
+            "input cases": [{k: c[k] for k in ("name", "shape", "seed", "expect")} for c in tested.cases()],
+            "dtype": tested.dtype,
+            "runtime": (tested.runtime, tested.provider),
+            "exporter options": tested.options(),
+            "model config": copy.deepcopy(dict(tested.model)),
+        }
+        actual = {
+            "tolerances": record["tolerances"],
+            "input cases": [{k: c.get(k) for k in ("name", "shape", "seed", "expect")} for c in cases],
+            "dtype": record["dtype"],
+            "runtime": (
+                (record["runtime"].get("name"), record["runtime"].get("provider"))
+                if isinstance(record["runtime"], Mapping)
+                else None
+            ),
+            "exporter options": record["exporter"].get("options") if isinstance(record["exporter"], Mapping) else None,
+            "model config": (
+                {k: v for k, v in config.items() if k != "weights_sha256"} if isinstance(config, Mapping) else None
+            ),
+        }
+        changed = sorted(
+            key
+            for key in expected
+            if json.dumps(expected[key], sort_keys=True) != json.dumps(actual[key], sort_keys=True)
+        )
+        if changed:
+            problems.append(f"{record['profile']!r} is a tested profile, but its {', '.join(changed)} differ from it")
     if problems:
         raise ConformanceError("malformed conformance record: " + "; ".join(problems))
 

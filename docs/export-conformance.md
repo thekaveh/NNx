@@ -111,7 +111,7 @@ that already holds a profile's files is refused unless `--force` clears it):
   export.
 - `stages` — every stage's `status`, `failure` and `detail`.
 
-`validate_record` refuses missing or unknown keys, unknown statuses, a
+A tested profile's name stands for its exact settings: a `Profile` reusing it with other settings is refused, and so is a record of it whose tolerances, input cases, dtype, runtime, exporter options or model config differ. A profile can only declare FP32 inputs in ONNX Runtime. `validate_record` refuses missing or unknown keys, unknown statuses, a
 failure class in the wrong stage, a stage that ran after a failure,
 contradictory `status` / `failure` / `level`, malformed hashes and
 non-finite tolerances, naming each problem.

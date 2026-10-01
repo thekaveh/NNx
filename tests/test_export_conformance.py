@@ -194,6 +194,8 @@ def test_a_tampered_artifact_is_rejected_before_it_is_loaded(tmp_path, monkeypat
     replay = execute(record, tmp_path)
     assert replay["stages"]["load"]["status"] == "failed" and replay["stages"]["load"]["failure"] == "hash-mismatch"
     assert replay["stages"]["parity"]["status"] == "not_run" and replay["level"] == "structural"
+    assert all(case["outcome"] is None and case["passed"] is False for case in replay["input_cases"])  # none stale
+    validate_record(replay)
     assert replay["failure"] == "hash-mismatch" and sessions == []  # nothing was loaded
     assert exit_code({"profiles": [replay]}) == EXIT_CODES["hash-mismatch"]
 
@@ -525,3 +527,59 @@ def test_the_validator_refuses_contradictions_without_crashing(tmp_path):
             validate_record(broken(edit))
     with pytest.raises(ConformanceError, match="plain directory name"):
         Profile("a/b", "torchscript")
+
+
+# --- review round 2 ------------------------------------------------------------------------------------------
+
+
+def test_a_profile_declares_only_what_it_runs_and_tested_names_keep_their_settings(tmp_path):
+    for settings in ({"dtype": "float16"}, {"runtime": "tensorrt"}, {"batches": ()}, {"rtol": float("nan")}):
+        with pytest.raises(ConformanceError):
+            Profile("custom", "torchscript", **settings)
+    loose = Profile("feedfwd-fp32-torchscript", "torchscript", rtol=1.0, atol=1.0)
+    with pytest.raises(ConformanceError, match="names a tested profile"):
+        run_profile(loose, tmp_path)
+
+
+def test_a_hand_edited_record_of_a_tested_profile_is_refused(tmp_path):
+    record = _valid_record(tmp_path)
+    loosened = json.loads(json.dumps(record))
+    loosened["tolerances"] = {"rtol": 1e9, "atol": 1e9}
+    loosened["input_cases"] = loosened["input_cases"][:1]
+    with pytest.raises(ConformanceError, match="tested profile, but its input cases, tolerances differ"):
+        validate_record(loosened)
+    with pytest.raises(ConformanceError, match="tested profile"):
+        execute(loosened, tmp_path)
+    stale = json.loads(json.dumps(record))
+    stale["stages"]["load"] = {"status": "failed", "failure": "load-error", "detail": "x"}
+    stale["stages"]["parity"] = {"status": "not_run", "failure": None, "detail": None}
+    stale.update(status="failed", failure="load-error", level="structural")
+    with pytest.raises(ConformanceError, match="no input case may carry an outcome"):
+        validate_record(stale)
+    doubled = json.loads(json.dumps(record))
+    doubled["artifacts"]["files"].append(dict(doubled["artifacts"]["files"][0]))
+    with pytest.raises(ConformanceError, match="more than once"):
+        validate_record(doubled)
+
+
+def test_an_unreadable_artifact_and_a_broken_install_are_classified(tmp_path, monkeypatch):
+    record = _valid_record(tmp_path)
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError("denied")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(conformance, "_sha256", unreadable)
+        replay = execute(record, tmp_path)
+    assert replay["failure"] == "hash-mismatch" and "PermissionError" in replay["stages"]["load"]["detail"]
+
+    real = conformance.importlib.import_module
+
+    def broken(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("DLL load failed")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(conformance.importlib, "import_module", broken)
+    broke = run_profile("feedfwd-fp32-torchscript", tmp_path / "broken")
+    assert broke["failure"] == "missing-dependency" and "onnxruntime" in broke["stages"]["dependencies"]["detail"]
