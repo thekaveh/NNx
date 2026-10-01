@@ -996,18 +996,69 @@ def test_a_scheduler_the_update_clock_cannot_drive_is_refused_up_front(build, re
 # --- review round 15 ---------------------------------------------------------------------------------------
 
 
-def test_a_checkpoint_from_before_component_state_cannot_resume_on_the_update_clock(tmp_path):
+def _make_legacy_sidecar(run_id, root):
+    """Rewrite a run's LAST sidecar as written before component state (FEAT-005)."""
     from nnx.nn.enum.checkpoints import Checkpoints
     from nnx.nn.params.nn_checkpoint import NNCheckpoint
 
-    parent = _train(_model(), epochs=1, scheduler=_one_cycle(), data_id="legacy")
-    checkpoint = NNCheckpoint.load(parent.id, Checkpoints.LAST)
+    checkpoint = NNCheckpoint.load(run_id, Checkpoints.LAST)
     assert checkpoint is not None
-    sidecar = tmp_path / "runs" / parent.id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    sidecar = root / "runs" / run_id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
     state = torch.load(sidecar, weights_only=True)
     for key in ("components", "optimizers", "optimizer_types", "schedulers", "scheduler_types"):
         state.pop(key, None)
-    state["nnx_training_state_version"] = 3  # as written before FEAT-005: its scheduler position counts epochs
+    state["nnx_training_state_version"] = 3
     torch.save(state, sidecar)
+
+
+def test_a_checkpoint_from_before_component_state_cannot_resume_on_the_update_clock(tmp_path):
+    parent = _train(_model(), epochs=1, scheduler=_one_cycle(), data_id="legacy")
+    _make_legacy_sidecar(parent.id, tmp_path)  # its scheduler position counts epochs
     with pytest.raises(ComponentRestoreError, match="predates scheduler clocks.*clock='epoch'"):
         _train(_model(seed=9), epochs=1, scheduler=_one_cycle(), data_id="legacy", resume_from_run_id=parent.id)
+
+
+# --- review round 16 ---------------------------------------------------------------------------------------
+
+
+class _Named:
+    """A user component whose name merely starts like a scheduler clock's."""
+
+    def component_spec(self):
+        from nnx.components import ComponentSpec
+
+        return ComponentSpec("nnx.scheduler_clock_notes", version=1)
+
+    def component_state(self):
+        return {}
+
+    def check_component_state(self, state, *, version):
+        return []
+
+    def load_component_state(self, state, *, version):
+        pass
+
+
+def test_only_the_clock_itself_refuses_a_legacy_checkpoint(tmp_path):
+    epoch = _sched(Schedulers.STEP, clock="epoch", step_size=1)
+    parent = _model().train(
+        NNTrainParams(
+            n_epochs=1, train_loader=_batches(), optim=_sgd(), scheduler=epoch, data_id="named", overwrite_existing=True
+        ),
+        components=[_Named()],
+    )
+    _make_legacy_sidecar(parent.id, tmp_path)
+    with pytest.warns(RuntimeWarning, match="predates component state"):
+        resumed = _model(seed=9).train(
+            NNTrainParams(
+                n_epochs=1,
+                train_loader=_batches(),
+                optim=_sgd(),
+                scheduler=epoch,
+                data_id="named",
+                resume_from_run_id=parent.id,
+                overwrite_existing=True,
+            ),
+            components=[_Named()],
+        )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"

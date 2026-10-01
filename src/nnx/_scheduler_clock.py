@@ -275,6 +275,17 @@ class SchedulerClock:
             )
         return problems
 
+    def _check_legacy_training_state(self, training_state: Mapping[str, Any]) -> list[str]:
+        """A checkpoint written before component state (FEAT-005) carries a
+        scheduler position that counts epochs: an attached clock would
+        reuse it as an update position, so it refuses."""
+        if self.attached and training_state.get("scheduler") is not None:
+            return [
+                f"{self.component_name}: the checkpoint predates scheduler clocks, so its scheduler position counts "
+                "epochs; resume it with clock='epoch'"
+            ]
+        return []
+
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
         # The position is the scheduler's own step count, restored with the
         # scheduler state; this component only guards the configuration.
