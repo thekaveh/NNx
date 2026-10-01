@@ -4948,6 +4948,168 @@ catches it.
 ```
 
 
+### 2.18. Causal language-model task (`nnx.lm_tasks`)
+
+#### `nnx.lm_tasks.CausalLMTask`
+
+```python
+class nnx.lm_tasks.CausalLMTask(vocab_size: 'int', alignment: 'str' = 'shift_inputs', ignore_id: 'int' = -100, pad_id: 'Optional[int]' = None, smoothing: 'float' = 0.0, vocab_axis: 'int' = -1, tokenizer: 'Optional[str]' = None, version: 'int' = 1) -> 'None'
+```
+
+A next-token prediction task.
+
+**Details**
+
+```text
+Args:
+    vocab_size: the vocabulary size; the logits' class axis must have
+        exactly this width.
+    alignment: ``"shift_inputs"`` (the task shifts token ids once) or
+        ``"pre_shifted"`` (batches carry aligned inputs and targets).
+    ignore_id: the target id that marks a position as not scored.
+    pad_id: an optional padding id: target positions holding it are not
+        scored either (input positions may hold it).
+    smoothing: label smoothing for the **objective** only, in ``[0, 1)``;
+        reported NLL and perplexity are always unsmoothed.
+    vocab_axis: the logits' vocabulary axis (``-1``, the last).
+    tokenizer: an optional declared tokenizer identity (for example the
+        tokenizer file's digest), checkpointed with the task.
+    version: the task schema version.
+```
+
+##### `nnx.lm_tasks.CausalLMTask.state`
+
+```python
+nnx.lm_tasks.CausalLMTask.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.lm_tasks.CausalLMTask.from_state`
+
+```python
+nnx.lm_tasks.CausalLMTask.from_state(state: 'Mapping[str, Any]') -> 'CausalLMTask'
+```
+
+No public description is currently available.
+
+##### `nnx.lm_tasks.CausalLMTask.split`
+
+```python
+nnx.lm_tasks.CausalLMTask.split(self, batch: 'Any') -> 'tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]'
+```
+
+``(inputs, targets, loss_mask)`` for one batch, aligned once (see the module docstring), with shapes, dtypes and ids checked.
+
+##### `nnx.lm_tasks.CausalLMTask.valid`
+
+```python
+nnx.lm_tasks.CausalLMTask.valid(self, targets: 'torch.Tensor', loss_mask: 'Optional[torch.Tensor]') -> 'torch.Tensor'
+```
+
+The scored positions: not ``ignore_id``, not ``pad_id`` and, when given, inside the loss mask.
+
+##### `nnx.lm_tasks.CausalLMTask.logits`
+
+```python
+nnx.lm_tasks.CausalLMTask.logits(self, model: 'Any', inputs: 'torch.Tensor', targets: 'torch.Tensor') -> 'torch.Tensor'
+```
+
+The model's logits ``(B, T, V)`` for ``inputs``, checked.
+
+##### `nnx.lm_tasks.CausalLMTask.token_sums`
+
+```python
+nnx.lm_tasks.CausalLMTask.token_sums(self, logits: 'torch.Tensor', targets: 'torch.Tensor', valid: 'torch.Tensor') -> 'tuple[torch.Tensor, float, int, int]'
+```
+
+``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct, valid count)`` over the valid positions; flattened once, here.
+
+##### `nnx.lm_tasks.CausalLMTask.objective`
+
+```python
+nnx.lm_tasks.CausalLMTask.objective(self, *, nonfinite: 'str' = 'fail') -> 'CausalLMObjective'
+```
+
+No public description is currently available.
+
+##### `nnx.lm_tasks.CausalLMTask.eval_step`
+
+```python
+nnx.lm_tasks.CausalLMTask.eval_step(self) -> 'CausalLMEval'
+```
+
+No public description is currently available.
+
+
+#### `nnx.lm_tasks.CausalLMObjective`
+
+```python
+class nnx.lm_tasks.CausalLMObjective(task: 'CausalLMTask', *, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+The task's training objective (see :meth:`CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens trained on.
+
+##### `nnx.lm_tasks.CausalLMObjective.component_spec`
+
+```python
+nnx.lm_tasks.CausalLMObjective.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.lm_tasks.CausalLMObjective.component_state`
+
+```python
+nnx.lm_tasks.CausalLMObjective.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.lm_tasks.CausalLMObjective.check_component_state`
+
+```python
+nnx.lm_tasks.CausalLMObjective.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.lm_tasks.CausalLMObjective.load_component_state`
+
+```python
+nnx.lm_tasks.CausalLMObjective.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+
+#### `nnx.lm_tasks.CausalLMEval`
+
+```python
+class nnx.lm_tasks.CausalLMEval(task: 'CausalLMTask') -> 'None'
+```
+
+The task's ``eval_step_fn`` (see :meth:`CausalLMTask.eval_step`): total valid-token NLL over the valid-token count for the whole validation loader, its perplexity and token accuracy. The model runs in eval mode and every submodule's training flag is restored.
+
+
+#### `nnx.lm_tasks.perplexity`
+
+```python
+nnx.lm_tasks.perplexity(nll: 'Optional[float]') -> 'Optional[float]'
+```
+
+``exp(nll)``; ``+inf`` when it overflows (never a clipped value).
+
+
+#### `nnx.lm_tasks.LMTaskError`
+
+```python
+class nnx.lm_tasks.LMTaskError
+```
+
+A task configuration or a batch the task rejects.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`

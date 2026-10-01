@@ -32,6 +32,7 @@ from . import (
     decisions,
     embeddings,
     interop,
+    lm_tasks,
     models,
     monitors,
     objectives,
@@ -371,6 +372,8 @@ __all__ = [
     "plans",
     "ExperimentPlan",
     "FitResult",
+    # Causal language-model task with token-weighted evaluation (FEAT-034)
+    "lm_tasks",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

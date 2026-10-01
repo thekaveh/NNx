@@ -1329,6 +1329,28 @@ pulls `tokenizers` + `datasets`); the rest of NNx works without it. See
 [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py)
 for a CPU-friendly TinyStories training run.
 
+**Training an LM: the causal-LM task (FEAT-034).** `nnx.lm_tasks.CausalLMTask`
+declares how a batch becomes next-token targets — the alignment
+(`"shift_inputs"` shifts token ids once; `"pre_shifted"` takes aligned
+`(inputs, targets)`), the vocabulary, the ignore id, an optional padding id,
+an optional loss mask, objective-only label smoothing and a version — and
+checks every batch before the forward pass:
+
+```text
+batch ──split()──► inputs, targets, loss_mask ──valid()──► one set of valid positions
+   task.objective(): LossTerm("token_ce", Σ CE over valid, denominator=#valid)   # FEAT-004 engine
+   task.eval_step(): loss = metrics["nll"] = Σ NLL / Σ #valid (whole loader), perplexity = exp(nll)
+```
+
+The valid positions are shared by the objective's denominator, the NLL and
+the token accuracy, so accumulation normalizes by valid tokens, an
+all-masked window steps nothing, and epoch NLL is independent of batching and
+padding. Reported NLL and perplexity are unsmoothed; an all-masked
+validation epoch is unavailable rather than zero; no classification field is
+fabricated. The task's configuration is checkpointed component state
+(`"lm.causal_task"`), so a resume with another configuration is refused
+before the first resumed update. See [`docs/lm.md` §6](lm.md).
+
 Downstream of the LM path, four follow-ons compose on top of it:
 
 - **PEFT for transformers** — `PrefixTuner` / `PromptTuner` (see §11)

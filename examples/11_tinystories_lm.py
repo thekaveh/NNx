@@ -7,8 +7,12 @@ Pipeline:
   2. Train a tiny BPE tokenizer on a 1% subset.
   3. Build a ~1M-param TransformerNN + NNTokenizerParams (the script
      prints the exact count at startup).
-  4. Train via the standard `NNModel.train()` loop with a custom
-     next-token train_step.
+  4. Train via the standard `NNModel.train()` loop with the causal-LM task
+     (FEAT-034): `CausalLMTask(alignment="pre_shifted")` supplies the
+     objective — cross-entropy over valid tokens, normalized by the
+     window's valid-token count — and the validation step, which reports
+     unsmoothed token NLL, perplexity (`exp(NLL)`) and token accuracy. No
+     placeholder classification metrics, no hand-written accumulation.
   5. Call `model.generate("Once upon a time")` to confirm the model
      produces vaguely-story-like continuations.
 
@@ -21,6 +25,12 @@ Requires the ``lm`` optional extra (for the HuggingFace ``tokenizers``
 Rust BPE backing ``NNTokenizerParams`` and ``train_bpe``):
 
     pip install 'thekaveh-nnx[lm]'
+
+``causal_lm_task_workflow`` is the bounded, offline version of the whole
+path: an inline corpus, ``pre_shifted`` windows, one training epoch with
+validation, a reload of the run and its LAST checkpoint (the task's
+configuration and token count travel with it), and greedy generation from
+the reloaded model.
 
 ``manual_attention_lm_example`` below is a bounded companion: a one-layer,
 ``d_model=16`` model with nonzero attention dropout takes one training
@@ -39,7 +49,9 @@ Run:
 from __future__ import annotations
 
 import argparse
+import math
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -50,18 +62,20 @@ from nnx import (
     GenerativeNNModel,
     Losses,
     Nets,
-    NNEvaluationDataPoint,
+    NNCheckpoint,
     NNModelParams,
     NNOptimParams,
+    NNRun,
     NNSchedulerParams,
     NNTokenizerParams,
     NNTrainParams,
     NNTransformerParams,
     Optims,
-    TrainStepContext,
     set_seed,
     train_bpe,
 )
+from nnx.lm_tasks import CausalLMTask
+from nnx.nn.enum.checkpoints import Checkpoints
 
 # A small inline corpus — used when the user doesn't have datasets/HF
 # access. Story-like sentences so the BPE tokenizer learns something
@@ -132,41 +146,63 @@ class _LMDataset(Dataset):
         return x, y
 
 
-def _lm_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
-    """Next-token cross-entropy training step.
+def lm_task(tokenizer: NNTokenizerParams) -> CausalLMTask:
+    """The causal-LM task for ``_LMDataset`` windows: they are already
+    ``(inputs, targets)``, so nothing is shifted again; ``<pad>`` targets
+    (none in these full windows) would not be scored."""
+    pad_id = tokenizer.tokenizer.token_to_id("<pad>")  # type: ignore[union-attr]
+    return CausalLMTask(vocab_size=tokenizer.vocab_size, alignment="pre_shifted", pad_id=pad_id)
 
-    Wraps the standard supervised step but flattens (B, T, V) → (B*T, V)
-    so torch's cross_entropy can apply along the vocab dim.
-    """
-    model = ctx.model
-    model.net.train()
-    optimizer = ctx.optimizer
-    if (ctx.batch_idx % ctx.accumulate_grad_batches) == 0:
-        model.net.zero_grad()
 
-    X, Y = ctx.batch
-    X = X.to(model.device)
-    Y = Y.to(model.device)
-    logits = model.net(X)  # (B, T, V)
-    b, t, v = logits.shape
-    loss = torch.nn.functional.cross_entropy(logits.reshape(b * t, v), Y.reshape(b * t))
-    (loss / ctx.accumulate_grad_batches).backward()
-    if ((ctx.batch_idx + 1) % ctx.accumulate_grad_batches) == 0:
-        if ctx.grad_clip_norm is not None:
-            torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
-        optimizer.step()
-
-    # We don't compute argmax-accuracy here (vocab is large, accuracy
-    # is a weak signal for LM training). Return loss + a placeholder
-    # error so the framework's NNEvaluationDataPoint stays uniform.
-    return NNEvaluationDataPoint(
-        loss=float(loss.detach()),
-        error=float(loss.detach()),
-        accuracy=0.0,
-        f1=0.0,
-        recall=0.0,
-        precision=0.0,
+def causal_lm_task_workflow() -> dict:
+    """Bounded offline smoke of the default path: inline corpus →
+    ``pre_shifted`` windows → one epoch of training with validation →
+    reload (run history and LAST checkpoint) → greedy generation. No
+    download, no ``--use-hf``. Needs the ``lm`` extra (``tokenizers``)."""
+    set_seed(0)
+    corpus = list(_FALLBACK_CORPUS[:20])
+    tk = train_bpe(files=None, texts=corpus * 5, vocab_size=96, special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"])
+    tokenizer = NNTokenizerParams.of(tokenizer=tk, path="lm_smoke_tokenizer.json")
+    ids: list[int] = []
+    for line in corpus:
+        ids.extend(tokenizer.encode(line))
+    windows = _LMDataset(token_ids=ids, seq_len=8)
+    n_val = max(1, len(windows) // 5)
+    train = torch.utils.data.Subset(windows, range(n_val, len(windows)))
+    val = torch.utils.data.Subset(windows, range(n_val))
+    net_params = NNTransformerParams(
+        input_dim=tokenizer.vocab_size,
+        output_dim=tokenizer.vocab_size,
+        dropout_prob=0.0,
+        vocab_size=tokenizer.vocab_size,
+        n_layers=1,
+        n_heads=2,
+        d_model=16,
+        ffn_mult=2,
+        max_seq_len=16,
     )
+    model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+    task = lm_task(tokenizer)
+    params = replace(
+        build_lm_train_params(3e-3, n_epochs=1, train_loader=DataLoader(train, batch_size=8, shuffle=False)),
+        val_loader=DataLoader(val, batch_size=8),
+    )
+    run = model.train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
+
+    # Reload: the run history and the LAST checkpoint (weights, task configuration, token count).
+    record = NNRun.load(run.id).idps[-1].val_edp
+    assert record is not None and record.kind == "causal_lm" and record.f1 is None  # no placeholder metrics
+    assert math.isclose(record.metrics["perplexity"], math.exp(record.metrics["nll"]))  # unsmoothed exp(NLL)
+    state = NNCheckpoint.load_training_state(run=run.id, type=Checkpoints.LAST)["components"]["lm.causal_task"]["state"]
+    assert state["task"] == task.state() and state["tokens"] == len(train) * 8
+    reloaded = GenerativeNNModel.from_checkpoint(
+        NNCheckpoint.load(run=run.id, type=Checkpoints.LAST), tokenizer=tokenizer
+    )
+    text = reloaded.generate(prompt="Once upon a time", max_new_tokens=4, temperature=0.0)
+    summary = {"val_nll": round(record.metrics["nll"], 4), "val_tokens": record.count, "generated": text}
+    print(f"causal-LM task workflow: {summary}")
+    return summary
 
 
 def manual_attention_lm_example(dtype: torch.dtype = torch.bfloat16) -> dict:
@@ -326,7 +362,11 @@ def main() -> None:
     print(f"[tinystories] total tokens: {len(all_ids):,}")
 
     ds = _LMDataset(token_ids=all_ids, seq_len=args.seq_len)
-    train_loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    n_val = max(1, len(ds) // 10)
+    train_loader = DataLoader(
+        torch.utils.data.Subset(ds, range(n_val, len(ds))), batch_size=args.batch_size, shuffle=True, drop_last=True
+    )
+    val_loader = DataLoader(torch.utils.data.Subset(ds, range(n_val)), batch_size=args.batch_size)
 
     # --- 4. Model ---
     net_params = NNTransformerParams(
@@ -345,11 +385,15 @@ def main() -> None:
     n_params = sum(p.numel() for p in model.net.parameters())
     print(f"[tinystories] model parameters: {n_params:,}")
 
-    # --- 5. Train ---
-    model.train(
-        params=build_lm_train_params(args.lr, n_epochs=args.n_epochs, train_loader=train_loader),
-        train_step_fn=_lm_train_step,
+    # --- 5. Train: the causal-LM task's objective and validation step ---
+    task = lm_task(tokenizer)
+    params = replace(
+        build_lm_train_params(args.lr, n_epochs=args.n_epochs, train_loader=train_loader), val_loader=val_loader
     )
+    run = model.train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
+    final = run.idps[-1].val_edp
+    if final is not None and final.loss is not None:
+        print(f"[tinystories] val token NLL {final.metrics['nll']:.4f}, perplexity {final.metrics['perplexity']:.2f}")
 
     # --- 6. Generate ---
     print("\n[tinystories] sample generations:")
