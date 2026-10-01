@@ -95,6 +95,8 @@ def _top_m(docs: np.ndarray, queries: np.ndarray, m: int) -> np.ndarray:
     index = faiss.IndexFlatIP(docs.shape[1])
     index.add(docs)
     _, positions = index.search(queries, m)
+    if (positions < 0).any():  # FAISS pads with -1 when fewer than m documents exist: never an id
+        raise ValueError("FAISS returned fewer candidates than requested (-1 positions)")
     return positions
 
 

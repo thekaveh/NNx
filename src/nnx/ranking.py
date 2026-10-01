@@ -162,6 +162,10 @@ def ndcg_at_k(relevance: Sequence[int], scores: Sequence[float], candidate_ids: 
 PAIR_BLOCK = 1 << 20  # pairs scored at once: memory stays linear in a query's size
 
 
+def _block_loss(high: torch.Tensor, low: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.softplus(-(high.unsqueeze(1) - low.unsqueeze(0))).sum()
+
+
 def pairwise_logistic_loss(
     scores: torch.Tensor, relevance: torch.Tensor, query_ids: Sequence[Id], *, weighting: str = "query"
 ) -> tuple[torch.Tensor, int]:
@@ -170,7 +174,8 @@ def pairwise_logistic_loss(
 
     Pairs are formed grade by grade (each grade's candidates against every
     lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
-    query's full pair matrix is ever held. ``relevance`` may live on any
+    query's full pair matrix is ever held — in training too: each block is
+    recomputed in backward (``torch.utils.checkpoint``) rather than kept. ``relevance`` may live on any
     device; it is moved to the scores'."""
     if weighting not in WEIGHTINGS:
         raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {weighting!r}")
@@ -192,7 +197,12 @@ def pairwise_logistic_loss(
             block = max(1, PAIR_BLOCK // max(1, low.shape[0]))
             for start in range(0, high.shape[0], block):
                 chunk = high[start : start + block]
-                total = total + torch.nn.functional.softplus(-(chunk.unsqueeze(1) - low.unsqueeze(0))).sum()
+                if torch.is_grad_enabled() and (chunk.requires_grad or low.requires_grad):
+                    # Recomputed in backward: autograd keeps the block's inputs, never its pair matrix.
+                    part = torch.utils.checkpoint.checkpoint(_block_loss, chunk, low, use_reentrant=False)
+                else:
+                    part = _block_loss(chunk, low)
+                total = total + part
                 pairs += chunk.shape[0] * low.shape[0]
         if pairs == 0:
             continue  # no unequal-relevance pair: the query teaches nothing
@@ -256,8 +266,9 @@ class RankingTask:
             raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {self.weighting!r}")
         if self.candidate_sets not in CANDIDATE_SETS:
             raise RankingError(f"candidate_sets must be one of {CANDIDATE_SETS}, got {self.candidate_sets!r}")
-        object.__setattr__(self, "weighting", str(self.weighting))  # a builtin str (numpy strings pickle unsafely)
-        object.__setattr__(self, "candidate_sets", str(self.candidate_sets))
+        # The canonical builtin str (a numpy string or a str Enum compares equal but pickles unsafely).
+        object.__setattr__(self, "weighting", WEIGHTINGS[WEIGHTINGS.index(self.weighting)])
+        object.__setattr__(self, "candidate_sets", CANDIDATE_SETS[CANDIDATE_SETS.index(self.candidate_sets)])
         object.__setattr__(self, "max_buffered", _count(self.max_buffered, "max_buffered", minimum=1))
         if self.group_size is not None:
             size = _count(self.group_size, "group_size", minimum=1)
@@ -345,12 +356,9 @@ class RankingTask:
         if not isinstance(relevance, torch.Tensor) or relevance.ndim != 1 or relevance.shape[0] != n:
             got = tuple(relevance.shape) if isinstance(relevance, torch.Tensor) else type(relevance).__name__
             raise RankingError(f"relevance must be a ({n},) tensor of integer grades, got {got}")
-        if relevance.is_floating_point():
-            if not bool(torch.isfinite(relevance).all()) or not bool((relevance == relevance.round()).all()):
-                raise RankingError("relevance grades must be finite integers")
-        elif relevance.dtype == torch.bool:
+        if relevance.dtype == torch.bool:
             raise RankingError("relevance grades must be integers, not booleans")
-        relevance = relevance.detach().cpu().long()
+        raw = relevance.detach().cpu()
         if mask is not None:
             if not isinstance(mask, torch.Tensor) or tuple(mask.shape) != (n,):
                 got = tuple(mask.shape) if isinstance(mask, torch.Tensor) else type(mask).__name__
@@ -360,6 +368,14 @@ class RankingTask:
                     raise RankingError("the mask must be boolean or 0/1 integers")
                 mask = mask.bool()
             mask = mask.detach().cpu()
+        read = raw if mask is None else raw[mask]  # a masked row's grade is never read
+        if raw.is_floating_point() and (not bool(torch.isfinite(read).all()) or not bool((read == read.round()).all())):
+            raise RankingError("relevance grades must be finite integers")
+        relevance = (
+            torch.where(torch.isfinite(raw), raw, torch.zeros_like(raw)).long()
+            if raw.is_floating_point()
+            else raw.long()
+        )
         bad = (relevance < 0) | (relevance > self.max_relevance)
         if mask is not None:
             bad &= mask  # a masked row's grade is never read
@@ -432,6 +448,12 @@ class RankingTask:
                 raise RankingError(
                     f"candidate {candidate!r} appears twice for query {query!r} in the evaluation stream"
                 )
+            if (
+                isinstance(grade, bool)
+                or not isinstance(grade, numbers.Integral)
+                or not 0 <= grade <= self.max_relevance
+            ):
+                raise RankingError(f"query {query!r}: grade {grade!r} is not an integer in 0..{self.max_relevance}")
             group[candidate] = (float(score), int(grade))
         sums = dict.fromkeys(self.metric_names(), 0.0)
         scored = excluded = 0
@@ -574,15 +596,16 @@ class RankingEval:
                 for batch in ctx.val_loader:
                     batches += 1
                     features, query_ids, candidate_ids, relevance, mask = self.task.split(batch)
+                    kept = len(query_ids) if mask is None else int(mask.sum())
+                    if len(rows) + kept > self.task.max_buffered:  # refused before the batch is buffered
+                        raise RankingError(
+                            f"the evaluation stream exceeds max_buffered={self.task.max_buffered} candidate rows"
+                        )
                     scores = self.task.scores(model, features, len(query_ids)).detach().double().cpu().tolist()
                     for i, (query, candidate) in enumerate(zip(query_ids, candidate_ids, strict=True)):
                         if mask is not None and not bool(mask[i]):
                             continue
                         rows.append((query, candidate, scores[i], int(relevance[i])))
-                    if len(rows) > self.task.max_buffered:
-                        raise RankingError(
-                            f"the evaluation stream exceeds max_buffered={self.task.max_buffered} candidate rows"
-                        )
         finally:
             _restore_training_modes(modes)
         if batches == 0:

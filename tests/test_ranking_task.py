@@ -699,3 +699,65 @@ def test_numpy_strings_become_builtin_strings():
 
     task = RankingTask(k=(1,), weighting=np.str_("pair"), candidate_sets=np.str_("exhaustive"))
     assert type(task.state()["weighting"]) is str and type(task.state()["candidate_sets"]) is str
+
+
+# --- review round 2 ------------------------------------------------------------------------------
+
+
+def test_training_keeps_block_inputs_not_the_pair_matrix():
+    n = 2000
+    scores = torch.randn(n, requires_grad=True)
+    grades = (torch.arange(n) % 2).long()  # 1000 x 1000 unequal pairs
+    saved = []
+
+    def pack(tensor):
+        saved.append(tensor.numel() * tensor.element_size())
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+        numerator, denominator = pairwise_logistic_loss(scores, grades, ["q"] * n, weighting="pair")
+    numerator.backward()
+    pair_matrix = 1000 * 1000 * 4
+    assert denominator == 1000 * 1000 and sum(saved) < pair_matrix / 10
+    reference = torch.nn.functional.softplus(-(scores[grades == 1][:, None] - scores[grades == 0][None, :])).sum()
+    assert float(numerator.detach()) == pytest.approx(float(reference.detach()), rel=1e-5)
+    assert scores.grad is not None and float(scores.grad.abs().sum()) > 0
+
+
+def test_round_two_settings_and_streams():
+    from enum import Enum
+
+    class Weighting(str, Enum):
+        PAIR = "pair"
+
+    class Sets(str, Enum):
+        EXHAUSTIVE = "exhaustive"
+
+    task = RankingTask(k=(1,), weighting=Weighting.PAIR, candidate_sets=Sets.EXHAUSTIVE)
+    assert task.state()["weighting"] == "pair" and type(task.state()["candidate_sets"]) is str
+    assert RankingTask.from_state(task.state()) == task
+    x = torch.randn(3, D)
+    q, c = torch.tensor([1, 1, 1]), torch.tensor([1, 2, 3])
+    padded = torch.tensor([1.0, 0.0, math.nan])
+    _, _, _, grades, _ = task.split((x, q, c, padded, torch.tensor([True, True, False])))
+    assert grades[:2].tolist() == [1, 0]
+    with pytest.raises(RankingError, match="finite integers"):
+        task.split((x, q, c, padded))
+    for bad in (-3, 7, 1.9, True):
+        with pytest.raises(RankingError, match="grade"):
+            task.evaluate_rows([("q", 1, 0.5, bad), ("q", 2, 0.1, 0)])
+    small = RankingTask(k=(1,), max_buffered=4)
+    seen = []
+
+    class Spy:
+        def __iter__(self):
+            seen.append("batch")
+            yield (torch.randn(5, D), torch.tensor([1] * 5), torch.arange(5), torch.tensor([1, 0, 0, 0, 0]))
+
+    model = _scorer()
+    calls = []
+    original = model.net.forward
+    model.net.forward = lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs)  # type: ignore[method-assign]
+    with pytest.raises(RankingError, match="max_buffered=4"):
+        small.eval_step()(_Ctx(model, Spy()))
+    assert calls == []  # refused before the batch was scored or buffered

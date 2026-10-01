@@ -1746,8 +1746,9 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
   No classification field is filled in; an epoch whose every query is
   excluded is unavailable (`status="empty"`, with its `excluded_queries`)
   and never elected BEST in place of a training metric. The record's
-  `loss` is the pairwise loss over the scored queries only, formed in
-  bounded blocks (memory linear in a query's size).
+  `loss` is the pairwise loss over the scored queries only. Pairs are
+  formed in bounded blocks, recomputed in backward during training, so
+  memory stays linear in a query's size in training and evaluation alike.
 - **Named selection.** `task.metric_specs()` declares the metrics
   (registered ids `ranking.mrr` / `ranking.recall` / `ranking.ndcg` with
   `config={"k": k}`, reported as `<metric>_at_<k>`), so
