@@ -689,8 +689,7 @@ class Trainer:
         # from the live model so it matches the state returned to the caller.
         # BEST remains the best state observed during training.
         if idps:
-            final_transforms, pre_transforms = _final_transforms(self.model, normalized_callbacks)
-            keeps_pre_transform = pre_transforms is not None
+            final_transforms, keeps_pre_transform = _final_transforms(self.model, normalized_callbacks, run.transforms)
             self.model._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=idps[-1],
@@ -708,7 +707,6 @@ class Trainer:
                 rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
                 completed_epoch=idps[-1].epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
-                resume_net_transforms=pre_transforms,
                 components=registry.collect(),
             )
 

@@ -1095,7 +1095,8 @@ def test_a_real_module_name_with_other_characters_is_a_valid_target():
             TransformRecipe([lora(bad, r=2, alpha=4.0)])
 
 
-def test_a_recipe_operation_declared_at_train_end_keeps_the_pre_transform_state():
+@pytest.mark.parametrize("how", ["declared", "materialized"])
+def test_a_recipe_operation_added_during_training_is_refused(how):
     from nnx import Callback
     from nnx.peft import apply_lora_to
 
@@ -1103,18 +1104,27 @@ def test_a_recipe_operation_declared_at_train_end_keeps_the_pre_transform_state(
         done = False
 
         def on_train_end(self, ctx):
-            apply_lora_to(ctx.model.net, "layers.0", r=2, alpha=4.0)
+            if how == "materialized":
+                TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(ctx.model)
+            else:
+                apply_lora_to(ctx.model.net, "layers.0", r=2, alpha=4.0)
             self.done = True
 
         def checkpoint_transforms(self):
-            return (lora("layers.0", r=2, alpha=4.0).checkpoint_transform(),) if self.done else ()
+            if how == "declared" and self.done:
+                return (lora("layers.0", r=2, alpha=4.0).checkpoint_transform(),)
+            return ()
 
-    parent = _train(_model(), n_epochs=1, callbacks=[LoRAAtTrainEnd()])
-    last, state = NNCheckpoint.load_with_training_state(run=parent.id, type=Checkpoints.LAST)
-    assert last is not None and state is not None and [t.name for t in last.transforms] == ["lora"]
-    assert state["model"] is not None and state["model_transforms"] == []  # the untransformed state, recorded
-    child = _train(_model(seed=5), n_epochs=1, resume_from_run_id=parent.id)  # resumes the pre-transform state
-    assert child.resume_status is not None and child.resume_status.mode == "stateful"
+    with pytest.raises(ValueError, match="recipe is materialized before training, but recipe operations"):
+        _train(_model(), n_epochs=1, callbacks=[LoRAAtTrainEnd()])
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    def step(ctx):
+        return NNEvaluationDataPoint(loss=0.5)
+
+    params = NNTrainerParams(n_epochs=1, train_loader=_loader(), optims={"main": _OPTIM}, data_id=f"trainer-{how}")
+    with pytest.raises(ValueError, match="recipe is materialized before training, but recipe operations"):
+        Trainer(_model()).train(params, trainer_step_fn=step, callbacks=[LoRAAtTrainEnd()])
 
 
 def test_a_fresh_dry_run_builds_its_base_on_the_cpu():

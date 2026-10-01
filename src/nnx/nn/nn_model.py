@@ -239,14 +239,7 @@ def _load_resume_source(
     # FEAT-016: the resuming model must carry exactly the recipe the source
     # was trained with (ids, versions, targets and config) — its weights
     # only fit that topology and that configuration.
-    # Pre-transform state (kept when a train-end transform followed) belongs
-    # to the transforms recorded with it; older sidecars record none.
-    pre_transforms = training_state.get("model_transforms") if training_state is not None else None
-    if resume_net_state is not None and pre_transforms is not None:
-        source_transforms = tuple(NNCheckpointTransform.from_state(item) for item in pre_transforms)
-    else:
-        source_transforms = tuple(ckpt.transforms)
-    saved_recipe, live_recipe = _recipe_transforms(source_transforms), _recipe_transforms(live_transforms)
+    saved_recipe, live_recipe = _recipe_transforms(ckpt.transforms), _recipe_transforms(live_transforms)
     if saved_recipe != live_recipe:
         raise ValueError(
             f"resume_from_run_id={run_id!r}/{ckpt_type} was trained with the transformation recipe "
@@ -418,18 +411,29 @@ def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tup
 
 
 def _final_transforms(
-    model: NNModel, callbacks: list[Callback]
-) -> tuple[tuple[NNCheckpointTransform, ...], Optional[tuple[NNCheckpointTransform, ...]]]:
+    model: NNModel, callbacks: list[Callback], trained_recipe: Sequence[NNCheckpointTransform]
+) -> tuple[tuple[NNCheckpointTransform, ...], bool]:
     """The transforms the final LAST records — the model's own followed by
-    those its callbacks applied at train end — and, when that LAST keeps the
-    pre-transform state for resuming, the transforms that state belongs to
-    (the model's own). A recipe recorded before training (FEAT-016) is the
-    live topology already, so it alone keeps none; any train-end transform,
-    a declared recipe operation included, keeps it."""
+    those its callbacks applied at train end — and whether that LAST keeps
+    the pre-transform state for resuming. A recipe recorded before training
+    (FEAT-016) is the live topology already, so it alone keeps none.
+
+    A recipe is materialized before training (``trained_recipe``, the one
+    the run id records): recipe operations a callback applies or declares
+    during training are refused before LAST is rewritten, since no
+    checkpoint could resume them."""
     own = tuple(model._topology_transforms)
     declared = _collect_checkpoint_transforms(callbacks)
-    keeps = bool(declared) or any(not _replayable(t) for t in own)
-    return (*own, *declared), (own if keeps else None)
+    late = [t for t in declared if _replayable(t)]
+    if _recipe_transforms(own) != tuple(trained_recipe) or late:
+        added = [t.state() for t in (*_recipe_transforms(own)[len(trained_recipe) :], *late)]
+        raise ValueError(
+            f"a transformation recipe is materialized before training, but recipe operations {added} were applied or "
+            "declared during it, which no checkpoint could resume — materialize the nnx.transforms.TransformRecipe "
+            "before calling train() (LAST keeps the last completed epoch)"
+        )
+    final = (*own, *declared)
+    return final, any(not _replayable(t) for t in final)
 
 
 def _refuse_unrecorded_recipe_state(net_state: Mapping[str, Any], base_state: Mapping[str, Any]) -> None:
@@ -2529,8 +2533,7 @@ class NNModel(_HubMixinBase):
         # Costs one extra checkpoint write per training run. BEST is
         # deliberately untouched — it tracks the best *training-time* state.
         if idps:
-            final_transforms, pre_transforms = _final_transforms(self, normalized_callbacks)
-            keeps_pre_transform = pre_transforms is not None
+            final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
             self._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=idps[-1],
@@ -2547,7 +2550,6 @@ class NNModel(_HubMixinBase):
                 rng_state=(pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)),
                 completed_epoch=idps[-1].epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
-                resume_net_transforms=pre_transforms,
                 optimizer_type=_component_type(optimizer),
                 scheduler_type=_component_type(scheduler),
                 optimizer_topology=resume_optimizer_topology,

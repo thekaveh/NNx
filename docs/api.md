@@ -6314,7 +6314,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, resume_net_transforms: 'Optional[Sequence[NNCheckpointTransform]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.
@@ -6322,10 +6322,6 @@ Save the checkpoint to disk atomically.
 **Details**
 
 ```text
-``resume_net_transforms`` (FEAT-016) records the transforms the
-pre-transform ``resume_net_state`` belongs to, so a resume can check
-the resuming model's recipe against it.
-
 ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
 mapping of every registered component's versioned state; it lives
 in the same generation sidecar as the optimizer state, so a model
