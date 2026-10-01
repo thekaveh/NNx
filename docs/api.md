@@ -3158,7 +3158,7 @@ No public description is currently available.
 nnx.decisions.benchmark.BenchmarkReport.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
 ```
 
-No public description is currently available.
+Write the JSON report atomically (serialized first: a report that cannot be written never replaces an existing file).
 
 ##### `nnx.decisions.benchmark.BenchmarkReport.load_state`
 

@@ -207,7 +207,8 @@ print(report.text())
   value is `"Infinity"` in the JSON and the CSV). `compare_reports` gives
   `b - a` per slice and metric only for reports of the same split, metric
   identity (metric set, `epsilon`, `n_bins`, policy) and sample set (a
-  digest of the samples' ids, questions and labels).
+  digest of the samples' ids, questions, labels and slicing). `collect`
+  refuses duplicate sample ids before any call.
 
 It is not a leaderboard: no paid remote run is a default, and it never
 tunes a threshold or a prompt on test outcomes.

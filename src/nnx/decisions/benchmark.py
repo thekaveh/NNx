@@ -445,7 +445,7 @@ class Record:
             reason=state.get("reason"),
             revision=state.get("revision"),
             prompt_identity=state.get("prompt_identity"),
-            execution=state.get("execution") or {},
+            execution={} if state.get("execution") is None else state["execution"],
         )
 
 
@@ -459,22 +459,16 @@ def write_records(path: Union[str, os.PathLike[str]], records: Iterable[Record])
 def read_records(path: Union[str, os.PathLike[str]]) -> list[Record]:
     """The records of a JSONL file written by :func:`write_records`."""
 
-    def reject(name: str) -> Any:
-        raise BenchmarkError(f"{os.fspath(path)}: records are strict JSON; {name} is not a number")
+    from .._artifacts import parse_json, read_text
 
     records = []
-    with open(path, encoding="utf-8") as handle:
-        for number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                state = json.loads(line, parse_constant=reject)
-            except json.JSONDecodeError as error:
-                raise BenchmarkError(f"{os.fspath(path)}:{number}: not JSON: {error}") from error
-            try:
-                records.append(Record.from_state(state))
-            except BenchmarkError as error:
-                raise BenchmarkError(f"{os.fspath(path)}:{number}: {error}") from error
+    for number, line in enumerate(read_text(path, "records", BenchmarkError).splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            records.append(Record.from_state(parse_json(line, "records", BenchmarkError)))
+        except BenchmarkError as error:
+            raise BenchmarkError(f"{os.fspath(path)}:{number}: {error}") from error
     return records
 
 
@@ -558,7 +552,7 @@ def _answer(sample: Sample, result: Any, provider_id: str) -> dict[str, Any]:
     pairs = getattr(result, "distribution", None)
     if pairs is None:
         raise InvalidDecisionResponse(f"sample {sample.id!r}: the result carries no distribution")
-    reordered: Any = validate_response(sample.question, dict(pairs), provider=provider_id)
+    reordered: Any = validate_response(sample.question, tuple(pairs), provider=provider_id)  # duplicates are seen
     return {"distribution": tuple((option_id, float(p)) for option_id, p in reordered.distribution)}
 
 
@@ -622,6 +616,9 @@ def collect(
         if not isinstance(sample, Sample):
             raise BenchmarkError(f"collect() needs Samples, got {type(sample).__name__}")
         batches.setdefault(sample.digest, []).append(sample)
+    repeated = sorted(i for i, n in Counter(sample.id for sample in samples).items() if n > 1)
+    if repeated:  # refused before any call: such a collection could never be scored
+        raise BenchmarkError(f"duplicate sample ids {repeated}")
     size = _batch_cap(provider, batch_size)
     plan = [group[i : i + size] for group in batches.values() for i in range(0, len(group), size)]
     records: list[Record] = []
@@ -707,7 +704,8 @@ def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optio
             return None
         capabilities = getattr(provider, "capabilities", None)
         if callable(capabilities):
-            modality = "text" if isinstance(inputs, list) and inputs and isinstance(inputs[0], str) else "tensor"
+            first = inputs[0] if isinstance(inputs, tuple) and inputs else inputs  # several inputs: the first part
+            modality = "text" if isinstance(first, list) and first and isinstance(first[0], str) else "tensor"
             declared: Any = capabilities()
             declared.check(question, modality=modality, batch_size=rows)
     except (UnsupportedCapability, InvalidDecisionRequest) as error:
@@ -896,11 +894,16 @@ class Resources:
                 raise BenchmarkError("a time needs its source: 'measured' or 'supplied'")
             seconds = _real(self.seconds)
             if seconds is None or not (math.isfinite(seconds) and seconds >= 0):
-                raise BenchmarkError(f"Resources.seconds must be a finite number >= 0, got {seconds!r}")
+                raise BenchmarkError(f"Resources.seconds must be a finite number >= 0, got {self.seconds!r}")
+            object.__setattr__(self, "seconds", seconds)  # a builtin float: the report stays JSON
         for name in ("warmup", "concurrency", "batch_count"):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 0):
                 raise BenchmarkError(f"Resources.{name} must be a non-negative integer or None, got {value!r}")
+            if value is not None:
+                object.__setattr__(self, name, int(value))
+        for name in ("hardware", "timing_boundary"):
+            _text(getattr(self, name), f"Resources.{name}", optional=True)
 
     def state(self) -> dict[str, Any]:
         return {
@@ -1154,9 +1157,22 @@ def evaluate(
 
 
 def _sample_set(samples: Sequence[Sample]) -> str:
-    """Which samples a report scored: their ids, question digests and labels,
-    order-free."""
-    rows = sorted(f"{sample.id}|{sample.digest}|{sample.true_label}" for sample in samples)
+    """Which samples a report scored — their ids, question digests, labels
+    and slicing (family, held-out, perturbation, grouping unit) — order-free."""
+    rows = sorted(
+        json.dumps(
+            [
+                sample.id,
+                sample.digest,
+                sample.true_label,
+                sample.family,
+                sample.heldout,
+                sample.perturbation,
+                sample.unit,
+            ]
+        )
+        for sample in samples
+    )
     return "sha256:" + hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
@@ -1220,11 +1236,15 @@ def bootstrap_interval(
     if isinstance(level, bool) or not isinstance(level, numbers.Real) or not 0 < level < 1:
         raise BenchmarkError(f"level must be in (0, 1), got {level!r}")
     _check_epsilon(epsilon)
+    samples = list(samples)  # iterated twice: a generator is read once
+    bad = [type(s).__name__ for s in samples if not isinstance(s, Sample)]
+    if bad:
+        raise BenchmarkError(f"bootstrap_interval() needs Samples, got {bad}")
     records, _ = _for_provider(records, provider)
-    members = _slice_members(list(samples)).get(slice)
+    members = _slice_members(samples).get(slice)
     if members is None:
         raise BenchmarkError(f"no slice {slice!r}")
-    joined, _ = _join(list(samples), records)
+    joined, _ = _join(samples, records)
     rows = [_row(s, joined[s.id][1]) for s in members if joined[s.id][0] == "answered"]  # type: ignore[arg-type]
 
     def statistic(chosen: Sequence[_Row]) -> float:
@@ -1278,7 +1298,7 @@ class BenchmarkReport:
     slices: Mapping[str, SliceReport]
     resources: Resources = field(default_factory=Resources)
     extra: int = 0  # records for no sample (benchmark-wide)
-    sample_set: Optional[str] = None  # a digest of the samples' ids, questions and labels
+    sample_set: Optional[str] = None  # a digest of the samples' ids, questions, labels and slicing
 
     def state(self) -> dict[str, Any]:
         return {
@@ -1357,18 +1377,22 @@ class BenchmarkReport:
         return "\n".join(lines) + "\n"
 
     def save(self, path: Union[str, os.PathLike[str]]) -> None:
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(self.to_json())
+        """Write the JSON report atomically (serialized first: a report that
+        cannot be written never replaces an existing file)."""
+        from .._artifacts import atomic_write
+
+        atomic_write(path, self.to_json())
 
     @staticmethod
     def load_state(path: Union[str, os.PathLike[str]]) -> dict[str, Any]:
         """A saved report's JSON state (for :func:`compare_reports`)."""
 
-        def reject(name: str) -> Any:
-            raise BenchmarkError(f"{os.fspath(path)} is strict JSON; {name} is not a number")
+        from .._artifacts import parse_json, read_text
 
-        with open(path, encoding="utf-8") as handle:
-            state = json.loads(handle.read(), parse_constant=reject)
+        try:
+            state = parse_json(read_text(path, "report", BenchmarkError), "report", BenchmarkError)
+        except BenchmarkError as error:
+            raise BenchmarkError(f"{os.fspath(path)}: {error}") from error
         if not isinstance(state, Mapping) or state.get("format") != FORMAT:
             raise BenchmarkError(f"{os.fspath(path)} is not a {FORMAT} report")
         return dict(state)

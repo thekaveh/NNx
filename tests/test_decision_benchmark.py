@@ -770,3 +770,75 @@ def test_generators_exports_and_sample_sets():
         compare_reports(report, fewer)
     base = evaluate(samples, records, split="x")
     assert compare_reports(base, evaluate(list(reversed(samples)), records, split="x"))["in_family"]["accuracy"] == 0
+
+
+def test_round_three_collector_edges():
+    class DuplicatePairs(KeywordProvider):
+        def decide(self, question, texts):
+            self.calls += 1
+
+            class Loose:  # not a validated ChoiceResult
+                question_digest = question.digest()
+                distribution = (("sport", 0.3), ("sport", 0.5), ("economy", 0.5))
+
+            return [Loose() for _ in texts]
+
+    samples = [Sample("g0", TOPIC, "goal", "sport")]
+    collection = collect(DuplicatePairs(), samples, provider_id="d", budget=Budget(max_calls=1))
+    assert collection.records[0].status == "failed" and "duplicate" in collection.records[0].reason
+
+    class PairText(KeywordProvider):  # no check(): the declared capabilities decide
+        def decide(self, question, inputs):
+            premises, hypotheses = inputs
+            return super().decide(question, [f"{p} {h}" for p, h in zip(premises, hypotheses, strict=True)])
+
+    pairs = [Sample(f"p{i}", TOPIC, (f"goal {i}", "match"), "sport") for i in range(2)]
+    answered = collect(PairText(), pairs, provider_id="pt", budget=Budget(max_calls=1))
+    assert [r.status for r in answered.records] == ["answered", "answered"]
+    provider = KeywordProvider()
+    with pytest.raises(BenchmarkError, match="duplicate sample ids"):
+        collect(provider, [samples[0], samples[0]], provider_id="k", budget=Budget(max_calls=1))
+    assert provider.calls == 0
+
+
+def test_round_three_report_edges(tmp_path):
+    samples, records = fixture()
+    grouped = [Sample(s.id, s.question, s.input, s.label, group=f"u{i % 2}") for i, s in enumerate(samples)]
+    interval = bootstrap_interval((s for s in grouped), records, metric="accuracy", seed=0)
+    assert interval.units == 2
+    report = evaluate(samples, records, split="x")
+    moved = [
+        Sample(s.id, s.question, s.input, s.label, heldout=i % 2 == 0, family="farm") for i, s in enumerate(samples)
+    ]
+    with pytest.raises(BenchmarkError, match="different samples"):
+        compare_reports(report, evaluate(moved, records, split="x"))
+    resources = Resources(warmup=np.int64(3), seconds=np.float32(1.5), source="supplied", batch_count=np.int32(2))
+    assert type(resources.warmup) is int and type(resources.seconds) is float
+    with pytest.raises(BenchmarkError, match="hardware"):
+        Resources(hardware=123)  # type: ignore[arg-type]
+    path = tmp_path / "report.json"
+    evaluate(samples, records, split="x", resources=resources).save(path)
+    before = path.read_bytes()
+    broken = evaluate(samples, records, split="x")
+    object.__setattr__(broken, "extra", np.int64(1))  # not JSON: the save fails before touching the file
+    with pytest.raises(TypeError):
+        broken.save(path)
+    assert path.read_bytes() == before
+    for text, match in (("{", "JSON"), ('{"format": 1e999}', "overflows"), ("[" * 100000, "JSON")):
+        bad = tmp_path / "bad.json"
+        bad.write_text(text)
+        with pytest.raises(BenchmarkError, match=match):
+            BenchmarkReport.load_state(bad)
+    (tmp_path / "latin.json").write_bytes(b"\xff\xfe")
+    with pytest.raises(BenchmarkError, match="not text"):
+        BenchmarkReport.load_state(tmp_path / "latin.json")
+    lines = tmp_path / "records.jsonl"
+    for raw in ("9" * 5000, "1e999"):
+        write_records(lines, records)
+        with open(lines, "a", encoding="utf-8") as handle:
+            handle.write('{"format": "nnx.decision-record/1", "p_true": ' + raw + "}\n")
+        with pytest.raises(BenchmarkError, match=r"records\.jsonl:5: "):
+            read_records(lines)
+    for execution in ([], 0, ""):
+        with pytest.raises(BenchmarkError, match="execution"):
+            Record.from_state({**records[0].state(), "execution": execution})
