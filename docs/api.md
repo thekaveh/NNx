@@ -5244,7 +5244,7 @@ Re-derive this split from the graph with its own seed and policy; a mismatch (di
 #### `nnx.link_tasks.LinkTask`
 
 ```python
-class nnx.link_tasks.LinkTask(split: 'LinkSplit', mode: 'str' = 'binary', train_negatives: 'int' = 1, max_candidates: 'int' = 1000000, version: 'int' = 1) -> 'None'
+class nnx.link_tasks.LinkTask(split: 'LinkSplit', mode: 'Optional[str]' = None, train_negatives: 'Optional[int]' = None, max_candidates: 'int' = 1000000, version: 'int' = 1) -> 'None'
 ```
 
 Link existence (``mode="binary"``) or edge categories (``"edge_label"``) over a :class:`LinkSplit` (see the module docstring).
@@ -5254,11 +5254,15 @@ Link existence (``mode="binary"``) or edge categories (``"edge_label"``) over a 
 ```text
 Args:
     split: the manifest.
-    mode: ``"binary"`` or ``"edge_label"`` (the split must have
-        categories).
+    mode: ``"binary"`` or ``"edge_label"``; by default the split's (an
+        edge-label split has categories).
     train_negatives: non-edges sampled per training positive, per pass
-        (binary only).
+        (binary only; by default 1, and 0 in edge-label mode).
     max_candidates: the most candidates evaluation materialises.
+
+Build the training loader and the objective from the same task: on a
+stateful resume the objective hands the loader the training pass to
+continue from, so training negatives continue as if uninterrupted.
 ```
 
 ##### `nnx.link_tasks.LinkTask.state`
@@ -5283,7 +5287,7 @@ Batches of ``name``'s candidates over the message graph, in a fixed order. Train
 nnx.link_tasks.LinkTask.check_batch(self, batch: 'Any') -> 'None'
 ```
 
-Refuse a batch that would leak or does not fit the split: message edges outside the training topology (a held-out positive is named), candidates outside the batch's split or with the wrong target.
+Refuse a batch that would leak or does not fit the split: message edges outside the training topology (a held-out positive is named); candidates outside the batch's split, with the wrong target or id; a barred self-loop; and a training negative that is a held-out (``val`` / ``test``) negative.
 
 ##### `nnx.link_tasks.LinkTask.objective`
 
@@ -5352,7 +5356,7 @@ Should be overridden by all subclasses.
 nnx.link_tasks.LinkPredictor.unpack_batch(self, batch: 'Any') -> 'tuple[tuple[torch.Tensor, ...], Optional[torch.Tensor]]'
 ```
 
-No public description is currently available.
+Refused: the default train / evaluate / predict paths cannot check a batch against its split, so a leak would pass unseen.
 
 ##### `nnx.link_tasks.LinkPredictor.sample_ids`
 
@@ -5384,10 +5388,10 @@ Exact metrics over a whole candidate set. Binary (``probabilities`` of shape ``(
 #### `nnx.link_tasks.LinkPrediction`
 
 ```python
-class nnx.link_tasks.LinkPrediction(ids: 'np.ndarray', pairs: 'np.ndarray', logits: 'np.ndarray', probabilities: 'np.ndarray', targets: 'np.ndarray') -> 'None'
+class nnx.link_tasks.LinkPrediction(ids: 'np.ndarray', pairs: 'np.ndarray', logits: 'np.ndarray', probabilities: 'np.ndarray', targets: 'np.ndarray', split: 'str') -> 'None'
 ```
 
-Candidates and their predictions, aligned row for row: ``ids``, ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (``(K,)`` binary, ``(K, C)`` categorical) and ``targets``.
+Candidates and their predictions, aligned row for row: ``ids``, ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (``(K,)`` binary, ``(K, C)`` categorical) and ``targets`` — all of one ``split``.
 
 
 #### `nnx.link_tasks.LinkTaskError`

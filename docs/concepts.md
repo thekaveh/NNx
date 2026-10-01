@@ -1765,13 +1765,21 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 - **Negatives** come from the static complement: never a positive of any
   split, a reverse, a duplicate or a barred self-loop. A request beyond the
   complement's capacity fails before sampling; validation and test
-  negatives are fixed in the manifest; training negatives are re-drawn per
-  pass from `(seed, pass)`. An edge-label task samples none: a non-edge is
-  never a category.
+  negatives are fixed in the manifest; training negatives are re-drawn and
+  shuffled with the positives per pass from `(seed, pass)`, and the pass
+  count is checkpointed, so a stateful resume draws what the uninterrupted
+  run would have (build the training loader and the objective from one
+  `LinkTask`; a mismatch is refused). An edge-label task samples none: a
+  non-edge is never a category (`LinkTask(split)` takes the split's mode).
 - **Checks.** A message edge outside the training topology — a held-out
-  positive is named — or a candidate outside its split fails before any
-  update; node-level nets and the graph-pooling adapter (§21) refuse link
-  batches.
+  positive is named — or a candidate outside its split, with the wrong
+  target or id, a barred self-loop, or a training negative that is a fixed
+  validation / test negative fails before any update. Batches are bound to
+  their role: the objective trains on `train` batches only, and evaluation
+  reads one held-out split whose every candidate appears exactly once.
+  The default train / evaluate / predict paths refuse link batches (they
+  cannot check them), as do node-level nets and the graph-pooling adapter
+  (§21).
 - **Shapes and metrics.** Binary candidates give one logit each, `(K,)`;
   edge-label candidates `(K, categories)`; `predict()` keeps ids, pairs,
   logits, probabilities and targets aligned, in candidate order.
@@ -1780,7 +1788,9 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   them unavailable with the reason, so `MonitorSpec("auroc")` never elects
   it BEST.
 - **Recipe and checkpoints.** `link_predictor_spec(...)` (GCN / GraphSAGE /
-  GAT encoder, `"dot"` or `"mlp"` decoder) is rebuilt on reload. The
+  GAT encoder with no activation after its last layer, so a `"dot"`
+  decoder's logits can be negative; or an `"mlp"` decoder) is rebuilt on
+  reload. The
   manifest — topology policy, candidate ids, fixed negatives — is component
   state `"link.task"`: a resume with another split fails before the first
   resumed update.

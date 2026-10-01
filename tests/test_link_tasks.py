@@ -349,3 +349,143 @@ def test_streaming_materialises():
     small = LinkTask(split, max_candidates=5)
     with pytest.raises(LinkTaskError, match="max_candidates=5"):
         small.eval_step()(Ctx(small.loader("val", x, batch_size=4)))
+
+
+# --- review round 1 ------------------------------------------------------------------------------------------
+
+
+def test_the_default_recipe_can_predict_no_link():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=5)
+    task = LinkTask(split)
+    model, _ = _train(task, x, epochs=30, seed=0)
+    assert model.net.encoder.last_activation is False  # unconstrained embeddings: dot logits can be negative
+    prediction = task.predict(model, task.loader("test", x, batch_size=64))
+    assert prediction.logits.min() < 0
+    assert link_metrics(prediction.probabilities, prediction.targets)["accuracy"].value > 0.6
+
+
+def test_replay_without_validation_edges():
+    edge_index, _ = _sbm()
+    for negatives in (0, 3):
+        split = split_links(edge_index, 30, val=0, test=0.2, seed=0, negatives=negatives)
+        assert len(split.test_negatives) == negatives * len(split.test)
+        assert split.replay(edge_index) == split
+    assert split_links(edge_index, 30, val=0, test=0, seed=0, negatives=2).replay(edge_index).test == ()
+
+
+def test_batches_are_bound_to_their_role():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    model = _model()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(LinkTaskError, match="'train' batches only, got a 'test' batch"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=task.loader("test", x, batch_size=8),
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            ),
+            objective=task.objective(),
+        )
+    assert all(torch.equal(before[k], v) for k, v in model.net.state_dict().items())
+
+    def negative_batch(edge):
+        (batch,) = list(task.loader("train", x, batch_size=10_000))
+        batch.edge_label_index = torch.cat([batch.edge_label_index, torch.tensor([[edge[0]], [edge[1]]])], dim=1)
+        batch.edge_label = torch.cat([batch.edge_label, torch.zeros(1)])
+        batch.candidate_id = torch.cat([batch.candidate_id, torch.tensor([-1])])
+        return batch
+
+    with pytest.raises(LinkTaskError, match="held-out \\(val / test\\) negative"):
+        task.check_batch(negative_batch(split.test_negatives[0]))
+    with pytest.raises(LinkTaskError, match="self-loop"):
+        task.check_batch(negative_batch((5, 5)))
+    with pytest.raises(LinkTaskError, match="outside the graph"):
+        task.check_batch(negative_batch((5, 30)))
+
+    class Ctx:
+        def __init__(self, loader):
+            self.model, self.val_loader, self.extra_metrics = model, loader, None
+
+    evaluate = task.eval_step()
+    assert evaluate(Ctx(task.loader("test", x, batch_size=8))).count == len(split.test) + len(split.test_negatives)
+    with pytest.raises(LinkTaskError, match="held-out split"):
+        evaluate(Ctx(task.loader("train", x, batch_size=8)))
+    with pytest.raises(LinkTaskError, match="one split"):
+        evaluate(Ctx([*task.loader("val", x, batch_size=8), *task.loader("test", x, batch_size=8)]))
+    with pytest.raises(LinkTaskError, match="exactly once"):
+        evaluate(Ctx([*task.loader("val", x, batch_size=8), *task.loader("val", x, batch_size=8)]))
+    with pytest.raises(LinkTaskError, match="exactly once"):
+        evaluate(Ctx(list(task.loader("val", x, batch_size=4))[:1]))
+
+
+def test_candidate_ids_must_match_their_pairs():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    (batch,) = list(task.loader("test", x, batch_size=10_000))
+    batch.candidate_id = batch.candidate_id.flip(0)
+    with pytest.raises(LinkTaskError, match="carries id"):
+        task.predict(_model(), [batch])
+
+
+def test_a_resumed_run_continues_the_training_negatives():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    whole, _ = _train(LinkTask(split), x, epochs=4, seed=0)
+    first, run = _train(LinkTask(split), x, epochs=2, seed=0)
+    resumed, _ = _train(LinkTask(split), x, epochs=2, seed=0, model=first, resume_from_run_id=run.id)
+    assert all(
+        torch.equal(a, b)
+        for a, b in zip(whole.net.state_dict().values(), resumed.net.state_dict().values(), strict=True)
+    )
+
+    # A loader built from another task object cannot continue the passes: refused, not silently re-drawn.
+    other, again = LinkTask(split), LinkTask(split)
+    model = _model()
+    with pytest.raises(LinkTaskError, match="same LinkTask"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=other.loader("train", x, batch_size=32, seed=0),
+                optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+                seed=0,
+                resume_from_run_id=run.id,
+            ),
+            objective=again.objective(),
+        )
+
+
+def test_the_default_paths_refuse_link_batches():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    for settings in ({}, {"decoder": "mlp"}):
+        model = _model(**settings)
+        before = {k: v.clone() for k, v in model.net.state_dict().items()}
+        with pytest.raises(LinkTaskError, match="through its LinkTask"):
+            model.train(
+                params=NNTrainParams(
+                    n_epochs=1,
+                    train_loader=task.loader("train", x, batch_size=8),
+                    optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+                )
+            )
+        assert all(torch.equal(before[k], v) for k, v in model.net.state_dict().items())
+        with pytest.raises(LinkTaskError, match="through its LinkTask"):
+            model.predict(torch.utils.data.DataLoader(list(task.loader("test", x, batch_size=8)), batch_size=None))
+
+
+def test_edge_label_defaults_shuffled_training_batches_and_conflicting_labels():
+    edges = torch.tensor([[0, 1, 2, 0], [1, 2, 3, 3]])
+    labelled = split_links(edges, 4, val=1, test=1, seed=1, edge_labels=[1, 0, 1, 0], categories=("a", "b"))
+    task = LinkTask(labelled)
+    assert task.mode == "edge_label" and task.train_negatives == 0
+    edge_index, x = _sbm()
+    binary = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    first = next(iter(binary.loader("train", x, batch_size=16, seed=0)))
+    assert set(first.edge_label.tolist()) == {0.0, 1.0}  # not every positive first
+    with pytest.raises(LinkTaskError, match="more than one category"):
+        LinkSplit(num_nodes=4, train=((0, 1),), categories=("a", "b"), edge_labels=(((0, 1), 0), ((0, 1), 1)))
