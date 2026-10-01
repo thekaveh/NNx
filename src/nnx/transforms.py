@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import math
 import weakref
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -315,7 +315,12 @@ class TransformRecipe:
             drift = model._topology_drift()
             preexisting: list[_Problem] = [] if drift is None else [(None, "recipe", None, drift)]
             _validate(
-                model.net, self.operations, recorded, list(optimizers), problems=preexisting, base=model._base_state()
+                model.net,
+                self.operations,
+                recorded,
+                list(optimizers),
+                problems=preexisting,
+                lazy=model._lazy_base_keys(),
             )
 
     def materialize(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> NNModel:
@@ -461,11 +466,11 @@ def _validate(
     *,
     indexed: bool = True,
     problems: Sequence[_Problem] = (),
-    base: Optional[Mapping[str, Optional[_Shape]]] = None,
+    lazy: Collection[str] = (),
 ) -> None:
     """Raise one :class:`RecipeError` naming every problem of
     ``operations`` on ``net``, after any ``problems`` already found.
-    ``base`` — the ``{key: shape}`` the model's descriptor rebuilds, for an
+    ``lazy`` — the base tensors a rebuild leaves uninitialized, for an
     in-place materialization — refuses a target a rebuild could not
     replay on."""
     problems = list(problems)
@@ -489,7 +494,7 @@ def _validate(
             except AttributeError:
                 problems.append((index, op.id, path, "no such module in model.net"))
                 continue
-            if base is not None and base.get(f"{path}.weight", ()) is None:
+            if f"{path}.weight" in lazy:
                 reason = "was an uninitialized lazy layer when the model was built, so a rebuild could not replay it"
                 problems.append((index, op.id, path, reason))
                 continue
@@ -623,6 +628,13 @@ def _expected_state(
                 if has_bias:
                     state[f"{path}.1.bias"] = bias
     return state, absent
+
+
+def _uninitialized_keys(state: Mapping[str, Any]) -> frozenset[str]:
+    """The keys of a state's uninitialized lazy parameters and buffers."""
+    from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
+
+    return frozenset(k for k, v in state.items() if isinstance(v, (UninitializedParameter, UninitializedBuffer)))
 
 
 def _state_shapes(state: Mapping[str, Any]) -> dict[str, Optional[tuple[int, ...]]]:

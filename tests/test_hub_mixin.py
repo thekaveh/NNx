@@ -426,3 +426,21 @@ def test_a_non_strict_hub_load_of_unrecorded_recipe_weights_still_loads_partiall
     for name, tensor in loaded.net.state_dict().items():
         if name in model.net.state_dict():
             assert torch.equal(tensor, model.net.state_dict()[name])
+
+
+def test_save_pretrained_refuses_a_recipe_model_its_recipe_cannot_rebuild(tmp_path):
+    """FEAT-016: unrecorded surgery after a recipe is refused before any
+    file is written, instead of failing when the artifact is loaded."""
+    from nnx.surgery import low_rank_factorize
+    from nnx.transforms import TransformRecipe, lora
+
+    model = _tiny_model()
+    linears = [name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear]
+    TransformRecipe([lora(linears[0], r=2, alpha=4.0)]).materialize(model)
+    parent, _, attr = linears[1].rpartition(".")
+    owner = model.net.get_submodule(parent) if parent else model.net
+    setattr(owner, attr, low_rank_factorize(model.net.get_submodule(linears[1]), rank=2))  # unrecorded
+    target = tmp_path / "artifact"
+    with pytest.raises(ValueError, match="save_pretrained refused before writing anything"):
+        model.save_pretrained(str(target))
+    assert not target.exists()

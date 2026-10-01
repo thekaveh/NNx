@@ -1043,3 +1043,19 @@ def test_the_drift_message_names_its_cause_once():
     with pytest.raises(ValueError) as caught:
         model._assert_reconstructible_topology()
     assert str(caught.value).count("differs from its descriptor plus its recorded transformation recipe") == 1
+
+
+# --- review round 9 ----------------------------------------------------------------------------------------
+
+
+def test_an_older_factory_model_still_takes_an_in_place_recipe():
+    model = NNModel(params=_register_mlp("tests.legacy_recipe_mlp"))
+    keys = list(model._reference_state)
+    del model._reference_state, model._reference_lazy
+    model._reference_state_keys = tuple(keys)  # names only, as a model pickled before this change carries
+    TransformRecipe([lora("0", r=2, alpha=4.0), low_rank("2", rank=2)]).materialize(model)
+    assert [t.name for t in model._topology_transforms] == ["lora", "low_rank"]
+    base = model._base_state()
+    assert base is not None
+    with pytest.raises(TypeError):
+        base["0.weight"] = (1, 1)  # type: ignore[index]  # the recorded reference is read-only, never copied

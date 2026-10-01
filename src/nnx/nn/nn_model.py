@@ -8,6 +8,7 @@ import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -44,7 +45,7 @@ from ..monitors import (
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
-from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _state_shapes
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _state_shapes, _uninitialized_keys
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -409,10 +410,6 @@ def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tup
     return lora_layers, low_rank_layers
 
 
-def _looks_like_recipe_state(net_state: Mapping[str, Any], base_keys: Iterable[str]) -> bool:
-    return any(_replaced_layers(net_state, base_keys))
-
-
 def _final_transforms(model: NNModel, callbacks: list[Callback]) -> tuple[tuple[NNCheckpointTransform, ...], bool]:
     """The transforms the final LAST records — the model's own followed by
     those its callbacks applied at train end — and whether that LAST keeps
@@ -423,7 +420,7 @@ def _final_transforms(model: NNModel, callbacks: list[Callback]) -> tuple[tuple[
 
 
 def _refuse_unrecorded_recipe_state(net_state: Mapping[str, Any], base_state: Mapping[str, Any]) -> None:
-    if _looks_like_recipe_state(net_state, base_state):
+    if any(_replaced_layers(net_state, base_state)):
         raise ValueError(
             "the weights come from a transformed topology (LoRA wrappers or low-rank factors) but record no "
             "transformation recipe: a raw state dict or an adapter-only export cannot rebuild the topology alone — "
@@ -1378,8 +1375,11 @@ class NNModel(_HubMixinBase):
         if module is None:
             # The tensors the descriptor rebuilds, recorded once from the
             # module just built — never a second construction (FEAT-006) —
-            # for the reconstructibility checks (FEAT-016).
-            self._reference_state = _state_shapes(self.net.state_dict())
+            # for the reconstructibility checks (FEAT-016), with the ones a
+            # rebuild leaves uninitialized (lazy layers).
+            built = self.net.state_dict()
+            self._reference_state = _state_shapes(built)
+            self._reference_lazy = _uninitialized_keys(built)
         # Built-in nets keep their own unpack_batch (the legacy path); other
         # modules see batches through an adapter (FEAT-006).
         self._batch_adapter: Optional[BatchAdapter] = (
@@ -1404,7 +1404,7 @@ class NNModel(_HubMixinBase):
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
 
-    def _base_state(self) -> Optional[dict[str, Optional[tuple[int, ...]]]]:
+    def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
         """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
         when the model built its module (a shape is ``None`` for an
         uninitialized lazy parameter); ``None`` for a runtime module, which
@@ -1427,7 +1427,12 @@ class NNModel(_HubMixinBase):
             else:
                 return None
             self._reference_state = recorded
-        return dict(recorded)
+        return MappingProxyType(recorded)
+
+    def _lazy_base_keys(self) -> frozenset[str]:
+        """The base tensors a rebuild leaves uninitialized (lazy layers);
+        none are known for an object built before they were recorded."""
+        return getattr(self, "_reference_lazy", frozenset())
 
     def _topology_drift(self) -> Optional[str]:
         """How the live topology differs from the descriptor plus the
@@ -1707,6 +1712,12 @@ class NNModel(_HubMixinBase):
         so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
         before any file or directory is written."""
         self._require_portable("save_pretrained")
+        if _recipe_transforms(self._topology_transforms):
+            # FEAT-016: an artifact whose recipe cannot rebuild its weights
+            # would fail only when someone loads it.
+            drift = self._topology_drift()
+            if drift is not None:
+                raise ValueError(f"save_pretrained refused before writing anything: {drift}")
         return super().save_pretrained(save_directory, *args, **kwargs)
 
     def _require_portable(self, operation: str) -> None:

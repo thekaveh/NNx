@@ -134,7 +134,9 @@ This writes three files into `./my-model/`:
   changed by a recorded recipe (`nnx.transforms`, see
   [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
   also writes `"transforms"`: the ordered operations, each with its id,
-  version, targets and config.
+  version, targets and config. Such a model is saved only while its
+  topology is exactly its base plus that recipe: unrecorded surgery is
+  refused before anything is written, rather than failing at load.
 - `README.md` — auto-generated model card from the mixin.
 
 ### 2.3. Load from a local directory
