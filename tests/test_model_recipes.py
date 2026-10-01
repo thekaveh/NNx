@@ -1051,7 +1051,7 @@ def test_the_drift_message_names_its_cause_once():
 def test_an_older_factory_model_still_takes_an_in_place_recipe():
     model = NNModel(params=_register_mlp("tests.legacy_recipe_mlp"))
     keys = list(model._reference_state)
-    del model._reference_state, model._reference_lazy
+    del model._reference_state
     model._reference_state_keys = tuple(keys)  # names only, as a model pickled before this change carries
     TransformRecipe([lora("0", r=2, alpha=4.0), low_rank("2", rank=2)]).materialize(model)
     assert [t.name for t in model._topology_transforms] == ["lora", "low_rank"]
@@ -1059,3 +1059,14 @@ def test_an_older_factory_model_still_takes_an_in_place_recipe():
     assert base is not None
     with pytest.raises(TypeError):
         base["0.weight"] = (1, 1)  # type: ignore[index]  # the recorded reference is read-only, never copied
+
+
+# --- review round 10 ---------------------------------------------------------------------------------------
+
+
+def test_lazy_layers_are_read_from_the_recorded_shapes():
+    model = _lazy_model("tests.lazy_shapes")
+    assert model._lazy_base_keys() == {"0.weight", "0.bias"}
+    nets_model = _model()
+    del nets_model._reference_state  # the built-in fallback rebuilds the reference and keeps its lazy keys
+    assert nets_model._lazy_base_keys() == frozenset() and nets_model._base_state() is not None

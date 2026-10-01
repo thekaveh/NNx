@@ -630,13 +630,6 @@ def _expected_state(
     return state, absent
 
 
-def _uninitialized_keys(state: Mapping[str, Any]) -> frozenset[str]:
-    """The keys of a state's uninitialized lazy parameters and buffers."""
-    from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
-
-    return frozenset(k for k, v in state.items() if isinstance(v, (UninitializedParameter, UninitializedBuffer)))
-
-
 def _state_shapes(state: Mapping[str, Any]) -> dict[str, Optional[tuple[int, ...]]]:
     """``{key: shape}`` of a state's tensors; ``None`` for an uninitialized
     lazy parameter or buffer, whose shape is not known yet."""

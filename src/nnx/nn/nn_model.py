@@ -45,7 +45,7 @@ from ..monitors import (
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
-from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _state_shapes, _uninitialized_keys
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -1375,11 +1375,9 @@ class NNModel(_HubMixinBase):
         if module is None:
             # The tensors the descriptor rebuilds, recorded once from the
             # module just built — never a second construction (FEAT-006) —
-            # for the reconstructibility checks (FEAT-016), with the ones a
-            # rebuild leaves uninitialized (lazy layers).
-            built = self.net.state_dict()
-            self._reference_state = _state_shapes(built)
-            self._reference_lazy = _uninitialized_keys(built)
+            # for the reconstructibility checks (FEAT-016); a shape is None
+            # where a rebuild leaves the tensor uninitialized (a lazy layer).
+            self._reference_state = _state_shapes(self.net.state_dict())
         # Built-in nets keep their own unpack_batch (the legacy path); other
         # modules see batches through an adapter (FEAT-006).
         self._batch_adapter: Optional[BatchAdapter] = (
@@ -1419,6 +1417,7 @@ class NNModel(_HubMixinBase):
             legacy_keys = getattr(self, "_reference_state_keys", None)
             if isinstance(net, ModelSpec) and legacy_keys is not None:
                 recorded = dict.fromkeys(legacy_keys)
+                self._reference_names_only = True  # shapes, lazy layers included, are unknown
             elif isinstance(net, Nets) and net_params is not None:
                 from ..seeding import _global_rng_kept
 
@@ -1430,9 +1429,13 @@ class NNModel(_HubMixinBase):
         return MappingProxyType(recorded)
 
     def _lazy_base_keys(self) -> frozenset[str]:
-        """The base tensors a rebuild leaves uninitialized (lazy layers);
-        none are known for an object built before they were recorded."""
-        return getattr(self, "_reference_lazy", frozenset())
+        """The base tensors a rebuild leaves uninitialized (lazy layers):
+        those recorded without a shape — unknown for an older factory
+        model whose reference holds names only."""
+        base = self._base_state()
+        if base is None or getattr(self, "_reference_names_only", False):
+            return frozenset()
+        return frozenset(key for key, shape in base.items() if shape is None)
 
     def _topology_drift(self) -> Optional[str]:
         """How the live topology differs from the descriptor plus the
