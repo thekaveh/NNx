@@ -2320,7 +2320,7 @@ def test_fp16_scaler_state_round_trips_a_resume(tmp_path, monkeypatch):
     # CPU simulation of the CUDA fp16 cell: fp16 resolves here, with a stand-in scaler and autocast.
     real = precision_module._unsupported
     monkeypatch.setattr(
-        precision_module, "_unsupported", lambda mode, device: None if mode == "fp16" else real(mode, device)
+        precision_module, "_unsupported", lambda mode, *device: None if mode == "fp16" else real(mode, *device)
     )
     monkeypatch.setattr(torch.amp, "GradScaler", _CpuScaler)
     monkeypatch.setattr(torch, "autocast", lambda device_type, dtype: contextlib.nullcontext())
