@@ -136,7 +136,8 @@ def precision_workflow(mode: str = "fp32", device: Devices = Devices.CPU) -> Opt
     under the current working directory; the smoke test runs it in a
     temporary one). A reduced mode is gated on ``precision_support``: where
     the device cannot run it, nothing is trained and ``None`` is returned."""
-    status = precision_support(str(device))[str(device)][mode]
+    torch_device = device()
+    status = precision_support(torch_device)[torch_device.type][mode]  # keyed by device type
     if status not in ("verified", "supported"):
         print(f"precision workflow: {mode} on {device} is {status}; skipped")
         return None

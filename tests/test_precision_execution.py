@@ -629,3 +629,84 @@ def test_a_cuda_ordinal_this_host_lacks_is_unsupported(monkeypatch):
     with pytest.raises(PrecisionUnsupportedError, match="cuda:3 does not exist"):
         PrecisionPolicy("fp16").resolve("cuda:3")
     assert set(precision_module.precision_support("cuda:3")["cuda"].values()) == {"unsupported"}
+
+
+# --- review round 7 ------------------------------------------------------------------------------------------
+
+
+def test_a_teacher_keeps_its_own_policy_beside_a_legacy_student_on_cpu():
+    legacy_student = NNModel(
+        net_params=_NET,
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, mixed_precision=True),
+    )
+    teacher = _model(PrecisionPolicy("bf16"), seed=3)
+    teacher_dtypes = _ForwardDtypes(teacher.net)
+    legacy_student.train(_train_params(n_epochs=1, train_loader=_batches(2)), objective=kd_objective(teacher))
+    assert teacher_dtypes.seen and set(teacher_dtypes.seen) == {(torch.bfloat16, True)}
+
+
+def test_an_fp16_objective_engine_needs_a_scaler():
+    fp16 = ResolvedPrecision(requested="fp16", effective="fp16", device_type="cpu", source="policy")
+    model = _model()
+    with pytest.raises(ValueError, match="fp16 trains through a GradScaler"):
+        nn_model_module._objective_engine(
+            supervised_objective(),
+            optimizers={"default": torch.optim.SGD(model.net.parameters(), lr=0.1)},
+            clip_norms={},
+            scaler=None,
+            precision=fp16,
+        )
+
+
+def test_a_scaler_hook_disagreeing_with_the_precision_is_refused(monkeypatch):
+    from nnx import precision as precision_module
+
+    fp32 = ResolvedPrecision(requested="fp32", effective="fp32", device_type="cuda")
+    with pytest.raises(ValueError, match="resolves to fp32: AMP is decided by NNModelParams.precision"):
+        nn_model_module._check_scaler_hook(fp32, _RecordingScaler([]), "cuda")
+    nn_model_module._check_scaler_hook(fp32, _RecordingScaler([]), "cpu")  # never switched anything on off CUDA
+
+    real = precision_module._unsupported
+    monkeypatch.setattr(
+        precision_module, "_unsupported", lambda mode, *device: None if mode == "fp16" else real(mode, *device)
+    )
+    monkeypatch.setattr(NNModel, "_build_grad_scaler", lambda _self: None)
+    model = _model(PrecisionPolicy("fp16"))
+    before = copy.deepcopy(model.net.state_dict())
+    with pytest.raises(ValueError, match="_build_grad_scaler returned none"):
+        model.train(_train_params(n_epochs=1))
+    assert all(torch.equal(model.net.state_dict()[k], v) for k, v in before.items())
+
+
+def test_a_trainer_builds_its_fp16_scaler_through_the_model_hook(monkeypatch):
+    from nnx import precision as precision_module
+
+    real = precision_module._unsupported
+    monkeypatch.setattr(
+        precision_module, "_unsupported", lambda mode, *device: None if mode == "fp16" else real(mode, *device)
+    )
+
+    class Built(Exception):
+        pass
+
+    def hook(_self):
+        raise Built
+
+    monkeypatch.setattr(NNModel, "_build_grad_scaler", hook)
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_batches(2),
+        optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0)},
+        save_phase_checkpoints=False,
+    )
+    with pytest.raises(Built):
+        Trainer(_model(PrecisionPolicy("fp16"))).train(params, objective=supervised_objective())
+
+
+def test_the_legacy_flag_beside_an_fp16_policy_keeps_the_policys_run_id():
+    def params(**fields):
+        return NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, **fields)
+
+    both = params(mixed_precision=True, precision=PrecisionPolicy("fp16"))
+    assert not both.mixed_precision
+    assert both.state() == params(precision=PrecisionPolicy("fp16")).state()

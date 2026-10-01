@@ -503,8 +503,9 @@ class Trainer:
         # steps every named optimizer once per committed update; its counters
         # are component state, so they continue across a stateful resume.
         engine = None
-        # The fp16 loss scaler (an objective under PrecisionPolicy("fp16")).
-        scaler = precision.build_scaler()
+        # The fp16 loss scaler (an objective under PrecisionPolicy("fp16")),
+        # through the model's hook as NNModel.train builds it.
+        scaler = self.model._build_grad_scaler() if precision.uses_scaler else None
         if objective is not None:
             engine = _objective_engine(
                 objective,

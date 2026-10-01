@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import inspect
 import json
 import math
@@ -783,6 +782,27 @@ def _step_loss_terms(
     return _StepLossTerms(output, target, None, valid, train_loss, backward_loss, weight)
 
 
+# The legacy rule for a step context without a precision (FEAT-028): FP16
+# for a scaler on CUDA, full precision otherwise. TF32 is never read here.
+_LEGACY_FP16 = ResolvedPrecision(requested="fp16", effective="fp16", device_type="cuda", source="legacy", tf32={})
+_FULL_PRECISION = ResolvedPrecision(requested="fp32", effective="fp32", device_type="cpu", tf32={})
+
+
+def _check_scaler_hook(precision: ResolvedPrecision, scaler: Any, device_type: str) -> None:
+    """The policy, not ``_build_grad_scaler``, decides AMP (FEAT-028): an fp16
+    run needs the hook's scaler, and a CUDA run that is not fp16 refuses one
+    (a scaler there used to switch AMP on; it would now be ignored). Off CUDA
+    a scaler never switched anything on, so it is left to the steps (the
+    paradigm steps refuse it)."""
+    if precision.uses_scaler and scaler is None:
+        raise ValueError("fp16 trains through a GradScaler, and _build_grad_scaler returned none")
+    if scaler is not None and not precision.uses_scaler and device_type == "cuda":
+        raise ValueError(
+            f"_build_grad_scaler returned a GradScaler, but this run resolves to {precision.effective}: AMP is "
+            "decided by NNModelParams.precision (PrecisionPolicy('fp16')), which builds the scaler itself"
+        )
+
+
 def _check_step_precision(train_step_fn: Optional[Callable[..., Any]], precision: ResolvedPrecision) -> None:
     """Refuse a step function marked full-precision-only (the built-in
     imperative paradigm steps) under a reduced precision (FEAT-028) —
@@ -1169,6 +1189,10 @@ def _objective_engine(
     update."""
     from .._update_engine import UpdateEngine
 
+    if precision.uses_scaler and scaler is None:
+        # As in default_train_step: an unscaled float16 backward underflows.
+        raise ValueError("fp16 trains through a GradScaler, and this objective run has none")
+
     return UpdateEngine(
         optimizers=optimizers,
         scaler=scaler if precision.uses_scaler else None,
@@ -1217,27 +1241,21 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         _reset_accumulation(accumulation_state)
 
     # FEAT-028: the run's resolved precision decides autocast and the
-    # scaler. A context without one keeps the legacy rule: mixed precision
-    # only for a scaler on CUDA.
+    # scaler. A context without one keeps the legacy rule: FP16 only for a
+    # scaler on CUDA.
     precision = ctx.precision
     if precision is None:
-        legacy_amp = ctx.scaler is not None and model.device.type == "cuda"
-        scaler = ctx.scaler if legacy_amp else None
-        reduced = legacy_amp
-        autocast: contextlib.AbstractContextManager[Any] = (
-            torch.amp.autocast(device_type="cuda") if legacy_amp else contextlib.nullcontext()
+        precision = _LEGACY_FP16 if ctx.scaler is not None and model.device.type == "cuda" else _FULL_PRECISION
+    if precision.uses_scaler and ctx.scaler is None:
+        # An unscaled float16 backward underflows small gradients to zero
+        # silently (the finite check sees nothing wrong): refuse it.
+        raise ValueError(
+            "fp16 trains through a GradScaler, and this step context has none: pass "
+            "scaler=model._build_grad_scaler() (NNModel.train always does)"
         )
-    else:
-        if precision.uses_scaler and ctx.scaler is None:
-            # An unscaled float16 backward underflows small gradients to zero
-            # silently (the finite check sees nothing wrong): refuse it.
-            raise ValueError(
-                "fp16 trains through a GradScaler, and this step context has none: pass "
-                "scaler=model._build_grad_scaler() (NNModel.train always does)"
-            )
-        scaler = ctx.scaler if precision.uses_scaler else None
-        reduced = precision.reduced
-        autocast = precision.autocast()
+    scaler = ctx.scaler if precision.uses_scaler else None
+    reduced = precision.reduced
+    autocast = precision.autocast()
 
     adapter = getattr(model, "task_adapter", None)
     with autocast:  # the forward and loss only; the backward runs outside autocast
@@ -2202,6 +2220,7 @@ class NNModel(_HubMixinBase):
         if precision is None:
             precision = self.resolved_precision
         scaler = self._build_grad_scaler()
+        _check_scaler_hook(precision, scaler, self.device.type)
         # FEAT-004: an objective's updates belong to the shared engine; its
         # committed-update counters are component state (nnx.update_engine),
         # so they continue across a stateful resume.

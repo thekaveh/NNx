@@ -312,13 +312,13 @@ class KDObjective(Objective):
 def _own_precision(ctx: ObjectiveContext, frozen: NNModel) -> Iterator[ResolvedPrecision]:
     """Run a frozen model (a KD teacher) in its own inference precision
     (FEAT-028), not the run's: the run's autocast is suspended around it.
-    Under the legacy ``mixed_precision`` flag the teacher keeps sharing the
-    student's CUDA autocast, as it always has."""
+    Where the legacy ``mixed_precision`` flag autocasts the student (CUDA),
+    the teacher keeps sharing that autocast, as it always has."""
     from .nn.nn_model import _inference_precision
 
     own = _inference_precision(frozen)
     run = ctx.precision
-    if run is not None and run.source == "legacy":
+    if run is not None and run.source == "legacy" and run.reduced:
         yield own
         return
     with contextlib.ExitStack() as stack:

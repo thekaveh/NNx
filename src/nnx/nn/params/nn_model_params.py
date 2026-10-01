@@ -63,6 +63,10 @@ class NNModelParams:
                     f"NNModelParams(mixed_precision=True) means fp16, which contradicts "
                     f"precision={self.precision.mode!r}; set precision alone"
                 )
+            if self.mixed_precision:
+                # The policy says fp16 already: the legacy flag adds nothing, so
+                # it is normalized away and the policy's run id is kept.
+                object.__setattr__(self, "mixed_precision", False)
             if self.precision.mode == "fp32":
                 # An explicit fp32 policy is the default (nothing to fall back
                 # from): normalized away, so it keeps the default's run id.
