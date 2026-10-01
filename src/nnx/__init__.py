@@ -41,6 +41,7 @@ from . import (
     preprocessing,
     provenance,
     prune,
+    ranking,
     tasks,
     viz,
 )
@@ -371,6 +372,8 @@ __all__ = [
     "plans",
     "ExperimentPlan",
     "FitResult",
+    # Query-grouped ranking and retrieval evaluation (FEAT-035)
+    "ranking",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

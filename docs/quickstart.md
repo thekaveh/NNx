@@ -660,3 +660,8 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 ### 3.5. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 
 `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}` plus DoRA / IA3 / PrefixTuner / PromptTuner. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual; DoRA layers in a per-output magnitude vector; IA3 is a per-output scaling; PrefixTuner / PromptTuner attach learned prefixes to a frozen `TransformerNN`; `AdapterLayer` is a bottleneck residual the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).
+
+
+### 3.6. Ranking and retrieval evaluation
+
+`nnx.ranking.RankingTask(k=(10,), max_relevance=2, weighting="query", candidate_sets="sampled")` trains and evaluates a scorer per query: pass `objective=task.objective()` (pairwise logistic loss over unequal-relevance pairs within a query) and `eval_step_fn=task.eval_step()` (MRR@k, Recall@k and NDCG@k per complete query, ties broken by candidate id, queries without a relevant candidate excluded and counted), and select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("ndcg_at_10")`. Batches are `(features, query_ids, candidate_ids, relevance)`. See [Concepts → Query-grouped ranking](concepts.md#21-query-grouped-ranking-nnxranking) and [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py).

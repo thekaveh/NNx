@@ -1692,3 +1692,67 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+
+## 21. Query-grouped ranking (`nnx.ranking`)
+
+A ranking model is judged per **query**: its candidates are ranked against
+each other, and a metric is an average over queries — never over rows or
+batches. `nnx.ranking.RankingTask` declares the task and checks every batch
+before any update:
+
+```text
+batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping with those keys
+   task.objective():  LossTerm("pairwise_logistic", Σ softplus(-(s_hi - s_lo)), denominator)   # FEAT-004 engine
+   task.eval_step():  buffer the stream ─► group by query ─► rank by score (ties: candidate id) ─► MRR@k, Recall@k, NDCG@k
+```
+
+- **Declared.** The cutoffs `k`, integer relevance grades `0..max_relevance`,
+  the `relevance_threshold` (a candidate is relevant at or above it), the
+  objective's `weighting` (`"query"`: each query weighs the same; `"pair"`:
+  each pair does), whether candidate sets are `"sampled"` or `"exhaustive"`,
+  the evaluation buffer limit `max_buffered`, an optional `group_size`
+  (every query must have exactly that many candidates) and a `version`.
+  Query and candidate ids are integers or strings, kept as host values, so
+  a candidate's identity survives sorting, device moves and reloads.
+- **Rejected before any update:** mismatched lengths, mixed id types, a
+  candidate listed twice for one query, grades outside the declared range,
+  a mask of the wrong shape or values, a scorer that does not return one
+  score per row.
+- **The objective** is the pairwise logistic loss over every pair of a
+  query's candidates with unequal grades (relevance `[1, 0]`, scores
+  `[2, 0]` → `log(1 + e^-2) = 0.126928`). Ties contribute nothing, and a
+  query without an unequal pair is skipped. Pairs are formed within a
+  microbatch, so keep a query's candidates in one batch when training.
+- **The evaluation** buffers the whole validation stream (at most
+  `max_buffered` rows), so a query split across batches — in any order —
+  is joined, and the same candidate arriving twice is refused. Each query's
+  candidates are ranked by score, ties broken by candidate id. `MRR@k` is
+  the reciprocal rank of the first relevant candidate in the top `k` (else
+  0); `Recall@k` the relevant candidates in the top `k` over all relevant
+  ones; `NDCG@k` uses gain `2^rel - 1` and discount `log2(rank + 1)`
+  (relevance `[2, 0, 1]`, scores `[3, 2, 1]`, `k=2` → MRR 1, Recall 1/2,
+  NDCG `3 / (3 + 1/log2 3)`). A query with no relevant candidate is
+  **excluded and counted**, never scored 0; `k` above a query's candidate
+  count, or `k <= 0`, is refused.
+- **The record** (`kind="ranking"`, `count` = scored queries) carries
+  `mrr_at_<k>`, `recall_at_<k>`, `ndcg_at_<k>`, `queries`,
+  `excluded_queries`, `candidates`, `candidates_per_query` and
+  `exhaustive_candidates` (`0.0` for sampled candidate sets: the metrics
+  then measure ranking within those candidates, not full-corpus retrieval).
+  No classification field is filled in; an epoch whose every query is
+  excluded is unavailable and never elected BEST.
+- **Named selection.** `task.metric_specs()` declares the metrics
+  (registered ids `ranking.mrr` / `ranking.recall` / `ranking.ndcg` with
+  `config={"k": k}`, reported as `<metric>_at_<k>`), so
+  `MonitorSpec("ndcg_at_10")` drives BEST, early stopping and plateau
+  scheduling. They are computed by the task's evaluation step only; the
+  default evaluation path refuses them.
+- **Checkpointed.** The task configuration is component state
+  `"ranking.task"`: a resume with another configuration is refused before
+  the first resumed update.
+
+NNx does not manage retrieval indexes: `export_to_faiss` writes an index
+and returns its path, and the caller maps FAISS positions to its own
+document ids — as [`examples/ranking_offline.py`](../examples/ranking_offline.py)
+does before an ID-aligned evaluation.

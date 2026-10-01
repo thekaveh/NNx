@@ -46,11 +46,19 @@ def _resolve_metric_with_provenance(
     otherwise freeze BEST selection (``finite < nan`` is always False)
     and be fed to ``ReduceLROnPlateau`` even when the same data point
     carries a perfectly usable finite loss.
+
+    A validation record that ran but is unavailable (``status="empty"``:
+    every target masked) ends the walk with no value: the epoch has no
+    validation signal, and the training loss is never compared in its
+    place (it is rejected as ``"val_edp=empty"``).
     """
     rejected: list[str] = []
     for split, edp in (("val_edp", val_edp), ("train_edp", train_edp)):
         if edp is None:
             continue
+        if split == "val_edp" and getattr(edp, "status", None) == "empty":
+            rejected.append("val_edp=empty")
+            return None, None, tuple(rejected)
         for field in ("error", "loss"):
             value = getattr(edp, field)
             if value is None:
@@ -106,7 +114,14 @@ def _resolve_scheduler_metric(
                 stacklevel=3,
             )
         return value
-    if rejected:
+    if "val_edp=empty" in rejected:
+        warnings.warn(
+            f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: the validation record is unavailable "
+            "(every target was masked)",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    elif rejected:
         warnings.warn(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: every candidate metric is "
             f"non-finite ({', '.join(rejected)})",
