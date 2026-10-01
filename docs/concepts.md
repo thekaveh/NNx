@@ -1768,10 +1768,14 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   checkpoint tag and the resume mode from `metadata.yaml`: `n_epochs`
   counts the epochs a run adds, so it pools only with runs descended the
   same way from identically configured parents — never with fresh runs,
-  with its parent, or with fine-tunes of other pretraining. A parent that
-  cannot be followed — the moving `best` alias, a deleted run, or one
-  retrained in place since — is named by the parent attempt the child
-  recorded when it started, so only siblings of that attempt pool. A cycle,
+  with its parent, or with fine-tunes of other pretraining. A parent is
+  followed only when it is the one the child started from — the same
+  attempt, finished before the child started. Otherwise (the moving `best`
+  alias, a deleted run, a parent still training when the child started or
+  retrained in place since) it is named by the parent checkpoint the child
+  recorded when it started, so only siblings of that checkpoint pool;
+  without a record, a deleted parent keeps its raw id and any other parent
+  names nothing shared. A cycle,
   more than 64 ancestors or an ancestor's unreadable files are refused,
   whatever order the runs are listed in. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and

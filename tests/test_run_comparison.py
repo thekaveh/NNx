@@ -636,6 +636,40 @@ def test_children_of_the_best_alias_or_a_retrained_parent_are_named_by_the_attem
         observations_from_runs([new.id], metric=loss)
 
 
+def test_a_child_of_a_parent_still_training_or_retrained_since_is_named_by_what_it_started_from(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+    warm = {"resume_mode": "weights_only"}
+    spawned = {}
+
+    class Spawn(Callback):  # fine-tunes from the parent's first epoch while the parent still trains
+        def on_epoch_end(self, ctx):
+            last = os.path.join("runs", ctx.run.id, "checkpoints", "last.pt")
+            if "early" not in spawned and os.path.isfile(last):
+                spawned["early"] = _model().train(
+                    params=_fit_params(10, resume_from_run_id=ctx.run.id, **warm), provenance=MANIFEST
+                )
+                spawned["while_running"] = observations_from_runs([spawned["early"].id], metric=loss)[0].config
+
+    parent = _model().train(params=_fit_params(0, n_epochs=4), provenance=MANIFEST, callbacks=[Spawn()])
+    late = _model().train(params=_fit_params(11, resume_from_run_id=parent.id, **warm), provenance=MANIFEST)
+    early, final = observations_from_runs([spawned["early"].id, late.id], metric=loss)
+    assert early.config != final.config  # a 1-epoch-pretrained fine-tune is not a replicate of a 4-epoch one
+    assert early.config == spawned["while_running"]  # and its identity does not change when the parent finishes
+
+    # Lineage without resume (parent_run_id) records no parent attempt: a child that started before the
+    # parent's current attempt finished is not followed into the retrained parent.
+    on_x = ExperimentManifest(data={"train": hash_bytes(b"x")})
+    on_y = ExperimentManifest(data={"train": hash_bytes(b"y")})
+    source = _model().train(params=_fit_params(5), provenance=on_x)
+    old = _model().train(params=_fit_params(50, parent_run_id=source.id), provenance=MANIFEST)
+    _model().train(params=_fit_params(5, overwrite_existing=True), provenance=on_y)
+    new = _model().train(params=_fit_params(51, parent_run_id=source.id), provenance=MANIFEST)
+    pair = observations_from_runs([old.id, new.id], metric=loss)
+    assert pair[0].config != pair[1].config
+
+
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
     from nnx import MonitorSpec
 

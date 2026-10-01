@@ -1005,6 +1005,26 @@ def _recorded_parent_attempt(provenance: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+def _recorded_parent_generation(provenance: Any) -> Optional[str]:
+    """The parent checkpoint generation a run recorded when it started."""
+    attempt = None if provenance is None else provenance.attempt
+    parent = None if attempt is None else attempt.parent
+    value = parent.get("generation") if isinstance(parent, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _started_after_parent_finished(own: Any, current: Any) -> bool:
+    """False when both attempts are recorded and the child started before
+    the parent's current attempt finished: it continued a parent still
+    training, or one retrained since (UTC ISO timestamps of one precision
+    compare as strings)."""
+    child = None if own is None else own.attempt
+    parent = None if current is None else current.attempt
+    if child is None or parent is None:
+        return True
+    return parent.finished_at is not None and child.started_at >= parent.finished_at
+
+
 def _parent_facts(provenance: Any) -> dict[str, Any]:
     """What a parent's provenance declares beyond its ``run.yaml``: its data
     and split identities and how its attempt ended."""
@@ -1028,12 +1048,15 @@ def _run_identity(
     generation is the procedure *parent then child*, so it pools only with
     runs whose parents had the same configuration, data and splits, ended
     the same way, and were continued the same way from the same checkpoint
-    tag. A parent that cannot be followed — the moving ``best`` alias, a
-    deleted run, or one retrained in place since the child started — is
-    named by the parent attempt the child recorded when it started (its
-    ``attempt.json``), so only siblings of that attempt pool; without that
-    record a deleted parent keeps its raw id and an alias names nothing
-    shared. Errors in an ancestor's files are raised, as for the run's own."""
+    tag. A parent is followed only when it is the one the child started
+    from: the same attempt, finished before the child started. Otherwise —
+    the moving ``best`` alias, a deleted run, a parent still training when
+    the child started or retrained in place since — it is named by the
+    parent checkpoint generation (else attempt) the child recorded in its
+    ``attempt.json``, so only siblings of that checkpoint pool; without a
+    record, a deleted parent keeps its raw id and anything else names
+    nothing shared. Errors in an ancestor's files are raised, as for the
+    run's own."""
     return _resolve(run_id, root, cache, (), known)[0]
 
 
@@ -1058,23 +1081,32 @@ def _resolve(
     if parent is not None:
         parent_id = str(parent["parent_run_id"])
         lineage = {"checkpoint": parent.get("parent_checkpoint"), "mode": _resume_mode(run_path, run_id)}
-        recorded = _recorded_parent_attempt(_provenance(run_id, root))
+        own = _provenance(run_id, root)
+        recorded, generation = _recorded_parent_attempt(own), _recorded_parent_generation(own)
         resolvable = _resolvable(parent_id, root)
         current = _provenance(parent_id, root) if resolvable else None
-        if resolvable and (recorded is None or recorded == _attempt_id(current)):
+        if (
+            resolvable
+            and (recorded is None or recorded == _attempt_id(current))
+            and _started_after_parent_finished(own, current)
+        ):
             # The parent the run started from (a parent without provenance
             # has only its run.yaml to declare).
             identity, above = _resolve(parent_id, root, cache, (*path, run_id))
             lineage.update(parent=identity, **_parent_facts(current))
             ancestors = above + 1
         else:
-            # An alias (``best`` moves), a deleted parent, or one retrained in
-            # place since: the parent attempt recorded when the run started
-            # names it; with no record, an alias names nothing shared.
-            if recorded is not None:
+            # An alias (``best`` moves), a deleted parent, one still training
+            # when the run started or retrained in place since: the parent
+            # checkpoint generation (else attempt) recorded when the run
+            # started names it; with no record, only a deleted parent's raw id
+            # is shared, and anything else names nothing shared.
+            if generation is not None:
+                lineage["parent"] = f"parent checkpoint {generation}"
+            elif recorded is not None:
                 lineage["parent"] = f"parent attempt {recorded}"
-            elif parent_id in ALIASES:
-                lineage["parent"] = f"unresolved alias {parent_id!r} of run {run_id}"
+            elif parent_id in ALIASES or resolvable:
+                lineage["parent"] = f"unresolved parent {parent_id!r} of run {run_id}"
             else:
                 lineage["parent"] = f"unresolved parent {parent_id!r}"
             ancestors = 1
