@@ -5055,7 +5055,7 @@ Replace each ``nn.Linear`` at ``targets`` by its rank-``rank`` factorization (``
 nnx.transforms.check_optimizer(model: 'NNModel', optimizer: 'torch.optim.Optimizer') -> 'None'
 ```
 
-Refuse an optimizer built before the model's recipe: one holding parameters ``model.net`` no longer has (layers a low-rank operation replaced), or holding a LoRA target's base weights but not the adapter built around them. An optimizer built afterwards — over every parameter or a subset — passes.
+Refuse an optimizer built before the model's recipe: one holding parameters the recipe replaced (a low-rank operation's layers, or the model a fresh materialization started from), or holding a LoRA target's base weights but not the adapter built around them. An optimizer built afterwards — over every parameter, a subset, or with parameters outside ``model.net`` — passes.
 
 
 #### `nnx.transforms.RecipeError`

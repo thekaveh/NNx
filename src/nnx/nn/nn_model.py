@@ -390,21 +390,36 @@ def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransfor
             ) from error
 
 
-def _looks_like_recipe_state(net_state: Mapping[str, Any], base_keys: Iterable[str]) -> bool:
-    """Whether a state dict holds, in place of some base layer ``X``, LoRA
-    wrappers (``X.base.weight``, ``X.lora_A``) or low-rank factors
-    (``X.0.weight`` and ``X.1.weight``) — the topology an nnx.transforms
-    recipe (FEAT-016) records."""
-    keys = set(net_state)
+def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
+    """The base layers ``X`` a state holds as LoRA wrappers (``X.base.weight``
+    or ``X.lora_A``) and as low-rank factors (``X.0.weight`` and
+    ``X.1.weight``) instead of ``X.weight`` — the topology an nnx.transforms
+    recipe (FEAT-016) records and unrecorded surgery leaves behind."""
+    keys = set(state_keys)
+    lora_layers: list[str] = []
+    low_rank_layers: list[str] = []
     for key in base_keys:
         if not key.endswith(".weight") or key in keys:
             continue
         layer = key[: -len(".weight")]
         if f"{layer}.lora_A" in keys or f"{layer}.base.weight" in keys:
-            return True
+            lora_layers.append(layer)
         if f"{layer}.0.weight" in keys and f"{layer}.1.weight" in keys:
-            return True
-    return False
+            low_rank_layers.append(layer)
+    return lora_layers, low_rank_layers
+
+
+def _looks_like_recipe_state(net_state: Mapping[str, Any], base_keys: Iterable[str]) -> bool:
+    return any(_replaced_layers(net_state, base_keys))
+
+
+def _final_transforms(model: NNModel, callbacks: list[Callback]) -> tuple[tuple[NNCheckpointTransform, ...], bool]:
+    """The transforms the final LAST records — the model's own followed by
+    those its callbacks applied at train end — and whether that LAST keeps
+    the pre-transform state for resuming. A recipe recorded before training
+    (FEAT-016) is the live topology already, so it alone keeps none."""
+    final = (*model._topology_transforms, *_collect_checkpoint_transforms(callbacks))
+    return final, any(not _replayable(t) for t in final)
 
 
 def _refuse_unrecorded_recipe_state(net_state: Mapping[str, Any], base_state: Mapping[str, Any]) -> None:
@@ -1421,15 +1436,7 @@ class NNModel(_HubMixinBase):
             return
         expected_keys = set(base_state)
         actual_keys = _tensor_keys(self.net.state_dict())
-        low_rank_replacements = [
-            key
-            for key in expected_keys
-            if key.endswith(".weight")
-            and key not in actual_keys
-            and f"{key[:-7]}.0.weight" in actual_keys
-            and f"{key[:-7]}.1.weight" in actual_keys
-        ]
-        if low_rank_replacements:
+        if _replaced_layers(actual_keys, expected_keys)[1]:
             raise ValueError(
                 "low-rank surgery topology has no reconstruction recipe; train before surgery, "
                 "or use export_state_dict() for the modified module"
@@ -1600,6 +1607,15 @@ class NNModel(_HubMixinBase):
         """
         model_params = checkpoint.model_params if device is None else replace(checkpoint.model_params, device=device)
         net = model_params.net
+        transforms = tuple(getattr(checkpoint, "transforms", ()))
+        if isinstance(net, RuntimeModule) and _recipe_transforms(transforms):
+            # A recipe is refused on a runtime-only module (FEAT-016); refused
+            # before module= is wrapped (or moved), so the caller's module is
+            # left exactly as given.
+            raise ValueError(
+                f"this checkpoint of the runtime-only module {net} records a transformation recipe, which nothing can "
+                "replay on a caller-owned module"
+            )
         if batch_adapter is not None:
             # Only passed when set: subclasses keep their own constructors.
             model_kwargs["batch_adapter"] = batch_adapter
@@ -1617,14 +1633,6 @@ class NNModel(_HubMixinBase):
         else:
             model = cls(params=model_params, net_params=checkpoint.net_params, **model_kwargs)
 
-        transforms = tuple(getattr(checkpoint, "transforms", ()))
-        if isinstance(net, RuntimeModule) and _recipe_transforms(transforms):
-            # A recipe is refused on a runtime-only module (FEAT-016), and a
-            # caller-owned module= is never transformed behind its back.
-            raise ValueError(
-                f"this checkpoint of the runtime-only module {net} records a transformation recipe, which nothing can "
-                "replay on a caller-owned module"
-            )
         _replay_transforms(model, transforms)
         model._topology_transforms = transforms
         if not transforms:
@@ -2462,11 +2470,7 @@ class NNModel(_HubMixinBase):
         # Costs one extra checkpoint write per training run. BEST is
         # deliberately untouched — it tracks the best *training-time* state.
         if idps:
-            final_transforms = (*self._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
-            # Pre-transform state is kept when a transform changes the topology
-            # at or after train end; a recipe recorded before training
-            # (FEAT-016) is the live topology already, so none is duplicated.
-            keeps_pre_transform = any(not _replayable(t) for t in final_transforms)
+            final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks)
             self._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=idps[-1],

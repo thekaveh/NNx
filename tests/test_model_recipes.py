@@ -596,3 +596,95 @@ def test_a_recipe_model_trains_and_resumes_through_the_trainer():
     assert child.resume_status is not None and child.resume_status.mode == "stateful"
     with pytest.raises(ValueError, match="materialize the same nnx.transforms.TransformRecipe"):
         Trainer(_model()).train(params(resume_from_run_id=parent.id), trainer_step_fn=step)
+
+
+# --- review round 3 ----------------------------------------------------------------------------------------
+
+
+def _register_mlp(name: str, calls: list[int] | None = None) -> NNModelParams:
+    from nnx.models import ModelSpec, register_model_factory
+
+    def factory(config):
+        if calls is not None:
+            calls.append(1)
+        return nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+
+    register_model_factory(name, 1, factory)
+    return NNModelParams(net=ModelSpec(name, 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+
+
+def test_a_registered_module_recipe_rank_is_checked_before_training():
+    model = TransformRecipe([low_rank("0", rank=4)]).materialize(NNModel(params=_register_mlp("tests.rank_mlp")))
+    model._assert_reconstructible_topology()  # the recipe's own topology passes
+    model.net[0] = low_rank_factorize(nn.Linear(6, 8), rank=2)  # same names, another rank
+    with pytest.raises(ValueError, match=r"0\.0\.weight has shape \(2, 6\), its recipe and base give \(4, None\)"):
+        model._assert_reconstructible_topology()
+
+
+def test_a_fresh_materialization_builds_its_base_once():
+    calls: list[int] = []
+    model = NNModel(params=_register_mlp("tests.counted_mlp", calls))
+    calls.clear()
+    TransformRecipe([lora("0", r=2, alpha=4.0)], materialization="fresh").materialize(model)
+    assert len(calls) == 1
+
+
+def test_check_optimizer_ignores_parameters_outside_the_net_and_refuses_a_fresh_source():
+    model = _recipe().materialize(_model())
+    temperature = nn.Parameter(torch.ones(1))  # e.g. a learnable loss temperature
+    check_optimizer(model, torch.optim.SGD([*model.net.parameters(), temperature], lr=0.1))
+    source = _model()
+    source_optimizer = build_optimizer(source.net, _OPTIM)
+    fresh = _recipe("fresh").materialize(source)
+    with pytest.raises(ValueError, match=r"\(\d+ parameters it holds were replaced by its recipe"):
+        check_optimizer(fresh, source_optimizer)
+    check_optimizer(fresh, build_optimizer(fresh.net, _OPTIM))
+
+
+def test_malformed_targets_are_refused_by_name():
+    with pytest.raises(RecipeError, match=r"targets must be explicit dotted module paths, got a list"):
+        TransformRecipe([lora(["layers.0", "layers.1"], r=4)])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="got the string '01'"):
+        TransformOp(id="low_rank", targets="01", config={"rank": 1, "method": "svd"})  # type: ignore[arg-type]
+
+
+def test_rebuilt_low_rank_factors_have_defined_values():
+    from nnx.transforms import _replay
+
+    recorded = TransformRecipe([low_rank("layers.1", rank=4)]).checkpoint_transforms()[0]
+    model = _model()
+    _replay(model, recorded)
+    assert all(torch.equal(p, torch.zeros_like(p)) for p in model.net.layers[1].parameters())
+
+
+def test_a_runtime_module_recipe_checkpoint_is_refused_before_the_module_is_wrapped():
+    module = nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+    model = NNModel(params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY), module=module)
+    recorded = TransformRecipe([lora("0", r=2, alpha=4.0)]).checkpoint_transforms()
+    checkpoint = NNCheckpoint(
+        idp=_checkpoint(model).idp,
+        model_params=model.params,
+        net_params=None,
+        net_state=module.state_dict(),
+        transforms=recorded,
+    )
+    with mock.patch.object(NNModel, "__init__", side_effect=AssertionError("module= wrapped")):
+        with pytest.raises(ValueError, match="nothing can replay on a caller-owned module"):
+            NNModel.from_checkpoint(checkpoint, module=module)
+
+
+def test_dry_runs_and_rebuilds_leave_an_unused_cuda_context_alone():
+    import nnx.seeding as seeding
+
+    captured = []
+    real = seeding._capture_rng_state
+
+    def spy(loader=None, *, cuda=True):
+        captured.append(cuda)
+        return real(loader, cuda=cuda)
+
+    with mock.patch.object(torch.cuda, "is_initialized", return_value=False):
+        with mock.patch.object(seeding, "_capture_rng_state", side_effect=spy):
+            _recipe("fresh").validate(_model())
+            NNModel.from_checkpoint(_checkpoint(_recipe().materialize(_model())))
+    assert captured and not any(captured)

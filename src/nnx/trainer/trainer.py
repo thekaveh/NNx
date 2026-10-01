@@ -57,10 +57,10 @@ from ..nn.nn_model import (
     _check_plateau_resume,
     _check_provenance,
     _check_resume_horizon,
-    _collect_checkpoint_transforms,
     _component_type,
     _dispatch_update,
     _enumerate_with_last,
+    _final_transforms,
     _load_resume_source,
     _loader_num_workers,
     _monitored_plateau,
@@ -83,7 +83,7 @@ from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
-from ..transforms import _recipe_transforms, _replayable
+from ..transforms import _recipe_transforms
 from ..utils import Utils
 from .params import NNTrainerParams
 
@@ -689,10 +689,7 @@ class Trainer:
         # from the live model so it matches the state returned to the caller.
         # BEST remains the best state observed during training.
         if idps:
-            final_transforms = (*self.model._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
-            # As in NNModel.train: a recipe (FEAT-016) is the live topology
-            # already, so only other transforms keep pre-transform state.
-            keeps_pre_transform = any(not _replayable(t) for t in final_transforms)
+            final_transforms, keeps_pre_transform = _final_transforms(self.model, normalized_callbacks)
             self.model._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=idps[-1],
