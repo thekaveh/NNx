@@ -54,12 +54,13 @@ def uses_update_clock(scheduler_params: Any) -> bool:
 def planned_updates(loader: Any, window: int, n_epochs: int) -> Optional[int]:
     """The run's planned committed updates when NNx owns the windows:
     ``ceil(len(loader) / window)`` per epoch (a short final window still
-    commits); ``None`` for a loader without a length."""
+    commits); ``None`` for a loader without a length. At least 1, so an
+    empty loader builds a valid schedule and the loop reports it."""
     try:
         batches = len(loader)
     except TypeError:
         return None
-    return n_epochs * math.ceil(batches / max(1, window))
+    return max(1, n_epochs * math.ceil(batches / max(1, window)))
 
 
 def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Optional[int]:
@@ -71,7 +72,7 @@ def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Opti
         return None
     if scheduler_params.total_steps is not None:
         return scheduler_params.total_steps
-    return None if planned is None else max(1, planned)
+    return planned
 
 
 def component_name(owner: Optional[str] = None) -> str:

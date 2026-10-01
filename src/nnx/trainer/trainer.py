@@ -599,9 +599,10 @@ class Trainer:
                     else ((idx, batch, False) for idx, batch in enumerate(params.train_loader))
                 )
                 for idx_batch, batch, is_last_batch in batches:
+                    # The rate this batch trains with (read before the step).
+                    lr_used = optimizers[primary].param_groups[0]["lr"]
                     if engine is not None:
                         assert objective is not None
-                        lr_used = optimizers[primary].param_groups[0]["lr"]
                         train_edp = _objective_microbatch(
                             engine,
                             objective,
@@ -615,7 +616,6 @@ class Trainer:
                         )
                     else:
                         assert trainer_step_fn is not None
-                        lr_used = optimizers[primary].param_groups[0]["lr"]
                         step_ctx = TrainerStepContext(
                             model=self.model,
                             batch=batch,

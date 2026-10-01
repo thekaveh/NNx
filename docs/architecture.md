@@ -27,7 +27,9 @@ the built-in path or `eval_step_fn`, updates each epoch-clock scheduler once,
 and dispatches `on_epoch_end`. An `optimizer_update`-clock scheduler is stepped
 instead right after each committed update of its optimizer — reported by the
 update engine, by `default_train_step`, or by a step function calling
-`ctx.report_update(...)` — never per microbatch, masked window or skipped step. A run that declares metrics or a named monitor also records the
+`ctx.report_update(...)` — never per microbatch, masked window or skipped step;
+an objective's `on_optimizer_update` callbacks see every optimizer's event of a
+commit before any clock steps. A run that declares metrics or a named monitor also records the
 whole-epoch training summary and the monitor's decision before the scheduler
 update; that one decision drives the plateau scheduler, BEST and any
 `EarlyStopping` given the same monitor

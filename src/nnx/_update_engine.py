@@ -276,8 +276,11 @@ class UpdateEngine:
                         loss=total,
                     )
                 )
-            for event in events:
-                for listener in self.listeners:
+            # Listener by listener, each over the whole commit: a later
+            # listener (a scheduler clock) acts only after an earlier one (the
+            # callbacks) has seen every optimizer's event (FEAT-014).
+            for listener in self.listeners:
+                for event in events:
                     listener(event)
             return tuple(events)
         finally:

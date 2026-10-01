@@ -8,6 +8,7 @@ default) keeps the epoch boundary.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 from unittest import mock
 
@@ -605,3 +606,64 @@ def test_a_default_budget_is_guarded_too():
 def test_an_empty_loader_reports_itself_on_the_update_clock():
     with pytest.raises(ValueError, match="train_loader yielded no batches"):
         _train(_model(), loader=[], scheduler=_sched(Schedulers.ONE_CYCLE))
+
+
+# --- review round 3 ----------------------------------------------------------------------------------------
+
+
+def test_callbacks_see_every_event_of_a_commit_before_any_clock_steps():
+    seen = []
+
+    class Seen(Callback):
+        def on_optimizer_update(self, ctx, event):
+            seen.append((event.optimizer, event.update_idx, ctx.optimizer.param_groups[0]["lr"]))
+
+    Trainer(_model()).train(_two_optimizer_params(), objective=supervised_objective(), callbacks=[Seen()])
+    # Both events of the first commit see optimizer "a" (the primary) before its clock steps.
+    assert seen[:2] == [("a", 1, pytest.approx(0.1)), ("b", 1, pytest.approx(0.1))]
+
+
+def test_an_explicit_default_step_owns_its_windows_too():
+    from nnx.nn.nn_model import default_train_step
+
+    params = NNTrainParams(
+        n_epochs=2,
+        train_loader=_batches(),
+        optim=_sgd(),
+        scheduler=_one_cycle(total_steps=None),
+        save_phase_checkpoints=False,
+        overwrite_existing=True,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the default step reports its updates: no silent-step warning
+        run = _model().train(params, train_step_fn=default_train_step)  # budget: the 6 planned updates
+    assert len(run.idps) == 10
+
+
+def test_a_build_scheduler_override_without_n_updates_still_works():
+    built = []
+
+    class Custom(NNModel):
+        def _build_scheduler(self, optimizer, params):
+            built.append(params.scheduler.clock)
+            return super()._build_scheduler(optimizer, params)
+
+    torch.manual_seed(0)
+    model = Custom(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    _train(model, scheduler=_sched(Schedulers.STEP, step_size=1))
+    assert built == ["optimizer_update"]
+
+
+def test_a_loaded_update_clock_does_not_survive_a_plateau_variant():
+    from nnx.nn.params.nn_scheduler_params_builder import NNSchedulerParamsBuilder
+
+    loaded = NNSchedulerParamsBuilder.from_params(_one_cycle())
+    plateau = loaded.copy().reduce_on_plateau(**_PLATEAU).build()  # the variant replaces the configuration whole
+    assert plateau.clock == "epoch"
+    chained = NNSchedulerParamsBuilder().clock("optimizer_update").step(step_size=2, **_PLATEAU).build()
+    assert chained.clock == "optimizer_update"  # a clock set in the chain still survives the variant
+    reset = NNSchedulerParamsBuilder.from_params(_one_cycle()).clock("optimizer_update").step(step_size=2, **_PLATEAU)
+    assert reset.build().clock == "optimizer_update"

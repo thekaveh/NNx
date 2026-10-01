@@ -2047,14 +2047,17 @@ class NNModel(_HubMixinBase):
         # default horizon is the planned updates when NNx owns the windows
         # (the default step or an objective) and the loader has a length.
         update_clock = uses_update_clock(params.scheduler)
+        owns_windows = train_step_fn is None or train_step_fn is default_train_step
         n_updates = (
             planned_updates(params.train_loader, params.optim.accumulate_grad_batches, params.n_epochs)
-            if update_clock and train_step_fn is None
+            if update_clock and owns_windows
             else None
         )
-        # n_updates is passed only to an update-clock schedule, so a subclass
-        # override of _build_scheduler(optimizer, params) keeps working.
-        extra = {"n_updates": n_updates} if update_clock else {}
+        # n_updates goes only to an update-clock schedule, and only to a
+        # _build_scheduler that accepts it (a subclass override may not).
+        accepts = inspect.signature(self._build_scheduler).parameters
+        takes_updates = "n_updates" in accepts or any(p.kind is p.VAR_KEYWORD for p in accepts.values())
+        extra = {"n_updates": n_updates} if update_clock and takes_updates else {}
         scheduler = _monitored_plateau(self._build_scheduler(optimizer, params, **extra), optimizer, monitor)
         clock: Optional[SchedulerClock] = None
         if update_clock:
@@ -2341,7 +2344,7 @@ class NNModel(_HubMixinBase):
 
                 if clock is not None:
                     # FEAT-014: stepped on committed updates, not here.
-                    if clock.count == updates_before_epoch and train_step_fn is not None and engine is None:
+                    if clock.count == updates_before_epoch and not owns_windows and engine is None:
                         warnings.warn(
                             f"epoch {idx_epoch}: the step function reported no optimizer update, so the "
                             "optimizer_update-clock scheduler did not step; call ctx.report_update() after each "
