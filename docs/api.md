@@ -5173,8 +5173,10 @@ Configuration B against A over shared replicate keys.
 flipped: for a metric to minimize, a negative delta means B is lower);
 ``unmatched_a`` / ``unmatched_b`` list the replicate keys found on one
 side only, with their attempt ids. ``n``, ``mean`` and ``std`` (``n - 1``)
-summarize the finite deltas; ``interval`` is the bootstrap's, when one
-was requested and ``n >= 2``.
+summarize the finite deltas; ``n_nonfinite`` counts the pairs of two
+finite values whose delta overflows a float (excluded from ``n`` and
+reported); ``interval`` is the bootstrap's, when one was requested and
+``n >= 2``.
 ```
 
 ##### `nnx.comparison.PairedComparison.metric`
@@ -5334,8 +5336,8 @@ Args:
         one or whose monitor elected nothing).
     replicate: ``"seed"`` keys each observation ``seed=<seed>`` (the
         training or ``Trainer`` seed), plus ``init_seed=<seed>`` for a
-        registered ``ModelSpec`` whose own seed differs; unknown for an
-        unseeded run. ``None`` leaves it unknown.
+        registered ``ModelSpec`` whose own seed differs; unknown for a
+        run without a training seed. ``None`` leaves it unknown.
     config: run id → declared configuration label, for every run; by
         default, a digest of the run's configuration without its salt,
         seeds, resume lineage and device.

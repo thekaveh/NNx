@@ -46,6 +46,7 @@ import os
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Optional, Union
 
 from ._artifacts import atomic_write, check_keys, parse_json, read_text
@@ -342,6 +343,15 @@ class GroupSummary:
     std: Optional[float] = field(init=False)
 
     def __post_init__(self) -> None:
+        _checked(self.observations, "GroupSummary.observations")
+        key = tuple(getattr(self, name) for name in POOL_FIELDS)
+        strays = sorted(item.id for item in self.observations if item._pool_key() != key)
+        if strays:
+            raise IncompatibleObservations(
+                f"a group's observations share its metric, split, selection, config, data and split_id; "
+                f"{strays} do not",
+                fields=POOL_FIELDS,
+            )
         values = [_value_of(item.value) for item in self.observations if item.finite]
         mean, std = _mean_std(values)
         object.__setattr__(self, "n", len(values))
@@ -408,6 +418,15 @@ class Summary:
     and the fields that differ between groups (``differing``)."""
 
     groups: tuple[GroupSummary, ...]
+
+    def __post_init__(self) -> None:
+        bad = [type(group).__name__ for group in self.groups if not isinstance(group, GroupSummary)]
+        if bad:
+            raise ComparisonError(f"Summary.groups must be GroupSummary objects, got {bad}")
+        keys = [tuple(getattr(group, name) for name in POOL_FIELDS) for group in self.groups]
+        if len(set(map(repr, keys))) != len(keys):
+            raise ComparisonError("a Summary's groups must be distinct poolable groups")
+        _checked(self.observations, "Summary observations")
 
     @property
     def differing(self) -> tuple[str, ...]:
@@ -514,8 +533,10 @@ class PairedComparison:
     flipped: for a metric to minimize, a negative delta means B is lower);
     ``unmatched_a`` / ``unmatched_b`` list the replicate keys found on one
     side only, with their attempt ids. ``n``, ``mean`` and ``std`` (``n - 1``)
-    summarize the finite deltas; ``interval`` is the bootstrap's, when one
-    was requested and ``n >= 2``."""
+    summarize the finite deltas; ``n_nonfinite`` counts the pairs of two
+    finite values whose delta overflows a float (excluded from ``n`` and
+    reported); ``interval`` is the bootstrap's, when one was requested and
+    ``n >= 2``."""
 
     a: GroupSummary
     b: GroupSummary
@@ -525,6 +546,7 @@ class PairedComparison:
     unmatched_a: tuple[tuple[str, str], ...] = field(init=False)
     unmatched_b: tuple[tuple[str, str], ...] = field(init=False)
     n: int = field(init=False)
+    n_nonfinite: int = field(init=False)
     mean: Optional[float] = field(init=False)
     std: Optional[float] = field(init=False)
     interval: Optional[tuple[float, float]] = field(init=False)
@@ -536,6 +558,9 @@ class PairedComparison:
         if differ:
             raise IncompatibleObservations(f"the two sides differ in {list(differ)} and are not paired", fields=differ)
         _text(self.pairing, "pairing")
+        both = {item.id for item in self.a.observations} & {item.id for item in self.b.observations}
+        if both:
+            raise ComparisonError(f"an attempt cannot be on both sides: {sorted(both)}")
         by_a = {item.replicate: item for item in self.a.observations}
         by_b = {item.replicate: item for item in self.b.observations}
         pairs = []
@@ -553,6 +578,9 @@ class PairedComparison:
             self, "unmatched_b", tuple((str(k), by_b[k].id) for k in sorted(set(by_b) - set(by_a), key=str))
         )
         object.__setattr__(self, "n", len(deltas))
+        object.__setattr__(
+            self, "n_nonfinite", sum(pair.delta is not None and not math.isfinite(pair.delta) for pair in pairs)
+        )
         object.__setattr__(self, "mean", mean)
         object.__setattr__(self, "std", std)
         object.__setattr__(self, "interval", None if self.bootstrap is None else self.bootstrap.interval(deltas))
@@ -574,6 +602,7 @@ class PairedComparison:
             "unmatched_a": [list(item) for item in self.unmatched_a],
             "unmatched_b": [list(item) for item in self.unmatched_b],
             "n": self.n,
+            "n_nonfinite": self.n_nonfinite,
             "mean": _encode(self.mean),
             "std": _encode(self.std),
             "bootstrap": None if self.bootstrap is None else self.bootstrap.state(),
@@ -626,13 +655,16 @@ def compare(
         raise IncompatibleObservations(f"the two sides differ in {list(differ)} and are not paired", fields=differ)
     if bootstrap is not None and not isinstance(bootstrap, Bootstrap):
         raise ComparisonError(f"bootstrap must be a Bootstrap or None, got {type(bootstrap).__name__}")
-    ids = {item.id for item in left.observations} & {item.id for item in right.observations}
-    if ids:
-        raise ComparisonError(f"an attempt cannot be on both sides: {sorted(ids)}")
     return PairedComparison(left, right, pairing, bootstrap)
 
 
 # --- the report -----------------------------------------------------------------------------------
+
+
+def _percent(level: float) -> str:
+    """``level`` as an exact percentage (0.95 -> ``95``, 0.9999999 -> ``99.99999``)."""
+    text = format(Decimal(repr(float(level))) * 100, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _fmt(value: Optional[float]) -> str:
@@ -744,10 +776,12 @@ class ComparisonReport:
                 for replicate, attempt in unmatched:
                     lines.append(f"    unmatched {side}: {replicate} ({attempt})")
             line = f"    n={result.n} mean delta={_fmt(result.mean)} sd(n-1)={_fmt(result.std)}"
+            if result.n_nonfinite:
+                line += f" ({result.n_nonfinite} matched pair(s) with a delta beyond float range excluded)"
             if result.interval is not None and result.bootstrap is not None:
                 low, high = result.interval
                 line += (
-                    f"; {result.bootstrap.level * 100:g}% seed-variability interval [{_fmt(low)}, {_fmt(high)}]"
+                    f"; {_percent(result.bootstrap.level)}% seed-variability interval [{_fmt(low)}, {_fmt(high)}]"
                     f" (bootstrap seed {result.bootstrap.seed}, {result.bootstrap.resamples} resamples)"
                 )
             lines.append(line)
@@ -857,16 +891,20 @@ def _config_identity(run_state: Mapping[str, Any]) -> str:
 
 def _replicate_key(run_state: Mapping[str, Any]) -> Optional[str]:
     """``seed=<train or Trainer seed>``, plus ``init_seed=<ModelSpec seed>``
-    when a registered model's own initialization seed differs from it."""
+    when a registered model's own initialization seed differs from it;
+    ``None`` for a run without a training seed (its data order is not
+    reproducible, whatever its initialization seed)."""
     train = run_state.get("train") or {}
     trainer = run_state.get("trainer") or {}
     seed = train.get("seed") if train.get("seed") is not None else trainer.get("seed")
     net = (run_state.get("model") or {}).get("net")
     init = net.get("seed") if isinstance(net, Mapping) and net.get("kind") == "registered" else None
-    parts = [] if seed is None else [f"seed={seed}"]
+    if seed is None:
+        return None
+    parts = [f"seed={seed}"]
     if init is not None and init != seed:
         parts.append(f"init_seed={init}")
-    return ",".join(parts) or None
+    return ",".join(parts)
 
 
 def _declared_monitor(run_state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
@@ -909,20 +947,23 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     from .provenance import load_provenance
 
     run_path = os.path.join(_runs_root(root), _validate_run_id(run_id))
-    with open(os.path.join(run_path, "run.yaml"), encoding="utf-8") as handle:
-        run_state = yaml.safe_load(handle)
+    try:
+        with open(os.path.join(run_path, "run.yaml"), encoding="utf-8") as handle:
+            run_state = yaml.safe_load(handle)
+    except (OSError, yaml.YAMLError) as error:
+        raise ComparisonError(f"run {run_id}: run.yaml is missing or unreadable: {error}") from error
     if not isinstance(run_state, Mapping):
         raise ComparisonError(f"malformed run.yaml for run {run_id}")
     csv_path = os.path.join(run_path, "idps.csv")
     try:
         rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
-    except pd.errors.EmptyDataError:
-        rows = []
-    idps = [NNIterationDataPoint.from_state(row) for row in rows]
+        idps = [NNIterationDataPoint.from_state(row) for row in rows]
+    except Exception as error:  # an empty or damaged history is not an empty one
+        raise ComparisonError(f"run {run_id}: malformed idps.csv: {type(error).__name__}: {error}") from error
     committed_by_last = os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE))
     try:
         provenance = load_provenance(run_id, root)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise ComparisonError(
             f"run {run_id}: its provenance files (provenance.json / attempt.json) are unreadable: "
             f"{type(error).__name__}: {error}"
@@ -958,8 +999,8 @@ def observations_from_runs(
             one or whose monitor elected nothing).
         replicate: ``"seed"`` keys each observation ``seed=<seed>`` (the
             training or ``Trainer`` seed), plus ``init_seed=<seed>`` for a
-            registered ``ModelSpec`` whose own seed differs; unknown for an
-            unseeded run. ``None`` leaves it unknown.
+            registered ``ModelSpec`` whose own seed differs; unknown for a
+            run without a training seed. ``None`` leaves it unknown.
         config: run id → declared configuration label, for every run; by
             default, a digest of the run's configuration without its salt,
             seeds, resume lineage and device.
@@ -1008,6 +1049,8 @@ def observations_from_runs(
         chosen = None
         rule = selection
         unknown_reason = "unknown: the committed epoch is not recorded" if not known else None
+        if known and not epochs:
+            unknown_reason = "unknown: the run records no committed epoch (idps.csv)"
         if selection == "best":
             # The rule is the run's declared monitor, whether or not any epoch was elected.
             monitor = _declared_monitor(run_state)
@@ -1041,6 +1084,8 @@ def observations_from_runs(
                     if split == "train"
                     else f"unknown: epoch {chosen.epoch_idx} has no validation record"
                 )
+            elif value is None:
+                evaluation = f"unknown: the epoch {chosen.epoch_idx} {split} record has no {metric.name!r}"
             last = None if attempt is None else attempt.last_committed
             if last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
@@ -1058,7 +1103,7 @@ def observations_from_runs(
                 status=status,
                 split=split,
                 selection=rule,
-                config=(config or {}).get(run_id) or _config_identity(run_state),
+                config=config[run_id] if config is not None else _config_identity(run_state),
                 data=data,
                 split_id=None if manifest is None else _identities(manifest.splits),
                 replicate=_replicate_key(run_state) if replicate == "seed" else None,

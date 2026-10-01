@@ -616,3 +616,66 @@ def test_reader_edges(tmp_path, monkeypatch):
         json.dump(state, handle)
     with pytest.raises(ComparisonError, match="provenance files"):
         observations_from_runs([runs[1].id], metric=LOSS)
+
+
+def test_round_three_edges():
+    from nnx.comparison import GroupSummary, PairedComparison, Summary
+
+    a = replicates([0.3, 0.4], config="cfg-a")
+    same = summarize(a).pooled()
+    with pytest.raises(ComparisonError, match="on both sides"):
+        PairedComparison(same, same, "same seed")
+    mixed = (a[0], obs(0.9, config="cfg-b", replicate="seed=5"))
+    with pytest.raises(IncompatibleObservations, match="do not"):
+        GroupSummary(ACC, "validation", "last", "cfg-a", "data:v1", "split:v1", mixed)
+    group = summarize(a).groups[0]
+    with pytest.raises(ComparisonError, match="distinct poolable groups"):
+        Summary((group, group))
+    # A delta beyond float range is counted and reported, not silently dropped.
+    left = [obs(-1e308, replicate="seed=0"), obs(0.0, replicate="seed=1")]
+    right = [obs(1e308, config="cfg-b", replicate="seed=0"), obs(1.0, config="cfg-b", replicate="seed=1")]
+    report = ComparisonReport.build([*left, *right], [(left, right, "same seed")])
+    result = report.comparisons[0]
+    assert (result.n, result.n_nonfinite, result.mean) == (1, 1, 1.0)
+    assert "1 matched pair(s) with a delta beyond float range excluded" in report.text()
+    assert ComparisonReport.from_state(json.loads(report.to_json())) == report
+    # Interval levels print exactly.
+    for level, text in ((0.9999999, "99.99999%"), (0.12345678, "12.345678%"), (0.95, "95%")):
+        finite_a = replicates([0.3, 0.4, 0.2], config="cfg-a")
+        finite_b = replicates([0.5, 0.6, 0.7], config="cfg-b")
+        built = ComparisonReport.build(
+            [*finite_a, *finite_b], [(finite_a, finite_b, "same seed")], bootstrap=Bootstrap(seed=1, level=level)
+        )
+        assert f"{text} seed-variability interval" in built.text()
+
+
+def test_round_three_reader_edges(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    runs = [_model().train(params=_fit_params(seed), provenance=MANIFEST) for seed in (0, 1, 2, 3)]
+    ids = [run.id for run in runs]
+    # An empty label is refused, never replaced by the digest.
+    with pytest.raises(ComparisonError, match="config"):
+        observations_from_runs(ids[:2], metric=LOSS, config={ids[0]: "narrow", ids[1]: ""})
+    # A metric the record does not hold says so.
+    (typo,) = observations_from_runs(ids[:1], metric=Metric("acc", "maximize"))
+    assert typo.value is None and typo.evaluation.startswith("unknown: the epoch 1 validation record has no 'acc'")
+    # Damaged run files are comparison errors.
+    with open(os.path.join("runs", ids[0], "provenance.json"), "w") as handle:
+        handle.write("[]")
+    with pytest.raises(ComparisonError, match="provenance files"):
+        observations_from_runs(ids[:1], metric=LOSS)
+    open(os.path.join("runs", ids[1], "idps.csv"), "w").close()
+    with pytest.raises(ComparisonError, match="malformed idps.csv"):
+        observations_from_runs(ids[1:2], metric=LOSS)
+    frame = pd.read_csv(os.path.join("runs", ids[2], "idps.csv"))
+    frame.drop(columns=["epoch_idx"]).to_csv(os.path.join("runs", ids[2], "idps.csv"), index=False)
+    with pytest.raises(ComparisonError, match="malformed idps.csv"):
+        observations_from_runs(ids[2:3], metric=LOSS)
+    os.remove(os.path.join("runs", ids[3], "run.yaml"))
+    with pytest.raises(ComparisonError, match="run.yaml is missing"):
+        observations_from_runs(ids[3:4], metric=LOSS)
+    # A run without a training seed has no replicate key.
+    from nnx.comparison import _replicate_key
+
+    assert _replicate_key({"model": {"net": {"kind": "registered", "seed": 0}}, "train": {}}) is None

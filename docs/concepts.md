@@ -1760,8 +1760,10 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   `Trainer` seed and a registered `ModelSpec`'s initialization seed),
   resume lineage and device, for `NNModel.train` and `Trainer` runs alike
   (or a label for every run, passed as `config=`). The replicate key is
-  `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs. The
-  text view counts attempts that did not complete as `not_completed`.
+  `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and
+  unknown for a run without a training seed. The text view counts attempts
+  that did not complete as `not_completed`, and a matched pair whose delta
+  overflows a float is counted (`n_nonfinite`) rather than averaged.
 
 This is about **your own runs**. The comparison against other toolkits is a
 separate page: [`docs/comparison.md`](comparison.md). See
