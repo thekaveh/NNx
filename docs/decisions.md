@@ -162,16 +162,21 @@ provider.decide(Boolean("This review is positive."), texts)
   `0` and `log(4)` give `p_true = 0.8`; texts are never normalized together.
   `Score` is unsupported and refused before any model call.
 - **Validated settings.** The entailment and contradiction ids — given or
-  resolved from names — must differ and fit the model's class count; when
-  its config declares one, the model's logits must have exactly that many
-  classes. A label name must be one its config knows. Templates hold
-  exactly one bare `{}` (no conversion or format spec).
+  resolved from names — must differ; when the model's config declares a
+  class count (`num_labels`), they must fit it and the logits must have
+  exactly that many classes. A label name must be one its config knows,
+  and an integer id that contradicts the config's own `entailment` /
+  `contradiction` names is refused. Templates hold exactly one bare `{}`
+  (no conversion or format spec).
   Unknown scoring or truncation policies are refused at construction.
 - **The provider contract.** NNx imports no NLI library and downloads
   nothing; importing `nnx.decisions` or constructing the provider calls no
   `from_pretrained`. The tokenizer is called HuggingFace-style
   (`tokenizer(premises, hypotheses, truncation=..., max_length=...,
-  padding=True, return_tensors="pt")`) and the model as `model(**encoded)`,
+  padding=True, return_tensors="pt")`, plus unpadded measurement calls with
+  `truncation=False, padding=False` whose `attention_mask` sums or
+  `input_ids` row lengths give each pair's token count) and the model as
+  `model(**encoded)`,
   returning logits or an object with `.logits`. Pairs go in chunks of
   `pair_batch_size` (the last may be shorter) to the model's device; the
   model runs in eval mode under no-grad and every submodule's training flag

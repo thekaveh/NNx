@@ -9,7 +9,7 @@ when the provider is built::
 
     from nnx.decisions import Choice, NLIProvider
 
-    provider = NLIProvider(model, tokenizer, entailment_id=2, contradiction_id=0,
+    provider = NLIProvider(model, tokenizer, entailment_id="entailment", contradiction_id="contradiction",
                            hypothesis_template="This text is about {}.", revision="abc123")
     provider.decide(Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"))), texts)
 
@@ -41,7 +41,10 @@ nothing: the caller passes a tokenizer and a ``torch.nn.Module`` already
 loaded (from a local path, a pinned ``revision`` or a test stub). The
 tokenizer is called HuggingFace-style — ``tokenizer(premises, hypotheses,
 truncation=..., max_length=..., padding=True, return_tensors="pt")``
-returning a mapping of tensors — and the model as ``model(**encoded)``,
+returning a mapping of tensors (and, to measure lengths first, with
+``truncation=False, padding=False`` and no ``return_tensors``, returning
+per-pair ``input_ids`` — or an ``attention_mask``, whose sums are used) —
+and the model as ``model(**encoded)``,
 returning the logits ``(pairs, classes)`` or an object with ``.logits``.
 Pairs are sent in chunks of ``pair_batch_size`` (the last chunk may be
 shorter), moved to the model's device; the model runs in eval mode under
@@ -122,7 +125,7 @@ def _label_space(model: Any) -> tuple[Optional[int], Mapping[str, int]]:
     n_labels = getattr(config, "num_labels", None)
     if isinstance(n_labels, numbers.Integral) and not isinstance(n_labels, bool):
         return int(n_labels), names
-    return (len(names) or None), names
+    return None, names  # names alone do not declare the class count (aliases, sparse ids)
 
 
 def _class_id(value: Any, what: str, n_labels: Optional[int], names: Mapping[str, int]) -> int:
@@ -222,6 +225,15 @@ class NLIProvider:
             raise InvalidDecisionRequest(
                 f"entailment_id and contradiction_id must differ, both are {self.entailment_id}"
             )
+        for what, name, class_id in (
+            ("entailment_id", "entailment", self.entailment_id),
+            ("contradiction_id", "contradiction", self.contradiction_id),
+        ):
+            if name in names and names[name] != class_id:  # a swapped id would score the wrong class silently
+                raise InvalidDecisionRequest(
+                    f"{what} {class_id} contradicts the model's config, which names {name!r} class {names[name]}; "
+                    f"pass the label name ({name!r}) or the matching id"
+                )
         self._n_labels = n_labels
         _check_template(self.hypothesis_template, "hypothesis_template")
         _check_template(self.boolean_template, "boolean_template")
@@ -318,8 +330,7 @@ class NLIProvider:
         the request; under ``"only_first"`` each must fit once its premise
         is cut — a hypothesis that alone overflows ``max_length`` rejects it."""
         try:
-            encoded = self.tokenizer(premises, hypotheses, truncation=False, padding=False)
-            lengths = [len(ids) for ids in encoded["input_ids"]]
+            lengths = _lengths(self.tokenizer(premises, hypotheses, truncation=False, padding=False))
         except Exception as error:
             raise ProviderFailure(f"{self.name}: the tokenizer failed: {error}") from error
         truncated = [length > self.max_length for length in lengths]
@@ -336,8 +347,7 @@ class NLIProvider:
         # premise to nothing).
         long = sorted({hypotheses[i] for i, cut in enumerate(truncated) if cut})
         try:
-            alone = self.tokenizer([""] * len(long), long, truncation=False, padding=False)
-            widths = [len(ids) for ids in alone["input_ids"]]
+            widths = _lengths(self.tokenizer([""] * len(long), long, truncation=False, padding=False))
         except Exception as error:
             raise ProviderFailure(f"{self.name}: the tokenizer failed: {error}") from error
         too_long = [hypothesis for hypothesis, width in zip(long, widths, strict=True) if width >= self.max_length]
@@ -402,6 +412,16 @@ class NLIProvider:
         if not np.isfinite(logits).all():
             raise ProviderFailure(f"{self.name}: the NLI model returned non-finite logits")
         return logits
+
+
+def _lengths(encoded: Any) -> list[int]:
+    """Each pair's token count from a measurement call: the attention mask's
+    sum when there is one (a tokenizer may pad anyway), else the length of
+    its ``input_ids`` row."""
+    mask = encoded.get("attention_mask") if isinstance(encoded, Mapping) or hasattr(encoded, "get") else None
+    if mask is not None:
+        return [int(sum(int(v) for v in row)) for row in mask]
+    return [len(ids) for ids in encoded["input_ids"]]
 
 
 def _softmax(values: np.ndarray) -> list[float]:

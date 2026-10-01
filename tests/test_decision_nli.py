@@ -380,6 +380,7 @@ def test_ids_resolved_by_name_are_range_checked_and_the_logit_width_must_match_t
     with pytest.raises(InvalidDecisionRequest, match="out of range for a model with 3 classes"):
         _provider(model=model)
     assert model.seen == []
+    model.config.label2id = {"contradiction": 0, "neutral": 1, "entailment": 2, "unused": "n/a"}
     by_id = _provider(model=model, entailment_id=2, contradiction_id=0)  # a non-integer entry names no class
     assert by_id.entailment_id == 2
 
@@ -390,6 +391,32 @@ def test_ids_resolved_by_name_are_range_checked_and_the_logit_width_must_match_t
 
     with pytest.raises(ProviderFailure, match=r"3 classes \(the model's config\)"):
         _provider(model=Wide()).decide(Boolean("late goal"), [TEXT])
+
+
+def test_names_without_num_labels_declare_no_class_count_and_swapped_ids_are_refused():
+    aliased = OverlapNLI()
+    aliased.config = SimpleNamespace(label2id={"contradiction": 0, "neutral": 1, "entailment": 2, "entails": 2})
+    (result,) = _provider(model=aliased).decide(Boolean("late goal"), [TEXT])  # 3 logits, 4 names: fine
+    assert result.p_true == pytest.approx(0.75)  # entailment log(1 + 2) against contradiction 0
+    sparse = OverlapNLI()
+    sparse.config = SimpleNamespace(label2id={"contradiction": 0, "entailment": 2})
+    assert _provider(model=sparse).entailment_id == 2  # not "out of range for 2 classes"
+    with pytest.raises(InvalidDecisionRequest, match="contradicts the model's config"):
+        _provider(entailment_id=0, contradiction_id=2)  # swapped against CONTRADICTION 0 / ENTAILMENT 2
+
+
+def test_lengths_are_measured_from_the_attention_mask_when_a_tokenizer_pads_anyway():
+    class AlwaysPads(WordTokenizer):
+        def __call__(self, premises, hypotheses, *, truncation, max_length=None, padding=False, return_tensors=None):
+            return super().__call__(
+                premises, hypotheses, truncation=truncation, max_length=max_length, padding=True, return_tensors="pt"
+            )
+
+    long_text = TEXT + " " + " ".join(f"word{i}" for i in range(40))
+    short, long = _provider(max_length=16, tokenizer=AlwaysPads()).decide(
+        Choice("Topic?", (SPORT, ECON)), [TEXT, long_text]
+    )
+    assert short.raw["truncated"] == [False, False] and long.raw["truncated"] == [True, True]
 
 
 def test_malformed_model_outputs_are_provider_failures():
