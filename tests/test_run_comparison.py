@@ -489,6 +489,50 @@ def test_a_continuation_never_pools_with_fresh_runs_or_its_parent(tmp_path, monk
     assert pair[1].config == found[3].config  # continuations with one schedule still pool
 
 
+def test_a_child_pools_only_with_children_of_identically_configured_parents(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+    slow = NNOptimParams.builder().sgd(max_lr=0.001).build()
+    parents_a = [_model().train(params=_fit_params(seed), provenance=MANIFEST) for seed in (0, 1)]
+    parents_b = [_model().train(params=_fit_params(seed, optim=slow), provenance=MANIFEST) for seed in (0, 1)]
+    children = [
+        _model().train(
+            params=_fit_params(10 + i, resume_from_run_id=parent.id, resume_mode="weights_only"), provenance=MANIFEST
+        )
+        for i, parent in enumerate([*parents_a, *parents_b])
+    ]
+    found = observations_from_runs([run.id for run in children], metric=loss)
+    assert found[0].config == found[1].config and found[2].config == found[3].config
+    assert found[0].config != found[2].config  # fine-tunes of different pretraining never pool
+    assert sorted(group.n for group in summarize(found).groups) == [2, 2]
+
+    # Born-again generations (lineage only, no resume): each generation is its own configuration.
+    gen0 = _model().train(params=_fit_params(20), provenance=MANIFEST)
+    gen1 = _model().train(params=_fit_params(21, parent_run_id=gen0.id), provenance=MANIFEST)
+    gen2 = _model().train(params=_fit_params(22, parent_run_id=gen1.id), provenance=MANIFEST)
+    generations = observations_from_runs([gen0.id, gen1.id, gen2.id], metric=loss)
+    assert len({item.config for item in generations}) == 3
+
+    # A parent that cannot be read keeps its raw id: the child pools with nothing.
+    orphan = _model().train(params=_fit_params(23, parent_run_id=gen0.id), provenance=MANIFEST)
+    assert observations_from_runs([orphan.id], metric=loss)[0].config == generations[1].config
+    shutil.rmtree(os.path.join("runs", gen0.id))
+    (alone,) = observations_from_runs([orphan.id], metric=loss)
+    assert alone.config != generations[1].config
+
+    # A resumed run whose metadata.yaml cannot be read is refused; a fresh one never reads it.
+    with open(os.path.join("runs", children[0].id, "metadata.yaml"), "wb") as handle:
+        handle.write(b"\xff\xfe not utf-8")
+    with pytest.raises(ComparisonError, match="metadata.yaml is unreadable"):
+        observations_from_runs([children[0].id], metric=loss)
+    with open(os.path.join("runs", parents_a[0].id, "metadata.yaml"), "w") as handle:
+        handle.write("when: 2020-13-45\n")
+    assert observations_from_runs([parents_a[0].id], metric=loss)[0].value is not None
+
+
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
     from nnx import MonitorSpec
 

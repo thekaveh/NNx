@@ -33,7 +33,8 @@ nothing here builds or loads a model, reads a checkpoint, elects a
   re-derived and checked. Input order never changes a report.
 - :func:`observations_from_runs` — reads observations from saved runs
   (``run.yaml``, ``idps.csv`` and the FEAT-019 provenance files, each read
-  once) without loading a model or a checkpoint.
+  once; for a run with a parent, ``metadata.yaml`` and the parents'
+  ``run.yaml``) without loading a model or a checkpoint.
 """
 
 from __future__ import annotations
@@ -891,7 +892,7 @@ class ComparisonReport:
             raise ComparisonError(f"malformed comparison report: {type(error).__name__}: {error}") from error
         try:
             stored = json.loads(json.dumps(dict(state), sort_keys=True))
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, RecursionError) as error:
             raise ComparisonError(f"malformed comparison report: {type(error).__name__}: {error}") from error
         if json.loads(json.dumps(rebuilt.state(), sort_keys=True)) != stored:
             raise ComparisonError("the report's stored results do not match its observations (edited or corrupt)")
@@ -921,30 +922,88 @@ def _canonical_text(value: Any) -> str:
 _PER_REPLICATE = ("seed", "parent_run_id", "parent_checkpoint")
 
 
-def _lineage(run_state: Mapping[str, Any], idps: Sequence[Any], resume_mode: Optional[str]) -> Optional[dict]:
-    """The shape of a resumed run's lineage — which checkpoint tag it
-    continued from, how (``stateful`` or ``weights_only``) and at which
-    epoch it began — without the parent run's id; ``None`` for a fresh
-    run. ``n_epochs`` counts the epochs a run *adds*, so a continuation
-    trained longer than a fresh run and a warm start began from other
-    weights: neither is a replicate of a fresh run."""
-    sections = [run_state[name] for name in ("train", "trainer") if isinstance(run_state.get(name), Mapping)]
-    resumed = [section for section in sections if section.get("parent_run_id") is not None]
-    if not resumed:
+MAX_LINEAGE = 64  # parent runs followed before a lineage is refused (a cycle, or a corrupt history)
+
+
+def _parent(run_state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """The training (or ``Trainer``) section that names a parent run."""
+    for name in ("train", "trainer"):
+        section = run_state.get(name)
+        if isinstance(section, Mapping) and section.get("parent_run_id") is not None:
+            return section
+    return None
+
+
+def _resume_mode(run_path: str, run_id: str) -> Optional[str]:
+    """How a run continued its parent (``stateful`` / ``weights_only``), from
+    ``metadata.yaml``; ``None`` when it did not resume (a born-again
+    generation, say) or predates the record. A file that cannot be read is
+    refused: the run's procedure would be unknown."""
+    import yaml
+
+    path = os.path.join(run_path, "metadata.yaml")
+    if not os.path.isfile(path):
         return None
-    epochs = [idp.epoch_idx for idp in idps]
-    return {
-        "checkpoint": resumed[0].get("parent_checkpoint"),
-        "mode": resume_mode,
-        "start_epoch": min(epochs) if epochs else None,
-    }
+    try:
+        with open(path, encoding="utf-8") as handle:
+            metadata = yaml.safe_load(handle)
+    except (OSError, ValueError, yaml.YAMLError) as error:
+        raise ComparisonError(
+            f"run {run_id}: metadata.yaml is unreadable ({type(error).__name__}: {error}); "
+            "how it continued its parent is unknown"
+        ) from error
+    resume = metadata.get("resume") if isinstance(metadata, Mapping) else None
+    mode = resume.get("mode") if isinstance(resume, Mapping) else None
+    return mode if isinstance(mode, str) else None
+
+
+class _LineageTooDeep(ComparisonError):
+    pass
+
+
+def _run_identity(
+    run_id: str,
+    root: Optional[str],
+    cache: dict[str, str],
+    depth: int = 0,
+    known: Optional[tuple[Mapping[str, Any], str]] = None,
+) -> str:
+    """:func:`_config_identity` of a saved run, with the identity of every
+    run it descends from: a continuation, a fine-tune or a born-again
+    generation is the procedure *parent then child*, so it pools only with
+    runs whose parents had the same configuration and that continued them
+    the same way. A parent that cannot be read keeps its raw id, so the run
+    pools with nothing."""
+    if run_id in cache:
+        return cache[run_id]
+    if depth > MAX_LINEAGE:
+        raise _LineageTooDeep(f"run {run_id}: a lineage deeper than {MAX_LINEAGE} runs (a cycle?)")
+    run_state, run_path = known if known is not None else _read_run_state(run_id, root)
+    parent = _parent(run_state)
+    lineage = None
+    if parent is not None:
+        parent_id = parent["parent_run_id"]
+        try:
+            ancestry = _run_identity(str(parent_id), root, cache, depth + 1)
+        except _LineageTooDeep:
+            raise
+        except ComparisonError:
+            ancestry = f"unreadable parent {parent_id!r}"
+        lineage = {
+            "parent": ancestry,
+            "checkpoint": parent.get("parent_checkpoint"),
+            "mode": _resume_mode(run_path, run_id),
+        }
+    cache[run_id] = _config_identity(run_state, lineage)
+    return cache[run_id]
 
 
 def _config_identity(run_state: Mapping[str, Any], lineage: Optional[Mapping[str, Any]] = None) -> str:
     """The run's configuration without what varies per replicate: the run
     id, the salt, the seed of its training (or ``Trainer``) parameters, and
-    the id of the run it resumed from — but with its :func:`_lineage`, so a
-    continuation never pools with fresh runs."""
+    the id of its parent run — replaced by the parent's identity, how it was
+    continued and from which checkpoint tag (``lineage``, see
+    :func:`_run_identity`)."""
     state = {key: value for key, value in run_state.items() if key not in ("id", "salt")}
     if lineage is not None:
         state[" lineage"] = dict(lineage)  # the space keeps it apart from any run.yaml key
@@ -1017,13 +1076,11 @@ def _raw_metric_value(edp: Any, name: str) -> Optional[float]:
     return None
 
 
-def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, bool, Optional[str]]:
-    import pandas as pd
+def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
+    """A run's ``run.yaml`` and its directory."""
     import yaml
 
-    from .nn.params.nn_iteration_data_point import NNIterationDataPoint
-    from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE, _load_resume_status, _runs_root, _validate_run_id
-    from .provenance import load_provenance
+    from .nn.params.nn_run import _runs_root, _validate_run_id
 
     try:
         run_path = os.path.join(_runs_root(root), _validate_run_id(run_id))
@@ -1032,13 +1089,24 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     try:
         with open(os.path.join(run_path, "run.yaml"), encoding="utf-8") as handle:
             run_state = yaml.safe_load(handle)
-    except (OSError, yaml.YAMLError) as error:
+    except (OSError, ValueError, yaml.YAMLError) as error:
         raise ComparisonError(f"run {run_id}: run.yaml is missing or unreadable: {error}") from error
     if not isinstance(run_state, Mapping):
         raise ComparisonError(f"malformed run.yaml for run {run_id}")
     for section in ("model", "train", "trainer"):
         if run_state.get(section) is not None and not isinstance(run_state[section], Mapping):
             raise ComparisonError(f"malformed run.yaml for run {run_id}: {section!r} is not a mapping")
+    return run_state, run_path
+
+
+def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, bool, str]:
+    import pandas as pd
+
+    from .nn.params.nn_iteration_data_point import NNIterationDataPoint
+    from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE
+    from .provenance import load_provenance
+
+    run_state, run_path = _read_run_state(run_id, root)
     csv_path = os.path.join(run_path, "idps.csv")
     try:
         rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
@@ -1056,8 +1124,7 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
             f"run {run_id}: its provenance files (provenance.json / attempt.json) are unreadable: "
             f"{type(error).__name__}: {error}"
         ) from error
-    resume = _load_resume_status(os.path.join(run_path, "metadata.yaml"))
-    return run_state, idps, provenance, committed_by_last, None if resume is None else resume.mode
+    return run_state, idps, provenance, committed_by_last, run_path
 
 
 def observations_from_runs(
@@ -1072,7 +1139,9 @@ def observations_from_runs(
 ) -> list[Observation]:
     """Observations of ``metric`` read from saved runs, without loading a
     model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance
-    files are read once each, and nothing is written).
+    files are read once each — plus, for a run with a parent, its
+    ``metadata.yaml`` and every ancestor's ``run.yaml`` — and nothing is
+    written).
 
     Args:
         run_ids: the runs (under ``root``'s ``runs/``).
@@ -1092,9 +1161,10 @@ def observations_from_runs(
             run without a training seed. ``None`` leaves it unknown.
         config: run id → declared configuration label, for every run; by
             default, a digest of the run's configuration without its salt,
-            seeds, parent run id and device — a resumed run keeps the shape
-            of its lineage (checkpoint tag, resume mode, first epoch), so
-            it never pools with fresh runs or with its own parent.
+            seeds and device, in which a parent run's id is replaced by the
+            parent's own identity, the checkpoint tag and the resume mode —
+            so a continuation, fine-tune or later generation pools only
+            with runs descended the same way from the same configuration.
 
     Runs should be trained with ``provenance=`` (FEAT-019): the status and
     attempt id come from the run's attempt record (``"unknown"`` without
@@ -1122,8 +1192,9 @@ def observations_from_runs(
         if unlabelled:
             raise ComparisonError(f"config= labels some runs but not {unlabelled}; label every run or none")
     observations = []
+    identities: dict[str, str] = {}  # run id -> configuration identity, parents included
     for run_id in run_ids:
-        run_state, idps, provenance, committed_by_last, resume_mode = _read_run(run_id, root)
+        run_state, idps, provenance, committed_by_last, run_path = _read_run(run_id, root)
         attempt = None if provenance is None else provenance.attempt
         status = "unknown" if attempt is None else attempt.status
         if status not in STATUSES:
@@ -1207,7 +1278,7 @@ def observations_from_runs(
                 config=(
                     config[run_id]
                     if config is not None
-                    else _config_identity(run_state, _lineage(run_state, idps, resume_mode))
+                    else _run_identity(run_id, root, identities, known=(run_state, run_path))
                 ),
                 data=data,
                 split_id=None if manifest is None else _identities(manifest.splits),

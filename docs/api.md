@@ -5317,7 +5317,7 @@ No public description is currently available.
 nnx.comparison.observations_from_runs(run_ids: 'Iterable[str]', *, metric: 'Metric', split: 'str' = 'validation', selection: 'str' = 'last', root: 'Optional[str]' = None, replicate: 'Optional[str]' = 'seed', config: 'Optional[Mapping[str, str]]' = None) -> 'list[Observation]'
 ```
 
-Observations of ``metric`` read from saved runs, without loading a model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance files are read once each, and nothing is written).
+Observations of ``metric`` read from saved runs, without loading a model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance files are read once each — plus, for a run with a parent, its ``metadata.yaml`` and every ancestor's ``run.yaml`` — and nothing is written).
 
 **Details**
 
@@ -5340,9 +5340,10 @@ Args:
         run without a training seed. ``None`` leaves it unknown.
     config: run id → declared configuration label, for every run; by
         default, a digest of the run's configuration without its salt,
-        seeds, parent run id and device — a resumed run keeps the shape
-        of its lineage (checkpoint tag, resume mode, first epoch), so
-        it never pools with fresh runs or with its own parent.
+        seeds and device, in which a parent run's id is replaced by the
+        parent's own identity, the checkpoint tag and the resume mode —
+        so a continuation, fine-tune or later generation pools only
+        with runs descended the same way from the same configuration.
 
 Runs should be trained with ``provenance=`` (FEAT-019): the status and
 attempt id come from the run's attempt record (``"unknown"`` without
