@@ -688,3 +688,65 @@ def test_dry_runs_and_rebuilds_leave_an_unused_cuda_context_alone():
             _recipe("fresh").validate(_model())
             NNModel.from_checkpoint(_checkpoint(_recipe().materialize(_model())))
     assert captured and not any(captured)
+
+
+# --- review round 4 ----------------------------------------------------------------------------------------
+
+
+def test_a_recipe_on_a_layer_the_base_lacks_is_refused_before_training():
+    model = _model()
+    model.net.extra = nn.Linear(4, 4, bias=False)  # unrecorded surgery adds a layer
+    TransformRecipe([lora("extra", r=2, alpha=4.0)]).materialize(model)
+    with pytest.raises(ValueError, match="lora target 'extra' is not a layer of the base"):
+        model._assert_reconstructible_topology()
+
+
+@pytest.mark.parametrize("materialization", ["fresh", "in_place"])
+def test_a_failed_materialization_leaves_the_random_streams_alone(materialization, monkeypatch):
+    model = _model()
+    torch.manual_seed(1)
+    before = torch.get_rng_state()
+    if materialization == "fresh":
+        recipe = TransformRecipe([low_rank("layers.1", rank=999)], materialization="fresh")  # the base is built first
+    else:
+        from nnx import transforms
+
+        real = transforms._build
+        calls = []
+
+        def failing(op, linear, *, allocate_only):
+            calls.append(op.id)
+            if len(calls) == 2:
+                raise RuntimeError("interrupted after a LoRA initialization")
+            return real(op, linear, allocate_only=allocate_only)
+
+        monkeypatch.setattr(transforms, "_build", failing)
+        recipe = _recipe()
+    with pytest.raises((RecipeError, RuntimeError)):
+        recipe.materialize(model)
+    assert torch.equal(torch.get_rng_state(), before)
+
+
+def test_a_bitfit_optimizer_built_after_the_recipe_passes():
+    model = TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(_model())
+    model.net.layers[0].base.bias.requires_grad_(True)  # base bias deliberately unfrozen, adapter left out
+    check_optimizer(model, torch.optim.SGD([model.net.layers[0].base.bias, *model.net.layers[2].parameters()], lr=0.1))
+    with pytest.raises(ValueError, match="holds the frozen base but not the adapter"):
+        check_optimizer(model, torch.optim.SGD([model.net.layers[0].base.weight], lr=0.1))
+
+
+def test_the_pre_training_topology_check_leaves_an_unused_cuda_context_alone():
+    import nnx.seeding as seeding
+
+    captured = []
+    real = seeding._capture_rng_state
+
+    def spy(loader=None, *, cuda=True):
+        captured.append(cuda)
+        return real(loader, cuda=cuda)
+
+    model = _recipe().materialize(_model())
+    with mock.patch.object(torch.cuda, "is_initialized", return_value=False):
+        with mock.patch.object(seeding, "_capture_rng_state", side_effect=spy):
+            model._assert_reconstructible_topology()
+    assert captured == [False]

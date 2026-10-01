@@ -4995,7 +4995,7 @@ Check the whole recipe as :meth:`materialize` would — against ``model`` in pla
 nnx.transforms.TransformRecipe.materialize(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'NNModel'
 ```
 
-Validate the whole recipe (as :meth:`validate`), then apply it — to ``model`` itself (``"in_place"``, returned) or to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned). The operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model as it was.
+Validate the whole recipe (as :meth:`validate`), then apply it — to ``model`` itself (``"in_place"``, returned) or to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned). The operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model — and the global random streams a fresh base or a LoRA initialization draws from — as they were.
 
 
 #### `nnx.transforms.TransformOp`
@@ -5055,7 +5055,7 @@ Replace each ``nn.Linear`` at ``targets`` by its rank-``rank`` factorization (``
 nnx.transforms.check_optimizer(model: 'NNModel', optimizer: 'torch.optim.Optimizer') -> 'None'
 ```
 
-Refuse an optimizer built before the model's recipe: one holding parameters the recipe replaced (a low-rank operation's layers, or the model a fresh materialization started from), or holding a LoRA target's base weights but not the adapter built around them. An optimizer built afterwards — over every parameter, a subset, or with parameters outside ``model.net`` — passes.
+Refuse an optimizer built before the model's recipe: one holding parameters the recipe replaced (a low-rank operation's layers, or the model a fresh materialization started from), or holding a LoRA target's frozen base weights but not the adapter built around them. An optimizer built afterwards — over every parameter, a subset, or with parameters outside ``model.net`` — passes.
 
 
 #### `nnx.transforms.RecipeError`

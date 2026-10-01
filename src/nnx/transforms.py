@@ -77,15 +77,22 @@ _Problem = tuple[Optional[int], str, Optional[str], str]
 _SUPERSEDED: weakref.WeakKeyDictionary[Any, dict[int, weakref.ref]] = weakref.WeakKeyDictionary()
 
 
+def _random_streams() -> dict[str, Any]:
+    """The global random streams, read without creating a CUDA context."""
+    import torch
+
+    from .seeding import _capture_rng_state
+
+    return _capture_rng_state(None, cuda=torch.cuda.is_initialized())
+
+
 @contextlib.contextmanager
 def _random_streams_kept() -> Iterator[None]:
     """Run a build whose initial values are discarded without moving the
-    global random streams (and without creating a CUDA context)."""
-    import torch
+    global random streams."""
+    from .seeding import _restore_rng_state
 
-    from .seeding import _capture_rng_state, _restore_rng_state
-
-    state = _capture_rng_state(None, cuda=torch.cuda.is_initialized())
+    state = _random_streams()
     try:
         yield
     finally:
@@ -316,11 +323,20 @@ class TransformRecipe:
         registered base built from ``model``'s descriptor (``"fresh"``,
         returned). The operations are recorded on the returned model, so
         its checkpoints and Hub saves rebuild the same topology.
-        Transactional: a failure leaves the model as it was."""
+        Transactional: a failure leaves the model — and the global random
+        streams a fresh base or a LoRA initialization draws from — as they
+        were."""
+        from .seeding import _restore_rng_state
+
+        streams = _random_streams()
         if self.materialization == "fresh":
             _check_source(model, fresh=True)
             target = _fresh_base(model)  # built once, then checked as validate would
-            _validate(target.net, self.operations, (), ())
+            try:
+                _validate(target.net, self.operations, (), ())
+            except BaseException:
+                _restore_rng_state(streams, None)
+                raise
         else:
             self.validate(model, optimizers=optimizers)
             target = model
@@ -344,18 +360,18 @@ class TransformRecipe:
                 parameter.requires_grad_(requires_grad)
             for module, training in modes:
                 module.training = training
+            _restore_rng_state(streams, None)
             raise
         target._topology_transforms = (*target._topology_transforms, *self.checkpoint_transforms())
         # What an optimizer built before this materialization holds and
         # check_optimizer refuses: the replaced low-rank layers, or the
         # whole source of a fresh base.
         superseded = list(model.net.parameters()) if target is not model else []
-        superseded += [p for (_, original) in replaced if type(original) is nn.Linear for p in original.parameters()]
+        superseded += [p for _, original in replaced for p in original.parameters()]
         live = {id(p) for p in target.net.parameters()}
-        record = _SUPERSEDED.setdefault(target, {})
-        for parameter in superseded:
-            if id(parameter) not in live:
-                record[id(parameter)] = weakref.ref(parameter)
+        gone = {id(p): weakref.ref(p) for p in superseded if id(p) not in live}
+        if gone:
+            _SUPERSEDED.setdefault(target, {}).update(gone)
         return target
 
 
@@ -547,17 +563,24 @@ _Shape = tuple[Optional[int], ...]
 
 def _expected_state(
     base: Mapping[str, Any], transforms: Sequence[NNCheckpointTransform]
-) -> Optional[dict[str, Optional[_Shape]]]:
+) -> Optional[tuple[dict[str, Optional[_Shape]], list[str]]]:
     """``{key: shape}`` of a base's tensors after the recorded recipe
     ``transforms`` — a shape is ``None``, or a dimension of it is, where the
-    base gives only names (a registered factory's reference keys); ``None``
-    when one is not a recipe operation."""
+    base gives only names (a registered factory's reference keys) — and the
+    recorded targets the base has no layer for; ``None`` when one is not a
+    recipe operation."""
     state: dict[str, Optional[_Shape]] = dict(base)
+    absent: list[str] = []
     for transform in transforms:
         if not _replayable(transform):
             return None
         op = TransformOp.from_checkpoint_transform(transform)
         for path in op.targets:
+            if f"{path}.weight" not in state:
+                # Added by unrecorded surgery: a rebuild from the base could
+                # not find it.
+                absent.append(f"{op.id} target {path!r} is not a layer of the base")
+                continue
             weight = state.pop(f"{path}.weight", None)
             has_bias = f"{path}.bias" in state
             bias = state.pop(f"{path}.bias", None)
@@ -577,7 +600,7 @@ def _expected_state(
                 state[f"{path}.1.weight"] = (out_features, rank)
                 if has_bias:
                     state[f"{path}.1.bias"] = bias
-    return state
+    return state, absent
 
 
 def _topology_problems(
@@ -590,9 +613,12 @@ def _topology_problems(
 
     from .peft.lora import LoRALinear
 
-    expected = _expected_state(base_state, transforms)
-    if expected is None:
+    outcome = _expected_state(base_state, transforms)
+    if outcome is None:
         return []
+    expected, absent = outcome
+    if absent:
+        return absent
     actual = {key: tuple(value.shape) for key, value in net.state_dict().items() if isinstance(value, torch.Tensor)}
     problems: list[str] = []
     unexpected, missing = sorted(set(actual) - set(expected)), sorted(set(expected) - set(actual))
@@ -630,7 +656,7 @@ def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
     """Refuse an optimizer built before the model's recipe: one holding
     parameters the recipe replaced (a low-rank operation's layers, or the
     model a fresh materialization started from), or holding a LoRA
-    target's base weights but not the adapter built around them. An
+    target's frozen base weights but not the adapter built around them. An
     optimizer built afterwards — over every parameter, a subset, or with
     parameters outside ``model.net`` — passes."""
     from .surgery._utils import get_module
@@ -656,7 +682,12 @@ def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
                 getattr(wrapper, "base", None),
                 (getattr(wrapper, "lora_A", None), getattr(wrapper, "lora_B", None)),
             )
-            holds_base = isinstance(base, nn.Module) and any(id(p) in held_ids for p in base.parameters())
+            # Built before the recipe, an optimizer holds the base weights the
+            # wrapper froze; one built after holds the adapter too, or only
+            # base tensors deliberately unfrozen again (BitFit-style).
+            holds_base = isinstance(base, nn.Module) and any(
+                id(p) in held_ids and not p.requires_grad for p in base.parameters()
+            )
             if holds_base and not any(isinstance(p, nn.Parameter) and id(p) in held_ids for p in adapter):
                 unadapted.append(path)
     if stale or unadapted:

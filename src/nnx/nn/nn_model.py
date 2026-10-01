@@ -1412,11 +1412,10 @@ class NNModel(_HubMixinBase):
             base_state = dict.fromkeys(getattr(self, "_reference_state_keys", ()))
         elif isinstance(net, Nets):
             assert self.net_params is not None
-            rng_state = _capture_rng_state(None)
-            try:
+            from ..transforms import _random_streams_kept
+
+            with _random_streams_kept():  # a throwaway build reads no CUDA stream it would create
                 fresh = net(params=self.net_params).state_dict()
-            finally:
-                _restore_rng_state(rng_state, None)
             base_state = {key: tuple(value.shape) for key, value in fresh.items() if isinstance(value, torch.Tensor)}
         else:
             return  # a runtime module is marked reconstructible=False instead
