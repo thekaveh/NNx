@@ -128,14 +128,25 @@ class JobError(DecisionError):
 
     def __reduce__(self) -> Any:
         # Keyword-only fields would break Exception's default pickling (a
-        # process-pool worker's error must reach its parent intact).
-        return (_restore_error, (type(self), str(self), dict(self.__dict__)))
+        # process-pool worker's error must reach its parent intact), and so
+        # would dropping the provider's error (the __cause__) when it pickles.
+        import pickle
+
+        cause = self.__cause__
+        try:
+            pickle.dumps(cause)
+        except Exception:
+            cause = None
+        return (_restore_error, (type(self), str(self), dict(self.__dict__), cause))
 
 
-def _restore_error(cls: type[JobError], message: str, fields: dict[str, Any]) -> JobError:
+def _restore_error(
+    cls: type[JobError], message: str, fields: dict[str, Any], cause: Optional[BaseException] = None
+) -> JobError:
     error = cls.__new__(cls)
     Exception.__init__(error, message)
     error.__dict__.update(fields)
+    error.__cause__ = cause
     return error
 
 
@@ -473,6 +484,15 @@ def _static_asks(job: DecisionJob) -> Iterator[_Ask]:
 _PENDING = object()
 
 
+class _ProviderError(Exception):
+    """A provider hook (``check``, ``capabilities``, ``count_tokens``) raised
+    something other than a declared refusal; carried to fail-fast."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 def _modality(state: Any) -> tuple[str, int]:
     """The modality and batch size a provider's capabilities are checked
     against, read from the state."""
@@ -533,7 +553,16 @@ class _Runner:
                 f"limits.max_tokens={limits.max_tokens} cannot be enforced: the provider has no count_tokens()"
             )
         # Every question known before running is validated before any call.
-        self._register([(ask, 0) for ask in _static_asks(job)])
+        try:
+            self._register([(ask, 0) for ask in _static_asks(job)])
+        except _ProviderError as wrapped:
+            failure = JobFailed(
+                f"the provider's pre-call check failed ({type(wrapped.error).__name__}: {wrapped.error})",
+                outcomes={},
+                failed=(),
+                skipped=tuple(self.registered),
+            )
+            raise failure from wrapped.error
 
     def _ordered(self) -> dict[str, QuestionOutcome]:
         """The outcomes in scheduling order (not completion order)."""
@@ -563,6 +592,8 @@ class _Runner:
                 self.provider.capabilities().check(ask.question, modality=modality, batch_size=batch_size)
         except (UnsupportedCapability, InvalidDecisionRequest) as error:
             raise InvalidJob(f"question {ask.id!r} cannot be served: {error}", outcomes=self._ordered()) from error
+        except Exception as error:  # the provider's own check failed: a provider failure
+            raise _ProviderError(error) from error
         self.checked.add(key)
 
     # ---------- evaluation ----------
@@ -617,24 +648,44 @@ class _Runner:
     def _round(self) -> tuple[Any, list[list[_Ready]]]:
         """The job's value (or pending) and this round's provider calls."""
         ready: list[_Ready] = []
-        try:
-            value = self._evaluate(self.job, 0, 0, (), ready)
-        except JobError as error:  # questions already ready are reported, never sent
+
+        def skip_ready() -> None:  # questions already ready are reported, never sent
             for item in ready:
                 self.order.setdefault(item.ask.id, None)
                 self.outcomes.setdefault(item.ask.id, QuestionOutcome(item.ask.id, "skipped"))
+
+        try:
+            value = self._evaluate(self.job, 0, 0, (), ready)
+            if value is not _PENDING:
+                return value, []
+            groups: dict[int, list[_Ready]] = {}
+            for item in ready:
+                groups.setdefault(item.group, []).append(item)  # stable: first appearance
+            chunks = [chunk for items in groups.values() for chunk in self._chunks(items)]
+        except JobError as error:
+            skip_ready()
             error.outcomes = self._ordered()
             error.completed = {k: v for k, v in error.outcomes.items() if v.kind == "answered"}
             raise
-        if value is not _PENDING:
-            return value, []
-        groups: dict[int, list[_Ready]] = {}
-        for item in ready:
-            groups.setdefault(item.group, []).append(item)  # stable: first appearance
-        chunks = [chunk for items in groups.values() for chunk in self._chunks(items)]
+        except _ProviderError as wrapped:  # fail-fast: answers already received are kept
+            skip_ready()
+            failure = JobFailed(
+                f"a provider hook failed ({type(wrapped.error).__name__}: {wrapped.error}); "
+                f"{len(ready)} ready question(s) skipped",
+                outcomes=self._ordered(),
+                failed=(),
+                skipped=[item.ask.id for item in ready],
+            )
+            raise failure from wrapped.error
         for chunk in chunks:
             self.order.update(dict.fromkeys(item.ask.id for item in chunk))
         return value, chunks
+
+    def _count_tokens(self, questions: list[Question], state: Any) -> Any:
+        try:
+            return self.provider.count_tokens(questions, state)
+        except Exception as error:  # the provider's token count failed: a provider failure
+            raise _ProviderError(error) from error
 
     def _chunks(self, items: list[_Ready]) -> list[list[_Ready]]:
         """``ceil(len / cap)`` calls of up to ``cap`` questions, in order,
@@ -645,7 +696,7 @@ class _Runner:
         current: list[_Ready] = []
         for item in items:
             candidate = [*current, item]
-            tokens = self.provider.count_tokens([r.ask.question for r in candidate], item.state)
+            tokens = self._count_tokens([r.ask.question for r in candidate], item.state)
             if len(candidate) <= self.cap and tokens <= self.limits.max_tokens:
                 current = candidate
                 continue
@@ -656,7 +707,7 @@ class _Runner:
                 )
             chunks.append(current)
             current = [item]
-            alone = self.provider.count_tokens([item.ask.question], item.state)
+            alone = self._count_tokens([item.ask.question], item.state)
             if alone > self.limits.max_tokens:
                 raise InvalidJob(
                     f"question {item.ask.id!r} alone exceeds max_tokens={self.limits.max_tokens} ({alone} tokens)",
@@ -824,7 +875,14 @@ class _Runner:
         launches = 0
 
         def cancelled() -> bool:
-            return stop is not None and (stop.done() or cast(asyncio.Event, cancel).is_set())
+            if stop is None:
+                return False
+            if stop.done() and not stop.cancelled() and stop.exception() is not None:
+                # The watcher itself failed (an event bound to another loop): not a cancellation.
+                raise InvalidJob(
+                    f"the cancel event cannot be awaited in this event loop: {stop.exception()}"
+                ) from stop.exception()
+            return stop.done() or cast(asyncio.Event, cancel).is_set()
 
         async def call(launch: int, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
             started.add(launch)

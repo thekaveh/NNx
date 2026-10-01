@@ -181,7 +181,9 @@ result.calls                                           # provider calls made
   question, one result per input row, each a result of that question (its
   digest): answers in the wrong order, short rows or a flat list are an
   `InvalidDecisionResponse` failure, never filed under the wrong id.
-- **Fail-fast.** When a call raises, nothing more is scheduled. `JobFailed`
+- **Fail-fast.** When a call raises — or a provider hook fails: its
+  `check`, `capabilities()` or `count_tokens` raising anything but a
+  declared refusal — nothing more is scheduled. `JobFailed`
   carries `outcomes` (every outcome so far, in scheduling order),
   `completed` (the answered ones), `failed` (the questions of that call) and
   `skipped` (ready questions never sent); continuations
@@ -195,7 +197,9 @@ result.calls                                           # provider calls made
   call (its methods need not be thread-safe); a running thread cannot be
   interrupted, so the run waits for it before returning, and a cancellation
   that arrives meanwhile is delivered once it is done. Setting the `cancel`
-  event (an `asyncio.Event`; set at any point, even if cleared again) stops
+  event (an `asyncio.Event` of the running loop — one bound to another loop
+  is an `InvalidJob`, never a cancellation; set at any point, even if
+  cleared again) stops
   scheduling — no continuation runs after it — and returns a `JobResult`
   with `status="cancelled"` and no value. A cancellation the provider
   raises itself is a provider failure, not a cancelled job. Cancelling the task cancels only the

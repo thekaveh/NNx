@@ -688,3 +688,75 @@ def test_cancel_events_are_asyncio_events_and_a_set_is_never_missed():
     result, ran = asyncio.run(set_then_clear())
     assert result.status == "cancelled" and ran == []  # the continuation never ran
     assert {q: (o.kind, o.sent) for q, o in result.outcomes.items()} == {"t": ("cancelled", True)}
+
+
+def test_a_failing_provider_hook_is_a_typed_failure_that_keeps_answers():
+    class FlakyCounter(TextProvider):
+        def __init__(self):
+            super().__init__()
+            self.counts = 0
+
+        def count_tokens(self, questions, texts):
+            self.counts += 1
+            if self.counts > 2:  # the second round's count fails
+                raise ConnectionError("token endpoint down")
+            return len(questions)
+
+    def job():
+        return Job.collect(
+            {
+                "x": Job.ask(TOPIC, id="a").then(lambda _: Follow(Job.ask(Boolean("Mentions goal"), id="c"), TEXTS)),
+                "y": Job.ask(Boolean("Mentions bank"), id="b"),
+            }
+        )
+
+    for runner in ("run", "arun"):
+        provider = FlakyCounter()
+        with pytest.raises(JobFailed) as caught:
+            if runner == "run":
+                job().run(provider, state=TEXTS, limits=Limits(max_tokens=50))
+            else:
+                asyncio.run(job().arun(provider, state=TEXTS, limits=Limits(max_tokens=50)))
+        error = caught.value
+        assert isinstance(error.__cause__, ConnectionError) and set(error.completed) == {"a", "b"}
+        assert error.skipped == ("c",) and error.outcomes["c"].kind == "skipped"
+
+    class BrokenCheck(TextProvider):
+        def check(self, question, inputs):
+            raise RuntimeError("capability service down")
+
+    with pytest.raises(JobFailed, match="pre-call check failed"):
+        Job.ask(TOPIC, id="t").run(BrokenCheck(), state=TEXTS)
+
+
+def test_a_continuation_over_the_token_cap_reports_ready_questions_as_skipped():
+    class Counting(TextProvider):
+        def count_tokens(self, questions, texts):
+            return sum(100 if q.prompt == "Mentions huge" else 1 for q in questions)
+
+    job = Job.ask(TOPIC, id="a").then(
+        lambda _: Follow(
+            Job.collect({"c": Job.ask(Boolean("Mentions huge"), id="c"), "d": Job.ask(Boolean("Mentions d"), id="d")}),
+            TEXTS,
+        )
+    )
+    with pytest.raises(InvalidJob, match="alone exceeds max_tokens=5") as caught:
+        job.run(Counting(), state=TEXTS, limits=Limits(max_tokens=5))
+    kinds = {q: o.kind for q, o in caught.value.outcomes.items()}
+    assert kinds == {"a": "answered", "c": "skipped", "d": "skipped"}
+
+
+def test_a_cancel_event_bound_to_another_loop_is_an_error_not_a_cancellation():
+    event = asyncio.Event()
+    job = Job.ask(TOPIC, id="t")
+    first = asyncio.run(job.arun(SlowAsyncProvider(), state=TEXTS, cancel=event))
+    assert first.status == "completed"
+    with pytest.raises(InvalidJob, match="cannot be awaited in this event loop"):
+        asyncio.run(job.arun(SlowAsyncProvider(), state=TEXTS, cancel=event))
+
+
+def test_pickled_job_errors_keep_their_cause():
+    with pytest.raises(JobFailed) as caught:
+        Job.ask(Boolean("boom"), id="b").run(TextProvider(fail_on={"boom"}), state=TEXTS)
+    restored = pickle.loads(pickle.dumps(caught.value))
+    assert isinstance(restored.__cause__, RuntimeError) and str(restored.__cause__) == str(caught.value.__cause__)
