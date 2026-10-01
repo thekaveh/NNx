@@ -1410,35 +1410,43 @@ class NNModel(_HubMixinBase):
         uninitialized lazy parameter); ``None`` for a runtime module, which
         nothing rebuilds."""
         recorded = getattr(self, "_reference_state", None)
-        if recorded is not None:
-            return dict(recorded)
-        net_params = getattr(self, "net_params", None)
-        if isinstance(self.params.net, Nets) and net_params is not None:
-            # An object that never ran __init__ (a stand-in, an old pickle):
-            # rebuild the reference as before, off the global random streams.
-            from ..seeding import _global_rng_kept
+        if recorded is None:
+            # An object that never ran this __init__ (a stand-in, an older
+            # pickle) gets the reference develop used: a factory's recorded
+            # names, or a rebuild of a built-in net off the global random
+            # streams — computed once.
+            net, net_params = self.params.net, getattr(self, "net_params", None)
+            legacy_keys = getattr(self, "_reference_state_keys", None)
+            if isinstance(net, ModelSpec) and legacy_keys is not None:
+                recorded = dict.fromkeys(legacy_keys)
+            elif isinstance(net, Nets) and net_params is not None:
+                from ..seeding import _global_rng_kept
 
-            with _global_rng_kept():
-                return _state_shapes(self.params.net(params=net_params).state_dict())
-        return None
+                with _global_rng_kept():
+                    recorded = _state_shapes(net(params=net_params).state_dict())
+            else:
+                return None
+            self._reference_state = recorded
+        return dict(recorded)
 
-    def _topology_drift(self) -> list[str]:
+    def _topology_drift(self) -> Optional[str]:
         """How the live topology differs from the descriptor plus the
         recorded recipe (FEAT-016) — names, shapes, each target's module and
-        configuration — as problem lines naming the cause; empty when it
-        matches, or when nothing could tell (a runtime module, a train-end
-        transform that rebuilds its own topology)."""
+        configuration — as one message; ``None`` when it matches, or when
+        nothing could tell (a runtime module, a train-end transform that
+        rebuilds its own topology)."""
         base_state = self._base_state()
         if base_state is None:
-            return []
+            return None
         from ..transforms import _topology_problems
 
         problems = _topology_problems(self.net, base_state, tuple(self._topology_transforms))
-        return [
-            f"the model's topology differs from its descriptor plus its recorded transformation recipe (unrecorded "
-            f"surgery?): {problem}"
-            for problem in problems[:5]
-        ]
+        if not problems:
+            return None
+        return (
+            "the model's topology differs from its descriptor plus its recorded transformation recipe (unrecorded "
+            "surgery?): " + "; ".join(problems[:5])
+        )
 
     def _assert_reconstructible_topology(self) -> None:
         transforms = tuple(self._topology_transforms)
@@ -1451,10 +1459,11 @@ class NNModel(_HubMixinBase):
             # FEAT-016: the live topology must be exactly the base plus its
             # recorded recipe; surgery outside the recipe stays unrecorded.
             drift = self._topology_drift()
-            if drift:
+            if drift is not None:
                 raise ValueError(
-                    "; ".join(drift)
-                    + "; apply topology changes through nnx.transforms.TransformRecipe so checkpoints can rebuild them"
+                    drift
+                    + "; apply topology changes through nnx.transforms.TransformRecipe so checkpoints can rebuild "
+                    "them"
                 )
             return
         expected_keys = set(base_state)

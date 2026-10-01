@@ -312,16 +312,11 @@ class TransformRecipe:
             recorded = _recorded_operations(model)
             # The model must already be its descriptor plus its recorded
             # recipe, or nothing recorded on it could ever be rebuilt.
-            preexisting: list[_Problem] = [(None, "recipe", None, problem) for problem in model._topology_drift()]
-            base = model._base_state() or {}
-            for index, op in enumerate(self.operations):
-                for path in op.targets:
-                    if isinstance(path, str) and f"{path}.weight" in base and base[f"{path}.weight"] is None:
-                        reason = (
-                            "was an uninitialized lazy layer when the model was built, so a rebuild could not replay it"
-                        )
-                        preexisting.append((index, op.id, path, reason))
-            _validate(model.net, self.operations, recorded, list(optimizers), problems=preexisting)
+            drift = model._topology_drift()
+            preexisting: list[_Problem] = [] if drift is None else [(None, "recipe", None, drift)]
+            _validate(
+                model.net, self.operations, recorded, list(optimizers), problems=preexisting, base=model._base_state()
+            )
 
     def materialize(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> NNModel:
         """Validate the whole recipe (as :meth:`validate`), then apply it —
@@ -360,10 +355,16 @@ class TransformRecipe:
                 for path, original in reversed(replaced):
                     set_module(target.net, path, original)
                 # Modes first: a module's own train() may change flags,
-                # which are then set exactly as they were.
-                _restore_training_modes(modes)
-                for parameter, requires_grad in flags:
-                    parameter.requires_grad_(requires_grad)
+                # which are then set exactly as they were. A failing hook
+                # must not hide the original error or skip the flags.
+                try:
+                    _restore_training_modes(modes)
+                except Exception:
+                    for module, training in modes:
+                        module.training = training
+                finally:
+                    for parameter, requires_grad in flags:
+                        parameter.requires_grad_(requires_grad)
                 raise
         except BaseException:
             _restore_rng_state(streams, None)
@@ -460,9 +461,13 @@ def _validate(
     *,
     indexed: bool = True,
     problems: Sequence[_Problem] = (),
+    base: Optional[Mapping[str, Optional[_Shape]]] = None,
 ) -> None:
     """Raise one :class:`RecipeError` naming every problem of
-    ``operations`` on ``net``, after any ``problems`` already found."""
+    ``operations`` on ``net``, after any ``problems`` already found.
+    ``base`` — the ``{key: shape}`` the model's descriptor rebuilds, for an
+    in-place materialization — refuses a target a rebuild could not
+    replay on."""
     problems = list(problems)
     paths = _registration_paths(net)
     owners = [(op, path) for op in recorded for path in op.targets]
@@ -483,6 +488,10 @@ def _validate(
                 module = net.get_submodule(path)
             except AttributeError:
                 problems.append((index, op.id, path, "no such module in model.net"))
+                continue
+            if base is not None and base.get(f"{path}.weight", ()) is None:
+                reason = "was an uninitialized lazy layer when the model was built, so a rebuild could not replay it"
+                problems.append((index, op.id, path, reason))
                 continue
             if type(module) is not nn.Linear:
                 problems.append((index, op.id, path, f"is a {type(module).__name__}; only nn.Linear is supported"))
@@ -607,8 +616,8 @@ def _expected_state(
                     state[f"{path}.base.bias"] = bias
             else:
                 rank = op.config["rank"]
-                # A dimension the base does not give stays None (a registered
-                # factory's names only), but the recorded rank is checked.
+                # A dimension the base does not give stays None (an
+                # uninitialized lazy layer), but the recorded rank is checked.
                 state[f"{path}.0.weight"] = (rank, in_features)
                 state[f"{path}.1.weight"] = (out_features, rank)
                 if has_bias:

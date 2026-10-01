@@ -977,3 +977,69 @@ def test_a_rollback_restores_flags_after_a_custom_train_hook(monkeypatch):
         TransformRecipe([lora("a", r=2, alpha=4.0), lora("b", r=2, alpha=4.0)]).materialize(model)
     assert [(n, p.requires_grad) for n, p in model.net.named_parameters()] == before
     assert model.net.training is False
+
+
+# --- review round 8 ----------------------------------------------------------------------------------------
+
+
+def test_an_older_factory_model_keeps_the_low_rank_refusal():
+    model = NNModel(params=_register_mlp("tests.legacy_mlp"))
+    keys = list(model._reference_state)
+    del model._reference_state
+    model._reference_state_keys = tuple(keys)  # what a model pickled before this change carries
+    model.net[0] = low_rank_factorize(model.net[0], rank=2)
+    with pytest.raises(ValueError, match="low-rank surgery topology has no reconstruction recipe"):
+        model._assert_reconstructible_topology()
+
+
+def test_a_fallback_reference_is_rebuilt_once():
+    model = _model()
+    del model._reference_state
+    built = []
+    real = nn.Linear.__init__
+
+    def counting(self, *args, **kwargs):
+        built.append(1)
+        real(self, *args, **kwargs)
+
+    with mock.patch.object(nn.Linear, "__init__", counting):
+        model._base_state()
+        first = len(built)
+        model._base_state()
+    assert first > 0 and len(built) == first
+
+
+def test_a_rollback_survives_a_failing_train_hook(monkeypatch):
+    from nnx import transforms
+
+    model = _model()
+    before = [(n, p.requires_grad) for n, p in model.net.named_parameters()]
+    monkeypatch.setattr(model.net, "train", mock.Mock(side_effect=RuntimeError("hook failed")))
+    real, calls = transforms._build, []
+
+    def failing(op, linear, *, allocate_only):
+        calls.append(1)
+        if len(calls) == 2:
+            raise KeyError("the original failure")
+        return real(op, linear, allocate_only=allocate_only)
+
+    monkeypatch.setattr(transforms, "_build", failing)
+    with pytest.raises(KeyError, match="the original failure"):
+        TransformRecipe([lora("layers.0", r=2, alpha=4.0), lora("layers.1", r=2, alpha=4.0)]).materialize(model)
+    assert [(n, p.requires_grad) for n, p in model.net.named_parameters()] == before
+
+
+def test_a_lazy_target_is_reported_once():
+    model = _lazy_model("tests.lazy_once")
+    with pytest.raises(RecipeError) as caught:
+        TransformRecipe([lora("0", r=2, alpha=4.0)]).validate(model)
+    assert [problem[2] for problem in caught.value.problems] == ["0"]
+
+
+def test_the_drift_message_names_its_cause_once():
+    model = _recipe().materialize(_model())
+    model.net.layers[2] = nn.Linear(12, 5)
+    model.net.extra = nn.Linear(2, 2)
+    with pytest.raises(ValueError) as caught:
+        model._assert_reconstructible_topology()
+    assert str(caught.value).count("differs from its descriptor plus its recorded transformation recipe") == 1
