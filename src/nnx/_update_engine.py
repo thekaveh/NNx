@@ -100,6 +100,7 @@ class UpdateEngine:
         nonfinite: str = "fail",
         autocast: Optional[Callable[[], AbstractContextManager[Any]]] = None,
         listeners: Iterable[Callable[[UpdateEvent], None]] = (),
+        precision: Any = None,
     ) -> None:
         check_nonfinite_policy(nonfinite)
         if not optimizers:
@@ -109,6 +110,8 @@ class UpdateEngine:
         self.clip_norms = dict(clip_norms or {})
         self.nonfinite = nonfinite
         self._autocast = autocast
+        # The run's ResolvedPrecision (FEAT-028), handed to every objective.
+        self.precision = precision
         self.listeners: list[Callable[[UpdateEvent], None]] = list(listeners)
         # Every optimizer's parameters, each once, in a stable order; which of
         # them require gradients is decided per microbatch (freezing).
@@ -241,11 +244,12 @@ class UpdateEngine:
             if not values:
                 return ()  # every term fully masked: nothing to learn from
             self._assign_gradients()
-            # The scaler sees only optimizers holding a gradient this window (a
-            # frozen or unused one has nothing to unscale, and GradScaler
-            # refuses to step an optimizer it never checked).
-            scaled = [opt for opt in self.optimizers.values() if _holds_gradient(opt)]
+            scaled: list[torch.optim.Optimizer] = []
             if self.scaler is not None:
+                # The scaler sees only optimizers holding a gradient this window
+                # (a frozen or unused one has nothing to unscale, and GradScaler
+                # refuses to step an optimizer it never checked).
+                scaled = [opt for opt in self.optimizers.values() if _holds_gradient(opt)]
                 for optimizer in scaled:
                     self.scaler.unscale_(optimizer)
                 if not self._gradients_finite():

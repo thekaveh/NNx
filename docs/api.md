@@ -2213,10 +2213,28 @@ This microbatch's own value (``None`` when fully masked).
 #### `nnx.objectives.ObjectiveContext`
 
 ```python
-class nnx.objectives.ObjectiveContext(model: 'NNModel', batch: 'Any', epoch_idx: 'int', batch_idx: 'int', extra_metrics: 'Optional[Mapping[str, Callable]]' = None) -> 'None'
+class nnx.objectives.ObjectiveContext(model: 'NNModel', batch: 'Any', epoch_idx: 'int', batch_idx: 'int', extra_metrics: 'Optional[Mapping[str, Callable]]' = None, precision: 'Optional[ResolvedPrecision]' = None) -> 'None'
 ```
 
 What an objective sees for one microbatch.
+
+**Details**
+
+```text
+``precision`` is the run's resolved precision (FEAT-028; ``None`` when
+called outside a run). The objective runs under its autocast, so a
+reduced run's forward outputs are float16 / bfloat16:
+:meth:`full_precision` returns them as float32 for the loss's
+bookkeeping and the records (bf16 has no NumPy dtype).
+```
+
+##### `nnx.objectives.ObjectiveContext.full_precision`
+
+```python
+nnx.objectives.ObjectiveContext.full_precision(self, tensor: 'torch.Tensor') -> 'torch.Tensor'
+```
+
+``tensor`` in full precision: a reduced run's float16 / bfloat16 output as float32 (differentiable), anything else unchanged.
 
 
 #### `nnx.objectives.ObjectiveResult`

@@ -47,6 +47,7 @@ from ._update_engine import REDUCTIONS, UpdateEvent, check_nonfinite_policy
 if TYPE_CHECKING:
     from .nn.nn_model import NNModel
     from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from .precision import ResolvedPrecision
 
 __all__ = [
     "KDObjective",
@@ -133,13 +134,26 @@ class LossTerm:
 
 @dataclass(frozen=True)
 class ObjectiveContext:
-    """What an objective sees for one microbatch."""
+    """What an objective sees for one microbatch.
+
+    ``precision`` is the run's resolved precision (FEAT-028; ``None`` when
+    called outside a run). The objective runs under its autocast, so a
+    reduced run's forward outputs are float16 / bfloat16:
+    :meth:`full_precision` returns them as float32 for the loss's
+    bookkeeping and the records (bf16 has no NumPy dtype).
+    """
 
     model: NNModel
     batch: Any
     epoch_idx: int
     batch_idx: int
     extra_metrics: Optional[Mapping[str, Callable]] = None
+    precision: Optional[ResolvedPrecision] = None
+
+    def full_precision(self, tensor: torch.Tensor) -> torch.Tensor:
+        """``tensor`` in full precision: a reduced run's float16 / bfloat16
+        output as float32 (differentiable), anything else unchanged."""
+        return self.precision.output(tensor) if self.precision is not None else tensor
 
 
 @dataclass(frozen=True)
@@ -209,7 +223,7 @@ class SupervisedObjective(Objective):
         adapter = getattr(model, "task_adapter", None)
         if adapter is not None:
             _, target, logits = model._fwd_outputs(ctx.batch)
-            output, target, valid = adapter.prepare(logits, target)
+            output, target, valid = adapter.prepare(ctx.full_precision(logits), target)
             _, numerator, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
             term = LossTerm("loss", numerator, None, "sum") if weight is None else LossTerm("loss", numerator, weight)
             accumulator = adapter.accumulator(keep_arrays=bool(ctx.extra_metrics))
@@ -218,6 +232,7 @@ class SupervisedObjective(Objective):
             record = accumulator.result(loss=term.value, extra_metrics=ctx.extra_metrics)
             return ObjectiveResult((term,), record)
         _, target, logits, prediction = model._fwd_pass(ctx.batch)
+        logits = ctx.full_precision(logits)
         term = _supervised_terms(model, logits, target, "loss", 1.0)
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
@@ -266,9 +281,11 @@ class KDObjective(Objective):
         model = ctx.model
         model.net.train()
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
-        student = model._net_forward((X,), {})
+        student = ctx.full_precision(model._net_forward((X,), {}))
         with torch.no_grad():
-            teacher_logits = self.teacher._net_forward((X.to(self.teacher.device),), {}).to(model.device)
+            teacher_logits = ctx.full_precision(
+                self.teacher._net_forward((X.to(self.teacher.device),), {}).to(model.device)
+            )
         rows = int(student.shape[0])
         soft = LossTerm(
             "distillation",

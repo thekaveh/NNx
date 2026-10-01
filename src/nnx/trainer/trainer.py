@@ -366,6 +366,10 @@ class Trainer:
                 "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
             )
 
+        # FEAT-028: the precision is resolved (and a step function refused a
+        # reduced policy) before anything is seeded, built or reserved.
+        precision = _trainer_precision(self.model, objective)
+
         if params.seed is not None:
             from ..seeding import set_seed
 
@@ -415,8 +419,6 @@ class Trainer:
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()
         }
-        # FEAT-028: the precision is resolved before any run is reserved.
-        precision = _trainer_precision(self.model, objective)
         if precision.uses_scaler and objective is not None:
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
 

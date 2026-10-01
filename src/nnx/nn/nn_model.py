@@ -751,17 +751,22 @@ def _step_loss_terms(
     batch: Any,
     accumulation_state: Optional[GradientAccumulationState],
     accumulate_grad_batches: int,
+    precision: Optional[ResolvedPrecision] = None,
 ) -> _StepLossTerms:
     """Forward one batch and compute its loss terms.
 
     Legacy models decode by loss (`_fwd_pass`). A model with a task
     (FEAT-002) validates the batch through its adapter first — before any
     backward pass or optimizer update — and scores only the valid targets.
+    Under a reduced ``precision`` (FEAT-028) the forward's output is taken
+    in full precision before the task, the loss and the records see it
+    (bf16 has no NumPy dtype; a task casts its targets to the output's).
     """
     adapter = getattr(model, "task_adapter", None)
+    full = precision.output if precision is not None else _unchanged
     if adapter is None:
         _, Y, Y_hat_logits, Y_hat = model._fwd_pass(batch)
-        output, target, prediction, valid = Y_hat_logits, Y, Y_hat, None
+        output, target, prediction, valid = full(Y_hat_logits), Y, Y_hat, None
         if accumulation_state is None:
             train_loss = model.loss_fn(_loss_input(model.loss_fn, output), target)
             return _StepLossTerms(
@@ -771,11 +776,27 @@ def _step_loss_terms(
         return _StepLossTerms(output, target, prediction, valid, train_loss, backward_loss, weight)
 
     _, Y, logits = model._fwd_outputs(batch)
-    output, target, valid = adapter.prepare(logits, Y)
+    output, target, valid = adapter.prepare(full(logits), Y)
     train_loss, backward_loss, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
     if accumulation_state is None and weight != 0:
         backward_loss = train_loss / accumulate_grad_batches
     return _StepLossTerms(output, target, None, valid, train_loss, backward_loss, weight)
+
+
+def _check_step_precision(train_step_fn: Optional[Callable[..., Any]], precision: ResolvedPrecision) -> None:
+    """Refuse a step function marked full-precision-only (the built-in
+    imperative paradigm steps) under a reduced precision (FEAT-028) —
+    ``NNModel.train``'s rule, shared with plan validation."""
+    if precision.reduced and getattr(train_step_fn, _FULL_PRECISION_ONLY, False):
+        name = getattr(train_step_fn, "__qualname__", type(train_step_fn).__name__)
+        raise PrecisionUnsupportedError(
+            f"{name} runs in full precision only (an imperative paradigm step built on finalize_step does not "
+            f"apply the {precision.effective} policy); train it in fp32, or express the loss as an objective"
+        )
+
+
+def _unchanged(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor
 
 
 def _record_step_loss(
@@ -1089,7 +1110,12 @@ def _objective_microbatch(
     with engine.autocast():
         result = objective(
             ObjectiveContext(
-                model=model, batch=batch, epoch_idx=epoch_idx, batch_idx=batch_idx, extra_metrics=extra_metrics
+                model=model,
+                batch=batch,
+                epoch_idx=epoch_idx,
+                batch_idx=batch_idx,
+                extra_metrics=extra_metrics,
+                precision=engine.precision,
             )
         )
     if not isinstance(result, ObjectiveResult):
@@ -1152,6 +1178,7 @@ def _objective_engine(
             clip_norms=clip_norms,
             nonfinite=getattr(objective, "nonfinite", "fail"),
             autocast=precision.autocast if precision.reduced else None,
+            precision=precision,
         )
     amp = scaler is not None and device.type == "cuda"
     return UpdateEngine(
@@ -1218,15 +1245,12 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 
     adapter = getattr(model, "task_adapter", None)
     with autocast:  # the forward and loss only; the backward runs outside autocast
-        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
+        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches, precision)
     loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
     if scaler is not None:
         scaler.scale(terms.backward_loss).backward()
     else:
         terms.backward_loss.backward()
-    if reduced and precision is not None:
-        # Records read the outputs in full precision (bf16 has no NumPy dtype).
-        terms = replace(terms, output=precision.output(terms.output.detach()))
 
     if ctx.epoch_summary is not None:
         _observe_epoch_summary(ctx.epoch_summary, model, terms, adapter)
@@ -2073,12 +2097,7 @@ class NNModel(_HubMixinBase):
         apply a reduced precision (the built-in imperative paradigm steps,
         which run in full precision) before any work is done."""
         precision = self._resolve_run_precision((_PRECISION_TRAIN, _PRECISION_EVALUATE, _PRECISION_PREDICT))
-        if precision.reduced and getattr(train_step_fn, _FULL_PRECISION_ONLY, False):
-            name = getattr(train_step_fn, "__qualname__", type(train_step_fn).__name__)
-            raise PrecisionUnsupportedError(
-                f"{name} runs in full precision only (an imperative paradigm step built on finalize_step does not "
-                f"apply the {precision.effective} policy); train it in fp32, or express the loss as an objective"
-            )
+        _check_step_precision(train_step_fn, precision)
         return precision
 
     def _resolve_run_precision(self, covers: tuple[str, ...]) -> ResolvedPrecision:
@@ -2992,6 +3011,9 @@ class NNModel(_HubMixinBase):
                 accumulate_grad_batches=accumulate_grad_batches,
                 batch_idx=batch_idx,
                 epoch_idx=0,
+                # An explicit policy (FEAT-028) applies here as in train();
+                # the legacy flag keeps its scaler-on-CUDA rule.
+                precision=self.resolved_precision if self.resolved_precision.source == "policy" else None,
             )
         )
 

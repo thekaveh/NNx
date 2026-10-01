@@ -500,3 +500,72 @@ def test_fp16_refuses_optimizers_sharing_a_parameter():
             optimizers={"a": torch.optim.SGD(shared, lr=0.1), "b": torch.optim.SGD(shared[:1], lr=0.1)},
             scaler=_CheckingScaler(),
         )
+
+
+# --- review round 5 ------------------------------------------------------------------------------------------
+
+
+def _multilabel_model(precision) -> NNModel:
+    from nnx import TaskSpec
+
+    torch.manual_seed(0)
+    params = NNModelParams(
+        net=Nets.FEED_FWD,
+        device=Devices.CPU,
+        loss=Losses.BINARY_CROSS_ENTROPY,
+        task=TaskSpec.multilabel(3),
+        precision=precision,
+    )
+    return NNModel(net_params=_NET, params=params)
+
+
+def _multilabel_batches(n: int = 4, size: int = 8, seed: int = 1):
+    generator = torch.Generator().manual_seed(seed)
+    return [
+        (torch.randn(size, 4, generator=generator), torch.randint(0, 2, (size, 3), generator=generator))
+        for _ in range(n)
+    ]
+
+
+@pytest.mark.parametrize("use_objective", [False, True], ids=["default-step", "objective"])
+def test_bf16_task_steps_read_targets_in_full_precision(use_objective):
+    # A multilabel task casts its integer targets to the output's dtype: the
+    # output must reach it in float32 (NumPy has no bfloat16).
+    model = _multilabel_model(PrecisionPolicy("bf16"))
+    dtypes = _ForwardDtypes(model.net)
+    run = model.train(
+        _train_params(n_epochs=1, train_loader=_multilabel_batches()),
+        objective=supervised_objective() if use_objective else None,
+    )
+    assert dtypes.seen and dtypes.seen[0] == (torch.bfloat16, True)
+    assert all(idp.train_edp.kind == "multilabel" and np.isfinite(idp.train_edp.loss) for idp in run.idps)
+
+
+def test_the_back_compat_train_step_applies_an_explicit_policy():
+    model = _model(PrecisionPolicy("bf16"))
+    dtypes = _ForwardDtypes(model.net)
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=0.05)
+    model._train_step(_batches(1)[0], optimizer, None)
+    assert dtypes.seen == [(torch.bfloat16, True)]
+    legacy = _model()
+    dtypes = _ForwardDtypes(legacy.net)
+    legacy._train_step(_batches(1)[0], torch.optim.SGD(legacy.net.parameters(), lr=0.05), None)
+    assert dtypes.seen == [(torch.float32, False)]
+
+
+def test_a_refused_trainer_step_function_leaves_the_global_rng_untouched():
+    def step(ctx):
+        return NNEvaluationDataPoint(loss=0.0)
+
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_batches(2),
+        optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0)},
+        save_phase_checkpoints=False,
+        seed=7,
+    )
+    trainer = Trainer(_model(PrecisionPolicy("bf16")))
+    before = torch.get_rng_state()
+    with pytest.raises(PrecisionUnsupportedError):
+        trainer.train(params, trainer_step_fn=step)
+    assert torch.equal(torch.get_rng_state(), before)  # refused before set_seed

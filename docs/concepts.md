@@ -687,7 +687,12 @@ optimizer), which is refused before any run is reserved — while `Trainer` step
 update in full precision and refuse a reduced policy before any run is
 reserved. The legacy `mixed_precision` flag is not applied by `Trainer`: it
 runs objectives in full precision and warns when the flag asks for it on
-CUDA; `NNModel.train` applies it. As
+CUDA; `NNModel.train` applies it. An objective runs under the run's
+autocast, so a reduced run's forward outputs are float16 / bfloat16:
+`ObjectiveContext.precision` is the resolved precision and
+`ctx.full_precision(output)` returns an output as float32 (differentiable)
+before task preparation, the loss's bookkeeping or a record converts it to
+NumPy — the built-in objectives (and the default step) do. As
 with the default step, `NNModel.train` rejects an objective run on a
 low-rank-surgery topology it cannot reconstruct. Imperative step functions and
 `finalize_step` are unchanged.

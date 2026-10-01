@@ -592,3 +592,18 @@ def test_round_twenty_four_a_list_of_callbacks_is_told_to_spread():
     report = _plan().with_callbacks([EarlyStopping(), EarlyStopping()]).validate()
     assert report.paths == ("callbacks[0]",) and "separate arguments" in report.diagnostics[0].message
     assert "with_callback_factories" not in report.diagnostics[0].message
+
+
+def test_precision_round_five_plans_check_the_policy_before_anything_runs():
+    from nnx.paradigms.augmentation import mixup_train_step_factory
+    from nnx.precision import PrecisionPolicy
+
+    fp16_on_cpu = _plan().with_model(dataclasses.replace(MODEL, precision=PrecisionPolicy("fp16")))
+    report = fp16_on_cpu.validate()
+    assert report.paths == ("model.precision",) and "fp16" in report.diagnostics[0].message
+    bf16 = _plan().with_model(dataclasses.replace(MODEL, precision=PrecisionPolicy("bf16")))
+    assert bf16.validate().ok
+    mixup = bf16.with_step_fns(train_step_fn=mixup_train_step_factory())
+    report = mixup.validate()
+    assert report.paths == ("train_step_fn",) and "full precision only" in report.diagnostics[0].message
+    assert _plan().with_step_fns(train_step_fn=mixup_train_step_factory()).validate().ok  # fp32 takes it

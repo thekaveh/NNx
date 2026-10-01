@@ -71,6 +71,7 @@ from .nn.params.nn_optim_params import NNOptimParams
 from .nn.params.nn_params import NNParams
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams, _validate_resume_mode
+from .precision import PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 
 if TYPE_CHECKING:
     from .nn.nn_model import NNModel
@@ -520,6 +521,10 @@ class ExperimentPlan:
                 self.model.loss()  # NNModel builds it first, whatever else the plan declares
             except Exception as exc:  # building the loss runs its own code: any failure is the model's diagnostic
                 report("model.loss", str(exc))
+            try:  # NNModel resolves the policy on its device next (FEAT-028), before building anything
+                resolve_precision(self.model, self.model.device())
+            except PrecisionUnsupportedError as exc:
+                report("model.precision", str(exc))
         if self.batch_adapter is not None and not isinstance(self.batch_adapter, BatchAdapter):
             report("batch_adapter", f"must be an nnx.models.BatchAdapter, got {type(self.batch_adapter).__name__}")
         net_typed = self.net is None or isinstance(self.net, NNParams)
@@ -659,8 +664,18 @@ class ExperimentPlan:
                     f"{spread('components', component)}",
                 )
 
+    def _precision(self) -> Optional[ResolvedPrecision]:
+        """The precision the plan's model resolves to on its device, or
+        ``None`` when the model is unusable or its policy unsupported."""
+        if not isinstance(self.model, NNModelParams) or not self._model_usable:
+            return None
+        try:
+            return resolve_precision(self.model, self.model.device())
+        except PrecisionUnsupportedError:
+            return None
+
     def _check_steps(self, report: Callable[[str, str], None]) -> None:
-        from .nn.nn_model import _check_provenance
+        from .nn.nn_model import _check_provenance, _check_step_precision
 
         for path, value in (
             ("train_step_fn", self.train_step_fn),
@@ -671,6 +686,12 @@ class ExperimentPlan:
                 report(path, f"must be callable, got {value!r}")
         if self.objective is not None and self.train_step_fn is not None:
             report("objective", "pass train_step_fn or objective, not both: one owner per optimizer update")
+        precision = self._precision()
+        if precision is not None:
+            try:
+                _check_step_precision(self.train_step_fn, precision)  # train()'s own rule (FEAT-028)
+            except PrecisionUnsupportedError as exc:
+                report("train_step_fn", str(exc))
         try:
             _check_provenance(self.provenance)  # train()'s own rule
         except TypeError as exc:
@@ -916,7 +937,7 @@ class ExperimentPlan:
                 if target is not None and self._default_step:
                     model.net.train()
                     with model.resolved_precision.autocast():  # as train()
-                        terms = _step_loss_terms(model, example_batch, None, 1)
+                        terms = _step_loss_terms(model, example_batch, None, 1, model.resolved_precision)
                     # An all-masked task batch has no loss of its own, as the default step records it.
                     loss = (
                         None if terms.valid is not None and terms.normalization_weight == 0 else float(terms.train_loss)
