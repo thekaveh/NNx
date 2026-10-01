@@ -229,7 +229,7 @@ The epoch transaction is history → LAST → phase/BEST → deferred callback c
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
-The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, mixed-precision scaler, completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored.
+The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, mixed-precision scaler, completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored. A training loader that defines `set_epoch(epoch)` (PyTorch's `DistributedSampler` convention) is told each epoch's index before it is iterated, by `NNModel.train` and `Trainer.train` alike, so per-epoch randomness drawn from that index — `nnx.link_tasks` training negatives (§22) — is identical in an uninterrupted and a resumed run.
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
@@ -1765,18 +1765,22 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 - **Negatives** come from the static complement: never a positive of any
   split, a reverse, a duplicate or a barred self-loop. A request beyond the
   complement's capacity fails before sampling; validation and test
-  negatives are fixed in the manifest; training negatives are re-drawn and
-  shuffled with the positives per pass from `(seed, pass)`, and the pass
-  count is checkpointed, so a stateful resume draws what the uninterrupted
-  run would have (build the training loader and the objective from one
-  `LinkTask`; a mismatch is refused). An edge-label task samples none: a
-  non-edge is never a category (`LinkTask(split)` takes the split's mode).
+  negatives are fixed in the manifest; every training pass re-draws its
+  negatives and shuffles its rows from `(seed, epoch)` — `NNModel.train` and
+  `Trainer.train` announce each epoch to a loader that defines
+  `set_epoch(epoch)` — so a stateful resume draws exactly what the
+  uninterrupted run would have, and an extra iteration of the training
+  loader (a callback scoring it) changes nothing. The negatives' seed is
+  checkpointed, and a resumed loader with another seed is refused. An
+  edge-label task samples none: a non-edge is never a category
+  (`LinkTask(split)` takes the split's mode).
 - **Checks.** A message edge outside the training topology — a held-out
   positive is named — or a candidate outside its split, with the wrong
   target or id, a barred self-loop, or a training negative that is a fixed
   validation / test negative fails before any update. Batches are bound to
-  their role: the objective trains on `train` batches only, and evaluation
-  reads one held-out split whose every candidate appears exactly once.
+  their role: the objective trains on `train` batches only, and the
+  training evaluator reads the `val` split, every candidate exactly once
+  (score `test` with `predict()` and `link_metrics()` after training).
   The default train / evaluate / predict paths refuse link batches (they
   cannot check them), as do node-level nets and the graph-pooling adapter
   (§21).
@@ -1790,7 +1794,11 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 - **Recipe and checkpoints.** `link_predictor_spec(...)` (GCN / GraphSAGE /
   GAT encoder with no activation after its last layer, so a `"dot"`
   decoder's logits can be negative; or an `"mlp"` decoder) is rebuilt on
-  reload. The
+  reload. Both decoders are symmetric, so on a directed split `u → v` and
+  `v → u` score alike; bring an asymmetric module for direction-sensitive
+  tasks. A `resume_mode="weights_only"` warm start does not compare
+  manifests (components start fresh), so warm-start only from a run on the
+  same split. The
   manifest — topology policy, candidate ids, fixed negatives — is component
   state `"link.task"`: a resume with another split fails before the first
   resumed update.

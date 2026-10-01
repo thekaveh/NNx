@@ -5260,9 +5260,9 @@ Args:
         (binary only; by default 1, and 0 in edge-label mode).
     max_candidates: the most candidates evaluation materialises.
 
-Build the training loader and the objective from the same task: on a
-stateful resume the objective hands the loader the training pass to
-continue from, so training negatives continue as if uninterrupted.
+Training negatives are drawn per epoch from ``(seed, epoch)``, so a
+stateful resume continues them as if uninterrupted; the objective
+checkpoints the seed and refuses a resumed loader with another one.
 ```
 
 ##### `nnx.link_tasks.LinkTask.state`

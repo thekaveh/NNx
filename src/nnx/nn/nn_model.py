@@ -817,6 +817,17 @@ def _to_device(value: Any, device: torch.device) -> Any:
     return to(device) if callable(to) else value
 
 
+def _set_loader_epoch(loader: Any, epoch: int) -> None:
+    """Tell a training loader which epoch it is about to serve, when it
+    defines ``set_epoch(epoch)`` (PyTorch's ``DistributedSampler``
+    convention): a loader that draws per-epoch randomness from the epoch
+    index — ``nnx.link_tasks`` training negatives — then draws the same
+    batches in an uninterrupted run and in one resumed at that epoch."""
+    set_epoch = getattr(loader, "set_epoch", None)
+    if callable(set_epoch):
+        set_epoch(epoch)
+
+
 def _enumerate_with_last(iterable: Iterable[Any]) -> Iterator[tuple[int, Any, bool]]:
     iterator = iter(iterable)
     try:
@@ -2201,6 +2212,7 @@ class NNModel(_HubMixinBase):
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
+                _set_loader_epoch(train_loader, idx_epoch)
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 

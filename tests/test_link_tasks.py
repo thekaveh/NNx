@@ -58,10 +58,11 @@ def _model(seed: int = 0, **settings) -> NNModel:
 
 def _train(task: LinkTask, x: torch.Tensor, epochs: int = 2, **kwargs):
     model = kwargs.pop("model", None) or _model()
+    seed = kwargs.pop("negatives_seed", 0)
     run = model.train(
         params=NNTrainParams(
             n_epochs=epochs,
-            train_loader=task.loader("train", x, batch_size=32, seed=0),
+            train_loader=task.loader("train", x, batch_size=32, seed=seed),
             val_loader=task.loader("val", x, batch_size=16),
             optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
             metrics=task.metric_specs(),
@@ -410,9 +411,10 @@ def test_batches_are_bound_to_their_role():
             self.model, self.val_loader, self.extra_metrics = model, loader, None
 
     evaluate = task.eval_step()
-    assert evaluate(Ctx(task.loader("test", x, batch_size=8))).count == len(split.test) + len(split.test_negatives)
-    with pytest.raises(LinkTaskError, match="held-out split"):
-        evaluate(Ctx(task.loader("train", x, batch_size=8)))
+    assert evaluate(Ctx(task.loader("val", x, batch_size=8))).count == len(split.val) + len(split.val_negatives)
+    for name in ("train", "test"):  # selecting BEST on train or test would leak
+        with pytest.raises(LinkTaskError, match="reads the 'val' split"):
+            evaluate(Ctx(task.loader(name, x, batch_size=8)))
     with pytest.raises(LinkTaskError, match="one split"):
         evaluate(Ctx([*task.loader("val", x, batch_size=8), *task.loader("test", x, batch_size=8)]))
     with pytest.raises(LinkTaskError, match="exactly once"):
@@ -442,20 +444,59 @@ def test_a_resumed_run_continues_the_training_negatives():
         for a, b in zip(whole.net.state_dict().values(), resumed.net.state_dict().values(), strict=True)
     )
 
-    # A loader built from another task object cannot continue the passes: refused, not silently re-drawn.
-    other, again = LinkTask(split), LinkTask(split)
+    # A resumed loader drawing negatives from another seed is refused before any update.
     model = _model()
-    with pytest.raises(LinkTaskError, match="same LinkTask"):
+    with pytest.raises(LinkTaskError, match="from seed 0, the resumed loader from seed 4"):
+        _train(LinkTask(split), x, epochs=1, seed=0, model=model, resume_from_run_id=run.id, negatives_seed=None)
+
+
+def test_training_negatives_follow_the_epoch_not_the_iteration_count():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    loader = task.loader("train", x, batch_size=10_000, seed=0)
+
+    def drawn():
+        (batch,) = list(loader)
+        return batch.link_pass, sorted(map(tuple, batch.edge_label_index.t().tolist()))
+
+    first, second = drawn(), drawn()  # outside training: one pass per iteration
+    assert first[0] == 0 and second[0] == 1 and first[1] != second[1]
+    loader.set_epoch(5)
+    assert drawn() == drawn() and drawn()[0] == 5  # within an epoch, extra iterations draw the same pass
+
+    # The training loop announces each epoch, for NNModel.train and Trainer.train alike.
+    seen = []
+
+    class Recording(list):
+        def set_epoch(self, epoch):
+            seen.append(epoch)
+
+    (batch,) = list(task.loader("train", x, batch_size=10_000, seed=0))
+    objective = task.objective()
+    model = _model()
+    for _ in range(2):  # one borrowed objective, two fresh fits: both start at epoch 0
         model.train(
             params=NNTrainParams(
-                n_epochs=1,
-                train_loader=other.loader("train", x, batch_size=32, seed=0),
-                optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
-                seed=0,
-                resume_from_run_id=run.id,
+                n_epochs=2, train_loader=Recording([batch]), optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
             ),
-            objective=again.objective(),
+            objective=objective,
+            salt=str(len(seen)),
         )
+    assert seen == [0, 1, 0, 1]
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    seen.clear()
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader(Recording([batch]))
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    Trainer(_model()).train(params=params, objective=objective)
+    assert seen == [0, 1]
 
 
 def test_the_default_paths_refuse_link_batches():
@@ -489,3 +530,36 @@ def test_edge_label_defaults_shuffled_training_batches_and_conflicting_labels():
     assert set(first.edge_label.tolist()) == {0.0, 1.0}  # not every positive first
     with pytest.raises(LinkTaskError, match="more than one category"):
         LinkSplit(num_nodes=4, train=((0, 1),), categories=("a", "b"), edge_labels=(((0, 1), 0), ((0, 1), 1)))
+
+
+def test_round_two_batch_and_setting_contracts():
+    import numpy as np_
+
+    from nnx import Activations
+
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    (batch,) = list(task.loader("val", x, batch_size=10_000))
+    assert split._is_message_graph(batch.edge_index)
+    assert split._is_message_graph(batch.edge_index[:, torch.randperm(batch.edge_index.shape[1])])  # any order
+    task.check_batch(batch)
+    del batch.edge_label
+    with pytest.raises(LinkTaskError, match="one edge_label"):
+        task.check_batch(batch)
+    labelled = LinkSplit(
+        num_nodes=4,
+        train=((0, 1),),
+        categories=("a", "b"),
+        edge_labels=(((np_.int64(0), torch.tensor(1)), np_.int64(1)),),
+    )
+    assert labelled.labels() == {(0, 1): 1} and labelled.digest().startswith("sha256:")
+    assert link_predictor_spec(input_dim=2, activation=Activations.TANH).config["activation"] == "tanh"
+    # Edge-label training rows are shuffled per pass too.
+    edges = torch.tensor([[i for i in range(12)], [i + 1 for i in range(12)]])
+    categories = split_links(
+        edges, 13, val=1, test=1, seed=0, edge_labels=[i % 2 for i in range(12)], categories=("a", "b")
+    )
+    loader = LinkTask(categories).loader("train", torch.randn(13, 2), batch_size=100, seed=0)
+    orders = [next(iter(loader)).edge_label_index.t().tolist() for _ in range(2)]
+    assert orders[0] != orders[1] and sorted(orders[0]) == sorted(orders[1])

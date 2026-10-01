@@ -49,8 +49,9 @@ import hashlib
 import json
 import math
 import numbers
+import operator
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -121,6 +122,26 @@ def _pairs(edge_index: Any, what: str) -> list[Edge]:
     return pairs
 
 
+def _integer(value: Any) -> Any:
+    """``value`` as a builtin int when it is any integer (numpy, a 0-d
+    tensor); anything else unchanged, for the caller to refuse."""
+    if isinstance(value, bool):
+        return value
+    try:
+        return operator.index(value)
+    except TypeError:
+        return value
+
+
+def _node_pair(pair: Any, what: str) -> Edge:
+    if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+        raise LinkTaskError(f"{what} holds (u, v) pairs, got {pair!r}")
+    return (
+        _count(_integer(pair[0]), "a node index", minimum=0),
+        _count(_integer(pair[1]), "a node index", minimum=0),
+    )
+
+
 def _total_pairs(num_nodes: int, directed: bool, self_loops: bool) -> int:
     if directed:
         return num_nodes * num_nodes if self_loops else num_nodes * (num_nodes - 1)
@@ -188,10 +209,10 @@ class LinkSplit:
                 raise LinkTaskError("an edge-label split has no negatives: a non-edge is never a category")
             labels: dict[Edge, int] = {}
             for pair, category in self.edge_labels:
-                edge = self._edge(tuple(pair), "edge_labels")  # type: ignore[arg-type]
+                edge = self._edge(_node_pair(pair, "edge_labels"), "edge_labels")
                 if edge in labels:
                     raise LinkTaskError(f"edge {edge} has more than one category in edge_labels")
-                labels[edge] = _count(category, f"edge {edge}'s category", minimum=0)
+                labels[edge] = _count(_integer(category), f"edge {edge}'s category", minimum=0)
                 if labels[edge] >= len(categories):
                     raise LinkTaskError(f"edge {edge}'s category {labels[edge]} has no name in {categories}")
             positives = set(self.train) | set(self.val) | set(self.test)
@@ -258,16 +279,36 @@ class LinkSplit:
         """The only edges messages pass over, for every split: the training
         edges (with reverses when undirected) — plus every labelled edge's
         existence in an edge-label split with ``label_existence="visible"``."""
-        edges = list(self.train)
-        if self.label_existence == "visible":
-            edges += [*self.val, *self.test]
-        pairs = edges + ([] if self.directed else [(v, u) for u, v in edges if u != v])
-        return torch.tensor(pairs, dtype=torch.long).t().contiguous().reshape(2, -1)
+        return self._messages().clone()
+
+    def _messages(self) -> torch.Tensor:
+        """The message graph, built once per split (callers get clones)."""
+
+        def build() -> torch.Tensor:
+            edges = list(self.train)
+            if self.label_existence == "visible":
+                edges += [*self.val, *self.test]
+            pairs = edges + ([] if self.directed else [(v, u) for u, v in edges if u != v])
+            return torch.tensor(pairs, dtype=torch.long).t().contiguous().reshape(2, -1)
+
+        return self._cached("messages_tensor", build)
 
     def _message_set(self) -> frozenset[Edge]:
-        return self._cached(
-            "_messages", lambda: frozenset((int(u), int(v)) for u, v in self.message_edge_index().t().tolist())
-        )
+        return self._cached("_messages", lambda: frozenset((int(u), int(v)) for u, v in self._messages().t().tolist()))
+
+    def _is_message_graph(self, edge_index: torch.Tensor) -> bool:
+        """Whether ``edge_index`` holds exactly the message edges (each once,
+        in any order) — a vectorised check, so a large graph costs a sort,
+        not a Python set per batch."""
+        if edge_index.is_floating_point() or edge_index.is_complex():
+            return False
+        keys = edge_index[0].long() * self.num_nodes + edge_index[1].long()
+        allowed = self._cached(f"message_keys:{keys.device}", lambda: self._message_keys().to(keys.device))
+        return keys.shape == allowed.shape and bool(torch.equal(torch.sort(keys).values, allowed))
+
+    def _message_keys(self) -> torch.Tensor:
+        messages = self._messages()
+        return torch.sort(messages[0] * self.num_nodes + messages[1]).values
 
     def _all_positives(self) -> frozenset[Edge]:
         return self._cached("_positives", lambda: frozenset((*self.train, *self.val, *self.test)))
@@ -578,8 +619,8 @@ def _check_structure(batch: Any) -> None:
     if not isinstance(ids, torch.Tensor) or ids.shape != (k,):
         raise LinkTaskError("a link batch needs one candidate_id per candidate")
     label = getattr(batch, "edge_label", None)
-    if label is not None and label.shape[0] != k:
-        raise LinkTaskError(f"{k} candidates but {label.shape[0]} targets")
+    if not isinstance(label, torch.Tensor) or label.shape != (k,):
+        raise LinkTaskError(f"a link batch needs one edge_label (target) per candidate: {k} candidates")
 
 
 def _check_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -608,7 +649,7 @@ def _check_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise LinkTaskError(f"dropout must be in [0, 1), got {dropout!r}")
     from .nn.enum.activations import Activations
 
-    activation = config.get("activation", "relu")
+    activation = getattr(config.get("activation", "relu"), "value", config.get("activation", "relu"))
     if activation not in {a.value for a in Activations}:
         raise LinkTaskError(f"unknown activation {activation!r}")
     return {
@@ -678,18 +719,24 @@ class LinkPrediction:
 
 
 class _Loader:
-    """Re-iterable link batches over the split's message graph."""
+    """Re-iterable link batches over the split's message graph. A training
+    pass draws its negatives and order from ``(seed, pass)``, where the pass
+    is the epoch the training loop announced (``set_epoch``) — so an
+    uninterrupted run and one resumed at that epoch draw the same batches,
+    and extra iterations (a callback scoring the training set) change
+    nothing — or, outside training, the count of earlier iterations."""
 
     def __init__(self, task: LinkTask, name: str, x: torch.Tensor, batch_size: int, seed: Optional[int]) -> None:
         self.task, self.name, self.x, self.batch_size, self.seed = task, name, x, batch_size, seed
         self.passes = 0
+        self.epoch: Optional[int] = None
+
+    def set_epoch(self, epoch: int) -> None:
+        """Called by ``NNModel.train`` / ``Trainer.train`` before each epoch."""
+        self.epoch = _count(epoch, "epoch", minimum=0)
 
     def __iter__(self) -> Iterator[Any]:
-        if self.name == "train":
-            resumed = self.task._cursor.pop("resume", None)  # restored by the objective on a stateful resume
-            if resumed is not None:
-                self.passes = resumed
-        current = self.passes
+        current = self.passes if self.epoch is None else self.epoch
         candidates, targets, ids = self.task._candidates(self.name, self.seed, current)
         self.passes += 1
         messages = self.task.split.message_edge_index()
@@ -702,6 +749,7 @@ class _Loader:
                 ids[start : start + self.batch_size],
                 self.name,
                 current if self.name == "train" else None,
+                self.task._negatives_seed(self.seed),
             )
 
     def __len__(self) -> int:
@@ -724,9 +772,9 @@ class LinkTask:
             (binary only; by default 1, and 0 in edge-label mode).
         max_candidates: the most candidates evaluation materialises.
 
-    Build the training loader and the objective from the same task: on a
-    stateful resume the objective hands the loader the training pass to
-    continue from, so training negatives continue as if uninterrupted.
+    Training negatives are drawn per epoch from ``(seed, epoch)``, so a
+    stateful resume continues them as if uninterrupted; the objective
+    checkpoints the seed and refuses a resumed loader with another one.
     """
 
     split: LinkSplit
@@ -734,7 +782,6 @@ class LinkTask:
     train_negatives: Optional[int] = None
     max_candidates: int = 1_000_000
     version: int = 1
-    _cursor: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.split, LinkSplit):
@@ -777,22 +824,34 @@ class LinkTask:
             raise LinkTaskError(f"x must be ({self.split.num_nodes}, features) node features")
         return _Loader(self, name, x, _count(batch_size, "batch_size", minimum=1), seed)
 
+    def _negatives_seed(self, seed: Optional[int]) -> int:
+        base = self.split.seed if seed is None else seed
+        return 0 if base is None else int(base)
+
     def _candidates(self, name: str, seed: Optional[int], passes: int) -> tuple[list[Edge], list[int], list[int]]:
         split = self.split
         positives = list(split.positives(name))
-        ids = split.candidate_ids(name)
+        ids = split._cached(f"ids:{name}", lambda: split.candidate_ids(name))
+        base = self._negatives_seed(seed)
+        rows: list[tuple[Edge, int, int]]
         if self.mode == "edge_label":
-            labels = split.labels()
-            return positives, [labels[e] for e in positives], [ids[e] for e in positives]
-        negatives = list(split.negatives(name))
-        if name == "train" and self.train_negatives:
+            labels = split._cached("labels", split.labels)
+            rows = [(e, labels[e], ids[e]) for e in positives]
+        elif name == "train":
+            rows = [(e, 1, ids[e]) for e in positives]
+        else:
+            negatives = list(split.negatives(name))
+            candidates = positives + negatives
+            return candidates, [1] * len(positives) + [0] * len(negatives), [ids[e] for e in candidates]
+        if name != "train":
+            return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
+        if self.mode == "binary" and self.train_negatives:
             excluded = set(split._all_positives()) | set(split.val_negatives) | set(split.test_negatives)
             needed = int(self.train_negatives) * len(positives)
             capacity = _total_pairs(split.num_nodes, split.directed, split.self_loops == "allow") - len(excluded)
             if needed > capacity:
                 raise LinkTaskError(f"{needed} training negatives requested; the complement holds {capacity}")
-            base = split.seed if seed is None else seed
-            rng = np.random.default_rng([0 if base is None else base, passes])
+            rng = np.random.default_rng([base, passes])
             negatives = _complement_sample(
                 needed,
                 split.num_nodes,
@@ -801,15 +860,13 @@ class LinkTask:
                 self_loops=split.self_loops == "allow",
                 rng=rng,
             )
-            rows = [(e, 1, ids[e]) for e in positives] + [(e, 0, -1) for e in negatives]
-            # Shuffled per pass from (seed, pass): no batch holds only one class.
-            order = np.random.default_rng([0 if base is None else base, passes, 1]).permutation(len(rows))
-            shuffled = [rows[int(i)] for i in order]
-            return [r[0] for r in shuffled], [r[1] for r in shuffled], [r[2] for r in shuffled]
-        candidates = positives + negatives
-        return candidates, [1] * len(positives) + [0] * len(negatives), [ids[e] for e in candidates]
+            rows += [(e, 0, -1) for e in negatives]
+        # Every training pass is shuffled from (seed, pass): no batch holds one class or one node range.
+        order = np.random.default_rng([base, passes, 1]).permutation(len(rows))
+        shuffled = [rows[int(i)] for i in order]
+        return [r[0] for r in shuffled], [r[1] for r in shuffled], [r[2] for r in shuffled]
 
-    def _batch(self, x, messages, candidates, targets, ids, name, passes=None) -> Any:
+    def _batch(self, x, messages, candidates, targets, ids, name, passes=None, seed=None) -> Any:
         from torch_geometric.data import Data
 
         index = torch.tensor(candidates, dtype=torch.long).t().reshape(2, -1)
@@ -823,7 +880,8 @@ class LinkTask:
             link_split=name,
         )
         if passes is not None:
-            batch.link_pass = passes  # which training pass drew its negatives (resume continues it)
+            batch.link_pass = passes  # the training pass (epoch) that drew its negatives and order
+            batch.link_seed = seed  # ... from this seed: checkpointed, so a resume cannot change it
         return batch
 
     def check_batch(self, batch: Any) -> None:
@@ -841,31 +899,33 @@ class LinkTask:
         x = getattr(batch, "x", None)
         if not isinstance(x, torch.Tensor) or x.ndim != 2 or x.shape[0] != split.num_nodes:
             raise LinkTaskError(f"a link batch carries the graph's {split.num_nodes} node rows")
-        allowed = split._message_set()
-        messages = {(int(u), int(v)) for u, v in batch.edge_index.t().tolist()}
-        if messages != allowed:
-            held_out = {e for s in ("val", "test") for e in split.positives(s)}
-            if split.label_existence == "visible":
-                held_out = set()
+        edge_index = getattr(batch, "edge_index", None)
+        if not isinstance(edge_index, torch.Tensor) or edge_index.ndim != 2 or edge_index.shape[0] != 2:
+            raise LinkTaskError("a link batch carries its message graph as a (2, edges) edge_index")
+        if not split._is_message_graph(edge_index):
+            allowed = split._message_set()
+            messages = {(int(u), int(v)) for u, v in edge_index.t().tolist()}
+            held_out = set() if split.label_existence == "visible" else {*split.val, *split.test}
             leaked = sorted((u, v) for u, v in messages - allowed if _canonical(u, v, split.directed) in held_out)
             if leaked:
                 raise LinkTaskError(f"leak: held-out positive(s) {leaked[:5]} are in the message graph")
-            extra, missing = sorted(messages - allowed)[:5], sorted(allowed - messages)[:5]
-            raise LinkTaskError(
-                f"the message graph must be the split's training topology (unexpected {extra}, missing {missing})"
-            )
+            if messages != allowed:
+                extra, missing = sorted(messages - allowed)[:5], sorted(allowed - messages)[:5]
+                raise LinkTaskError(
+                    f"the message graph must be the split's training topology (unexpected {extra}, missing {missing})"
+                )
         pairs = [(int(u), int(v)) for u, v in batch.edge_label_index.t().tolist()]
         targets = batch.edge_label.tolist()
         given = batch.candidate_id.tolist()
         ids = split._cached(f"ids:{name}", lambda: split.candidate_ids(name))
-        positives = set(split.positives(name))
+        positives = split._cached(f"positives:{name}", lambda: frozenset(split.positives(name)))
         for u, v in pairs:
             if not (0 <= u < split.num_nodes and 0 <= v < split.num_nodes):
                 raise LinkTaskError(f"candidate {(u, v)} is outside the graph's {split.num_nodes} nodes")
             if u == v and split.self_loops == "bar":
                 raise LinkTaskError(f"candidate {(u, v)} is a self-loop, barred by the split")
         if self.mode == "edge_label":
-            labels = split.labels()
+            labels = split._cached("labels", split.labels)
             for edge, target, given_id in zip(pairs, targets, given, strict=True):
                 if edge not in positives:
                     raise LinkTaskError(f"candidate {edge} is not a {name!r} edge")
@@ -874,8 +934,8 @@ class LinkTask:
                 if given_id != ids[edge]:
                     raise LinkTaskError(f"candidate {edge} carries id {given_id}, not its id {ids[edge]}")
             return
-        fixed = set(split.negatives(name))
-        held_out = set(split.val_negatives) | set(split.test_negatives)
+        fixed = split._cached(f"negatives:{name}", lambda: frozenset(split.negatives(name)))
+        held_out = split._cached("held_out_negatives", lambda: frozenset((*split.val_negatives, *split.test_negatives)))
         others = split._all_positives()
         for edge, target, given_id in zip(pairs, targets, given, strict=True):
             if target not in (0, 1, 0.0, 1.0):
@@ -984,7 +1044,7 @@ class LinkObjective(Objective):
         if not isinstance(task, LinkTask):
             raise LinkTaskError(f"a LinkTask is needed, got {type(task).__name__}")
         self.task = task
-        self.passes = 0  # training passes begun: checkpointed, so a resume continues the negatives
+        self.seed: Optional[int] = None  # the training negatives' seed, checkpointed
         self._expect: Optional[int] = None
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
@@ -993,15 +1053,15 @@ class LinkObjective(Objective):
         self.task.check_batch(batch)  # before any forward pass: a leak never trains
         if batch.link_split != "train":
             raise LinkTaskError(f"the link objective trains on 'train' batches only, got a {batch.link_split!r} batch")
-        drawn = getattr(batch, "link_pass", None)
-        if drawn is not None:
-            if self._expect is not None and drawn != self._expect:
+        seed = getattr(batch, "link_seed", None)
+        if seed is not None:
+            if self._expect is not None and seed != self._expect:
                 raise LinkTaskError(
-                    f"the resumed run expects training pass {self._expect} but the loader drew pass {drawn}: "
-                    "build the training loader and the objective from the same LinkTask"
+                    f"the checkpoint drew training negatives from seed {self._expect}, the resumed loader from "
+                    f"seed {seed}: build the training loader with the same seed"
                 )
             self._expect = None
-            self.passes = max(self.passes, int(drawn) + 1)
+            self.seed = int(seed)
         model = ctx.model
         model.net.train()
         logits = self.task._logits(model, batch)
@@ -1026,7 +1086,7 @@ class LinkObjective(Objective):
         return ComponentSpec("link.task", version=1)
 
     def component_state(self) -> dict[str, Any]:
-        return {"task": self.task.state(), "manifest": self.task.split.state(), "passes": self.passes}
+        return {"task": self.task.state(), "manifest": self.task.split.state(), "negatives_seed": self.seed}
 
     def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
         if not isinstance(state, Mapping):
@@ -1039,14 +1099,12 @@ class LinkObjective(Objective):
         return problems
 
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
-        """The manifest is configuration (checked, not restored); the pass
-        count is handed to the task's training loader, so the resumed run
-        draws the negatives the uninterrupted one would have."""
-        passes = state.get("passes")
-        if isinstance(passes, int) and not isinstance(passes, bool) and passes >= 0:
-            self.passes = passes
-            self._expect = passes
-            self.task._cursor["resume"] = passes
+        """The manifest is configuration (checked, not restored). The
+        training negatives' seed is restored and must match the resumed
+        loader's (passes follow the epoch, so they continue by themselves)."""
+        seed = state.get("negatives_seed")
+        if isinstance(seed, int) and not isinstance(seed, bool):
+            self.seed = self._expect = seed
 
 
 class LinkEval:
@@ -1065,8 +1123,11 @@ class LinkEval:
 
         _no_extra_metrics(ctx)
         prediction = self.task.predict(ctx.model, ctx.val_loader)
-        if prediction.split == "train":
-            raise LinkTaskError("evaluation reads a held-out split ('val' or 'test'), got 'train' batches")
+        if prediction.split != "val":
+            raise LinkTaskError(
+                f"the training evaluator reads the 'val' split, got {prediction.split!r} batches: selecting on "
+                "'train' or 'test' would leak; score 'test' with task.predict() and link_metrics() after training"
+            )
         expected = self.task.split.candidate_ids(prediction.split)
         seen = prediction.ids.tolist()
         if len(seen) != len(expected) or set(seen) != set(expected.values()):
