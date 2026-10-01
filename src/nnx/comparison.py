@@ -33,8 +33,9 @@ nothing here builds or loads a model, reads a checkpoint, elects a
   re-derived and checked. Input order never changes a report.
 - :func:`observations_from_runs` — reads observations from saved runs
   (``run.yaml``, ``idps.csv`` and the FEAT-019 provenance files, each read
-  once; for a run with a parent, ``metadata.yaml`` and the parents'
-  ``run.yaml``) without loading a model or a checkpoint.
+  once; for a run with a parent, ``metadata.yaml`` and every ancestor's
+  ``run.yaml`` and provenance files) without loading a model or a
+  checkpoint.
 """
 
 from __future__ import annotations
@@ -961,30 +962,52 @@ def _resume_mode(run_path: str, run_id: str) -> Optional[str]:
 
 
 def _resolvable(run_id: str, root: Optional[str]) -> bool:
-    """Whether ``run_id`` names a saved run (not an alias, a malformed id or
-    a deleted run)."""
+    """Whether ``run_id`` names a run directory (not an alias, a malformed id
+    or a deleted run). A directory whose files cannot be read is resolvable:
+    reading it then raises."""
     from .nn.params.nn_run import _runs_root, _validate_run_id
 
     if run_id in ALIASES:
         return False
     try:
-        return os.path.isfile(os.path.join(_runs_root(root), _validate_run_id(run_id), "run.yaml"))
+        path = os.path.join(_runs_root(root), _validate_run_id(run_id))
     except (TypeError, ValueError):
         return False
+    return os.path.lexists(path)
 
 
-def _parent_facts(parent_id: str, root: Optional[str]) -> dict[str, Any]:
-    """What a parent's provenance declares (FEAT-019) beyond its ``run.yaml``:
-    its data and split identities and how its attempt ended."""
+def _provenance(run_id: str, root: Optional[str]) -> Any:
+    """A run's FEAT-019 provenance (``None`` without it); unreadable files
+    raise :class:`ComparisonError`."""
     from .provenance import load_provenance
 
     try:
-        provenance = load_provenance(parent_id, root)
+        return load_provenance(run_id, root)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise ComparisonError(
-            f"run {parent_id}: its provenance files are unreadable ({type(error).__name__}: {error}); "
-            "what its children descend from is unknown"
+            f"run {run_id}: its provenance files (provenance.json / attempt.json) are unreadable: "
+            f"{type(error).__name__}: {error}"
         ) from error
+
+
+def _attempt_id(provenance: Any) -> Optional[str]:
+    attempt = None if provenance is None else provenance.attempt
+    return None if attempt is None else attempt.attempt_id
+
+
+def _recorded_parent_attempt(provenance: Any) -> Optional[str]:
+    """The parent attempt a run recorded when it started (its
+    ``attempt.json`` ``parent``): which run a ``best`` alias pointed to then,
+    and which attempt of a parent later retrained in place."""
+    attempt = None if provenance is None else provenance.attempt
+    parent = None if attempt is None else attempt.parent
+    value = parent.get("attempt_id") if isinstance(parent, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _parent_facts(provenance: Any) -> dict[str, Any]:
+    """What a parent's provenance declares beyond its ``run.yaml``: its data
+    and split identities and how its attempt ended."""
     manifest = None if provenance is None else provenance.manifest
     attempt = None if provenance is None else provenance.attempt
     return {
@@ -1005,9 +1028,12 @@ def _run_identity(
     generation is the procedure *parent then child*, so it pools only with
     runs whose parents had the same configuration, data and splits, ended
     the same way, and were continued the same way from the same checkpoint
-    tag. A parent that is not a saved run (deleted, or the moving ``best``
-    alias) keeps its raw id: the run pools only with siblings of that same
-    parent. Errors in an ancestor's files are raised, as for the run's own."""
+    tag. A parent that cannot be followed — the moving ``best`` alias, a
+    deleted run, or one retrained in place since the child started — is
+    named by the parent attempt the child recorded when it started (its
+    ``attempt.json``), so only siblings of that attempt pool; without that
+    record a deleted parent keeps its raw id and an alias names nothing
+    shared. Errors in an ancestor's files are raised, as for the run's own."""
     return _resolve(run_id, root, cache, (), known)[0]
 
 
@@ -1025,22 +1051,35 @@ def _resolve(
     if run_id in path:
         raise ComparisonError(f"run {path[0]}: its lineage is a cycle ({' -> '.join((*path, run_id))})")
     if len(path) > MAX_LINEAGE:
-        raise ComparisonError(f"run {path[0]}: a lineage deeper than {MAX_LINEAGE} runs")
+        raise ComparisonError(f"run {path[0]}: a lineage of more than {MAX_LINEAGE} ancestors")
     run_state, run_path = known if known is not None else _read_run_state(run_id, root)
     parent = _parent(run_state)
     lineage, ancestors = None, 0
     if parent is not None:
         parent_id = str(parent["parent_run_id"])
         lineage = {"checkpoint": parent.get("parent_checkpoint"), "mode": _resume_mode(run_path, run_id)}
-        if _resolvable(parent_id, root):
+        recorded = _recorded_parent_attempt(_provenance(run_id, root))
+        resolvable = _resolvable(parent_id, root)
+        current = _provenance(parent_id, root) if resolvable else None
+        if resolvable and (recorded is None or recorded == _attempt_id(current)):
+            # The parent the run started from (a parent without provenance
+            # has only its run.yaml to declare).
             identity, above = _resolve(parent_id, root, cache, (*path, run_id))
-            lineage.update(parent=identity, **_parent_facts(parent_id, root))
+            lineage.update(parent=identity, **_parent_facts(current))
             ancestors = above + 1
         else:
-            lineage["parent"] = f"unresolved parent {parent_id!r}"
+            # An alias (``best`` moves), a deleted parent, or one retrained in
+            # place since: the parent attempt recorded when the run started
+            # names it; with no record, an alias names nothing shared.
+            if recorded is not None:
+                lineage["parent"] = f"parent attempt {recorded}"
+            elif parent_id in ALIASES:
+                lineage["parent"] = f"unresolved alias {parent_id!r} of run {run_id}"
+            else:
+                lineage["parent"] = f"unresolved parent {parent_id!r}"
             ancestors = 1
     if ancestors > MAX_LINEAGE:
-        raise ComparisonError(f"run {run_id}: a lineage deeper than {MAX_LINEAGE} runs")
+        raise ComparisonError(f"run {run_id}: a lineage of more than {MAX_LINEAGE} ancestors")
     cache[run_id] = (_config_identity(run_state, lineage), ancestors)
     return cache[run_id]
 
@@ -1187,8 +1226,10 @@ def observations_from_runs(
     """Observations of ``metric`` read from saved runs, without loading a
     model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance
     files are read once each — plus, for a run with a parent, its
-    ``metadata.yaml`` and every ancestor's ``run.yaml`` — and nothing is
-    written).
+    ``metadata.yaml`` and every ancestor's ``run.yaml`` and provenance
+    files, whose data and split identities and attempt status join the
+    configuration identity; an ancestor's unreadable file is refused — and
+    nothing is written).
 
     Args:
         run_ids: the runs (under ``root``'s ``runs/``).

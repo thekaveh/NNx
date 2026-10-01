@@ -5317,7 +5317,7 @@ No public description is currently available.
 nnx.comparison.observations_from_runs(run_ids: 'Iterable[str]', *, metric: 'Metric', split: 'str' = 'validation', selection: 'str' = 'last', root: 'Optional[str]' = None, replicate: 'Optional[str]' = 'seed', config: 'Optional[Mapping[str, str]]' = None) -> 'list[Observation]'
 ```
 
-Observations of ``metric`` read from saved runs, without loading a model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance files are read once each — plus, for a run with a parent, its ``metadata.yaml`` and every ancestor's ``run.yaml`` — and nothing is written).
+Observations of ``metric`` read from saved runs, without loading a model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance files are read once each — plus, for a run with a parent, its ``metadata.yaml`` and every ancestor's ``run.yaml`` and provenance files, whose data and split identities and attempt status join the configuration identity; an ancestor's unreadable file is refused — and nothing is written).
 
 **Details**
 

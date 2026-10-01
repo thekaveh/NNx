@@ -1769,10 +1769,11 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   counts the epochs a run adds, so it pools only with runs descended the
   same way from identically configured parents — never with fresh runs,
   with its parent, or with fine-tunes of other pretraining. A parent that
-  is not a saved run (deleted, or the moving `best` alias) keeps its raw
-  id, so its children pool only with each other. A cycle, a lineage deeper
-  than 64 runs or an ancestor's unreadable files are refused, whatever
-  order the runs are listed in. The replicate key is
+  cannot be followed — the moving `best` alias, a deleted run, or one
+  retrained in place since — is named by the parent attempt the child
+  recorded when it started, so only siblings of that attempt pool. A cycle,
+  more than 64 ancestors or an ancestor's unreadable files are refused,
+  whatever order the runs are listed in. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and
   unknown for a run without a training seed. The text view counts attempts
   that did not complete as `not_completed`, and a matched pair whose delta

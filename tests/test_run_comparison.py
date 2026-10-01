@@ -516,7 +516,7 @@ def test_a_child_pools_only_with_children_of_identically_configured_parents(tmp_
     generations = observations_from_runs([gen0.id, gen1.id, gen2.id], metric=loss)
     assert len({item.config for item in generations}) == 3
 
-    # A parent that cannot be read keeps its raw id: the child pools with nothing.
+    # A deleted parent keeps its raw id: its children pool only with each other.
     orphan = _model().train(params=_fit_params(23, parent_run_id=gen0.id), provenance=MANIFEST)
     assert observations_from_runs([orphan.id], metric=loss)[0].config == generations[1].config
     shutil.rmtree(os.path.join("runs", gen0.id))
@@ -572,11 +572,12 @@ def test_a_parents_declared_data_and_lineage_errors_are_part_of_the_identity(tmp
     for parent_id, run_id in zip(chain[:-1], chain[1:], strict=True):
         fake(run_id, parent_id)
     for order in (chain, chain[::-1], chain[-1:]):
-        with pytest.raises(ComparisonError, match=f"deeper than {MAX_LINEAGE}"):
+        with pytest.raises(ComparisonError, match=f"more than {MAX_LINEAGE} ancestors"):
             observations_from_runs(order, metric=loss)
     assert len(observations_from_runs(chain[: MAX_LINEAGE + 1][::-1], metric=loss)) == MAX_LINEAGE + 1
 
-    # A cycle is named; the moving "best" alias is never followed.
+    # A cycle is named; the moving "best" alias is never followed, and without
+    # an attempt record its children share nothing.
     fake("a" * 32, "b" * 32)
     fake("b" * 32, "a" * 32)
     with pytest.raises(ComparisonError, match="cycle"):
@@ -584,12 +585,55 @@ def test_a_parents_declared_data_and_lineage_errors_are_part_of_the_identity(tmp
     fake("c" * 32, "best")
     fake("d" * 32, "best")
     pair = observations_from_runs(["c" * 32, "d" * 32], metric=loss)
-    assert pair[0].config == pair[1].config != found[0].config
+    assert len({pair[0].config, pair[1].config, found[0].config}) == 3
     # An ancestor's unreadable provenance is raised, not swallowed.
     with open(os.path.join("runs", parents[0].id, "provenance.json"), "w") as handle:
         handle.write("{not json")
     with pytest.raises(ComparisonError, match="provenance"):
         observations_from_runs([children[0].id], metric=loss)
+
+
+def test_children_of_the_best_alias_or_a_retrained_parent_are_named_by_the_attempt_they_started_from(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+    best = os.path.join("runs", "best")
+
+    def point_best(run):
+        if os.path.islink(best) or os.path.isfile(best):
+            os.remove(best)
+        elif os.path.isdir(best):
+            import shutil
+
+            shutil.rmtree(best)
+        os.symlink(os.path.abspath(os.path.join("runs", run.id)), best)
+
+    p1 = _model().train(params=_fit_params(0), provenance=MANIFEST)
+    point_best(p1)
+    c1 = _model().train(params=_fit_params(10, resume_from_run_id="best"), provenance=MANIFEST)
+    point_best(c1)
+    c2 = _model().train(params=_fit_params(11, resume_from_run_id="best"), provenance=MANIFEST)  # P1's grandchild
+    point_best(p1)
+    c3 = _model().train(params=_fit_params(12, resume_from_run_id="best"), provenance=MANIFEST)  # P1's child
+    found = observations_from_runs([c1.id, c2.id, c3.id], metric=loss)
+    assert found[0].config == found[2].config != found[1].config
+
+    # A parent retrained in place since: its old child no longer pools with a new one.
+    on_x = ExperimentManifest(data={"train": hash_bytes(b"x")})
+    on_y = ExperimentManifest(data={"train": hash_bytes(b"y")})
+    parent = _model().train(params=_fit_params(20), provenance=on_x)
+    old = _model().train(params=_fit_params(21, resume_from_run_id=parent.id), provenance=MANIFEST)
+    _model().train(params=_fit_params(20, overwrite_existing=True), provenance=on_y)
+    new = _model().train(params=_fit_params(22, resume_from_run_id=parent.id), provenance=MANIFEST)
+    pair = observations_from_runs([old.id, new.id], metric=loss)
+    assert pair[0].config != pair[1].config
+
+    # A parent directory without its run.yaml is unreadable, not deleted.
+    os.remove(os.path.join("runs", parent.id, "run.yaml"))
+    with pytest.raises(ComparisonError, match="run.yaml"):
+        observations_from_runs([new.id], metric=loss)
 
 
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
