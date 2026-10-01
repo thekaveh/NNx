@@ -1191,3 +1191,21 @@ def test_epoch_rows_sum_exactly_as_the_eager_chart_on_every_python():
             )
         )
     assert stats.loss_sum == _running_sum(values) and stats.err_sum == _running_sum(values)
+
+
+def test_the_full_history_lent_to_a_callback_is_read_only_too():
+    class _EditFull(_Full):
+        def __init__(self) -> None:
+            super().__init__()
+            self.errors: list[str] = []
+
+        def on_epoch_end(self, ctx) -> None:
+            super().on_epoch_end(ctx)
+            try:
+                ctx.idps[-1] = ctx.idps[-1].with_val_edp(None)
+            except TypeError as exc:
+                self.errors.append(type(exc).__name__)
+
+    callback = _EditFull()
+    _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[callback], n_epochs=2)
+    assert callback.errors == ["TypeError", "TypeError"] and callback.lengths[:2] == [5, 10]

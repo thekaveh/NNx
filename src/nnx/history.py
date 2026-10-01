@@ -705,7 +705,7 @@ class _JournalHistory:
                 return None
             if not held:
                 try:
-                    held.append(self.full())
+                    held.append(_WindowView(self.full()))  # read-only, like the window
                 except Exception as exc:  # noqa: BLE001 — re-raised unless tolerant
                     if not tolerant:
                         raise
@@ -773,15 +773,16 @@ def _wants_full(callback: Any) -> bool:
 class _WindowView(Sequence):
     """``ctx.idps`` in a journal run: a live, read-only sequence over the
     window — it grows with each record (trimmed to ``retention``) as an
-    eager run's list does, and supports ``len``, indexing, slicing (a new
-    list), iteration and ``reversed``, but no in-place change (item
-    assignment raises ``TypeError``; it has no ``append`` or other list
-    mutator): the journal, LAST and ``NNRun.idps`` keep the records exactly
-    as they were recorded."""
+    eager run's list does — or over the whole history lent to a ``"full"``
+    callback. It supports ``len``, indexing, slicing (a new list),
+    iteration and ``reversed``, but no in-place change (item assignment
+    raises ``TypeError``; it has no ``append`` or other list mutator): the
+    journal, LAST and ``NNRun.idps`` keep the records exactly as they were
+    recorded."""
 
     __slots__ = ("_records",)
 
-    def __init__(self, records: collections.deque[NNIterationDataPoint]) -> None:
+    def __init__(self, records: Union[collections.deque[NNIterationDataPoint], list[NNIterationDataPoint]]) -> None:
         self._records = records
 
     def __len__(self) -> int:
