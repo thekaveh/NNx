@@ -195,33 +195,44 @@ def test_a_skipped_update_does_not_advance_the_clock():
     assert len(skipped.history) == 2  # still one LR snapshot per epoch
 
 
-def test_a_skipped_amp_step_is_not_a_committed_update():
-    from nnx._scheduler_clock import SchedulerClock
+class _FakeScaler:
+    """A CPU stand-in for GradScaler: the second step finds inf gradients, so the scale backs off. A fused
+    optimizer is still called (its kernel skips the update itself); a classic one is not."""
 
-    class FakeScaler:
-        """A CPU stand-in for GradScaler: the second step finds inf gradients and skips the optimizer."""
+    def __init__(self, fused: bool) -> None:
+        self.fused, self.value, self.steps = fused, 1024.0, 0
 
-        def __init__(self):
-            self.steps = 0
+    def get_scale(self):
+        return self.value
 
-        def step(self, optimizer):
-            self.steps += 1
-            if self.steps != 2:
-                optimizer.step()
+    def step(self, optimizer):
+        self.steps += 1
+        if self.steps != 2 or self.fused:
+            optimizer.step()
 
-        def update(self):
-            pass
+    def update(self):
+        if self.steps == 2:
+            self.value /= 2.0
+
+
+@pytest.mark.parametrize("fused", [False, True])
+def test_a_skipped_amp_step_is_not_a_committed_update(fused):
+    from nnx._scheduler_clock import SchedulerClock, watching_steps
+    from nnx._update_engine import scaler_step
 
     param = torch.nn.Parameter(torch.ones(1))
     optimizer = torch.optim.SGD([param], lr=0.1)
     clock = SchedulerClock("default", lr_scheduler.StepLR(optimizer, step_size=1), horizon=None)
-    scaler = FakeScaler()
-    for _ in range(3):  # what default_train_step does under AMP: step, update, report
-        param.grad = torch.ones(1)
-        scaler.step(optimizer)
-        scaler.update()
-        clock.committed()
-    assert clock.count == 2  # the skipped step's report did not count
+    scaler = _FakeScaler(fused)
+    committed = []
+    with watching_steps([clock]):
+        for _ in range(3):  # what default_train_step does under AMP when a clock listens
+            param.grad = torch.ones(1)
+            committed.append(scaler_step(scaler, (optimizer,)))
+            if committed[-1]:
+                clock.committed()
+    assert committed == [True, False, True]
+    assert clock.count == 2
 
 
 def test_the_default_step_reports_each_committed_update_once():
@@ -731,3 +742,101 @@ def test_an_nnmodel_step_reports_without_a_name_on_the_epoch_clock_too():
 
     with pytest.raises(TypeError, match="takes no optimizer name in NNModel.train"):
         _train(_model(), scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1), step=named)
+
+
+# --- review round 6 ----------------------------------------------------------------------------------------
+
+
+class _Lookahead(torch.optim.Optimizer):
+    """A wrapper optimizer that skips ``Optimizer.__init__`` (as some third-party wrappers do), so it has no
+    step hooks."""
+
+    def __init__(self, inner: torch.optim.Optimizer) -> None:  # noqa: B027 - deliberately no super().__init__
+        self.inner = inner
+        self.param_groups = inner.param_groups
+        self.state = inner.state
+        self.defaults = inner.defaults
+
+    def step(self, closure=None):
+        return self.inner.step(closure)
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        self.inner.zero_grad(set_to_none)
+
+    def state_dict(self):
+        return self.inner.state_dict()
+
+    def load_state_dict(self, state_dict) -> None:
+        self.inner.load_state_dict(state_dict)
+
+
+def _factory_optim(factory_id: str, factory) -> Any:
+    from nnx.optimizers import NNOptimFactoryParams, OptimizerFactorySpec, register_optimizer_factory
+
+    register_optimizer_factory(factory_id, 1, factory, replace=True)
+    return NNOptimFactoryParams(factory=OptimizerFactorySpec(id=factory_id, version=1), max_lr=0.1)
+
+
+def test_an_optimizer_without_step_hooks_still_drives_the_clock():
+    from nnx.optimizers import unregister_optimizer_factory
+
+    optim = _factory_optim("clock-lookahead", lambda groups, config: _Lookahead(torch.optim.SGD(groups)))
+    try:
+        monitor = LRMonitor()
+        _model().train(
+            NNTrainParams(
+                n_epochs=2,
+                train_loader=_batches(),
+                optim=optim,
+                scheduler=_sched(Schedulers.STEP, step_size=1),
+                save_phase_checkpoints=False,
+                overwrite_existing=True,
+            ),
+            callbacks=[monitor],
+        )
+    finally:
+        unregister_optimizer_factory("clock-lookahead", 1)
+    assert [k for k, _ in monitor.update_history] == list(range(1, 11))  # every report counts
+
+
+def test_no_step_hook_outlives_the_run():
+    seen = {}
+
+    class Grab(Callback):
+        def on_train_begin(self, ctx):
+            seen["model"] = ctx.optimizer
+
+    _train(_model(), scheduler=_sched(Schedulers.STEP, step_size=1), callbacks=[Grab()])
+    assert not seen["model"]._optimizer_step_post_hooks
+
+    def step(ctx):
+        seen["trainer"] = ctx.optimizers
+        return _two_rate_step(ctx)
+
+    Trainer(_model()).train(_two_optimizer_params(), trainer_step_fn=step)
+    assert not any(optimizer._optimizer_step_post_hooks for optimizer in seen["trainer"].values())
+
+
+def test_iteration_records_snapshot_a_tensor_learning_rate():
+    from nnx.optimizers import unregister_optimizer_factory
+
+    def tensor_lr(groups, config):
+        for group in groups:
+            group["lr"] = torch.tensor(float(group["lr"]))
+        return torch.optim.SGD(groups, foreach=False)
+
+    optim = _factory_optim("clock-tensor-lr", tensor_lr)
+    try:
+        run = _model().train(
+            NNTrainParams(
+                n_epochs=1,
+                train_loader=_batches(3),
+                optim=optim,
+                scheduler=_sched(Schedulers.STEP, step_size=1),
+                save_phase_checkpoints=False,
+                overwrite_existing=True,
+            )
+        )
+    finally:
+        unregister_optimizer_factory("clock-tensor-lr", 1)
+    assert [idp.lr for idp in run.idps] == pytest.approx([0.1, 0.05, 0.025])

@@ -52,6 +52,7 @@ from .._scheduler_clock import (
     planned_updates,
     update_horizon,
     uses_update_clock,
+    watching_steps,
 )
 from ..components import ComponentRegistry, ResumeStatus
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
@@ -559,6 +560,7 @@ class Trainer:
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
+            watching_steps(clocks.values()),
         ):
             callback_lifecycle.start()
             # FEAT-005: reset hooks have run once; restore the validated
@@ -600,7 +602,7 @@ class Trainer:
                 )
                 for idx_batch, batch, is_last_batch in batches:
                     # The rate this batch trains with (read before the step).
-                    lr_used = optimizers[primary].param_groups[0]["lr"]
+                    lr_used = float(optimizers[primary].param_groups[0]["lr"])
                     if engine is not None:
                         assert objective is not None
                         train_edp = _objective_microbatch(
@@ -697,7 +699,7 @@ class Trainer:
                     warnings.warn(
                         f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
                         "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
-                        "after each update the step commits",
+                        "after each optimizer.step() the step function takes (a report counts only after a step)",
                         UserWarning,
                         stacklevel=4,
                     )

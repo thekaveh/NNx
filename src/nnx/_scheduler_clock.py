@@ -5,17 +5,19 @@ A scheduler configured with ``clock="optimizer_update"`` steps once per
 all-masked window or a skipped AMP step. The update source is explicit:
 
 - the shared update engine (FEAT-004) for an objective run;
-- ``default_train_step`` and ``finalize_step`` (so every built-in paradigm
-  step), after each optimizer step they take;
+- ``default_train_step`` (never for a step the AMP scaler skipped) and
+  ``finalize_step`` (so every built-in paradigm step), after each optimizer
+  step they take;
 - a custom step function that calls ``ctx.report_update()`` (``NNModel``)
   or ``ctx.report_update(name)`` (``Trainer``) after each optimizer step it
   takes itself — NNx never infers updates around an opaque step.
 
-A report counts only when its optimizer has stepped since the last counted
-report (an optimizer step post-hook tells the clock), so a report of an AMP
-step the scaler skipped, or a second report of one step (a step built on
-``default_train_step`` / ``finalize_step`` that reports again), never
-advances the schedule.
+Whoever calls ``optimizer.step()`` reports it. As a safety net, while the
+loop runs (:func:`watching_steps`) a report counts only when its optimizer
+has stepped since the last counted report, so a second report of one step
+(a step that delegates to ``default_train_step`` / ``finalize_step`` and
+reports again) does not advance the schedule. An optimizer without working
+step hooks gets no safety net: every report counts.
 
 A :class:`SchedulerClock` steps the scheduler after each committed update of
 its optimizer while attached (``Trainer``'s ``auto_step_schedulers=False``
@@ -27,10 +29,11 @@ resume refuses a mismatched configuration before anything steps.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Optional
 
 CLOCK = "optimizer_update"
@@ -70,6 +73,12 @@ class _NoUpdateListener:
 # ``TrainerStepContext`` (reports by name) and ``TrainStepContext`` (no name).
 NO_UPDATE_LISTENER = _NoUpdateListener()
 NO_UPDATE_REPORTER = _NoUpdateListener(refuse_names=True)
+
+
+def listens(report_update: Any) -> bool:
+    """Whether a context's ``report_update`` reaches a clock (a step can
+    then skip work, such as host syncs, only a listener needs)."""
+    return not isinstance(report_update, _NoUpdateListener)
 
 
 def uses_update_clock(scheduler_params: Any) -> bool:
@@ -134,16 +143,28 @@ class SchedulerClock:
         self.component_name = component_name
         # (scheduler step, learning rate after it) since the epoch began.
         self.trace: list[tuple[int, float]] = []
-        # Optimizer steps no report has claimed yet (see the module
-        # docstring); without step hooks every report counts.
-        self._unclaimed_steps = 0
-        register = getattr(scheduler.optimizer, "register_step_post_hook", None)
-        self._guarded = register is not None
-        if register is not None:
-            register(self._optimizer_stepped)
+        # The double-report safety net (see the module docstring): whether
+        # the optimizer stepped since the last counted report, tracked only
+        # while watching_steps() holds a step hook.
+        self._guarded = False
+        self._stepped = False
+
+    def watch_steps(self) -> Any:
+        """Register the optimizer step hook behind the safety net; the
+        handle to remove, or ``None`` when the optimizer has no working
+        step hooks (a wrapper that skips ``Optimizer.__init__``)."""
+        register = getattr(self.scheduler.optimizer, "register_step_post_hook", None)
+        if register is None:
+            return None
+        try:
+            handle = register(self._optimizer_stepped)
+        except (AttributeError, TypeError, RuntimeError):
+            return None
+        self._guarded, self._stepped = True, False
+        return handle
 
     def _optimizer_stepped(self, *_: Any) -> None:
-        self._unclaimed_steps += 1
+        self._stepped = True
 
     @property
     def count(self) -> int:
@@ -158,9 +179,9 @@ class SchedulerClock:
         if not self.attached:
             return
         if self._guarded:
-            if self._unclaimed_steps == 0:
+            if not self._stepped:
                 return
-            self._unclaimed_steps -= 1
+            self._stepped = False
         if self.horizon is not None and self.count >= self.horizon:
             raise ValueError(
                 f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's budget of "
@@ -212,3 +233,15 @@ class SchedulerClock:
         # The position is the scheduler's own step count, restored with the
         # scheduler state; this component only guards the configuration.
         return None
+
+
+@contextlib.contextmanager
+def watching_steps(clocks: Iterable[SchedulerClock]) -> Iterator[None]:
+    """Hold each clock's optimizer step hook for the training loop and
+    remove it afterwards, so no hook outlives the run."""
+    handles = [handle for handle in (clock.watch_steps() for clock in clocks) if handle is not None]
+    try:
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()

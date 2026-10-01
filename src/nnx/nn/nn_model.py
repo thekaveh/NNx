@@ -22,10 +22,13 @@ from .._scheduler_clock import (
     HORIZON_KINDS,
     NO_UPDATE_REPORTER,
     SchedulerClock,
+    listens,
     planned_updates,
     update_horizon,
     uses_update_clock,
+    watching_steps,
 )
+from .._update_engine import scaler_step
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
     BatchAdapter,
@@ -1174,14 +1177,21 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
         if amp_enabled:
             assert scaler is not None
-            scaler.step(ctx.optimizer)
-            scaler.update()
+            if listens(ctx.report_update):
+                # An update clock listens: report only a step the scaler
+                # did not skip (a lowered scale, fused optimizers included).
+                committed = scaler_step(scaler, (ctx.optimizer,))
+            else:
+                # Nothing listens: skip the scale comparison's host syncs.
+                scaler.step(ctx.optimizer)
+                scaler.update()
+                committed = False
         else:
             ctx.optimizer.step()
+            committed = True
         _reset_accumulation(accumulation_state)
-        # The clock counts the report only if the optimizer stepped: an AMP
-        # step the scaler skipped does not advance the schedule.
-        ctx.report_update()
+        if committed:
+            ctx.report_update()
 
     if adapter is not None:
         assert terms.valid is not None
@@ -2223,6 +2233,7 @@ class NNModel(_HubMixinBase):
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
+            watching_steps([clock] if clock is not None else []),
         ):
             callback_lifecycle.start()
             # FEAT-005: reset hooks (on_train_begin) have run once; now the
@@ -2274,7 +2285,7 @@ class NNModel(_HubMixinBase):
                     )
                     # The learning rate this batch trains with — an update
                     # clock may step the schedule inside the step (FEAT-014).
-                    lr_used = optimizer.param_groups[0]["lr"]
+                    lr_used = float(optimizer.param_groups[0]["lr"])
                     train_edp = step_fn(step_ctx)
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
@@ -2346,7 +2357,7 @@ class NNModel(_HubMixinBase):
                         warnings.warn(
                             f"epoch {idx_epoch}: the step function reported no optimizer update, so the "
                             "optimizer_update-clock scheduler did not step; call ctx.report_update() after each "
-                            "optimizer update the step commits",
+                            "optimizer.step() the step function takes itself (a report counts only after a step)",
                             UserWarning,
                             stacklevel=4,
                         )
