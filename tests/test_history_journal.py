@@ -1177,3 +1177,17 @@ def test_a_full_read_back_checks_the_committed_chunks():
 
     with pytest.raises(HistoryCorruptionError, match="chunk 0 .* is corrupt"):
         _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[_Corrupt(), _Full()], n_epochs=2)
+
+
+def test_epoch_rows_sum_exactly_as_the_eager_chart_on_every_python():
+    from nnx.nn.params.nn_run import _running_sum
+
+    values = [0.1, 0.7, 0.2, 1e-17, 0.3, 0.6]  # compensated summation would differ in the last bit
+    stats = history_module._EpochStats()
+    for value in values:
+        stats.add(
+            NNIterationDataPoint(
+                iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=NNEvaluationDataPoint(loss=value, error=value), lr=0.1
+            )
+        )
+    assert stats.loss_sum == _running_sum(values) and stats.err_sum == _running_sum(values)

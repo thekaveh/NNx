@@ -257,6 +257,17 @@ def _release_empty_reservation(run_path: str) -> None:
         os.rmdir(run_path)
 
 
+def _running_sum(values: list[float]) -> float:
+    """Left-to-right ``+=`` from ``0.0`` — what the history journal's epoch
+    rows accumulate batch by batch (FEAT-036), so both charts agree to the
+    bit on every Python version (``sum()`` of floats is compensated from
+    3.12 on, a plain running sum before)."""
+    total = 0.0
+    for value in values:
+        total += value
+    return total
+
+
 def _epoch_values(
     summary: Any, losses: tuple[float, int], errors: tuple[float, int], val_edp: Any, record: Any
 ) -> dict[str, Any]:
@@ -727,8 +738,8 @@ class NNRun:
             record = next((i.selection for i in reversed(idp_list) if i.selection is not None), None)
             values = _epoch_values(
                 summary,
-                (sum(losses), len(losses)),
-                (sum(errs), len(errs)),
+                (_running_sum(losses), len(losses)),
+                (_running_sum(errs), len(errs)),
                 val_idp.val_edp if val_idp is not None else None,
                 record,
             )

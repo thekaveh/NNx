@@ -184,8 +184,9 @@ def _nan_to_none(value: Optional[float]) -> Optional[float]:
 
 
 class _EpochStats:
-    """Running per-batch loss / error means of the epoch being written, in
-    the order ``NNRun._epoch_series`` sums them."""
+    """Running per-batch loss / error sums of the epoch being written — the
+    same left-to-right ``+=`` ``NNRun._epoch_series`` applies
+    (``nn_run._running_sum``), so journal and eager charts agree to the bit."""
 
     def __init__(self) -> None:
         self._reset(None)
