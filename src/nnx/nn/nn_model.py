@@ -7,7 +7,7 @@ import os
 import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -18,7 +18,13 @@ from tqdm import tqdm
 from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
-from .._scheduler_clock import SchedulerClock, planned_updates, update_horizon, uses_update_clock
+from .._scheduler_clock import (
+    NO_UPDATE_LISTENER,
+    SchedulerClock,
+    planned_updates,
+    update_horizon,
+    uses_update_clock,
+)
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
     BatchAdapter,
@@ -460,7 +466,7 @@ class TrainStepContext:
     # commits; an ``optimizer_update``-clock scheduler steps on it.
     # ``default_train_step`` calls it (never for a masked window or a skipped
     # AMP step); a custom step drives such a scheduler only by calling it.
-    report_update: Callable[[], None] = field(default=lambda: None)
+    report_update: Callable[[], None] = NO_UPDATE_LISTENER
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -2200,7 +2206,9 @@ class NNModel(_HubMixinBase):
         step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
         # FEAT-014: a step's committed updates drive an optimizer_update
         # clock (an objective's engine reports to the clock directly).
-        report_update: Callable[[], None] = clock.committed if clock is not None and engine is None else (lambda: None)
+        report_update: Callable[[], None] = (
+            clock.committed if clock is not None and engine is None else NO_UPDATE_LISTENER
+        )
         if engine is not None:
             assert objective is not None
             # Committed updates are announced to every callback.

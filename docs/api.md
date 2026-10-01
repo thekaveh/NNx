@@ -500,7 +500,7 @@ is preferred for new code.
 #### `nnx.nn.nn_model.TrainStepContext`
 
 ```python
-class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None, report_update: 'Callable[[], None]' = <function TrainStepContext.<lambda> at 0x7ff2636fbec0>) -> 'None'
+class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None, report_update: 'Callable[[], None]' = <no update listener>) -> 'None'
 ```
 
 Frozen bundle of state passed into a training-step function.
@@ -760,7 +760,7 @@ Raises:
 #### `nnx.trainer.trainer.TrainerStepContext`
 
 ```python
-class nnx.trainer.trainer.TrainerStepContext(model: 'NNModel', batch: 'Any', optimizers: 'Mapping[str, torch.optim.Optimizer]', schedulers: 'Mapping[str, Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', batch_idx: 'int', epoch_idx: 'int', report_update: 'Callable[[str], None]' = <function TrainerStepContext.<lambda> at 0x7ff2617a67a0>) -> 'None'
+class nnx.trainer.trainer.TrainerStepContext(model: 'NNModel', batch: 'Any', optimizers: 'Mapping[str, torch.optim.Optimizer]', schedulers: 'Mapping[str, Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', batch_idx: 'int', epoch_idx: 'int', report_update: 'Callable[[str], None]' = <no update listener>) -> 'None'
 ```
 
 Per-batch state passed into a trainer_step_fn.

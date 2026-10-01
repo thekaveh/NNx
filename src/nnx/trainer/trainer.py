@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 import torch
@@ -45,7 +45,13 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
-from .._scheduler_clock import SchedulerClock, planned_updates, update_horizon, uses_update_clock
+from .._scheduler_clock import (
+    NO_UPDATE_LISTENER,
+    SchedulerClock,
+    planned_updates,
+    update_horizon,
+    uses_update_clock,
+)
 from ..components import ComponentRegistry, ResumeStatus
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
@@ -113,7 +119,7 @@ class TrainerStepContext:
     # commits on optimizer ``name``; that optimizer's optimizer_update-clock
     # scheduler steps on it (each optimizer keeps its own count). NNx never
     # infers updates around a step function.
-    report_update: Callable[[str], None] = field(default=lambda name: None)
+    report_update: Callable[[str], None] = NO_UPDATE_LISTENER
 
 
 TrainerStepFn = Callable[[TrainerStepContext], NNEvaluationDataPoint]

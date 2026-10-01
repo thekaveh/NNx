@@ -27,6 +27,21 @@ CLOCK = "optimizer_update"
 _HORIZON_KINDS = frozenset({"one_cycle", "linear_warmup_decay"})
 
 
+class _NoUpdateListener:
+    """The default ``report_update`` of a step context built outside a
+    training loop: nothing listens, so a report does nothing (a stable
+    ``repr`` keeps generated signatures deterministic)."""
+
+    def __call__(self, *_: Any) -> None:
+        return None
+
+    def __repr__(self) -> str:
+        return "<no update listener>"
+
+
+NO_UPDATE_LISTENER = _NoUpdateListener()
+
+
 def uses_update_clock(scheduler_params: Any) -> bool:
     return getattr(scheduler_params, "clock", "epoch") == CLOCK
 
