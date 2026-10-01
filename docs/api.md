@@ -2925,6 +2925,424 @@ class nnx.decisions.ProviderFailure
 The provider's backend failed while answering a supported, valid request (the original error is the ``__cause__``).
 
 
+#### `nnx.decisions.benchmark.Sample`
+
+```python
+class nnx.decisions.benchmark.Sample(id: 'str', question: 'Question', input: 'Any', label: 'Union[str, bool]', family: 'str' = 'default', heldout: 'bool' = False, group: 'Optional[str]' = None, perturbation: 'Optional[str]' = None) -> 'None'
+```
+
+One benchmark item.
+
+**Details**
+
+```text
+Attributes:
+    id: the sample id — how records join (never row position).
+    question: the typed question; its digest is the schema identity.
+    input: what the provider reads for this sample (a text, a tensor
+        row, an array row).
+    label: the true option id (Choice / Score) or ``True`` / ``False``
+        (Boolean).
+    family: the task family.
+    heldout: whether the family is held out (reported apart from
+        in-family rows).
+    group: the grouping unit intervals resample (default: the id).
+    perturbation: what produced this sample from another (``None``:
+        an original).
+```
+
+##### `nnx.decisions.benchmark.Sample.digest`
+
+```python
+property nnx.decisions.benchmark.Sample.digest
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.Sample.unit`
+
+```python
+property nnx.decisions.benchmark.Sample.unit
+```
+
+The grouping unit (``group``, else the id).
+
+##### `nnx.decisions.benchmark.Sample.true_label`
+
+```python
+property nnx.decisions.benchmark.Sample.true_label
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.Record`
+
+```python
+class nnx.decisions.benchmark.Record(sample_id: 'str', question_digest: 'str', provider: 'str', status: 'str', distribution: 'Optional[tuple[tuple[str, float], ...]]' = None, p_true: 'Optional[float]' = None, reason: 'Optional[str]' = None, revision: 'Optional[str]' = None, prompt_identity: 'Optional[str]' = None, execution: 'Mapping[str, Any]' = <factory>) -> 'None'
+```
+
+One provider output for one sample.
+
+**Details**
+
+```text
+``status`` is ``"answered"`` (with ``distribution`` for a Choice or
+Score, ``p_true`` for a Boolean), ``"unsupported"`` (the provider
+declared it cannot serve the request) or ``"failed"`` (the call raised);
+the latter two carry a ``reason``. ``revision`` is the model revision,
+``prompt_identity`` how the provider rendered the question (a digest of
+its settings), ``execution`` free JSON metadata (batch, timing, whether
+the budget cut the batch short).
+```
+
+##### `nnx.decisions.benchmark.Record.state`
+
+```python
+nnx.decisions.benchmark.Record.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.Record.from_state`
+
+```python
+nnx.decisions.benchmark.Record.from_state(state: 'Mapping[str, Any]') -> 'Record'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.write_records`
+
+```python
+nnx.decisions.benchmark.write_records(path: 'Union[str, os.PathLike[str]]', records: 'Iterable[Record]') -> 'None'
+```
+
+One JSON object per line (strict JSON, sorted keys).
+
+
+#### `nnx.decisions.benchmark.read_records`
+
+```python
+nnx.decisions.benchmark.read_records(path: 'Union[str, os.PathLike[str]]') -> 'list[Record]'
+```
+
+The records of a JSONL file written by :func:`write_records`.
+
+
+#### `nnx.decisions.benchmark.Budget`
+
+```python
+class nnx.decisions.benchmark.Budget(max_calls: 'int', max_samples: 'Optional[int]' = None) -> 'None'
+```
+
+What a live collection may spend: ``max_calls`` provider calls and, optionally, ``max_samples`` samples. A batch the sample budget cuts short is sent shortened and recorded as ``partial_batch``.
+
+
+#### `nnx.decisions.benchmark.collect`
+
+```python
+nnx.decisions.benchmark.collect(provider: 'Any', samples: 'Sequence[Sample]', *, provider_id: 'str', budget: 'Budget', batch_size: 'int' = 16, revision: 'Optional[str]' = None, prompt_identity: 'Optional[str]' = None) -> 'Collection'
+```
+
+Ask ``provider`` every sample's question, in batches of samples that share one question (at most ``batch_size`` inputs per call).
+
+**Details**
+
+```text
+The provider and its id and the :class:`Budget` are explicit. Each batch
+is attempted once: a provider that raises gives ``"failed"`` records
+(retries are the provider's own), a request the provider declares it
+cannot serve (its ``check(question, inputs)``, or an
+``UnsupportedCapability`` from ``decide``) gives ``"unsupported"``
+records. Collection stops when the budget is spent; samples never
+attempted have no record (``missing`` when evaluated).
+``prompt_identity`` defaults to a digest of the provider's ``record()``.
+```
+
+
+#### `nnx.decisions.benchmark.Collection`
+
+```python
+class nnx.decisions.benchmark.Collection(records: 'tuple[Record, ...]', calls: 'int', complete: 'bool', stopped: 'Optional[str]' = None) -> 'None'
+```
+
+A live collection: the records, the provider calls made, whether every sample was attempted (``complete``) and, if not, why.
+
+
+#### `nnx.decisions.benchmark.evaluate`
+
+```python
+nnx.decisions.benchmark.evaluate(samples: 'Sequence[Sample]', records: 'Sequence[Record]', *, split: 'str', provider: 'Optional[str]' = None, epsilon: 'Optional[float]' = None, n_bins: 'int' = 10, policy: 'Any' = None, model_id: 'Optional[str]' = None, resources: 'Optional[Resources]' = None) -> 'BenchmarkReport'
+```
+
+Replay: join ``records`` to ``samples`` by sample id and question digest and report every slice. Calls no provider and fits nothing.
+
+**Details**
+
+```text
+Args:
+    split: the benchmark split's identity (reports of different splits
+        are never compared).
+    provider: which provider's records to score (``None``: all records,
+        which must then come from one provider).
+    epsilon: the NLL floor; ``None`` (default) is exact — ``+inf`` when a
+        true label has probability 0.
+    n_bins: reliability bins.
+    policy / model_id: an ``nnx.abstention.AbstentionPolicy`` applied as
+        given (never tuned here) for selective coverage and risk.
+    resources: how cost was measured, if at all.
+```
+
+
+#### `nnx.decisions.benchmark.BenchmarkReport`
+
+```python
+class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>) -> 'None'
+```
+
+A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared :class:`Resources`.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.state`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.to_json`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.csv_rows`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.csv_rows(self) -> 'list[dict[str, Any]]'
+```
+
+One row per slice and metric: value, unit, denominator, the unavailable reason, and the slice's eligible / failed / unsupported / missing counts.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.to_csv`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.to_csv(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.text`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.text(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.save`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.BenchmarkReport.load_state`
+
+```python
+nnx.decisions.benchmark.BenchmarkReport.load_state(path: 'Union[str, os.PathLike[str]]') -> 'dict[str, Any]'
+```
+
+A saved report's JSON state (for :func:`compare_reports`).
+
+
+#### `nnx.decisions.benchmark.SliceReport`
+
+```python
+class nnx.decisions.benchmark.SliceReport(name: 'str', coverage: 'Coverage', metrics: 'Mapping[str, MetricValue]', bins: 'tuple[Any, ...]') -> 'None'
+```
+
+One slice: its coverage, every metric and the reliability bins.
+
+##### `nnx.decisions.benchmark.SliceReport.state`
+
+```python
+nnx.decisions.benchmark.SliceReport.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.Coverage`
+
+```python
+class nnx.decisions.benchmark.Coverage(samples: 'int', eligible: 'int', missing: 'int', duplicate: 'int', mismatched: 'int', unsupported: 'int', failed: 'int', extra: 'int' = 0, reasons: 'Mapping[str, int]' = <factory>) -> 'None'
+```
+
+How the samples of a slice joined their records: ``eligible`` (one answered record with the sample's digest), ``missing`` (no record), ``duplicate`` (several), ``mismatched`` (a record for another question digest), ``unsupported`` and ``failed`` (with their reasons). ``extra`` counts records for no sample (whole benchmark only).
+
+##### `nnx.decisions.benchmark.Coverage.state`
+
+```python
+nnx.decisions.benchmark.Coverage.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.MetricValue`
+
+```python
+class nnx.decisions.benchmark.MetricValue(name: 'str', value: 'Optional[float]', denominator: 'int', reason: 'Optional[str]' = None) -> 'None'
+```
+
+A metric's ``value`` over ``denominator`` rows, or ``None`` with the ``reason`` it is unavailable.
+
+##### `nnx.decisions.benchmark.MetricValue.unit`
+
+```python
+property nnx.decisions.benchmark.MetricValue.unit
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.benchmark.MetricValue.state`
+
+```python
+nnx.decisions.benchmark.MetricValue.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.Resources`
+
+```python
+class nnx.decisions.benchmark.Resources(warmup: 'Optional[int]' = None, hardware: 'Optional[str]' = None, timing_boundary: 'Optional[str]' = None, concurrency: 'Optional[int]' = None, batch_count: 'Optional[int]' = None, seconds: 'Optional[float]' = None, source: 'Optional[str]' = None) -> 'None'
+```
+
+How cost was obtained — every field ``None`` unless declared.
+
+**Details**
+
+```text
+``source`` is ``"measured"`` (timed here; ``hardware`` is then required)
+or ``"supplied"`` (reported by someone else); ``timing_boundary`` says
+what the time covers (for example ``"provider.decide calls only"``).
+```
+
+##### `nnx.decisions.benchmark.Resources.state`
+
+```python
+nnx.decisions.benchmark.Resources.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.bootstrap_interval`
+
+```python
+nnx.decisions.benchmark.bootstrap_interval(samples: 'Sequence[Sample]', records: 'Sequence[Record]', *, metric: 'str', seed: 'int', slice: 'str' = 'in_family', resamples: 'int' = 1000, level: 'float' = 0.95, epsilon: 'Optional[float]' = None) -> 'Interval'
+```
+
+Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows of ``slice``, resampling grouping units — every row of a drawn unit comes along — with ``numpy.random.default_rng(seed)``.
+
+
+#### `nnx.decisions.benchmark.Interval`
+
+```python
+class nnx.decisions.benchmark.Interval(metric: 'str', estimate: 'Optional[float]', low: 'Optional[float]', high: 'Optional[float]', level: 'float', seed: 'int', resamples: 'int', units: 'int', degenerate: 'bool', unit: 'str' = 'group', method: 'str' = 'percentile bootstrap, grouping units resampled with replacement', reason: 'Optional[str]' = None) -> 'None'
+```
+
+A percentile bootstrap interval of one metric, resampling the declared grouping units (``unit="group"``) with ``seed``. ``degenerate`` flags a sample that cannot vary: fewer than two units, or every resample giving the same value (``low == high``).
+
+##### `nnx.decisions.benchmark.Interval.state`
+
+```python
+nnx.decisions.benchmark.Interval.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.benchmark.compare_reports`
+
+```python
+nnx.decisions.benchmark.compare_reports(a: 'Union[BenchmarkReport, Mapping[str, Any]]', b: 'Union[BenchmarkReport, Mapping[str, Any]]') -> 'dict[str, dict[str, Optional[float]]]'
+```
+
+``b - a`` per slice and metric, for two reports of the same split and metric identity (a :class:`BenchmarkReport` or a saved report's state); anything else raises :class:`BenchmarkError`. A metric unavailable on either side has no delta.
+
+
+#### `nnx.decisions.benchmark.permute_options`
+
+```python
+nnx.decisions.benchmark.permute_options(sample: 'Sample', order: 'Sequence[str]') -> 'Sample'
+```
+
+The same options in another order (``order``: every option id once). A Score's levels are ordered, so it is refused.
+
+
+#### `nnx.decisions.benchmark.redescribe`
+
+```python
+nnx.decisions.benchmark.redescribe(sample: 'Sample', descriptions: 'Mapping[str, str]') -> 'Sample'
+```
+
+New descriptions for some options (``id -> description``): the label space is the same, the text the provider sees is not.
+
+
+#### `nnx.decisions.benchmark.add_distractors`
+
+```python
+nnx.decisions.benchmark.add_distractors(sample: 'Sample', distractors: 'Sequence[Union[Option, tuple[str, str]]]') -> 'Sample'
+```
+
+Extra wrong options appended to a Choice.
+
+
+#### `nnx.decisions.benchmark.add_none_of_the_above`
+
+```python
+nnx.decisions.benchmark.add_none_of_the_above(sample: 'Sample', option: 'Union[Option, tuple[str, str]]' = ('none', 'None of the above'), *, remove_label: 'bool' = True) -> 'Sample'
+```
+
+A none-of-the-above option; with ``remove_label`` the true option is removed, so none-of-the-above becomes the answer.
+
+
+#### `nnx.decisions.benchmark.add_context`
+
+```python
+nnx.decisions.benchmark.add_context(sample: 'Sample', context: 'str', *, kind: 'str' = 'long_context') -> 'Sample'
+```
+
+Irrelevant context appended to a text input.
+
+
+#### `nnx.decisions.benchmark.rewrite_input`
+
+```python
+nnx.decisions.benchmark.rewrite_input(sample: 'Sample', text: 'str', *, kind: 'str') -> 'Sample'
+```
+
+The same question over a rewritten text input — a translation (``kind="multilingual"``) or an adversarial rewrite (``kind="adversarial"``).
+
+
+#### `nnx.decisions.benchmark.BenchmarkError`
+
+```python
+class nnx.decisions.benchmark.BenchmarkError
+```
+
+A malformed sample, record, budget or report, or reports that cannot be compared.
+
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 #### `nnx.provenance.ExperimentManifest`

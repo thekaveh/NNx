@@ -142,6 +142,21 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 
 NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's notebook ergonomics.
 
+### 3.11. Decision-provider benchmarking
+
+*Methodology dated 2026-10-01 (NNx's own `nnx.decisions.benchmark`; no competitor claim).*
+
+| Aspect | NNx |
+|---|---|
+| Replay format | JSONL records (`nnx.decision-record/1`): sample id, question digest, provider, status, answer or reason, model revision, prompt identity, execution metadata; replay needs no provider, credentials or network |
+| Coverage statuses | `eligible`, `missing`, `duplicate`, `mismatched` (question digest), `unsupported`, `failed` (with reasons) per sample; `extra` records; joined by sample id and digest, never row position |
+| Capabilities | A provider's declared limits give `unsupported` rows with its own reason and denominator (a fixed head outside its label space), never scored as wrong |
+| Budgets | A live collection needs an explicit provider and `Budget(max_calls, max_samples)`; one attempt per batch; a cut-short batch is marked `partial_batch` |
+| Metrics | Accuracy, macro-F1, exact NLL, Brier, ECE and reliability bins, optional selective coverage / risk; unavailable values carry a reason and denominator |
+
+It compares providers on identical samples; it is not a leaderboard and makes
+no superiority claim.
+
 ## 4. When to use what
 
 **Use NNx when** any combination of these matters:

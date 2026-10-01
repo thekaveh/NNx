@@ -125,7 +125,77 @@ answer:
 - **Failures.** An exception from the model itself becomes `ProviderFailure`,
   with the original error as `__cause__`.
 
-## 5. Errors
+## 5. Benchmarking providers
+
+`nnx.decisions.benchmark` (FEAT-021) scores decision providers on
+**identical samples**, offline first: a live collection runs once, and every
+report after that is a replay of saved records — no provider call, no
+credentials, no network, nothing fitted.
+
+```python
+from nnx.decisions.benchmark import Budget, Sample, collect, evaluate, read_records, write_records
+
+samples = [Sample("pet-0", question, row, "cat", family="pets"), ...]
+collection = collect(provider, samples, provider_id="fixed-head-v1", budget=Budget(max_calls=20))
+write_records("records.jsonl", collection.records)           # once, live
+report = evaluate(samples, read_records("records.jsonl"), split="animals-v1")   # any time, offline
+print(report.text())
+```
+
+- **Samples** carry the join key (`id`), the typed question (its digest is
+  the schema identity), the provider input, the true label, the task
+  `family` (`heldout=True` families report apart), the grouping unit
+  (`group`) and the `perturbation` that produced them. `permute_options`,
+  `redescribe` (new label descriptions), `add_distractors`,
+  `add_none_of_the_above`, `add_context` (long irrelevant context) and
+  `rewrite_input` (multilingual or adversarial state) derive perturbed
+  samples that keep their original's grouping unit.
+- **Replay format.** One `Record` per provider output, one JSON object per
+  line (`nnx.decision-record/1`, strict JSON): sample id, question digest,
+  provider, status, the answer (`distribution` or `p_true`) or the
+  `reason` there is none, model `revision`, `prompt_identity` (by default a
+  digest of the provider's `record()`) and `execution` metadata (batch,
+  size, `partial_batch`, seconds, attempt).
+- **Coverage statuses.** Records join samples by sample id **and** question
+  digest, never by row position. Each sample is `eligible` (one answered
+  record), `missing`, `duplicate`, `mismatched` (a record for another
+  question digest), `unsupported` or `failed` (both with their reasons);
+  records for no sample count as `extra`.
+- **Capabilities.** A provider that declares it cannot serve a request —
+  `FixedHeadProvider` outside its label space, for instance — gives
+  `unsupported` records with its own reason, counted in each slice's
+  denominator and never scored as wrong.
+- **Budgets.** `collect` needs an explicit provider, provider id and
+  `Budget(max_calls, max_samples=None)`. It attempts each batch once
+  (retries are the provider's own), stops when the budget is spent (the
+  rest is `missing`) and marks a batch the sample budget cut short as
+  `partial_batch`.
+- **Metrics,** per slice (`in_family`, `heldout`, `family:<name>`,
+  `perturbation:<name>`): accuracy, macro-F1, NLL (exact by default:
+  `+inf` when a true label has probability 0; `epsilon=` floors it), Brier,
+  ECE with reliability bins and — given an `nnx.abstention` policy, applied
+  as given — selective coverage and risk. Each is a `MetricValue` with its
+  denominator, or unavailable with the reason. NLL and Brier are the named
+  `nll` / `brier` metrics' terms; a Boolean is the options `("true",
+  "false")`.
+- **Resources** (`Resources`) say how cost was obtained — warmup, hardware,
+  timing boundary, concurrency, batch count, seconds and whether the
+  numbers were `measured` (hardware required) or `supplied`; anything not
+  declared stays `null`.
+- **Intervals.** `bootstrap_interval` resamples grouping units (whole
+  groups, never single rows of one) with a recorded seed, and flags a
+  degenerate sample (fewer than two units, or no variation).
+- **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
+  eligible and failure counts and unavailable states. `compare_reports`
+  gives `b - a` per slice and metric only for reports of the same split and
+  metric identity (metric set, `epsilon`, `n_bins`, policy).
+
+It is not a leaderboard: no paid remote run is a default, and it never
+tunes a threshold or a prompt on test outcomes.
+[`examples/decision_benchmark_offline.py`](../examples/decision_benchmark_offline.py)
+collects once and replays with sockets disabled.
+
+## 6. Errors
 
 All are `nnx.decisions.DecisionError`s, and their names are stable:
 
@@ -136,22 +206,22 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `UnsupportedCapability` | undeclared primitives, modalities, batch sizes or label spaces — before any model call |
 | `ProviderFailure` (also a `RuntimeError`) | the backend failing on a valid, supported request |
 
-## 6. Consumers
+## 7. Consumers
 
 Planned decision features share this digest, the `kind` discriminators and
 `validate_response` rather than defining their own: the optional Jev SDK
 adapter ([#220](https://github.com/thekaveh/NNx/issues/220)), a local
 label-conditioned baseline adapter
-([#234](https://github.com/thekaveh/NNx/issues/234)), a reproducible
-decision-provider benchmark ([#243](https://github.com/thekaveh/NNx/issues/243)),
-offline teacher-distribution datasets
+([#234](https://github.com/thekaveh/NNx/issues/234)), offline
+teacher-distribution datasets
 ([#244](https://github.com/thekaveh/NNx/issues/244)), applicative batching for
 independent decisions ([#245](https://github.com/thekaveh/NNx/issues/245)) and an
 optional `Result` at fallible boundaries
-([#263](https://github.com/thekaveh/NNx/issues/263)). None of them has landed;
-`nnx.decisions` does not depend on any of them.
+([#263](https://github.com/thekaveh/NNx/issues/263)); `nnx.decisions` does not
+depend on any of them. The provider benchmark (§5, from
+[#243](https://github.com/thekaveh/NNx/issues/243)) has landed.
 
-## 7. What this does not do
+## 8. What this does not do
 
 - It does not claim every classifier is a universal decision-maker: the
   fixed-head adapter answers only what its head justifies.
