@@ -211,6 +211,10 @@ result.calls                                           # provider calls made
   raises `JobLimitExceeded`. A request whose call began is reported with
   `sent=True`, never as rolled back: whatever the provider did with it
   stays done.
+  The provider's hooks (`check`, `capabilities()`, `count_tokens`) are
+  synchronous and run on the event loop in `arun`: keep them local and
+  fast (no network round trip). The timeout is checked between hook
+  calls, so a slow hook overruns it by at most one call.
 - **Outcomes.** `result.outcomes[id].kind` is `"answered"` (rows may still
   be `"abstained"` under a policy), `"failed"` (with `error`), `"skipped"`
   (never sent: a failure, a limit or the timeout stopped scheduling) or

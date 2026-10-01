@@ -121,7 +121,8 @@ class JobError(DecisionError):
 
     The error pickles (a process-pool worker's error reaches its parent): a
     provider error that would not survive the round trip — on its own or as
-    a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it."""
+    a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it,
+    and an answer's provider ``raw`` output that would not is dropped."""
 
     def __init__(self, message: str, *, outcomes: Optional[Mapping[str, QuestionOutcome]] = None) -> None:
         super().__init__(message)
@@ -137,14 +138,38 @@ class JobError(DecisionError):
         portable: dict[int, Optional[BaseException]] = {}
         fields = dict(self.__dict__)
         fields["outcomes"] = {
-            question_id: outcome
-            if outcome.error is None
-            else replace(outcome, error=_portable(outcome.error, portable))
-            for question_id, outcome in self.outcomes.items()
+            question_id: _portable_outcome(outcome, portable) for question_id, outcome in self.outcomes.items()
         }
         fields["completed"] = {k: v for k, v in fields["outcomes"].items() if v.kind == "answered"}
         cause = _portable(self.__cause__, portable)
         return (_restore_error, (type(self), str(self), fields, cause))
+
+
+def _round_trips(value: Any) -> bool:
+    import pickle
+
+    try:
+        pickle.loads(pickle.dumps(value))
+    except Exception:
+        return False
+    return True
+
+
+def _portable_outcome(outcome: QuestionOutcome, seen: dict[int, Optional[BaseException]]) -> QuestionOutcome:
+    """``outcome`` with its error portable and any answer whose provider
+    ``raw`` output does not survive a pickle round trip stripped of it."""
+    if outcome.error is not None:
+        outcome = replace(outcome, error=_portable(outcome.error, seen))
+    rows = []
+    for row in outcome.rows:
+        if not _round_trips(row):
+            result = replace(row.result, raw=None)
+            decision = row.decision
+            if decision is not None and hasattr(decision, "result"):
+                decision = replace(decision, result=replace(decision.result, raw=None))
+            row = replace(row, result=result, decision=decision)
+        rows.append(row)
+    return replace(outcome, rows=tuple(rows))
 
 
 def _portable(error: Optional[BaseException], seen: dict[int, Optional[BaseException]]) -> Optional[BaseException]:
@@ -153,12 +178,9 @@ def _portable(error: Optional[BaseException], seen: dict[int, Optional[BaseExcep
     if error is None:
         return None
     if id(error) not in seen:
-        import pickle
-
-        try:
-            pickle.loads(pickle.dumps(error))
+        if _round_trips(error):
             seen[id(error)] = error
-        except Exception:
+        else:
             try:
                 text = str(error)
             except Exception:
@@ -565,9 +587,7 @@ class _Runner:
         self.launched = 0  # calls scheduled (bounded by max_requests)
         self.memo: dict[tuple[int, ...], Any] = {}  # path -> map value / Follow, computed once
         self.states: list[Any] = [state]  # group index -> state
-        self.seen_ids: set[str] = set()
         self.registered: dict[str, None] = {}  # question ids known so far, in order
-        self.checked: set[tuple[str, int]] = set()
         self.started = time.monotonic()
         if callable(getattr(provider, "decide_many", None)):
             # A batching provider declares its cap (None: any number per call).
@@ -599,17 +619,22 @@ class _Runner:
     # ---------- validation ----------
 
     def _register(self, asks: Sequence[tuple[_Ask, int]]) -> None:
-        for ask, group in asks:
-            if ask.id in self.seen_ids:
+        """Register every ask first (so a refusal reports them all), then
+        check each against the provider."""
+        for ask, _ in asks:
+            if ask.id in self.registered:
                 raise InvalidJob(f"duplicate question id {ask.id!r}", outcomes=self._ordered())
-            self.seen_ids.add(ask.id)
             self.registered[ask.id] = None
+        for ask, group in asks:
+            self._deadline()
             self._check(ask, group)
 
+    def _deadline(self) -> None:
+        """Provider hooks run synchronously: the timeout is checked between them."""
+        if self._expired():
+            raise JobTimeout(f"the run exceeded its timeout of {self.limits.timeout}s", outcomes=self._ordered())
+
     def _check(self, ask: _Ask, group: int) -> None:
-        key = (ask.id, group)
-        if key in self.checked:
-            return
         state = self.states[group]
         try:
             check = getattr(self.provider, "check", None)
@@ -622,7 +647,6 @@ class _Runner:
             raise InvalidJob(f"question {ask.id!r} cannot be served: {error}", outcomes=self._ordered()) from error
         except Exception as error:  # the provider's own check failed: a provider failure
             raise _ProviderError(error) from error
-        self.checked.add(key)
 
     # ---------- evaluation ----------
 
@@ -737,9 +761,14 @@ class _Runner:
         chunks: list[list[_Ready]] = []
         current: list[_Ready] = []
         for item in items:
+            self._deadline()
             candidate = [*current, item]
+            if len(candidate) > self.cap:  # full: never count a call that cannot be sent
+                chunks.append(current)
+                current = []
+                candidate = [item]
             tokens = self._count_tokens([r.ask.question for r in candidate], item.state)
-            if len(candidate) <= self.cap and tokens <= self.limits.max_tokens:
+            if tokens <= self.limits.max_tokens:
                 current = candidate
                 continue
             if not current:
@@ -799,17 +828,21 @@ class _Runner:
             results = tuple(results)
             if rows is not None and len(results) != rows:
                 raise InvalidDecisionResponse(f"question {item.ask.id!r}: {len(results)} results for {rows} input rows")
-            digest = item.ask.question.digest()
+            question = item.ask.question
+            digest = question.digest()
+            options = None if isinstance(question, Boolean) else tuple(question.option_ids)
             wrong = [
                 i
                 for i, result in enumerate(results)
                 if not isinstance(result, (ChoiceResult, BooleanResult, ScoreResult))
                 or result.question_digest != digest
+                or result.kind != question.kind
+                or (options is not None and tuple(i for i, _ in getattr(result, "distribution", ())) != options)
             ]
             if wrong:
                 raise InvalidDecisionResponse(
-                    f"question {item.ask.id!r}: results {wrong} do not answer it (another question's digest, or "
-                    "not a decision result)"
+                    f"question {item.ask.id!r}: results {wrong} do not answer it (another question's digest or "
+                    "kind, options other than its own in its order, or not a decision result)"
                 )
             checked.append(results)
         return checked
@@ -912,10 +945,7 @@ class _Runner:
         started: set[int] = set()  # launches whose provider call began: those requests were sent
         if cancel is not None and not isinstance(cancel, asyncio.Event):
             raise InvalidJob(f"cancel must be an asyncio.Event, got {type(cancel).__name__}")
-        # Set at any point (even if cleared again), the event cancels the run.
-        stop: Optional[asyncio.Future[Any]] = None if cancel is None else asyncio.ensure_future(cancel.wait())
-        if stop is not None:
-            await asyncio.sleep(0)  # the watcher starts: an unusable event is refused before any call
+        stop: Optional[asyncio.Future[Any]] = None
         launches = 0
 
         def cancelled() -> bool:
@@ -940,6 +970,10 @@ class _Runner:
                 self._mark([chunk], "cancelled", sent=launch in started)
 
         try:
+            if cancel is not None:
+                # Set at any point (even if cleared again), the event cancels the run.
+                stop = asyncio.ensure_future(cancel.wait())
+                await asyncio.sleep(0)  # the watcher starts: an unusable event is refused before any call
             while True:
                 if cancelled():  # before any continuation runs; known questions were never sent
                     for question_id in self.registered:

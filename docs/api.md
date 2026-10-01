@@ -3100,7 +3100,8 @@ Base of the decision-job errors. ``outcomes`` maps question ids to every :class:
 ```text
 The error pickles (a process-pool worker's error reaches its parent): a
 provider error that would not survive the round trip — on its own or as
-a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it.
+a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it,
+and an answer's provider ``raw`` output that would not is dropped.
 ```
 
 

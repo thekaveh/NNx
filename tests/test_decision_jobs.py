@@ -27,6 +27,7 @@ from nnx.decisions import (
     JobTimeout,
     Limits,
     Score,
+    UnsupportedCapability,
     validate_response,
 )
 
@@ -881,3 +882,109 @@ def test_a_token_count_that_is_not_a_number_is_a_typed_failure():
         with pytest.raises(JobFailed, match="count_tokens") as caught:
             Job.collect(_questions(2)).run(Bad(), state=TEXTS, limits=Limits(max_tokens=5))
         assert type(caught.value.__cause__).__name__ == "InvalidDecisionResponse"
+
+
+def test_a_slow_hook_overruns_the_timeout_by_at_most_one_call():
+    class SlowCount(TextProvider):
+        counts = 0
+
+        def count_tokens(self, questions, texts):
+            SlowCount.counts += 1
+            time.sleep(0.3)
+            return len(questions)
+
+    for runner in ("run", "arun"):
+        SlowCount.counts = 0
+        job = Job.collect(_questions(6))
+        with pytest.raises(JobTimeout):
+            if runner == "run":
+                job.run(SlowCount(), state=TEXTS, limits=Limits(max_tokens=100, timeout=0.4, max_questions=1))
+            else:
+                asyncio.run(
+                    job.arun(SlowCount(), state=TEXTS, limits=Limits(max_tokens=100, timeout=0.4, max_questions=1))
+                )
+        assert SlowCount.counts <= 2  # never all six
+
+
+def test_answers_must_be_of_the_question_kind_and_its_options_in_order():
+    from nnx.decisions import BooleanResult, ChoiceResult
+
+    def wrong(question):
+        digest = question.digest()
+        return (
+            BooleanResult(digest, 0.4),
+            ChoiceResult(digest, (("x", 0.5), ("y", 0.5))),
+            ChoiceResult(digest, tuple(reversed(tuple((o, 0.5) for o in question.option_ids)))),
+        )
+
+    for index in range(3):
+
+        class Wrong(TextProvider):
+            def decide(self, question, texts, index=index):
+                return [wrong(question)[index] for _ in texts]
+
+        with pytest.raises(JobFailed) as caught:
+            Job.ask(TOPIC, id="t").run(Wrong(batching=False), state=TEXTS)
+        assert type(caught.value.__cause__).__name__ == "InvalidDecisionResponse"
+
+
+def test_an_unpicklable_raw_answer_is_dropped_when_the_error_pickles():
+    import dataclasses
+    import threading
+
+    class Raw(TextProvider):
+        def decide_many(self, questions, texts):
+            if any(q.prompt == "Mentions word1" for q in questions):
+                raise RuntimeError("backend down")
+            answers = super().decide_many(questions, texts)
+            return [[dataclasses.replace(r, raw={"lock": threading.Lock()}) for r in rows] for rows in answers]
+
+    with pytest.raises(JobFailed) as caught:
+        Job.collect(_questions(2)).run(Raw(), state=TEXTS, limits=Limits(max_questions=1))
+    restored = pickle.loads(pickle.dumps(caught.value))
+    assert restored.outcomes["q0"].kind == "answered" and restored.outcomes["q0"].rows[0].result.raw is None
+    assert caught.value.outcomes["q0"].rows[0].result.raw is not None  # the live error keeps it
+
+
+def test_cancelling_at_the_first_await_leaves_no_task_behind():
+    async def scenario():
+        event = asyncio.Event()
+        task = asyncio.ensure_future(Job.ask(TOPIC, id="t").arun(SlowAsyncProvider(), state=TEXTS, cancel=event))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+
+    assert asyncio.run(scenario()) == []
+
+
+def test_token_counts_never_cover_a_call_over_the_question_cap():
+    class Recording(TextProvider):
+        def __init__(self):
+            super().__init__()
+            self.sizes = []
+
+        def count_tokens(self, questions, texts):
+            self.sizes.append(len(questions))
+            return len(questions)
+
+    provider = Recording()
+    Job.collect(_questions(4)).run(provider, state=TEXTS, limits=Limits(max_tokens=100, max_questions=2))
+    assert max(provider.sizes) <= 2
+
+
+def test_a_refused_continuation_question_reports_its_siblings_too():
+    class Refuses(TextProvider):
+        def check(self, question, inputs):
+            if question.prompt == "Mentions d":
+                raise UnsupportedCapability("no d")
+
+    for keys in (("d", "c"), ("c", "d")):
+        follow = Job.collect({k: Job.ask(Boolean(f"Mentions {k}"), id=k) for k in keys})
+        job = Job.ask(TOPIC, id="a").then(lambda _, follow=follow: Follow(follow, TEXTS))
+        with pytest.raises(InvalidJob) as caught:
+            job.run(Refuses(), state=TEXTS)
+        kinds = {q: o.kind for q, o in caught.value.outcomes.items()}
+        assert kinds == {"a": "answered", "c": "skipped", "d": "skipped"}
