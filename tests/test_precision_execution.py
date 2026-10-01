@@ -272,11 +272,13 @@ def test_bf16_stays_within_its_fp32_reference_tolerance_on_cpu(fixture):
 
 @pytest.mark.parametrize("mode", ["fp16", "bf16"])
 def test_cuda_cells_are_verified_only_on_cuda_hardware(mode):
+    from nnx import precision as precision_module
+
     if not torch.cuda.is_available():
         # No hardware here: the cell is reported unverified — never claimed as support.
         assert precision_support("cuda")["cuda"][mode] == "unverified"
         return
-    if mode == "bf16" and not torch.cuda.is_bf16_supported():
+    if mode == "bf16" and not precision_module._native_cuda_bf16():  # emulated bf16 is not support
         assert precision_support("cuda")["cuda"][mode] == "unsupported"
         return
     _within(
@@ -828,8 +830,8 @@ def test_a_resolution_is_hashable():
 # --- review round 10 -----------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("teacher_mode", "expected"), [("bf16", torch.bfloat16), (None, torch.float16)])
-def test_a_teacher_with_its_own_policy_never_shares_a_legacy_students_autocast(teacher_mode, expected):
+@pytest.mark.parametrize(("teacher_mode", "expected"), [("bf16", torch.bfloat16), (None, torch.float32)])
+def test_a_teacher_never_shares_a_legacy_students_autocast(teacher_mode, expected):
     from nnx import ObjectiveContext
     from nnx.objectives import _own_precision
 
@@ -840,7 +842,7 @@ def test_a_teacher_with_its_own_policy_never_shares_a_legacy_students_autocast(t
     ctx = ObjectiveContext(model=student, batch=_batches(1)[0], epoch_idx=0, batch_idx=0, precision=legacy)
     with torch.no_grad(), legacy.autocast(), _own_precision(ctx, teacher):
         logits = teacher.net(_batches(1)[0][0])
-    assert logits.dtype is expected  # its own bf16 policy, or (no policy) the shared legacy autocast
+    assert logits.dtype is expected  # its own bf16 policy, or (none, or an explicit fp32) full precision
 
 
 def test_a_disabled_scaler_from_the_hook_is_refused_for_fp16():

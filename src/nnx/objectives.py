@@ -311,17 +311,13 @@ class KDObjective(Objective):
 @contextlib.contextmanager
 def _own_precision(ctx: ObjectiveContext, frozen: NNModel) -> Iterator[ResolvedPrecision]:
     """Run a frozen model (a KD teacher) in its own inference precision
-    (FEAT-028), not the run's: the run's autocast is suspended around it.
-    A teacher without a policy of its own keeps sharing the autocast the
-    legacy ``mixed_precision`` flag gives the student (CUDA), as it always
-    has."""
+    (FEAT-028) — its explicit policy, else full precision — never in the
+    student's: the run's autocast (the legacy flag's too, which never governs
+    inference) is suspended around it."""
     from .nn.nn_model import _inference_precision
 
     own = _inference_precision(frozen)
     run = ctx.precision
-    if run is not None and run.source == "legacy" and run.reduced and own.source != "policy":
-        yield own
-        return
     with contextlib.ExitStack() as stack:
         if run is not None and run.reduced:
             stack.enter_context(torch.autocast(device_type=run.device_type, enabled=False))
