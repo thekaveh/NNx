@@ -991,3 +991,23 @@ def test_a_subclass_cosine_period_is_its_own_choice_under_a_cosine_configuration
 def test_a_scheduler_the_update_clock_cannot_drive_is_refused_up_front(build, reason):
     with pytest.raises(ValueError, match=f"{reason}.*use clock='epoch'"):
         _train(_subclass_model(build), scheduler=_sched(Schedulers.STEP, step_size=1))
+
+
+# --- review round 15 ---------------------------------------------------------------------------------------
+
+
+def test_a_checkpoint_from_before_component_state_cannot_resume_on_the_update_clock(tmp_path):
+    from nnx.nn.enum.checkpoints import Checkpoints
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    parent = _train(_model(), epochs=1, scheduler=_one_cycle(), data_id="legacy")
+    checkpoint = NNCheckpoint.load(parent.id, Checkpoints.LAST)
+    assert checkpoint is not None
+    sidecar = tmp_path / "runs" / parent.id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    state = torch.load(sidecar, weights_only=True)
+    for key in ("components", "optimizers", "optimizer_types", "schedulers", "scheduler_types"):
+        state.pop(key, None)
+    state["nnx_training_state_version"] = 3  # as written before FEAT-005: its scheduler position counts epochs
+    torch.save(state, sidecar)
+    with pytest.raises(ComponentRestoreError, match="predates scheduler clocks.*clock='epoch'"):
+        _train(_model(seed=9), epochs=1, scheduler=_one_cycle(), data_id="legacy", resume_from_run_id=parent.id)

@@ -27,7 +27,7 @@ from .._scheduler_clock import (
     uses_update_clock,
 )
 from .._update_engine import scaler_step
-from ..components import ComponentRegistry, ResumeStatus
+from ..components import ComponentRegistry, ComponentRestoreError, ResumeStatus
 from ..models import (
     BatchAdapter,
     MissingModelFactoryError,
@@ -322,9 +322,19 @@ def _resume_training_state(
 def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping[str, Any]) -> Any:
     """Validate saved component state against ``registry`` without mutating
     anything. Sidecars written before FEAT-005 carry no component state:
-    every component then starts fresh (with a warning when there are any)."""
+    every component then starts fresh (with a warning when there are any) —
+    except an optimizer_update scheduler clock (FEAT-014): such a checkpoint's
+    scheduler position counts epochs, so resuming it on the update clock is
+    refused before anything is restored."""
     saved = training_state.get("components")
     if saved is None:
+        clocks = [name for name in registry.names if name.startswith("nnx.scheduler_clock")]
+        if clocks and (training_state.get("scheduler") is not None or training_state.get("schedulers")):
+            raise ComponentRestoreError(
+                f"{name}: the checkpoint predates scheduler clocks, so its scheduler position counts epochs; "
+                "resume it with clock='epoch'"
+                for name in clocks
+            )
         if len(registry):
             warnings.warn(
                 f"checkpoint predates component state (FEAT-005); {', '.join(registry.names)} start fresh",
