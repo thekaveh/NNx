@@ -189,6 +189,13 @@ class ResolvedPrecision:
     # flag. A run narrows it to the routes it took (scoped()).
     covers: Optional[tuple[str, ...]] = None
 
+    def __hash__(self) -> int:
+        # tf32 is a mapping: hash its items, so a resolution can key a dict.
+        tf32 = tuple(sorted(self.tf32.items()))
+        return hash(
+            (self.requested, self.effective, self.device_type, self.source, self.fallback_reason, tf32, self.covers)
+        )
+
     def scoped(self, covers: tuple[str, ...]) -> ResolvedPrecision:
         """This resolution, recording that it applies to ``covers`` only."""
         return replace(self, covers=tuple(covers))
@@ -274,6 +281,8 @@ def _device_type(device: Union[str, torch.device, Any]) -> str:
 def _unsupported(mode: str, device_type: str, index: Optional[int] = None) -> Optional[str]:
     """Why ``device_type`` (``index``: which CUDA device) cannot run
     ``mode`` (``None`` when it can)."""
+    if device_type == "cuda" and mode != "fp32" and not torch.cuda.is_available():
+        return f"{mode} was requested on a CUDA device, but CUDA is not available on this host"
     if device_type == "cuda" and index is not None and torch.cuda.is_available():
         if not 0 <= index < torch.cuda.device_count():
             return f"cuda:{index} does not exist on this host ({torch.cuda.device_count()} CUDA device(s))"

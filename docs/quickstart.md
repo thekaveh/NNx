@@ -92,10 +92,12 @@ their schemas are unchanged.
 
 `run.precision` records what happened — `requested`, `effective`,
 `fallback_reason`, TF32 (reported separately, from torch's `fp32_precision`
-setting when made; NNx never sets it) and which surfaces the precision
-actually applied to in that run (`covers` / `not_covered`; a custom
-`train_step_fn` receives `ctx.precision` and applies it itself, so training
-is then outside `covers`) — and `NNRun.load` reads it back from
+setting when made; NNx never sets it) and which NNx surfaces apply it
+(`covers`: the run's training where NNx runs the default step or an
+objective, and `evaluate()` / `predict()` whenever they are called;
+`not_covered`: surfaces that never do) — custom `train_step_fn` /
+`eval_step_fn` code is outside both (a training step reads `ctx.precision`
+and applies it itself) — and `NNRun.load` reads it back from
 `metadata.yaml`. The
 policy does not reach `nnx.lr_finder`, `nnx.diffusion.sampling` or
 generation. `nnx.precision_support()` reports each device's cells as

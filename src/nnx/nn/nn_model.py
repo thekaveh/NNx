@@ -674,13 +674,13 @@ def _check_resume_precision(
     """Refuse a stateful resume into a different effective precision
     (FEAT-028), or with a scaler that appears or disappears, before anything
     is restored. A sidecar written before precision was recorded trained in
-    fp16 exactly when it saved a scaler; a weights-only warm start may
-    switch."""
+    fp16 exactly when it saved an enabled scaler (a disabled GradScaler saves
+    an empty state); a weights-only warm start may switch."""
     record = training_state.get("precision")
     if isinstance(record, Mapping) and record.get("effective") is not None:
         saved = str(record["effective"])
     else:
-        saved = "fp16" if training_state.get("scaler") is not None else "fp32"
+        saved = "fp16" if training_state.get("scaler") else "fp32"
     if saved != precision.effective:
         raise ValueError(
             f"resume precision mismatch: the checkpoint trained in {saved}, this run resolves {precision.effective}; "
@@ -712,8 +712,7 @@ def _inference_precision(model: Any) -> ResolvedPrecision:
     resolved = model.resolved_precision if isinstance(model, NNModel) else None
     if resolved is not None and _PRECISION_EVALUATE in resolved.applies_to:
         return resolved
-    # Full precision needs no record, so TF32 is not read on this hot path.
-    return ResolvedPrecision(requested="fp32", effective="fp32", device_type=torch.device(model.device).type, tf32={})
+    return _FULL_PRECISION  # needs no record, so TF32 is not read on this hot path
 
 
 def _check_finite_gradients(module: torch.nn.Module) -> None:
@@ -783,8 +782,6 @@ def _step_loss_terms(
         backward_loss = train_loss / accumulate_grad_batches
     return _StepLossTerms(output, target, None, valid, train_loss, backward_loss, weight)
 
-
-_UNSET: Any = object()  # "not passed", for an argument whose None is meaningful
 
 # The legacy rule for a step context without a precision (FEAT-028): FP16
 # for a scaler on CUDA, full precision otherwise. TF32 is never read here.
@@ -2147,8 +2144,9 @@ class NNModel(_HubMixinBase):
         eval_step_fn: Optional[EvalStepFn] = None,
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
-        precision: Optional[ResolvedPrecision] = None,
-        scaler: Any = _UNSET,
+        *,
+        precision: ResolvedPrecision,
+        scaler: Optional[Any],
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -2227,11 +2225,6 @@ class NNModel(_HubMixinBase):
         if stateful_resume:
             _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
         scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
-        if precision is None:
-            precision = self.resolved_precision
-        if scaler is _UNSET:
-            scaler = self._build_grad_scaler()
-            _check_scaler_hook(precision, scaler, self.device.type)
         # FEAT-004: an objective's updates belong to the shared engine; its
         # committed-update counters are component state (nnx.update_engine),
         # so they continue across a stateful resume.

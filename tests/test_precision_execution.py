@@ -753,7 +753,7 @@ def test_the_cached_resolution_follows_the_cuda_ordinal():
     assert _precision_key(params, "cuda:0") != _precision_key(params, "cuda:1")
 
 
-def test_a_legacy_trainer_run_and_its_model_report_the_same_precision(monkeypatch):
+def test_a_legacy_trainer_run_records_full_precision_and_leaves_the_models_resolution():
     model = NNModel(
         net_params=_NET,
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, mixed_precision=True),
@@ -765,7 +765,12 @@ def test_a_legacy_trainer_run_and_its_model_report_the_same_precision(monkeypatc
         save_phase_checkpoints=False,
     )
     run = Trainer(model).train(params, objective=supervised_objective())
-    assert run.precision is not None and model.resolved_precision == run.precision
+    assert run.precision is not None and run.precision.covers == ()
+    assert "Trainer.train never applies mixed_precision=True" in str(run.precision.fallback_reason)
+    # The model keeps its legacy resolution (what NNModel.train applies on CUDA).
+    assert model.resolved_precision.source == "legacy" and model.resolved_precision.fallback_reason != (
+        run.precision.fallback_reason
+    )
 
 
 def test_the_legacy_trainer_warning_points_at_the_caller():
@@ -786,3 +791,35 @@ def test_the_legacy_trainer_warning_points_at_the_caller():
         line = inspect.currentframe().f_lineno + 1  # type: ignore[union-attr]
         train(model)
     assert (caught[0].filename, caught[0].lineno) == (__file__, line)
+
+
+# --- review round 9 ------------------------------------------------------------------------------------------
+
+
+def test_born_again_resolves_the_policy_afresh():
+    from nnx import born_again_train
+
+    model = _model(PrecisionPolicy("bf16"))
+    stale = ResolvedPrecision(requested="fp32", effective="fp32", device_type="cpu")
+    model._precision = (nn_model_module._precision_key(model.params, model.device), stale)  # a stale cache
+    with pytest.raises(PrecisionUnsupportedError, match="born_again_train"):
+        born_again_train(model, generations=2, train_params=_train_params(n_epochs=1))
+
+
+def test_a_pre_record_sidecar_with_a_disabled_scaler_counts_as_full_precision():
+    fp32 = ResolvedPrecision(requested="fp32", effective="fp32", device_type="cpu")
+    nn_model_module._check_resume_precision({"scaler": {}}, fp32, object())  # a disabled GradScaler's state
+    with pytest.raises(ValueError, match="the checkpoint trained in fp16"):
+        nn_model_module._check_resume_precision({"scaler": {"scale": 2.0}}, fp32, object())
+
+
+def test_a_cuda_request_without_cuda_says_so(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    for mode in ("fp16", "bf16"):
+        with pytest.raises(PrecisionUnsupportedError, match="CUDA is not available on this host"):
+            PrecisionPolicy(mode).resolve("cuda")
+
+
+def test_a_resolution_is_hashable():
+    resolved = PrecisionPolicy("bf16").resolve("cpu")
+    assert {resolved: 1}[resolved] == 1 and hash(resolved) == hash(PrecisionPolicy("bf16").resolve("cpu"))
