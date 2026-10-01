@@ -73,6 +73,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "quantize",
         "surgery",
         "trainer",
+        "transforms",
         "viz",
     ]
 
@@ -117,6 +118,15 @@ def test_preprocessing_api_is_public_and_complete():
     expected = {"Standardizer", "SplitView", "describe_transform", "PreprocessingError", "FORMAT"}
     assert expected <= set(preprocessing.__all__)
     assert all(getattr(preprocessing, name, None) is not None for name in preprocessing.__all__)
+
+
+def test_transforms_api_is_public_and_complete():
+    from nnx import transforms
+
+    expected = {"RecipeError", "TransformOp", "TransformRecipe", "check_optimizer", "lora", "low_rank"}
+    assert set(transforms.__all__) == expected
+    assert all(getattr(transforms, name, None) is not None for name in transforms.__all__)
+    assert "transforms" in nnx.__all__
 
 
 def test_calibration_api_is_public_and_complete():

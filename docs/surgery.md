@@ -178,3 +178,30 @@ model.train(params=replace(train_params, optim=optim))  # default supervised ste
 drift is exactly 0.0 over training while the new rows learn.)
 
 `nnx.finetune.freeze` covers the simpler case of freezing entire parameter tensors via fnmatch globs; the `frozen_mask` covers the row-level case that `freeze` can't reach.
+
+## 8. Recorded recipes: surgery that checkpoints can rebuild
+
+The primitives above edit a module and record nothing, so a model they changed cannot be rebuilt from its descriptor: `NNModel.train` refuses unrecorded low-rank surgery before any run is reserved, and its checkpoints could not be reconstructed anyway. For the two topology changes NNx can replay — LoRA on explicit `nn.Linear` targets and SVD low-rank replacement — use a **recipe** (FEAT-016, `nnx.transforms`):
+
+```python
+from nnx.optimizers import build_optimizer
+from nnx.transforms import TransformRecipe, check_optimizer, lora, low_rank
+
+recipe = TransformRecipe(
+    [lora("layers.0", r=4, alpha=8.0), low_rank("layers.1", rank=4)],
+    materialization="in_place",  # or "fresh": build a new registered base and transform that
+)
+recipe.validate(model)          # mutates nothing; one RecipeError names every problem
+recipe.materialize(model)       # transactional; the operations are recorded on the model
+optimizer = build_optimizer(model.net, optim_params)  # AFTER the recipe
+check_optimizer(model, optimizer)
+```
+
+- **What is recorded.** Each operation's `id` (`"lora"` / `"low_rank"`), `version`, explicit `targets` (dotted paths under `model.net`; globs are refused) and `config`, in order. The recipe copies its operations — changing the list they came from changes nothing — and its configs are read-only.
+- **Validation.** Before anything changes, `validate` / `materialize` reject a missing target, a target that is not exactly an `nn.Linear`, a target registered under more than one name, two targets of one operation that are the same or nested, a target inside a subtree another operation (or an earlier recipe) transforms, a rank above `min(in, out)`, an unknown operation or version — each named by operation index and target — and any optimizer passed in `optimizers=` that already holds a target's parameters, with the instruction to build the optimizer after the recipe. `check_optimizer(model, optimizer)` refuses an optimizer that is stale for the current topology the same way.
+- **Reconstruction.** The recorded operations travel with every run checkpoint (LAST, BEST, the phase tags and `ModelCheckpoint` snapshots), `NNCheckpoint.to_file` in both formats and `save_pretrained`. `NNModel.from_checkpoint` and `from_pretrained` build a fresh base, replay the operations — LoRA wrappers around the fresh layers, low-rank factors allocated in their recorded two-Linear shape — and only then load the saved tensors: SVD is never rerun, and the ordered keys, shapes, trainability and predictions match the saved model. An unknown operation or version is refused before any tensor is loaded, naming the transform's index.
+- **Training and resume.** A recipe model trains through `NNModel.train` / `Trainer.train` (its topology must stay exactly the base plus its recipe — surgery outside it is refused), and resumes when the resuming model has materialized the same recipe.
+- **What cannot rebuild a recipe.** A raw `export_state_dict()` file or an adapter-only `save_lora_weights` export carries no recipe; loading one into a fresh base fails with an error saying so. Materialize the recipe first, or keep a checkpoint / `save_pretrained` artifact.
+
+The manual refinement loop in [`examples/20_low_rank_surgery_ffn.py`](https://github.com/thekaveh/NNx/blob/main/examples/20_low_rank_surgery_ffn.py) stays (unrecorded surgery); its `recipe_reconstruction_workflow()` helper shows the recorded path end to end.
+

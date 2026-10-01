@@ -42,6 +42,7 @@ from . import (
     provenance,
     prune,
     tasks,
+    transforms,
     viz,
 )
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
@@ -367,6 +368,8 @@ __all__ = [
     "calibration",
     # Abstention policies and risk-coverage evaluation (FEAT-008)
     "abstention",
+    # Replayable model transformation recipes (FEAT-016)
+    "transforms",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",

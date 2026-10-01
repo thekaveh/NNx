@@ -316,6 +316,20 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
+### 2.18. Replayable transformation recipes (`nnx.transforms`)
+
+@api nnx.transforms.TransformRecipe
+
+@api nnx.transforms.TransformOp
+
+@api nnx.transforms.lora
+
+@api nnx.transforms.low_rank
+
+@api nnx.transforms.check_optimizer
+
+@api nnx.transforms.RecipeError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

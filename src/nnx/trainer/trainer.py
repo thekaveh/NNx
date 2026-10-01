@@ -773,7 +773,11 @@ class Trainer:
             for name, sched_params in scheduler_params.items():
                 _check_resume_horizon(sched_params, n_epochs=params.n_epochs, owner=f" for {name!r}")
         source = _load_resume_source(
-            params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=True
+            params.resume_from_run_id,
+            params.resume_from_checkpoint,
+            params.resume_mode,
+            trainer=True,
+            live_transforms=self.model._topology_transforms,
         )
         net = self.model.net
         training_state = source.training_state

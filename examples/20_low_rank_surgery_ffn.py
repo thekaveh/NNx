@@ -49,6 +49,16 @@ right after the site, dotted-path consumers (``get_submodule``,
 ``freeze``, parameter-group globs) still address the original layers, and
 a raw ``state_dict`` round-trips into an equivalently deepened fresh model.
 
+``recipe_reconstruction_workflow`` below records the topology change
+instead (FEAT-016, ``nnx.transforms``): a ``TransformRecipe`` of LoRA on one
+Linear then a rank-4 SVD factorization of another is validated (an
+optimizer built *before* it is refused with a rebuild instruction),
+materialized, trained a few steps with an optimizer built *after* it, and
+saved as a checkpoint; ``NNModel.from_checkpoint`` rebuilds the same
+topology on a fresh base — the factors are loaded, SVD is not rerun — with
+identical keys, trainability and predictions. The manual loop in ``main``
+stays: unrecorded surgery is still refused before persistent training.
+
 Run:
     pip install thekaveh-nnx
     python examples/20_low_rank_surgery_ffn.py
@@ -380,6 +390,77 @@ def surgery_freeze_roles() -> dict:
         "loss": float(loss.detach()),
     }
     print(f"surgery freeze-roles workflow: {summary}")
+    return summary
+
+
+def recipe_reconstruction_workflow() -> dict:
+    import os
+    import tempfile
+    from unittest import mock
+
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
+    from nnx.optimizers import build_optimizer
+    from nnx.transforms import RecipeError, TransformRecipe, check_optimizer, lora, low_rank
+
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=6, output_dim=3, hidden_dims=[16, 12], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    optim = NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)
+    recipe = TransformRecipe(
+        [lora("layers.0", r=4, alpha=8.0), low_rank("layers.1", rank=4)], materialization="in_place"
+    )
+
+    # Validation mutates nothing; an optimizer built before the recipe is refused.
+    early = build_optimizer(model.net, optim)
+    try:
+        recipe.materialize(model, optimizers=[early])
+        raise AssertionError("a stale optimizer must be refused")
+    except RecipeError as exc:
+        refused = str(exc)
+    assert "build the optimizer after" in refused and model._topology_transforms == ()
+
+    recipe.materialize(model)
+    optimizer = build_optimizer(model.net, optim)  # optimizer-after-transform order
+    check_optimizer(model, optimizer)
+    features = torch.randn(32, 6, generator=torch.Generator().manual_seed(1))
+    labels = torch.randint(0, 3, (32,), generator=torch.Generator().manual_seed(2))
+    for _ in range(5):
+        optimizer.zero_grad()
+        loss = torch.nn.functional.cross_entropy(model.net(features), labels)
+        loss.backward()
+        optimizer.step()
+
+    idp = NNIterationDataPoint(
+        lr=1e-2, iter_idx=4, epoch_idx=0, batch_idx=4, train_edp=NNEvaluationDataPoint(loss=float(loss))
+    )
+    checkpoint = NNCheckpoint(
+        idp=idp,
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+        transforms=model._topology_transforms,
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "recipe.safetensors")
+        checkpoint.to_file(path, format="safetensors")
+        with mock.patch("torch.linalg.svd", side_effect=AssertionError("SVD rerun during reload")):
+            rebuilt = NNModel.from_checkpoint(NNCheckpoint.from_file(path))
+
+    model.net.eval()
+    rebuilt.net.eval()
+    with torch.no_grad():
+        same = torch.allclose(rebuilt.net(features), model.net(features), rtol=1e-5, atol=1e-6)
+    keys = list(rebuilt.net.state_dict()) == list(model.net.state_dict())
+    flags = [p.requires_grad for p in rebuilt.net.parameters()] == [p.requires_grad for p in model.net.parameters()]
+    assert same and keys and flags
+    summary = {"operations": [t.name for t in rebuilt._topology_transforms], "predictions_match": same}
+    print(f"recipe {summary['operations']} rebuilt from its checkpoint; predictions match: {same}")
     return summary
 
 

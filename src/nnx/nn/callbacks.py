@@ -489,6 +489,8 @@ class ModelCheckpoint(Callback):
             net_params=ctx.model.net_params,
             net_state=_snapshot_state_dict(ctx.model.net.state_dict()),
             training_state_present=False,
+            # FEAT-016: a recorded recipe rebuilds this snapshot's topology too.
+            transforms=tuple(getattr(ctx.model, "_topology_transforms", ())),
         )
         # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
         # uses through _checkpoint_path; we hand-build the path here because
