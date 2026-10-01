@@ -1763,12 +1763,16 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   and device, for `NNModel.train` and `Trainer` runs alike (or a label for
   every run, passed as `config=`). A run with a parent — a continuation, a
   fine-tune, a born-again generation — has the parent's id replaced by the
-  parent's own identity (followed back through every ancestor), the
+  parent's own identity (followed back through every ancestor), the data
+  and split identities its provenance declares, how its attempt ended, the
   checkpoint tag and the resume mode from `metadata.yaml`: `n_epochs`
   counts the epochs a run adds, so it pools only with runs descended the
   same way from identically configured parents — never with fresh runs,
   with its parent, or with fine-tunes of other pretraining. A parent that
-  cannot be read keeps its raw id, so its child pools with nothing. The replicate key is
+  is not a saved run (deleted, or the moving `best` alias) keeps its raw
+  id, so its children pool only with each other. A cycle, a lineage deeper
+  than 64 runs or an ancestor's unreadable files are refused, whatever
+  order the runs are listed in. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and
   unknown for a run without a training seed. The text view counts attempts
   that did not complete as `not_completed`, and a matched pair whose delta

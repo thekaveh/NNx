@@ -533,6 +533,65 @@ def test_a_child_pools_only_with_children_of_identically_configured_parents(tmp_
     assert observations_from_runs([parents_a[0].id], metric=loss)[0].value is not None
 
 
+def test_a_parents_declared_data_and_lineage_errors_are_part_of_the_identity(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+    on_x = ExperimentManifest(data={"train": hash_bytes(b"pretrain-x")})
+    on_y = ExperimentManifest(data={"train": hash_bytes(b"pretrain-y")})
+    parents = [
+        _model().train(params=_fit_params(0), salt=f"{name}{i}", provenance=manifest)
+        for name, manifest in (("x", on_x), ("y", on_y))
+        for i in range(2)
+    ]
+    children = [
+        _model().train(
+            params=_fit_params(10 + i, resume_from_run_id=parent.id, resume_mode="weights_only"), provenance=MANIFEST
+        )
+        for i, parent in enumerate(parents)
+    ]
+    found = observations_from_runs([run.id for run in children], metric=loss)
+    assert found[0].config == found[1].config and found[2].config == found[3].config
+    assert found[0].config != found[2].config  # pretraining declared only through provenance= still splits
+    assert sorted(group.n for group in summarize(found).groups) == [2, 2]
+
+    # Lineages are resolved the same whatever order the runs are listed in.
+    def fake(run_id, parent_id):
+        state = yaml.safe_load(open(os.path.join("runs", children[0].id, "run.yaml")))
+        state["train"]["parent_run_id"] = parent_id
+        os.makedirs(os.path.join("runs", run_id))
+        with open(os.path.join("runs", run_id, "run.yaml"), "w") as handle:
+            yaml.safe_dump(state, handle)
+
+    from nnx.comparison import MAX_LINEAGE
+
+    chain = [f"{i:032x}" for i in range(MAX_LINEAGE + 2)]
+    fake(chain[0], None)
+    for parent_id, run_id in zip(chain[:-1], chain[1:], strict=True):
+        fake(run_id, parent_id)
+    for order in (chain, chain[::-1], chain[-1:]):
+        with pytest.raises(ComparisonError, match=f"deeper than {MAX_LINEAGE}"):
+            observations_from_runs(order, metric=loss)
+    assert len(observations_from_runs(chain[: MAX_LINEAGE + 1][::-1], metric=loss)) == MAX_LINEAGE + 1
+
+    # A cycle is named; the moving "best" alias is never followed.
+    fake("a" * 32, "b" * 32)
+    fake("b" * 32, "a" * 32)
+    with pytest.raises(ComparisonError, match="cycle"):
+        observations_from_runs(["a" * 32], metric=loss)
+    fake("c" * 32, "best")
+    fake("d" * 32, "best")
+    pair = observations_from_runs(["c" * 32, "d" * 32], metric=loss)
+    assert pair[0].config == pair[1].config != found[0].config
+    # An ancestor's unreadable provenance is raised, not swallowed.
+    with open(os.path.join("runs", parents[0].id, "provenance.json"), "w") as handle:
+        handle.write("{not json")
+    with pytest.raises(ComparisonError, match="provenance"):
+        observations_from_runs([children[0].id], metric=loss)
+
+
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
     from nnx import MonitorSpec
 

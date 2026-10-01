@@ -922,7 +922,8 @@ def _canonical_text(value: Any) -> str:
 _PER_REPLICATE = ("seed", "parent_run_id", "parent_checkpoint")
 
 
-MAX_LINEAGE = 64  # parent runs followed before a lineage is refused (a cycle, or a corrupt history)
+MAX_LINEAGE = 64  # ancestors a run may have before its lineage is refused (a corrupt history)
+ALIASES = ("best",)  # moving pointers a run can resume from: never followed as a fixed parent
 
 
 def _parent(run_state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
@@ -935,10 +936,10 @@ def _parent(run_state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
 
 
 def _resume_mode(run_path: str, run_id: str) -> Optional[str]:
-    """How a run continued its parent (``stateful`` / ``weights_only``), from
-    ``metadata.yaml``; ``None`` when it did not resume (a born-again
-    generation, say) or predates the record. A file that cannot be read is
-    refused: the run's procedure would be unknown."""
+    """How a run continued its parent — ``stateful``, ``weights_only``, or
+    ``fresh`` when it did not resume (a born-again generation, say) — from
+    ``metadata.yaml``; ``None`` when the run predates the record. A file that cannot be read, or
+    an unknown mode, is refused: the run's procedure would be unknown."""
     import yaml
 
     path = os.path.join(run_path, "metadata.yaml")
@@ -954,47 +955,93 @@ def _resume_mode(run_path: str, run_id: str) -> Optional[str]:
         ) from error
     resume = metadata.get("resume") if isinstance(metadata, Mapping) else None
     mode = resume.get("mode") if isinstance(resume, Mapping) else None
-    return mode if isinstance(mode, str) else None
+    if mode is not None and mode not in ("fresh", "stateful", "weights_only"):
+        raise ComparisonError(f"run {run_id}: metadata.yaml records an unknown resume mode {mode!r}")
+    return mode
 
 
-class _LineageTooDeep(ComparisonError):
-    pass
+def _resolvable(run_id: str, root: Optional[str]) -> bool:
+    """Whether ``run_id`` names a saved run (not an alias, a malformed id or
+    a deleted run)."""
+    from .nn.params.nn_run import _runs_root, _validate_run_id
+
+    if run_id in ALIASES:
+        return False
+    try:
+        return os.path.isfile(os.path.join(_runs_root(root), _validate_run_id(run_id), "run.yaml"))
+    except (TypeError, ValueError):
+        return False
+
+
+def _parent_facts(parent_id: str, root: Optional[str]) -> dict[str, Any]:
+    """What a parent's provenance declares (FEAT-019) beyond its ``run.yaml``:
+    its data and split identities and how its attempt ended."""
+    from .provenance import load_provenance
+
+    try:
+        provenance = load_provenance(parent_id, root)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise ComparisonError(
+            f"run {parent_id}: its provenance files are unreadable ({type(error).__name__}: {error}); "
+            "what its children descend from is unknown"
+        ) from error
+    manifest = None if provenance is None else provenance.manifest
+    attempt = None if provenance is None else provenance.attempt
+    return {
+        "data": None if manifest is None else _identities(manifest.data),
+        "splits": None if manifest is None else _identities(manifest.splits),
+        "status": None if attempt is None else attempt.status,
+    }
 
 
 def _run_identity(
     run_id: str,
     root: Optional[str],
-    cache: dict[str, str],
-    depth: int = 0,
+    cache: dict[str, tuple[str, int]],
     known: Optional[tuple[Mapping[str, Any], str]] = None,
 ) -> str:
     """:func:`_config_identity` of a saved run, with the identity of every
     run it descends from: a continuation, a fine-tune or a born-again
     generation is the procedure *parent then child*, so it pools only with
-    runs whose parents had the same configuration and that continued them
-    the same way. A parent that cannot be read keeps its raw id, so the run
-    pools with nothing."""
+    runs whose parents had the same configuration, data and splits, ended
+    the same way, and were continued the same way from the same checkpoint
+    tag. A parent that is not a saved run (deleted, or the moving ``best``
+    alias) keeps its raw id: the run pools only with siblings of that same
+    parent. Errors in an ancestor's files are raised, as for the run's own."""
+    return _resolve(run_id, root, cache, (), known)[0]
+
+
+def _resolve(
+    run_id: str,
+    root: Optional[str],
+    cache: dict[str, tuple[str, int]],
+    path: tuple[str, ...],
+    known: Optional[tuple[Mapping[str, Any], str]] = None,
+) -> tuple[str, int]:
+    """``(identity, ancestors)``, cached per call: the same answer whatever
+    order runs are listed in."""
     if run_id in cache:
         return cache[run_id]
-    if depth > MAX_LINEAGE:
-        raise _LineageTooDeep(f"run {run_id}: a lineage deeper than {MAX_LINEAGE} runs (a cycle?)")
+    if run_id in path:
+        raise ComparisonError(f"run {path[0]}: its lineage is a cycle ({' -> '.join((*path, run_id))})")
+    if len(path) > MAX_LINEAGE:
+        raise ComparisonError(f"run {path[0]}: a lineage deeper than {MAX_LINEAGE} runs")
     run_state, run_path = known if known is not None else _read_run_state(run_id, root)
     parent = _parent(run_state)
-    lineage = None
+    lineage, ancestors = None, 0
     if parent is not None:
-        parent_id = parent["parent_run_id"]
-        try:
-            ancestry = _run_identity(str(parent_id), root, cache, depth + 1)
-        except _LineageTooDeep:
-            raise
-        except ComparisonError:
-            ancestry = f"unreadable parent {parent_id!r}"
-        lineage = {
-            "parent": ancestry,
-            "checkpoint": parent.get("parent_checkpoint"),
-            "mode": _resume_mode(run_path, run_id),
-        }
-    cache[run_id] = _config_identity(run_state, lineage)
+        parent_id = str(parent["parent_run_id"])
+        lineage = {"checkpoint": parent.get("parent_checkpoint"), "mode": _resume_mode(run_path, run_id)}
+        if _resolvable(parent_id, root):
+            identity, above = _resolve(parent_id, root, cache, (*path, run_id))
+            lineage.update(parent=identity, **_parent_facts(parent_id, root))
+            ancestors = above + 1
+        else:
+            lineage["parent"] = f"unresolved parent {parent_id!r}"
+            ancestors = 1
+    if ancestors > MAX_LINEAGE:
+        raise ComparisonError(f"run {run_id}: a lineage deeper than {MAX_LINEAGE} runs")
+    cache[run_id] = (_config_identity(run_state, lineage), ancestors)
     return cache[run_id]
 
 
@@ -1192,7 +1239,7 @@ def observations_from_runs(
         if unlabelled:
             raise ComparisonError(f"config= labels some runs but not {unlabelled}; label every run or none")
     observations = []
-    identities: dict[str, str] = {}  # run id -> configuration identity, parents included
+    identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
     for run_id in run_ids:
         run_state, idps, provenance, committed_by_last, run_path = _read_run(run_id, root)
         attempt = None if provenance is None else provenance.attempt
