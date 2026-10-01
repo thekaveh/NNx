@@ -63,6 +63,10 @@ class NNModelParams:
                     f"NNModelParams(mixed_precision=True) means fp16, which contradicts "
                     f"precision={self.precision.mode!r}; set precision alone"
                 )
+            if self.precision.mode == "fp32":
+                # An explicit fp32 policy is the default (nothing to fall back
+                # from): normalized away, so it keeps the default's run id.
+                object.__setattr__(self, "precision", None)
 
     def __str__(self) -> str:
         task = f", task={self.task}" if self.task is not None else ""

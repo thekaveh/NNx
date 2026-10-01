@@ -45,6 +45,7 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
+from .._update_engine import check_scaler_ownership
 from ..components import ComponentRegistry, ResumeStatus
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
@@ -416,6 +417,8 @@ class Trainer:
         }
         # FEAT-028: the precision is resolved before any run is reserved.
         precision = _trainer_precision(self.model, objective)
+        if precision.uses_scaler and objective is not None:
+            check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
 
         run = NNRun(
             train=_representative_train_params(params),

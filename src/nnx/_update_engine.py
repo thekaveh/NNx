@@ -124,6 +124,8 @@ class UpdateEngine:
                         self._params.append(param)
                     owned.append(index[id(param)])
             self._owner[name] = owned
+        if scaler is not None:
+            check_scaler_ownership(self.optimizers)
         self.update_counts: dict[str, int] = {name: 0 for name in self.optimizers}
         self.commits = 0
         self.skipped = 0
@@ -239,14 +241,19 @@ class UpdateEngine:
             if not values:
                 return ()  # every term fully masked: nothing to learn from
             self._assign_gradients()
+            # The scaler sees only optimizers holding a gradient this window (a
+            # frozen or unused one has nothing to unscale, and GradScaler
+            # refuses to step an optimizer it never checked).
+            scaled = [opt for opt in self.optimizers.values() if _holds_gradient(opt)]
             if self.scaler is not None:
-                for optimizer in self.optimizers.values():
+                for optimizer in scaled:
                     self.scaler.unscale_(optimizer)
                 if not self._gradients_finite():
                     # One window, one decision: the scaler would skip only the
                     # optimizers that overflowed, so none steps (the update
                     # still backs the scale off, from what unscale_ found).
-                    self.scaler.update()
+                    if scaled:
+                        self.scaler.update()
                     self.skipped += 1
                     return ()
             elif not self._gradients_finite():
@@ -261,15 +268,16 @@ class UpdateEngine:
                 norm = self.clip_norms.get(name)
                 if norm is not None:
                     torch.nn.utils.clip_grad_norm_([self._params[i] for i in self._owner[name]], norm)
-            if self.scaler is not None:
+            if self.scaler is not None and scaled:
                 scale_before = float(self.scaler.get_scale())
-                for optimizer in self.optimizers.values():
+                for optimizer in scaled:
                     self.scaler.step(optimizer)
                 self.scaler.update()
+                # A backstop: a scaler that skips for its own reasons.
                 if float(self.scaler.get_scale()) < scale_before:
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
-            else:
+            elif self.scaler is None:
                 for optimizer in self.optimizers.values():
                     optimizer.step()
             self.commits += 1
@@ -340,6 +348,26 @@ class UpdateEngine:
         self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
 
 
+def _holds_gradient(optimizer: torch.optim.Optimizer) -> bool:
+    return any(param.grad is not None for group in optimizer.param_groups for param in group["params"])
+
+
+def check_scaler_ownership(optimizers: Mapping[str, torch.optim.Optimizer]) -> None:
+    """Refuse optimizers sharing a parameter under a loss scaler: it
+    unscales per optimizer, so a shared parameter's gradient would be
+    unscaled twice (FEAT-028)."""
+    owners: dict[int, str] = {}
+    for name, optimizer in optimizers.items():
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                first = owners.setdefault(id(param), name)
+                if first != name:
+                    raise ValueError(
+                        f"optimizers {first!r} and {name!r} share a parameter, which an fp16 loss scaler would "
+                        "unscale twice; give each parameter to one optimizer (non-overlapping param_groups)"
+                    )
+
+
 def gradients_finite(params: Iterable[torch.Tensor]) -> bool:
     """Whether every gradient is finite — reduced on each device, one host
     sync per device (shared by the engine and the default step). A sparse
@@ -350,7 +378,8 @@ def gradients_finite(params: Iterable[torch.Tensor]) -> bool:
         if grad is None:
             continue
         values = grad._values() if grad.is_sparse else grad
-        by_device.setdefault(values.device, []).append(values)
+        if values.numel():  # an empty gradient holds nothing non-finite
+            by_device.setdefault(values.device, []).append(values)
     for grads in by_device.values():
         # Max-abs norms: inf / nan exactly when an element is, and never an
         # overflow of finite values; a few multi-tensor kernels per device.

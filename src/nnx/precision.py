@@ -263,14 +263,17 @@ class ResolvedPrecision:
         )
 
 
+def _torch_device(device: Union[str, torch.device, Any]) -> torch.device:
+    return device if isinstance(device, torch.device) else torch.device(str(device))
+
+
 def _device_type(device: Union[str, torch.device, Any]) -> str:
-    if isinstance(device, torch.device):
-        return device.type
-    return torch.device(str(device)).type
+    return _torch_device(device).type
 
 
-def _unsupported(mode: str, device_type: str) -> Optional[str]:
-    """Why ``device_type`` cannot run ``mode`` (``None`` when it can)."""
+def _unsupported(mode: str, device_type: str, index: Optional[int] = None) -> Optional[str]:
+    """Why ``device_type`` (``index``: which CUDA device) cannot run
+    ``mode`` (``None`` when it can)."""
     if mode == "fp32":
         return None
     if mode == "fp16":
@@ -279,7 +282,7 @@ def _unsupported(mode: str, device_type: str) -> Optional[str]:
         return f"fp16 runs as float16 autocast with a GradScaler on CUDA only; this device is {device_type!r}"
     if device_type == "cpu":
         return None
-    if device_type == "cuda" and torch.cuda.is_available() and _native_cuda_bf16():
+    if device_type == "cuda" and torch.cuda.is_available() and _native_cuda_bf16(index):
         return None
     return (
         f"bf16 runs on CPU and on CUDA devices with native bf16 support (compute capability 8.0+, not "
@@ -287,18 +290,21 @@ def _unsupported(mode: str, device_type: str) -> Optional[str]:
     )
 
 
-def _native_cuda_bf16() -> bool:
-    """Whether the current CUDA device runs bf16 natively — not the
-    emulation ``torch.cuda.is_bf16_supported()`` counts by default."""
-    try:
-        return bool(torch.cuda.is_bf16_supported(including_emulation=False))
-    except TypeError:  # a torch without the keyword: native means Ampere or newer
-        return bool(torch.cuda.is_bf16_supported()) and torch.cuda.get_device_capability()[0] >= 8
+def _native_cuda_bf16(index: Optional[int] = None) -> bool:
+    """Whether CUDA device ``index`` (the current one when ``None``) runs
+    bf16 natively — not the emulation ``torch.cuda.is_bf16_supported()``
+    counts by default."""
+    with torch.cuda.device(index) if index is not None else contextlib.nullcontext():
+        try:
+            return bool(torch.cuda.is_bf16_supported(including_emulation=False))
+        except TypeError:  # a torch without the keyword: native means Ampere or newer
+            return bool(torch.cuda.is_bf16_supported()) and torch.cuda.get_device_capability()[0] >= 8
 
 
 def _resolve(mode: str, fallback: str, device: Any, *, source: str) -> ResolvedPrecision:
-    device_type = _device_type(device)
-    reason = _unsupported(mode, device_type)
+    torch_device = _torch_device(device)
+    device_type = torch_device.type
+    reason = _unsupported(mode, device_type, torch_device.index)
     if reason is None:
         return ResolvedPrecision(requested=mode, effective=mode, device_type=device_type, source=source)
     if fallback == "fp32":
@@ -349,6 +355,7 @@ def precision_support(device: Union[str, torch.device, None] = None) -> dict[str
         "cuda": torch.cuda.is_available(),
         "mps": bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()),
     }
+    index = _torch_device(device).index if device is not None else None  # which CUDA device, when given
     device_types = [_device_type(device)] if device is not None else list(present)
     verified = {("cpu", "fp32"), ("cpu", "bf16")}
     matrix: dict[str, dict[str, str]] = {}
@@ -362,6 +369,6 @@ def precision_support(device: Union[str, torch.device, None] = None) -> dict[str
             elif not present.get(device_type, False):
                 row[mode] = "unverified"
             else:
-                row[mode] = "supported" if _unsupported(mode, device_type) is None else "unsupported"
+                row[mode] = "supported" if _unsupported(mode, device_type, index) is None else "unsupported"
         matrix[device_type] = row
     return matrix

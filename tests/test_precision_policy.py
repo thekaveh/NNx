@@ -431,3 +431,45 @@ def test_cudnn_tf32_per_op_settings_are_reported_separately(monkeypatch):
 
 def test_support_for_other_device_types_never_claims_a_reduced_mode():
     assert precision_support("xpu")["xpu"] == {"fp32": "unverified", "fp16": "unsupported", "bf16": "unsupported"}
+
+
+# --- review round 4 ----------------------------------------------------------------------------------------
+
+
+def test_an_explicit_fp32_policy_keeps_the_default_run_id():
+    explicit = _params(precision=PrecisionPolicy("fp32"))
+    assert explicit.precision is None and explicit.state() == _params().state()
+    assert (
+        NNRun(net=_NET, train=_train_params(), model=explicit).id
+        == NNRun(net=_NET, train=_train_params(), model=_params()).id
+    )
+
+
+def test_native_bf16_is_checked_on_the_resolved_cuda_device(monkeypatch):
+    import contextlib
+
+    current = {"index": 0}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    @contextlib.contextmanager
+    def device(index):
+        previous, current["index"] = current["index"], index
+        yield
+        current["index"] = previous
+
+    monkeypatch.setattr(torch.cuda, "device", device)
+    # cuda:0 only emulates bf16 (a V100); cuda:1 runs it natively (an A100).
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda including_emulation=True: current["index"] == 1)
+    assert PrecisionPolicy("bf16").resolve("cuda:1").effective == "bf16"
+    with pytest.raises(PrecisionUnsupportedError):
+        PrecisionPolicy("bf16").resolve("cuda:0")
+    assert precision_support("cuda:1")["cuda"]["bf16"] == "supported"
+
+
+def test_empty_gradients_are_finite():
+    from nnx._update_engine import gradients_finite
+
+    empty, sparse = torch.nn.Parameter(torch.ones(0)), torch.nn.Parameter(torch.ones(3))
+    empty.grad = torch.ones(0)
+    sparse.grad = torch.sparse_coo_tensor(torch.zeros(1, 0, dtype=torch.long), torch.zeros(0), (3,))
+    assert gradients_finite([empty, sparse])

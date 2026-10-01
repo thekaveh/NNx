@@ -437,3 +437,66 @@ def test_a_multi_optimizer_fp16_window_is_all_or_nothing():
     assert all(torch.equal(before[key], after[key]) for key in before)  # the head did not step alone
     assert events == [] and engine.skipped == 1 and engine.commits == 0
     assert second.weight.grad is None  # the window was released
+
+
+def _two_optimizer_engine(model, optimizers, scaler):
+    from nnx._update_engine import UpdateEngine
+
+    events: list = []
+    engine = UpdateEngine(optimizers=optimizers, scaler=scaler, clip_norms={}, listeners=[events.append])
+    return engine, events
+
+
+class _CheckingScaler(_PerOptimizerScaler):
+    """GradScaler's protocol rules: step() needs a prior unscale_() of that optimizer."""
+
+    def __init__(self) -> None:
+        super().__init__(poisoned=None)  # type: ignore[arg-type]
+        self.unscaled: set[int] = set()
+
+    def unscale_(self, optimizer):
+        # Like GradScaler: inf checks are recorded only for gradients that exist.
+        if any(p.grad is not None for group in optimizer.param_groups for p in group["params"]):
+            self.unscaled.add(id(optimizer))
+        super().unscale_(optimizer)
+
+    def step(self, optimizer):
+        assert id(optimizer) in self.unscaled, "No inf checks were recorded for this optimizer."
+        optimizer.step()
+
+
+def test_an_fp16_window_skips_the_scaler_for_an_optimizer_without_gradients():
+    from nnx.nn.nn_model import _objective_microbatch
+
+    model = _model()
+    first = model.net.layers[0]
+    for parameter in first.parameters():
+        parameter.requires_grad_(False)  # frozen during warm-up: no gradient this window
+    optimizers = {
+        "backbone": torch.optim.SGD(first.parameters(), lr=0.1),
+        "head": torch.optim.SGD([p for n, p in model.net.named_parameters() if not n.startswith("layers.0")], lr=0.1),
+    }
+    engine, events = _two_optimizer_engine(model, optimizers, _CheckingScaler())
+    _objective_microbatch(
+        engine,
+        supervised_objective(),
+        model=model,
+        batch=_batches(1)[0],
+        epoch_idx=0,
+        batch_idx=0,
+        extra_metrics=None,
+        close_window=True,
+    )
+    assert {event.optimizer for event in events} == {"backbone", "head"} and engine.commits == 1
+
+
+def test_fp16_refuses_optimizers_sharing_a_parameter():
+    from nnx._update_engine import UpdateEngine
+
+    model = _model()
+    shared = list(model.net.parameters())
+    with pytest.raises(ValueError, match="share a parameter.*unscale twice"):
+        UpdateEngine(
+            optimizers={"a": torch.optim.SGD(shared, lr=0.1), "b": torch.optim.SGD(shared[:1], lr=0.1)},
+            scaler=_CheckingScaler(),
+        )

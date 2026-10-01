@@ -77,8 +77,9 @@ device when the model is built and again, afresh, before a run is reserved:
 | `"fp16"` | `float16` autocast + a `torch.amp.GradScaler` | CUDA |
 | `"bf16"` | `bfloat16` autocast, no scaler | CPU; CUDA with native bf16 (compute capability 8.0+ — emulated bf16 does not count) |
 
-A mode the device cannot run raises `PrecisionUnsupportedError` before any
-run directory exists, unless the policy names `fallback="fp32"`: the run then
+An explicit `PrecisionPolicy("fp32")` is the default (it normalizes to no
+policy, so it keeps the default's run id). A mode the device cannot run
+raises `PrecisionUnsupportedError` before any run directory exists, unless the policy names `fallback="fp32"`: the run then
 trains in full precision and records why. Autocast wraps only the forward
 pass and loss — the backward runs outside it, parameters stay `float32` (never
 `model.half()`), and the update keeps its unscale → normalize → finite-check
