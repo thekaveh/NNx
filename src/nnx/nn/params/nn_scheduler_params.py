@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from ..._validation import require_count, require_finite_real
 from ..enum.schedulers import Schedulers
 
 if TYPE_CHECKING:
     from .nn_scheduler_params_builder import NNSchedulerParamsBuilder
+
+SchedulerClock = Literal["epoch", "optimizer_update"]
+SCHEDULER_CLOCKS: tuple[str, ...] = ("epoch", "optimizer_update")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -29,7 +32,21 @@ class NNSchedulerParams:
     total_steps: Optional[int] = None  # ONE_CYCLE, LINEAR_WARMUP_DECAY
     warmup_steps: Optional[int] = None  # LINEAR_WARMUP_DECAY
 
+    # FEAT-014: what one scheduler step counts. "epoch" (the default) steps
+    # once per completed epoch, as always; "optimizer_update" steps once per
+    # committed update of the optimizer the scheduler belongs to (never per
+    # microbatch, masked window or skipped AMP step), so its horizons —
+    # step_size, T_max, total_steps, warmup_steps — count updates.
+    clock: SchedulerClock = "epoch"
+
     def __post_init__(self):
+        if self.clock not in SCHEDULER_CLOCKS:
+            raise ValueError(f"NNSchedulerParams clock must be 'epoch' or 'optimizer_update', got {self.clock!r}")
+        if self.clock == "optimizer_update" and self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU):
+            raise ValueError(
+                "a plateau scheduler reads a monitored metric at the epoch boundary, not an optimizer-update "
+                "clock; use clock='epoch' (the default) for ReduceLROnPlateau"
+            )
         # Fail-fast on out-of-range numeric fields. None of these are emitted
         # into state() when at their defaults, so validation never shifts a
         # run.id — same [[params-boundary-validation]] contract as the other
@@ -82,7 +99,8 @@ class NNSchedulerParams:
                 f"factor={self.factor:1.0e}, threshold={self.threshold:1.0e}, "
                 f"min_lr={self.min_lr:1.0e}]"
             )
-        return f"[{self.kind}, factor={self.factor:1.0e}, min_lr={self.min_lr:1.0e}]"
+        clock = "" if self.clock == "epoch" else f", clock={self.clock}"
+        return f"[{self.kind}, factor={self.factor:1.0e}, min_lr={self.min_lr:1.0e}{clock}]"
 
     def state(self) -> dict:
         d: dict[str, object] = dict(
@@ -110,6 +128,10 @@ class NNSchedulerParams:
             d["total_steps"] = self.total_steps
         if self.warmup_steps is not None:
             d["warmup_steps"] = self.warmup_steps
+        # FEAT-014: omitted at the "epoch" default, so every existing
+        # configuration keeps its state() and run id.
+        if self.clock != "epoch":
+            d["clock"] = self.clock
         return d
 
     @staticmethod
@@ -127,6 +149,7 @@ class NNSchedulerParams:
             max_lr=state.get("max_lr"),
             total_steps=state.get("total_steps"),
             warmup_steps=state.get("warmup_steps"),
+            clock=state.get("clock", "epoch"),
         )
 
     @classmethod

@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 import torch
@@ -45,6 +45,7 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
+from .._scheduler_clock import SchedulerClock, planned_updates, update_horizon, uses_update_clock
 from ..components import ComponentRegistry, ResumeStatus
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
@@ -108,6 +109,11 @@ class TrainerStepContext:
     extra_metrics: Optional[Mapping[str, Callable]]
     batch_idx: int
     epoch_idx: int
+    # FEAT-014: call ``report_update(name)`` once after each update the step
+    # commits on optimizer ``name``; that optimizer's optimizer_update-clock
+    # scheduler steps on it (each optimizer keeps its own count). NNx never
+    # infers updates around a step function.
+    report_update: Callable[[str], None] = field(default=lambda name: None)
 
 
 TrainerStepFn = Callable[[TrainerStepContext], NNEvaluationDataPoint]
@@ -180,7 +186,7 @@ def _representative_train_params(params: NNTrainerParams) -> NNTrainParams:
     )
 
 
-def _build_scheduler(opt, sched_params, n_epochs):
+def _build_scheduler(opt, sched_params, n_epochs, n_updates=None):
     """Same dispatch logic as NNModel._build_scheduler — duplicated rather
     than promoted to a shared helper because it's a small body and lifting
     it would expand the public surface."""
@@ -195,6 +201,8 @@ def _build_scheduler(opt, sched_params, n_epochs):
             patience=sched_params.patience,
             threshold=sched_params.threshold,
         )
+    if n_updates is not None:
+        return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs, n_updates=n_updates)
     return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs)
 
 
@@ -425,17 +433,37 @@ class Trainer:
 
         monitor = params.monitor.resolve(params.metrics) if params.monitor is not None else None
         tracker = MonitorTracker(monitor, warn_missing=True) if monitor is not None else None
+        # FEAT-014: an optimizer_update-clock scheduler's default horizon is
+        # the planned updates only for an objective (NNx owns its windows);
+        # a step function's updates are its own, so budgets are explicit.
+        planned = planned_updates(train_loader, objective_window, params.n_epochs) if objective is not None else None
         schedulers = {
             name: _monitored_plateau(
                 _build_scheduler(
                     opt=optimizers[name],
                     sched_params=params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
                     n_epochs=params.n_epochs,
+                    n_updates=planned if uses_update_clock(params.schedulers.get(name)) else None,
                 ),
                 optimizers[name],
                 monitor,
             )
             for name in optimizers
+        }
+        # One clock per optimizer_update-clock scheduler, each counting its
+        # own optimizer's committed updates; auto_step_schedulers=False
+        # detaches them (counted, never stepped), restored state included.
+        clocks = {
+            name: SchedulerClock(
+                name,
+                schedulers[name],
+                horizon=update_horizon(params.schedulers[name]),
+                planned=planned,
+                attached=params.auto_step_schedulers,
+                component_name=f"nnx.scheduler_clock.{name}",
+            )
+            for name in optimizers
+            if uses_update_clock(params.schedulers.get(name))
         }
 
         from ..optimizers import optimizer_factory_state
@@ -452,6 +480,8 @@ class Trainer:
         )
         if tracker is not None:
             registry.register(tracker)  # its best continues across a stateful resume
+        for clock in clocks.values():
+            registry.register(clock)
         # FEAT-004: an objective's updates belong to the shared engine, which
         # steps every named optimizer once per committed update; its counters
         # are component state, so they continue across a stateful resume.
@@ -465,6 +495,9 @@ class Trainer:
                 device=self.model.device,
             )
             registry.register(engine)
+            engine.listeners.append(
+                lambda event: clocks[event.optimizer].committed() if event.optimizer in clocks else None
+            )
         start_epoch, component_plan, resume_status, rollback = self._resume(
             params, optimizers, schedulers, registry, train_loader
         )
@@ -483,6 +516,15 @@ class Trainer:
         if engine is not None:
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
             ctx.update_count = engine.commits
+
+        def report_update(name: str) -> None:
+            if name not in optimizers:
+                raise ValueError(
+                    f"report_update({name!r}): no optimizer of that name; this Trainer has {sorted(optimizers)}"
+                )
+            clock = clocks.get(name)
+            if clock is not None:
+                clock.committed()
 
         idps: list[NNIterationDataPoint] = []
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
@@ -533,6 +575,9 @@ class Trainer:
                     cb.on_epoch_begin(ctx)
 
                 n_idps_before_epoch = len(idps)
+                for clock in clocks.values():
+                    clock.trace.clear()
+                updates_before_epoch = {name: clock.count for name, clock in clocks.items()}
                 # FEAT-003 whole-epoch summary of the step's records (no named
                 # training metrics: Trainer steps are custom).
                 epoch_summary = _TrainEpochSummary((), None, None) if summarize else None
@@ -568,6 +613,7 @@ class Trainer:
                             extra_metrics=params.extra_metrics,
                             batch_idx=idx_batch,
                             epoch_idx=idx_epoch,
+                            report_update=report_update,
                         )
                         train_edp = trainer_step_fn(step_ctx)
                     if epoch_summary is not None:
@@ -625,7 +671,21 @@ class Trainer:
                 # clear benefit. Custom hooks can own scheduler timing by
                 # setting auto_step_schedulers=False.
                 if params.auto_step_schedulers:
-                    _step_schedulers(schedulers.values(), val_edp, train_edp, epoch_idx=idx_epoch, record=record)
+                    # Optimizer_update-clock schedulers step on committed
+                    # updates instead (FEAT-014).
+                    epoch_scheds = [sched for name, sched in schedulers.items() if name not in clocks]
+                    _step_schedulers(epoch_scheds, val_edp, train_edp, epoch_idx=idx_epoch, record=record)
+                silent = [name for name, clock in clocks.items() if clock.count == updates_before_epoch[name]]
+                if silent and engine is None:
+                    warnings.warn(
+                        f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
+                        "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
+                        "after each update the step commits",
+                        UserWarning,
+                        stacklevel=4,
+                    )
+                primary_clock = clocks.get(primary)
+                ctx.update_lrs = list(primary_clock.trace) if primary_clock is not None else []
 
                 ctx.idp = idps[-1]
                 ctx.idps = idps

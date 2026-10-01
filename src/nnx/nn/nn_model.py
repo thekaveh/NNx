@@ -7,7 +7,7 @@ import os
 import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -18,6 +18,7 @@ from tqdm import tqdm
 from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
+from .._scheduler_clock import SchedulerClock, planned_updates, update_horizon, uses_update_clock
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
     BatchAdapter,
@@ -204,7 +205,11 @@ def _check_resume_horizon(
             f"resuming {kind}{owner} requires scheduler.total_steps to be set explicitly "
             "to one shared horizon covering the original and resumed epochs"
         )
-    if start_epoch is not None and start_epoch + n_epochs > total_steps:
+    from .._scheduler_clock import uses_update_clock
+
+    # An optimizer_update clock counts updates, not epochs: its horizon is
+    # checked against the restored update count (SchedulerClock).
+    if start_epoch is not None and not uses_update_clock(scheduler_params) and start_epoch + n_epochs > total_steps:
         raise ValueError(
             f"resumed {kind}{owner} would reach epoch {start_epoch + n_epochs}, beyond "
             f"scheduler.total_steps={total_steps}; configure one shared horizon covering the original and "
@@ -451,6 +456,11 @@ class TrainStepContext:
     # or a monitor keeps; `default_train_step` reports each batch's outputs
     # and denominators to it. Custom steps may ignore it.
     epoch_summary: Optional[_TrainEpochSummary] = None
+    # FEAT-014: call once after each optimizer update the step actually
+    # commits; an ``optimizer_update``-clock scheduler steps on it.
+    # ``default_train_step`` calls it (never for a masked window or a skipped
+    # AMP step); a custom step drives such a scheduler only by calling it.
+    report_update: Callable[[], None] = field(default=lambda: None)
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -1083,6 +1093,16 @@ def _objective_engine(
     )
 
 
+def _scaler_step(scaler: Any, optimizer: torch.optim.Optimizer) -> bool:
+    """``scaler.step`` + ``update``; whether the update was committed. A
+    lowered scale means the scaler found inf/NaN gradients and skipped the
+    step (FEAT-014: such a step never advances an optimizer_update clock)."""
+    scale_before = float(scaler.get_scale())
+    scaler.step(optimizer)
+    scaler.update()
+    return float(scaler.get_scale()) >= scale_before
+
+
 def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     """Standard supervised training step: forward → loss → backward → step.
 
@@ -1160,11 +1180,13 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
         if amp_enabled:
             assert scaler is not None
-            scaler.step(ctx.optimizer)
-            scaler.update()
+            committed = _scaler_step(scaler, ctx.optimizer)
         else:
             ctx.optimizer.step()
+            committed = True
         _reset_accumulation(accumulation_state)
+        if committed:
+            ctx.report_update()
 
     if adapter is not None:
         assert terms.valid is not None
@@ -2021,7 +2043,26 @@ class NNModel(_HubMixinBase):
         stateful_resume = params.resume_from_run_id is not None and params.resume_mode != "weights_only"
         if stateful_resume:
             _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
-        scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
+        # FEAT-014: an optimizer_update clock steps on committed updates; its
+        # default horizon is the planned updates when NNx owns the windows
+        # (the default step or an objective) and the loader has a length.
+        update_clock = uses_update_clock(params.scheduler)
+        n_updates = (
+            planned_updates(params.train_loader, params.optim.accumulate_grad_batches, params.n_epochs)
+            if update_clock and train_step_fn is None
+            else None
+        )
+        scheduler = _monitored_plateau(
+            self._build_scheduler(optimizer, params, n_updates=n_updates)
+            if update_clock
+            else self._build_scheduler(optimizer, params),
+            optimizer,
+            monitor,
+        )
+        clock: Optional[SchedulerClock] = None
+        if update_clock:
+            clock = SchedulerClock("default", scheduler, horizon=update_horizon(params.scheduler), planned=n_updates)
+            registry.register(clock)
         scaler = self._build_grad_scaler()
         # FEAT-004: an objective's updates belong to the shared engine; its
         # committed-update counters are component state (nnx.update_engine),
@@ -2036,6 +2077,8 @@ class NNModel(_HubMixinBase):
                 device=self.device,
             )
             registry.register(engine)
+            if clock is not None:
+                engine.listeners.append(lambda event: clock.committed(event.optimizer))
         start_epoch = 0
 
         # Warm resume restores every stateful training component when the
@@ -2155,6 +2198,9 @@ class NNModel(_HubMixinBase):
         # Explicit None check (not `or`) so a hypothetical callable that
         # happens to be falsy by __bool__ doesn't silently fall back.
         step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
+        # FEAT-014: a step's committed updates drive an optimizer_update
+        # clock (an objective's engine reports to the clock directly).
+        report_update: Callable[[], None] = clock.committed if clock is not None and engine is None else (lambda: None)
         if engine is not None:
             assert objective is not None
             # Committed updates are announced to every callback.
@@ -2198,6 +2244,9 @@ class NNModel(_HubMixinBase):
 
                 n_idps_before_epoch = len(idps)
                 accumulation_state = GradientAccumulationState()
+                if clock is not None:
+                    clock.trace.clear()
+                    updates_before_epoch = clock.count
                 epoch_summary = (
                     _TrainEpochSummary(train_metrics, metric_domain, metric_ignore_index, metric_threshold)
                     if summarize
@@ -2217,6 +2266,7 @@ class NNModel(_HubMixinBase):
                         is_last_batch=is_last_batch,
                         accumulation_state=accumulation_state,
                         epoch_summary=epoch_summary,
+                        report_update=report_update,
                     )
                     train_edp = step_fn(step_ctx)
                     if epoch_summary is not None:
@@ -2283,10 +2333,22 @@ class NNModel(_HubMixinBase):
                         record = tracker.observe(value, epoch=idx_epoch)
                     idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
 
-                if record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                if clock is not None:
+                    # FEAT-014: stepped on committed updates, not here.
+                    if clock.count == updates_before_epoch and train_step_fn is not None and engine is None:
+                        warnings.warn(
+                            f"epoch {idx_epoch}: the step function reported no optimizer update, so the "
+                            "optimizer_update-clock scheduler did not step; call ctx.report_update() after each "
+                            "optimizer update the step commits",
+                            UserWarning,
+                            stacklevel=4,
+                        )
+                elif record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
                     _step_monitored_plateau(scheduler, record)
                 else:
                     self._step_scheduler(scheduler, val_edp, train_edp, epoch_idx=idx_epoch)
+                # The epoch's per-update learning rates (empty on the epoch clock).
+                ctx.update_lrs = list(clock.trace) if clock is not None else []
 
                 ctx.idp = idps[-1]
                 ctx.idps = idps
@@ -2828,6 +2890,8 @@ class NNModel(_HubMixinBase):
         self,
         optimizer: torch.optim.Optimizer,
         params: NNTrainParams,
+        *,
+        n_updates: Optional[int] = None,
     ):
         # If params.scheduler has a `kind` attribute (set by the Schedulers
         # enum), dispatch on it; otherwise fall back to ReduceLROnPlateau
@@ -2848,7 +2912,9 @@ class NNModel(_HubMixinBase):
 
         # When a `kind` is supplied, the params dataclass carries kind-specific
         # config. The enum's __call__ knows how to construct.
-        return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs)
+        # ``n_updates``: the run's planned committed updates, the default
+        # horizon of an optimizer_update clock (FEAT-014).
+        return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs, n_updates=n_updates)
 
     def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:
         """The AMP loss scaler for this model, or ``None``.
@@ -3063,3 +3129,6 @@ class _CallbackContext:
         self.deferred_checkpoint_writes: list[Callable[[], None]] = []
         # FEAT-004: committed optimizer updates so far (objective runs only).
         self.update_count: Optional[int] = None
+        # FEAT-014: the epoch's ``(update index, LR after its scheduler step)``
+        # for the primary optimizer's optimizer_update clock (empty otherwise).
+        self.update_lrs: list[tuple[int, float]] = []

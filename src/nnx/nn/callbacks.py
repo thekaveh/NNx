@@ -505,14 +505,22 @@ class ModelCheckpoint(Callback):
 
 
 class LRMonitor(Callback):
-    """Logs the current LR each epoch. History exposed at `.history`."""
+    """Logs the current LR each epoch. History exposed at `.history`.
+
+    `.history` keeps one entry per epoch (the primary optimizer's LR at the
+    epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
+    scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
+    after that update's scheduler step)`` for the primary optimizer, a
+    separate trace (empty on the epoch clock)."""
 
     def __init__(self):
         self.history: list[float] = []
+        self.update_history: list[tuple[int, float]] = []
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
+        self.update_history.extend(getattr(ctx, "update_lrs", ()))
 
 
 def _edp_metric_iter(edp):

@@ -57,7 +57,7 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
 2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The remaining specialization packages provide model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`), and diagnostics (`viz`) that compose around the loop rather than injecting hooks.
-3. The **Training-loop internals** run per-batch step hooks inside the data loop, then `_step_scheduler` and `_save_checkpoints` once per completed epoch; paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
+3. The **Training-loop internals** run per-batch step hooks inside the data loop, then `_save_checkpoints` once per completed epoch; `_step_scheduler` steps each scheduler once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.
 

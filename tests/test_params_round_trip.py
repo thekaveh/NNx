@@ -936,3 +936,16 @@ def test_provenance_round_trips_outside_the_run_state(tmp_path, monkeypatch):
     assert loaded.provenance is not None and loaded.provenance.manifest == manifest
     assert loaded.provenance.fingerprint == manifest.fingerprint()
     assert ExperimentManifest.from_state(manifest.state()) == manifest
+
+
+def test_scheduler_clock_is_omitted_at_the_epoch_default():
+    """FEAT-014: the clock joins state() only when it is "optimizer_update",
+    so an epoch-clock configuration — every one written before — keeps its
+    state() and run id, and a state without it loads as the epoch clock."""
+    plateau = dict(min_lr=0.0, factor=0.5, patience=1, cooldown=0, threshold=1e-3)
+    epoch = NNSchedulerParams(kind=Schedulers.ONE_CYCLE, total_steps=10, **plateau)
+    assert "clock" not in epoch.state()
+    assert NNSchedulerParams.from_state(epoch.state()).clock == "epoch"
+    updates = replace(epoch, clock="optimizer_update")
+    assert updates.state()["clock"] == "optimizer_update"
+    assert NNSchedulerParams.from_state(updates.state()) == updates

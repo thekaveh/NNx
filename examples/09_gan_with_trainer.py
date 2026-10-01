@@ -18,7 +18,9 @@ update — it zeroes, back-propagates and steps ``optimizers["D"]`` and
 ``optimizers["G"]`` itself. The Trainer owns the epoch loop and steps each
 registered scheduler once per epoch, unless
 ``NNTrainerParams(auto_step_schedulers=False)`` (builder:
-``.auto_step_schedulers(False)``) hands scheduler timing to the step too.
+``.auto_step_schedulers(False)``) hands scheduler timing to the step too —
+including an ``optimizer_update``-clock schedule, which then never steps on
+the updates the step reports (``manual_scheduler_ownership`` below, FEAT-014).
 
 This is a *teaching* GAN — small, CPU-fast, intentionally minimal —
 not a production setup. Spectral norm, EMA, R1 regularization, larger
@@ -65,8 +67,10 @@ from nnx import (
     NNParamGroupSpec,
     NNParams,
     NNRun,
+    NNSchedulerParams,
     NNTrainerParams,
     Optims,
+    Schedulers,
     Trainer,
     TrainerStepContext,
     set_seed,
@@ -326,6 +330,60 @@ def two_optimizer_resume() -> dict:
 
     summary = {"source": first.id, "resumed": resumed.id, "restored": list(status.restored_components)}
     print(f"two-optimizer resume: {summary}")
+    return summary
+
+
+def manual_scheduler_ownership() -> dict:
+    """Bounded demonstration that ``auto_step_schedulers=False`` hands every
+    scheduler step to the step function (FEAT-014): neither the epoch
+    boundary (D's epoch-clock schedule) nor reported updates (G's
+    ``optimizer_update``-clock schedule) advance a scheduler — only the
+    step's own ``scheduler.step()`` calls do. Reported updates are still
+    counted, so attaching the schedules later resumes from the true count.
+    """
+    set_seed(0)
+    loader = _make_loader(128, batch_size=64)  # 2 batches per epoch
+
+    def step_lr(clock: str) -> NNSchedulerParams:
+        return NNSchedulerParams(
+            kind=Schedulers.STEP,
+            step_size=1,
+            clock=clock,
+            min_lr=0.0,
+            factor=0.5,
+            patience=0,
+            cooldown=0,
+            threshold=0.0,
+        )
+
+    manual_steps = {"G": 0, "D": 0}
+    seen: dict = {}
+
+    def owning_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        result = gan_step(ctx)
+        ctx.report_update("D")
+        ctx.report_update("G")  # counted for G's update clock, never stepped while detached
+        seen["schedulers"] = ctx.schedulers
+        if ctx.batch_idx == 0:  # the hook's own timing: D's schedule, once per epoch
+            ctx.schedulers["D"].step()
+            manual_steps["D"] += 1
+        return result
+
+    Trainer(_make_gan_model()).train(
+        params=NNTrainerParams(
+            n_epochs=2,
+            train_loader=loader,
+            optims={"G": _scoped_adam("G.*"), "D": _scoped_adam("D.*")},
+            schedulers={"G": step_lr("optimizer_update"), "D": step_lr("epoch")},
+            auto_step_schedulers=False,
+        ),
+        trainer_step_fn=owning_step,
+    )
+    schedulers = seen["schedulers"]
+    assert schedulers["G"].last_epoch == 0  # 4 reported updates, no automatic step
+    assert schedulers["D"].last_epoch == manual_steps["D"] == 2  # only the hook's own steps
+    summary = {name: schedulers[name].last_epoch for name in ("G", "D")}
+    print(f"manual scheduler ownership: {summary}")
     return summary
 
 

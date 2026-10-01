@@ -22,6 +22,7 @@ UNNUMBERED_EXAMPLES = [
     "optimizer_factories.py",
     "preprocessing_offline.py",
     "regression_task.py",
+    "scheduler_clocks.py",
     "split_replay.py",
     "tabular_validation.py",
 ]
@@ -50,6 +51,7 @@ def test_example_imports_without_running_main(example):
         "26_custom_eval_step.py",
         "preprocessing_offline.py",
         "regression_task.py",
+        "scheduler_clocks.py",
         "split_replay.py",
     ],
 )
@@ -85,6 +87,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("07_lora_finetuning.py", "peft_preconverted_base"),
     ("09_gan_with_trainer.py", "trainer_builder_snapshot"),
     ("09_gan_with_trainer.py", "two_optimizer_resume"),
+    ("09_gan_with_trainer.py", "manual_scheduler_ownership"),
     ("11_tinystories_lm.py", "manual_attention_lm_example"),
     ("11_tinystories_lm.py", "lm_config_rejects_nonfinite"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),
@@ -104,6 +107,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("optimizer_factories.py", "optimizer_factories_workflow"),
     ("preprocessing_offline.py", "preprocessing_offline_workflow"),
     ("regression_task.py", "regression_task_workflow"),
+    ("scheduler_clocks.py", "scheduler_clocks_workflow"),
     ("split_replay.py", "split_replay_workflow"),
     ("tabular_validation.py", "tabular_validation_workflow"),
     ("25_conv_classifier.py", "conv_integral_schema_roundtrip"),
