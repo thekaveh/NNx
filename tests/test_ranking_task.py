@@ -363,7 +363,8 @@ def test_an_all_excluded_stream_is_unavailable_and_the_mode_is_restored():
     model.net.train()
     x, q, c, r = _data(2)
     record = task.eval_step()(_Ctx(model, _loader((x, q, c, torch.zeros_like(r)), 3)))
-    assert record.status == "empty" and record.count == 0 and not record.metrics and record.loss is None
+    assert record.status == "empty" and record.count == 0 and record.loss is None
+    assert dict(record.metrics) == {"queries": 0.0, "excluded_queries": 2.0, "exhaustive_candidates": 0.0}
     assert model.net.training
 
 
@@ -597,3 +598,104 @@ def test_without_a_monitor_an_all_excluded_epoch_never_becomes_best():
         run = _scorer().train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
     best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
     assert best is not None and best.idp.epoch_idx == 0 and best.idp.val_edp.status == "ok"
+
+
+# --- review round 1 -----------------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_the_objective_trains_on_a_cuda_scorer():  # pragma: no cover - GPU only
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=D, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CUDA, loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    task = RankingTask(k=(1,), max_relevance=2)
+    result = _objective_step(task, model, next(iter(_loader(_data(2), batch_size=2 * GROUP))))
+    assert result.terms[0].numerator.device.type == "cuda" and result.terms[0].denominator == 2
+
+
+def test_relevance_on_another_device_is_moved_to_the_scores_before_any_indexing():
+    """CPU stand-in for the GPU case: the grades are moved (whole) to the
+    scores' device before a device index ever touches them."""
+    moved = []
+
+    class Grades(torch.Tensor):
+        def to(self, *args, **kwargs):
+            moved.append(tuple(self.shape))
+            return super().to(*args, **kwargs)
+
+    grades = torch.tensor([1, 0, 2, 0, 1, 1]).as_subclass(Grades)
+    numerator, denominator = pairwise_logistic_loss(torch.rand(6), grades, ["a"] * 3 + ["b"] * 3)
+    assert moved[0] == (6,) and denominator == 2
+
+
+def test_pairs_are_scored_in_bounded_blocks(monkeypatch):
+    import nnx.ranking as ranking
+
+    seen = []
+    original = torch.nn.functional.softplus
+
+    def spy(x, *args, **kwargs):
+        seen.append(x.numel())
+        return original(x, *args, **kwargs)
+
+    monkeypatch.setattr(ranking, "PAIR_BLOCK", 64)
+    monkeypatch.setattr(torch.nn.functional, "softplus", spy)
+    n = 300
+    scores = torch.linspace(0, 1, n, dtype=torch.float64)
+    grades = torch.tensor([2 if i < 40 else 1 if i < 100 else 0 for i in range(n)])
+    numerator, denominator = pairwise_logistic_loss(scores, grades, ["q"] * n, weighting="pair")
+    assert max(seen) <= max(64, n)  # never the n x n matrix
+    s, r = scores.tolist(), grades.tolist()
+    expected = [math.log1p(math.exp(-(s[i] - s[j]))) for i in range(n) for j in range(n) if r[i] > r[j]]
+    assert denominator == len(expected) and float(numerator) == pytest.approx(math.fsum(expected), rel=1e-12)
+
+
+def test_the_validation_loss_covers_only_scored_queries():
+    task = RankingTask(k=(1,), max_relevance=2, relevance_threshold=2)
+    model = _scorer()
+    x = torch.randn(6, D, generator=torch.Generator().manual_seed(5))
+    q, c = torch.tensor([1, 1, 1, 2, 2, 2]), torch.tensor([1, 2, 3, 1, 2, 3])
+    r = torch.tensor([2, 0, 0, 1, 0, 0])  # query 2 has no candidate at the threshold: excluded
+    record = task.eval_step()(_Ctx(model, [(x, q, c, r)]))
+    alone = task.eval_step()(_Ctx(model, [(x[:3], q[:3], c[:3], r[:3])]))
+    assert record.metrics["excluded_queries"] == 1.0 and record.loss == pytest.approx(alone.loss)
+
+
+def test_masked_rows_may_carry_any_grade_and_features_with_to_are_moved():
+    task = RankingTask(k=(1,))
+    x = torch.randn(3, D)
+    q, c = torch.tensor([1, 1, 1]), torch.tensor([1, 2, 3])
+    _, _, _, grades, _ = task.split((x, q, c, torch.tensor([1, 0, -1]), torch.tensor([True, True, False])))
+    assert grades.tolist() == [1, 0, -1]
+    with pytest.raises(RankingError, match="grades must be in 0..1"):
+        task.split((x, q, c, torch.tensor([1, 0, -1])))
+
+    class Features:
+        def __init__(self, x):
+            self.x, self.devices = x, []
+
+        def to(self, device):
+            self.devices.append(torch.device(device))
+            return self.x
+
+    features = Features(x)
+    assert task.scores(_scorer(), features, 3).shape == (3,) and features.devices == [torch.device("cpu")]
+
+
+def test_a_validation_task_record_without_a_value_never_falls_back_to_training():
+    from nnx._metrics import _resolve_metric
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    no_loss = NNEvaluationDataPoint(kind="ranking", count=2, status="ok", metrics={"ndcg_at_1": 1.0})
+    assert _resolve_metric(no_loss, NNEvaluationDataPoint(loss=0.5)) is None
+    legacy = NNEvaluationDataPoint()  # a record without a task kind keeps the fallback
+    assert _resolve_metric(legacy, NNEvaluationDataPoint(loss=0.5)) == 0.5
+
+
+def test_numpy_strings_become_builtin_strings():
+    import numpy as np
+
+    task = RankingTask(k=(1,), weighting=np.str_("pair"), candidate_sets=np.str_("exhaustive"))
+    assert type(task.state()["weighting"]) is str and type(task.state()["candidate_sets"]) is str

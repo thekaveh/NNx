@@ -398,7 +398,10 @@ fields are simply absent, while NaN and ±inf are rejected with one
 `RuntimeWarning` per epoch that names the rejected field/split and the
 value actually used. An epoch with no finite signal anywhere skips the
 plateau step (a distinct "no metric available" warning) and compares as an
-unavailable BEST baseline. The raw observations are retained unchanged in
+unavailable BEST baseline. A validation *task record* that is unavailable —
+every target masked (`status="empty"`), or no error and no loss — ends the
+walk instead: the epoch has no signal, the plateau step is skipped, and the
+training metrics are never compared in its place. The raw observations are retained unchanged in
 the live history and checkpoint payloads; CSV readback keeps mapping NaN
 cells to `None`. `EarlyStopping` is separate and never falls back from
 validation to training metrics. Its default (`monitor=None`) picks one
@@ -1741,7 +1744,10 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
   `exhaustive_candidates` (`0.0` for sampled candidate sets: the metrics
   then measure ranking within those candidates, not full-corpus retrieval).
   No classification field is filled in; an epoch whose every query is
-  excluded is unavailable and never elected BEST.
+  excluded is unavailable (`status="empty"`, with its `excluded_queries`)
+  and never elected BEST in place of a training metric. The record's
+  `loss` is the pairwise loss over the scored queries only, formed in
+  bounded blocks (memory linear in a query's size).
 - **Named selection.** `task.metric_specs()` declares the metrics
   (registered ids `ranking.mrr` / `ranking.recall` / `ranking.ndcg` with
   `config={"k": k}`, reported as `<metric>_at_<k>`), so

@@ -159,13 +159,24 @@ def ndcg_at_k(relevance: Sequence[int], scores: Sequence[float], candidate_ids: 
     return dcg / idcg
 
 
+PAIR_BLOCK = 1 << 20  # pairs scored at once: memory stays linear in a query's size
+
+
 def pairwise_logistic_loss(
     scores: torch.Tensor, relevance: torch.Tensor, query_ids: Sequence[Id], *, weighting: str = "query"
 ) -> tuple[torch.Tensor, int]:
     """``(numerator, denominator)`` of the pairwise logistic loss over the
-    unequal-relevance pairs within each query (see the module docstring)."""
+    unequal-relevance pairs within each query (see the module docstring).
+
+    Pairs are formed grade by grade (each grade's candidates against every
+    lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
+    query's full pair matrix is ever held. ``relevance`` may live on any
+    device; it is moved to the scores'."""
     if weighting not in WEIGHTINGS:
         raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {weighting!r}")
+    if len(query_ids) != scores.shape[0] or relevance.shape[0] != scores.shape[0]:
+        raise RankingError(f"{scores.shape[0]} scores for {relevance.shape[0]} grades and {len(query_ids)} query ids")
+    relevance = relevance.to(scores.device)
     groups: dict[Id, list[int]] = {}
     for row, query in enumerate(query_ids):
         groups.setdefault(query, []).append(row)
@@ -173,16 +184,23 @@ def pairwise_logistic_loss(
     denominator = 0
     for rows in groups.values():
         index = torch.tensor(rows, device=scores.device)
-        s, r = scores[index], relevance[index].to(scores.device)
-        higher = r.unsqueeze(1) > r.unsqueeze(0)  # pair (i, j): i more relevant than j
-        if not bool(higher.any()):
+        s, r = scores[index], relevance[index]
+        total = s[:0].sum()
+        pairs = 0
+        for grade in torch.unique(r).tolist()[1:]:  # each grade above the lowest, against every lower one
+            high, low = s[r == grade], s[r < grade]
+            block = max(1, PAIR_BLOCK // max(1, low.shape[0]))
+            for start in range(0, high.shape[0], block):
+                chunk = high[start : start + block]
+                total = total + torch.nn.functional.softplus(-(chunk.unsqueeze(1) - low.unsqueeze(0))).sum()
+                pairs += chunk.shape[0] * low.shape[0]
+        if pairs == 0:
             continue  # no unequal-relevance pair: the query teaches nothing
-        losses = torch.nn.functional.softplus(-(s.unsqueeze(1) - s.unsqueeze(0)))[higher]
         if weighting == "pair":
-            numerator = numerator + losses.sum()
-            denominator += int(losses.numel())
+            numerator = numerator + total
+            denominator += pairs
         else:
-            numerator = numerator + losses.mean()
+            numerator = numerator + total / pairs
             denominator += 1
     return numerator, denominator
 
@@ -238,6 +256,8 @@ class RankingTask:
             raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {self.weighting!r}")
         if self.candidate_sets not in CANDIDATE_SETS:
             raise RankingError(f"candidate_sets must be one of {CANDIDATE_SETS}, got {self.candidate_sets!r}")
+        object.__setattr__(self, "weighting", str(self.weighting))  # a builtin str (numpy strings pickle unsafely)
+        object.__setattr__(self, "candidate_sets", str(self.candidate_sets))
         object.__setattr__(self, "max_buffered", _count(self.max_buffered, "max_buffered", minimum=1))
         if self.group_size is not None:
             size = _count(self.group_size, "group_size", minimum=1)
@@ -331,11 +351,6 @@ class RankingTask:
         elif relevance.dtype == torch.bool:
             raise RankingError("relevance grades must be integers, not booleans")
         relevance = relevance.detach().cpu().long()
-        bad = (relevance < 0) | (relevance > self.max_relevance)
-        if bool(bad.any()):
-            raise RankingError(
-                f"relevance grades must be in 0..{self.max_relevance}; found {relevance[bad][:5].tolist()}"
-            )
         if mask is not None:
             if not isinstance(mask, torch.Tensor) or tuple(mask.shape) != (n,):
                 got = tuple(mask.shape) if isinstance(mask, torch.Tensor) else type(mask).__name__
@@ -345,6 +360,13 @@ class RankingTask:
                     raise RankingError("the mask must be boolean or 0/1 integers")
                 mask = mask.bool()
             mask = mask.detach().cpu()
+        bad = (relevance < 0) | (relevance > self.max_relevance)
+        if mask is not None:
+            bad &= mask  # a masked row's grade is never read
+        if bool(bad.any()):
+            raise RankingError(
+                f"relevance grades must be in 0..{self.max_relevance}; found {relevance[bad][:5].tolist()}"
+            )
         seen: set[tuple[Id, Id]] = set()
         for row, pair in enumerate(zip(query_ids, candidate_ids, strict=True)):
             if mask is not None and not bool(mask[row]):
@@ -372,9 +394,9 @@ class RankingTask:
 
     def scores(self, model: Any, features: Any, n: int) -> torch.Tensor:
         """The scorer's one score per row, checked."""
-        if isinstance(features, torch.Tensor):
-            features = features.to(model.device)
-        raw = model.net(features)
+        from .nn.nn_model import _to_device
+
+        raw = model.net(_to_device(features, model.device))  # a tensor, or anything with .to (a graph batch)
         scores = getattr(raw, "logits", None)
         if scores is None:
             adapter = getattr(model, "_batch_adapter", None)  # a registered module's own output rule (FEAT-006)
@@ -443,15 +465,17 @@ def _record(
 ) -> Any:
     from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
+    exhaustive = 1.0 if task.candidate_sets == "exhaustive" else 0.0
     if scored == 0:  # no query could be scored: unavailable, with what was excluded
-        return NNEvaluationDataPoint(kind=KIND, count=0, status="empty")
+        counts = {"queries": 0.0, "excluded_queries": float(excluded), "exhaustive_candidates": exhaustive}
+        return NNEvaluationDataPoint(kind=KIND, count=0, status="empty", metrics=counts if excluded else {})
     metrics = {
         **means,
         "queries": float(scored),
         "excluded_queries": float(excluded),
         "candidates": float(candidates),
         "candidates_per_query": candidates / scored,
-        "exhaustive_candidates": 1.0 if task.candidate_sets == "exhaustive" else 0.0,
+        "exhaustive_candidates": exhaustive,
     }
     return NNEvaluationDataPoint(loss=loss, kind=KIND, count=scored, status="ok", metrics=metrics)
 
@@ -565,11 +589,13 @@ class RankingEval:
             raise RankingError("the validation loader yielded no batches")
         means, scored, excluded, candidates = self.task.evaluate_rows(rows)
         loss = None
-        if scored:
-            scores = torch.tensor([row[2] for row in rows], dtype=torch.float64)
-            grades = torch.tensor([row[3] for row in rows])
+        if scored:  # the pairwise loss over the scored queries only (never an excluded one)
+            relevant = {row[0] for row in rows if row[3] >= self.task.relevance_threshold}
+            kept = [row for row in rows if row[0] in relevant]
+            scores = torch.tensor([row[2] for row in kept], dtype=torch.float64)
+            grades = torch.tensor([row[3] for row in kept])
             numerator, denominator = pairwise_logistic_loss(
-                scores, grades, [row[0] for row in rows], weighting=self.task.weighting
+                scores, grades, [row[0] for row in kept], weighting=self.task.weighting
             )
             loss = float(numerator) / denominator if denominator else None
         return _record(self.task, loss=loss, means=means, scored=scored, excluded=excluded, candidates=candidates)

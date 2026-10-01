@@ -5110,6 +5110,15 @@ nnx.ranking.pairwise_logistic_loss(scores: 'torch.Tensor', relevance: 'torch.Ten
 
 ``(numerator, denominator)`` of the pairwise logistic loss over the unequal-relevance pairs within each query (see the module docstring).
 
+**Details**
+
+```text
+Pairs are formed grade by grade (each grade's candidates against every
+lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
+query's full pair matrix is ever held. ``relevance`` may live on any
+device; it is moved to the scores'.
+```
+
 
 #### `nnx.ranking.rank`
 
