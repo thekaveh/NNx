@@ -9,35 +9,41 @@ operations on explicit ``nn.Linear`` targets of ``model.net``:
   ``nn.Sequential(Linear(in, k, bias=False), Linear(k, out))``.
 
 Each operation records its ``id``, ``version``, ``targets`` and ``config``
-and their order. :meth:`TransformRecipe.validate` checks a model against
+and their order. A recipe needs a model NNx can rebuild — built-in
+``Nets`` or a registered ``ModelSpec``; a runtime-only ``module=`` is
+refused. :meth:`TransformRecipe.validate` checks a model against
 the whole recipe — every target present, an ``nn.Linear``, registered once,
 no target inside another operation's subtree, no version this NNx does not
 know, no optimizer holding a parameter the recipe replaces — and mutates
-nothing; :meth:`TransformRecipe.materialize` then either builds a fresh
-registered base (``materialization="fresh"``) or changes the given model
-in place (``"in_place"``), and records the operations on the model.
+nothing; :meth:`TransformRecipe.materialize` then either changes the given
+model in place (``materialization="in_place"``, the default) or builds a
+fresh, randomly initialized registered base from its descriptor
+(``"fresh"``), and records the operations on the model it returns.
 
 Recorded operations travel with every checkpoint (pickle and safetensors)
 and Hub save as :class:`~nnx.nn.params.nn_checkpoint.NNCheckpointTransform`
-entries, and ``NNModel.from_checkpoint`` / ``from_pretrained`` replay them
-on a freshly built base **before** loading the saved tensors: the low-rank
-factors are allocated in their recorded shape and loaded — SVD is never
-rerun — and LoRA wrappers are rebuilt around the fresh base layers. A raw
-state dict or an adapter-only export carries no recipe and cannot rebuild
-the topology alone.
+entries, and fold into the run id of a run that trains them and into
+``ExperimentManifest.for_model``.
+``NNModel.from_checkpoint`` / ``from_pretrained`` replay them on a freshly
+built base **before** loading the saved tensors: the low-rank factors are
+allocated in their recorded shape and loaded — SVD is never rerun — and
+LoRA wrappers are rebuilt around the fresh base layers. A raw state dict or
+an adapter-only export carries no recipe and cannot rebuild the topology
+alone.
 
 Build an optimizer *after* materializing a recipe: an optimizer built
 before holds the replaced parameters, and :func:`check_optimizer` (or
 ``validate(model, optimizers=...)``) refuses it with a rebuild
-instruction. Surgery done outside a recipe stays unrecorded and is still
-refused before persistent training.
+instruction. A recipe model's live topology must stay exactly its base plus
+its recipe: ``NNModel.train`` and ``Trainer.train`` refuse anything else
+(and ``NNModel.train`` still refuses unrecorded low-rank surgery on an
+untransformed model, as before).
 """
 
 from __future__ import annotations
 
 import math
-import types
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -62,6 +68,7 @@ LORA = "lora"
 LOW_RANK = "low_rank"
 _VERSIONS = {LORA: (1,), LOW_RANK: (1,)}
 _PATH_CHARACTERS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")
+_Problem = tuple[Optional[int], str, Optional[str], str]
 
 
 class RecipeError(ValueError):
@@ -69,10 +76,9 @@ class RecipeError(ValueError):
     ``problems`` lists ``(operation index, operation id, target, reason)``;
     the message names each."""
 
-    def __init__(self, problems: Sequence[tuple[Optional[int], str, Optional[str], str]]) -> None:
+    def __init__(self, problems: Sequence[_Problem]) -> None:
         self.problems = tuple(problems)
-        lines = [_describe(index, op_id, target, reason) for index, op_id, target, reason in self.problems]
-        super().__init__("; ".join(lines))
+        super().__init__("; ".join(_describe(*problem) for problem in self.problems))
 
 
 def _describe(index: Optional[int], op_id: str, target: Optional[str], reason: str) -> str:
@@ -80,9 +86,40 @@ def _describe(index: Optional[int], op_id: str, target: Optional[str], reason: s
     return f"{where}, target {target!r}: {reason}" if target is not None else f"{where}: {reason}"
 
 
+class _FrozenConfig(Mapping):
+    """An operation's read-only config: hashable, picklable, comparable to
+    a plain dict."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Mapping[str, Any]) -> None:
+        self._items = tuple(sorted((str(key), _frozen(value)) for key, value in values.items()))
+
+    def __getitem__(self, key: str) -> Any:
+        for name, value in self._items:
+            if name == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (name for name, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(self._items)
+
+    def __repr__(self) -> str:
+        return repr(dict(self._items))
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (_FrozenConfig, (dict(self._items),))
+
+
 def _frozen(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return types.MappingProxyType({str(k): _frozen(v) for k, v in value.items()})
+        return _FrozenConfig(value)
     if isinstance(value, (list, tuple)):
         return tuple(_frozen(v) for v in value)
     return value
@@ -110,7 +147,7 @@ class TransformOp:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "targets", tuple(self.targets))
-        object.__setattr__(self, "config", _frozen(dict(self.config)))
+        object.__setattr__(self, "config", _FrozenConfig(dict(self.config)))
 
     def state(self) -> dict[str, Any]:
         """The JSON-ready form a checkpoint records (``options`` of its
@@ -124,9 +161,18 @@ class TransformOp:
 
     @staticmethod
     def from_checkpoint_transform(transform: NNCheckpointTransform) -> TransformOp:
-        options = dict(transform.options)
-        targets = options.pop("targets", ())
-        return TransformOp(id=transform.name, targets=tuple(targets), config=options, version=transform.version)
+        """The operation a checkpoint recorded; malformed options raise a
+        :class:`RecipeError`."""
+        try:
+            if not isinstance(transform.options, Mapping):
+                raise TypeError(f"options must be a mapping, got {type(transform.options).__name__}")
+            options = dict(transform.options)
+            targets = options.pop("targets", ())
+            if isinstance(targets, (str, bytes)) or not all(isinstance(t, str) for t in targets):
+                raise TypeError("targets must be a list of module paths")
+            return TransformOp(id=transform.name, targets=tuple(targets), config=options, version=transform.version)
+        except (TypeError, ValueError) as error:
+            raise RecipeError([(None, str(transform.name), None, f"malformed recorded options: {error}")]) from None
 
 
 def lora(*targets: str, r: int = 8, alpha: float = 16.0, dropout: float = 0.0) -> TransformOp:
@@ -142,9 +188,9 @@ def low_rank(*targets: str, rank: int, method: str = "svd") -> TransformOp:
     return TransformOp(id=LOW_RANK, targets=tuple(targets), config={"rank": rank, "method": method})
 
 
-def _config_problems(index: Optional[int], op: TransformOp) -> list[tuple[Optional[int], str, Optional[str], str]]:
+def _config_problems(index: Optional[int], op: TransformOp) -> list[_Problem]:
     """Operation-level problems, independent of any model."""
-    problems: list[tuple[Optional[int], str, Optional[str], str]] = []
+    problems: list[_Problem] = []
 
     def problem(reason: str, target: Optional[str] = None) -> None:
         problems.append((index, op.id, target, reason))
@@ -193,29 +239,29 @@ def _within(path: str, root: str) -> bool:
 class TransformRecipe:
     """An ordered, immutable list of :class:`TransformOp`.
 
-    ``materialization`` says what :meth:`materialize` does: ``"fresh"``
-    builds a fresh registered base from the given model's descriptor and
-    transforms that (the given model is untouched); ``"in_place"``
-    transforms the given model itself. The operations are copied: changing
-    the list they came from changes nothing here.
+    ``materialization`` says what :meth:`materialize` does: ``"in_place"``
+    (the default) transforms the given model itself — its trained weights
+    are what LoRA wraps and SVD factorizes; ``"fresh"`` builds a fresh,
+    randomly initialized registered base from the given model's descriptor
+    and transforms that, leaving the given model untouched. The operations
+    are copied: changing the list they came from changes nothing here.
     """
 
     operations: tuple[TransformOp, ...]
-    materialization: Literal["fresh", "in_place"] = "fresh"
+    materialization: Literal["fresh", "in_place"] = "in_place"
 
     def __post_init__(self) -> None:
         operations = tuple(self.operations)
         object.__setattr__(self, "operations", operations)
-        problems = []
+        problems: list[_Problem] = []
         for index, op in enumerate(operations):
             if not isinstance(op, TransformOp):
                 problems.append((index, type(op).__name__, None, "is not a TransformOp (build one with lora/low_rank)"))
             else:
                 problems.extend(_config_problems(index, op))
         if self.materialization not in ("fresh", "in_place"):
-            problems.append(
-                (None, "recipe", None, f"materialization must be 'fresh' or 'in_place', got {self.materialization!r}")
-            )
+            reason = f"materialization must be 'fresh' or 'in_place', got {self.materialization!r}"
+            problems.append((None, "recipe", None, reason))
         if problems:
             raise RecipeError(problems)
 
@@ -224,43 +270,50 @@ class TransformRecipe:
         return tuple(op.checkpoint_transform() for op in self.operations)
 
     def validate(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> None:
-        """Check the whole recipe against ``model`` — mutating nothing —
-        and raise one :class:`RecipeError` naming every problem."""
-        _validate(model.net, self.operations, _recorded_operations(model), list(optimizers))
+        """Check the whole recipe as :meth:`materialize` would — against
+        ``model`` in place, or against the fresh base ``model`` describes —
+        mutating nothing, and raise one :class:`RecipeError` naming every
+        problem. ``optimizers`` are checked for an in-place materialization
+        (a fresh base's parameters belong to no existing optimizer)."""
+        from .models import RuntimeModule
+
+        if isinstance(model.params.net, RuntimeModule):
+            # Its descriptor pins the untransformed module and nothing can
+            # rebuild it, so a recipe could never be replayed.
+            reason = (
+                f"{model.params.net} is a runtime-only module (module=), which nothing can rebuild: build the model "
+                "from Nets or a registered ModelSpec, or use nnx.peft / nnx.surgery directly"
+            )
+            raise RecipeError([(None, "recipe", None, reason)])
+        if self.materialization == "fresh":
+            _check_fresh_source(model)
+            _validate(model.net, self.operations, (), ())
+        else:
+            _validate(model.net, self.operations, _recorded_operations(model), list(optimizers))
 
     def materialize(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> NNModel:
-        """Apply the recipe — to a fresh registered base built from
-        ``model``'s descriptor (``"fresh"``, returned) or to ``model``
-        itself (``"in_place"``, returned) — after validating it whole; the
-        operations are recorded on the returned model, so its checkpoints
-        and Hub saves rebuild the same topology. Transactional: a failure
-        leaves the model as it was."""
-        optimizers = list(optimizers)
-        if self.materialization == "fresh":
-            if _recorded_operations(model) or getattr(model, "_topology_transforms", ()):
-                raise RecipeError(
-                    [(None, "recipe", None, "a fresh materialization starts from an untransformed model's descriptor")]
-                )
-            target = _fresh_base(model)
-        else:
-            target = model
-        _validate(target.net, self.operations, _recorded_operations(target), optimizers)
+        """Validate the whole recipe (as :meth:`validate`), then apply it —
+        to ``model`` itself (``"in_place"``, returned) or to a fresh
+        registered base built from ``model``'s descriptor (``"fresh"``,
+        returned). The operations are recorded on the returned model, so
+        its checkpoints and Hub saves rebuild the same topology.
+        Transactional: a failure leaves the model as it was."""
+        self.validate(model, optimizers=optimizers)
+        target = _fresh_base(model) if self.materialization == "fresh" else model
         replaced: list[tuple[str, nn.Module]] = []
         # Building a LoRA wrapper freezes its base and sets modes, so a
         # rollback also restores every flag and mode as it was.
         flags = [(p, p.requires_grad) for p in target.net.parameters()]
         modes = [(m, m.training) for m in target.net.modules()]
+        from .surgery._utils import get_module, set_module
+
         try:
             for op in self.operations:
                 for path in op.targets:
-                    from .surgery._utils import get_module, set_module
-
                     original = get_module(target.net, path)
                     set_module(target.net, path, _build(op, original, allocate_only=False))
                     replaced.append((path, original))
         except BaseException:
-            from .surgery._utils import set_module
-
             for path, original in reversed(replaced):
                 set_module(target.net, path, original)
             for parameter, requires_grad in flags:
@@ -278,33 +331,48 @@ def _recorded_operations(model: Any) -> tuple[TransformOp, ...]:
     recorded = tuple(getattr(model, "_topology_transforms", ()))
     foreign = [t for t in recorded if t.name not in _VERSIONS]
     if foreign:
-        raise RecipeError(
-            [
-                (
-                    None,
-                    "recipe",
-                    None,
-                    f"the model already carries the topology transform {foreign[0].name!r}; apply recipes to a model "
-                    "before any train-end transform",
-                )
-            ]
+        reason = (
+            f"the model already carries the topology transform {foreign[0].name!r}; apply recipes to a model before "
+            "any train-end transform"
         )
+        raise RecipeError([(None, "recipe", None, reason)])
     return tuple(TransformOp.from_checkpoint_transform(t) for t in recorded)
 
 
-def _fresh_base(model: NNModel) -> NNModel:
-    from .models import ModelSpec, RuntimeModule
-    from .nn.enum.nets import Nets
+def _check_fresh_source(model: NNModel) -> None:
+    """A fresh materialization builds a plain ``NNModel`` from a registered
+    descriptor of an untransformed model."""
+    from .nn.nn_model import NNModel
 
-    net = model.params.net
-    if isinstance(net, RuntimeModule):
-        raise RecipeError(
-            [(None, "recipe", None, f"a fresh materialization needs a registered base; {net} is runtime-only")]
+    problems: list[_Problem] = []
+    if getattr(model, "_topology_transforms", ()):
+        problems.append(
+            (None, "recipe", None, "a fresh materialization starts from an untransformed model's descriptor")
         )
-    if isinstance(net, ModelSpec):
-        return type(model)(params=model.params)
-    assert isinstance(net, Nets)
-    return type(model)(params=model.params, net_params=model.net_params)
+    if type(model) is not NNModel:
+        problems.append(
+            (
+                None,
+                "recipe",
+                None,
+                f"a fresh materialization builds an NNModel; use 'in_place' for a {type(model).__name__}",
+            )
+        )
+    if problems:
+        raise RecipeError(problems)
+
+
+def _fresh_base(model: NNModel) -> NNModel:
+    from .models import ModelSpec, _UnpackBatch
+    from .nn.nn_model import NNModel
+
+    adapter = getattr(model, "_batch_adapter", None)
+    # A caller's batch adapter carries over; the default one is bound to the
+    # old module, so the fresh model derives its own.
+    kwargs = {"batch_adapter": adapter} if adapter is not None and not isinstance(adapter, _UnpackBatch) else {}
+    if isinstance(model.params.net, ModelSpec):
+        return NNModel(params=model.params, **kwargs)
+    return NNModel(params=model.params, net_params=model.net_params, **kwargs)
 
 
 def _registration_paths(net: nn.Module) -> dict[int, list[str]]:
@@ -329,28 +397,25 @@ def _validate(
     operations: Sequence[TransformOp],
     recorded: Sequence[TransformOp],
     optimizers: Sequence[Any],
+    *,
+    indexed: bool = True,
 ) -> None:
-    problems: list[tuple[Optional[int], str, Optional[str], str]] = []
+    problems: list[_Problem] = []
     paths = _registration_paths(net)
     owners = [(op, path) for op in recorded for path in op.targets]
-    for index, op in enumerate(operations):
+    for position, op in enumerate(operations):
+        index = position if indexed else None
         problems.extend(_config_problems(index, op))
-        for position, path in enumerate(op.targets):
+        for slot, path in enumerate(op.targets):
             if not isinstance(path, str):
                 continue
-            for other in op.targets[:position]:
+            for other in op.targets[:slot]:
                 if isinstance(other, str) and path != other and (_within(path, other) or _within(other, path)):
                     problems.append((index, op.id, path, f"overlaps target {other!r} of the same operation"))
             for owner_op, owner_path in owners:
                 if _within(path, owner_path) or _within(owner_path, path):
-                    problems.append(
-                        (
-                            index,
-                            op.id,
-                            path,
-                            f"is inside the subtree {owner_path!r} another operation ({owner_op.id}) transforms",
-                        )
-                    )
+                    reason = f"is inside the subtree {owner_path!r} another operation ({owner_op.id}) transforms"
+                    problems.append((index, op.id, path, reason))
             try:
                 module = net.get_submodule(path)
             except AttributeError:
@@ -369,22 +434,18 @@ def _validate(
         owners.extend((op, path) for path in op.targets if isinstance(path, str))
     for number, optimizer in enumerate(optimizers):
         held = {id(p) for group in optimizer.param_groups for p in group["params"]}
-        for index, op in enumerate(operations):
+        for position, op in enumerate(operations):
             for path in op.targets:
                 try:
                     module = net.get_submodule(path)
                 except (AttributeError, TypeError):
                     continue
                 if any(id(p) in held for p in module.parameters()):
-                    problems.append(
-                        (
-                            index,
-                            op.id,
-                            path,
-                            f"optimizer {number} holds this target's parameters — build the optimizer after "
-                            "materializing the recipe (e.g. nnx.optimizers.build_optimizer(model.net, ...))",
-                        )
+                    reason = (
+                        f"optimizer {number} holds this target's parameters — build the optimizer after "
+                        "materializing the recipe (e.g. nnx.optimizers.build_optimizer(model.net, ...))"
                     )
+                    problems.append((position if indexed else None, op.id, path, reason))
     if problems:
         raise RecipeError(problems)
 
@@ -410,17 +471,11 @@ def _build(op: TransformOp, linear: nn.Module, *, allocate_only: bool) -> nn.Mod
     from .surgery._utils import copy_param_roles
 
     weight = linear.weight
-    down = cast(
-        nn.Linear, skip_init(nn.Linear, linear.in_features, rank, bias=False, dtype=weight.dtype, device=weight.device)
-    )
-    up = cast(
-        nn.Linear,
-        skip_init(
-            nn.Linear, rank, linear.out_features, bias=linear.bias is not None, dtype=weight.dtype, device=weight.device
-        ),
-    )
-    copy_param_roles(linear, down)
-    copy_param_roles(linear, up)
+    bias = linear.bias is not None
+    down = skip_init(nn.Linear, linear.in_features, rank, bias=False, dtype=weight.dtype, device=weight.device)
+    up = skip_init(nn.Linear, rank, linear.out_features, bias=bias, dtype=weight.dtype, device=weight.device)
+    copy_param_roles(linear, cast(nn.Linear, down))
+    copy_param_roles(linear, cast(nn.Linear, up))
     factors = nn.Sequential(down, up)
     factors.train(linear.training)
     return factors
@@ -430,6 +485,11 @@ def _replayable(transform: NNCheckpointTransform) -> bool:
     return transform.name in _VERSIONS
 
 
+def _recipe_transforms(transforms: Iterable[NNCheckpointTransform]) -> tuple[NNCheckpointTransform, ...]:
+    """The recorded recipe operations among a model's transforms."""
+    return tuple(t for t in transforms if _replayable(t))
+
+
 def _replay(model: NNModel, transform: NNCheckpointTransform) -> None:
     """Rebuild one recorded operation's topology on a freshly built base
     before its saved tensors are loaded (``from_checkpoint`` /
@@ -437,44 +497,118 @@ def _replay(model: NNModel, transform: NNCheckpointTransform) -> None:
     from .surgery._utils import get_module, set_module
 
     op = TransformOp.from_checkpoint_transform(transform)
-    _validate(model.net, (op,), _recorded_operations(model), ())
+    _validate(model.net, (op,), _recorded_operations(model), (), indexed=False)
     for path in op.targets:
         set_module(model.net, path, _build(op, get_module(model.net, path), allocate_only=True))
     model._topology_transforms = (*model._topology_transforms, transform)
 
 
-def _expected_keys(base_keys: Iterable[str], transforms: Sequence[NNCheckpointTransform]) -> Optional[set[str]]:
-    """The tensor keys a base with ``base_keys`` has after the recorded
-    recipe ``transforms`` (``None`` when one is not a recipe operation)."""
-    keys = set(base_keys)
+def _expected_state(
+    base: Mapping[str, Any], transforms: Sequence[NNCheckpointTransform]
+) -> Optional[dict[str, Optional[tuple[int, ...]]]]:
+    """``{key: shape}`` of a base's tensors after the recorded recipe
+    ``transforms`` — a shape is ``None`` where the base gives only names
+    (a registered factory's reference keys); ``None`` when one is not a
+    recipe operation."""
+    state: dict[str, Optional[tuple[int, ...]]] = dict(base)
     for transform in transforms:
         if not _replayable(transform):
             return None
         op = TransformOp.from_checkpoint_transform(transform)
         for path in op.targets:
-            bias = f"{path}.bias" in keys
-            keys -= {f"{path}.weight", f"{path}.bias"}
+            weight = state.pop(f"{path}.weight", None)
+            has_bias = f"{path}.bias" in state
+            bias = state.pop(f"{path}.bias", None)
+            out_features, in_features = weight if weight is not None else (None, None)
             if op.id == LORA:
-                keys |= {f"{path}.lora_A", f"{path}.lora_B", f"{path}.base.weight"}
-                keys |= {f"{path}.base.bias"} if bias else set()
+                r = op.config["r"]
+                state[f"{path}.lora_A"] = (r, in_features) if in_features is not None else None
+                state[f"{path}.lora_B"] = (out_features, r) if out_features is not None else None
+                state[f"{path}.base.weight"] = weight
+                if has_bias:
+                    state[f"{path}.base.bias"] = bias
             else:
-                keys |= {f"{path}.0.weight", f"{path}.1.weight"}
-                keys |= {f"{path}.1.bias"} if bias else set()
-    return keys
+                rank = op.config["rank"]
+                state[f"{path}.0.weight"] = (rank, in_features) if in_features is not None else None
+                state[f"{path}.1.weight"] = (out_features, rank) if out_features is not None else None
+                if has_bias:
+                    state[f"{path}.1.bias"] = bias
+    return state
+
+
+def _topology_problems(
+    net: nn.Module, base_state: Mapping[str, Optional[tuple[int, ...]]], transforms: Sequence[NNCheckpointTransform]
+) -> list[str]:
+    """How ``net`` differs from its base plus the recorded recipe: tensor
+    names, the shapes the recipe and the base fix, and each target's
+    module and configuration."""
+    import torch
+
+    from .peft.lora import LoRALinear
+
+    expected = _expected_state(base_state, transforms)
+    if expected is None:
+        return []
+    actual = {key: tuple(value.shape) for key, value in net.state_dict().items() if isinstance(value, torch.Tensor)}
+    problems: list[str] = []
+    unexpected, missing = sorted(set(actual) - set(expected)), sorted(set(expected) - set(actual))
+    if unexpected or missing:
+        problems.append(f"unexpected tensors {unexpected[:5]}, missing {missing[:5]}")
+    for key, shape in expected.items():
+        live = actual.get(key)
+        if live is None or shape is None:
+            continue
+        if len(shape) != len(live) or any(
+            want is not None and want != got for want, got in zip(shape, live, strict=False)
+        ):
+            problems.append(f"{key} has shape {live}, its recipe and base give {shape}")
+    for transform in _recipe_transforms(transforms):
+        op = TransformOp.from_checkpoint_transform(transform)
+        for path in op.targets:
+            try:
+                module = net.get_submodule(path)
+            except AttributeError:
+                continue  # reported as missing tensors
+            if op.id == LORA:
+                dropout = getattr(getattr(module, "lora_dropout", None), "p", 0.0)
+                if not isinstance(module, LoRALinear) or (module.r, module.alpha, dropout) != (
+                    op.config["r"],
+                    op.config["alpha"],
+                    op.config["dropout"],
+                ):
+                    problems.append(f"{path} is not the LoRA wrapper its recipe records ({dict(op.config)})")
+            elif not (isinstance(module, nn.Sequential) and len(module) == 2):
+                problems.append(f"{path} is not the low-rank factor pair its recipe records")
+    return problems
 
 
 def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
-    """Refuse an optimizer that no longer matches ``model.net`` — one built
-    before a recipe replaced layers holds parameters the model no longer
-    has, and misses the new ones — with the instruction to rebuild it."""
-    live = {id(p) for p in model.net.parameters()}
-    trainable = {id(p) for p in model.net.parameters() if p.requires_grad}
+    """Refuse an optimizer built before the model's recipe: one holding
+    parameters ``model.net`` no longer has (layers a low-rank operation
+    replaced), or holding a LoRA target's base weights but not the adapter
+    built around them. An optimizer built afterwards — over every
+    parameter or a subset — passes."""
+    from .surgery._utils import get_module
+
     held = {id(p) for group in optimizer.param_groups for p in group["params"]}
-    stale = held - live
-    missing = trainable - held
-    if stale or missing:
+    stale = len(held - {id(p) for p in model.net.parameters()})
+    unadapted: list[str] = []
+    for transform in _recipe_transforms(getattr(model, "_topology_transforms", ())):
+        op = TransformOp.from_checkpoint_transform(transform)
+        if op.id != LORA:
+            continue
+        for path in op.targets:
+            wrapper = get_module(model.net, path)
+            base, adapter = (
+                getattr(wrapper, "base", None),
+                (getattr(wrapper, "lora_A", None), getattr(wrapper, "lora_B", None)),
+            )
+            holds_base = isinstance(base, nn.Module) and any(id(p) in held for p in base.parameters())
+            if holds_base and not any(isinstance(p, nn.Parameter) and id(p) in held for p in adapter):
+                unadapted.append(path)
+    if stale or unadapted:
         raise ValueError(
-            f"this optimizer is stale for the model's current topology ({len(stale)} parameters it holds are no longer "
-            f"in model.net, {len(missing)} trainable parameters are missing): build the optimizer after materializing "
-            "the recipe, e.g. nnx.optimizers.build_optimizer(model.net, optim_params)"
+            f"this optimizer is stale for the model's current topology ({stale} parameters it holds are no longer in "
+            f"model.net; it holds the frozen base but not the adapter of {unadapted}): build the optimizer after "
+            "materializing the recipe, e.g. nnx.optimizers.build_optimizer(model.net, optim_params)"
         )

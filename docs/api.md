@@ -3006,7 +3006,7 @@ nnx.provenance.ExperimentManifest.fingerprint(self) -> 'str'
 nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None, preprocessing: 'Any' = None) -> 'ExperimentManifest'
 ```
 
-A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
+A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), its recorded transformation recipe when it has one (FEAT-016), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
 
 
 #### `nnx.provenance.IdentityRef`
@@ -4957,7 +4957,7 @@ catches it.
 #### `nnx.transforms.TransformRecipe`
 
 ```python
-class nnx.transforms.TransformRecipe(operations: 'tuple[TransformOp, ...]', materialization: "Literal['fresh', 'in_place']" = 'fresh') -> 'None'
+class nnx.transforms.TransformRecipe(operations: 'tuple[TransformOp, ...]', materialization: "Literal['fresh', 'in_place']" = 'in_place') -> 'None'
 ```
 
 An ordered, immutable list of :class:`TransformOp`.
@@ -4965,11 +4965,12 @@ An ordered, immutable list of :class:`TransformOp`.
 **Details**
 
 ```text
-``materialization`` says what :meth:`materialize` does: ``"fresh"``
-builds a fresh registered base from the given model's descriptor and
-transforms that (the given model is untouched); ``"in_place"``
-transforms the given model itself. The operations are copied: changing
-the list they came from changes nothing here.
+``materialization`` says what :meth:`materialize` does: ``"in_place"``
+(the default) transforms the given model itself — its trained weights
+are what LoRA wraps and SVD factorizes; ``"fresh"`` builds a fresh,
+randomly initialized registered base from the given model's descriptor
+and transforms that, leaving the given model untouched. The operations
+are copied: changing the list they came from changes nothing here.
 ```
 
 ##### `nnx.transforms.TransformRecipe.checkpoint_transforms`
@@ -4986,7 +4987,7 @@ The operations as checkpoint transforms, in order.
 nnx.transforms.TransformRecipe.validate(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'None'
 ```
 
-Check the whole recipe against ``model`` — mutating nothing — and raise one :class:`RecipeError` naming every problem.
+Check the whole recipe as :meth:`materialize` would — against ``model`` in place, or against the fresh base ``model`` describes — mutating nothing, and raise one :class:`RecipeError` naming every problem. ``optimizers`` are checked for an in-place materialization (a fresh base's parameters belong to no existing optimizer).
 
 ##### `nnx.transforms.TransformRecipe.materialize`
 
@@ -4994,7 +4995,7 @@ Check the whole recipe against ``model`` — mutating nothing — and raise one 
 nnx.transforms.TransformRecipe.materialize(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'NNModel'
 ```
 
-Apply the recipe — to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned) or to ``model`` itself (``"in_place"``, returned) — after validating it whole; the operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model as it was.
+Validate the whole recipe (as :meth:`validate`), then apply it — to ``model`` itself (``"in_place"``, returned) or to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned). The operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model as it was.
 
 
 #### `nnx.transforms.TransformOp`
@@ -5027,7 +5028,7 @@ No public description is currently available.
 nnx.transforms.TransformOp.from_checkpoint_transform(transform: 'NNCheckpointTransform') -> 'TransformOp'
 ```
 
-No public description is currently available.
+The operation a checkpoint recorded; malformed options raise a :class:`RecipeError`.
 
 
 #### `nnx.transforms.lora`
@@ -5054,13 +5055,13 @@ Replace each ``nn.Linear`` at ``targets`` by its rank-``rank`` factorization (``
 nnx.transforms.check_optimizer(model: 'NNModel', optimizer: 'torch.optim.Optimizer') -> 'None'
 ```
 
-Refuse an optimizer that no longer matches ``model.net`` — one built before a recipe replaced layers holds parameters the model no longer has, and misses the new ones — with the instruction to rebuild it.
+Refuse an optimizer built before the model's recipe: one holding parameters ``model.net`` no longer has (layers a low-rank operation replaced), or holding a LoRA target's base weights but not the adapter built around them. An optimizer built afterwards — over every parameter or a subset — passes.
 
 
 #### `nnx.transforms.RecipeError`
 
 ```python
-class nnx.transforms.RecipeError(problems: 'Sequence[tuple[Optional[int], str, Optional[str], str]]') -> 'None'
+class nnx.transforms.RecipeError(problems: 'Sequence[_Problem]') -> 'None'
 ```
 
 A recipe that does not fit a model, or a malformed operation. ``problems`` lists ``(operation index, operation id, target, reason)``; the message names each.
@@ -6118,10 +6119,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 

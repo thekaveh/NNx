@@ -110,8 +110,11 @@ def test_a_recipe_records_id_version_config_and_order_immutably():
     assert dict(recipe.operations[0].config) == {"r": 4, "alpha": 8.0, "dropout": 0.0}
     with pytest.raises(TypeError):
         recipe.operations[0].config["r"] = 9  # type: ignore[index]
-    assert recipe.materialization == "fresh"
-    assert TransformRecipe(source, materialization="in_place").materialization == "in_place"
+    assert recipe.materialization == "in_place"  # the default: a trained model's own weights are transformed
+    assert TransformRecipe(source, materialization="fresh").materialization == "fresh"
+    import pickle
+
+    assert pickle.loads(pickle.dumps(recipe)) == recipe and hash(recipe) == hash(TransformRecipe(recipe.operations))
     assert [t.state() for t in recipe.checkpoint_transforms()] == [
         {"name": "lora", "version": 1, "options": {"targets": ["layers.0"], "r": 4, "alpha": 8.0, "dropout": 0.0}},
         {"name": "low_rank", "version": 1, "options": {"targets": ["layers.1"], "rank": 4, "method": "svd"}},
@@ -161,12 +164,12 @@ def test_a_failed_materialization_leaves_the_model_as_it_was(monkeypatch):
 # --- AC2 + AC3: reconstruction ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fmt", ["pickle", "safetensors"])
-def test_lora_then_low_rank_rebuilds_a_fresh_base_without_rerunning_svd(fmt, tmp_path):
+def test_lora_then_low_rank_rebuilds_a_fresh_base_without_rerunning_svd(tmp_path):
+    # (the safetensors format: tests/test_checkpoint_safetensors.py, which needs the `hub` extra)
     model = _recipe().materialize(_model())
     _perturb(model)
-    path = str(tmp_path / f"recipe.{fmt}")
-    _checkpoint(model).to_file(path, format=fmt)
+    path = str(tmp_path / "recipe.pt")
+    _checkpoint(model).to_file(path, format="pickle")
     with mock.patch("torch.linalg.svd", side_effect=AssertionError("SVD rerun during reload")):
         rebuilt = NNModel.from_checkpoint(NNCheckpoint.from_file(path))
     _same_model(model, rebuilt)
@@ -258,8 +261,8 @@ def test_a_trained_recipe_round_trips_through_its_run_checkpoints(tag, tmp_path)
     rebuilt = NNModel.from_checkpoint(checkpoint)
     if tag is Checkpoints.LAST:
         _same_model(model, rebuilt)
-    path = str(tmp_path / "trained.safetensors")
-    checkpoint.to_file(path, format="safetensors")
+    path = str(tmp_path / "trained.pt")
+    checkpoint.to_file(path, format="pickle")
     _same_model(rebuilt, NNModel.from_checkpoint(NNCheckpoint.from_file(path)))
 
 
@@ -312,11 +315,160 @@ def test_a_raw_state_dict_cannot_rebuild_a_recipe_alone(tmp_path):
         net_params=model.net_params,
         net_state=model.net.state_dict(),  # weights of a transformed topology, no recipe
     )
-    with pytest.raises(
-        ValueError, match="records no transformation recipe: a raw state dict or an adapter-only export"
-    ):
+    with pytest.raises(ValueError, match="record no transformation recipe: a raw state dict or an adapter-only export"):
         NNModel.from_checkpoint(raw)
     assert "records no" in (NNModel.export_state_dict.__doc__ or "")
     from nnx.peft import save_lora_weights
 
     assert "records no" in (save_lora_weights.__doc__ or "")
+
+
+# --- review regressions ------------------------------------------------------------------------------------
+
+
+def test_a_resume_refuses_a_different_recipe_even_with_pre_transform_state():
+    parent = _train(TransformRecipe([lora("layers.0", r=4, alpha=8.0)]).materialize(_model()))
+    other = TransformRecipe([lora("layers.0", r=4, alpha=16.0)]).materialize(_model(seed=5))
+    with pytest.raises(ValueError, match="materialize the same nnx.transforms.TransformRecipe"):
+        _train(other, n_epochs=1, resume_from_run_id=parent.id)
+    with pytest.raises(ValueError, match="materialize the same nnx.transforms.TransformRecipe"):
+        _train(_model(seed=6), n_epochs=1, resume_from_run_id=parent.id)  # no recipe at all
+
+
+def test_a_recipe_run_has_its_own_run_id_and_no_duplicate_weights():
+    base_run = _train(_model())
+    recipe_run = _train(_recipe().materialize(_model()))
+    assert recipe_run.id != base_run.id  # no collision, no overwrite
+    assert [t["name"] for t in recipe_run.state()["transforms"]] == ["lora", "low_rank"]
+    assert "transforms" not in base_run.state()  # run ids without a recipe are unchanged
+    from nnx.nn.params.nn_run import NNRun
+
+    assert NNRun.load(recipe_run.id).id == recipe_run.id
+    _, training_state = NNCheckpoint.load_with_training_state(run=recipe_run.id, type=Checkpoints.LAST)
+    assert training_state is not None and training_state.get("model") is None
+
+
+def test_the_provenance_manifest_records_the_recipe():
+    from nnx.provenance import ExperimentManifest
+
+    base = ExperimentManifest.for_model(_model())
+    assert "transforms" not in base.model  # manifests without a recipe are unchanged
+    with_recipe = ExperimentManifest.for_model(_recipe().materialize(_model()))
+    assert [t["name"] for t in with_recipe.model["transforms"]] == ["lora", "low_rank"]
+    assert with_recipe.fingerprint() != base.fingerprint()
+
+
+def test_a_fresh_materialization_needs_a_plain_nnmodel():
+    class Custom(NNModel):
+        pass
+
+    torch.manual_seed(0)
+    model = Custom(net_params=_model().net_params, params=_model().params)
+    with pytest.raises(RecipeError, match="use 'in_place' for a Custom"):
+        _recipe("fresh").materialize(model)
+    transformed = _recipe().materialize(_model())
+    with pytest.raises(RecipeError, match="starts from an untransformed"):
+        TransformRecipe([lora("layers.2")], materialization="fresh").validate(transformed)  # validate mirrors it
+
+
+def test_validate_mirrors_a_fresh_materialization_for_optimizers():
+    model = _model()
+    held = build_optimizer(model.net, _OPTIM)
+    _recipe("fresh").validate(model, optimizers=[held])  # a fresh base's parameters are not held
+    with pytest.raises(RecipeError, match="build the optimizer after"):
+        _recipe("in_place").validate(model, optimizers=[held])
+
+
+def test_the_trainer_refuses_surgery_outside_the_recipe():
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    model = _recipe().materialize(_model())
+    model.net.layers[2] = low_rank_factorize(model.net.layers[2], rank=2)
+    params = NNTrainerParams(n_epochs=1, train_loader=_loader(), optims={"main": _OPTIM})
+    with pytest.raises(ValueError, match="differs from its recorded transformation recipe"):
+        Trainer(model).train(params, trainer_step_fn=lambda ctx: NNEvaluationDataPoint(loss=0.5))
+
+
+def test_a_shape_only_change_outside_the_recipe_is_refused():
+    model = _recipe().materialize(_model())
+    # Same tensor names, different rank: re-factorize the recipe's own target.
+    model.net.layers[1] = low_rank_factorize(model.net.layers[1][1], rank=2)
+    with pytest.raises(ValueError, match="layers.1.0.weight has shape"):
+        model._assert_reconstructible_topology()
+    lora_model = TransformRecipe([lora("layers.0", r=4, alpha=8.0)]).materialize(_model())
+    lora_model.net.layers[0].alpha = 16.0  # same shapes, different recorded configuration
+    with pytest.raises(ValueError, match="is not the LoRA wrapper its recipe records"):
+        lora_model._assert_reconstructible_topology()
+
+
+def test_a_custom_step_on_a_recipe_model_is_checked_too():
+    model = _recipe().materialize(_model())
+    model.net.layers[2] = low_rank_factorize(model.net.layers[2], rank=2)
+    params = NNTrainParams(n_epochs=1, train_loader=_loader(), optim=_OPTIM)
+    with pytest.raises(ValueError, match="differs from its recorded transformation recipe"):
+        model.train(params, train_step_fn=lambda ctx: NNEvaluationDataPoint(loss=0.5))
+
+
+def test_a_subset_optimizer_built_after_the_recipe_passes():
+    model = _recipe().materialize(_model())
+    subset = torch.optim.SGD([model.net.layers[0].lora_A, model.net.layers[0].lora_B], lr=0.1)
+    check_optimizer(model, subset)
+    stale = torch.optim.SGD(model.net.layers[0].base.parameters(), lr=0.1)  # the base a LoRA operation froze
+    with pytest.raises(ValueError, match=r"holds the frozen base but not the adapter of \[.layers.0.\]"):
+        check_optimizer(model, stale)
+
+
+def test_malformed_recorded_options_name_the_transform():
+    model = _recipe().materialize(_model())
+    checkpoint = _checkpoint(model)
+    for options in ([], {"targets": [["layers.1"]], "rank": 4, "method": "svd"}):
+        bad = NNCheckpointTransform(name="low_rank", version=1, options=options)  # type: ignore[arg-type]
+        tampered = NNCheckpoint(
+            idp=checkpoint.idp,
+            model_params=checkpoint.model_params,
+            net_params=checkpoint.net_params,
+            net_state=checkpoint.net_state,
+            transforms=(checkpoint.transforms[0], bad),
+        )
+        with pytest.raises(
+            ValueError, match=r"topology transform 1 \('low_rank' version 1\).*malformed recorded options"
+        ):
+            NNModel.from_checkpoint(tampered)
+
+
+def test_a_recipe_refuses_a_runtime_only_module():
+    module = nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+    model = NNModel(params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY), module=module)
+    for materialization in ("in_place", "fresh"):
+        with pytest.raises(RecipeError, match="runtime-only module"):
+            TransformRecipe([lora("0", r=2, alpha=4.0)], materialization=materialization).materialize(model)
+    assert type(module[0]) is nn.Linear and model._topology_transforms == ()  # left untouched
+    recorded = NNCheckpointTransform(
+        name="lora", version=1, options={"targets": ["0"], "r": 2, "alpha": 4.0, "dropout": 0.0}
+    )
+    pristine = nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+    tampered = NNCheckpoint(
+        idp=_checkpoint(model).idp,
+        model_params=model.params,
+        net_params=None,
+        net_state=module.state_dict(),
+        transforms=(recorded,),
+    )
+    with pytest.raises(ValueError, match="nothing can replay on a caller-owned module"):
+        NNModel.from_checkpoint(tampered, module=pristine)
+    assert type(pristine[0]) is nn.Linear  # never transformed behind the caller's back
+
+
+def test_a_registered_module_raw_state_gets_the_recipe_error():
+    from nnx.models import ModelSpec, register_model_factory
+
+    register_model_factory(
+        "tests.recipe_mlp", 1, lambda config: nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+    )
+    params = NNModelParams(net=ModelSpec("tests.recipe_mlp", 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = TransformRecipe([lora("0", r=2, alpha=4.0)]).materialize(NNModel(params=params))
+    raw = NNCheckpoint(
+        idp=_checkpoint(model).idp, model_params=model.params, net_params=None, net_state=model.net.state_dict()
+    )
+    with pytest.raises(ValueError, match="record no transformation recipe"):
+        NNModel.from_checkpoint(raw)

@@ -344,7 +344,8 @@ class ExperimentManifest:
     ) -> ExperimentManifest:
         """A manifest from an existing model's declarations: its task and
         label order (FEAT-002), its model descriptor and built-in net params
-        (FEAT-006), and — when given — the training configuration
+        (FEAT-006), its recorded transformation recipe when it has one
+        (FEAT-016), and — when given — the training configuration
         (``NNTrainParams.state()`` without ``n_epochs`` and the resume
         lineage, which describe an attempt; loaders are never read) and a
         fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as
@@ -358,6 +359,12 @@ class ExperimentManifest:
         net_params = getattr(model, "net_params", None)
         if net_params is not None:
             model_state["net_params"] = net_params.state()
+        from .transforms import _recipe_transforms
+
+        recipe = _recipe_transforms(getattr(model, "_topology_transforms", ()))
+        if recipe:
+            # FEAT-016: the recorded transformation recipe is part of the model.
+            model_state["transforms"] = [transform.state() for transform in recipe]
         merged = dict(config or {})
         if train is not None:
             train_state = dict(train.state() if hasattr(train, "state") else train)

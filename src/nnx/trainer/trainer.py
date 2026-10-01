@@ -83,6 +83,7 @@ from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
+from ..transforms import _recipe_transforms, _replayable
 from ..utils import Utils
 from .params import NNTrainerParams
 
@@ -306,6 +307,10 @@ class Trainer:
         if objective is not None and not callable(objective):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         _check_provenance(provenance)
+        if _recipe_transforms(self.model._topology_transforms):
+            # FEAT-016: a recipe model's topology must be its base plus its
+            # recorded recipe, or its checkpoints could not be rebuilt.
+            self.model._assert_reconstructible_topology()
         if params is None:
             raise ValueError("trainer params must not be None")
         if params.train_loader is None:
@@ -388,6 +393,7 @@ class Trainer:
             # (the GAN composite idiom) still produce a saveable run.
             net=self.model.net_params,
             salt=salt,
+            transforms=_recipe_transforms(self.model._topology_transforms),  # FEAT-016
         )
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
@@ -684,6 +690,9 @@ class Trainer:
         # BEST remains the best state observed during training.
         if idps:
             final_transforms = (*self.model._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
+            # As in NNModel.train: a recipe (FEAT-016) is the live topology
+            # already, so only other transforms keep pre-transform state.
+            keeps_pre_transform = any(not _replayable(t) for t in final_transforms)
             self.model._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=idps[-1],
@@ -698,9 +707,9 @@ class Trainer:
                 # named optimizer / scheduler and component, so a completed run
                 # resumes the continuous states.
                 **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
-                rng_state=pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader),
+                rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
                 completed_epoch=idps[-1].epoch_idx,
-                resume_net_state=pre_transform_net_state if final_transforms else None,
+                resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 components=registry.collect(),
             )
 

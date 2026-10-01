@@ -376,3 +376,34 @@ def test_hub_save_and_load_replays_a_transformation_recipe(tmp_path):
     x = torch.randn(4, model.net_params.input_dim)
     with torch.no_grad():
         torch.testing.assert_close(rebuilt.net(x), model.net(x), rtol=1e-5, atol=1e-6)
+
+
+def test_hub_load_refuses_an_unknown_recipe_operation_before_loading_tensors(tmp_path):
+    """FEAT-016: local ``from_pretrained`` rejects an unknown recorded
+    operation or version, naming its index, before any tensor is read; a
+    transformed artifact whose config records no recipe says so."""
+    from unittest import mock
+
+    from nnx.transforms import TransformRecipe, lora, low_rank
+
+    model = _tiny_model()
+    linears = [name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear]
+    TransformRecipe([lora(linears[0], r=2, alpha=4.0), low_rank(linears[1], rank=2)]).materialize(model)
+    model.save_pretrained(str(tmp_path))
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    cases = (
+        (
+            {**config["transforms"][1], "version": 7},
+            r"topology transform 1 \('low_rank' version 7\).*unknown version 7",
+        ),
+        ({"name": "prune", "version": 1, "options": {}}, r"topology transform 1 \('prune' version 1\).*unsupported"),
+    )
+    for bad, pattern in cases:
+        config_path.write_text(json.dumps({**config, "transforms": [config["transforms"][0], bad]}))
+        with mock.patch("safetensors.torch.load_file", side_effect=AssertionError("tensors loaded")):
+            with pytest.raises(ValueError, match=pattern):
+                NNModel.from_pretrained(str(tmp_path))
+    config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
+    with pytest.raises(ValueError, match="record no transformation recipe"):
+        NNModel.from_pretrained(str(tmp_path))

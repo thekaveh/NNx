@@ -447,8 +447,8 @@ def recipe_reconstruction_workflow() -> dict:
         transforms=model._topology_transforms,
     )
     with tempfile.TemporaryDirectory() as directory:
-        path = os.path.join(directory, "recipe.safetensors")
-        checkpoint.to_file(path, format="safetensors")
+        path = os.path.join(directory, "recipe.pt")
+        checkpoint.to_file(path, format="pickle")
         with mock.patch("torch.linalg.svd", side_effect=AssertionError("SVD rerun during reload")):
             rebuilt = NNModel.from_checkpoint(NNCheckpoint.from_file(path))
 

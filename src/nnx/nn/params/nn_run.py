@@ -23,7 +23,7 @@ from ..._metrics import _resolve_metric
 from ...components import ResumeStatus
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
-from ..params.nn_checkpoint import NNCheckpoint
+from ..params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
 from ..params.nn_iteration_data_point import NNIterationDataPoint
 from ..params.nn_model_params import NNModelParams
 from ..params.nn_optim_params import NNOptimParams
@@ -469,6 +469,11 @@ class NNRun:
     # byte-for-byte — same omit-when-default contract as `trainer`.
     salt: Optional[str] = field(default=None)
 
+    # FEAT-016: the transformation recipe (nnx.transforms) the trained model
+    # carries. Omitted from state() when empty, so every run without one
+    # keeps its run id byte-for-byte; a recipe run gets its own id.
+    transforms: tuple[NNCheckpointTransform, ...] = field(default=())
+
     _id: str = field(init=False, repr=False)
     _state: dict[str, object] = field(init=False, repr=False)
     idps: Optional[list[NNIterationDataPoint]] = field(repr=False, default=None)
@@ -534,6 +539,11 @@ class NNRun:
         # to distinguish otherwise-identical configs.
         if self.salt is not None:
             state["salt"] = self.salt
+        object.__setattr__(self, "transforms", tuple(self.transforms))
+        if self.transforms:
+            # Canonical key order: run.yaml round-trips sorted keys and the id
+            # hashes the state, so a reloaded run keeps its id.
+            state["transforms"] = json.loads(json.dumps([t.state() for t in self.transforms], sort_keys=True))
 
         id = hashlib.md5(str(state).encode("utf-8")).hexdigest()
 
@@ -935,6 +945,7 @@ class NNRun:
                 model=model,
                 trainer=trainer,
                 salt=rep.get("salt"),
+                transforms=tuple(NNCheckpointTransform.from_state(item) for item in rep.get("transforms") or ()),
                 idps=idps,
                 resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
                 provenance=_load_provenance_tolerantly(id, root),
