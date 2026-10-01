@@ -316,6 +316,20 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
+### 2.18. Execution precision (`nnx.precision`)
+
+@api nnx.precision.PrecisionPolicy
+
+@api nnx.precision.ResolvedPrecision
+
+@api nnx.precision.PrecisionUnsupportedError
+
+@api nnx.precision.ReferenceTolerance
+
+@api nnx.precision.resolve_precision
+
+@api nnx.precision.precision_support
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

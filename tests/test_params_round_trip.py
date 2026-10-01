@@ -936,3 +936,16 @@ def test_provenance_round_trips_outside_the_run_state(tmp_path, monkeypatch):
     assert loaded.provenance is not None and loaded.provenance.manifest == manifest
     assert loaded.provenance.fingerprint == manifest.fingerprint()
     assert ExperimentManifest.from_state(manifest.state()) == manifest
+
+
+def test_nn_model_params_state_omits_precision_when_unset():
+    """FEAT-028: precision follows the omit-when-default rule (run ids unchanged)."""
+    from nnx import PrecisionPolicy
+
+    params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    assert "precision" not in params.state()
+    with_policy = NNModelParams(
+        net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16")
+    )
+    assert with_policy.state()["precision"] == {"mode": "bf16"}
+    assert NNModelParams.from_state(with_policy.state()) == with_policy

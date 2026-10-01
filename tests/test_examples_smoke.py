@@ -69,6 +69,7 @@ def test_representative_examples_run_end_to_end(name, tmp_path):
 
 BOUNDED_EXAMPLE_HELPERS = [
     ("01_synthetic_classification.py", "native_nll_workflow"),
+    ("01_synthetic_classification.py", "precision_workflow"),
     ("02_resume_training.py", "amp_resume_compatibility"),
     ("03_custom_metrics.py", "named_monitor_workflow"),
     ("04_onnx_export.py", "registered_module_variant"),
@@ -131,3 +132,19 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
         # Helpers that need an optional extra raise ImportError naming it:
         # an explicit skip in a core-only environment, never a silent pass.
         pytest.skip(f"{name}:{helper} needs an optional extra: {exc}")
+
+
+def test_the_precision_example_runs_bf16_where_the_host_supports_it(tmp_path, monkeypatch):
+    """FEAT-028: example 01's precision option — bounded CPU FP32 runs in the
+    helper list above; BF16 is gated on ``precision_support`` (CPU qualifies),
+    and a mode the device cannot run is skipped, not claimed."""
+    from nnx import Devices
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    namespace = runpy.run_path(
+        str(ROOT / "examples" / "01_synthetic_classification.py"), run_name="__nnx_example_smoke__"
+    )
+    summary = namespace["precision_workflow"]("bf16")
+    assert summary is not None and (summary["requested"], summary["effective"]) == ("bf16", "bf16")
+    assert namespace["precision_workflow"]("bf16", Devices.MPS) is None  # unsupported there: gated off

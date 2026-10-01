@@ -31,6 +31,7 @@ from .._step_helpers import finalize_step
 from ..nn.moe import MoELinear
 from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+from ..precision import full_precision_only
 
 
 def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
@@ -111,4 +112,4 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
             extra_metrics=ctx.extra_metrics,
         )
 
-    return step
+    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)

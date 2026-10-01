@@ -37,7 +37,8 @@ def finalize_step(
     guards against.
 
     **Not supported** in paradigm step factories (would silently drop
-    if we accepted them): AMP (``ctx.scaler``) and gradient accumulation
+    if we accepted them): AMP (``ctx.scaler``, or a reduced
+    ``ctx.precision`` — FEAT-028) and gradient accumulation
     (``ctx.accumulate_grad_batches != 1``). Both raise loudly rather
     than letting the caller think their NNOptimParams knobs are in
     effect. Honoring them would require per-paradigm care (scaling
@@ -72,12 +73,13 @@ def finalize_step(
             (the paradigm factories don't honor those knobs).
         FloatingPointError: when ``loss`` is non-finite.
     """
-    if ctx.scaler is not None:
+    precision = getattr(ctx, "precision", None)
+    if ctx.scaler is not None or (precision is not None and precision.reduced):
         raise ValueError(
             f"{paradigm} train_step_fn does not support mixed precision "
-            "(NNModelParams.mixed_precision=True). Disable AMP on this "
-            "NNModel or write a custom train_step_fn that handles the "
-            "scaler explicitly."
+            "(NNModelParams.mixed_precision=True or a reduced PrecisionPolicy). "
+            "Train this NNModel in fp32, or write a custom train_step_fn that "
+            "applies ctx.precision and the scaler explicitly."
         )
     if ctx.accumulate_grad_batches != 1:
         raise ValueError(

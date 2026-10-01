@@ -199,6 +199,14 @@ property nnx.nn.nn_model.NNModel.task_adapter
 
 The adapter for ``params.task`` (FEAT-002), or ``None`` for a legacy classification model. Custom steps can call ``task_adapter.record(output, target, loss=...)`` to write the same task record the default step writes.
 
+##### `nnx.nn.nn_model.NNModel.resolved_precision`
+
+```python
+property nnx.nn.nn_model.NNModel.resolved_precision
+```
+
+The precision this model runs in on its current device (FEAT-028): ``params.precision`` resolved against ``device`` — re- resolved, never read from saved metadata, whenever the device or the policy changes (a loaded model resolves on its destination device).
+
 ##### `nnx.nn.nn_model.NNModel.to_onnx`
 
 ```python
@@ -234,7 +242,7 @@ Returns the path written. Network is put in eval mode for tracing.
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
 
 ```python
-nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, **model_kwargs: 'Any') -> 'Self'
+nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, precision: 'Optional[PrecisionPolicy]' = None, **model_kwargs: 'Any') -> 'Self'
 ```
 
 Rebuild a model, replay topology transforms, and load its weights.
@@ -254,6 +262,12 @@ that differs from the saved weights raises ``ValueError``, both
 before any weight is loaded. A runtime-only module
 (``reconstructible=False``) needs ``module=`` — a module of the same
 topology, into which the weights are loaded.
+
+FEAT-028: the precision policy is re-resolved on the destination
+device (the constructor resolves it) — never read from the
+checkpoint's recorded precision — so a policy that device cannot
+run fails here; ``precision=`` replaces the saved policy (and the
+legacy ``mixed_precision`` flag) for this model.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.save_pretrained`
@@ -500,7 +514,7 @@ is preferred for new code.
 #### `nnx.nn.nn_model.TrainStepContext`
 
 ```python
-class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None) -> 'None'
+class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None, precision: 'Optional[ResolvedPrecision]' = None) -> 'None'
 ```
 
 Frozen bundle of state passed into a training-step function.
@@ -545,7 +559,10 @@ This is the body that `NNModel.train()` runs when no custom
   - gradient accumulation (zero_grad at cycle start, step at cycle
     end). A trailing partial cycle is stepped at the epoch boundary;
     gradients use each loss's effective normalization weight.
-  - AMP (unscales before grad clip; scaler.step + update at cycle end)
+  - the run's precision (FEAT-028): autocast around the forward only,
+    the backward outside it; fp16 unscales before grad clip and steps
+    through the scaler, scaler-free bf16 checks its gradients are
+    finite before clipping
   - grad clipping by L2 norm
   - the NaN/Inf guard (raises FloatingPointError on divergent loss)
   - extra_metrics injection on the returned NNEvaluationDataPoint
@@ -4948,6 +4965,179 @@ catches it.
 ```
 
 
+### 2.18. Execution precision (`nnx.precision`)
+
+#### `nnx.precision.PrecisionPolicy`
+
+```python
+class nnx.precision.PrecisionPolicy(mode: 'PrecisionMode' = 'fp32', fallback: 'PrecisionFallback' = 'error') -> 'None'
+```
+
+The requested execution precision.
+
+**Details**
+
+```text
+Args:
+    mode: ``"fp32"`` (the default), ``"fp16"`` or ``"bf16"``.
+    fallback: what happens when the device cannot run ``mode``:
+        ``"error"`` (the default) fails before any run is reserved;
+        ``"fp32"`` runs in full precision and records why.
+```
+
+##### `nnx.precision.PrecisionPolicy.state`
+
+```python
+nnx.precision.PrecisionPolicy.state(self) -> 'dict[str, str]'
+```
+
+``{"mode": ...}``, plus ``"fallback"`` when it is not the default ``"error"``.
+
+##### `nnx.precision.PrecisionPolicy.from_state`
+
+```python
+nnx.precision.PrecisionPolicy.from_state(state: 'Mapping[str, Any]') -> 'PrecisionPolicy'
+```
+
+No public description is currently available.
+
+##### `nnx.precision.PrecisionPolicy.resolve`
+
+```python
+nnx.precision.PrecisionPolicy.resolve(self, device: 'Union[str, torch.device]') -> 'ResolvedPrecision'
+```
+
+What this policy runs as on ``device`` (see the module table).
+
+
+#### `nnx.precision.ResolvedPrecision`
+
+```python
+class nnx.precision.ResolvedPrecision(requested: 'str', effective: 'str', device_type: 'str', source: 'str' = 'default', fallback_reason: 'Optional[str]' = None, tf32: 'Mapping[str, bool]' = <factory>) -> 'None'
+```
+
+A policy resolved against a device: what was requested, what runs, and why a fallback happened.
+
+**Details**
+
+```text
+``autocast()`` is the forward context, ``build_scaler()`` the
+``GradScaler`` (FP16 only) and ``record()`` the run-inspection
+mapping (``NNRun.precision``).
+```
+
+##### `nnx.precision.ResolvedPrecision.autocast_dtype`
+
+```python
+property nnx.precision.ResolvedPrecision.autocast_dtype
+```
+
+No public description is currently available.
+
+##### `nnx.precision.ResolvedPrecision.reduced`
+
+```python
+property nnx.precision.ResolvedPrecision.reduced
+```
+
+Whether anything runs below full precision.
+
+##### `nnx.precision.ResolvedPrecision.uses_scaler`
+
+```python
+property nnx.precision.ResolvedPrecision.uses_scaler
+```
+
+No public description is currently available.
+
+##### `nnx.precision.ResolvedPrecision.autocast`
+
+```python
+nnx.precision.ResolvedPrecision.autocast(self) -> 'contextlib.AbstractContextManager[Any]'
+```
+
+The forward-pass context: autocast to the effective dtype, or nothing in full precision.
+
+##### `nnx.precision.ResolvedPrecision.build_scaler`
+
+```python
+nnx.precision.ResolvedPrecision.build_scaler(self) -> 'Optional[Any]'
+```
+
+A fresh ``GradScaler`` for FP16, ``None`` otherwise.
+
+##### `nnx.precision.ResolvedPrecision.output`
+
+```python
+nnx.precision.ResolvedPrecision.output(self, tensor: 'torch.Tensor') -> 'torch.Tensor'
+```
+
+``tensor`` as a caller sees it: a reduced-precision floating output of an autocast forward is returned as float32, so outputs keep their full-precision schema (and BF16 converts to a dtype NumPy can hold).
+
+##### `nnx.precision.ResolvedPrecision.record`
+
+```python
+nnx.precision.ResolvedPrecision.record(self) -> 'dict[str, Any]'
+```
+
+The run-inspection mapping: requested and effective precision, the fallback reason, TF32 (separately), and what the policy covers — never :mod:`nnx.lr_finder` or :mod:`nnx.diffusion.sampling`.
+
+##### `nnx.precision.ResolvedPrecision.from_record`
+
+```python
+nnx.precision.ResolvedPrecision.from_record(record: 'Mapping[str, Any]') -> 'ResolvedPrecision'
+```
+
+No public description is currently available.
+
+
+#### `nnx.precision.PrecisionUnsupportedError`
+
+```python
+class nnx.precision.PrecisionUnsupportedError
+```
+
+A precision the device cannot run, with no fallback chosen — or a step function that cannot apply a reduced precision.
+
+
+#### `nnx.precision.ReferenceTolerance`
+
+```python
+class nnx.precision.ReferenceTolerance(loss: 'float', weights: 'float') -> 'None'
+```
+
+How far a reduced-precision run may drift from its FP32 reference on NNx's seeded fixtures: the largest absolute difference of a per-epoch training loss, and of any trained parameter.
+
+
+#### `nnx.precision.resolve_precision`
+
+```python
+nnx.precision.resolve_precision(params: 'Any', device: 'Union[str, torch.device, Any]') -> 'ResolvedPrecision'
+```
+
+The precision a model's parameters (``NNModelParams``) run in on ``device``: its policy, the legacy ``mixed_precision`` flag (FP16 on CUDA, full precision elsewhere — its historical meaning), or full precision.
+
+
+#### `nnx.precision.precision_support`
+
+```python
+nnx.precision.precision_support(device: 'Union[str, torch.device, None]' = None) -> 'dict[str, dict[str, str]]'
+```
+
+The precision matrix as this host sees it: for each device type (``"cpu"``, ``"cuda"``, ``"mps"``, or just ``device``'s), each mode's status —
+
+**Details**
+
+```text
+- ``"verified"``: NNx's seeded reference fixtures hold it within
+  :data:`REFERENCE_TOLERANCES` (CPU FP32 and BF16);
+- ``"supported"``: the hardware is present and the mode resolves, but
+  no NNx fixture vouches for it here;
+- ``"unverified"``: the hardware is absent, so nothing is claimed;
+- ``"unsupported"``: the device type cannot run the mode.
+```
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
@@ -5023,10 +5213,10 @@ different id, and net rebuilding crashes. Every loader
 #### `nnx.nn.params.nn_model_params.NNModelParams`
 
 ```python
-class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None) -> 'None'
+class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None, precision: 'Optional[PrecisionPolicy]' = None) -> 'None'
 ```
 
-NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None)
+NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None, precision: 'Optional[PrecisionPolicy]' = None)
 
 ##### `nnx.nn.params.nn_model_params.NNModelParams.is_valid`
 
@@ -6000,10 +6190,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, precision: 'Optional[ResolvedPrecision]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, precision: 'Optional[ResolvedPrecision]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -6025,6 +6215,14 @@ No public description is currently available.
 
 ```python
 nnx.nn.params.nn_run.NNRun.with_resume_status(self, value: 'Optional[ResumeStatus]') -> 'NNRun'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_run.NNRun.with_precision`
+
+```python
+nnx.nn.params.nn_run.NNRun.with_precision(self, value: 'Optional[ResolvedPrecision]') -> 'NNRun'
 ```
 
 No public description is currently available.
@@ -6195,7 +6393,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.

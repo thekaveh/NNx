@@ -49,7 +49,6 @@ and every fit, never copied or cloned, and never reset by the plan.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import functools
 import inspect
@@ -891,7 +890,7 @@ class ExperimentPlan:
         for a ``BatchNorm`` net in train mode.
         """
         self._probe_validation().raise_for_errors()
-        from .nn.nn_model import _step_loss_terms
+        from .nn.nn_model import _inference_precision, _step_loss_terms
         from .seeding import _seed_scope
 
         assert isinstance(self.model, NNModelParams)
@@ -905,16 +904,18 @@ class ExperimentPlan:
             cuda_started()  # CUDA the build started: its streams, as the build left them, are restored too
             model._check_task_preflight()  # as train() does, before any batch is read
             with torch.no_grad():
-                model.net.eval()  # the output as predict() sees it
-                output, target = model._inference_forward(example_batch)
+                model.net.eval()  # the output as predict() sees it, in its precision (FEAT-028)
+                inference = _inference_precision(model)
+                with inference.autocast():
+                    output, target = model._inference_forward(example_batch)
+                output = inference.output(output) if isinstance(output, torch.Tensor) else output
                 # With a target and the default step, the loss that step computes on this batch: in
                 # train mode (dropout, batch statistics), with its reshaping, masking and task rules. A
                 # custom step or objective defines its own loss, which a probe cannot know.
                 loss = None
                 if target is not None and self._default_step:
                     model.net.train()
-                    amp = model._build_grad_scaler() is not None and model.device.type == "cuda"  # as train()
-                    with torch.amp.autocast(device_type="cuda") if amp else contextlib.nullcontext():
+                    with model.resolved_precision.autocast():  # as train()
                         terms = _step_loss_terms(model, example_batch, None, 1)
                     # An all-masked task batch has no loss of its own, as the default step records it.
                     loss = (

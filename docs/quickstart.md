@@ -58,39 +58,88 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 # Devices.get() picks MPS > CUDA > CPU.
 ```
 
-### 2.2. Mixed precision (CUDA)
+### 2.2. Precision: FP32, FP16 and BF16
 
 ```python
-NNModelParams(..., mixed_precision=True)   # silently no-op on CPU/MPS
+from nnx import PrecisionPolicy
+NNModelParams(..., precision=PrecisionPolicy("bf16"))                   # CPU, or CUDA with bf16 support
+NNModelParams(..., precision=PrecisionPolicy("fp16"))                   # CUDA only
+NNModelParams(..., precision=PrecisionPolicy("fp16", fallback="fp32"))  # fp16 where it can run, else fp32
 ```
 
-`mixed_precision=True` activates only when the model runs on CUDA: the
-default training step wraps the forward in `torch.amp.autocast("cuda")` and
-the loop owns one `torch.amp.GradScaler("cuda")` — scale → backward →
-`unscale_` (so `grad_clip_norm` clips true gradients) → `step` → `update`. On
-CPU / MPS no scaler is built (`TrainStepContext.scaler is None`) and training
-is plain FP32. A custom `train_step_fn` sees the scaler through the standard
-`scale` / `unscale_` / `step` / `update` / `state_dict` protocol and never
-needs to branch on its concrete class. The scaler's state dictionary travels
-with every checkpoint's training-state sidecar, so a warm resume continues from
-the saved scale factor and growth tracker, and a resume whose configuration
-turns AMP on or off relative to the checkpoint is rejected
-(`resume GradScaler presence mismatch`) rather than silently continuing:
+`NNModelParams.precision` (FEAT-028) declares the precision training,
+evaluation and prediction run in. The policy is resolved against the model's
+device when the model is built and again, afresh, before a run is reserved:
+
+| mode | runs as | where |
+|---|---|---|
+| `"fp32"` (default) | full precision — no autocast, no scaler | every device |
+| `"fp16"` | `float16` autocast + a `torch.amp.GradScaler` | CUDA |
+| `"bf16"` | `bfloat16` autocast, no scaler | CPU; CUDA with `torch.cuda.is_bf16_supported()` |
+
+A mode the device cannot run raises `PrecisionUnsupportedError` before any
+run directory exists, unless the policy names `fallback="fp32"`: the run then
+trains in full precision and records why. Autocast wraps only the forward
+pass and loss — the backward runs outside it, parameters stay `float32` (never
+`model.half()`), and the update keeps its unscale → normalize → finite-check
+→ clip → step order: FP16 `unscale_`s first (so `grad_clip_norm` clips true
+gradients) and steps through the scaler, which skips a non-finite update;
+scaler-free BF16 checks its gradients itself and raises `FloatingPointError`
+rather than apply a non-finite one. Evaluation and `predict()` /
+`predict_proba()` run under the same policy and return `float32` outputs, so
+their schemas are unchanged.
+
+`run.precision` records what happened — `requested`, `effective`,
+`fallback_reason`, TF32 (reported separately; NNx never sets it) and what the
+policy covers — and `NNRun.load` reads it back from `metadata.yaml`. The
+policy does not reach `nnx.lr_finder`, `nnx.diffusion.sampling` or
+generation. `nnx.precision_support()` reports each device's cells as
+`"verified"` (CPU FP32 and BF16, by NNx's seeded fixtures within
+`nnx.precision.REFERENCE_TOLERANCES`), `"supported"`, `"unverified"` (the
+hardware is absent here — nothing is claimed) or `"unsupported"`.
+
+The scaler's state dictionary and the precision record travel with every
+checkpoint's training-state sidecar, so a warm resume continues from the
+saved scale factor and growth tracker. A stateful resume into a different
+effective precision is rejected (`resume precision mismatch`) before the
+model is touched; a weights-only warm start (`resume_mode="weights_only"`)
+may switch:
 
 ```python
-amp = NNModelParams(net=Nets.FEED_FWD, device=Devices.CUDA, loss=Losses.CROSS_ENTROPY, mixed_precision=True)
-first = NNModel(net_params=net_params, params=amp).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
+bf16 = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16"))
+first = NNModel(net_params=net_params, params=bf16).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
+print(first.precision.record()["effective"])   # "bf16"
 state = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)
-print(state["scaler"]["scale"])       # None on CPU/MPS; the current scale factor on CUDA
-resumed = NNModel(net_params=net_params, params=amp).train(
+print(state["precision"]["effective"], state["scaler"])   # "bf16", None (fp16 keeps the scaler's state)
+resumed = NNModel(net_params=net_params, params=bf16).train(
     params=NNTrainParams(n_epochs=1, train_loader=train_loader, resume_from_run_id=first.id),
 )
 ```
 
+`NNModel.from_checkpoint(..., device=...)` and Hub loading re-resolve the
+policy on the destination device — never from saved metadata — and take
+`precision=` to replace it (say, a CUDA FP16 model loaded on a CPU). The
+built-in imperative paradigm steps (`finalize_step`) run in full precision
+and refuse a reduced policy before any work is done; a custom
+`train_step_fn` applies `ctx.precision.autocast()` and `ctx.scaler` itself.
+In `Trainer`, an objective runs in the policy, while step functions (which
+own every update) refuse a reduced one.
+
+The legacy `NNModelParams(mixed_precision=True)` keeps its meaning and run
+id: FP16 autocast with a scaler in `NNModel.train` on CUDA, silently plain
+FP32 elsewhere, and no effect on evaluation, prediction or `Trainer`.
+Combining it with a policy other than `fp16` is refused. A stateful resume
+of a checkpoint written before precision was recorded counts it as FP16
+exactly when it saved a scaler (`resume GradScaler presence mismatch` still
+names a scaler that appears or disappears).
+
 The scaler factory is why NNx declares the PyTorch floor it does — see the
 [support matrix](external-contracts.md#21-pytorch-support-matrix) for the
 tested torch / torchvision / Python combinations and which of them carry real
-CUDA evidence. [`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
+CUDA evidence. [`examples/01_synthetic_classification.py`](https://github.com/thekaveh/NNx/blob/main/examples/01_synthetic_classification.py)'s
+`precision_workflow()` (also `--precision bf16`) runs a bounded CPU FP32
+workflow and a BF16 one gated on `precision_support`;
+[`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
 `amp_resume_compatibility()` runs the CPU no-scaler cycle everywhere and the
 enabled-AMP cycle only on a CUDA host.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import math
@@ -41,6 +42,8 @@ from ..monitors import (
     _MetricSet,
     _TrainEpochSummary,
 )
+from ..precision import FULL_PRECISION_ONLY as _FULL_PRECISION_ONLY
+from ..precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
@@ -451,6 +454,11 @@ class TrainStepContext:
     # or a monitor keeps; `default_train_step` reports each batch's outputs
     # and denominators to it. Custom steps may ignore it.
     epoch_summary: Optional[_TrainEpochSummary] = None
+    # FEAT-028: the run's resolved precision — `precision.autocast()` is the
+    # forward context, and `scaler` is set for fp16 only. A custom step owns
+    # applying it; a context built by hand without it keeps the legacy rule
+    # (autocast and the scaler only for a scaler on CUDA).
+    precision: Optional[ResolvedPrecision] = None
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -655,6 +663,52 @@ def _classification_edp_for_loss(
         loss=loss,
         extra_metrics=extra_metrics,
     )
+
+
+def _check_resume_precision(training_state: Mapping[str, Any], precision: ResolvedPrecision) -> None:
+    """Refuse a stateful resume into a different effective precision
+    (FEAT-028), before anything is restored. A sidecar written before
+    precision was recorded trained in fp16 exactly when it saved a scaler;
+    a weights-only warm start may switch."""
+    record = training_state.get("precision")
+    if isinstance(record, Mapping) and record.get("effective") is not None:
+        saved = str(record["effective"])
+    else:
+        saved = "fp16" if training_state.get("scaler") is not None else "fp32"
+    if saved != precision.effective:
+        raise ValueError(
+            f"resume precision mismatch: the checkpoint trained in {saved}, this run resolves {precision.effective}; "
+            "resume with the same precision, or start from its weights with resume_mode='weights_only' to switch"
+        )
+
+
+def _requested_mode(params: Any) -> str:
+    policy = getattr(params, "precision", None)
+    if policy is not None:
+        return str(policy.mode)
+    return "fp16" if getattr(params, "mixed_precision", False) else "fp32"
+
+
+def _inference_precision(model: Any) -> ResolvedPrecision:
+    """The precision evaluation and prediction run in (FEAT-028): an
+    explicit policy's; full precision for the legacy ``mixed_precision``
+    flag (a training-only setting) and for stand-ins borrowing these
+    methods."""
+    resolved = model.resolved_precision if isinstance(model, NNModel) else None
+    if resolved is not None and resolved.source == "policy":
+        return resolved
+    return ResolvedPrecision(requested="fp32", effective="fp32", device_type=torch.device(model.device).type)
+
+
+def _check_finite_gradients(module: torch.nn.Module) -> None:
+    """Raise before a scaler-free reduced-precision update applies a
+    non-finite gradient (FEAT-028)."""
+    for name, parameter in module.named_parameters():
+        if parameter.grad is not None and not bool(torch.isfinite(parameter.grad).all()):
+            raise FloatingPointError(
+                f"non-finite gradient for {name!r} in a reduced-precision update; nothing was stepped. Check the "
+                "learning rate and loss scale, or train in fp32"
+            )
 
 
 def _scale_gradients(module: torch.nn.Module, factor: float) -> None:
@@ -1067,12 +1121,22 @@ def _objective_engine(
     clip_norms: Mapping[str, Optional[float]],
     scaler: Optional[torch.amp.GradScaler],
     device: torch.device,
+    precision: Optional[ResolvedPrecision] = None,
 ) -> Any:
-    """The update engine for an objective run: mixed precision (autocast
-    around the objective, the scaler for the update) only where the
-    supervised path uses it — a CUDA device with a scaler."""
+    """The update engine for an objective run: the run's precision
+    (FEAT-028) — autocast around the objective, the scaler for an fp16
+    update; without one, mixed precision only where the supervised path
+    uses it (a CUDA device with a scaler)."""
     from .._update_engine import UpdateEngine
 
+    if precision is not None:
+        return UpdateEngine(
+            optimizers=optimizers,
+            scaler=scaler if precision.uses_scaler else None,
+            clip_norms=clip_norms,
+            nonfinite=getattr(objective, "nonfinite", "fail"),
+            autocast=precision.autocast if precision.reduced else None,
+        )
     amp = scaler is not None and device.type == "cuda"
     return UpdateEngine(
         optimizers=optimizers,
@@ -1091,7 +1155,10 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
       - gradient accumulation (zero_grad at cycle start, step at cycle
         end). A trailing partial cycle is stepped at the epoch boundary;
         gradients use each loss's effective normalization weight.
-      - AMP (unscales before grad clip; scaler.step + update at cycle end)
+      - the run's precision (FEAT-028): autocast around the forward only,
+        the backward outside it; fp16 unscales before grad clip and steps
+        through the scaler, scaler-free bf16 checks its gradients are
+        finite before clipping
       - grad clipping by L2 norm
       - the NaN/Inf guard (raises FloatingPointError on divergent loss)
       - extra_metrics injection on the returned NNEvaluationDataPoint
@@ -1117,22 +1184,33 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         model.net.zero_grad()
         _reset_accumulation(accumulation_state)
 
-    # Mixed precision is opt-in via NNModelParams.mixed_precision; only
-    # takes effect on CUDA where autocast + GradScaler are meaningful.
-    scaler = ctx.scaler
-    amp_enabled = scaler is not None and model.device.type == "cuda"
+    # FEAT-028: the run's resolved precision decides autocast and the
+    # scaler. A context without one keeps the legacy rule: mixed precision
+    # only for a scaler on CUDA.
+    precision = ctx.precision
+    if precision is None:
+        legacy_amp = ctx.scaler is not None and model.device.type == "cuda"
+        scaler = ctx.scaler if legacy_amp else None
+        reduced = legacy_amp
+        autocast: contextlib.AbstractContextManager[Any] = (
+            torch.amp.autocast(device_type="cuda") if legacy_amp else contextlib.nullcontext()
+        )
+    else:
+        scaler = ctx.scaler if precision.uses_scaler else None
+        reduced = precision.reduced
+        autocast = precision.autocast()
 
     adapter = getattr(model, "task_adapter", None)
-    if amp_enabled:
-        assert scaler is not None
-        with torch.amp.autocast(device_type="cuda"):
-            terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
-        loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+    with autocast:  # the forward and loss only; the backward runs outside autocast
+        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
+    loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+    if scaler is not None:
         scaler.scale(terms.backward_loss).backward()
     else:
-        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
-        loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
         terms.backward_loss.backward()
+    if reduced and precision is not None:
+        # Records read the outputs in full precision (bf16 has no NumPy dtype).
+        terms = replace(terms, output=precision.output(terms.output.detach()))
 
     if ctx.epoch_summary is not None:
         _observe_epoch_summary(ctx.epoch_summary, model, terms, adapter)
@@ -1143,8 +1221,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         model.net.zero_grad()
         _reset_accumulation(accumulation_state)
     elif should_step:
-        if amp_enabled:
-            assert scaler is not None
+        if scaler is not None:
             scaler.unscale_(ctx.optimizer)
         if (
             accumulation_state is not None
@@ -1154,12 +1231,16 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             _scale_gradients(model.net, 1.0 / accumulation_state.normalization_weight)
         elif accumulation_state is None and cycle_size < accumulate_grad_batches:
             _scale_gradients(model.net, accumulate_grad_batches / cycle_size)
+        if reduced and scaler is None:
+            # No scaler skips a non-finite reduced-precision update (bf16),
+            # so the step checks its gradients itself: nothing non-finite is
+            # ever applied.
+            _check_finite_gradients(model.net)
         if ctx.grad_clip_norm is not None:
             # Under AMP the gradients were unscaled above, so the clip
             # threshold applies in the original gradient space.
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
-        if amp_enabled:
-            assert scaler is not None
+        if scaler is not None:
             scaler.step(ctx.optimizer)
             scaler.update()
         else:
@@ -1287,6 +1368,9 @@ class NNModel(_HubMixinBase):
         self._topology_transforms: tuple[NNCheckpointTransform, ...] = ()
 
         self.device = self.params.device()
+        # FEAT-028: the precision policy is resolved against this device
+        # before anything is built, so an unsupported request fails here.
+        self._precision = resolve_precision(self.params, self.device)
         self.loss_fn = self.params.loss().to(self.device)
         net = self.params.net
         if module is not None:
@@ -1314,6 +1398,24 @@ class NNModel(_HubMixinBase):
         task record the default step writes."""
         # getattr: subclasses and stand-ins that bypass __init__ are legacy models.
         return getattr(self, "_task_adapter", None)
+
+    @property
+    def resolved_precision(self) -> ResolvedPrecision:
+        """The precision this model runs in on its current device
+        (FEAT-028): ``params.precision`` resolved against ``device`` — re-
+        resolved, never read from saved metadata, whenever the device or the
+        policy changes (a loaded model resolves on its destination device)."""
+        cached = getattr(self, "_precision", None)
+        device_type = torch.device(self.device).type
+        if (
+            cached is None
+            or cached.device_type != device_type
+            or (cached.source == "policy") != (getattr(self.params, "precision", None) is not None)
+            or cached.requested != _requested_mode(self.params)
+        ):
+            cached = resolve_precision(self.params, self.device)
+            self._precision = cached
+        return cached
 
     def _check_task_preflight(self) -> None:
         """Reject a runtime ``loss_fn`` the declared task cannot score —
@@ -1500,6 +1602,7 @@ class NNModel(_HubMixinBase):
         *,
         module: Optional[torch.nn.Module] = None,
         batch_adapter: Optional[BatchAdapter] = None,
+        precision: Optional[PrecisionPolicy] = None,
         **model_kwargs: Any,
     ) -> Self:
         """Rebuild a model, replay topology transforms, and load its weights.
@@ -1516,8 +1619,16 @@ class NNModel(_HubMixinBase):
         before any weight is loaded. A runtime-only module
         (``reconstructible=False``) needs ``module=`` — a module of the same
         topology, into which the weights are loaded.
+
+        FEAT-028: the precision policy is re-resolved on the destination
+        device (the constructor resolves it) — never read from the
+        checkpoint's recorded precision — so a policy that device cannot
+        run fails here; ``precision=`` replaces the saved policy (and the
+        legacy ``mixed_precision`` flag) for this model.
         """
         model_params = checkpoint.model_params if device is None else replace(checkpoint.model_params, device=device)
+        if precision is not None:
+            model_params = replace(model_params, precision=precision, mixed_precision=False)
         net = model_params.net
         if batch_adapter is not None:
             # Only passed when set: subclasses keep their own constructors.
@@ -1662,6 +1773,7 @@ class NNModel(_HubMixinBase):
         token=None,
         map_location: str = "cpu",
         strict: bool = True,
+        precision: Optional[PrecisionPolicy] = None,
         **model_kwargs,
     ) -> NNModel:
         """Rebuild an NNModel from a save_pretrained directory or Hub repo.
@@ -1681,6 +1793,10 @@ class NNModel(_HubMixinBase):
         a corrupted or hand-edited artifact. Unrecognized ``model_kwargs``
         raise instead of being silently dropped — NNModel reconstructs
         entirely from ``config.json``.
+
+        FEAT-028: the saved precision policy is re-resolved on the
+        ``map_location`` device, never taken from saved metadata;
+        ``precision=`` replaces it (and the legacy ``mixed_precision`` flag).
         """
         # The mixin inspects NNModel.__init__'s signature and auto-injects
         # matching config.json entries ("net_params"/"params") as kwargs.
@@ -1753,6 +1869,8 @@ class NNModel(_HubMixinBase):
         if torch_load_device.index is not None:
             raise ValueError(f"indexed Hub map_location is unsupported: {map_location!r}")
         params = replace(params, device=load_device)
+        if precision is not None:
+            params = replace(params, precision=precision, mixed_precision=False)
 
         transforms = tuple(NNCheckpointTransform.from_state(item) for item in config.get("transforms", []))
         reconstruction_kwargs = cls._hub_reconstruction_kwargs(config, os.path.dirname(config_path))
@@ -1883,6 +2001,9 @@ class NNModel(_HubMixinBase):
         if params is None:
             raise ValueError("train params must be non-None")
         self._check_task_preflight()
+        # FEAT-028: the precision policy is resolved once, before any run is
+        # reserved; the loop, validation and prediction reuse it.
+        precision = self._precision_for_training(train_step_fn)
         _monitoring_preflight(
             self,
             metrics=params.metrics,
@@ -1931,8 +2052,24 @@ class NNModel(_HubMixinBase):
                     eval_step_fn=eval_step_fn,
                     components=components,
                     objective=objective,
+                    precision=precision,
                 ),
             )
+
+    def _precision_for_training(self, train_step_fn: Optional[TrainStepFn]) -> ResolvedPrecision:
+        """Resolve the run's precision (FEAT-028) — afresh, so the record
+        carries TF32 as it is now — and refuse a step function that cannot
+        apply a reduced precision (the built-in imperative paradigm steps,
+        which run in full precision) before any work is done."""
+        precision = resolve_precision(self.params, self.device)
+        self._precision = precision
+        if precision.reduced and getattr(train_step_fn, _FULL_PRECISION_ONLY, False):
+            name = getattr(train_step_fn, "__qualname__", type(train_step_fn).__name__)
+            raise PrecisionUnsupportedError(
+                f"{name} runs in full precision only (an imperative paradigm step built on finalize_step does not "
+                f"apply the {precision.effective} policy); train it in fp32, or express the loss as an objective"
+            )
+        return precision
 
     def _train_impl(
         self,
@@ -1944,6 +2081,7 @@ class NNModel(_HubMixinBase):
         eval_step_fn: Optional[EvalStepFn] = None,
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
+        precision: Optional[ResolvedPrecision] = None,
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -2022,6 +2160,8 @@ class NNModel(_HubMixinBase):
         if stateful_resume:
             _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
         scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
+        if precision is None:
+            precision = self.resolved_precision
         scaler = self._build_grad_scaler()
         # FEAT-004: an objective's updates belong to the shared engine; its
         # committed-update counters are component state (nnx.update_engine),
@@ -2034,6 +2174,7 @@ class NNModel(_HubMixinBase):
                 clip_norms={"default": params.optim.grad_clip_norm},
                 scaler=scaler,
                 device=self.device,
+                precision=precision,
             )
             registry.register(engine)
         start_epoch = 0
@@ -2071,6 +2212,7 @@ class NNModel(_HubMixinBase):
                 expected_topology = training_state.get("optimizer_topology")
                 if expected_topology is not None and expected_topology != resume_optimizer_topology:
                     raise ValueError("resume optimizer parameter topology does not match the checkpoint")
+                _check_resume_precision(training_state, precision)
                 if (training_state.get("scaler") is None) != (scaler is None):
                     raise ValueError(
                         "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
@@ -2188,7 +2330,7 @@ class NNModel(_HubMixinBase):
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
-            run = run.with_resume_status(resume_status)
+            run = run.with_resume_status(resume_status).with_precision(precision)
             ctx.run = run
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
@@ -2213,6 +2355,7 @@ class NNModel(_HubMixinBase):
                         extra_metrics=params.extra_metrics,
                         accumulate_grad_batches=params.optim.accumulate_grad_batches,
                         batch_idx=idx_batch,
+                        precision=precision,
                         epoch_idx=idx_epoch,
                         is_last_batch=is_last_batch,
                         accumulation_state=accumulation_state,
@@ -2308,6 +2451,7 @@ class NNModel(_HubMixinBase):
                         optimizer=optimizer,
                         scheduler=scheduler,
                         scaler=scaler,
+                        precision=precision.record(),
                         completed_epoch=idx_epoch,
                         train_loader=train_loader,
                         optimizer_factory=resume_optimizer_factory,
@@ -2371,6 +2515,7 @@ class NNModel(_HubMixinBase):
                 optimizer_state=optimizer.state_dict(),
                 scheduler_state=scheduler.state_dict(),
                 scaler_state=scaler.state_dict() if scaler is not None else None,
+                precision=precision.record(),
                 rng_state=(pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader)),
                 completed_epoch=idps[-1].epoch_idx,
                 resume_net_state=pre_transform_net_state if final_transforms else None,
@@ -2432,10 +2577,13 @@ class NNModel(_HubMixinBase):
         n_samples = 0
         n_metric_samples = 0
 
+        precision = _inference_precision(self)
         try:
             with torch.no_grad():
                 for batch in loader:
-                    _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
+                    with precision.autocast():
+                        _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
+                    Y_hat_logits = precision.output(Y_hat_logits)  # scored in full precision
                     if named is not None:
                         named.update(Y, Y_hat_logits)
                     batch_n = int(Y.size(0))
@@ -2495,11 +2643,13 @@ class NNModel(_HubMixinBase):
         loss_normalization_weight = 0.0
         loss_uses_sum_reduction = False
         n_batches = 0
+        precision = _inference_precision(self)
         try:
             with torch.no_grad():
                 for batch in loader:
-                    _, Y, logits = self._fwd_outputs(batch)
-                    output, target, valid = adapter.prepare(logits, Y)
+                    with precision.autocast():
+                        _, Y, logits = self._fwd_outputs(batch)
+                    output, target, valid = adapter.prepare(precision.output(logits), Y)
                     accumulator.update(output, target, valid)
                     if named is not None:
                         named.update(target, output, valid)
@@ -2634,6 +2784,7 @@ class NNModel(_HubMixinBase):
         batches like a ``DataLoader``."""
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
+        precision = _inference_precision(self)
 
         try:
             if batches or isinstance(X, DataLoader):
@@ -2642,7 +2793,9 @@ class NNModel(_HubMixinBase):
                 offset = 0
                 with torch.no_grad():
                     for batch in X:
-                        logits = self._inference_forward(batch)[0].cpu().numpy()  # predict discards labels
+                        with precision.autocast():
+                            output = self._inference_forward(batch)[0]  # predict discards labels
+                        logits = precision.output(output).cpu().numpy()
                         ids: Optional[np.ndarray] = None
                         # NeighborLoader subgraphs: only the leading seed
                         # rows are this batch's nodes (see
@@ -2692,8 +2845,9 @@ class NNModel(_HubMixinBase):
                     X = (X,)
                 args_t, kwargs_t = tuple(_to_tensor(x) for x in X), {}
 
-            with torch.no_grad():
-                Y_hat_logits = self._net_forward(args_t, kwargs_t).cpu().numpy()
+            with torch.no_grad(), precision.autocast():
+                output = self._net_forward(args_t, kwargs_t)
+            Y_hat_logits = precision.output(output).cpu().numpy()
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
@@ -2853,17 +3007,17 @@ class NNModel(_HubMixinBase):
     def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:
         """The AMP loss scaler for this model, or ``None``.
 
-        Built only for ``mixed_precision=True`` on a CUDA device — CPU / MPS
-        runs never instantiate one. ``torch.amp.GradScaler(device)`` is the
-        PyTorch >= 2.3 factory; NNx's declared floor (``torch>=2.4``, the
-        oldest release the full test suite passes on) guarantees it exists,
-        so no legacy ``torch.cuda.amp`` fallback is needed (FIX-011). The
-        returned object is used through the standard ``scale`` /
-        ``unscale_`` / ``step`` / ``update`` / ``state_dict`` protocol.
+        Built only when the model's precision resolves to fp16 on its device
+        (FEAT-028): ``PrecisionPolicy("fp16")``, or the legacy
+        ``mixed_precision=True``, on CUDA — CPU / MPS runs and bf16 never
+        instantiate one. ``torch.amp.GradScaler(device)`` is the PyTorch >=
+        2.3 factory; NNx's declared floor (``torch>=2.4``, the oldest release
+        the full test suite passes on) guarantees it exists, so no legacy
+        ``torch.cuda.amp`` fallback is needed (FIX-011). The returned object
+        is used through the standard ``scale`` / ``unscale_`` / ``step`` /
+        ``update`` / ``state_dict`` protocol.
         """
-        if getattr(self.params, "mixed_precision", False) and self.device.type == "cuda":
-            return torch.amp.GradScaler("cuda")
-        return None
+        return resolve_precision(self.params, self.device).build_scaler()
 
     def _save_checkpoints(
         self,
@@ -2880,6 +3034,7 @@ class NNModel(_HubMixinBase):
         train_loader: Optional[Iterable[Any]] = None,
         optimizer_factory: Optional[dict[str, Any]] = None,
         components: Optional[dict[str, Any]] = None,
+        precision: Optional[dict[str, Any]] = None,
         optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
@@ -2902,7 +3057,9 @@ class NNModel(_HubMixinBase):
         optimizer_topology = _optimizer_topology(optimizer, self.net) if optimizer is not None else None
         # FEAT-005: a Trainer's named optimizers / schedulers and every
         # component travel in the same generation sidecar.
-        stateful_extras: dict[str, Any] = {"components": components}
+        # FEAT-028: the run's resolved precision record rides along, so a
+        # stateful resume can refuse a different one.
+        stateful_extras: dict[str, Any] = {"components": components, "precision": precision}
         if optimizers is not None:
             stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
 

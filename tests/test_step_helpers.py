@@ -287,3 +287,49 @@ def test_softened_kl_temperature_scaling():
 
     out = softened_kl(student, teacher, temperature=T)
     assert out.item() == pytest.approx(expected, rel=1e-5)
+
+
+# --- FEAT-028: imperative paradigm steps run in full precision ---------------
+
+
+def test_finalize_step_raises_on_a_reduced_precision_context():
+    from dataclasses import replace
+
+    from nnx import PrecisionPolicy
+
+    m, opt = _model_and_optim()
+    X = torch.randn(2, 4)
+    loss = F.cross_entropy(m.net(X), torch.zeros(2, dtype=torch.long))
+    ctx = replace(_ctx(m, opt), precision=PrecisionPolicy("bf16").resolve("cpu"))  # no scaler for bf16
+    with pytest.raises(ValueError, match="mixed precision"):
+        finalize_step(loss, ctx, paradigm="testparadigm")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: mixup_train_step_factory(alpha=0.2),
+        lambda: diffusion_train_step_factory(NoiseSchedulers.LINEAR(T=10)),
+    ],
+    ids=["mixup", "diffusion"],
+)
+def test_a_paradigm_step_refuses_a_reduced_policy_before_any_run(factory, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from nnx import PrecisionPolicy, PrecisionUnsupportedError
+
+    monkeypatch.chdir(tmp_path)
+    m, _ = _model_and_optim()
+    bf16 = NNModel(net_params=m.net_params, params=replace(m.params, precision=PrecisionPolicy("bf16")))
+    batches = [(torch.randn(4, 4), torch.zeros(4, dtype=torch.long))]
+    with pytest.raises(PrecisionUnsupportedError, match="runs in full precision only"):
+        bf16.train(
+            NNTrainParams(
+                n_epochs=1,
+                train_loader=batches,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.01, momentum=0.0, weight_decay=0.0),
+                scheduler=NNSchedulerParams(min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0),
+            ),
+            train_step_fn=factory(),
+        )
+    assert not (tmp_path / "runs").exists()  # refused before any partial work

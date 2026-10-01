@@ -15,11 +15,23 @@ training and evaluation, while ``predict().logits`` stays raw. The helper
 trains briefly, reloads BEST and checks the reported loss against an
 explicit log-softmax/NLL reference.
 
+``precision_workflow`` (FEAT-028) trains the same classifier under an
+explicit ``PrecisionPolicy``: ``"fp32"`` (the default, bounded and CPU-only)
+or ``"bf16"`` — gated: it runs only where :func:`nnx.precision_support`
+reports bf16 verified or supported on the device (CPU qualifies; on a CUDA
+host without bf16 support it is skipped). It prints the run's precision
+record (requested, effective, fallback reason, TF32) and checks that
+predictions keep their float32 schema.
+
 Run:
     python examples/01_synthetic_classification.py
+    python examples/01_synthetic_classification.py --precision bf16
 """
 
 from __future__ import annotations
+
+import argparse
+from typing import Optional
 
 import numpy as np
 import torch
@@ -42,8 +54,10 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    PrecisionPolicy,
     ProbabilitySpec,
     VisUtils,
+    precision_support,
     prediction_from_logits,
     set_seed,
 )
@@ -114,6 +128,43 @@ def native_nll_workflow() -> dict:
 
     summary = {"probe_loss": round(probe_loss, 6), "best_val_loss": round(reported, 6), "run_id": run.id}
     print(f"native-NLL workflow: {summary}")
+    return summary
+
+
+def precision_workflow(mode: str = "fp32", device: Devices = Devices.CPU) -> Optional[dict]:
+    """Bounded training under ``PrecisionPolicy(mode)`` (writes ``runs/``
+    under the current working directory; the smoke test runs it in a
+    temporary one). A reduced mode is gated on ``precision_support``: where
+    the device cannot run it, nothing is trained and ``None`` is returned."""
+    status = precision_support(str(device))[str(device)][mode]
+    if status not in ("verified", "supported"):
+        print(f"precision workflow: {mode} on {device} is {status}; skipped")
+        return None
+    set_seed(0)
+    train_loader, val_loader, X_val = _synthetic_loaders(n_train=64, n_val=32)
+    model = NNModel(
+        net_params=NNParams(input_dim=8, output_dim=3, hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=device, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy(mode)
+        ),
+    )
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            seed=0,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=3, cooldown=1, threshold=1e-3),
+        )
+    )
+    assert run.precision is not None and run.precision.effective == mode
+    result = model.predict(X_val)
+    assert result.logits.dtype == np.float32  # predictions keep their full-precision schema
+    assert all(p.dtype == torch.float32 for p in model.net.parameters())  # autocast only, never .half()
+    record = run.precision.record()
+    summary = {key: record[key] for key in ("requested", "effective", "fallback_reason", "tf32")}
+    print(f"precision workflow: {summary}")
     return summary
 
 
@@ -222,4 +273,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--precision", choices=["fp32", "bf16"], help="run the bounded precision workflow instead")
+    args = parser.parse_args()
+    if args.precision is None:
+        main()
+    else:
+        precision_workflow(args.precision)

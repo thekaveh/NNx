@@ -21,6 +21,7 @@ from filelock import FileLock
 
 from ..._metrics import _resolve_metric
 from ...components import ResumeStatus
+from ...precision import ResolvedPrecision
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
@@ -449,6 +450,26 @@ def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
         return None
 
 
+def _load_precision(metadata_path: str) -> Optional[ResolvedPrecision]:
+    """The resolved precision recorded in ``metadata.yaml`` (FEAT-028);
+    ``None`` for runs written before it or when unreadable — inspection
+    only, never needed to reload the run."""
+    if not os.path.isfile(metadata_path):
+        return None
+    try:
+        with open(metadata_path, encoding="utf-8") as f:
+            metadata = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    record = metadata.get("precision") if isinstance(metadata, dict) else None
+    if not isinstance(record, dict):
+        return None
+    try:
+        return ResolvedPrecision.from_record(record)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
     # Built-in nets only; ``None`` for a registered or runtime module
@@ -481,6 +502,10 @@ class NNRun:
     # runs/<id>/provenance.json and attempt.json. Opt-in and never part of
     # state() or the run id; None means absent — never "equal".
     provenance: Optional[ProvenanceRecord] = field(repr=False, compare=False, default=None)
+    # The precision the run trained in (FEAT-028): requested, effective,
+    # the fallback reason and TF32, separately. Runtime/provenance only —
+    # never part of state() or the run id; written to metadata.yaml.
+    precision: Optional[ResolvedPrecision] = field(repr=False, compare=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -699,6 +724,9 @@ class NNRun:
     def with_resume_status(self, value: Optional[ResumeStatus]) -> NNRun:
         return replace(self, resume_status=value)
 
+    def with_precision(self, value: Optional[ResolvedPrecision]) -> NNRun:
+        return replace(self, precision=value)
+
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
@@ -816,6 +844,8 @@ class NNRun:
         metadata = env_snapshot()
         if self.resume_status is not None:
             metadata["resume"] = self.resume_status.state()
+        if self.precision is not None:
+            metadata["precision"] = self.precision.record()
         _atomic_write_text(metadata_path, yaml.safe_dump(metadata, sort_keys=True))
 
         _atomic_write_text(
@@ -937,6 +967,7 @@ class NNRun:
                 salt=rep.get("salt"),
                 idps=idps,
                 resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
+                precision=_load_precision(os.path.join(run_path, "metadata.yaml")),
                 provenance=_load_provenance_tolerantly(id, root),
             )
         except KeyError as e:
