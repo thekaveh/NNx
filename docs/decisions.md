@@ -177,6 +177,10 @@ result.calls                                           # provider calls made
   prerequisite succeeded, and maps the answer explicitly into the follow-up
   `state`; it never feeds a sibling question. `Limits.max_depth` bounds
   nesting and `Limits.max_requests` the run's calls (`JobLimitExceeded`).
+- **Answers are checked.** A call's answers must hold one result list per
+  question, one result per input row, each a result of that question (its
+  digest): answers in the wrong order, short rows or a flat list are an
+  `InvalidDecisionResponse` failure, never filed under the wrong id.
 - **Fail-fast.** When a call raises, nothing more is scheduled. `JobFailed`
   carries `outcomes` (every outcome so far, in scheduling order),
   `completed` (the answered ones), `failed` (the questions of that call) and
@@ -191,8 +195,10 @@ result.calls                                           # provider calls made
   call (its methods need not be thread-safe); a running thread cannot be
   interrupted, so the run waits for it before returning, and a cancellation
   that arrives meanwhile is delivered once it is done. Setting the `cancel`
-  event stops scheduling and returns a `JobResult` with
-  `status="cancelled"` and no value. Cancelling the task cancels only the
+  event (an `asyncio.Event`; set at any point, even if cleared again) stops
+  scheduling — no continuation runs after it — and returns a `JobResult`
+  with `status="cancelled"` and no value. A cancellation the provider
+  raises itself is a provider failure, not a cancelled job. Cancelling the task cancels only the
   job's own tasks and re-raises. `Limits.timeout` raises `JobTimeout`; a
   request or depth limit lets the calls already in flight finish, then
   raises `JobLimitExceeded`. A request whose call began is reported with

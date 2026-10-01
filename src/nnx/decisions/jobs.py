@@ -37,6 +37,10 @@ such as :class:`~nnx.decisions.FixedHeadProvider`, has cap 1) bounded by
 cannot serve and a token cap the provider cannot enforce are rejected
 before any call.
 
+**Answers are checked.** Each call's answers must hold one result list per
+question, one result per input row, each a result of that question (its
+digest); anything else is an ``InvalidDecisionResponse`` failure.
+
 **Fail-fast.** A provider error stops scheduling: :class:`JobFailed` carries
 every outcome known so far (``outcomes``; the answered ones are
 ``completed``), the failing questions and the skipped ones; nothing
@@ -52,8 +56,9 @@ A provider with only synchronous methods is called in a worker thread,
 never alongside another call (its methods need not be thread-safe), and the
 run waits for a running thread before it returns — a cancellation that
 arrives meanwhile is delivered once the thread is done. Setting the
-``cancel`` event stops scheduling and returns a ``"cancelled"``
-:class:`JobResult`; cancelling the task cleans up the job's own tasks and
+``cancel`` event (an ``asyncio.Event``; set at any point, even if cleared
+again) stops scheduling — no continuation runs after it — and returns a
+``"cancelled"`` :class:`JobResult`; cancelling the task cleans up the job's own tasks and
 re-raises. A request whose call began is reported as ``sent`` — never as
 rolled back: whatever the provider did with it stays done.
 
@@ -74,12 +79,16 @@ from typing import Any, Optional, Union, cast
 
 from .schema import (
     Boolean,
+    BooleanResult,
     Choice,
+    ChoiceResult,
     DecisionError,
     DecisionResult,
     InvalidDecisionRequest,
     InvalidDecisionResponse,
+    ProviderFailure,
     Score,
+    ScoreResult,
     UnsupportedCapability,
 )
 
@@ -509,6 +518,7 @@ class _Runner:
         self.memo: dict[tuple[int, ...], Any] = {}  # path -> map value / Follow, computed once
         self.states: list[Any] = [state]  # group index -> state
         self.seen_ids: set[str] = set()
+        self.registered: dict[str, None] = {}  # question ids known so far, in order
         self.checked: set[tuple[str, int]] = set()
         self.started = time.monotonic()
         if callable(getattr(provider, "decide_many", None)):
@@ -536,6 +546,7 @@ class _Runner:
             if ask.id in self.seen_ids:
                 raise InvalidJob(f"duplicate question id {ask.id!r}", outcomes=self._ordered())
             self.seen_ids.add(ask.id)
+            self.registered[ask.id] = None
             self._check(ask, group)
 
     def _check(self, ask: _Ask, group: int) -> None:
@@ -606,7 +617,15 @@ class _Runner:
     def _round(self) -> tuple[Any, list[list[_Ready]]]:
         """The job's value (or pending) and this round's provider calls."""
         ready: list[_Ready] = []
-        value = self._evaluate(self.job, 0, 0, (), ready)
+        try:
+            value = self._evaluate(self.job, 0, 0, (), ready)
+        except JobError as error:  # questions already ready are reported, never sent
+            for item in ready:
+                self.order.setdefault(item.ask.id, None)
+                self.outcomes.setdefault(item.ask.id, QuestionOutcome(item.ask.id, "skipped"))
+            error.outcomes = self._ordered()
+            error.completed = {k: v for k, v in error.outcomes.items() if v.kind == "answered"}
+            raise
         if value is not _PENDING:
             return value, []
         groups: dict[int, list[_Ready]] = {}
@@ -667,10 +686,40 @@ class _Runner:
 
     @staticmethod
     def _answers(chunk: list[_Ready], answered: Any) -> list[Sequence[DecisionResult]]:
+        """The provider's answers, checked against the questions they claim
+        to answer: one result list per question, one result per input row,
+        each a result of that question (its digest)."""
         answers = list(answered)
         if len(answers) != len(chunk):
             raise InvalidDecisionResponse(f"the provider answered {len(answers)} of {len(chunk)} questions in one call")
-        return answers
+        try:
+            rows: Optional[int] = _modality(chunk[0].state)[1]
+        except UnsupportedCapability:  # a provider-specific input: its row count is the provider's to check
+            rows = None
+        checked = []
+        for item, results in zip(chunk, answers, strict=True):
+            if isinstance(results, (str, bytes)) or not isinstance(results, Sequence):
+                raise InvalidDecisionResponse(
+                    f"question {item.ask.id!r}: expected a sequence of results (one per input row), got "
+                    f"{type(results).__name__}"
+                )
+            results = tuple(results)
+            if rows is not None and len(results) != rows:
+                raise InvalidDecisionResponse(f"question {item.ask.id!r}: {len(results)} results for {rows} input rows")
+            digest = item.ask.question.digest()
+            wrong = [
+                i
+                for i, result in enumerate(results)
+                if not isinstance(result, (ChoiceResult, BooleanResult, ScoreResult))
+                or result.question_digest != digest
+            ]
+            if wrong:
+                raise InvalidDecisionResponse(
+                    f"question {item.ask.id!r}: results {wrong} do not answer it (another question's digest, or "
+                    "not a decision result)"
+                )
+            checked.append(results)
+        return checked
 
     def _call(self, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
         questions = [item.ask.question for item in chunk]
@@ -758,9 +807,9 @@ class _Runner:
                 self.calls += 1
                 try:
                     answered = self._call(chunk)
+                    self._record(chunk, answered)
                 except Exception as error:  # fail-fast: nothing more is scheduled
                     raise self._fail([(chunk, error)], chunks[index + 1 :]) from error
-                self._record(chunk, answered)
 
     # ---------- async ----------
 
@@ -768,8 +817,14 @@ class _Runner:
         threads: list[asyncio.Future[Any]] = []  # worker threads of synchronous calls
         in_flight: dict[asyncio.Future[Any], tuple[int, list[_Ready], bool]] = {}  # task -> (launch, chunk, sync)
         started: set[int] = set()  # launches whose provider call began: those requests were sent
+        if cancel is not None and not isinstance(cancel, asyncio.Event):
+            raise InvalidJob(f"cancel must be an asyncio.Event, got {type(cancel).__name__}")
+        # Set at any point (even if cleared again), the event cancels the run.
         stop: Optional[asyncio.Future[Any]] = None if cancel is None else asyncio.ensure_future(cancel.wait())
         launches = 0
+
+        def cancelled() -> bool:
+            return stop is not None and (stop.done() or cast(asyncio.Event, cancel).is_set())
 
         async def call(launch: int, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
             started.add(launch)
@@ -784,13 +839,19 @@ class _Runner:
 
         try:
             while True:
+                if cancelled():  # before any continuation runs; known questions were never sent
+                    for question_id in self.registered:
+                        if question_id not in self.outcomes:
+                            self.order.setdefault(question_id, None)
+                            self.outcomes[question_id] = QuestionOutcome(question_id, "cancelled", sent=False)
+                    return JobResult(None, self._ordered(), self.calls, status="cancelled")
                 value, chunks = self._round()
                 if not chunks:
                     return JobResult(value, self._ordered(), self.calls)
                 queue = list(chunks)
                 stopping: Optional[tuple[type[JobError], str]] = None
                 while queue or in_flight:
-                    if cancel is not None and cancel.is_set():
+                    if cancelled():
                         self._mark(queue, "cancelled", sent=False)
                         abandon()
                         return JobResult(None, self._ordered(), self.calls, status="cancelled")
@@ -812,8 +873,6 @@ class _Runner:
                     if stopping is not None and not in_flight:
                         self._mark(queue, "skipped", sent=False)
                         raise stopping[0](stopping[1], outcomes=self._ordered())
-                    if stop is not None and stop.done():  # the event was set and cleared again
-                        stop = asyncio.ensure_future(cast(asyncio.Event, cancel).wait())
                     waiters: list[asyncio.Future[Any]] = [*in_flight, *([stop] if stop is not None else [])]
                     done, _ = await asyncio.wait(
                         waiters, timeout=self._remaining(), return_when=asyncio.FIRST_COMPLETED
@@ -829,12 +888,13 @@ class _Runner:
                     failures: list[tuple[list[_Ready], BaseException]] = []
                     for _, task in sorted((in_flight[t][0], t) for t in done if t in in_flight):
                         _, chunk, _ = in_flight.pop(task)
+                        if task.cancelled():  # the job cancels nothing before this point: the provider did
+                            failures.append((chunk, ProviderFailure("the provider's call was cancelled")))
+                            continue
                         try:
-                            answered = task.result()
+                            self._record(chunk, task.result())
                         except Exception as error:  # recorded after every success of this tick
                             failures.append((chunk, error))
-                            continue
-                        self._record(chunk, answered)
                     if failures:  # fail-fast: nothing more is scheduled
                         abandon()
                         raise self._fail(failures, queue) from failures[0][1]
