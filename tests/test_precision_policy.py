@@ -312,3 +312,94 @@ def test_a_run_resolves_its_policy_once_and_reads_metadata_once(monkeypatch):
     )
     NNRun.load(run.id)
     assert sum(name.endswith("metadata.yaml") for name in loads) == 1
+
+
+# --- review round 2 ----------------------------------------------------------------------------------------
+
+
+def test_bf16_trains_a_model_with_sparse_gradients():
+    class SparseBag(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed = torch.nn.Embedding(10, 8, sparse=True)
+            self.head = torch.nn.Linear(8, 2)
+
+        def forward(self, tokens):
+            return self.head(self.embed(tokens).mean(dim=1))
+
+    generator = torch.Generator().manual_seed(2)
+    batches = [
+        (torch.randint(0, 10, (4, 3), generator=generator), torch.randint(0, 2, (4,), generator=generator))
+        for _ in range(3)
+    ]
+    model = NNModel(
+        module=SparseBag(),
+        params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16")),
+    )
+    run = model.train(_train_params(train_loader=batches))
+    assert run.precision is not None and run.precision.effective == "bf16"
+
+
+def _step_params():
+    from nnx import NNTrainerParams
+
+    return NNTrainerParams(
+        n_epochs=1,
+        train_loader=_batches(2),
+        optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0)},
+        save_phase_checkpoints=False,
+    )
+
+
+def _silent_step(ctx):
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    return NNEvaluationDataPoint(loss=0.0)
+
+
+def test_a_trainer_run_without_a_policy_claims_only_what_it_applied():
+    from nnx import Trainer
+
+    run = Trainer(NNModel(net_params=_NET, params=_params())).train(_step_params(), trainer_step_fn=_silent_step)
+    assert run.precision is not None
+    assert run.precision.record()["covers"] == ["evaluate()", "predict() / predict_proba()"]
+
+
+def test_a_trainer_run_says_it_never_applies_the_legacy_flag():
+    from nnx import Trainer
+
+    model = NNModel(net_params=_NET, params=_params(mixed_precision=True))
+    run = Trainer(model).train(_step_params(), trainer_step_fn=_silent_step)
+    assert run.precision is not None and run.precision.record()["covers"] == []
+    assert run.precision.fallback_reason is not None and "never applies" in run.precision.fallback_reason
+
+
+def test_a_failed_resolution_leaves_the_training_modes_alone():
+    from dataclasses import replace
+
+    model = NNModel(net_params=_NET, params=_params(precision=PrecisionPolicy("bf16")))
+    model.net.train()
+    model.params = replace(model.params, precision=PrecisionPolicy("fp16"))
+    for call in (
+        lambda: model.predict(torch.randn(2, 4)),
+        lambda: model.evaluate([(torch.randn(2, 4), torch.zeros(2, dtype=torch.long))]),
+    ):
+        with pytest.raises(PrecisionUnsupportedError):
+            call()
+        assert model.net.training
+
+
+def test_inference_without_a_policy_does_not_read_tf32(monkeypatch):
+    class CountingBackend:
+        reads = 0
+
+        @property
+        def allow_tf32(self):
+            CountingBackend.reads += 1
+            return False
+
+    model = NNModel(net_params=_NET, params=_params())
+    monkeypatch.setattr(torch.backends.cuda, "matmul", CountingBackend())
+    model.predict(torch.randn(2, 4))
+    model.evaluate([(torch.randn(2, 4), torch.zeros(2, dtype=torch.long))])
+    assert CountingBackend.reads == 0

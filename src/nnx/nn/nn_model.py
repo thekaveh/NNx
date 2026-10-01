@@ -19,6 +19,7 @@ from tqdm import tqdm
 from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
+from .._update_engine import gradients_finite
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
     BatchAdapter,
@@ -703,20 +704,16 @@ def _inference_precision(model: Any) -> ResolvedPrecision:
     resolved = model.resolved_precision if isinstance(model, NNModel) else None
     if resolved is not None and resolved.source == "policy":
         return resolved
-    return ResolvedPrecision(requested="fp32", effective="fp32", device_type=torch.device(model.device).type)
+    # Full precision needs no record, so TF32 is not read on this hot path.
+    return ResolvedPrecision(requested="fp32", effective="fp32", device_type=torch.device(model.device).type, tf32={})
 
 
 def _check_finite_gradients(module: torch.nn.Module) -> None:
     """Raise before a scaler-free reduced-precision update applies a
     non-finite gradient (FEAT-028) — one host sync for the whole model."""
-    from .._update_engine import gradients_finite
-
     if gradients_finite(module.parameters()):
         return
-    name = next(
-        (n for n, p in module.named_parameters() if p.grad is not None and not bool(torch.isfinite(p.grad).all())),
-        "?",
-    )
+    name = next((n for n, p in module.named_parameters() if p.grad is not None and not gradients_finite([p])), "?")
     raise FloatingPointError(
         f"non-finite gradient for {name!r} in a reduced-precision update; nothing was stepped. Check the learning "
         "rate and loss scale, or train in fp32"
@@ -2068,16 +2065,24 @@ class NNModel(_HubMixinBase):
         carries TF32 as it is now — and refuse a step function that cannot
         apply a reduced precision (the built-in imperative paradigm steps,
         which run in full precision) before any work is done."""
-        precision = resolve_precision(self.params, self.device)
-        if precision.source != "legacy":
-            precision = precision.scoped((_PRECISION_TRAIN, _PRECISION_EVALUATE, _PRECISION_PREDICT))
-        self._precision = (_precision_key(self.params, self.device), precision)
+        precision = self._resolve_run_precision((_PRECISION_TRAIN, _PRECISION_EVALUATE, _PRECISION_PREDICT))
         if precision.reduced and getattr(train_step_fn, _FULL_PRECISION_ONLY, False):
             name = getattr(train_step_fn, "__qualname__", type(train_step_fn).__name__)
             raise PrecisionUnsupportedError(
                 f"{name} runs in full precision only (an imperative paradigm step built on finalize_step does not "
                 f"apply the {precision.effective} policy); train it in fp32, or express the loss as an objective"
             )
+        return precision
+
+    def _resolve_run_precision(self, covers: tuple[str, ...]) -> ResolvedPrecision:
+        """Resolve the policy afresh for a run (TF32 as it is now), scoped to
+        the surfaces the run applies it to — the legacy flag keeps its
+        training-only scope — and cache it for evaluation and prediction
+        (shared by ``NNModel.train`` and ``Trainer.train``)."""
+        precision = resolve_precision(self.params, self.device)
+        if precision.source != "legacy":
+            precision = precision.scoped(covers)
+        self._precision = (_precision_key(self.params, self.device), precision)
         return precision
 
     def _train_impl(
@@ -2575,6 +2580,7 @@ class NNModel(_HubMixinBase):
         # in `.eval()` mode after evaluate(); BatchNorm / Dropout layers
         # would behave incorrectly on the next batch unless the caller
         # remembered to call `self.net.train()` themselves.
+        precision = _inference_precision(self)  # before eval(): a failure leaves the modes alone
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
 
@@ -2586,7 +2592,6 @@ class NNModel(_HubMixinBase):
         n_samples = 0
         n_metric_samples = 0
 
-        precision = _inference_precision(self)
         try:
             with torch.no_grad():
                 for batch in loader:
@@ -2645,6 +2650,7 @@ class NNModel(_HubMixinBase):
         an ``"empty"`` record (no loss, no metrics) instead of raising."""
         adapter = self.task_adapter
         assert adapter is not None
+        precision = _inference_precision(self)  # before eval(): a failure leaves the modes alone
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
         accumulator = adapter.accumulator(keep_arrays=bool(extra_metrics))
@@ -2652,7 +2658,6 @@ class NNModel(_HubMixinBase):
         loss_normalization_weight = 0.0
         loss_uses_sum_reduction = False
         n_batches = 0
-        precision = _inference_precision(self)
         try:
             with torch.no_grad():
                 for batch in loader:
@@ -2791,9 +2796,9 @@ class NNModel(_HubMixinBase):
         first loader batch's logits, so a caller can reject them before the
         rest of the loader is run. ``batches=True`` treats any iterable of
         batches like a ``DataLoader``."""
+        precision = _inference_precision(self)  # before eval(): a failure leaves the modes alone
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
-        precision = _inference_precision(self)
 
         try:
             if batches or isinstance(X, DataLoader):

@@ -333,3 +333,31 @@ def test_a_paradigm_step_refuses_a_reduced_policy_before_any_run(factory, tmp_pa
             train_step_fn=factory(),
         )
     assert not (tmp_path / "runs").exists()  # refused before any partial work
+
+
+def test_a_wraps_wrapper_of_a_paradigm_step_keeps_the_refusal(tmp_path, monkeypatch):
+    import functools
+    from dataclasses import replace
+
+    from nnx import PrecisionPolicy, PrecisionUnsupportedError
+
+    monkeypatch.chdir(tmp_path)
+    step = mixup_train_step_factory(alpha=0.2)
+
+    @functools.wraps(step)
+    def logged(ctx):
+        return step(ctx)
+
+    m, _ = _model_and_optim()
+    bf16 = NNModel(net_params=m.net_params, params=replace(m.params, precision=PrecisionPolicy("bf16")))
+    with pytest.raises(PrecisionUnsupportedError, match="runs in full precision only"):
+        bf16.train(
+            NNTrainParams(
+                n_epochs=1,
+                train_loader=[(torch.randn(4, 4), torch.zeros(4, dtype=torch.long))],
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.01, momentum=0.0, weight_decay=0.0),
+                scheduler=NNSchedulerParams(min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0),
+            ),
+            train_step_fn=logged,
+        )
+    assert not (tmp_path / "runs").exists()

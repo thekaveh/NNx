@@ -334,10 +334,17 @@ class UpdateEngine:
 
 
 def gradients_finite(params: Iterable[torch.Tensor]) -> bool:
-    """Whether every gradient is finite — reduced on device, one host sync
-    for the whole set (shared by the engine and the default step)."""
-    flags = [torch.isfinite(param.grad).all() for param in params if param.grad is not None]
-    return not flags or bool(torch.stack([flag.to(flags[0].device) for flag in flags]).all())
+    """Whether every gradient is finite — reduced on each device, one host
+    sync per device (shared by the engine and the default step). A sparse
+    gradient is judged by its stored values."""
+    by_device: dict[torch.device, list[torch.Tensor]] = {}
+    for param in params:
+        grad = param.grad
+        if grad is None:
+            continue
+        values = grad.coalesce().values() if grad.is_sparse else grad
+        by_device.setdefault(values.device, []).append(torch.isfinite(values).all())
+    return all(bool(torch.stack(flags).all()) for flags in by_device.values())
 
 
 def _is_count(value: Any) -> bool:

@@ -122,7 +122,10 @@ resumed = NNModel(net_params=net_params, params=bf16).train(
 policy on the destination device — never from saved metadata — and take
 `precision=` to replace it (say, a CUDA FP16 model loaded on a CPU). The
 built-in imperative paradigm steps (`finalize_step`) run in full precision
-and refuse a reduced policy before any work is done; a custom
+and refuse a reduced policy before any work is done (a wrapper keeps that
+refusal when it is written with `functools.wraps`, which carries the
+marker, or marked with `nnx.precision.full_precision_only`; otherwise
+`finalize_step` refuses at the first step); a custom
 `train_step_fn` applies `ctx.precision.autocast()` and `ctx.scaler` itself.
 In `Trainer`, an objective runs in the policy, while step functions (which
 own every update) refuse a reduced one.

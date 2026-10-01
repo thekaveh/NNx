@@ -71,7 +71,6 @@ from ..nn.nn_model import (
     _objective_microbatch,
     _optimizer_topology,
     _plan_component_restore,
-    _precision_key,
     _restore_weights_only,
     _rollback_resume,
     _step_monitored_plateau,
@@ -89,7 +88,6 @@ from ..precision import (
     TRAINER_OBJECTIVE,
     PrecisionUnsupportedError,
     ResolvedPrecision,
-    resolve_precision,
 )
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
@@ -153,27 +151,26 @@ def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) ->
     objective, which the shared engine runs; step functions own every
     update in full precision, so they refuse a reduced policy. The legacy
     ``mixed_precision`` flag keeps its meaning here: never applied."""
-    resolved = resolve_precision(model.params, model.device)
-    model._precision = (_precision_key(model.params, model.device), resolved)
-    if resolved.source == "policy":
+    trained = (TRAINER_OBJECTIVE,) if objective is not None else ()
+    resolved = model._resolve_run_precision((*trained, EVALUATE, PREDICT))
+    if resolved.source != "legacy":
         if resolved.reduced and objective is None:
             raise PrecisionUnsupportedError(
                 f"Trainer step functions run in full precision (they own every optimizer update), so they cannot "
                 f"apply the {resolved.effective} policy; pass objective= to train in it, or set precision fp32"
             )
-        trained = (TRAINER_OBJECTIVE,) if objective is not None else ()
-        return resolved.scoped((*trained, EVALUATE, PREDICT))
+        return resolved
     if objective is not None:
         _warn_full_precision_objective(model)
-    if resolved.requested == "fp32":
-        return resolved
     return ResolvedPrecision(
         requested=resolved.requested,
         effective="fp32",
         device_type=resolved.device_type,
         source="legacy",
-        fallback_reason=resolved.fallback_reason
-        or "Trainer.train does not apply mixed_precision=True (NNModel.train does); set NNModelParams.precision",
+        fallback_reason=(
+            "Trainer.train never applies mixed_precision=True, on any device (NNModel.train applies it on CUDA); "
+            "set NNModelParams.precision"
+        ),
         covers=(),
     )
 
