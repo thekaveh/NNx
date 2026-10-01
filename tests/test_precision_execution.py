@@ -569,3 +569,63 @@ def test_a_refused_trainer_step_function_leaves_the_global_rng_untouched():
     with pytest.raises(PrecisionUnsupportedError):
         trainer.train(params, trainer_step_fn=step)
     assert torch.equal(torch.get_rng_state(), before)  # refused before set_seed
+
+
+# --- review round 6 ------------------------------------------------------------------------------------------
+
+
+def test_an_fp16_step_without_a_scaler_is_refused_before_the_forward():
+    model = _model()
+    dtypes = _ForwardDtypes(model.net)
+    before = copy.deepcopy(model.net.state_dict())
+    fp16 = ResolvedPrecision(requested="fp16", effective="fp16", device_type="cpu", source="policy")
+    ctx = TrainStepContext(
+        model=model,
+        batch=_batches(1)[0],
+        optimizer=torch.optim.SGD(model.net.parameters(), lr=0.1),
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+        precision=fp16,
+    )
+    with pytest.raises(ValueError, match="fp16 trains through a GradScaler"):
+        default_train_step(ctx)
+    assert dtypes.seen == []
+    assert all(torch.equal(value, model.net.state_dict()[key]) for key, value in before.items())
+
+
+def test_the_record_claims_training_only_where_nnx_applies_the_policy():
+    from nnx.precision import EVALUATE, PREDICT, TRAIN
+
+    def custom_step(ctx):
+        return default_train_step(ctx)  # it may apply ctx.precision, but NNx cannot vouch for it
+
+    custom = _model(PrecisionPolicy("bf16")).train(_train_params(n_epochs=1), train_step_fn=custom_step)
+    assert custom.precision is not None and custom.precision.covers == (EVALUATE, PREDICT)
+    default = _model(PrecisionPolicy("bf16")).train(_train_params(n_epochs=1))
+    assert default.precision is not None and default.precision.covers == (TRAIN, EVALUATE, PREDICT)
+
+
+@pytest.mark.parametrize(("student_mode", "teacher_mode"), [("bf16", None), (None, "bf16")])
+def test_a_kd_teacher_runs_in_its_own_precision(student_mode, teacher_mode):
+    student = _model(PrecisionPolicy(student_mode) if student_mode else None)
+    teacher = _model(PrecisionPolicy(teacher_mode) if teacher_mode else None, seed=3)
+    teacher_dtypes = _ForwardDtypes(teacher.net)
+    student.train(_train_params(n_epochs=1, train_loader=_batches(2)), objective=kd_objective(teacher))
+    expected = (torch.bfloat16, True) if teacher_mode == "bf16" else (torch.float32, False)
+    assert teacher_dtypes.seen and set(teacher_dtypes.seen) == {expected}
+
+
+def test_a_cuda_ordinal_this_host_lacks_is_unsupported(monkeypatch):
+    from nnx import precision as precision_module
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    resolved = PrecisionPolicy("bf16", fallback="fp32").resolve("cuda:3")
+    assert resolved.effective == "fp32" and "cuda:3 does not exist" in str(resolved.fallback_reason)
+    with pytest.raises(PrecisionUnsupportedError, match="cuda:3 does not exist"):
+        PrecisionPolicy("fp16").resolve("cuda:3")
+    assert set(precision_module.precision_support("cuda:3")["cuda"].values()) == {"unsupported"}

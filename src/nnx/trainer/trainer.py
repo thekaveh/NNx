@@ -419,7 +419,7 @@ class Trainer:
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()
         }
-        if precision.uses_scaler and objective is not None:
+        if precision.uses_scaler:  # only an objective runs a reduced policy here
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
 
         run = NNRun(
@@ -511,7 +511,6 @@ class Trainer:
                 optimizers=optimizers,
                 clip_norms={name: getattr(params.optims[name], "grad_clip_norm", None) for name in optimizers},
                 scaler=scaler,
-                device=self.model.device,
                 precision=precision,
             )
             registry.register(engine)

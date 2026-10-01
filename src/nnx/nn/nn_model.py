@@ -709,7 +709,7 @@ def _inference_precision(model: Any) -> ResolvedPrecision:
     flag (a training-only setting) and for stand-ins borrowing these
     methods."""
     resolved = model.resolved_precision if isinstance(model, NNModel) else None
-    if resolved is not None and resolved.source == "policy":
+    if resolved is not None and _PRECISION_EVALUATE in resolved.applies_to:
         return resolved
     # Full precision needs no record, so TF32 is not read on this hot path.
     return ResolvedPrecision(requested="fp32", effective="fp32", device_type=torch.device(model.device).type, tf32={})
@@ -1162,31 +1162,20 @@ def _objective_engine(
     optimizers: Mapping[str, torch.optim.Optimizer],
     clip_norms: Mapping[str, Optional[float]],
     scaler: Optional[torch.amp.GradScaler],
-    device: torch.device,
-    precision: Optional[ResolvedPrecision] = None,
+    precision: ResolvedPrecision,
 ) -> Any:
-    """The update engine for an objective run: the run's precision
-    (FEAT-028) — autocast around the objective, the scaler for an fp16
-    update; without one, mixed precision only where the supervised path
-    uses it (a CUDA device with a scaler)."""
+    """The update engine for an objective run, in the run's precision
+    (FEAT-028): autocast around the objective, the scaler for an fp16
+    update."""
     from .._update_engine import UpdateEngine
 
-    if precision is not None:
-        return UpdateEngine(
-            optimizers=optimizers,
-            scaler=scaler if precision.uses_scaler else None,
-            clip_norms=clip_norms,
-            nonfinite=getattr(objective, "nonfinite", "fail"),
-            autocast=precision.autocast if precision.reduced else None,
-            precision=precision,
-        )
-    amp = scaler is not None and device.type == "cuda"
     return UpdateEngine(
         optimizers=optimizers,
-        scaler=scaler if amp else None,
+        scaler=scaler if precision.uses_scaler else None,
         clip_norms=clip_norms,
         nonfinite=getattr(objective, "nonfinite", "fail"),
-        autocast=(lambda: torch.amp.autocast(device_type="cuda")) if amp else None,
+        autocast=precision.autocast if precision.reduced else None,
+        precision=precision,
     )
 
 
@@ -1239,6 +1228,13 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             torch.amp.autocast(device_type="cuda") if legacy_amp else contextlib.nullcontext()
         )
     else:
+        if precision.uses_scaler and ctx.scaler is None:
+            # An unscaled float16 backward underflows small gradients to zero
+            # silently (the finite check sees nothing wrong): refuse it.
+            raise ValueError(
+                "fp16 trains through a GradScaler, and this step context has none: pass "
+                "scaler=model._build_grad_scaler() (NNModel.train always does)"
+            )
         scaler = ctx.scaler if precision.uses_scaler else None
         reduced = precision.reduced
         autocast = precision.autocast()
@@ -2096,7 +2092,10 @@ class NNModel(_HubMixinBase):
         carries TF32 as it is now — and refuse a step function that cannot
         apply a reduced precision (the built-in imperative paradigm steps,
         which run in full precision) before any work is done."""
-        precision = self._resolve_run_precision((_PRECISION_TRAIN, _PRECISION_EVALUATE, _PRECISION_PREDICT))
+        # A custom step receives the precision (ctx.precision) but applies it
+        # itself: the record claims training only where NNx applies it.
+        trained = (_PRECISION_TRAIN,) if train_step_fn is None or train_step_fn is default_train_step else ()
+        precision = self._resolve_run_precision((*trained, _PRECISION_EVALUATE, _PRECISION_PREDICT))
         _check_step_precision(train_step_fn, precision)
         return precision
 
@@ -2213,7 +2212,6 @@ class NNModel(_HubMixinBase):
                 optimizers={"default": optimizer},
                 clip_norms={"default": params.optim.grad_clip_norm},
                 scaler=scaler,
-                device=self.device,
                 precision=precision,
             )
             registry.register(engine)

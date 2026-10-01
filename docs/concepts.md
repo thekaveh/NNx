@@ -692,7 +692,9 @@ autocast, so a reduced run's forward outputs are float16 / bfloat16:
 `ObjectiveContext.precision` is the resolved precision and
 `ctx.full_precision(output)` returns an output as float32 (differentiable)
 before task preparation, the loss's bookkeeping or a record converts it to
-NumPy — the built-in objectives (and the default step) do. As
+NumPy — the built-in objectives (and the default step) do. `kd_objective`'s
+frozen teacher runs in its own inference precision (its explicit policy, or
+full precision), never in the student's. As
 with the default step, `NNModel.train` rejects an objective run on a
 low-rank-surgery topology it cannot reconstruct. Imperative step functions and
 `finalize_step` are unchanged.

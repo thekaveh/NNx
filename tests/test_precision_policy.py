@@ -450,6 +450,7 @@ def test_native_bf16_is_checked_on_the_resolved_cuda_device(monkeypatch):
 
     current = {"index": 0}
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)  # the simulated host has two GPUs
 
     @contextlib.contextmanager
     def device(index):

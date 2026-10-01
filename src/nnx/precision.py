@@ -274,6 +274,9 @@ def _device_type(device: Union[str, torch.device, Any]) -> str:
 def _unsupported(mode: str, device_type: str, index: Optional[int] = None) -> Optional[str]:
     """Why ``device_type`` (``index``: which CUDA device) cannot run
     ``mode`` (``None`` when it can)."""
+    if device_type == "cuda" and index is not None and torch.cuda.is_available():
+        if not 0 <= index < torch.cuda.device_count():
+            return f"cuda:{index} does not exist on this host ({torch.cuda.device_count()} CUDA device(s))"
     if mode == "fp32":
         return None
     if mode == "fp16":

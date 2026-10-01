@@ -33,9 +33,10 @@ either a step function or an objective, never both.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import numbers
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -282,9 +283,9 @@ class KDObjective(Objective):
         model.net.train()
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
         student = ctx.full_precision(model._net_forward((X,), {}))
-        with torch.no_grad():
+        with torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
             teacher_logits = ctx.full_precision(
-                self.teacher._net_forward((X.to(self.teacher.device),), {}).to(model.device)
+                teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)
             )
         rows = int(student.shape[0])
         soft = LossTerm(
@@ -305,6 +306,26 @@ class KDObjective(Objective):
             extra_metrics=ctx.extra_metrics,
         )
         return ObjectiveResult((soft, hard), record)
+
+
+@contextlib.contextmanager
+def _own_precision(ctx: ObjectiveContext, frozen: NNModel) -> Iterator[ResolvedPrecision]:
+    """Run a frozen model (a KD teacher) in its own inference precision
+    (FEAT-028), not the run's: the run's autocast is suspended around it.
+    Under the legacy ``mixed_precision`` flag the teacher keeps sharing the
+    student's CUDA autocast, as it always has."""
+    from .nn.nn_model import _inference_precision
+
+    own = _inference_precision(frozen)
+    run = ctx.precision
+    if run is not None and run.source == "legacy":
+        yield own
+        return
+    with contextlib.ExitStack() as stack:
+        if run is not None and run.reduced:
+            stack.enter_context(torch.autocast(device_type=run.device_type, enabled=False))
+        stack.enter_context(own.autocast())
+        yield own
 
 
 def kd_objective(
