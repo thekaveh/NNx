@@ -225,6 +225,7 @@ class JEPAObjective(Objective):
             )
         self._predictor_path = path
         _freeze(self.target_encoder)
+        self.ema_updates = 0  # this run's EMA steps (a stateful resume restores the saved count)
 
     # ---------- per microbatch ----------
 

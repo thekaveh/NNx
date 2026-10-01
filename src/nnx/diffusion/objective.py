@@ -110,6 +110,7 @@ class DiffusionObjective(Objective):
         self.noise_fn = noise_fn
         self._generator: Optional[torch.Generator] = None
         self._fingerprint = _schedule_fingerprint(schedule)
+        self._schedules: dict[torch.device, NoiseSchedule] = {}
 
     # ---------- before each run ----------
 
@@ -141,10 +142,10 @@ class DiffusionObjective(Objective):
             t = torch.randint(0, self.schedule.T, (x_0.shape[0],), generator=self.generator)
             eps = torch.randn(x_0.shape, generator=self.generator, dtype=x_0.dtype)
         t, eps = t.to(x_0.device), eps.to(x_0.device)
-        if t.shape != (x_0.shape[0],) or eps.shape != x_0.shape:
+        if t.shape != (x_0.shape[0],) or eps.shape != x_0.shape or eps.dtype != x_0.dtype:
             raise ValueError(
-                f"noise_fn must return t of shape ({x_0.shape[0]},) and eps of shape {tuple(x_0.shape)}; got "
-                f"{tuple(t.shape)} and {tuple(eps.shape)}"
+                f"noise_fn must return t of shape ({x_0.shape[0]},) and eps shaped and typed like x_0 "
+                f"({tuple(x_0.shape)}, {x_0.dtype}); got {tuple(t.shape)} and {tuple(eps.shape)}, {eps.dtype}"
             )
         if self.noise_fn is not None:
             # Checked before t indexes the schedule (an out-of-range index is a
@@ -157,6 +158,13 @@ class DiffusionObjective(Objective):
             t = t.long()
         return t, eps
 
+    def _schedule_on(self, device: torch.device) -> NoiseSchedule:
+        """The schedule's tensors on ``device``, moved once per device."""
+        moved = self._schedules.get(device)
+        if moved is None:
+            moved = self._schedules[device] = self.schedule.to(device)
+        return moved
+
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         model = ctx.model
         model.net.train()
@@ -164,8 +172,9 @@ class DiffusionObjective(Objective):
         if x_0.shape[0] == 0 or x_0.numel() == 0:
             raise ValueError("diffusion_objective got an empty batch: there is no noise to predict")
         t, eps = self.draw(x_0)
-        sqrt_a = _extract(self.schedule.sqrt_alphas_cumprod, t, x_0.shape)
-        sqrt_1ma = _extract(self.schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+        schedule = self._schedule_on(x_0.device)
+        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape)
+        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
         eps_pred = model.net(x_t, t)
         error = full_precision(eps_pred) - full_precision(eps)

@@ -197,7 +197,7 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   objective's `after_update` hook — after every named optimizer stepped,
   from the updated online weights, and before callbacks see the update
   event — never per microbatch and never for a skipped window
-  (`ema_momentum` is fixed in `[0, 1)`; `ema_updates` counts the steps).
+  (`ema_momentum` is fixed in `[0, 1)`; `ema_updates` counts this run's EMA steps and continues across a stateful resume).
   A `Trainer` with separate encoder and predictor optimizers still
   advances it once per committed update.
 * **Ownership, checked before any run is reserved.** The predictor must

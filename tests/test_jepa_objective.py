@@ -379,3 +379,13 @@ def test_a_target_on_another_dtype_is_refused_before_any_run():
     with pytest.raises(ValueError, match="another device or dtype"):
         model.train(_params([_batch(_images(2).double())]), objective=jepa_objective(target, predictor, _masks(FOUR)))
     assert not os.path.exists("runs")
+
+
+def test_the_ema_counter_counts_each_runs_steps():
+    model, target, predictor = _parts()
+    objective = jepa_objective(target, predictor, _masks(FOUR), ema_momentum=0.5)
+    loader = [_batch(_images(2, seed=s)) for s in range(2)]
+    model.train(_params(loader), objective=objective)
+    assert objective.ema_updates == 2
+    model.train(_params(loader, seed=1), objective=objective)  # a fresh run, not a resume
+    assert objective.ema_updates == 2

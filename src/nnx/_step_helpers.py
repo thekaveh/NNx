@@ -49,7 +49,10 @@ def first_input(model: Any, batch: Any, *, who: str) -> torch.Tensor:
             )
         x = inputs[0]
     elif hasattr(model.net, "unpack_batch"):
-        (x,), _ = cast(Any, model.net).unpack_batch(batch)
+        inputs, _ = cast(Any, model.net).unpack_batch(batch)
+        if len(inputs) != 1:
+            raise ValueError(f"{who} needs batches of exactly one input; the net's unpack_batch gave {len(inputs)}")
+        (x,) = inputs
     elif isinstance(batch, (list, tuple)):
         x = batch[0]
     else:

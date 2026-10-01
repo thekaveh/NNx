@@ -448,3 +448,17 @@ def test_the_objective_splits_batches_through_the_models_adapter():
     )
     with pytest.raises(ValueError, match="exactly one input"):
         two.train(_params([(_points(2), _points(2), torch.zeros(2))]), objective=diffusion_objective(SCHEDULE))
+
+
+# --- review round 4 ---------------------------------------------------------------------------------------
+
+
+def test_noise_of_another_dtype_is_named():
+    model = _model()
+    ctx = ObjectiveContext(model=model, batch=(_points(3), torch.zeros(3)), epoch_idx=0, batch_idx=0)
+    double = diffusion_objective(
+        SCHEDULE,
+        noise_fn=lambda x_0, g: (torch.zeros(3, dtype=torch.long), torch.zeros(x_0.shape, dtype=torch.float64)),
+    )
+    with pytest.raises(ValueError, match="typed like x_0"):
+        double(ctx)

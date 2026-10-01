@@ -289,6 +289,7 @@ def main():
         ),
         train_step_fn=step_fn,
         objective=objective,
+        salt="objective" if args.objective else None,  # a distinct run from the imperative mode
     )
 
     losses = [idp.train_edp.loss for idp in run.idps]

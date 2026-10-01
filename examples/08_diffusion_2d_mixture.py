@@ -189,6 +189,7 @@ def main():
         ),
         train_step_fn=step_fn,
         objective=objective,
+        salt="objective" if args.objective else None,  # a distinct run from the imperative mode
     )
 
     first = run.idps[0].train_edp.loss
