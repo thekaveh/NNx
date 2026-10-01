@@ -19,7 +19,9 @@ when the provider is built::
   **entailment logits across the candidates** with a softmax
   (``choice_scoring="entailment_softmax"``): logits ``log(3)`` and ``0``
   give ``(0.75, 0.25)``. Results are keyed by the request's option ids, in
-  its order, whatever order the candidates arrive in.
+  its order, whatever order the candidates arrive in. Only the candidates'
+  descriptions are scored: the Choice's prompt is not part of any
+  hypothesis (write it into ``hypothesis_template`` when it matters).
 - A :class:`Boolean` scores one pair per input — the prompt rendered by
   ``boolean_template`` — and takes the softmax over that pair's
   **contradiction and entailment** logits alone
@@ -49,8 +51,8 @@ success and on failure.
 **Truncation (explicit, reported).** Every pair is measured untruncated
 first. ``truncation="only_first"`` cuts the premise to fit ``max_length``
 and reports which pairs were cut in each result's ``raw["truncated"]``; a
-hypothesis that does not fit even with the premise cut rejects the request
-before any model call. ``truncation="error"`` rejects a request with an
+hypothesis that leaves no room for the premise (measured with an empty
+premise) rejects the request before any model call. ``truncation="error"`` rejects a request with an
 over-long pair before any model call.
 
 Each result's ``raw`` records the pair logits, the truncation report and
@@ -112,7 +114,11 @@ def _label_space(model: Any) -> tuple[Optional[int], Mapping[str, int]]:
     them (HuggingFace ``config.num_labels`` / ``label2id``)."""
     config = getattr(model, "config", None)
     label2id = getattr(config, "label2id", None)
-    names = {str(k).lower(): int(v) for k, v in label2id.items()} if isinstance(label2id, Mapping) else {}
+    names: dict[str, int] = {}
+    if isinstance(label2id, Mapping):
+        for key, value in label2id.items():
+            if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+                names[str(key).lower()] = int(value)  # a non-integer entry names no class
     n_labels = getattr(config, "num_labels", None)
     if isinstance(n_labels, numbers.Integral) and not isinstance(n_labels, bool):
         return int(n_labels), names
@@ -127,10 +133,11 @@ def _class_id(value: Any, what: str, n_labels: Optional[int], names: Mapping[str
                 f"unknown {what} label {value!r}: the model's config names {sorted(names) or 'no labels'}; pass the "
                 "class id as an int"
             )
-        return names[key]
-    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        class_id = names[key]
+    elif isinstance(value, bool) or not isinstance(value, numbers.Integral):
         raise InvalidDecisionRequest(f"{what} must be a class id (int) or a label name (str), got {value!r}")
-    class_id = int(value)
+    else:
+        class_id = int(value)
     if class_id < 0 or (n_labels is not None and class_id >= n_labels):
         raise InvalidDecisionRequest(f"{what} {class_id} is out of range for a model with {n_labels} classes")
     return class_id
@@ -323,24 +330,22 @@ class NLIProvider:
                 f"{sum(truncated)} premise/hypothesis pair(s) exceed max_length={self.max_length} tokens (the longest "
                 f"has {max(lengths)}) and truncation='error'; shorten the inputs or use truncation='only_first'"
             )
-        long = [i for i, cut in enumerate(truncated) if cut]
-        overflow = (
-            f"the hypothesis plus special tokens does not fit max_length={self.max_length} even with the premise "
-            "cut; raise max_length or shorten the description or prompt"
-        )
+        # Measured, not inferred from a tokenizer error: each over-long pair's
+        # hypothesis with an empty premise must leave room for at least one
+        # premise token (a HuggingFace fast tokenizer refuses to cut a
+        # premise to nothing).
+        long = sorted({hypotheses[i] for i, cut in enumerate(truncated) if cut})
         try:
-            cut = self.tokenizer(
-                [premises[i] for i in long],
-                [hypotheses[i] for i in long],
-                truncation="only_first",
-                max_length=self.max_length,
-                padding=False,
+            alone = self.tokenizer([""] * len(long), long, truncation=False, padding=False)
+            widths = [len(ids) for ids in alone["input_ids"]]
+        except Exception as error:
+            raise ProviderFailure(f"{self.name}: the tokenizer failed: {error}") from error
+        too_long = [hypothesis for hypothesis, width in zip(long, widths, strict=True) if width >= self.max_length]
+        if too_long:
+            raise InvalidDecisionRequest(
+                f"the hypothesis {too_long[0]!r} plus special tokens leaves no room for the premise within "
+                f"max_length={self.max_length}; raise max_length or shorten the description or prompt"
             )
-            cut_lengths = [len(ids) for ids in cut["input_ids"]]
-        except Exception as error:  # a tokenizer that refuses to cut a too-short premise
-            raise InvalidDecisionRequest(f"{overflow} ({error})") from error
-        if any(length > self.max_length for length in cut_lengths):
-            raise InvalidDecisionRequest(overflow)
         return truncated
 
     def _pair_logits(self, premises: list[str], hypotheses: list[str]) -> np.ndarray:
@@ -382,10 +387,17 @@ class NLIProvider:
                 f"{self.name}: the NLI model returned logits of inconsistent shapes {[c.shape for c in chunks]}"
             ) from error
         width = max(cast(int, self.entailment_id), cast(int, self.contradiction_id)) + 1
-        if logits.ndim != 2 or logits.shape[0] != len(premises) or logits.shape[1] < width:
+        classes = self._n_labels  # the config's class count, when it declares one
+        if (
+            logits.ndim != 2
+            or logits.shape[0] != len(premises)
+            or logits.shape[1] < width
+            or (classes is not None and logits.shape[1] != classes)
+        ):
+            expected = f"{classes} classes (the model's config)" if classes is not None else f"at least {width} classes"
             raise ProviderFailure(
                 f"{self.name}: the NLI model returned logits of shape {tuple(logits.shape)} for {len(premises)} pairs; "
-                f"expected (pairs, classes) with at least {width} classes"
+                f"expected (pairs, classes) with {expected}"
             )
         if not np.isfinite(logits).all():
             raise ProviderFailure(f"{self.name}: the NLI model returned non-finite logits")

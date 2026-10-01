@@ -153,15 +153,19 @@ provider.decide(Boolean("This review is positive."), texts)
 - **Scoring, explicit.** A `Choice` scores every (text, candidate) pair and
   softmaxes the **entailment logits across the candidates**
   (`choice_scoring="entailment_softmax"`): logits `log(3)` and `0` give
-  `(0.75, 0.25)`, keyed by the request's option ids in its order. A
+  `(0.75, 0.25)`, keyed by the request's option ids in its order. Only the
+  descriptions are scored — the Choice's prompt is not part of any
+  hypothesis, so write it into `hypothesis_template` when it matters. A
   `Boolean` scores one pair per text — its prompt rendered by
   `boolean_template` — and softmaxes that pair's **contradiction and
   entailment** logits alone (`boolean_scoring="entailment_vs_contradiction"`):
   `0` and `log(4)` give `p_true = 0.8`; texts are never normalized together.
   `Score` is unsupported and refused before any model call.
-- **Validated settings.** The entailment and contradiction ids must differ
-  and fit the model's class count (when its config declares one); a label
-  name must be one its config knows. Templates hold exactly one bare `{}` (no conversion or format spec).
+- **Validated settings.** The entailment and contradiction ids — given or
+  resolved from names — must differ and fit the model's class count; when
+  its config declares one, the model's logits must have exactly that many
+  classes. A label name must be one its config knows. Templates hold
+  exactly one bare `{}` (no conversion or format spec).
   Unknown scoring or truncation policies are refused at construction.
 - **The provider contract.** NNx imports no NLI library and downloads
   nothing; importing `nnx.decisions` or constructing the provider calls no
@@ -175,9 +179,9 @@ provider.decide(Boolean("This review is positive."), texts)
   `ProviderFailure`.
 - **Truncation, reported.** Pairs are measured untruncated first.
   `truncation="only_first"` (default) cuts the premise to `max_length` and
-  marks which pairs were cut in `raw["truncated"]`; a hypothesis that does
-  not fit even with the premise cut is refused (`InvalidDecisionRequest`)
-  before any model call. `truncation="error"` refuses an over-long request
+  marks which pairs were cut in `raw["truncated"]`; a hypothesis that leaves
+  no room for the premise (measured with an empty premise) is refused
+  (`InvalidDecisionRequest`) before any model call. `truncation="error"` refuses an over-long request
   before any model call.
 - **Records, never calibrated.** Each result's `raw` holds the pair logits,
   the truncation report and `provider.record()` — the templates, label ids,

@@ -147,7 +147,7 @@ NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's not
 | Aspect | NNx | HF Transformers | GLiClass |
 |---|---|---|---|
 | Labels supplied at inference | `nnx.decisions.NLIProvider` over a caller-supplied NLI cross-encoder; typed `Choice` / `Boolean` results keyed by bookkeeping ids | [`zero-shot-classification` pipeline](https://huggingface.co/docs/transformers/main_classes/pipelines#transformers.ZeroShotClassificationPipeline) over an NLI model | [GLiClass](https://github.com/Knowledgator/GLiClass) — a dedicated label-conditioned encoder ([paper](https://arxiv.org/abs/2508.07662)) |
-| Model loading | Never: the caller passes a loaded model and tokenizer (and records the revision) | A Hub name (downloaded) or an already-loaded model and tokenizer | Loads a pretrained checkpoint (`from_pretrained`) |
+| Model loading | Never: the caller passes a loaded model and tokenizer (and records the revision) | A Hub name (downloaded) or an already-loaded model and tokenizer passed to the pipeline | The caller loads a checkpoint (`GLiClassModel.from_pretrained`, a Hub name or a local path) and passes the model and tokenizer to its pipeline |
 | Scoring recorded with each result | Templates, label ids, scoring method, truncation, revision; `calibrated: False` | Scores only | Scores only |
 
 NNx ships only the NLI baseline as a provider; transfer to a decision task is

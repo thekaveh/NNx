@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import os
 import subprocess
 import sys
 import textwrap
@@ -218,10 +219,19 @@ def test_importing_and_constructing_download_nothing(tmp_path):
         sys.path.insert(0, {str(tmp_path)!r})
         try:
             import transformers
-            for name in ("PreTrainedModel", "PreTrainedTokenizerBase", "AutoModel", "AutoTokenizer",
-                         "AutoModelForSequenceClassification", "AutoConfig"):
-                if hasattr(transformers, name):
-                    setattr(getattr(transformers, name), "from_pretrained", classmethod(refuse))
+            from importlib import import_module
+            owners = [getattr(transformers, name, None) for name in (
+                "PreTrainedModel", "PreTrainedTokenizerBase", "PretrainedConfig", "ProcessorMixin",
+                "ImageProcessingMixin", "FeatureExtractionMixin", "AutoTokenizer", "AutoConfig",
+                "AutoProcessor", "AutoImageProcessor",
+            )]
+            try:  # every Auto*Model* class loads through this base
+                owners.append(import_module("transformers.models.auto.auto_factory")._BaseAutoModelClass)
+            except (ImportError, AttributeError):
+                pass
+            for owner in owners:
+                if owner is not None:
+                    owner.from_pretrained = classmethod(refuse)
         except ImportError:
             pass
         try:
@@ -241,9 +251,13 @@ def test_importing_and_constructing_download_nothing(tmp_path):
     )
     stub = inspect.getsource(sys.modules[__name__])
     (tmp_path / "stub.py").write_text(stub)
-    run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=False)
+    env = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_HOME": str(tmp_path / "hf-home")}
+    run = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=False, env=env
+    )
     assert run.returncode == 0, run.stderr
     assert float(run.stdout.strip().splitlines()[-1]) == pytest.approx(0.75)
+    assert not (tmp_path / "hf-home").exists()  # no Hub cache was even created
 
 
 def test_the_provider_module_imports_no_nli_library():
@@ -330,7 +344,7 @@ def test_a_hypothesis_that_cannot_fit_is_refused_before_the_model():
     long_description = ("t-long", "one two three four five six")
     question = Choice("Topic?", (SPORT, long_description))
     quiet = _provider(max_length=6)  # this stub cuts the premise to nothing and still overflows
-    with pytest.raises(InvalidDecisionRequest, match="does not fit max_length=6"):
+    with pytest.raises(InvalidDecisionRequest, match="leaves no room for the premise within max_length=6"):
         quiet.decide(question, [TEXT])
     assert quiet.model_calls == 0 and quiet.model.seen == []
 
@@ -341,9 +355,41 @@ def test_a_hypothesis_that_cannot_fit_is_refused_before_the_model():
             return super().__call__(premises, hypotheses, truncation=truncation, max_length=max_length, **kwargs)
 
     strict = _provider(max_length=6, tokenizer=Strict())
-    with pytest.raises(InvalidDecisionRequest, match="too short") as caught:
-        strict.decide(question, [TEXT])
-    assert isinstance(caught.value.__cause__, ValueError) and strict.model_calls == 0
+    with pytest.raises(InvalidDecisionRequest, match="leaves no room for the premise"):
+        strict.decide(question, [TEXT])  # measured first: the strict cut is never attempted
+    assert strict.model_calls == 0 and not any(call["truncation"] == "only_first" for call in strict.tokenizer.calls)
+    # A hypothesis that fits leaves the overflow to the premise, which is cut and reported.
+    (fits,) = _provider(max_length=10, tokenizer=Strict()).decide(Choice("Topic?", (SPORT, ECON)), [TEXT])
+    assert fits.raw["truncated"] == [True, True]
+
+    class Crashing(WordTokenizer):  # a backend failure is not the caller's error
+        def __call__(self, premises, hypotheses, **kwargs):
+            if "" in premises:
+                raise RuntimeError("backend tokenizer crashed")
+            return super().__call__(premises, hypotheses, **kwargs)
+
+    crashing = _provider(max_length=8, tokenizer=Crashing())
+    with pytest.raises(ProviderFailure, match="backend tokenizer crashed"):
+        crashing.decide(Choice("Topic?", (SPORT, ECON)), [TEXT])
+    assert crashing.model_calls == 0
+
+
+def test_ids_resolved_by_name_are_range_checked_and_the_logit_width_must_match_the_config():
+    model = OverlapNLI()
+    model.config.label2id = {"contradiction": 0, "neutral": 1, "entailment": 5, "unused": "n/a"}
+    with pytest.raises(InvalidDecisionRequest, match="out of range for a model with 3 classes"):
+        _provider(model=model)
+    assert model.seen == []
+    by_id = _provider(model=model, entailment_id=2, contradiction_id=0)  # a non-integer entry names no class
+    assert by_id.entailment_id == 2
+
+    class Wide(OverlapNLI):
+        def forward(self, input_ids, token_type_ids, attention_mask):
+            out = super().forward(input_ids, token_type_ids, attention_mask).logits
+            return torch.cat([out, torch.zeros(out.shape[0], 4)], dim=1)  # 7 columns, config says 3
+
+    with pytest.raises(ProviderFailure, match=r"3 classes \(the model's config\)"):
+        _provider(model=Wide()).decide(Boolean("late goal"), [TEXT])
 
 
 def test_malformed_model_outputs_are_provider_failures():
