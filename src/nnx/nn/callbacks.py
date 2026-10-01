@@ -23,7 +23,7 @@ from .._metrics import _resolve_metric_with_provenance
 from .._validation import require_count, require_finite_real
 from ..components import ComponentSpec
 from ..monitors import MetricSpec, MonitorSpec, MonitorTracker
-from ..transforms import _recipe_transforms
+from ..transforms import _snapshot_transforms
 from .params.nn_checkpoint import _MODEL_CHECKPOINT_TAG, NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
@@ -491,7 +491,7 @@ class ModelCheckpoint(Callback):
             net_state=_snapshot_state_dict(ctx.model.net.state_dict()),
             training_state_present=False,
             # FEAT-016: a recorded recipe rebuilds this snapshot's topology too.
-            transforms=_recipe_transforms(getattr(ctx.model, "_topology_transforms", ())),
+            transforms=_snapshot_transforms(getattr(ctx.model, "_topology_transforms", ())),
         )
         # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
         # uses through _checkpoint_path; we hand-build the path here because

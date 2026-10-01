@@ -312,3 +312,30 @@ def test_qat_converted_model_onnx_exports(tmp_path, monkeypatch, skip_on_dynamo_
         skip_on_dynamo_dispatch_error(e)
         raise  # unreachable — helper either skips or re-raises
     assert onnx_path.exists() and onnx_path.stat().st_size > 0
+
+
+def test_a_converted_recipe_model_trained_again_writes_loadable_tags(tmp_path, monkeypatch):
+    """FEAT-016: a recipe model converted by QAT records both on LAST; when
+    that converted model trains again, its in-loop tags record the full
+    transform list too (not just the recipe), so they replay and load."""
+    from nnx.nn.enum.checkpoints import Checkpoints
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+    from nnx.transforms import TransformRecipe, lora
+
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    optim = NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0)
+    model = TransformRecipe([lora("layers.0", r=4, alpha=8.0)]).materialize(_make_model(hidden_dims=[64, 64]))
+    first = model.train(
+        params=NNTrainParams(n_epochs=1, train_loader=_make_loader(), optim=optim),
+        callbacks=[QATLifecycleCallback(qat_config="8da4w")],
+        train_step_fn=qat_train_step_factory(qat_config="8da4w"),
+    )
+    converted = NNModel.from_checkpoint(NNCheckpoint.load(run=first.id, type=Checkpoints.LAST))
+    assert [t.name for t in converted._topology_transforms] == ["lora", "torchao_qat"]
+    again = converted.train(params=NNTrainParams(n_epochs=1, train_loader=_make_loader(), optim=optim, data_id="again"))
+    for tag in (Checkpoints.FIRST, Checkpoints.BEST):
+        checkpoint = NNCheckpoint.load(run=again.id, type=tag)
+        assert checkpoint is not None and [t.name for t in checkpoint.transforms] == ["lora", "torchao_qat"]
+        NNModel.from_checkpoint(checkpoint)

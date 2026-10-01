@@ -45,7 +45,7 @@ from ..monitors import (
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
-from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _state_shapes
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _snapshot_transforms, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -428,14 +428,14 @@ def _check_trained_recipe(
         raise ValueError(
             "a transformation recipe is materialized before training, but recipe operations "
             f"{[t.state() for t in (*added, *late)]} were applied or declared during it, which no checkpoint could "
-            "resume — materialize the nnx.transforms.TransformRecipe before calling train() (LAST keeps the last "
-            "completed epoch)"
+            "resume — materialize the nnx.transforms.TransformRecipe before calling train() (refused before this "
+            "checkpoint was written; the run's earlier checkpoints are kept)"
         )
     if trained_recipe and all(_replayable(t) for t in declared):
         drift = model._topology_drift()
         if drift is not None:
             raise ValueError(
-                f"{drift}; refused before the checkpoint is written (LAST keeps the last completed epoch) — apply "
+                f"{drift}; refused before the checkpoint is written (the run's earlier checkpoints are kept) — apply "
                 "topology changes through nnx.transforms.TransformRecipe before training"
             )
 
@@ -3095,7 +3095,7 @@ class NNModel(_HubMixinBase):
             net_state=self.net.state_dict(),
             # FEAT-016: a recipe recorded before training rebuilds every tag's
             # topology (none for a model without one, as before).
-            transforms=_recipe_transforms(self._topology_transforms),
+            transforms=_snapshot_transforms(self._topology_transforms),
         )
         # Every checkpoint tag is a valid resume point, so each carries the
         # same stateful training bundle as LAST/BEST.

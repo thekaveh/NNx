@@ -572,6 +572,15 @@ def _replayable(transform: NNCheckpointTransform) -> bool:
     return transform.name in _VERSIONS
 
 
+def _snapshot_transforms(transforms: Iterable[NNCheckpointTransform]) -> tuple[NNCheckpointTransform, ...]:
+    """The transforms a checkpoint written during training records: a
+    recipe model's full list (a recipe followed by a train-end conversion
+    such as QAT, when a converted model trains again), so the tag replays
+    its topology; nothing for a model without a recipe, as before."""
+    transforms = tuple(transforms)
+    return transforms if _recipe_transforms(transforms) else ()
+
+
 def _recipe_transforms(transforms: Iterable[NNCheckpointTransform]) -> tuple[NNCheckpointTransform, ...]:
     """The recorded recipe operations among a model's transforms."""
     return tuple(t for t in transforms if _replayable(t))
