@@ -477,7 +477,7 @@ def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_
     plain = _model().train(params=_fit_params(5), provenance=MANIFEST)
     (no_monitor,) = observations_from_runs([plain.id], metric=Metric("loss", "minimize"), selection="best")
     assert no_monitor.selection == "best" and no_monitor.value is None
-    assert no_monitor.evaluation == "unknown: the run's monitor elected no epoch"
+    assert no_monitor.evaluation == "unknown: the run declares no monitor"
 
 
 def test_train_split_reads_only_a_whole_epoch_summary(tmp_path, monkeypatch):
@@ -532,7 +532,8 @@ def test_numpy_scalars_huge_values_and_declared_unknown_identities():
     assert item.value == 0.25 and isinstance(item.value, float)
     assert obs(np.int64(1)).value == 1.0
     huge = summarize(replicates([1e200, -1e200, 1e200])).pooled()
-    assert huge.std == math.inf
+    assert huge.std == pytest.approx(statistics.stdev([1.0, -1.0, 1.0]) * 1e200)  # finite: never overflowed
+    assert summarize(replicates([1e308, 1e308])).pooled().std == 0.0
     a = replicates([-1e308, 0.0], config="cfg-a")
     b = replicates([1e308, 1.0], config="cfg-b")
     report = ComparisonReport.build([*a, *b], [(a, b, "same seed")])
@@ -542,3 +543,76 @@ def test_numpy_scalars_huge_values_and_declared_unknown_identities():
     from nnx.provenance import IdentityRef
 
     assert _identities({"train": IdentityRef.unknown()}) is None
+
+
+def test_registered_model_seeds_are_replicates_not_configuration(tmp_path, monkeypatch):
+    from torch import nn
+
+    from nnx import ModelSpec, register_model_factory, unregister_model_factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    register_model_factory(
+        "cmp-mlp", 1, lambda config: nn.Sequential(nn.Linear(4, config["h"]), nn.ReLU(), nn.Linear(config["h"], 2))
+    )
+    try:
+        runs = []
+        for seed in (0, 1, 2):
+            model = NNModel(
+                params=NNModelParams(net=ModelSpec("cmp-mlp", 1, {"h": 8}, seed=seed + 10), loss=Losses.CROSS_ENTROPY)
+            )
+            runs.append(model.train(params=_fit_params(seed), provenance=MANIFEST))
+        found = observations_from_runs([run.id for run in runs], metric=Metric("loss", "minimize"))
+        assert len(summarize(found).groups) == 1  # the ModelSpec seed is a replicate, not configuration
+        assert [item.replicate for item in found] == [
+            "seed=0,init_seed=10",
+            "seed=1,init_seed=11",
+            "seed=2,init_seed=12",
+        ]
+    finally:
+        unregister_model_factory("cmp-mlp", 1)
+    from nnx.comparison import _config_identity
+
+    state = {"model": {"device": "cpu", "loss": "x"}, "train": {"seed": 1}}
+    assert _config_identity(state) == _config_identity({**state, "model": {"device": "cuda", "loss": "x"}})
+
+
+def test_round_two_edges():
+    a = replicates([0.3, math.nan], config="cfg-a")
+    b = replicates([0.5, 0.6], config="cfg-b")
+    copy = [Observation(**{**item.__dict__}) for item in a]  # equal in every field, NaN included
+    ComparisonReport.build([*a, *b], [(copy, b, "same seed")])
+    with pytest.raises(ComparisonError, match="does not fit a float"):
+        obs(10**400)
+    from nnx.comparison import PairedComparison
+
+    twice = summarize([obs(0.1, attempt="x1", replicate="seed=1"), obs(0.2, attempt="x2", replicate="seed=1")]).pooled()
+    with pytest.raises(ComparisonError, match="repeats replicate keys"):
+        PairedComparison(twice, summarize(b).pooled(), "same seed")
+    with pytest.raises(ComparisonError, match="report's own observations"):
+        ComparisonReport(summarize(a), (compare(a, b, pairing="same seed"),))
+    finite_a = replicates([0.3, 0.4, 0.2], config="cfg-a")
+    finite_b = replicates([0.5, 0.6, 0.7], config="cfg-b")
+    report = ComparisonReport.build(
+        [*finite_a, *finite_b], [(finite_a, finite_b, "same seed")], bootstrap=Bootstrap(seed=1, level=0.975)
+    )
+    assert report.comparisons[0].interval is not None and "97.5% seed-variability interval" in report.text()
+    with pytest.raises(ComparisonError, match="not one string"):
+        observations_from_runs("abc", metric=LOSS)
+
+
+def test_reader_edges(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    runs = [_model().train(params=_fit_params(seed), provenance=MANIFEST) for seed in (0, 1)]
+    with pytest.raises(ComparisonError, match="label every run or none"):
+        observations_from_runs([run.id for run in runs], metric=LOSS, config={runs[0].id: "a"})
+    (plain,) = observations_from_runs([runs[0].id], metric=LOSS, selection="best")
+    assert plain.evaluation == "unknown: the run declares no monitor"
+    attempt = os.path.join("runs", runs[1].id, "attempt.json")
+    state = json.loads(open(attempt).read())
+    del state["started_at"]
+    with open(attempt, "w") as handle:
+        json.dump(state, handle)
+    with pytest.raises(ComparisonError, match="provenance files"):
+        observations_from_runs([runs[1].id], metric=LOSS)

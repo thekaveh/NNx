@@ -1756,9 +1756,12 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   when it elected nothing), on the validation record or the whole-epoch
   training summary (recorded only by runs that declare metrics or a
   monitor — never a last batch). The configuration identity is a digest of
-  the run's configuration without its salt, seed and resume lineage, for
-  `NNModel.train` and `Trainer` runs alike (or a label you pass); the text
-  view counts attempts that did not complete as `not_completed`.
+  the run's configuration without its salt, seeds (the training or
+  `Trainer` seed and a registered `ModelSpec`'s initialization seed),
+  resume lineage and device, for `NNModel.train` and `Trainer` runs alike
+  (or a label for every run, passed as `config=`). The replicate key is
+  `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs. The
+  text view counts attempts that did not complete as `not_completed`.
 
 This is about **your own runs**. The comparison against other toolkits is a
 separate page: [`docs/comparison.md`](comparison.md). See

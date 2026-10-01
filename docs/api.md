@@ -5333,11 +5333,12 @@ Args:
         the declared monitor, and the value is unknown for a run without
         one or whose monitor elected nothing).
     replicate: ``"seed"`` keys each observation ``seed=<seed>`` (the
-        training or ``Trainer`` seed; unknown for an unseeded run);
-        ``None`` leaves it unknown.
-    config: run id → declared configuration label; by default, a digest
-        of the run's configuration without its salt, seed and resume
-        lineage.
+        training or ``Trainer`` seed), plus ``init_seed=<seed>`` for a
+        registered ``ModelSpec`` whose own seed differs; unknown for an
+        unseeded run. ``None`` leaves it unknown.
+    config: run id → declared configuration label, for every run; by
+        default, a digest of the run's configuration without its salt,
+        seeds, resume lineage and device.
 
 Runs should be trained with ``provenance=`` (FEAT-019): the status and
 attempt id come from the run's attempt record (``"unknown"`` without

@@ -43,6 +43,7 @@ import json
 import math
 import numbers
 import os
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
@@ -102,7 +103,10 @@ def _number(value: Any) -> Optional[float]:
         return None
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise ComparisonError(f"an observation's value must be a number or None, got {value!r}")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as error:  # an integer too large for a float
+        raise ComparisonError(f"an observation's value does not fit a float: {error}") from error
 
 
 def _encode(value: Optional[float]) -> Any:
@@ -288,12 +292,26 @@ def _mean_std(values: Sequence[float]) -> tuple[Optional[float], Optional[float]
     if n == 0:
         return None, None
     try:
-        mean = math.fsum(values) / n
-        if n == 1:
-            return mean, None
-        return mean, math.sqrt(math.fsum((v - mean) ** 2 for v in values) / (n - 1))
-    except OverflowError:  # finite values whose spread overflows a float
-        return (math.inf if n == 1 else math.fsum(v / n for v in values)), math.inf
+        total = math.fsum(values)
+    except OverflowError:  # fsum raises on an intermediate overflow
+        total = math.inf
+    mean = total / n if math.isfinite(total) else math.fsum(v / n for v in values)  # no overflow in the sum
+    if n == 1:
+        return mean, None
+    deviations = [v - mean for v in values]
+    if not all(math.isfinite(d) for d in deviations):
+        deviations = [v / 2 - mean / 2 for v in values]  # halved: the spread itself overflows a float
+        scale = 2.0
+    else:
+        scale = 1.0
+    largest = max(abs(d) for d in deviations)
+    if largest == 0.0:
+        return mean, 0.0
+    std = largest * math.sqrt(math.fsum((d / largest) ** 2 for d in deviations) / (n - 1))  # scaled: no overflow
+    try:
+        return mean, std * scale
+    except OverflowError:  # pragma: no cover - a float product saturates to inf instead
+        return mean, math.inf
 
 
 @dataclass(frozen=True)
@@ -512,6 +530,12 @@ class PairedComparison:
     interval: Optional[tuple[float, float]] = field(init=False)
 
     def __post_init__(self) -> None:
+        _check_replicates(self.a, "a")
+        _check_replicates(self.b, "b")
+        differ = tuple(name for name in _differing((self.a, self.b)) if name != "config")
+        if differ:
+            raise IncompatibleObservations(f"the two sides differ in {list(differ)} and are not paired", fields=differ)
+        _text(self.pairing, "pairing")
         by_a = {item.replicate: item for item in self.a.observations}
         by_b = {item.replicate: item for item in self.b.observations}
         pairs = []
@@ -565,14 +589,18 @@ def _side(observations: Iterable[Observation], what: str) -> GroupSummary:
             fields=_differing(group),
         )
     side = group[0]
+    _check_replicates(side, what)
+    return side
+
+
+def _check_replicates(side: GroupSummary, what: str) -> None:
     missing = [item.id for item in side.observations if item.replicate is None]
     if missing:
         raise ComparisonError(f"pairing needs a replicate key on every observation; side {what} lacks one on {missing}")
-    keys = [item.replicate for item in side.observations]
-    repeated = sorted({key for key in keys if keys.count(key) > 1}, key=str)
+    keys = Counter(item.replicate for item in side.observations)
+    repeated = sorted((key for key, n in keys.items() if n > 1), key=str)
     if repeated:
         raise ComparisonError(f"side {what} repeats replicate keys {repeated}: a replicate pairs once")
-    return side
 
 
 def compare(
@@ -623,6 +651,20 @@ class ComparisonReport:
     summary: Summary
     comparisons: tuple[PairedComparison, ...] = ()
 
+    def __post_init__(self) -> None:
+        known = {(item.metric.name, item.id): item.state() for item in self.summary.observations}
+        for result in self.comparisons:
+            stray = sorted(
+                item.id
+                for item in (*result.a.observations, *result.b.observations)
+                if known.get((item.metric.name, item.id)) != item.state()
+            )
+            if stray:
+                raise ComparisonError(
+                    f"compared observations must be the report's own observations (same id and every field); "
+                    f"not found or different: {stray}"
+                )
+
     @staticmethod
     def build(
         observations: Iterable[Observation],
@@ -640,7 +682,9 @@ class ComparisonReport:
             stray = sorted(
                 getattr(item, "id", repr(item))
                 for item in (*a, *b)
-                if not isinstance(item, Observation) or known.get((item.metric.name, item.id)) != item
+                if not isinstance(item, Observation)
+                or (known.get((item.metric.name, item.id)) is None)
+                or known[(item.metric.name, item.id)].state() != item.state()
             )
             if stray:
                 raise ComparisonError(
@@ -703,7 +747,7 @@ class ComparisonReport:
             if result.interval is not None and result.bootstrap is not None:
                 low, high = result.interval
                 line += (
-                    f"; {result.bootstrap.level:.0%} seed-variability interval [{_fmt(low)}, {_fmt(high)}]"
+                    f"; {result.bootstrap.level * 100:g}% seed-variability interval [{_fmt(low)}, {_fmt(high)}]"
                     f" (bootstrap seed {result.bootstrap.seed}, {result.bootstrap.resamples} resamples)"
                 )
             lines.append(line)
@@ -801,7 +845,28 @@ def _config_identity(run_state: Mapping[str, Any]) -> str:
     for section in ("train", "trainer"):
         if isinstance(state.get(section), Mapping):
             state[section] = {k: v for k, v in state[section].items() if k not in _PER_REPLICATE}
+    model = state.get("model")
+    if isinstance(model, Mapping):
+        model = {k: v for k, v in model.items() if k != "device"}  # where it ran is not what it is
+        net = model.get("net")
+        if isinstance(net, Mapping) and net.get("kind") == "registered":
+            model["net"] = {k: v for k, v in net.items() if k != "seed"}  # a ModelSpec's init seed (FEAT-006)
+        state["model"] = model
     return "sha256:" + hashlib.sha256(_canonical_text(state).encode("utf-8")).hexdigest()[:16]
+
+
+def _replicate_key(run_state: Mapping[str, Any]) -> Optional[str]:
+    """``seed=<train or Trainer seed>``, plus ``init_seed=<ModelSpec seed>``
+    when a registered model's own initialization seed differs from it."""
+    train = run_state.get("train") or {}
+    trainer = run_state.get("trainer") or {}
+    seed = train.get("seed") if train.get("seed") is not None else trainer.get("seed")
+    net = (run_state.get("model") or {}).get("net")
+    init = net.get("seed") if isinstance(net, Mapping) and net.get("kind") == "registered" else None
+    parts = [] if seed is None else [f"seed={seed}"]
+    if init is not None and init != seed:
+        parts.append(f"init_seed={init}")
+    return ",".join(parts) or None
 
 
 def _declared_monitor(run_state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
@@ -855,7 +920,14 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
         rows = []
     idps = [NNIterationDataPoint.from_state(row) for row in rows]
     committed_by_last = os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE))
-    return run_state, idps, load_provenance(run_id, root), committed_by_last
+    try:
+        provenance = load_provenance(run_id, root)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ComparisonError(
+            f"run {run_id}: its provenance files (provenance.json / attempt.json) are unreadable: "
+            f"{type(error).__name__}: {error}"
+        ) from error
+    return run_state, idps, provenance, committed_by_last
 
 
 def observations_from_runs(
@@ -885,11 +957,12 @@ def observations_from_runs(
             the declared monitor, and the value is unknown for a run without
             one or whose monitor elected nothing).
         replicate: ``"seed"`` keys each observation ``seed=<seed>`` (the
-            training or ``Trainer`` seed; unknown for an unseeded run);
-            ``None`` leaves it unknown.
-        config: run id → declared configuration label; by default, a digest
-            of the run's configuration without its salt, seed and resume
-            lineage.
+            training or ``Trainer`` seed), plus ``init_seed=<seed>`` for a
+            registered ``ModelSpec`` whose own seed differs; unknown for an
+            unseeded run. ``None`` leaves it unknown.
+        config: run id → declared configuration label, for every run; by
+            default, a digest of the run's configuration without its salt,
+            seeds, resume lineage and device.
 
     Runs should be trained with ``provenance=`` (FEAT-019): the status and
     attempt id come from the run's attempt record (``"unknown"`` without
@@ -906,6 +979,13 @@ def observations_from_runs(
         raise ComparisonError(f"selection must be 'last' or 'best', got {selection!r}")
     if replicate not in ("seed", None):
         raise ComparisonError(f"replicate must be 'seed' or None, got {replicate!r}")
+    if isinstance(run_ids, (str, bytes)):
+        raise ComparisonError("run_ids is a sequence of run ids, not one string")
+    run_ids = list(run_ids)
+    if config is not None:
+        unlabelled = [run_id for run_id in run_ids if run_id not in config]
+        if unlabelled:
+            raise ComparisonError(f"config= labels some runs but not {unlabelled}; label every run or none")
     observations = []
     for run_id in run_ids:
         run_state, idps, provenance, committed_by_last = _read_run(run_id, root)
@@ -941,7 +1021,11 @@ def observations_from_runs(
                 elected = [idp for idp in ordered if idp.selection is not None and idp.selection.improved]
                 chosen = elected[-1] if elected else None
                 if chosen is None:
-                    unknown_reason = "unknown: the run's monitor elected no epoch"
+                    unknown_reason = (
+                        "unknown: the run's monitor elected no epoch"
+                        if _declared_monitor(run_state) is not None
+                        else "unknown: the run declares no monitor"
+                    )
         value = None
         evaluation = unknown_reason
         if chosen is not None:
@@ -961,8 +1045,6 @@ def observations_from_runs(
             if last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
         train = run_state.get("train") or {}
-        trainer = run_state.get("trainer") or {}
-        seed = train.get("seed") if train.get("seed") is not None else trainer.get("seed")
         manifest = None if provenance is None else provenance.manifest
         data = None if manifest is None else _identities(manifest.data)
         if data is None and train.get("data_id") is not None:
@@ -979,7 +1061,7 @@ def observations_from_runs(
                 config=(config or {}).get(run_id) or _config_identity(run_state),
                 data=data,
                 split_id=None if manifest is None else _identities(manifest.splits),
-                replicate=f"seed={seed}" if replicate == "seed" and seed is not None else None,
+                replicate=_replicate_key(run_state) if replicate == "seed" else None,
                 evaluation=evaluation,
             )
         )
