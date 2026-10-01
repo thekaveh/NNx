@@ -41,18 +41,21 @@ before any call.
 every outcome known so far (``outcomes``; the answered ones are
 ``completed``), the failing questions and the skipped ones; nothing
 completed is re-run (the job never retries — retries belong to the
-provider). Request and depth limits raise :class:`JobLimitExceeded`, the
-``timeout`` :class:`JobTimeout`, each with the outcomes so far.
+provider). Request and depth limits raise :class:`JobLimitExceeded` (in
+``arun``, after the calls already in flight finish), the ``timeout``
+:class:`JobTimeout`, each with the outcomes so far; questions never sent
+are ``skipped``.
 
 **Async.** :meth:`DecisionJob.arun` runs up to ``Limits.max_concurrency``
 provider calls at once through a provider's ``adecide_many`` / ``adecide``.
-A provider with only synchronous methods is called in a worker thread, one
-call at a time (its methods need not be thread-safe), and the run waits for
-a running thread before it returns. Setting the ``cancel`` event stops
-scheduling and returns a ``"cancelled"`` :class:`JobResult`; cancelling the
-task cleans up the job's own tasks and re-raises. A request already sent is
-reported as ``sent`` — never as rolled back: whatever the provider did with
-it stays done.
+A provider with only synchronous methods is called in a worker thread,
+never alongside another call (its methods need not be thread-safe), and the
+run waits for a running thread before it returns — a cancellation that
+arrives meanwhile is delivered once the thread is done. Setting the
+``cancel`` event stops scheduling and returns a ``"cancelled"``
+:class:`JobResult`; cancelling the task cleans up the job's own tasks and
+re-raises. A request whose call began is reported as ``sent`` — never as
+rolled back: whatever the provider did with it stays done.
 
 **What "independent" means.** Computational, not statistical: questions
 batched together share a call, nothing more. Their answers are separate
@@ -62,11 +65,10 @@ marginals; the job never multiplies them into a joint probability.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import numbers
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union, cast
 
@@ -76,6 +78,7 @@ from .schema import (
     DecisionError,
     DecisionResult,
     InvalidDecisionRequest,
+    InvalidDecisionResponse,
     Score,
     UnsupportedCapability,
 )
@@ -113,6 +116,18 @@ class JobError(DecisionError):
         self.completed: dict[str, QuestionOutcome] = {
             question_id: outcome for question_id, outcome in self.outcomes.items() if outcome.kind == "answered"
         }
+
+    def __reduce__(self) -> Any:
+        # Keyword-only fields would break Exception's default pickling (a
+        # process-pool worker's error must reach its parent intact).
+        return (_restore_error, (type(self), str(self), dict(self.__dict__)))
+
+
+def _restore_error(cls: type[JobError], message: str, fields: dict[str, Any]) -> JobError:
+    error = cls.__new__(cls)
+    Exception.__init__(error, message)
+    error.__dict__.update(fields)
+    return error
 
 
 class InvalidJob(JobError, ValueError):
@@ -191,7 +206,10 @@ class Limits:
         depth = self.max_depth
         if isinstance(depth, bool) or not isinstance(depth, numbers.Integral) or depth < 0:
             raise InvalidJob(f"max_depth must be a non-negative integer, got {depth!r}")
-        object.__setattr__(self, "max_concurrency", _optional_positive(self.max_concurrency, "max_concurrency"))
+        concurrency = self.max_concurrency
+        if isinstance(concurrency, bool) or not isinstance(concurrency, numbers.Integral) or concurrency < 1:
+            raise InvalidJob(f"max_concurrency must be a positive integer, got {concurrency!r}")
+        object.__setattr__(self, "max_concurrency", int(concurrency))
         timeout = self.timeout
         if timeout is not None and (
             isinstance(timeout, bool) or not isinstance(timeout, numbers.Real) or not timeout > 0
@@ -216,9 +234,10 @@ class QuestionOutcome:
 
     ``kind`` is ``"answered"`` (the provider answered; rows may still
     abstain), ``"failed"`` (its provider call raised — ``error``),
-    ``"skipped"`` (never sent: a failure stopped scheduling) or
-    ``"cancelled"`` (the run was cancelled; ``sent`` says whether the
-    request had already gone out — a sent request is not rolled back).
+    ``"skipped"`` (never sent: a failure, a limit or the timeout stopped
+    scheduling) or ``"cancelled"`` (the run was cancelled, or a sibling call
+    failed first; ``sent`` says whether the request had already gone out —
+    a sent request is not rolled back).
     """
 
     id: str
@@ -318,6 +337,12 @@ class DecisionJob:
                 raise InvalidJob("an abstention policy needs the model_id it was tuned for")
             if isinstance(question, Boolean):
                 raise InvalidJob("an abstention policy applies to a Choice or Score, not a Boolean")
+            from ..abstention import AbstentionSchemaError
+
+            try:  # the checks abstention.decide makes on each answer, made before any call
+                policy._check(tuple(question.option_ids), model_id, "probabilities", None)
+            except AbstentionSchemaError as error:
+                raise InvalidJob(f"question {id!r}: the abstention policy does not fit it: {error}") from error
         return DecisionJob(_Ask(question, id, policy, model_id))
 
     @staticmethod
@@ -479,7 +504,8 @@ class _Runner:
         self.answers: dict[str, Any] = {}  # question id -> its value
         self.outcomes: dict[str, QuestionOutcome] = {}
         self.order: dict[str, None] = {}  # question ids in scheduling order
-        self.calls = 0
+        self.calls = 0  # provider calls made
+        self.launched = 0  # calls scheduled (bounded by max_requests)
         self.memo: dict[tuple[int, ...], Any] = {}  # path -> map value / Follow, computed once
         self.states: list[Any] = [state]  # group index -> state
         self.seen_ids: set[str] = set()
@@ -565,8 +591,12 @@ class _Runner:
                     f"a continuation must return Follow(job, state=...), got {type(follow).__name__}",
                     outcomes=self._ordered(),
                 )
-            self.states.append(follow.state)
-            follow_group = len(self.states) - 1
+            # Questions batch per state object: a continuation that returns
+            # a state already in use joins that state's group.
+            follow_group = next((i for i, known in enumerate(self.states) if known is follow.state), None)
+            if follow_group is None:
+                self.states.append(follow.state)
+                follow_group = len(self.states) - 1
             self.memo[path] = (follow, follow_group)
             self._register([(ask, follow_group) for ask in _static_asks(follow.job)])
         else:
@@ -619,52 +649,59 @@ class _Runner:
 
     # ---------- calling the provider ----------
 
-    def _before_call(self) -> None:
-        if self.limits.max_requests is not None and self.calls >= self.limits.max_requests:
-            raise JobLimitExceeded(
-                f"the next call would exceed max_requests={self.limits.max_requests}", outcomes=self._ordered()
-            )
-        self._check_deadline()
+    def _limit(self) -> Optional[tuple[type[JobError], str]]:
+        """The limit the next call would break, if any."""
+        if self.limits.max_requests is not None and self.launched >= self.limits.max_requests:
+            return JobLimitExceeded, f"the next call would exceed max_requests={self.limits.max_requests}"
+        if self._expired():
+            return JobTimeout, f"the run exceeded its timeout of {self.limits.timeout}s"
+        return None
 
-    def _check_deadline(self) -> None:
-        if self.limits.timeout is not None and time.monotonic() - self.started > self.limits.timeout:
-            raise JobTimeout(f"the run exceeded its timeout of {self.limits.timeout}s", outcomes=self._ordered())
+    def _expired(self) -> bool:
+        return self.limits.timeout is not None and time.monotonic() - self.started > self.limits.timeout
+
+    def _remaining(self) -> Optional[float]:
+        if self.limits.timeout is None:
+            return None
+        return max(self.limits.timeout - (time.monotonic() - self.started), 0.0)
+
+    @staticmethod
+    def _answers(chunk: list[_Ready], answered: Any) -> list[Sequence[DecisionResult]]:
+        answers = list(answered)
+        if len(answers) != len(chunk):
+            raise InvalidDecisionResponse(f"the provider answered {len(answers)} of {len(chunk)} questions in one call")
+        return answers
 
     def _call(self, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
         questions = [item.ask.question for item in chunk]
         state = chunk[0].state
         if len(chunk) == 1 and not callable(getattr(self.provider, "decide_many", None)):
-            return [self.provider.decide(questions[0], state)]
-        return list(self.provider.decide_many(questions, state))
+            return self._answers(chunk, [self.provider.decide(questions[0], state)])
+        return self._answers(chunk, self.provider.decide_many(questions, state))
 
-    async def _acall(
-        self, chunk: list[_Ready], sync_lock: asyncio.Lock, threads: list[asyncio.Future[Any]]
-    ) -> list[Sequence[DecisionResult]]:
+    def _is_async(self, chunk: list[_Ready]) -> bool:
+        if callable(getattr(self.provider, "adecide_many", None)):
+            return True
+        return len(chunk) == 1 and callable(getattr(self.provider, "adecide", None))
+
+    async def _acall(self, chunk: list[_Ready], threads: list[asyncio.Future[Any]]) -> list[Sequence[DecisionResult]]:
         questions = [item.ask.question for item in chunk]
         state = chunk[0].state
         many: Optional[Callable[..., Awaitable[Any]]] = getattr(self.provider, "adecide_many", None)
         if callable(many):
-            return list(await many(questions, state))
+            return self._answers(chunk, await many(questions, state))
         one: Optional[Callable[..., Awaitable[Any]]] = getattr(self.provider, "adecide", None)
         if callable(one) and len(chunk) == 1:
-            return [await one(questions[0], state)]
-        # A synchronous provider runs in a worker thread, one call at a time
-        # (its methods need not be thread-safe). A thread cannot be
-        # interrupted: it is shielded, and the run waits for it before
+            return self._answers(chunk, [await one(questions[0], state)])
+        # A synchronous provider runs in a worker thread, never alongside
+        # another call (its methods need not be thread-safe). A thread cannot
+        # be interrupted: it is shielded, and the run waits for it before
         # returning, so the borrowed provider is never left in use.
-        async with sync_lock:
-            work = asyncio.ensure_future(asyncio.to_thread(self._call, chunk))
-            threads.append(work)
-            return await asyncio.shield(work)
+        work = asyncio.ensure_future(asyncio.to_thread(self._call, chunk))
+        threads.append(work)
+        return await asyncio.shield(work)
 
     def _record(self, chunk: list[_Ready], answered: list[Sequence[DecisionResult]]) -> None:
-        if len(answered) != len(chunk):
-            raise JobFailed(
-                f"the provider answered {len(answered)} of {len(chunk)} questions in one call",
-                outcomes=self._ordered(),
-                failed=[item.ask.id for item in chunk],
-                skipped=[],
-            )
         for item, results in zip(chunk, answered, strict=True):
             results = tuple(results)
             ask = item.ask
@@ -682,16 +719,24 @@ class _Runner:
                 self.answers[ask.id] = decisions
             self.outcomes[ask.id] = QuestionOutcome(ask.id, "answered", rows, sent=True)
 
-    def _fail(self, chunk: list[_Ready], pending: list[list[_Ready]], error: BaseException) -> JobFailed:
-        for item in chunk:
-            self.outcomes[item.ask.id] = QuestionOutcome(item.ask.id, "failed", error=error, sent=True)
-        skipped = [item.ask.id for later in pending for item in later]
-        for question_id in skipped:
-            self.outcomes[question_id] = QuestionOutcome(question_id, "skipped")
+    def _mark(self, chunks: Iterable[list[_Ready]], kind: str, *, sent: bool) -> None:
+        for chunk in chunks:
+            for item in chunk:
+                self.outcomes[item.ask.id] = QuestionOutcome(item.ask.id, kind, sent=sent)
+
+    def _fail(
+        self, failures: Sequence[tuple[list[_Ready], BaseException]], pending: Sequence[list[_Ready]]
+    ) -> JobFailed:
+        for chunk, error in failures:
+            for item in chunk:
+                self.outcomes[item.ask.id] = QuestionOutcome(item.ask.id, "failed", error=error, sent=True)
+        self._mark(pending, "skipped", sent=False)
+        error = failures[0][1]
+        skipped = [item.ask.id for chunk in pending for item in chunk]
         failure = JobFailed(
             f"a provider call failed ({type(error).__name__}: {error}); {len(skipped)} ready question(s) skipped",
             outcomes=self._ordered(),
-            failed=[item.ask.id for item in chunk],
+            failed=[item.ask.id for chunk, _ in failures for item in chunk],
             skipped=skipped,
         )
         failure.__cause__ = error
@@ -705,32 +750,37 @@ class _Runner:
             if not chunks:
                 return JobResult(value, self._ordered(), self.calls)
             for index, chunk in enumerate(chunks):
-                self._before_call()
+                limit = self._limit()
+                if limit is not None:  # nothing more is sent
+                    self._mark(chunks[index:], "skipped", sent=False)
+                    raise limit[0](limit[1], outcomes=self._ordered())
+                self.launched += 1
                 self.calls += 1
                 try:
                     answered = self._call(chunk)
                 except Exception as error:  # fail-fast: nothing more is scheduled
-                    raise self._fail(chunk, chunks[index + 1 :], error) from error
+                    raise self._fail([(chunk, error)], chunks[index + 1 :]) from error
                 self._record(chunk, answered)
 
     # ---------- async ----------
 
     async def arun(self, cancel: Optional[asyncio.Event]) -> JobResult:
-        semaphore = asyncio.Semaphore(self.limits.max_concurrency)
-        sync_lock = asyncio.Lock()
-        threads: list[asyncio.Future[Any]] = []
-        in_flight: dict[asyncio.Future[Any], list[_Ready]] = {}
+        threads: list[asyncio.Future[Any]] = []  # worker threads of synchronous calls
+        in_flight: dict[asyncio.Future[Any], tuple[int, list[_Ready], bool]] = {}  # task -> (launch, chunk, sync)
+        started: set[int] = set()  # launches whose provider call began: those requests were sent
+        stop: Optional[asyncio.Future[Any]] = None if cancel is None else asyncio.ensure_future(cancel.wait())
+        launches = 0
 
-        async def call(chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
-            async with semaphore:
-                return await self._acall(chunk, sync_lock, threads)
+        async def call(launch: int, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
+            started.add(launch)
+            self.calls += 1
+            return await self._acall(chunk, threads)
 
-        def cancelled_result() -> JobResult:
-            for task, chunk in in_flight.items():
-                task.cancel()  # only the job's own tasks
-                for item in chunk:
-                    self.outcomes[item.ask.id] = QuestionOutcome(item.ask.id, "cancelled", sent=True)
-            return JobResult(None, self._ordered(), self.calls, status="cancelled")
+        def abandon() -> None:
+            """Cancel the job's in-flight calls; a started one was sent."""
+            for task, (launch, chunk, _) in in_flight.items():
+                task.cancel()
+                self._mark([chunk], "cancelled", sent=launch in started)
 
         try:
             while True:
@@ -738,54 +788,79 @@ class _Runner:
                 if not chunks:
                     return JobResult(value, self._ordered(), self.calls)
                 queue = list(chunks)
+                stopping: Optional[tuple[type[JobError], str]] = None
                 while queue or in_flight:
                     if cancel is not None and cancel.is_set():
-                        for chunk in queue:
-                            for item in chunk:
-                                self.outcomes[item.ask.id] = QuestionOutcome(item.ask.id, "cancelled", sent=False)
-                        return cancelled_result()
-                    while queue and len(in_flight) < self.limits.max_concurrency:
-                        self._before_call()
+                        self._mark(queue, "cancelled", sent=False)
+                        abandon()
+                        return JobResult(None, self._ordered(), self.calls, status="cancelled")
+                    while queue and stopping is None:
+                        sync = not self._is_async(queue[0])
+                        if in_flight and (
+                            sync
+                            or len(in_flight) >= self.limits.max_concurrency
+                            or any(entry[2] for entry in in_flight.values())
+                        ):
+                            break  # a synchronous call runs alone; others up to max_concurrency
+                        stopping = self._limit()
+                        if stopping is not None:
+                            break  # nothing more is sent; calls in flight finish first
                         chunk = queue.pop(0)
-                        self.calls += 1
-                        in_flight[asyncio.ensure_future(call(chunk))] = chunk
-                    waiters: list[Awaitable[Any]] = list(in_flight)
-                    stop = None
-                    if cancel is not None:
-                        stop = asyncio.ensure_future(cancel.wait())
-                        waiters.append(stop)
-                    deadline = None
-                    if self.limits.timeout is not None:
-                        deadline = max(self.limits.timeout - (time.monotonic() - self.started), 0.0)
-                    done, _ = await asyncio.wait(waiters, timeout=deadline, return_when=asyncio.FIRST_COMPLETED)
-                    if stop is not None and not stop.done():
-                        stop.cancel()
+                        self.launched += 1
+                        in_flight[asyncio.ensure_future(call(launches, chunk))] = (launches, chunk, sync)
+                        launches += 1
+                    if stopping is not None and not in_flight:
+                        self._mark(queue, "skipped", sent=False)
+                        raise stopping[0](stopping[1], outcomes=self._ordered())
+                    if stop is not None and stop.done():  # the event was set and cleared again
+                        stop = asyncio.ensure_future(cast(asyncio.Event, cancel).wait())
+                    waiters: list[asyncio.Future[Any]] = [*in_flight, *([stop] if stop is not None else [])]
+                    done, _ = await asyncio.wait(
+                        waiters, timeout=self._remaining(), return_when=asyncio.FIRST_COMPLETED
+                    )
                     if not done:  # the timeout elapsed with calls in flight
-                        cancelled_result()
+                        self._mark(queue, "skipped", sent=False)
+                        abandon()
                         raise JobTimeout(
-                            f"the run exceeded its timeout of {self.limits.timeout}s; in-flight requests were sent "
-                            "and are not rolled back",
+                            f"the run exceeded its timeout of {self.limits.timeout}s; in-flight requests that were "
+                            "sent are not rolled back",
                             outcomes=self._ordered(),
                         )
-                    for task in [t for t in in_flight if t in done]:
-                        chunk = in_flight.pop(task)
+                    failures: list[tuple[list[_Ready], BaseException]] = []
+                    for _, task in sorted((in_flight[t][0], t) for t in done if t in in_flight):
+                        _, chunk, _ = in_flight.pop(task)
                         try:
                             answered = task.result()
-                        except Exception as error:  # fail-fast
-                            for other, sibling in in_flight.items():
-                                other.cancel()  # sent: reported as such, never as rolled back
-                                for item in sibling:
-                                    self.outcomes[item.ask.id] = QuestionOutcome(item.ask.id, "cancelled", sent=True)
-                            raise self._fail(chunk, queue, error) from error
+                        except Exception as error:  # recorded after every success of this tick
+                            failures.append((chunk, error))
+                            continue
                         self._record(chunk, answered)
+                    if failures:  # fail-fast: nothing more is scheduled
+                        abandon()
+                        raise self._fail(failures, queue) from failures[0][1]
         except asyncio.CancelledError:
-            cancelled_result()
+            abandon()
             raise
         finally:
-            for task, chunk in in_flight.items():
+            if stop is not None:
+                stop.cancel()
+            for task, (launch, chunk, _) in in_flight.items():
                 task.cancel()
-                for item in chunk:  # sent: never presented as rolled back
-                    self.outcomes.setdefault(item.ask.id, QuestionOutcome(item.ask.id, "cancelled", sent=True))
-            for work in [*in_flight, *threads]:
-                with contextlib.suppress(BaseException):
-                    await asyncio.gather(work, return_exceptions=True)
+                for item in chunk:  # a sent request is never presented as rolled back
+                    self.outcomes.setdefault(
+                        item.ask.id, QuestionOutcome(item.ask.id, "cancelled", sent=launch in started)
+                    )
+            # Wait for the job's own tasks and threads; a cancellation that
+            # arrives meanwhile is delivered once they are done, never lost.
+            pending = [
+                work for work in (*in_flight, *threads, *([stop] if stop is not None else [])) if not work.done()
+            ]
+            interrupted = False
+            while pending:
+                try:
+                    await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+                except asyncio.CancelledError:
+                    interrupted = True
+                pending = [work for work in pending if not work.done()]
+            if interrupted:
+                raise asyncio.CancelledError

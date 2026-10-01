@@ -159,8 +159,9 @@ result.calls                                           # provider calls made
 | `job.then(fn)` | `fn(value)` returns `Follow(next_job, state=...)`; the value is the next job's |
 
 - **Batching.** Independent questions over the same state are sent in the
-  fewest calls: `ceil(count / cap)` per state, in the order they were
-  collected, keeping their ids and the `collect` key order. `cap` is the
+  fewest calls: `ceil(count / cap)` per state object (continuations that
+  return the same object share it; equal but distinct objects do not), in
+  the order they were collected, keeping their ids and the `collect` key order. `cap` is the
   provider's: a provider with `decide_many(questions, inputs)` declares
   `max_questions` (`None`: any number per call); a provider with only
   `decide`, such as `FixedHeadProvider`, answers one question per call.
@@ -169,7 +170,8 @@ result.calls                                           # provider calls made
   provider cannot serve (its `check(question, inputs)` when it has one, else
   `capabilities().check(...)`) and a `Limits.max_tokens` cap the provider
   cannot enforce (it needs `count_tokens(questions, inputs)`) raise
-  `InvalidJob` with no call made. A continuation's questions are checked
+  `InvalidJob` with no call made; so does an abstention `policy` whose
+  labels or `model_id` do not fit its question (checked by `ask`). A continuation's questions are checked
   when the continuation runs, before they are sent.
 - **Dependent questions.** A `then` continuation runs **once**, after its
   prerequisite succeeded, and maps the answer explicitly into the follow-up
@@ -185,17 +187,21 @@ result.calls                                           # provider calls made
 - **Async and cancellation.** `await job.arun(provider, state=..., limits=...,
   cancel=None)` runs up to `Limits.max_concurrency` calls at once through
   the provider's `adecide_many` / `adecide`. A provider with only
-  synchronous methods is called in a worker thread, one call at a time (its
-  methods need not be thread-safe); a running thread cannot be interrupted,
-  so the run waits for it before returning. Setting the `cancel` event stops
-  scheduling and returns a `JobResult` with `status="cancelled"` and no
-  value. Cancelling the task cancels only the job's own tasks and re-raises.
-  `Limits.timeout` raises `JobTimeout`. A request already sent is reported
-  with `sent=True`, never as rolled back: whatever the provider did with it
+  synchronous methods is called in a worker thread, never alongside another
+  call (its methods need not be thread-safe); a running thread cannot be
+  interrupted, so the run waits for it before returning, and a cancellation
+  that arrives meanwhile is delivered once it is done. Setting the `cancel`
+  event stops scheduling and returns a `JobResult` with
+  `status="cancelled"` and no value. Cancelling the task cancels only the
+  job's own tasks and re-raises. `Limits.timeout` raises `JobTimeout`; a
+  request or depth limit lets the calls already in flight finish, then
+  raises `JobLimitExceeded`. A request whose call began is reported with
+  `sent=True`, never as rolled back: whatever the provider did with it
   stays done.
 - **Outcomes.** `result.outcomes[id].kind` is `"answered"` (rows may still
-  be `"abstained"` under a policy), `"failed"` (with `error`), `"skipped"` or
-  `"cancelled"` (with `sent`); the three never blur.
+  be `"abstained"` under a policy), `"failed"` (with `error`), `"skipped"`
+  (never sent: a failure, a limit or the timeout stopped scheduling) or
+  `"cancelled"` (with `sent`); the four never blur.
 - **The provider is borrowed.** `run` and `arun` never close it, and it
   stays usable after a failure or a cancellation.
 - **Serialisation.** A job of `ask` and `collect` only pickles as plain data

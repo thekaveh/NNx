@@ -440,3 +440,167 @@ def test_logits_chain_is_untouched():
     from nnx.generation import LogitsChain
 
     assert not hasattr(LogitsChain, "ask") and not hasattr(LogitsChain.builder(), "then")
+
+
+# --- review hardening -------------------------------------------------------------------------------------------
+
+
+def test_a_synchronous_provider_gets_no_call_after_a_failure_and_unsent_requests_say_so():
+    provider = TextProvider(batching=False, delay=0.02, fail_on={"Mentions word0"})
+    with pytest.raises(JobFailed) as caught:
+        asyncio.run(Job.collect(_questions(4)).arun(provider, state=TEXTS, limits=Limits(max_concurrency=4)))
+    assert [prompts for prompts, _ in provider.calls] == [("Mentions word0",)]  # nothing after the failure
+    outcomes = caught.value.outcomes
+    assert outcomes["q0"].kind == "failed" and outcomes["q0"].sent
+    assert all((outcomes[q].kind, outcomes[q].sent) == ("skipped", False) for q in ("q1", "q2", "q3"))
+
+    async def cancelled_mid_call():
+        cancel = asyncio.Event()
+        slow = TextProvider(batching=False, delay=0.1)
+        run = asyncio.ensure_future(
+            Job.collect(_questions(3)).arun(slow, state=TEXTS, limits=Limits(max_concurrency=3), cancel=cancel)
+        )
+        await asyncio.sleep(0.03)
+        cancel.set()
+        return await run, slow
+
+    result, slow = asyncio.run(cancelled_mid_call())
+    assert result.calls == 1 == len(slow.calls)
+    assert [(o.kind, o.sent) for o in result.outcomes.values()] == [
+        ("cancelled", True),
+        ("cancelled", False),
+        ("cancelled", False),
+    ]
+
+
+def test_cancelling_the_task_while_a_thread_runs_is_delivered_after_the_thread():
+    async def scenario():
+        provider = TextProvider(batching=False, delay=0.3)
+        provider.finished = 0
+
+        original = provider.decide
+
+        def decide(question, texts):
+            try:
+                return original(question, texts)
+            finally:
+                provider.finished += 1
+
+        provider.decide = decide
+        cancel = asyncio.Event()
+        task = asyncio.ensure_future(Job.ask(TOPIC, id="t").arun(provider, state=TEXTS, cancel=cancel))
+        await asyncio.sleep(0.02)
+        cancel.set()
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert provider.finished == 1  # the borrowed provider is no longer in use
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(Job.ask(TOPIC, id="t").arun(provider, state=TEXTS), timeout=0.05)
+        assert provider.finished == 2
+
+    asyncio.run(scenario())
+
+
+def test_task_cancellation_cleans_up_the_cancel_event_waiter():
+    async def scenario():
+        before = len(asyncio.all_tasks())
+        task = asyncio.ensure_future(
+            Job.collect(_questions(2)).arun(
+                SlowAsyncProvider(), state=TEXTS, limits=Limits(max_questions=1), cancel=asyncio.Event()
+            )
+        )
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert len(asyncio.all_tasks()) == before
+
+    asyncio.run(scenario())
+
+
+def test_a_success_finishing_with_a_failure_is_kept():
+    class Together(TextProvider):
+        async def adecide_many(self, questions, texts):
+            await asyncio.sleep(0.01)
+            return self.decide_many(questions, texts)
+
+    provider = Together(fail_on={"Mentions word0"})
+    with pytest.raises(JobFailed) as caught:
+        asyncio.run(
+            Job.collect(_questions(2)).arun(provider, state=TEXTS, limits=Limits(max_questions=1, max_concurrency=2))
+        )
+    assert caught.value.failed == ("q0",) and set(caught.value.completed) == {"q1"}
+
+
+def test_a_limit_lets_calls_in_flight_finish_and_reports_every_outcome():
+    provider = SlowAsyncProvider()
+    with pytest.raises(JobLimitExceeded, match="max_requests=3") as caught:
+        asyncio.run(
+            Job.collect(_questions(4)).arun(
+                provider, state=TEXTS, limits=Limits(max_questions=1, max_concurrency=2, max_requests=3)
+            )
+        )
+    kinds = {q: (o.kind, o.sent) for q, o in caught.value.outcomes.items()}
+    assert kinds == {
+        "q0": ("answered", True),
+        "q1": ("answered", True),
+        "q2": ("answered", True),
+        "q3": ("skipped", False),
+    }
+    assert len(provider.calls) == 3
+
+
+def test_an_abstention_policy_that_does_not_fit_its_question_is_refused_at_ask():
+    policy = AbstentionPolicy(
+        "max_probability", 0.7, labels=("t-sport", "t-econ"), model_id="text-v1", tuning_split_id="v"
+    )
+    with pytest.raises(InvalidJob, match="model_id"):
+        Job.ask(TOPIC, id="t", policy=policy, model_id="other-model")
+    reordered = Choice("Topic?", (("t-econ", "rates bank"), ("t-sport", "goal match")))
+    with pytest.raises(InvalidJob, match="labels"):
+        Job.ask(reordered, id="t", policy=policy, model_id="text-v1")
+
+
+def test_continuations_returning_the_same_state_object_batch_together():
+    shared = ["the keeper saved it", "rates and the bank"]
+    provider = TextProvider()
+    job = Job.collect(
+        {
+            "a": Job.ask(Boolean("Mentions goal"), id="a").then(
+                lambda _: Follow(Job.ask(Boolean("Mentions keeper"), id="a2"), state=shared)
+            ),
+            "b": Job.ask(Boolean("Mentions bank"), id="b").then(
+                lambda _: Follow(Job.ask(Boolean("Mentions rates"), id="b2"), state=shared)
+            ),
+        }
+    )
+    result = job.run(provider, state=TEXTS)
+    assert result.calls == 2 and provider.calls[1] == (("Mentions keeper", "Mentions rates"), tuple(shared))
+
+
+def test_an_answer_count_mismatch_is_a_typed_failure_with_skips():
+    class Short(TextProvider):
+        def decide_many(self, questions, texts):
+            return super().decide_many(questions, texts)[:1]
+
+    with pytest.raises(JobFailed) as caught:
+        Job.collect(_questions(4)).run(Short(), state=TEXTS, limits=Limits(max_questions=2))
+    error = caught.value
+    assert error.failed == ("q0", "q1") and error.skipped == ("q2", "q3")
+    assert error.outcomes["q0"].kind == "failed" and error.outcomes["q2"].kind == "skipped"
+    assert type(error.__cause__).__name__ == "InvalidDecisionResponse"
+
+
+def test_job_errors_pickle_with_their_outcomes_and_concurrency_is_required():
+    with pytest.raises(JobFailed) as caught:
+        Job.collect(_questions(3)).run(
+            TextProvider(fail_on={"Mentions word1"}), state=TEXTS, limits=Limits(max_questions=1)
+        )
+    restored = pickle.loads(pickle.dumps(caught.value))
+    assert type(restored) is JobFailed and str(restored) == str(caught.value)
+    assert restored.failed == ("q1",) and restored.skipped == ("q2",) and set(restored.completed) == {"q0"}
+    with pytest.raises(InvalidJob, match="max_concurrency"):
+        Limits(max_concurrency=None)  # type: ignore[arg-type]

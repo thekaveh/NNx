@@ -20,8 +20,10 @@ whole path locally, with no hosted provider:
      skipped questions, and the continuation waiting on the failed answer
      never runs.
   5. **Async.** ``arun`` runs the same job with up to two calls at once and
-     returns the same answers; a ``cancel`` event stops scheduling and
-     reports the request already sent as sent, not rolled back.
+     returns the same answers; a ``cancel`` event set before the first call
+     stops scheduling, and every question is reported cancelled and not
+     sent (a request whose call had begun would be reported sent, never
+     rolled back).
 
 Fully offline, CPU only.
 
