@@ -1070,3 +1070,64 @@ def test_lazy_layers_are_read_from_the_recorded_shapes():
     nets_model = _model()
     del nets_model._reference_state  # the built-in fallback rebuilds the reference and keeps its lazy keys
     assert nets_model._lazy_base_keys() == frozenset() and nets_model._base_state() is not None
+
+
+# --- review round 11 ---------------------------------------------------------------------------------------
+
+
+def test_a_real_module_name_with_other_characters_is_a_valid_target():
+    from nnx.models import ModelSpec, register_model_factory
+
+    class Blocks(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleDict({"q-proj": nn.Linear(6, 8), "out": nn.Linear(8, 3)})
+
+        def forward(self, x):
+            return self.blocks["out"](torch.relu(self.blocks["q-proj"](x)))
+
+    register_model_factory("tests.hyphenated", 1, lambda config: Blocks())
+    params = NNModelParams(net=ModelSpec("tests.hyphenated", 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = TransformRecipe([lora("blocks.q-proj", r=2, alpha=4.0)]).materialize(NNModel(params=params))
+    assert type(model.net.blocks["q-proj"]).__name__ == "LoRALinear"
+    for bad in ("blocks.*", "blocks..out", "blocks.[q]"):
+        with pytest.raises(RecipeError, match="no globs"):
+            TransformRecipe([lora(bad, r=2, alpha=4.0)])
+
+
+def test_a_recipe_operation_declared_at_train_end_keeps_the_pre_transform_state():
+    from nnx import Callback
+    from nnx.peft import apply_lora_to
+
+    class LoRAAtTrainEnd(Callback):
+        done = False
+
+        def on_train_end(self, ctx):
+            apply_lora_to(ctx.model.net, "layers.0", r=2, alpha=4.0)
+            self.done = True
+
+        def checkpoint_transforms(self):
+            return (lora("layers.0", r=2, alpha=4.0).checkpoint_transform(),) if self.done else ()
+
+    parent = _train(_model(), n_epochs=1, callbacks=[LoRAAtTrainEnd()])
+    last, state = NNCheckpoint.load_with_training_state(run=parent.id, type=Checkpoints.LAST)
+    assert last is not None and state is not None and [t.name for t in last.transforms] == ["lora"]
+    assert state["model"] is not None and state["model_transforms"] == []  # the untransformed state, recorded
+    child = _train(_model(seed=5), n_epochs=1, resume_from_run_id=parent.id)  # resumes the pre-transform state
+    assert child.resume_status is not None and child.resume_status.mode == "stateful"
+
+
+def test_a_fresh_dry_run_builds_its_base_on_the_cpu():
+    from nnx import transforms
+
+    built = []
+    real = transforms._fresh_base
+
+    def spy(model, *, dry_run=False):
+        base = real(model, dry_run=dry_run)
+        built.append((dry_run, base.params.device))
+        return base
+
+    with mock.patch.object(transforms, "_fresh_base", side_effect=spy):
+        _recipe("fresh").validate(_model())
+    assert built == [(True, Devices.CPU)]

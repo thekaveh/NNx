@@ -68,7 +68,7 @@ __all__ = [
 LORA = "lora"
 LOW_RANK = "low_rank"
 _VERSIONS = {LORA: (1,), LOW_RANK: (1,)}
-_PATH_CHARACTERS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")
+_GLOB_CHARACTERS = set("*?[]")
 _Problem = tuple[Optional[int], str, Optional[str], str]
 _Shape = tuple[Optional[int], ...]
 # Per model, the parameters its recipe made stale for an optimizer: the
@@ -228,7 +228,7 @@ def _config_problems(index: Optional[int], op: TransformOp) -> list[_Problem]:
     for target in op.targets:
         if not isinstance(target, str):
             problem(f"targets must be explicit dotted module paths, got a {type(target).__name__}")
-        elif not target or not set(target) <= _PATH_CHARACTERS:
+        elif not target or "" in target.split(".") or set(target) & _GLOB_CHARACTERS:
             problem("targets must be explicit dotted module paths (no globs)", target)
     paths = [target for target in op.targets if isinstance(target, str)]
     if len(set(paths)) != len(paths):
@@ -305,7 +305,7 @@ class TransformRecipe:
             # Checked against the base materialize would build — built here
             # and discarded, leaving the global random streams untouched.
             with _global_rng_kept():
-                base = _fresh_base(model)
+                base = _fresh_base(model, dry_run=True)
             _validate(base.net, self.operations, (), ())
         else:
             _check_source(model, fresh=False)
@@ -435,17 +435,24 @@ def _check_source(model: NNModel, *, fresh: bool) -> None:
         raise RecipeError(problems)
 
 
-def _fresh_base(model: NNModel) -> NNModel:
+def _fresh_base(model: NNModel, *, dry_run: bool = False) -> NNModel:
+    """The plain ``NNModel`` a fresh materialization transforms; a
+    ``dry_run`` (``validate``) builds it on the CPU — the topology is
+    device-independent — so a check never allocates on an accelerator."""
+    from dataclasses import replace
+
     from .models import ModelSpec, _UnpackBatch
+    from .nn.enum.devices import Devices
     from .nn.nn_model import NNModel
 
+    params = replace(model.params, device=Devices.CPU) if dry_run else model.params
     adapter = getattr(model, "_batch_adapter", None)
     # A caller's batch adapter carries over; the default one is bound to the
     # old module, so the fresh model derives its own.
     kwargs = {"batch_adapter": adapter} if adapter is not None and not isinstance(adapter, _UnpackBatch) else {}
-    if isinstance(model.params.net, ModelSpec):
-        return NNModel(params=model.params, **kwargs)
-    return NNModel(params=model.params, net_params=model.net_params, **kwargs)
+    if isinstance(params.net, ModelSpec):
+        return NNModel(params=params, **kwargs)
+    return NNModel(params=params, net_params=model.net_params, **kwargs)
 
 
 def _registration_paths(net: nn.Module) -> dict[int, list[str]]:

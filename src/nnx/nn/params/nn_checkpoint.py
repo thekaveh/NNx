@@ -5,6 +5,7 @@ import os
 import tempfile
 import uuid
 from collections import OrderedDict
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Optional
@@ -308,6 +309,7 @@ class NNCheckpoint:
         rng_state: Optional[dict[str, Any]] = None,
         completed_epoch: Optional[int] = None,
         resume_net_state: Optional[dict[str, Any]] = None,
+        resume_net_transforms: Optional[Sequence[NNCheckpointTransform]] = None,
         optimizer_type: Optional[str] = None,
         scheduler_type: Optional[str] = None,
         optimizer_topology: Optional[list[list[dict[str, Any]]]] = None,
@@ -321,6 +323,10 @@ class NNCheckpoint:
         optimizer_factories: Optional[dict[str, Optional[dict[str, Any]]]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
+
+        ``resume_net_transforms`` (FEAT-016) records the transforms the
+        pre-transform ``resume_net_state`` belongs to, so a resume can check
+        the resuming model's recipe against it.
 
         ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
         mapping of every registered component's versioned state; it lives
@@ -370,6 +376,11 @@ class NNCheckpoint:
                 "rng": rng_state,
                 "completed_epoch": self.idp.epoch_idx if completed_epoch is None else completed_epoch,
                 "model": resume_net_state,
+                # FEAT-016: the transforms that pre-transform state belongs
+                # to (None when there is none, and in older sidecars).
+                "model_transforms": (
+                    None if resume_net_transforms is None else [t.state() for t in resume_net_transforms]
+                ),
                 # FEAT-005: checkpointable components and Trainer's named
                 # optimizers / schedulers (None when absent).
                 "components": components,
