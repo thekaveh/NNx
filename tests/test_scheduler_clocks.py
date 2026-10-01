@@ -81,7 +81,9 @@ def _sched(kind: Schedulers, clock: str = "optimizer_update", **config: Any) -> 
     return NNSchedulerParams(kind=kind, clock=clock, **{**_PLATEAU, **config})  # type: ignore[arg-type]
 
 
-def _train(model, *, epochs=2, loader=None, accumulate=2, scheduler=None, callbacks=(), objective=None, **train):
+def _train(
+    model, *, epochs=2, loader=None, accumulate=2, scheduler=None, callbacks=(), objective=None, step=None, **train
+):
     train.setdefault("overwrite_existing", True)  # several runs per test share a configuration
     params = NNTrainParams(
         n_epochs=epochs,
@@ -91,7 +93,7 @@ def _train(model, *, epochs=2, loader=None, accumulate=2, scheduler=None, callba
         save_phase_checkpoints=False,
         **train,
     )
-    return model.train(params, callbacks=list(callbacks), objective=objective)
+    return model.train(params, callbacks=list(callbacks), objective=objective, train_step_fn=step)
 
 
 # --- params ------------------------------------------------------------------------------------------------
@@ -654,16 +656,49 @@ def test_a_build_scheduler_override_without_n_updates_still_works():
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
     _train(model, scheduler=_sched(Schedulers.STEP, step_size=1))
-    assert built == ["optimizer_update"]
+    _train(model, scheduler=_sched(Schedulers.COSINE_ANNEALING))  # super() still gets the default horizon
+    assert built == ["optimizer_update", "optimizer_update"]
+    assert "_planned_scheduler_updates" not in vars(model)  # the plan is only lent for the build
 
 
-def test_a_loaded_update_clock_does_not_survive_a_plateau_variant():
+def test_a_loaded_update_clock_survives_a_variant_call():
     from nnx.nn.params.nn_scheduler_params_builder import NNSchedulerParamsBuilder
 
-    loaded = NNSchedulerParamsBuilder.from_params(_one_cycle())
-    plateau = loaded.copy().reduce_on_plateau(**_PLATEAU).build()  # the variant replaces the configuration whole
+    retuned = NNSchedulerParamsBuilder.from_params(_one_cycle()).one_cycle(max_lr=0.5, total_steps=24, **_PLATEAU)
+    assert retuned.build().clock == "optimizer_update"  # a horizon never silently switches to counting epochs
+    with pytest.raises(ValueError, match=r"builder: \.clock\('epoch'\)"):
+        NNSchedulerParamsBuilder.from_params(_one_cycle()).reduce_on_plateau(**_PLATEAU).build()
+    plateau = NNSchedulerParamsBuilder.from_params(_one_cycle()).reduce_on_plateau(**_PLATEAU).clock("epoch").build()
     assert plateau.clock == "epoch"
-    chained = NNSchedulerParamsBuilder().clock("optimizer_update").step(step_size=2, **_PLATEAU).build()
-    assert chained.clock == "optimizer_update"  # a clock set in the chain still survives the variant
-    reset = NNSchedulerParamsBuilder.from_params(_one_cycle()).clock("optimizer_update").step(step_size=2, **_PLATEAU)
-    assert reset.build().clock == "optimizer_update"
+
+
+# --- review round 4 ----------------------------------------------------------------------------------------
+
+
+def test_a_built_in_paradigm_step_reports_its_updates():
+    from nnx import mixup_train_step_factory
+
+    monitor = LRMonitor()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no "reported no update" warning
+        _train(
+            _model(),
+            accumulate=1,
+            scheduler=_sched(Schedulers.STEP, step_size=1),
+            callbacks=[monitor],
+            step=mixup_train_step_factory(alpha=0.2),
+        )
+    assert [k for k, _ in monitor.update_history] == list(range(1, 11))  # 2 epochs x 5 batches
+    assert monitor.update_history[-1][1] == pytest.approx(0.1 * 0.5**10)
+
+
+def test_an_nnmodel_step_cannot_report_by_optimizer_name():
+    from nnx.nn.nn_model import default_train_step
+
+    def named(ctx):
+        result = default_train_step(ctx)
+        ctx.report_update("net")
+        return result
+
+    with pytest.raises(TypeError, match="takes no optimizer name in NNModel.train"):
+        _train(_model(), scheduler=_sched(Schedulers.STEP, step_size=1), step=named)

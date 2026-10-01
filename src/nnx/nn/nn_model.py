@@ -2053,12 +2053,15 @@ class NNModel(_HubMixinBase):
             if update_clock and owns_windows
             else None
         )
-        # n_updates goes only to an update-clock schedule, and only to a
-        # _build_scheduler that accepts it (a subclass override may not).
-        accepts = inspect.signature(self._build_scheduler).parameters
-        takes_updates = "n_updates" in accepts or any(p.kind is p.VAR_KEYWORD for p in accepts.values())
-        extra = {"n_updates": n_updates} if update_clock and takes_updates else {}
-        scheduler = _monitored_plateau(self._build_scheduler(optimizer, params, **extra), optimizer, monitor)
+        # The plan reaches _build_scheduler without a new argument, so a
+        # subclass override of _build_scheduler(optimizer, params) that
+        # calls super() still gets the default horizon.
+        self._planned_scheduler_updates = n_updates
+        try:
+            built = self._build_scheduler(optimizer, params)
+        finally:
+            del self._planned_scheduler_updates
+        scheduler = _monitored_plateau(built, optimizer, monitor)
         clock: Optional[SchedulerClock] = None
         if update_clock:
             clock = SchedulerClock(
@@ -2201,7 +2204,7 @@ class NNModel(_HubMixinBase):
         # FEAT-014: a step's committed updates drive an optimizer_update
         # clock (an objective's engine reports to the clock directly).
         report_update: Callable[[], None] = (
-            clock.committed if clock is not None and engine is None else NO_UPDATE_LISTENER
+            clock.report_update if clock is not None and engine is None else NO_UPDATE_LISTENER
         )
         if engine is not None:
             assert objective is not None
@@ -2895,6 +2898,10 @@ class NNModel(_HubMixinBase):
             )
         )
 
+    # The planned committed updates while train() builds an
+    # optimizer_update-clock scheduler (FEAT-014); None otherwise.
+    _planned_scheduler_updates: Optional[int] = None
+
     def _build_scheduler(
         self,
         optimizer: torch.optim.Optimizer,
@@ -2902,6 +2909,8 @@ class NNModel(_HubMixinBase):
         *,
         n_updates: Optional[int] = None,
     ):
+        if n_updates is None:
+            n_updates = self._planned_scheduler_updates
         # If params.scheduler has a `kind` attribute (set by the Schedulers
         # enum), dispatch on it; otherwise fall back to ReduceLROnPlateau
         # for backwards compatibility with existing notebook code.
@@ -2922,7 +2931,8 @@ class NNModel(_HubMixinBase):
         # When a `kind` is supplied, the params dataclass carries kind-specific
         # config. The enum's __call__ knows how to construct.
         # ``n_updates``: the run's planned committed updates, the default
-        # horizon of an optimizer_update clock (FEAT-014).
+        # horizon of an optimizer_update clock (FEAT-014); train() supplies
+        # it through ``_planned_scheduler_updates``.
         return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs, n_updates=n_updates)
 
     def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:

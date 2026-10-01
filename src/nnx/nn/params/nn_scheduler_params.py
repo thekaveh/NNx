@@ -45,7 +45,7 @@ class NNSchedulerParams:
         if self.clock == "optimizer_update" and self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU):
             raise ValueError(
                 "a plateau scheduler reads a monitored metric at the epoch boundary, not an optimizer-update "
-                "clock; use clock='epoch' (the default) for ReduceLROnPlateau"
+                "clock; use clock='epoch' (the default; builder: .clock('epoch')) for ReduceLROnPlateau"
             )
         # Fail-fast on out-of-range numeric fields. None of these are emitted
         # into state() when at their defaults, so validation never shifts a

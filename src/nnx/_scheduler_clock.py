@@ -129,6 +129,17 @@ class SchedulerClock:
         self.scheduler.step()
         self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
 
+    def report_update(self, *names: Any) -> None:
+        """``TrainStepContext.report_update()`` in ``NNModel.train``: one
+        committed update of the run's one optimizer. A name is refused
+        rather than ignored (``Trainer`` steps report by name)."""
+        if names:
+            raise TypeError(
+                f"report_update() takes no optimizer name in NNModel.train (it trains one optimizer); got "
+                f"{names[0]!r}. Trainer step functions report by name"
+            )
+        self.committed()
+
     # ---------- checkpointable component (FEAT-005) ----------
 
     def component_spec(self) -> Any:

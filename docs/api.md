@@ -5510,7 +5510,7 @@ Raises:
 nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.clock(self, clock: 'str') -> 'NNSchedulerParamsBuilder'
 ```
 
-What one scheduler step counts (FEAT-014): ``"epoch"`` (the default) or ``"optimizer_update"`` — once per committed update of the scheduler's optimizer, with horizons counted in updates. Call before or after the variant method (a clock loaded by `from_params` is replaced by a variant call, like the rest of the loaded configuration).
+What one scheduler step counts (FEAT-014): ``"epoch"`` (the default) or ``"optimizer_update"`` — once per committed update of the scheduler's optimizer, with horizons counted in updates. Call before or after the variant method; a variant call keeps the clock (a loaded one too).
 
 ##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.reduce_on_plateau`
 

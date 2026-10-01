@@ -53,10 +53,6 @@ class NNSchedulerParamsBuilder:
 
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
-        # Whether `.clock()` set the clock in this chain: only then does it
-        # survive a later variant call (a loaded configuration is replaced
-        # whole, clock included).
-        self._clock_set = False
 
     def copy(self) -> NNSchedulerParamsBuilder:
         """Return an independent branch of this builder.
@@ -67,7 +63,6 @@ class NNSchedulerParamsBuilder:
         """
         branch = type(self)()
         branch._fields = dict(self._fields)  # every field is an immutable scalar or enum
-        branch._clock_set = self._clock_set
         return branch
 
     @classmethod
@@ -88,9 +83,11 @@ class NNSchedulerParamsBuilder:
         return builder
 
     def _set_variant(self, fields: dict[str, Any]) -> None:
-        # A variant replaces the configuration; a clock set with `.clock()`
-        # (FEAT-014) is orthogonal to it and survives in either call order.
-        clock = self._fields.get("clock") if self._clock_set else None
+        # A variant replaces the configuration; the clock (FEAT-014) is
+        # orthogonal to it and survives in either call order — a loaded
+        # clock too, so a variant never silently changes what a horizon
+        # counts.
+        clock = self._fields.get("clock")
         self._fields = fields
         if clock is not None:
             self._fields["clock"] = clock
@@ -99,11 +96,9 @@ class NNSchedulerParamsBuilder:
         """What one scheduler step counts (FEAT-014): ``"epoch"`` (the
         default) or ``"optimizer_update"`` — once per committed update of
         the scheduler's optimizer, with horizons counted in updates. Call
-        before or after the variant method (a clock loaded by
-        `from_params` is replaced by a variant call, like the rest of the
-        loaded configuration)."""
+        before or after the variant method; a variant call keeps the clock
+        (a loaded one too)."""
         self._fields["clock"] = clock
-        self._clock_set = True
         return self
 
     def reduce_on_plateau(
