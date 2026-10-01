@@ -230,7 +230,9 @@ def test_a_stale_optimizer_is_refused_with_a_rebuild_instruction():
         _recipe().materialize(model, optimizers=[stale])
     assert model._topology_transforms == ()  # refused before anything changed
     _recipe().materialize(model)
-    with pytest.raises(ValueError, match="stale for the model's current topology.*build the optimizer.*after"):
+    with pytest.raises(
+        ValueError, match="does not fit the model's current topology.*build it over the trainable parameters after"
+    ):
         check_optimizer(model, stale)
     check_optimizer(model, build_optimizer(model.net, _OPTIM))  # rebuilt after: fine
 
@@ -414,7 +416,7 @@ def test_a_subset_optimizer_built_after_the_recipe_passes():
     subset = torch.optim.SGD([model.net.layers[0].lora_A, model.net.layers[0].lora_B], lr=0.1)
     check_optimizer(model, subset)
     stale = torch.optim.SGD(model.net.layers[0].base.parameters(), lr=0.1)  # the base a LoRA operation froze
-    with pytest.raises(ValueError, match=r"holds the frozen base but not the adapter of \[.layers.0.\]"):
+    with pytest.raises(ValueError, match=r"holds the frozen base but none of the adapter of \[.layers.0.\]"):
         check_optimizer(model, stale)
 
 
@@ -617,7 +619,7 @@ def test_a_registered_module_recipe_rank_is_checked_before_training():
     model = TransformRecipe([low_rank("0", rank=4)]).materialize(NNModel(params=_register_mlp("tests.rank_mlp")))
     model._assert_reconstructible_topology()  # the recipe's own topology passes
     model.net[0] = low_rank_factorize(nn.Linear(6, 8), rank=2)  # same names, another rank
-    with pytest.raises(ValueError, match=r"0\.0\.weight has shape \(2, 6\), its recipe and base give \(4, None\)"):
+    with pytest.raises(ValueError, match=r"0\.0\.weight has shape \(2, 6\), its recipe and base give \(4, 6\)"):
         model._assert_reconstructible_topology()
 
 
@@ -636,7 +638,9 @@ def test_check_optimizer_ignores_parameters_outside_the_net_and_refuses_a_fresh_
     source = _model()
     source_optimizer = build_optimizer(source.net, _OPTIM)
     fresh = _recipe("fresh").materialize(source)
-    with pytest.raises(ValueError, match=r"\(\d+ parameters it holds were replaced by its recipe"):
+    with pytest.raises(
+        ValueError, match=r"it holds \d+ parameters its recipe replaced, so it was built before the recipe"
+    ):
         check_optimizer(fresh, source_optimizer)
     check_optimizer(fresh, build_optimizer(fresh.net, _OPTIM))
 
@@ -699,7 +703,10 @@ def test_a_recipe_on_a_layer_the_base_lacks_is_refused():
     model = _model()
     model.net.extra = nn.Linear(4, 4, bias=False)  # unrecorded surgery adds a layer
     recipe = TransformRecipe([lora("extra", r=2, alpha=4.0)])
-    with pytest.raises(RecipeError, match="'extra': is not a layer of the model's base"):
+    with pytest.raises(
+        RecipeError,
+        match=r"differs from its descriptor plus its recorded recipe.*unexpected tensors \['extra.weight'\]",
+    ):
         recipe.materialize(model)  # refused before anything is recorded or saved
     assert type(model.net.extra) is nn.Linear and model._topology_transforms == ()
     apply_lora_to(model.net, "extra", r=2, alpha=4.0)  # recorded by hand, bypassing validation
@@ -738,7 +745,7 @@ def test_a_bitfit_optimizer_built_after_the_recipe_passes():
     model = TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(_model())
     model.net.layers[0].base.bias.requires_grad_(True)  # base bias deliberately unfrozen, adapter left out
     check_optimizer(model, torch.optim.SGD([model.net.layers[0].base.bias, *model.net.layers[2].parameters()], lr=0.1))
-    with pytest.raises(ValueError, match="holds the frozen base but not the adapter"):
+    with pytest.raises(ValueError, match="holds the frozen base but none of the adapter"):
         check_optimizer(model, torch.optim.SGD([model.net.layers[0].base.weight], lr=0.1))
 
 
@@ -756,7 +763,7 @@ def test_the_pre_training_topology_check_leaves_an_unused_cuda_context_alone():
     with mock.patch.object(torch.cuda, "is_initialized", return_value=False):
         with mock.patch.object(seeding, "_capture_rng_state", side_effect=spy):
             model._assert_reconstructible_topology()
-    assert captured == [False]
+    assert captured == []  # the base was recorded at construction: nothing is rebuilt, no stream is read
 
 
 # --- review round 5 ----------------------------------------------------------------------------------------
@@ -765,7 +772,7 @@ def test_the_pre_training_topology_check_leaves_an_unused_cuda_context_alone():
 def test_an_in_place_target_resized_by_unrecorded_surgery_is_refused():
     model = _model()
     model.net.layers[1] = nn.Linear(16, 40)  # the base gives Linear(16, 12)
-    with pytest.raises(RecipeError, match=r"'layers.1': has shape \(40, 16\), the model's base gives \(12, 16\)"):
+    with pytest.raises(RecipeError, match=r"layers.1.weight has shape \(40, 16\), its recipe and base give \(12, 16\)"):
         TransformRecipe([lora("layers.1", r=2, alpha=4.0)]).materialize(model)
 
 
@@ -801,3 +808,99 @@ def test_integer_and_float_lora_numbers_are_one_recipe_with_one_run_id():
         return NNRun(train=params, model=model.params, net=model.net_params, transforms=transforms).id
 
     assert run_id(ints) == run_id(floats)
+
+
+# --- review round 6 ----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("surgery", ["drop a target's bias", "widen another layer"])
+def test_unrecorded_surgery_anywhere_refuses_an_in_place_recipe(surgery):
+    model = _model()
+    if surgery == "drop a target's bias":
+        model.net.layers[0] = nn.Linear(6, 16, bias=False)  # same weight shape, no bias
+    else:
+        model.net.layers[2] = nn.Linear(12, 5)  # a layer the recipe does not touch
+    with pytest.raises(RecipeError, match="differs from its descriptor plus its recorded recipe"):
+        TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(model)
+    assert model._topology_transforms == ()
+
+
+def test_a_registered_module_resized_by_unrecorded_surgery_is_refused():
+    model = NNModel(params=_register_mlp("tests.resized_mlp"))
+    model.net[0], model.net[2] = nn.Linear(6, 40), nn.Linear(40, 3)
+    with pytest.raises(RecipeError, match=r"0\.weight has shape \(40, 6\), its recipe and base give \(8, 6\)"):
+        TransformRecipe([lora("0", r=2, alpha=4.0)]).materialize(model)
+
+
+def test_an_unrepresentable_lora_alpha_is_a_recipe_error():
+    with pytest.raises(RecipeError, match="alpha must be a finite positive number"):
+        TransformRecipe([lora("layers.0", r=2, alpha=10**400)])
+    model = _recipe().materialize(_model())
+    checkpoint = _checkpoint(model)
+    options = {"targets": ["layers.0"], "r": 4, "alpha": 10**400, "dropout": 0.0}
+    tampered = NNCheckpoint(
+        idp=checkpoint.idp,
+        model_params=checkpoint.model_params,
+        net_params=checkpoint.net_params,
+        net_state=checkpoint.net_state,
+        transforms=(NNCheckpointTransform(name="lora", version=1, options=options), checkpoint.transforms[1]),
+    )
+    with pytest.raises(ValueError, match=r"topology transform 0 \('lora' version 1\) cannot be replayed.*alpha"):
+        NNModel.from_checkpoint(tampered)
+
+
+def test_a_reloaded_recipe_keeps_the_canonical_form_and_run_id():
+    from nnx.nn.params.nn_run import NNRun
+
+    model = TransformRecipe([lora("layers.0", r=4, alpha=8.0)]).materialize(_model())
+    checkpoint = _checkpoint(model)
+    written_with_ints = NNCheckpoint(
+        idp=checkpoint.idp,
+        model_params=checkpoint.model_params,
+        net_params=checkpoint.net_params,
+        net_state=checkpoint.net_state,
+        transforms=(
+            NNCheckpointTransform(
+                name="lora", version=1, options={"targets": ["layers.0"], "r": 4, "alpha": 8, "dropout": 0}
+            ),
+        ),
+    )
+    reloaded = NNModel.from_checkpoint(written_with_ints)
+    assert [t.state() for t in reloaded._topology_transforms] == [t.state() for t in model._topology_transforms]
+    params = NNTrainParams(n_epochs=1, seed=0, train_loader=_loader(), optim=_OPTIM)
+    ids = {
+        NNRun(train=params, model=m.params, net=m.net_params, transforms=m._topology_transforms).id
+        for m in (model, reloaded)
+    }
+    assert len(ids) == 1
+
+
+def test_the_optimizer_error_names_only_what_happened():
+    model = TransformRecipe([low_rank("layers.1", rank=4)]).materialize(_model(), optimizers=())
+    unrelated = torch.optim.SGD([_model().net.layers[0].weight], lr=0.1)  # another model's parameters
+    check_optimizer(model, unrelated)
+    replaced_model = _model()
+    before = build_optimizer(replaced_model.net, _OPTIM)
+    TransformRecipe([low_rank("layers.1", rank=4)]).materialize(replaced_model)
+    with pytest.raises(ValueError) as caught:
+        check_optimizer(replaced_model, before)
+    assert "its recipe replaced" in str(caught.value) and "adapter" not in str(caught.value)
+    lora_model = TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(_model())
+    with pytest.raises(ValueError) as caught:
+        check_optimizer(lora_model, torch.optim.SGD([lora_model.net.layers[0].base.weight], lr=0.1))
+    assert "adapter" in str(caught.value) and "its recipe replaced" not in str(caught.value)
+
+
+def test_an_in_place_validation_rebuilds_nothing():
+    model = _model()
+    built = []
+    real = nn.Linear.__init__
+
+    def counting(self, *args, **kwargs):
+        built.append(1)
+        real(self, *args, **kwargs)
+
+    with mock.patch.object(nn.Linear, "__init__", counting):
+        TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).validate(model)
+        model._assert_reconstructible_topology()
+    assert built == []  # the base was recorded when the model was built

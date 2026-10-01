@@ -159,7 +159,7 @@ class TransformOp:
         if self.id == LORA:
             # alpha=4 and alpha=4.0 are one recipe, with one run id.
             for key in ("alpha", "dropout"):
-                if type(config.get(key)) is int:
+                if type(config.get(key)) is int and _finite(config[key]):
                     config[key] = float(config[key])
         object.__setattr__(self, "config", _FrozenConfig(config))
 
@@ -202,6 +202,14 @@ def low_rank(*targets: str, rank: int, method: str = "svd") -> TransformOp:
     return TransformOp(id=LOW_RANK, targets=tuple(targets), config={"rank": rank, "method": method})
 
 
+def _finite(number: Any) -> bool:
+    """A finite real a float can hold (a huge int cannot)."""
+    try:
+        return math.isfinite(number)
+    except OverflowError:
+        return False
+
+
 def _config_problems(index: Optional[int], op: TransformOp) -> list[_Problem]:
     """Operation-level problems, independent of any model."""
     problems: list[_Problem] = []
@@ -233,7 +241,7 @@ def _config_problems(index: Optional[int], op: TransformOp) -> list[_Problem]:
         r, alpha, dropout = op.config["r"], op.config["alpha"], op.config["dropout"]
         if isinstance(r, bool) or not isinstance(r, int) or r < 1:
             problem(f"r must be a positive integer, got {r!r}")
-        if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not math.isfinite(alpha) or alpha <= 0:
+        if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not _finite(alpha) or alpha <= 0:
             problem(f"alpha must be a finite positive number, got {alpha!r}")
         if isinstance(dropout, bool) or not isinstance(dropout, (int, float)) or not 0 <= dropout < 1:
             problem(f"dropout must be in [0, 1), got {dropout!r}")
@@ -301,9 +309,14 @@ class TransformRecipe:
             _validate(base.net, self.operations, (), ())
         else:
             _check_source(model, fresh=False)
-            _validate(
-                model.net, self.operations, _recorded_operations(model), list(optimizers), base=model._base_state()
-            )
+            recorded = _recorded_operations(model)
+            base = model._base_state()
+            # The model must already be its descriptor plus its recorded
+            # recipe, or nothing recorded on it could ever be rebuilt.
+            drift = [] if base is None else _topology_problems(model.net, base, model._topology_transforms)
+            reason = "the model differs from its descriptor plus its recorded recipe (unrecorded surgery?): "
+            preexisting = [(None, "recipe", None, reason + problem) for problem in drift[:5]]
+            _validate(model.net, self.operations, recorded, list(optimizers), problems=preexisting)
 
     def materialize(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> NNModel:
         """Validate the whole recipe (as :meth:`validate`), then apply it —
@@ -316,6 +329,7 @@ class TransformRecipe:
         were."""
         from .seeding import _global_rng_state, _restore_rng_state
         from .surgery._utils import get_module, set_module
+        from .utils import _capture_training_modes, _restore_training_modes
 
         streams = _global_rng_state()
         replaced: list[tuple[str, nn.Module]] = []
@@ -330,7 +344,7 @@ class TransformRecipe:
             # Building a LoRA wrapper freezes its base and sets modes, so a
             # rollback also restores every flag and mode as it was.
             flags = [(p, p.requires_grad) for p in target.net.parameters()]
-            modes = [(m, m.training) for m in target.net.modules()]
+            modes = _capture_training_modes(target.net)
             try:
                 for op in self.operations:
                     for path in op.targets:
@@ -342,8 +356,7 @@ class TransformRecipe:
                     set_module(target.net, path, original)
                 for parameter, requires_grad in flags:
                     parameter.requires_grad_(requires_grad)
-                for module, training in modes:
-                    module.training = training
+                _restore_training_modes(modes)
                 raise
         except BaseException:
             _restore_rng_state(streams, None)
@@ -439,12 +452,11 @@ def _validate(
     optimizers: Sequence[Any],
     *,
     indexed: bool = True,
-    base: Optional[Mapping[str, Optional[_Shape]]] = None,
+    problems: Sequence[_Problem] = (),
 ) -> None:
-    """Every problem of ``operations`` on ``net``. ``base`` — the
-    ``{key: shape}`` the model's descriptor rebuilds, for an in-place
-    materialization — refuses a target a rebuild could not reproduce."""
-    problems: list[_Problem] = []
+    """Raise one :class:`RecipeError` naming every problem of
+    ``operations`` on ``net``, after any ``problems`` already found."""
+    problems = list(problems)
     paths = _registration_paths(net)
     owners = [(op, path) for op in recorded for path in op.targets]
     for position, op in enumerate(operations):
@@ -471,19 +483,6 @@ def _validate(
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:
                 problems.append((index, op.id, path, f"the same nn.Linear is registered under {aliases}"))
-            if base is not None:
-                key = f"{path}.weight"
-                if key not in base:
-                    reason = (
-                        "is not a layer of the model's base (unrecorded surgery?), so no checkpoint could rebuild it"
-                    )
-                    problems.append((index, op.id, path, reason))
-                elif base[key] is not None and tuple(module.weight.shape) != base[key]:
-                    reason = (
-                        f"has shape {tuple(module.weight.shape)}, the model's base gives {base[key]} (unrecorded "
-                        "surgery?), so no checkpoint could rebuild it"
-                    )
-                    problems.append((index, op.id, path, reason))
             if op.id == LOW_RANK and isinstance(op.config.get("rank"), int):
                 limit = min(module.in_features, module.out_features)
                 if op.config["rank"] > limit:
@@ -560,7 +559,16 @@ def _replay(model: NNModel, transform: NNCheckpointTransform) -> None:
     _validate(model.net, (op,), _recorded_operations(model), (), indexed=False)
     for path in op.targets:
         set_module(model.net, path, _build(op, get_module(model.net, path), allocate_only=True))
-    model._topology_transforms = (*model._topology_transforms, transform)
+    model._topology_transforms = (*model._topology_transforms, op.checkpoint_transform())
+
+
+def _canonical_transforms(transforms: Iterable[NNCheckpointTransform]) -> tuple[NNCheckpointTransform, ...]:
+    """Recorded transforms with each recipe operation in its canonical
+    form (integer LoRA numbers as floats), as a materialized recipe records
+    them — so a reloaded model keeps the run id the recipe gives."""
+    return tuple(
+        TransformOp.from_checkpoint_transform(t).checkpoint_transform() if _replayable(t) else t for t in transforms
+    )
 
 
 def _expected_state(
@@ -694,10 +702,14 @@ def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
             )
             if holds_base and not any(isinstance(p, nn.Parameter) and id(p) in held_ids for p in adapter):
                 unadapted.append(path)
-    if stale or unadapted:
+    reasons = []
+    if stale:
+        reasons.append(f"it holds {stale} parameters its recipe replaced, so it was built before the recipe")
+    if unadapted:
+        reasons.append(f"it holds the frozen base but none of the adapter of {unadapted}, which would never train")
+    if reasons:
         raise ValueError(
-            f"this optimizer is stale for the model's current topology ({stale} parameters it holds were replaced by its "
-            f"recipe; it holds the frozen base but not the adapter of {unadapted}, which would never train): build the "
-            "optimizer over the trainable parameters after "
-            "materializing the recipe, e.g. nnx.optimizers.build_optimizer(model.net, optim_params)"
+            f"this optimizer does not fit the model's current topology: {'; '.join(reasons)} — build it over the "
+            "trainable parameters after materializing the recipe, e.g. nnx.optimizers.build_optimizer(model.net, "
+            "optim_params)"
         )

@@ -42,9 +42,9 @@ from ..monitors import (
     _TrainEpochSummary,
 )
 from ..provenance import ExperimentManifest
-from ..seeding import _capture_rng_state, _global_rng_kept, _restore_rng_state  # the loop's checkpointed RNG streams
+from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
-from ..transforms import _recipe_transforms, _replayable
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -888,6 +888,18 @@ def _tensor_keys(state: Mapping[str, Any]) -> set[str]:
     return {key for key, value in state.items() if isinstance(value, torch.Tensor)}
 
 
+def _state_shapes(state: Mapping[str, Any]) -> dict[str, Optional[tuple[int, ...]]]:
+    """``{key: shape}`` of a state's tensors; ``None`` for an uninitialized
+    lazy parameter, whose shape is not known yet."""
+    from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
+
+    return {
+        key: None if isinstance(value, (UninitializedParameter, UninitializedBuffer)) else tuple(value.shape)
+        for key, value in state.items()
+        if isinstance(value, torch.Tensor)
+    }
+
+
 def _to_device(value: Any, device: torch.device) -> Any:
     """Move a tensor (or anything with ``.to``, e.g. a graph batch) to the
     device; other values pass through."""
@@ -1372,10 +1384,14 @@ class NNModel(_HubMixinBase):
             self.net = module.to(self.device)
         elif isinstance(net, ModelSpec):
             self.net = build_module(net).to(self.device)
-            self._reference_state_keys = tuple(_tensor_keys(self.net.state_dict()))
         else:
             assert isinstance(net, Nets) and net_params is not None
             self.net = net(params=net_params).to(self.device)
+        if module is None:
+            # The tensors the descriptor rebuilds, recorded once from the
+            # module just built — never a second construction (FEAT-006) —
+            # for the reconstructibility checks (FEAT-016).
+            self._reference_state = _state_shapes(self.net.state_dict())
         # Built-in nets keep their own unpack_batch (the legacy path); other
         # modules see batches through an adapter (FEAT-006).
         self._batch_adapter: Optional[BatchAdapter] = (
@@ -1401,19 +1417,12 @@ class NNModel(_HubMixinBase):
             adapter.check_loss_fn(self.loss_fn)
 
     def _base_state(self) -> Optional[dict[str, Optional[tuple[int, ...]]]]:
-        """``{key: shape}`` of the tensors the descriptor rebuilds (shapes
-        ``None`` for a registered factory, whose layout is recorded by name
-        when it builds the module — never a second construction, FEAT-006);
-        ``None`` for a runtime module, which nothing rebuilds."""
-        net = self.params.net
-        if isinstance(net, ModelSpec):
-            return dict.fromkeys(getattr(self, "_reference_state_keys", ()))
-        if isinstance(net, Nets):
-            assert self.net_params is not None
-            with _global_rng_kept():  # a throwaway build leaves the random streams alone
-                fresh = net(params=self.net_params).state_dict()
-            return {key: tuple(value.shape) for key, value in fresh.items() if isinstance(value, torch.Tensor)}
-        return None
+        """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
+        when the model built its module (a shape is ``None`` for an
+        uninitialized lazy parameter); ``None`` for a runtime module, which
+        nothing rebuilds."""
+        recorded = getattr(self, "_reference_state", None)
+        return None if recorded is None else dict(recorded)
 
     def _assert_reconstructible_topology(self) -> None:
         transforms = tuple(self._topology_transforms)
@@ -1636,7 +1645,7 @@ class NNModel(_HubMixinBase):
             model = cls(params=model_params, net_params=checkpoint.net_params, **model_kwargs)
 
         _replay_transforms(model, transforms)
-        model._topology_transforms = transforms
+        model._topology_transforms = _canonical_transforms(transforms)
         if not transforms:
             _refuse_unrecorded_recipe_state(checkpoint.net_state, model.net.state_dict())
         if not isinstance(net, Nets):
@@ -1859,7 +1868,7 @@ class NNModel(_HubMixinBase):
             reconstruction_kwargs["batch_adapter"] = batch_adapter
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
         _replay_transforms(model, transforms)
-        model._topology_transforms = transforms
+        model._topology_transforms = _canonical_transforms(transforms)
         state_dict = load_file(weights_path, device=str(torch_load_device))
         if not transforms and strict:
             _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
