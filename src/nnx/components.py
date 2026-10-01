@@ -144,6 +144,9 @@ class ResumeStatus:
             ``"weights_only"`` (model weights only — the checkpoint had no
             training state, or ``resume_mode="weights_only"`` was asked).
         source_run_id / source_checkpoint: where the resume came from.
+        source_epoch: the epoch of that checkpoint when the session resumed
+            from it (FEAT-036's lineage reads it); ``None`` for a fresh run
+            and for status recorded before it existed.
         restored_components: names of the components whose state was
             restored, in registration order.
         fresh_components: registered components that kept their fresh
@@ -156,15 +159,19 @@ class ResumeStatus:
     source_checkpoint: Optional[str] = None
     restored_components: tuple[str, ...] = ()
     fresh_components: tuple[str, ...] = ()
+    source_epoch: Optional[int] = None
 
     def state(self) -> dict[str, Any]:
-        return {
+        state: dict[str, Any] = {
             "mode": self.mode,
             "source_run_id": self.source_run_id,
             "source_checkpoint": self.source_checkpoint,
             "restored_components": list(self.restored_components),
             "fresh_components": list(self.fresh_components),
         }
+        if self.source_epoch is not None:  # omitted when unknown: earlier metadata reads the same
+            state["source_epoch"] = self.source_epoch
+        return state
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> ResumeStatus:
@@ -174,6 +181,7 @@ class ResumeStatus:
             source_checkpoint=state.get("source_checkpoint"),
             restored_components=tuple(state.get("restored_components") or ()),
             fresh_components=tuple(state.get("fresh_components") or ()),
+            source_epoch=state.get("source_epoch"),
         )
 
     def __post_init__(self) -> None:

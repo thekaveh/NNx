@@ -26,28 +26,29 @@ On disk, ``runs/<id>/history/`` holds::
     journal.json        the small manifest — counts, byte lengths and the
                         index chain — replaced atomically
 
-**Commit protocol.** Each epoch's records are written and the manifest is
-published *before* the LAST checkpoint, which stays the epoch's commit
-marker. Readers show only records up to LAST's epoch: a crash while a chunk
-is written or before the manifest is replaced leaves the previous manifest,
-and a crash before LAST is replaced leaves an uncommitted tail that is
-ignored. A committed chunk whose bytes no longer match its SHA-256 raises
+**Commit protocol.** Each epoch's records are written (and, with the index
+and summary rows, flushed to disk) and the manifest is published *before*
+the LAST checkpoint, which stays the epoch's commit marker. Readers show
+only records up to LAST's epoch: a crash while a chunk is written or before
+the manifest is replaced leaves the previous manifest, and a crash before
+LAST is replaced leaves an uncommitted tail that is ignored. A committed
+chunk whose bytes no longer match its SHA-256 raises
 :class:`HistoryCorruptionError`.
 
 **Callbacks.** Built-in callbacks read ``ctx.idp`` (the epoch's last record),
-so the window changes nothing for them; ``LRMonitor.history`` keeps the same
-window. A ``Callback`` that needs the whole history sets
-``history_access = "full"`` and gets the materialised history as ``ctx.idps``
-at ``on_epoch_end`` and ``on_train_end`` (read back from the journal: its cost
-grows with the run). A plain function callback — ``callbacks=[lambda idps:
-...]``, which by contract receives the full list — is refused before
-training, as is an unknown ``history_access``.
+so the window changes nothing for them; ``LRMonitor.history`` keeps the LRs
+of the last ``retention`` epochs. A ``Callback`` that needs the whole history
+sets ``history_access = "full"`` and gets the materialised history as
+``ctx.idps`` at ``on_epoch_end`` and ``on_train_end`` (read back from the
+journal: its cost grows with the run). A plain function callback —
+``callbacks=[lambda idps: ...]``, which by contract receives the full list —
+is refused before training, as is an unknown ``history_access``.
 
 **Lineage.** A resumed run owns its own run directory and chunk files; its
 parent is never written. ``iter_history(run_id, lineage=True)`` yields the
-parent's committed records that precede the child's first epoch (following
-``resume_from_run_id`` / ``parent_run_id``, recursively), then the child's —
-never the parent prefix twice.
+parent's committed records up to the checkpoint the child resumed from
+(following ``resume_from_run_id`` / ``parent_run_id``, recursively), then
+the child's — never the parent's later epochs, never an epoch twice.
 """
 
 from __future__ import annotations
@@ -57,6 +58,8 @@ import hashlib
 import json
 import math
 import os
+import tempfile
+import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -83,6 +86,7 @@ _INDEX = "index.jsonl"
 _EPOCHS = "epochs.jsonl"
 _GENESIS = "0" * 64
 _ACCESS = ("window", "full")
+_SERIES = ("train_loss", "train_err", "val_loss", "val_err", "monitor")
 
 
 class HistoryCorruptionError(ValueError):
@@ -100,29 +104,56 @@ class HistoryJournal:
             loaded run).
         chunk_size: records per journal chunk file, at most ``retention``
             (so the records waiting for their chunk are always inside the
-            window).
+            window). ``None`` (the default) means ``min(250, retention)``;
+            :attr:`chunk` is the resolved size.
     """
 
     retention: int = 1000
-    chunk_size: int = 250
+    chunk_size: Optional[int] = None
 
     def __post_init__(self) -> None:
-        for name in ("retention", "chunk_size"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"HistoryJournal.{name} must be a positive integer, got {value!r}")
-        if self.chunk_size > self.retention:
-            raise ValueError(
-                f"HistoryJournal.chunk_size ({self.chunk_size}) must not exceed retention ({self.retention}): "
-                "records waiting for their chunk stay in memory"
+        from ._validation import require_count
+
+        object.__setattr__(
+            self, "retention", require_count(self.retention, "retention", owner="HistoryJournal", minimum=1)
+        )
+        if self.chunk_size is not None:
+            object.__setattr__(
+                self, "chunk_size", require_count(self.chunk_size, "chunk_size", owner="HistoryJournal", minimum=1)
             )
+            if self.chunk_size > self.retention:
+                raise ValueError(
+                    f"HistoryJournal.chunk_size ({self.chunk_size}) must not exceed retention ({self.retention}): "
+                    "records waiting for their chunk stay in memory"
+                )
+
+    @property
+    def chunk(self) -> int:
+        """Records per chunk file: ``chunk_size``, or ``min(250, retention)``."""
+        return self.chunk_size if self.chunk_size is not None else min(250, self.retention)
 
 
 # --- encoding --------------------------------------------------------------------------------
 
 
+def _scalar(value: Any) -> Any:
+    """A NumPy or 0-d tensor scalar in a record (a custom step's metric,
+    say) as the Python number it holds — ``idps.csv`` writes those too."""
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            result = item()
+        except (TypeError, ValueError, RuntimeError):
+            pass
+        else:
+            if result is None or isinstance(result, (bool, int, float, str)):
+                return result
+    raise TypeError(f"a history record holds a {type(value).__name__}, which the journal cannot store as JSON")
+
+
 def _record_line(record: NNIterationDataPoint) -> bytes:
-    return json.dumps(record.state(), separators=(",", ":"), allow_nan=True).encode("utf-8") + b"\n"
+    text = json.dumps(record.state(), separators=(",", ":"), allow_nan=True, default=_scalar)
+    return text.encode("utf-8") + b"\n"
 
 
 def _record(line: bytes) -> NNIterationDataPoint:
@@ -132,7 +163,8 @@ def _record(line: bytes) -> NNIterationDataPoint:
 
 
 def _json_line(value: Any) -> bytes:
-    return json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=True).encode("utf-8") + b"\n"
+    text = json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=True, default=_scalar)
+    return text.encode("utf-8") + b"\n"
 
 
 def _chain(previous: str, line: bytes) -> str:
@@ -159,7 +191,6 @@ class _EpochStats:
 
     def _reset(self, epoch: Optional[int]) -> None:
         self.epoch = epoch
-        self.records = 0
         self.loss_sum = 0.0
         self.loss_n = 0
         self.err_sum = 0.0
@@ -168,7 +199,6 @@ class _EpochStats:
     def add(self, record: NNIterationDataPoint) -> None:
         if self.epoch != record.epoch_idx:
             self._reset(record.epoch_idx)
-        self.records += 1
         train = record.train_edp
         if train is not None and train.loss is not None:
             self.loss_sum += train.loss
@@ -178,30 +208,66 @@ class _EpochStats:
             self.err_n += 1
 
     def row(self, last: NNIterationDataPoint) -> dict[str, Any]:
-        nan = float("nan")
-        summary = last.train_summary
-        if summary is not None:
-            train_loss = summary.loss if summary.loss is not None else nan
-            train_err = summary.error if summary.error is not None else nan
-        else:
-            train_loss = self.loss_sum / self.loss_n if self.loss_n else nan
-            train_err = self.err_sum / self.err_n if self.err_n else nan
-        val = last.val_edp
-        record = last.selection
+        """The epoch's chart row — the rules ``NNRun._epoch_series`` applies
+        to an eager run, from the epoch's last record (the only one that
+        carries validation, the summary and the monitor record)."""
+        from .nn.params.nn_run import _epoch_values
+
+        values = _epoch_values(
+            last.train_summary,
+            (self.loss_sum, self.loss_n),
+            (self.err_sum, self.err_n),
+            last.val_edp,
+            last.selection,
+        )
         return {
             "epoch": last.epoch_idx,
-            "records": self.records,
-            "train_loss": _nan_to_none(train_loss),
-            "train_err": _nan_to_none(train_err),
-            "val_loss": _nan_to_none(val.loss) if val is not None else None,
-            "val_err": _nan_to_none(val.error) if val is not None else None,
-            "monitor": _nan_to_none(record.value) if record is not None else None,
-            "monitor_key": record.monitor.key if record is not None else None,
-            "improved": bool(record is not None and record.improved),
+            **{name: _nan_to_none(values[name]) for name in _SERIES},
+            "improved": values["improved"],
         }
 
 
 # --- writing ---------------------------------------------------------------------------------
+
+
+def _fsync_path(path: str) -> None:
+    """Flush a written file (or a directory entry) to disk; like the run's
+    other writers, a filesystem that cannot fsync is tolerated."""
+    try:
+        # A file is opened for writing: Windows' fsync needs a writable handle.
+        fd = os.open(path, os.O_RDONLY if os.path.isdir(path) else os.O_RDWR)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _append_bytes(path: str, data: bytes) -> None:
+    """Append to the index or the epoch rows. Not fsynced here: the epoch's
+    files are flushed together before its manifest is published."""
+    with open(path, "ab") as handle:
+        handle.write(data)
+
+
+def _write_chunk_file(path: str, data: bytes) -> None:
+    """A chunk is written once: an owned temporary file, renamed into place
+    (the temporary is removed if anything fails). Not fsynced here — see
+    :func:`_append_bytes`."""
+    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def _empty_manifest(spec: HistoryJournal) -> dict[str, Any]:
@@ -209,7 +275,7 @@ def _empty_manifest(spec: HistoryJournal) -> dict[str, Any]:
         "format": JOURNAL_FORMAT,
         "version": JOURNAL_VERSION,
         "retention": spec.retention,
-        "chunk_size": spec.chunk_size,
+        "chunk_size": spec.chunk,
         "chunks": 0,
         "records": 0,
         "index_bytes": 0,
@@ -219,108 +285,113 @@ def _empty_manifest(spec: HistoryJournal) -> dict[str, Any]:
     }
 
 
-def _manifest_text(manifest: dict[str, Any]) -> bytes:
-    return (json.dumps(manifest, sort_keys=True, indent=1) + "\n").encode("utf-8")
-
-
-def _append_bytes(path: str, data: bytes) -> None:
-    with open(path, "ab") as handle:
-        handle.write(data)
-        handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except OSError:
-            pass
-
-
-def _write_chunk_file(path: str, data: bytes) -> None:
-    """A chunk is written once: a temporary file, fsynced, renamed."""
-    temporary = f"{path}.tmp"
-    with open(temporary, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except OSError:
-            pass
-    os.replace(temporary, path)
+def _manifest_text(manifest: dict[str, Any]) -> str:
+    return json.dumps(manifest, sort_keys=True, indent=1) + "\n"
 
 
 class _JournalWriter:
     """Appends one run's records as immutable chunks and publishes the
-    manifest; memory is bounded by ``chunk_size`` records (and one index
-    line per chunk)."""
+    manifest; memory is bounded by ``chunk_size`` records (and one file
+    name per chunk)."""
 
     def __init__(self, directory: str, spec: HistoryJournal) -> None:
         self.directory = directory
         self.spec = spec
-        self.seq = 0
+        self.chunk_size = spec.chunk
         self.records = 0
         self.index_bytes = 0
         self.index_chain = _GENESIS
         self.epochs = 0
         self.epochs_bytes = 0
-        self.chunks: list[str] = []  # this writer's chunk files, for full-history callbacks
+        self.chunks = 0  # chunk files written, named by sequence number
+        self._synced = 0  # chunks already flushed to disk
         self._pending: list[NNIterationDataPoint] = []
+        self._lines: list[bytes] = []  # the pending records, encoded as they arrive
         self._stats = _EpochStats()
-        self._published: Optional[bytes] = None
-        self._previous: Optional[bytes] = None
+        self._published: Optional[str] = None
+        self._previous: Optional[str] = None
 
     def _ensure(self) -> None:
-        os.makedirs(self.directory, exist_ok=True)
+        if not os.path.isdir(self.directory):
+            os.makedirs(self.directory, exist_ok=True)
+            self._new_directory = True  # its entry in the run directory is flushed with the epoch
 
-    def append(self, record: NNIterationDataPoint) -> None:
+    _new_directory = False
+
+    def append(self, record: NNIterationDataPoint, line: Optional[bytes] = None) -> None:
+        if line is None:
+            line = _record_line(record)  # a value the journal cannot store fails on its first batch
         self._pending.append(record)
+        self._lines.append(line)
         self._stats.add(record)
-        if len(self._pending) > self.spec.chunk_size:  # all but the newest record are final
-            self._write_chunk(self._pending[: self.spec.chunk_size])
-            del self._pending[: self.spec.chunk_size]
+        if len(self._pending) > self.chunk_size:  # all but the newest record are final
+            self._flush(self.chunk_size)
 
     def replace_last(self, record: NNIterationDataPoint) -> None:
+        self._lines[-1] = _record_line(record)
         self._pending[-1] = record
 
-    def _write_chunk(self, records: Sequence[NNIterationDataPoint]) -> None:
+    def _flush(self, count: int) -> None:
+        self._write_chunk(self._pending[:count], self._lines[:count])
+        del self._pending[:count]
+        del self._lines[:count]
+
+    def _write_chunk(self, records: Sequence[NNIterationDataPoint], lines: Sequence[bytes]) -> None:
         self._ensure()
-        data = b"".join(_record_line(record) for record in records)
-        name = _chunk_name(self.seq)
+        data = b"".join(lines)
+        seq = self.chunks
+        name = _chunk_name(seq)
         _write_chunk_file(os.path.join(self.directory, name), data)
-        entry = {
-            "seq": self.seq,
-            "file": name,
-            "records": len(records),
-            "first_iter": records[0].iter_idx,
-            "last_iter": records[-1].iter_idx,
-            "first_epoch": records[0].epoch_idx,
-            "last_epoch": records[-1].epoch_idx,
-            "sha256": hashlib.sha256(data).hexdigest(),
-        }
-        line = _json_line(entry)
+        line = _json_line(
+            {
+                "seq": seq,
+                "file": name,
+                "records": len(records),
+                "first_iter": records[0].iter_idx,
+                "last_iter": records[-1].iter_idx,
+                "first_epoch": records[0].epoch_idx,
+                "last_epoch": records[-1].epoch_idx,
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
         _append_bytes(os.path.join(self.directory, _INDEX), line)
         self.index_chain = _chain(self.index_chain, line)
         self.index_bytes += len(line)
         self.records += len(records)
-        self.chunks.append(name)
-        self.seq += 1
+        self.chunks += 1
 
-    def end_epoch(self) -> None:
+    def end_epoch(self, *, sync: bool = True) -> None:
         """Write the epoch's remaining records (all final now) and its
-        summary row; the manifest is published separately."""
+        summary row, then (``sync``) flush every file written since the
+        last flush; the manifest is published separately."""
         last = self._pending[-1] if self._pending else None
         if last is None:
             return
         row = self._stats.row(last)
         while self._pending:
-            self._write_chunk(self._pending[: self.spec.chunk_size])
-            del self._pending[: self.spec.chunk_size]
+            self._flush(self.chunk_size)
         line = _json_line(row)
         _append_bytes(os.path.join(self.directory, _EPOCHS), line)
         self.epochs += 1
         self.epochs_bytes += len(line)
+        if sync:
+            self.sync()
+
+    def sync(self) -> None:
+        """Flush the chunks written since the last flush, the index, the
+        epoch rows and the directory entries to disk."""
+        for name in (*map(_chunk_name, range(self._synced, self.chunks)), _INDEX, _EPOCHS):
+            _fsync_path(os.path.join(self.directory, name))
+        _fsync_path(self.directory)
+        if self._new_directory:  # the run directory's new history/ entry
+            _fsync_path(os.path.dirname(self.directory))
+            self._new_directory = False
+        self._synced = self.chunks
 
     def manifest(self) -> dict[str, Any]:
         return {
             **_empty_manifest(self.spec),
-            "chunks": len(self.chunks),
+            "chunks": self.chunks,
             "records": self.records,
             "index_bytes": self.index_bytes,
             "index_chain": self.index_chain,
@@ -333,7 +404,8 @@ class _JournalWriter:
 
         self._ensure()
         text = _manifest_text(self.manifest())
-        _atomic_write_text(os.path.join(self.directory, _MANIFEST), text.decode("utf-8"))
+        _atomic_write_text(os.path.join(self.directory, _MANIFEST), text)
+        _fsync_path(self.directory)  # the rename is durable before LAST, the commit marker
         self._previous, self._published = self._published, text
 
     def rollback(self) -> None:
@@ -343,14 +415,14 @@ class _JournalWriter:
         from .nn.params.nn_run import _atomic_write_text
 
         previous = self._previous if self._previous is not None else _manifest_text(_empty_manifest(self.spec))
-        _atomic_write_text(os.path.join(self.directory, _MANIFEST), previous.decode("utf-8"))
+        _atomic_write_text(os.path.join(self.directory, _MANIFEST), previous)
 
     def materialize(self) -> list[NNIterationDataPoint]:
         """Every record this writer has seen, read back from its chunks,
         plus those still waiting for one."""
         records: list[NNIterationDataPoint] = []
-        for name in self.chunks:
-            with open(os.path.join(self.directory, name), "rb") as handle:
+        for seq in range(self.chunks):
+            with open(os.path.join(self.directory, _chunk_name(seq)), "rb") as handle:
                 records.extend(_record(line) for line in handle if line.strip())
         return records + list(self._pending)
 
@@ -370,18 +442,20 @@ class _Chunk:
 
 class _JournalReader:
     """A published journal: its manifest and index, checked against each
-    other; chunks are read (and checked) on demand."""
+    other; chunks are read (and checked) on demand. ``manifest`` reads a
+    journal not yet published (a migration checks it before publishing)."""
 
-    def __init__(self, directory: str) -> None:
+    def __init__(self, directory: str, manifest: Optional[dict[str, Any]] = None, *, index: bool = True) -> None:
         self.directory = directory
         path = os.path.join(directory, _MANIFEST)
-        try:
-            with open(path, encoding="utf-8") as handle:
-                manifest = json.load(handle)
-        except FileNotFoundError:
-            raise HistoryCorruptionError(f"the history journal at {directory} has no {_MANIFEST}") from None
-        except ValueError as exc:
-            raise HistoryCorruptionError(f"the history journal manifest at {path} is not JSON: {exc}") from None
+        if manifest is None:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+            except FileNotFoundError:
+                raise HistoryCorruptionError(f"the history journal at {directory} has no {_MANIFEST}") from None
+            except ValueError as exc:
+                raise HistoryCorruptionError(f"the history journal manifest at {path} is not JSON: {exc}") from None
         if not isinstance(manifest, dict) or manifest.get("format") != JOURNAL_FORMAT:
             raise HistoryCorruptionError(f"{path} is not an NNx history journal manifest")
         if manifest.get("version") != JOURNAL_VERSION:
@@ -395,7 +469,8 @@ class _JournalReader:
             raise HistoryCorruptionError(f"the history journal manifest at {path} is malformed")
         self.manifest = manifest
         self.retention = max(1, manifest["retention"])
-        self.chunks = self._read_index()
+        # index=False: the manifest alone (the epoch rows need nothing more).
+        self.chunks = self._read_index() if index else []
 
     def _read_index(self) -> list[_Chunk]:
         path = os.path.join(self.directory, _INDEX)
@@ -419,7 +494,7 @@ class _JournalReader:
             chunks = [
                 _Chunk(
                     seq=entry["seq"],
-                    file=_chunk_name(entry["seq"]),
+                    file=entry["file"],
                     records=entry["records"],
                     first_epoch=entry["first_epoch"],
                     last_epoch=entry["last_epoch"],
@@ -429,7 +504,7 @@ class _JournalReader:
             ]
         except (KeyError, TypeError, ValueError) as exc:
             raise HistoryCorruptionError(f"the committed index {path} is malformed: {exc}") from None
-        if [chunk.seq for chunk in chunks] != list(range(len(chunks))):
+        if [(chunk.seq, chunk.file) for chunk in chunks] != [(seq, _chunk_name(seq)) for seq in range(len(chunks))]:
             raise HistoryCorruptionError(f"the committed index {path} does not number its chunks in order")
         if sum(chunk.records for chunk in chunks) != self.manifest["records"]:
             raise HistoryCorruptionError(f"the committed index {path} does not count the manifest's records")
@@ -463,26 +538,23 @@ class _JournalReader:
     def tail(self, count: int, max_epoch: Optional[int]) -> list[NNIterationDataPoint]:
         """The last ``count`` records up to ``max_epoch``, reading only the
         chunks that hold them."""
+        visible = [chunk for chunk in self.chunks if max_epoch is None or chunk.first_epoch <= max_epoch]
+        needed, start = 0, len(visible)
+        while start > 0 and needed < count:
+            start -= 1
+            needed += visible[start].records
         window: collections.deque[NNIterationDataPoint] = collections.deque(maxlen=count)
-        needed, start = 0, len(self.chunks)
-        for position in range(len(self.chunks) - 1, -1, -1):
-            chunk = self.chunks[position]
-            if max_epoch is not None and chunk.first_epoch > max_epoch:
-                continue  # entirely uncommitted
-            start = position
-            needed += chunk.records
-            if needed >= count:
-                break
-        for chunk in self.chunks[start:]:
-            if max_epoch is not None and chunk.first_epoch > max_epoch:
-                break
+        for chunk in visible[start:]:
             window.extend(
                 record for record in self.read_chunk(chunk) if max_epoch is None or record.epoch_idx <= max_epoch
             )
         return list(window)
 
-    def first_epoch(self) -> Optional[int]:
-        return self.chunks[0].first_epoch if self.chunks else None
+    def first_epoch(self, max_epoch: Optional[int]) -> Optional[int]:
+        """The epoch of the first committed record (``None`` when there is none)."""
+        if not self.chunks or (max_epoch is not None and self.chunks[0].first_epoch > max_epoch):
+            return None
+        return self.chunks[0].first_epoch
 
     def epoch_rows(self, max_epoch: Optional[int]) -> list[dict[str, Any]]:
         wanted = self.manifest["epochs_bytes"]
@@ -504,12 +576,10 @@ def _journal_epoch_series(directory: str, max_epoch: int) -> dict[str, list[Any]
     """``NNRun._epoch_series`` for a journal run: its per-epoch rows up to
     ``max_epoch``, with ``None`` read back as NaN."""
     nan = float("nan")
-    series: dict[str, list[Any]] = {
-        name: [] for name in ("epochs", "train_loss", "train_err", "val_loss", "val_err", "monitor", "improved")
-    }
-    for row in _JournalReader(directory).epoch_rows(max_epoch):
+    series: dict[str, list[Any]] = {name: [] for name in ("epochs", *_SERIES, "improved")}
+    for row in _JournalReader(directory, index=False).epoch_rows(max_epoch):
         series["epochs"].append(row["epoch"])
-        for name in ("train_loss", "train_err", "val_loss", "val_err", "monitor"):
+        for name in _SERIES:
             series[name].append(nan if row[name] is None else row[name])
         series["improved"].append(bool(row["improved"]))
     return series
@@ -518,22 +588,6 @@ def _journal_epoch_series(directory: str, max_epoch: int) -> dict[str, list[Any]
 def has_journal(run_path: str) -> bool:
     """Whether a run directory keeps its history in a published journal."""
     return os.path.isfile(os.path.join(run_path, HISTORY_DIR, _MANIFEST))
-
-
-def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optional[int]:
-    """The LAST checkpoint's epoch for runs under the commit protocol (``-1``
-    before the first commit); ``None`` (no filter) for runs written before it."""
-    from .nn.enum.checkpoints import Checkpoints
-    from .nn.params.nn_checkpoint import NNCheckpoint
-    from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE
-
-    if not os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
-        return None
-    last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
-    last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
-    if last is None and os.path.isfile(last_path):
-        raise ValueError(f"malformed LAST checkpoint at {last_path}")  # as NNRun.load
-    return -1 if last is None else last.idp.epoch_idx
 
 
 # --- the training loop's history ---------------------------------------------------------------
@@ -569,9 +623,6 @@ class _EagerHistory:
     def window(self) -> list[NNIterationDataPoint]:
         return self.records
 
-    def full(self) -> list[NNIterationDataPoint]:
-        return self.records
-
     def save_epoch(self, run: NNRun) -> None:
         run.with_idps(self.records).save(update_best=False)
 
@@ -586,11 +637,11 @@ class _JournalHistory:
     """The last ``retention`` records in memory, every record in the run's
     journal."""
 
-    def __init__(self, run: NNRun, spec: HistoryJournal, root: Optional[str] = None) -> None:
+    def __init__(self, run: NNRun, spec: HistoryJournal) -> None:
         from .nn.params.nn_run import _runs_root
 
         self.spec = spec
-        self.directory = os.path.join(_runs_root(root), run.id, HISTORY_DIR)
+        self.directory = os.path.abspath(os.path.join(_runs_root(None), run.id, HISTORY_DIR))
         self._window: collections.deque[NNIterationDataPoint] = collections.deque(maxlen=spec.retention)
         self._writer = _JournalWriter(self.directory, spec)
         self._epoch_records = 0
@@ -668,34 +719,72 @@ def _check_history(history: Any, callbacks: Any) -> None:
             raise ValueError(f"{type(callback).__name__}.history_access must be one of {_ACCESS}, got {access!r}")
 
 
-def _wants_full(callback: Any, history: Any) -> bool:
-    return isinstance(history, _JournalHistory) and getattr(callback, "history_access", "window") == "full"
+def _wants_full(callback: Any) -> bool:
+    return getattr(callback, "history_access", "window") == "full"
+
+
+def _lend_idps(ctx: Any, view: Optional[list[NNIterationDataPoint]], call: Any) -> None:
+    """Run ``call()`` with ``ctx.idps`` lent as ``view`` (``None``: as it
+    is), then put the previous list back unless the callback reassigned it
+    — so a lent history never outlives its callback, and a reassignment
+    reaches the next one, as in an eager run."""
+    if view is None:
+        call()
+        return
+    current, ctx.idps = ctx.idps, view
+    try:
+        call()
+    finally:
+        if ctx.idps is view:
+            ctx.idps = current
 
 
 def _dispatch_epoch_end(callbacks: Sequence[Any], ctx: Any, history: TrainingHistory) -> None:
-    """``on_epoch_end`` for every callback: ``ctx.idps`` is the history's
-    window, or — for a callback declaring ``history_access = "full"`` —
-    the whole history, read back once per epoch."""
-    window = history.window()
+    """``on_epoch_end`` for every callback. An eager run hands every callback
+    the running list, exactly as before; a journal run hands each its window,
+    or — for a callback declaring ``history_access = "full"`` — the whole
+    history, read back once per epoch."""
+    ctx.idps = history.window()
     full: Optional[list[NNIterationDataPoint]] = None
     for callback in callbacks:
-        if _wants_full(callback, history):
+        view = None  # ctx.idps as the previous callback left it, as always
+        if isinstance(history, _JournalHistory) and _wants_full(callback):
             if full is None:
                 full = history.full()
-            ctx.idps = full
-        else:
-            ctx.idps = window
-        callback.on_epoch_end(ctx)
-    ctx.idps = window
+            view = full
+        _lend_idps(ctx, view, lambda callback=callback: callback.on_epoch_end(ctx))
 
 
-def _idps_view(callback: Any, history: Optional[TrainingHistory]) -> Optional[list[NNIterationDataPoint]]:
-    """``ctx.idps`` for one callback at ``on_train_end`` in a journal run: the
-    window, or the whole history for ``"full"``. ``None`` — leave ``ctx.idps``
-    as the epoch loop left it — for an eager run, exactly as before."""
-    if not isinstance(history, _JournalHistory):
-        return None
-    return history.full() if _wants_full(callback, history) else history.window()
+class _TrainEndViews:
+    """The whole history (read back at most once) lent as ``ctx.idps`` to a
+    journal run's ``history_access = "full"`` callbacks at ``on_train_end``;
+    ``None`` — ``ctx.idps`` as the epoch loop left it — for every other
+    callback and for an eager run. A history that cannot be read back is
+    warned about once and the callback still runs, with the window."""
+
+    def __init__(self, history: Optional[TrainingHistory]) -> None:
+        self._history = history if isinstance(history, _JournalHistory) else None
+        self._full: Optional[list[NNIterationDataPoint]] = None
+        self._unreadable = False
+
+    def for_callback(self, callback: Any) -> Optional[list[NNIterationDataPoint]]:
+        if self._history is None or not _wants_full(callback):
+            return None
+        if self._unreadable:
+            return self._history.window()
+        if self._full is None:
+            try:
+                self._full = self._history.full()
+            except Exception as exc:  # noqa: BLE001 — cleanup hooks must still run
+                self._unreadable = True
+                warnings.warn(
+                    f"the history journal could not be read back for on_train_end ({type(exc).__name__}: {exc}); "
+                    f"callbacks declaring history_access='full' get the last {self._history.spec.retention} records",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                return self._history.window()
+        return self._full
 
 
 # --- reading a run's history -----------------------------------------------------------------
@@ -707,23 +796,97 @@ def _run_path(run_id: str, root: Optional[str]) -> str:
     return os.path.join(_runs_root(root), _validate_run_id(run_id))
 
 
-def _own_records(run_id: str, root: Optional[str]) -> tuple[Iterator[NNIterationDataPoint], Optional[int]]:
-    """A run's committed records (lazily for a journal) and its first epoch."""
+def _reader(run_id: str, root: Optional[str], readers: dict[str, Optional[_JournalReader]]) -> Optional[_JournalReader]:
+    """A run's journal reader (``None`` for a CSV run), opened once per
+    ``iter_history`` call."""
+    if run_id not in readers:
+        run_path = _run_path(run_id, root)
+        readers[run_id] = _JournalReader(os.path.join(run_path, HISTORY_DIR)) if has_journal(run_path) else None
+    return readers[run_id]
+
+
+def _own_records(
+    run_id: str, root: Optional[str], committed: Optional[int], readers: dict[str, Optional[_JournalReader]]
+) -> Iterator[NNIterationDataPoint]:
+    """A run's records up to its committed epoch (``None``: all) — lazily
+    for a journal; a legacy CSV is read whole, floats round-trip (its export
+    reproduces the file)."""
     from .nn.params.nn_run import _read_idps_csv
 
+    reader = _reader(run_id, root, readers)
+    if reader is not None:
+        yield from reader.records(committed)
+        return
+    for record in _read_idps_csv(os.path.join(_run_path(run_id, root), "idps.csv"), exact=True):
+        if committed is None or record.epoch_idx <= committed:
+            yield record
+
+
+def _first_epoch(
+    run_id: str, root: Optional[str], committed: Optional[int], readers: dict[str, Optional[_JournalReader]]
+) -> Optional[int]:
+    """The epoch of a run's first committed record, without reading its
+    history: a journal's index, or a CSV's first row."""
+    import pandas as pd
+
+    reader = _reader(run_id, root, readers)
+    if reader is not None:
+        return reader.first_epoch(committed)
+    try:
+        frame = pd.read_csv(os.path.join(_run_path(run_id, root), "idps.csv"), nrows=1, usecols=["epoch_idx"])
+    except (OSError, ValueError, pd.errors.EmptyDataError):
+        return None
+    if frame.empty:
+        return None
+    first = int(frame["epoch_idx"].iloc[0])
+    return None if committed is not None and first > committed else first
+
+
+def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optional[int]]:
+    """The run a run resumed from and the checkpoint it resumed from — from
+    its recorded resume status (``metadata.yaml``); a run that started fresh
+    has none, even when it names a parent (a born-again generation starts
+    its own epochs). The status also records the epoch of the checkpoint
+    resumed from (``None`` before it did). Runs written before resume
+    status fall back to the lineage in their ``run.yaml``. No checkpoint
+    and no history is read."""
+    import yaml
+
+    from .nn.params.nn_run import _load_resume_status
+
     run_path = _run_path(run_id, root)
-    committed = _committed_epoch(run_id, run_path, root)
-    if has_journal(run_path):
-        reader = _JournalReader(os.path.join(run_path, HISTORY_DIR))
-        return reader.records(committed), reader.first_epoch()
-    # A legacy CSV run is read whole, floats round-trip (its export
-    # reproduces the file).
-    records = [
-        record
-        for record in _read_idps_csv(os.path.join(run_path, "idps.csv"), exact=True)
-        if committed is None or record.epoch_idx <= committed
-    ]
-    return iter(records), records[0].epoch_idx if records else None
+    status = _load_resume_status(os.path.join(run_path, "metadata.yaml"))
+    if status is not None:
+        if status.mode == "fresh" or status.source_run_id is None:
+            return None, None, None
+        return status.source_run_id, status.source_checkpoint or "last", status.source_epoch
+    path = os.path.join(run_path, "run.yaml")
+    with open(path, encoding="utf-8") as handle:
+        state = yaml.safe_load(handle)
+    if not isinstance(state, dict):
+        raise ValueError(f"malformed run.yaml at {path}: expected a mapping")
+    for section in (state.get("trainer"), state.get("train")):
+        if isinstance(section, dict) and section.get("parent_run_id") is not None:
+            return str(section["parent_run_id"]), section.get("parent_checkpoint") or "last", None
+    return None, None, None
+
+
+def _resume_epoch(
+    parent_id: str, checkpoint: Any, root: Optional[str], parent_committed: Optional[int]
+) -> Optional[int]:
+    """The epoch of the parent checkpoint a child resumed from, or ``None``
+    when it can no longer be read. A resume from ``last`` reuses the
+    parent's committed epoch (its LAST) instead of reading it again."""
+    from .nn.nn_model import _resume_checkpoint_type
+    from .nn.params.nn_checkpoint import NNCheckpoint
+
+    if str(checkpoint) == "last" and parent_committed is not None:
+        return parent_committed if parent_committed >= 0 else None
+    try:
+        loaded = NNCheckpoint.load(run=parent_id, type=_resume_checkpoint_type(checkpoint), root=root)
+    except Exception:  # noqa: BLE001 — unreadable for any reason: the documented fallback applies
+        return None
+    return None if loaded is None else loaded.idp.epoch_idx
 
 
 def iter_history(run_id: str, root: Optional[str] = None, *, lineage: bool = False) -> Iterator[NNIterationDataPoint]:
@@ -732,33 +895,127 @@ def iter_history(run_id: str, root: Optional[str] = None, *, lineage: bool = Fal
     parsed round-trip, so its export reproduces the file). Records past the
     LAST checkpoint's epoch are never yielded.
 
-    With ``lineage=True`` a resumed run (``resume_from_run_id`` /
-    ``parent_run_id``) is preceded by its parent's committed records up to
-    — not including — its own first epoch, recursively: each record once.
+    With ``lineage=True`` a resumed run is preceded by the committed records
+    of the run it resumed from, up to and including the epoch it resumed
+    from (recorded in its resume status; for runs recorded before that, the
+    epoch of that checkpoint now) and never past the run's own first record,
+    recursively: each epoch once, never the parent's later epochs. When
+    that epoch cannot be known (the checkpoint, or the parent's LAST, is
+    unreadable), the parent's records before the run's first record are
+    used, with a ``RuntimeWarning``; when neither is known, or the parent
+    run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
+    Lineage follows resumes: a run that started fresh (a born-again
+    generation naming its teacher's run as ``parent_run_id``, say) starts
+    its own epochs, and its lineage is its own history.
     """
-    yield from _lineage(run_id, root, lineage, seen=set(), until=None)
+    yield from _lineage(run_id, root, lineage, seen=set(), until=None, committed=_UNKNOWN, readers={})
+
+
+_UNKNOWN: Any = object()
 
 
 def _lineage(
-    run_id: str, root: Optional[str], lineage: bool, *, seen: set[str], until: Optional[int]
+    run_id: str,
+    root: Optional[str],
+    lineage: bool,
+    *,
+    seen: set[str],
+    until: Optional[int],
+    committed: Any,
+    readers: dict[str, Optional[_JournalReader]],
 ) -> Iterator[NNIterationDataPoint]:
-    from .nn.params.nn_run import NNRun
+    from .nn.params.nn_run import _committed_epoch
 
     seen.add(run_id)
-    records, first = _own_records(run_id, root)
+    if committed is _UNKNOWN:
+        committed = _committed_epoch(run_id, _run_path(run_id, root), root)
     if lineage:
-        run = NNRun._load(run_id, root, records=False)
-        source = run.trainer if run.trainer is not None else run.train
-        parent = source.resume_from_run_id or source.parent_run_id
+        parent, checkpoint, source_epoch = _parent(run_id, root)
         if parent is not None and parent not in seen:
-            # The parent contributes only what precedes this run (and what
-            # its own child needs): each epoch comes from one run.
-            bounds = [bound for bound in (first, until) if bound is not None]
-            yield from _lineage(parent, root, lineage, seen=seen, until=min(bounds) if bounds else None)
-    for record in records:
+            yield from _parent_prefix(
+                run_id,
+                parent,
+                checkpoint,
+                source_epoch,
+                root,
+                seen=seen,
+                until=until,
+                committed=committed,
+                readers=readers,
+            )
+    for record in _own_records(run_id, root, committed, readers):  # read once the parent's prefix is done
         if until is not None and record.epoch_idx >= until:
             return
         yield record
+
+
+def _parent_prefix(
+    run_id: str,
+    parent: str,
+    checkpoint: Any,
+    source_epoch: Optional[int],
+    root: Optional[str],
+    *,
+    seen: set[str],
+    until: Optional[int],
+    committed: Optional[int],
+    readers: dict[str, Optional[_JournalReader]],
+) -> Iterator[NNIterationDataPoint]:
+    """The parent's records that precede ``run_id``: up to the epoch it
+    resumed from, never past its own first record or a descendant's cut."""
+    from .nn.params.nn_run import _committed_epoch
+
+    if parent == "best":
+        warnings.warn(
+            f"run {run_id} resumed from the runs/best pointer, which may name another run by now: its lineage "
+            f"starts at {run_id}",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return
+    parent_path = _run_path(parent, root)
+    if not os.path.isfile(os.path.join(parent_path, "run.yaml")):
+        warnings.warn(
+            f"run {run_id} resumed from run {parent}, which is no longer saved: its lineage starts at {run_id}",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return
+    try:
+        parent_committed: Optional[int] = _committed_epoch(parent, parent_path, root)
+    except Exception:  # noqa: BLE001 — a corrupt LAST: fall back to the child's first record
+        parent_committed = -1
+    if parent_committed == -1:
+        # The parent's LAST is gone or unreadable, yet the child resumed from
+        # a committed epoch: its records are read unfiltered and cut at the
+        # recorded branch epoch, or else before the child's first record.
+        parent_committed, checkpoint = None, None
+    resumed = (
+        source_epoch
+        if source_epoch is not None
+        else (None if checkpoint is None else _resume_epoch(parent, checkpoint, root, parent_committed))
+    )
+    first = _first_epoch(run_id, root, committed, readers)
+    if resumed is None and first is None:
+        warnings.warn(
+            f"cannot tell where run {run_id} branched from run {parent} (the checkpoint it resumed from is "
+            f"unreadable and {run_id} has no committed record): its lineage starts at {run_id}",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return
+    if resumed is None:
+        warnings.warn(
+            f"the checkpoint run {run_id} resumed from (or run {parent}'s LAST) is unreadable: its lineage uses "
+            f"run {parent}'s records "
+            f"before {run_id}'s first record (epoch {first})",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+    # Each epoch comes from one run: the parent's own records stop where this
+    # run — or a descendant below it — takes over.
+    bounds = [bound for bound in (None if resumed is None else resumed + 1, first, until) if bound is not None]
+    yield from _lineage(parent, root, True, seen=seen, until=min(bounds), committed=parent_committed, readers=readers)
 
 
 def export_history_csv(
@@ -778,56 +1035,106 @@ def export_history_csv(
     return len(records)
 
 
-def migrate_history(run_id: str, root: Optional[str] = None, *, spec: Optional[HistoryJournal] = None) -> None:
+def migrate_history(
+    run_id: str,
+    root: Optional[str] = None,
+    *,
+    spec: Optional[HistoryJournal] = None,
+    discard_uncommitted: bool = False,
+) -> None:
     """Move a legacy run's ``idps.csv`` into a history journal, explicitly.
 
     The committed records are written as a journal (with per-epoch summary
-    rows) and published, then ``idps.csv`` is removed; ``run.yaml`` — and so
-    the run id — is untouched. A run that already keeps a journal, and one
-    that is being trained (its lease is held), are refused.
+    rows), published and read back, and only then is ``idps.csv`` removed;
+    ``run.yaml`` — and so the run id — is untouched. A leftover journal from
+    an interrupted migration (never published) is replaced. Refused: a run
+    that already keeps a journal, a run that is being trained (its lease is
+    held), and — unless ``discard_uncommitted=True`` — a CSV holding records
+    past the LAST checkpoint's epoch, which readers hide but a migration
+    would delete.
     """
     from filelock import FileLock, Timeout
 
-    from .nn.params.nn_run import _runs_root
+    from .nn.params.nn_run import _lease_path, _runs_root
 
     spec = spec or HistoryJournal()
+    if run_id == "best":
+        raise ValueError("migrate a run by its own id, not through the runs/best pointer")
     run_path = _run_path(run_id, root)
     if not os.path.isfile(os.path.join(run_path, "run.yaml")):
         raise ValueError(f"no saved run {run_id} under {_runs_root(root)}")
-    leases = os.path.join(_runs_root(root), ".leases")
-    os.makedirs(leases, exist_ok=True)
-    lease = FileLock(os.path.join(leases, f"{run_id}.lock"), timeout=0)  # training holds it
+    lease_path = _lease_path(_runs_root(root), run_id)  # the lock a training session holds
+    os.makedirs(os.path.dirname(lease_path), exist_ok=True)
+    lease = FileLock(lease_path, timeout=0)
     try:
         lease.acquire()
     except Timeout:
         raise RuntimeError(f"run {run_id} is being trained; migrate its history once training ends") from None
     try:
-        _migrate_locked(run_id, run_path, root, spec)
+        with FileLock(os.path.join(run_path, ".run.lock")):
+            _migrate_locked(run_id, run_path, root, spec, discard_uncommitted=discard_uncommitted)
     finally:
         lease.release()
 
 
-def _migrate_locked(run_id: str, run_path: str, root: Optional[str], spec: HistoryJournal) -> None:
-    from filelock import FileLock
+def _reads_back(records: Iterator[NNIterationDataPoint], expected: Sequence[bytes]) -> bool:
+    """Whether ``records`` encode, one by one, to exactly ``expected``."""
+    count = 0
+    for count, record in enumerate(records, start=1):
+        if count > len(expected) or _record_line(record) != expected[count - 1]:
+            return False
+    return count == len(expected)
 
-    from .nn.params.nn_run import _read_idps_csv
 
-    with FileLock(os.path.join(run_path, ".run.lock")):
-        if has_journal(run_path):
-            raise ValueError(f"run {run_id} already keeps its history in a journal")
-        csv_path = os.path.join(run_path, "idps.csv")
-        if not os.path.isfile(csv_path):
-            raise ValueError(f"run {run_id} has no idps.csv to migrate")
-        # The committed records, floats parsed round-trip: the journal holds
-        # exactly the values the CSV was written from.
-        committed = _committed_epoch(run_id, run_path, root)
-        records = [r for r in _read_idps_csv(csv_path, exact=True) if committed is None or r.epoch_idx <= committed]
-        writer = _JournalWriter(os.path.join(run_path, HISTORY_DIR), spec)
-        writer._ensure()
-        for position, record in enumerate(records):
-            writer.append(record)
-            ends_epoch = position + 1 == len(records) or records[position + 1].epoch_idx != record.epoch_idx
-            if ends_epoch:
-                writer.end_epoch()
-        writer.publish()  # the journal is complete before the CSV goes
+def _migrate_locked(
+    run_id: str, run_path: str, root: Optional[str], spec: HistoryJournal, *, discard_uncommitted: bool
+) -> None:
+    import shutil
+
+    from .nn.params.nn_run import _committed_epoch, _read_idps_csv
+
+    csv_path = os.path.join(run_path, "idps.csv")
+    directory = os.path.join(run_path, HISTORY_DIR)
+    if has_journal(run_path) and not os.path.isfile(csv_path):
+        raise ValueError(f"run {run_id} already keeps its history in a journal")
+    if not os.path.isfile(csv_path):
+        raise ValueError(f"run {run_id} has no idps.csv to migrate")
+    # Floats parsed round-trip: the journal holds exactly the values the CSV
+    # was written from.
+    records = _read_idps_csv(csv_path, exact=True)
+    committed = _committed_epoch(run_id, run_path, root)
+    visible = [r for r in records if committed is None or r.epoch_idx <= committed]
+    if len(visible) != len(records) and not discard_uncommitted:
+        raise ValueError(
+            f"idps.csv of run {run_id} holds {len(records) - len(visible)} records past the LAST checkpoint's epoch "
+            f"({committed}); readers hide them, but migrating would delete them with the CSV — pass "
+            "discard_uncommitted=True to migrate only the committed records"
+        )
+    records = visible
+    expected = [_record_line(record) for record in records]  # NaN-safe: compared as the lines written
+    if has_journal(run_path):
+        # A migration interrupted after publishing: its journal was checked
+        # before it was published — finish once it still matches the CSV.
+        if not _reads_back(_JournalReader(directory).records(None), expected):
+            raise ValueError(f"run {run_id} keeps both a history journal and an idps.csv that differ; remove one")
         os.remove(csv_path)
+        return
+    if os.path.lexists(directory):  # an unpublished leftover of an interrupted migration
+        shutil.rmtree(directory)
+    writer = _JournalWriter(directory, spec)
+    writer._ensure()
+    try:
+        for position, record in enumerate(records):
+            writer.append(record, expected[position])
+            if position + 1 == len(records) or records[position + 1].epoch_idx != record.epoch_idx:
+                writer.end_epoch(sync=False)
+        writer.sync()  # once, before the journal is checked and published
+        # The journal must read back as the CSV's records before it is
+        # published and the CSV goes.
+        if not _reads_back(_JournalReader(directory, manifest=writer.manifest()).records(None), expected):
+            raise HistoryCorruptionError(f"the migrated journal of run {run_id} does not read back as its idps.csv")
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    writer.publish()
+    os.remove(csv_path)

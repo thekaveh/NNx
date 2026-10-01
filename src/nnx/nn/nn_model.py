@@ -19,7 +19,14 @@ from typing_extensions import Self
 
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..components import ComponentRegistry, ResumeStatus
-from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _idps_view, _training_history
+from ..history import (
+    HistoryJournal,
+    _check_history,
+    _dispatch_epoch_end,
+    _lend_idps,
+    _TrainEndViews,
+    _training_history,
+)
 from ..models import (
     BatchAdapter,
     MissingModelFactoryError,
@@ -374,14 +381,12 @@ class _CallbackFinalizer:
 
     def __exit__(self, exc_type, exc, tb):
         cleanup_errors: list[BaseException] = []
+        # FEAT-036: in a journal run, each callback's ctx.idps is the window or,
+        # for history_access="full", the whole history (read back once).
+        views = _TrainEndViews(getattr(self._ctx, "history_records", None))
         for cb in reversed(self._started):
             try:
-                # FEAT-036: the history journal's window, or the whole history
-                # for a callback declaring history_access="full".
-                view = _idps_view(cb, getattr(self._ctx, "history_records", None))
-                if view is not None:
-                    self._ctx.idps = view
-                cb.on_train_end(self._ctx)
+                _lend_idps(self._ctx, views.for_callback(cb), lambda cb=cb: cb.on_train_end(self._ctx))
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
 
@@ -2133,6 +2138,7 @@ class NNModel(_HubMixinBase):
                     mode="stateful",
                     source_run_id=params.resume_from_run_id,
                     source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
                     fresh_components=tuple(component_plan.fresh),
                 )
             else:
@@ -2150,6 +2156,7 @@ class NNModel(_HubMixinBase):
                     mode="weights_only",
                     source_run_id=params.resume_from_run_id,
                     source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
                     fresh_components=registry.names,
                 )
 

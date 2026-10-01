@@ -21,7 +21,7 @@ from filelock import FileLock
 
 from ..._metrics import _resolve_metric
 from ...components import ResumeStatus
-from ...history import HISTORY_DIR, _journal_epoch_series, _JournalReader, has_journal
+from ...history import HISTORY_DIR, HistoryCorruptionError, _journal_epoch_series, _JournalReader, has_journal
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint
@@ -257,6 +257,57 @@ def _release_empty_reservation(run_path: str) -> None:
         os.rmdir(run_path)
 
 
+def _epoch_values(
+    summary: Any, losses: tuple[float, int], errors: tuple[float, int], val_edp: Any, record: Any
+) -> dict[str, Any]:
+    """One epoch's chart values: training loss / error from the whole-epoch
+    summary when recorded, else the mean of the per-batch values (``(sum,
+    count)``); the epoch's validation record; the monitored value and
+    whether it improved. NaN where there is nothing to plot. Shared by
+    ``NNRun._epoch_series`` and the history journal's epoch rows (FEAT-036)."""
+    nan = float("nan")
+
+    def mean(total: tuple[float, int]) -> float:
+        return total[0] / total[1] if total[1] else nan
+
+    def value(edp: Any, name: str) -> float:
+        field_value = getattr(edp, name, None) if edp is not None else None
+        return field_value if field_value is not None else nan
+
+    return {
+        "train_loss": value(summary, "loss") if summary is not None else mean(losses),
+        "train_err": value(summary, "error") if summary is not None else mean(errors),
+        "val_loss": value(val_edp, "loss"),
+        "val_err": value(val_edp, "error"),
+        "monitor": record.value if record is not None and record.value is not None else nan,
+        "improved": bool(record is not None and record.improved),
+    }
+
+
+_COMPUTE: Any = object()  # NNRun._load: derive the committed epoch itself
+
+
+def _lease_path(runs_root: str, run_id: str) -> str:
+    """The lock a training run holds for its whole session (``writable_lease``),
+    outside ``runs/<id>/`` so an overwrite cannot unlink it."""
+    return os.path.join(runs_root, ".leases", f"{run_id}.lock")
+
+
+def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optional[int]:
+    """The epoch of a run's LAST checkpoint — its commit marker — under the
+    history protocol (``-1`` before the first commit); ``None`` for a legacy
+    run written before the protocol, whose history is not filtered. An
+    empty or corrupt LAST raises instead of hiding otherwise valid history.
+    Shared by ``NNRun.load`` and ``nnx.history`` (FEAT-036)."""
+    if not os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
+        return None
+    last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
+    last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
+    if os.path.isfile(last_path) and last is None:
+        raise ValueError(f"malformed LAST checkpoint at {last_path}")
+    return -1 if last is None else last.idp.epoch_idx
+
+
 def _read_idps_csv(csv_path: str, *, exact: bool = False) -> list[NNIterationDataPoint]:
     """Every record of an ``idps.csv``. ``exact`` parses floats round-trip
     (``migrate_history``, FEAT-036); ``NNRun.load`` keeps pandas' default
@@ -386,8 +437,9 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
         return None
     try:
         # A journal run (FEAT-036) is checked through its manifest and index;
-        # no history record is read to elect a winner.
-        NNRun._load(run_id, root, records=False)
+        # no history record is read to elect a winner. LAST is read once.
+        committed_epoch = _committed_epoch(run_id, run_path, root)
+        NNRun._load(run_id, root, records=False, committed_epoch=committed_epoch)
         best = NNCheckpoint.load(run=run_id, type=Checkpoints.BEST, root=root)
         if best is None:
             return None
@@ -396,11 +448,8 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
             # which is not comparable with other runs' error/loss — it is
             # never elected into runs/best.
             return None
-        if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
-            last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
-            committed_epoch = -1 if last is None else last.idp.epoch_idx
-            if best.idp.epoch_idx > committed_epoch:
-                return None
+        if committed_epoch is not None and best.idp.epoch_idx > committed_epoch:
+            return None
         return best
     except Exception:  # noqa: BLE001 — a scan over untrusted directories must skip, not abort
         return None
@@ -649,13 +698,20 @@ class NNRun:
         epoch of its last record."""
         if self.history is not None:
             last_epoch = self.idps[-1].epoch_idx if self.idps else -1
-            return _journal_epoch_series(self.history, last_epoch)
+            try:
+                return _journal_epoch_series(self.history, last_epoch)
+            except HistoryCorruptionError as exc:
+                warnings.warn(
+                    f"run {self.id}'s history journal is unreadable ({exc}); the chart shows only the "
+                    f"{len(self.idps or [])} records in memory, and their oldest epoch may be partial",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
         from collections import defaultdict
 
         epoch_buckets: dict[int, list[NNIterationDataPoint]] = defaultdict(list)
         for idp in cast(list[NNIterationDataPoint], self.idps or []):
             epoch_buckets[idp.epoch_idx].append(idp)
-        nan = float("nan")
         series: dict[str, list[Any]] = {
             name: [] for name in ("epochs", "train_loss", "train_err", "val_loss", "val_err", "monitor", "improved")
         }
@@ -663,27 +719,21 @@ class NNRun:
             idp_list = epoch_buckets[epoch_idx]
             series["epochs"].append(epoch_idx)
             summary = next((i.train_summary for i in reversed(idp_list) if i.train_summary is not None), None)
-            if summary is not None:
-                series["train_loss"].append(summary.loss if summary.loss is not None else nan)
-                series["train_err"].append(summary.error if summary.error is not None else nan)
-            else:
-                losses = [
-                    i.train_edp.loss for i in idp_list if i.train_edp is not None and i.train_edp.loss is not None
-                ]
-                errs = [
-                    i.train_edp.error for i in idp_list if i.train_edp is not None and i.train_edp.error is not None
-                ]
-                series["train_loss"].append(sum(losses) / len(losses) if losses else nan)
-                series["train_err"].append(sum(errs) / len(errs) if errs else nan)
+            losses = [i.train_edp.loss for i in idp_list if i.train_edp is not None and i.train_edp.loss is not None]
+            errs = [i.train_edp.error for i in idp_list if i.train_edp is not None and i.train_edp.error is not None]
             # val_edp is set only on the last idp of each epoch (when a
             # val_loader was supplied). Use the last non-None val_edp found.
             val_idp = next((i for i in reversed(idp_list) if i.val_edp is not None), None)
-            val_edp = val_idp.val_edp if val_idp is not None else None
-            series["val_loss"].append(val_edp.loss if val_edp is not None and val_edp.loss is not None else nan)
-            series["val_err"].append(val_edp.error if val_edp is not None and val_edp.error is not None else nan)
             record = next((i.selection for i in reversed(idp_list) if i.selection is not None), None)
-            series["monitor"].append(record.value if record is not None and record.value is not None else nan)
-            series["improved"].append(bool(record is not None and record.improved))
+            values = _epoch_values(
+                summary,
+                (sum(losses), len(losses)),
+                (sum(errs), len(errs)),
+                val_idp.val_edp if val_idp is not None else None,
+                record,
+            )
+            for name, value in values.items():
+                series[name].append(value)
         return series
 
     def _render_metric_chart_html(self) -> str:
@@ -777,11 +827,11 @@ class NNRun:
     def writable_lease(self, root: Optional[str] = None, *, overwrite: bool = False) -> Iterator[None]:
         """Reserve this run ID and hold exclusive ownership until training ends."""
         runs_root = _runs_root(root)
-        lease_root = os.path.join(runs_root, ".leases")
-        os.makedirs(lease_root, exist_ok=True)
+        lease = _lease_path(runs_root, self.id)
+        os.makedirs(os.path.dirname(lease), exist_ok=True)
         # Keep the lease outside runs/<id>/ so an admitted overwrite cannot
         # unlink the lock file whose ownership it is waiting to acquire.
-        with FileLock(os.path.join(lease_root, f"{self.id}.lock")):
+        with FileLock(lease):
             self.ensure_writable(root=root, overwrite=overwrite)
             run_path = os.path.join(runs_root, self.id)
             try:
@@ -815,6 +865,15 @@ class NNRun:
 
     def save(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
         run_path = os.path.join(_runs_root(root), self.id)
+        if self.history is not None and os.path.realpath(self.history) != os.path.realpath(
+            os.path.join(run_path, HISTORY_DIR)
+        ):
+            # FEAT-036: the records live in the journal, which a save neither
+            # copies nor rewrites — a copy under another root would have none.
+            raise ValueError(
+                f"run {self.id} keeps its history in the journal at {self.history}, not under {run_path}: save it "
+                "from its own runs root, or export the history with nnx.history.export_history_csv"
+            )
         os.makedirs(run_path, exist_ok=True)
         with FileLock(os.path.join(run_path, ".run.lock")):
             return self._save_locked(root, update_best=update_best)
@@ -916,7 +975,7 @@ class NNRun:
         return NNRun._load(id, root)
 
     @staticmethod
-    def _load(id: str, root: Optional[str] = None, *, records: bool = True) -> NNRun:
+    def _load(id: str, root: Optional[str] = None, *, records: bool = True, committed_epoch: Any = _COMPUTE) -> NNRun:
         # Reject path-traversal identifiers before joining; see
         # `_validate_run_id` for the threat model. Internal callers pass
         # md5 hex (always safe), so this is a defense-in-depth guard on
@@ -948,15 +1007,10 @@ class NNRun:
         if journal is None:
             idps = _read_idps_csv(csv_path)
 
-        committed_epoch: Optional[int] = None
-        if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
-            last = NNCheckpoint.load(run=id, type=Checkpoints.LAST, root=root)
-            last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
-            if os.path.isfile(last_path) and last is None:
-                raise ValueError(f"malformed LAST checkpoint at {last_path}")
-            committed_epoch = -1 if last is None else last.idp.epoch_idx
-            if journal is None:
-                idps = [idp for idp in idps if idp.epoch_idx <= committed_epoch]
+        if committed_epoch is _COMPUTE:
+            committed_epoch = _committed_epoch(id, run_path, root)
+        if journal is None and committed_epoch is not None:
+            idps = [idp for idp in idps if idp.epoch_idx <= committed_epoch]
         if journal is not None and records:
             # FEAT-036: only the committed tail, from the chunks holding it.
             idps = journal.tail(journal.retention, committed_epoch)
@@ -987,7 +1041,7 @@ class NNRun:
                 idps=idps,
                 resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
                 provenance=_load_provenance_tolerantly(id, root),
-                history=journal.directory if journal is not None else None,
+                history=os.path.abspath(journal.directory) if journal is not None else None,
             )
         except KeyError as e:
             # A hand-edited / truncated run.yaml otherwise surfaces as a

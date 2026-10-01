@@ -802,6 +802,7 @@ class Trainer:
                 mode="weights_only",
                 source_run_id=params.resume_from_run_id,
                 source_checkpoint=source.label,
+                source_epoch=source.checkpoint.idp.epoch_idx,
                 fresh_components=registry.names,
             )
             return source.checkpoint.idp.epoch_idx + 1, None, status, None
@@ -879,6 +880,7 @@ class Trainer:
             mode="stateful",
             source_run_id=params.resume_from_run_id,
             source_checkpoint=source.label,
+            source_epoch=source.checkpoint.idp.epoch_idx,
             fresh_components=tuple(component_plan.fresh),
         )
         return start_epoch, component_plan, status, rollback

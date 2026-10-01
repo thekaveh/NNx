@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import filecmp
 import gc
 import hashlib
@@ -126,9 +127,9 @@ def _journal(run: NNRun) -> str:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"retention": 0}, "retention must be a positive integer"),
-        ({"chunk_size": 0}, "chunk_size must be a positive integer"),
-        ({"retention": True}, "retention must be a positive integer"),
+        ({"retention": 0}, "requires retention >= 1"),
+        ({"chunk_size": 0}, "requires chunk_size >= 1"),
+        ({"retention": True}, "requires retention to be an integer"),
         ({"retention": 3, "chunk_size": 4}, "must not exceed retention"),
     ],
 )
@@ -617,3 +618,449 @@ def test_a_continuation_owns_its_files_and_exports_its_lineage_once(checkpoint):
     assert epochs == sorted(epochs) and set(epochs) == set(range(start + 2))
     assert [(r.epoch_idx, r.batch_idx) for r in lineage] == sorted({(r.epoch_idx, r.batch_idx) for r in lineage})
     assert export_history_csv(child.id, "lineage.csv", lineage=True) == len(lineage) == (start + 2) * 5
+
+
+# --- review regressions ----------------------------------------------------------------------------
+
+
+def _legacy_with_csv(tmp_path):
+    legacy = _fit("model", data_id="legacy")
+    csv = os.path.join("runs", legacy.id, "idps.csv")
+    before = tmp_path / "before.csv"
+    before.write_bytes(open(csv, "rb").read())
+    return legacy, before
+
+
+def test_a_retried_migration_replaces_an_unpublished_leftover(tmp_path):
+    legacy, before = _legacy_with_csv(tmp_path)
+    leftover = os.path.join("runs", legacy.id, "history")
+    os.makedirs(leftover)
+    for name in ("index.jsonl", "epochs.jsonl"):  # appended lines of an interrupted attempt
+        with open(os.path.join(leftover, name), "wb") as handle:
+            handle.write(b'{"seq":0,"stale":true}\n' * 2)
+    migrate_history(legacy.id, spec=HistoryJournal(retention=4, chunk_size=2))
+    export_history_csv(legacy.id, tmp_path / "after.csv")
+    assert filecmp.cmp(tmp_path / "after.csv", before, shallow=False)
+
+
+def test_a_migration_that_does_not_read_back_keeps_the_csv(tmp_path, monkeypatch):
+    legacy, before = _legacy_with_csv(tmp_path)
+    monkeypatch.setattr(history_module._JournalReader, "records", lambda self, max_epoch: iter([]))
+    with pytest.raises(HistoryCorruptionError, match="does not read back"):
+        migrate_history(legacy.id)
+    assert open(os.path.join("runs", legacy.id, "idps.csv"), "rb").read() == before.read_bytes()
+    assert not os.path.exists(os.path.join("runs", legacy.id, "history"))
+
+
+def test_a_migration_never_silently_drops_records_past_last(tmp_path):
+    legacy, _ = _legacy_with_csv(tmp_path)
+    os.remove(os.path.join("runs", legacy.id, "checkpoints", "last.pt"))  # LAST gone: nothing is committed
+    with pytest.raises(ValueError, match="15 records past the LAST checkpoint's epoch"):
+        migrate_history(legacy.id)
+    assert os.path.isfile(os.path.join("runs", legacy.id, "idps.csv"))
+    migrate_history(legacy.id, discard_uncommitted=True)
+    assert list(iter_history(legacy.id)) == []
+
+
+@pytest.mark.parametrize("crash", ["rolled back", "killed after the manifest"])
+def test_lineage_stops_at_the_resumed_checkpoint_even_without_child_records(crash, monkeypatch):
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=4)
+    with monkeypatch.context() as patch:
+        # The child resumes from FIRST (epoch 0); its first epoch never commits.
+        _crash_before_last(patch, 1, rollback=crash == "rolled back")
+        with pytest.raises(_Boom):
+            _fit("model", spec, n_epochs=2, resume_from_run_id=parent.id, resume_from_checkpoint="first")
+    (child,) = [run for run in NNRun.all() if run.id != parent.id]
+    assert list(iter_history(child.id)) == []
+    assert {record.epoch_idx for record in iter_history(child.id, lineage=True)} == {0}
+
+
+def test_a_journal_run_is_not_saved_under_another_root(tmp_path):
+    run = _fit("model", HistoryJournal(retention=3, chunk_size=2))
+    loaded = NNRun.load(run.id, root=".")  # a relative root still records an absolute journal path
+    assert os.path.isabs(loaded.history)
+    with pytest.raises(ValueError, match="keeps its history in the journal"):
+        loaded.save(root=str(tmp_path / "elsewhere"))
+    assert not os.path.exists(tmp_path / "elsewhere")
+    loaded.save()  # its own root is fine
+
+
+def test_the_eager_path_keeps_a_callbacks_reassigned_idps():
+    class _Trim(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            ctx.idps = ctx.idps[-2:]
+
+    class _Read(Callback):
+        def __init__(self) -> None:
+            self.seen: list[int] = []
+
+        def on_epoch_end(self, ctx) -> None:
+            self.seen.append(len(ctx.idps))
+
+        def on_train_end(self, ctx) -> None:
+            self.seen.append(len(ctx.idps))
+
+    reader = _Read()
+    _fit("model", callbacks=[_Trim(), reader], n_epochs=2)
+    assert reader.seen == [2, 2, 2]  # exactly as before the journal existed
+
+
+def test_a_full_callback_still_ends_when_the_history_cannot_be_read_back(monkeypatch):
+    class _Ends(_Full):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ended = False
+
+        def on_train_end(self, ctx) -> None:
+            self.ended = True
+            super().on_train_end(ctx)
+
+    reads = []
+
+    def unreadable(self):
+        reads.append(None)
+        raise OSError("disk gone")
+
+    first, second = _Ends(), _Ends()
+    monkeypatch.setattr(history_module._JournalHistory, "full", unreadable)
+    with pytest.warns(RuntimeWarning, match="could not be read back") as caught:
+        with pytest.raises(OSError):
+            _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[first, second])
+    assert first.ended and second.ended  # both cleanup hooks ran, with the window
+    assert first.lengths[-1] == second.lengths[-1] == 3
+    assert len(reads) == 2  # the failed epoch read, then one attempt at the end — not one per callback
+    assert len([w for w in caught if "could not be read back" in str(w.message)]) == 1
+
+
+def test_on_train_end_reads_the_history_back_once(monkeypatch):
+    calls = []
+    original = history_module._JournalHistory.full
+
+    def counted(self):
+        calls.append(None)
+        return original(self)
+
+    monkeypatch.setattr(history_module._JournalHistory, "full", counted)
+    first, second = _Full(), _Full()
+    _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[first, second])
+    assert len(calls) == 3 + 1  # once per epoch, once at the end — not once per callback
+    assert first.lengths == second.lengths == [5, 10, 15, 15]
+
+
+def test_an_unbounded_lr_monitor_keeps_every_epoch_without_reading_history_back(monkeypatch):
+    reads = []
+    monkeypatch.setattr(history_module._JournalHistory, "full", lambda self: reads.append(None) or [])
+    bounded, every = LRMonitor(), LRMonitor(bounded=False)
+    _fit("model", HistoryJournal(retention=2, chunk_size=2), callbacks=[bounded, every], n_epochs=4)
+    assert len(bounded.history) == 2 and len(every.history) == 4 and not reads
+
+
+def test_a_failed_chunk_write_leaves_no_temporary(tmp_path):
+    def refuse(source, target):
+        raise OSError("rename refused")
+
+    directory = tmp_path / "history"
+    directory.mkdir()
+    with pytest.MonkeyPatch.context() as patch:  # os.replace only; the fixture's chdir stays
+        patch.setattr(history_module.os, "replace", refuse)
+        with pytest.raises(OSError, match="rename refused"):
+            history_module._write_chunk_file(str(directory / "chunk-00000000.jsonl"), b"{}\n")
+    assert os.listdir(directory) == []
+
+
+def test_chunks_are_flushed_at_the_epoch_boundary_not_per_batch(monkeypatch):
+    in_boundary = []
+    synced = []
+    original_sync = history_module._fsync_path
+
+    def at_boundary(method):
+        original = getattr(history_module._JournalWriter, method)
+
+        def wrapped(self, *args, **kwargs):
+            in_boundary.append(True)
+            try:
+                return original(self, *args, **kwargs)
+            finally:
+                in_boundary.pop()
+
+        monkeypatch.setattr(history_module._JournalWriter, method, wrapped)
+
+    def fsync(path):
+        synced.append(bool(in_boundary))
+        return original_sync(path)
+
+    at_boundary("end_epoch")
+    at_boundary("publish")
+    monkeypatch.setattr(history_module, "_fsync_path", fsync)
+    _fit("model", HistoryJournal(retention=2, chunk_size=1))
+    assert synced and all(synced)
+
+
+def test_counts_accept_numpy_integers_and_chunk_size_defaults_within_retention():
+    import numpy as np
+
+    spec = HistoryJournal(retention=np.int64(4), chunk_size=np.int32(2))
+    assert (spec.retention, spec.chunk_size, spec.chunk) == (4, 2, 2) and type(spec.retention) is int
+    assert HistoryJournal(retention=100).chunk == 100 and HistoryJournal().chunk == 250
+    # The default stays a default: replace() resolves it again.
+    assert dataclasses.replace(HistoryJournal(retention=1000), retention=100).chunk == 100
+    assert dataclasses.replace(HistoryJournal(retention=10), retention=5000).chunk == 250
+
+
+def test_lineage_follows_resumes_not_a_fresh_runs_named_parent():
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=3)
+    generation = _fit("model", spec, n_epochs=2, parent_run_id=parent.id)  # born-again style: starts fresh
+    lineage = [(r.epoch_idx, r.batch_idx) for r in iter_history(generation.id, lineage=True)]
+    assert lineage == [(e, b) for e in range(2) for b in range(5)]  # its own epochs, each once
+
+
+def test_lineage_falls_back_when_the_resumed_checkpoint_is_unreadable():
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=3)
+    child = _fit("model", spec, n_epochs=1, resume_from_run_id=parent.id, resume_from_checkpoint="first")
+    with open(os.path.join("runs", parent.id, "checkpoints", "first.pt"), "wb") as handle:
+        handle.write(b"truncated")
+    epochs = [r.epoch_idx for r in iter_history(child.id, lineage=True)]
+    assert epochs == [0] * 5 + [1] * 5  # the parent's records before the child's first record
+
+
+def _fit_with_step(step, history=None, **train):
+    batches = [(torch.zeros(2, 4), torch.zeros(2, dtype=torch.long))] * 3
+    params = NNTrainParams(n_epochs=2, train_loader=batches, optim=_OPTIM, **train)
+    return _model().train(params, train_step_fn=step, history=history)
+
+
+def test_a_nan_record_migrates(tmp_path):
+    nan = float("nan")
+    run = _fit_with_step(
+        lambda ctx: NNEvaluationDataPoint(loss=nan, error=0.5, accuracy=0.5, f1=0.0, precision=0.0, recall=0.0)
+    )
+    csv_before = tmp_path / "before.csv"
+    csv_before.write_bytes(open(os.path.join("runs", run.id, "idps.csv"), "rb").read())
+    migrate_history(run.id)
+    export_history_csv(run.id, tmp_path / "after.csv")
+    assert filecmp.cmp(tmp_path / "after.csv", csv_before, shallow=False)
+
+
+def test_numpy_and_tensor_scalars_are_journaled_as_numbers():
+    import numpy as np
+
+    def step(ctx):
+        return NNEvaluationDataPoint(
+            loss=np.float32(0.25), error=torch.tensor(0.5).item(), accuracy=np.float64(0.5), extra={"n": np.int64(3)}
+        )
+
+    run = _fit_with_step(step, HistoryJournal(retention=2, chunk_size=1))
+    (first, *_) = iter_history(run.id)
+    assert first.train_edp.loss == 0.25 and first.train_edp.extra == {"n": 3}
+    assert type(first.train_edp.loss) is float
+
+
+def test_a_migration_interrupted_after_publishing_is_finished_by_a_retry(tmp_path, monkeypatch):
+    legacy, before = _legacy_with_csv(tmp_path)
+    csv = os.path.join("runs", legacy.id, "idps.csv")
+    original = os.remove
+
+    def interrupted(path):
+        if path.endswith("idps.csv"):
+            raise KeyboardInterrupt
+        return original(path)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(history_module.os, "remove", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            migrate_history(legacy.id, spec=HistoryJournal(retention=4, chunk_size=2))
+    assert os.path.isfile(csv) and history_module.has_journal(os.path.join("runs", legacy.id))
+    migrate_history(legacy.id)  # finishes: the published journal matches the CSV
+    assert not os.path.exists(csv)
+    export_history_csv(legacy.id, tmp_path / "after.csv")
+    assert filecmp.cmp(tmp_path / "after.csv", before, shallow=False)
+    with pytest.raises(ValueError, match="already keeps its history in a journal"):
+        migrate_history(legacy.id)
+
+
+def test_lineage_never_repeats_epochs_when_the_parent_checkpoint_moved_on():
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=4)
+    child = _fit("model", spec, n_epochs=1, resume_from_run_id=parent.id, resume_from_checkpoint="first")
+    # FIRST is rewritten after the child resumed (as a still-training parent's BEST or LAST would be).
+    last = NNCheckpoint.load(run=parent.id, type=Checkpoints.LAST)
+    assert last is not None
+    last.save(run=parent.id, type=Checkpoints.FIRST)
+    epochs = [r.epoch_idx for r in iter_history(child.id, lineage=True)]
+    assert epochs == [0] * 5 + [1] * 5  # clamped at the child's first record
+
+
+def test_a_deleted_parent_starts_the_lineage_at_the_child():
+    import shutil
+
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=2)
+    child = _fit("model", spec, n_epochs=1, resume_from_run_id=parent.id)
+    shutil.rmtree(os.path.join("runs", parent.id))
+    with pytest.warns(RuntimeWarning, match="no longer saved"):
+        epochs = [r.epoch_idx for r in iter_history(child.id, lineage=True)]
+    assert epochs == [2] * 5
+
+
+def test_an_unknown_branch_point_never_yields_the_parents_later_epochs(monkeypatch):
+    import yaml
+
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=4)
+    with monkeypatch.context() as patch:
+        _crash_before_last(patch, 1, rollback=True)  # the child never commits a record
+        with pytest.raises(_Boom):
+            _fit("model", spec, n_epochs=2, resume_from_run_id=parent.id, resume_from_checkpoint="first")
+    (child,) = [run for run in NNRun.all() if run.id != parent.id]
+    with open(os.path.join("runs", parent.id, "checkpoints", "first.pt"), "wb") as handle:
+        handle.write(b"truncated")
+    # The resume recorded the epoch it branched at: the corrupt checkpoint does not matter.
+    assert child.resume_status is not None and child.resume_status.source_epoch == 0
+    assert {r.epoch_idx for r in iter_history(child.id, lineage=True)} == {0}
+    # Status recorded before source_epoch existed: the branch point cannot be known.
+    metadata = os.path.join("runs", child.id, "metadata.yaml")
+    state = yaml.safe_load(open(metadata))
+    del state["resume"]["source_epoch"]
+    with open(metadata, "w") as handle:
+        yaml.safe_dump(state, handle)
+    with pytest.warns(RuntimeWarning, match="cannot tell where run"):
+        assert list(iter_history(child.id, lineage=True)) == []
+
+
+def test_a_corrupt_parent_last_falls_back_to_the_childs_first_record():
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=3)
+    child = _fit("model", spec, n_epochs=1, resume_from_run_id=parent.id)
+    with open(os.path.join("runs", parent.id, "checkpoints", "last.pt"), "wb") as handle:
+        handle.write(b"truncated")
+    expected = [e for e in range(4) for _ in range(5)]
+    assert [r.epoch_idx for r in iter_history(child.id, lineage=True)] == expected  # the recorded branch epoch
+    import yaml
+
+    metadata = os.path.join("runs", child.id, "metadata.yaml")
+    state = yaml.safe_load(open(metadata))
+    del state["resume"]["source_epoch"]  # status recorded before source_epoch existed
+    with open(metadata, "w") as handle:
+        yaml.safe_dump(state, handle)
+    with pytest.warns(RuntimeWarning, match="unreadable"):
+        assert [r.epoch_idx for r in iter_history(child.id, lineage=True)] == expected  # the child's first record
+
+
+def test_a_callbacks_reassigned_idps_reaches_the_next_callback_in_a_journal_run():
+    class _Trim(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            ctx.idps = ctx.idps[-2:]
+
+    class _Read(Callback):
+        def __init__(self) -> None:
+            self.seen: list[int] = []
+
+        def on_epoch_end(self, ctx) -> None:
+            self.seen.append(len(ctx.idps))
+
+    full, reader = _Full(), _Read()
+    _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[_Trim(), full, reader], n_epochs=2)
+    assert full.lengths[:2] == [5, 10] and reader.seen == [2, 2]  # as in an eager run
+
+
+def test_a_value_the_journal_cannot_store_fails_on_the_first_batch():
+    import numpy as np
+
+    steps = []
+
+    def step(ctx):
+        steps.append(None)
+        return NNEvaluationDataPoint(loss=0.5, error=0.5, extra={"per_class": np.array([0.9, 0.8])})
+
+    with pytest.raises(TypeError, match="cannot store as JSON"):
+        _fit_with_step(step, HistoryJournal(retention=10, chunk_size=10))
+    assert len(steps) == 1
+
+
+def test_the_manifest_rename_is_flushed_before_last(monkeypatch):
+    events = []
+    original_sync, original_save = history_module._fsync_path, NNCheckpoint.save
+
+    def fsync(path):
+        events.append(("fsync", os.path.basename(path)))
+        return original_sync(path)
+
+    def save(self, *args, **kwargs):
+        events.append(("checkpoint", kwargs.get("type")))
+        return original_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(history_module, "_fsync_path", fsync)
+    monkeypatch.setattr(NNCheckpoint, "save", save)
+    _fit("model", HistoryJournal(retention=3, chunk_size=2), n_epochs=1)
+    first_checkpoint = next(i for i, event in enumerate(events) if event[0] == "checkpoint")
+    assert events[first_checkpoint - 1] == ("fsync", "history")  # the directory, after the manifest rename
+
+
+def test_a_migration_flushes_once(tmp_path, monkeypatch):
+    legacy, _ = _legacy_with_csv(tmp_path)
+    syncs = []
+    original = history_module._JournalWriter.sync
+    monkeypatch.setattr(history_module._JournalWriter, "sync", lambda self: syncs.append(None) or original(self))
+    migrate_history(legacy.id)
+    assert len(syncs) == 1  # not once per migrated epoch
+
+
+def test_the_chart_falls_back_to_the_window_when_the_journal_is_gone():
+    import shutil
+
+    run = _fit("model", HistoryJournal(retention=7, chunk_size=2))
+    shutil.rmtree(run.history)
+    with pytest.warns(RuntimeWarning, match="journal is unreadable"):
+        assert run._epoch_series()["epochs"] == [1, 2]  # the window's epochs, from memory
+    with pytest.warns(RuntimeWarning, match="journal is unreadable"):
+        assert "<table" in run._repr_html_()
+
+
+def test_the_new_history_directory_and_files_are_flushed_writably(monkeypatch):
+    opened = []
+    original = history_module.os.open
+
+    def spy(path, flags, *args, **kwargs):
+        opened.append((path, flags))
+        return original(path, flags, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(history_module.os, "open", spy)
+        run = _fit("model", HistoryJournal(retention=3, chunk_size=2), n_epochs=1)
+    run_dir = os.path.realpath(os.path.dirname(run.history))
+    files = [(p, f) for p, f in opened if os.path.realpath(p).startswith(os.path.realpath(run.history) + os.sep)]
+    assert files and all(f & os.O_RDWR for _, f in files)  # Windows' fsync needs a writable handle
+    assert any(os.path.realpath(p) == run_dir for p, _ in opened)  # the run directory's history/ entry
+
+
+def test_a_lent_history_does_not_reach_a_later_on_train_end():
+    window, full = _Window(), _Full()
+    _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[window, full])
+    # on_train_end runs in reverse: the full callback first, then the window one.
+    assert full.lengths[-1] == 15 and window.lengths[-1] == 3
+
+
+def test_a_recorded_branch_epoch_survives_an_unreadable_parent_last(monkeypatch):
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=3)
+    with monkeypatch.context() as patch:
+        _crash_before_last(patch, 3, rollback=True)  # the child never commits a record
+        with pytest.raises(_Boom):
+            _fit("model", spec, n_epochs=1, resume_from_run_id=parent.id)
+    (child,) = [run for run in NNRun.all() if run.id != parent.id]
+    with open(os.path.join("runs", parent.id, "checkpoints", "last.pt"), "wb") as handle:
+        handle.write(b"truncated")
+    assert sorted({r.epoch_idx for r in iter_history(child.id, lineage=True)}) == [0, 1, 2]
+
+
+def test_the_best_pointer_is_not_followed_as_a_lineage_parent():
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    _fit("model", spec, n_epochs=2)
+    child = _fit("model", spec, n_epochs=1, resume_from_run_id="best")
+    with pytest.warns(RuntimeWarning, match="runs/best pointer"):
+        assert {r.epoch_idx for r in iter_history(child.id, lineage=True)} == {2}
+    with pytest.raises(ValueError, match="not through the runs/best pointer"):
+        migrate_history("best")

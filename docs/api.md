@@ -1782,7 +1782,7 @@ Saved component state that cannot be restored: every problem found (missing, unk
 #### `nnx.components.ResumeStatus`
 
 ```python
-class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = ()) -> 'None'
+class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = (), source_epoch: 'Optional[int]' = None) -> 'None'
 ```
 
 How a training session started.
@@ -1796,6 +1796,9 @@ Attributes:
         ``"weights_only"`` (model weights only — the checkpoint had no
         training state, or ``resume_mode="weights_only"`` was asked).
     source_run_id / source_checkpoint: where the resume came from.
+    source_epoch: the epoch of that checkpoint when the session resumed
+        from it (FEAT-036's lineage reads it); ``None`` for a fresh run
+        and for status recorded before it existed.
     restored_components: names of the components whose state was
         restored, in registration order.
     fresh_components: registered components that kept their fresh
@@ -6558,7 +6561,7 @@ No public description is currently available.
 #### `nnx.history.HistoryJournal`
 
 ```python
-class nnx.history.HistoryJournal(retention: 'int' = 1000, chunk_size: 'int' = 250) -> 'None'
+class nnx.history.HistoryJournal(retention: 'int' = 1000, chunk_size: 'Optional[int]' = None) -> 'None'
 ```
 
 Opt-in bounded history for one training run.
@@ -6572,8 +6575,17 @@ Args:
         loaded run).
     chunk_size: records per journal chunk file, at most ``retention``
         (so the records waiting for their chunk are always inside the
-        window).
+        window). ``None`` (the default) means ``min(250, retention)``;
+        :attr:`chunk` is the resolved size.
 ```
+
+##### `nnx.history.HistoryJournal.chunk`
+
+```python
+property nnx.history.HistoryJournal.chunk
+```
+
+Records per chunk file: ``chunk_size``, or ``min(250, retention)``.
 
 
 #### `nnx.history.iter_history`
@@ -6587,9 +6599,18 @@ Stream a run's committed history in order: a journal chunk by chunk (each checke
 **Details**
 
 ```text
-With ``lineage=True`` a resumed run (``resume_from_run_id`` /
-``parent_run_id``) is preceded by its parent's committed records up to
-— not including — its own first epoch, recursively: each record once.
+With ``lineage=True`` a resumed run is preceded by the committed records
+of the run it resumed from, up to and including the epoch it resumed
+from (recorded in its resume status; for runs recorded before that, the
+epoch of that checkpoint now) and never past the run's own first record,
+recursively: each epoch once, never the parent's later epochs. When
+that epoch cannot be known (the checkpoint, or the parent's LAST, is
+unreadable), the parent's records before the run's first record are
+used, with a ``RuntimeWarning``; when neither is known, or the parent
+run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
+Lineage follows resumes: a run that started fresh (a born-again
+generation naming its teacher's run as ``parent_run_id``, say) starts
+its own epochs, and its lineage is its own history.
 ```
 
 
@@ -6605,7 +6626,7 @@ Write a run's committed history (see :func:`iter_history`) to ``path`` in the le
 #### `nnx.history.migrate_history`
 
 ```python
-nnx.history.migrate_history(run_id: 'str', root: 'Optional[str]' = None, *, spec: 'Optional[HistoryJournal]' = None) -> 'None'
+nnx.history.migrate_history(run_id: 'str', root: 'Optional[str]' = None, *, spec: 'Optional[HistoryJournal]' = None, discard_uncommitted: 'bool' = False) -> 'None'
 ```
 
 Move a legacy run's ``idps.csv`` into a history journal, explicitly.
@@ -6614,9 +6635,13 @@ Move a legacy run's ``idps.csv`` into a history journal, explicitly.
 
 ```text
 The committed records are written as a journal (with per-epoch summary
-rows) and published, then ``idps.csv`` is removed; ``run.yaml`` — and so
-the run id — is untouched. A run that already keeps a journal, and one
-that is being trained (its lease is held), are refused.
+rows), published and read back, and only then is ``idps.csv`` removed;
+``run.yaml`` — and so the run id — is untouched. A leftover journal from
+an interrupted migration (never published) is replaced. Refused: a run
+that already keeps a journal, a run that is being trained (its lease is
+held), and — unless ``discard_uncommitted=True`` — a CSV holding records
+past the LAST checkpoint's epoch, which readers hide but a migration
+would delete.
 ```
 
 
@@ -8132,7 +8157,7 @@ No public description is currently available.
 #### `nnx.nn.callbacks.LRMonitor`
 
 ```python
-class nnx.nn.callbacks.LRMonitor()
+class nnx.nn.callbacks.LRMonitor(bounded: 'bool' = True)
 ```
 
 Logs the current LR each epoch. History exposed at `.history`.
@@ -8140,8 +8165,10 @@ Logs the current LR each epoch. History exposed at `.history`.
 **Details**
 
 ```text
-In a run with a history journal (FEAT-036, ``nnx.history``) the log keeps
-the journal's ``retention`` most recent epochs, like ``ctx.idps``.
+In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+bounded too: it keeps the LRs of the last ``retention`` epochs (the
+journal's bound, applied per epoch). ``bounded=False`` keeps every
+epoch's LR (one float each) in any run.
 ```
 
 ##### `nnx.nn.callbacks.LRMonitor.on_epoch_end`

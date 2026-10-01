@@ -507,18 +507,21 @@ class ModelCheckpoint(Callback):
 class LRMonitor(Callback):
     """Logs the current LR each epoch. History exposed at `.history`.
 
-    In a run with a history journal (FEAT-036, ``nnx.history``) the log keeps
-    the journal's ``retention`` most recent epochs, like ``ctx.idps``.
+    In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+    bounded too: it keeps the LRs of the last ``retention`` epochs (the
+    journal's bound, applied per epoch). ``bounded=False`` keeps every
+    epoch's LR (one float each) in any run.
     """
 
-    def __init__(self):
+    def __init__(self, bounded: bool = True):
         self.history: list[float] = []
+        self.bounded = bounded
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
         retention = getattr(ctx, "history_retention", None)
-        if retention is not None and len(self.history) > retention:
+        if retention is not None and getattr(self, "bounded", True) and len(self.history) > retention:
             del self.history[:-retention]
 
 
