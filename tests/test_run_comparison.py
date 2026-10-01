@@ -679,3 +679,67 @@ def test_round_three_reader_edges(tmp_path, monkeypatch):
     from nnx.comparison import _replicate_key
 
     assert _replicate_key({"model": {"net": {"kind": "registered", "seed": 0}}, "train": {}}) is None
+
+
+def test_round_four_edges(tmp_path):
+    from nnx.comparison import GroupSummary, PairedComparison, Summary
+
+    a = replicates([0.3, 0.4, 0.2], config="cfg-a")
+    b = replicates([0.5, 0.6, 0.7], config="cfg-b")
+    forward = ComparisonReport.build([*a, *b], [(a, b, "same seed")])
+    # Direct construction in any order gives the canonical report, which reloads.
+    shuffled_a = GroupSummary(ACC, "validation", "last", "cfg-a", "data:v1", "split:v1", tuple(reversed(a)))
+    shuffled_b = GroupSummary(ACC, "validation", "last", "cfg-b", "data:v1", "split:v1", tuple(reversed(b)))
+    direct = ComparisonReport(
+        Summary((shuffled_b, shuffled_a)), (PairedComparison(shuffled_a, shuffled_b, "same seed"),)
+    )
+    assert direct.to_json() == forward.to_json()
+    path = tmp_path / "report.json"
+    direct.save(path)
+    assert ComparisonReport.load(path) == forward
+    with pytest.raises(ComparisonError, match="at least one"):
+        Summary(())
+    with pytest.raises(ComparisonError, match="at least one observation"):
+        GroupSummary(ACC, "validation", "last", None, None, None, ())
+    with pytest.raises(ComparisonError, match="must be a Metric"):
+        GroupSummary("acc", "validation", "last", None, None, None, tuple(a))  # type: ignore[arg-type]
+    with pytest.raises(ComparisonError, match="GroupSummary"):
+        PairedComparison("x", shuffled_b, "same seed")  # type: ignore[arg-type]
+    with pytest.raises(ComparisonError, match="Bootstrap"):
+        PairedComparison(shuffled_a, shuffled_b, "same seed", bootstrap="x")  # type: ignore[arg-type]
+    with pytest.raises(ComparisonError, match="Summary"):
+        ComparisonReport("x")  # type: ignore[arg-type]
+    with pytest.raises(ComparisonError, match="resamples"):
+        Bootstrap(seed=0, resamples=10**13)
+    # The bootstrap interval stays finite where the mean does.
+    huge_a = replicates([0.0, 0.0], config="cfg-a")
+    huge_b = replicates([1e308, 1.5e308], config="cfg-b")
+    result = compare(huge_a, huge_b, pairing="same seed", bootstrap=Bootstrap(seed=0, resamples=50))
+    assert result.mean == pytest.approx(1.25e308) and all(math.isfinite(v) for v in result.interval)
+
+
+def test_round_four_reader_edges(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    runs = [_model().train(params=_fit_params(seed), provenance=MANIFEST) for seed in (0, 1, 2)]
+    ids = [run.id for run in runs]
+    with pytest.raises(ComparisonError, match="not a run id"):
+        observations_from_runs(["../x"], metric=LOSS)
+    path = os.path.join("runs", ids[0], "run.yaml")
+    state = yaml.safe_load(open(path))
+    with open(path, "w") as handle:
+        yaml.safe_dump({**state, "train": [1]}, handle)
+    with pytest.raises(ComparisonError, match="'train' is not a mapping"):
+        observations_from_runs(ids[:1], metric=LOSS)
+    for bad, match in (([1], "not a mapping"), ({"epoch": "x"}, "not an epoch")):
+        attempt = os.path.join("runs", ids[1], "attempt.json")
+        record = json.loads(open(attempt).read())
+        record["last_committed"] = bad
+        with open(attempt, "w") as handle:
+            json.dump(record, handle)
+        with pytest.raises(ComparisonError, match=match):
+            observations_from_runs(ids[1:2], metric=LOSS)
+    (item,) = observations_from_runs(ids[2:], metric=Metric("acc", "maximize"))
+    assert "missing, or NaN" in item.evaluation

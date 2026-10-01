@@ -309,10 +309,7 @@ def _mean_std(values: Sequence[float]) -> tuple[Optional[float], Optional[float]
     if largest == 0.0:
         return mean, 0.0
     std = largest * math.sqrt(math.fsum((d / largest) ** 2 for d in deviations) / (n - 1))  # scaled: no overflow
-    try:
-        return mean, std * scale
-    except OverflowError:  # pragma: no cover - a float product saturates to inf instead
-        return mean, math.inf
+    return mean, std * scale  # a float product saturates to inf, never raises
 
 
 @dataclass(frozen=True)
@@ -343,7 +340,16 @@ class GroupSummary:
     std: Optional[float] = field(init=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.metric, Metric):
+            raise ComparisonError(f"GroupSummary.metric must be a Metric, got {type(self.metric).__name__}")
+        _text(self.split, "GroupSummary.split")
+        _text(self.selection, "GroupSummary.selection")
+        if not self.observations:
+            raise ComparisonError("a GroupSummary needs at least one observation")
         _checked(self.observations, "GroupSummary.observations")
+        # Canonical order, whatever order they were given in: a report then
+        # saves and reloads identically.
+        object.__setattr__(self, "observations", tuple(sorted(self.observations, key=Observation._sort_key)))
         key = tuple(getattr(self, name) for name in POOL_FIELDS)
         strays = sorted(item.id for item in self.observations if item._pool_key() != key)
         if strays:
@@ -423,10 +429,18 @@ class Summary:
         bad = [type(group).__name__ for group in self.groups if not isinstance(group, GroupSummary)]
         if bad:
             raise ComparisonError(f"Summary.groups must be GroupSummary objects, got {bad}")
+        if not self.groups:
+            raise ComparisonError("a Summary needs at least one group")
         keys = [tuple(getattr(group, name) for name in POOL_FIELDS) for group in self.groups]
         if len(set(map(repr, keys))) != len(keys):
             raise ComparisonError("a Summary's groups must be distinct poolable groups")
         _checked(self.observations, "Summary observations")
+        # The order summarize() gives: canonical, whatever order they were given in.
+        object.__setattr__(
+            self,
+            "groups",
+            tuple(sorted(self.groups, key=lambda group: repr(tuple(getattr(group, name) for name in POOL_FIELDS)))),
+        )
 
     @property
     def differing(self) -> tuple[str, ...]:
@@ -468,6 +482,9 @@ def summarize(observations: Iterable[Observation]) -> Summary:
 # --- paired comparisons ---------------------------------------------------------------------------
 
 
+MAX_RESAMPLES = 1_000_000
+
+
 @dataclass(frozen=True)
 class Bootstrap:
     """A percentile bootstrap of the mean paired delta: ``resamples``
@@ -483,8 +500,14 @@ class Bootstrap:
     def __post_init__(self) -> None:
         if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
             raise ComparisonError(f"Bootstrap.seed must be a non-negative integer, got {self.seed!r}")
-        if isinstance(self.resamples, bool) or not isinstance(self.resamples, int) or self.resamples < 1:
-            raise ComparisonError(f"Bootstrap.resamples must be a positive integer, got {self.resamples!r}")
+        if (
+            isinstance(self.resamples, bool)
+            or not isinstance(self.resamples, int)
+            or not 1 <= self.resamples <= MAX_RESAMPLES
+        ):
+            raise ComparisonError(
+                f"Bootstrap.resamples must be an integer in [1, {MAX_RESAMPLES}], got {self.resamples!r}"
+            )
         if isinstance(self.level, bool) or not isinstance(self.level, (int, float)) or not 0 < self.level < 1:
             raise ComparisonError(f"Bootstrap.level must be in (0, 1), got {self.level!r}")
 
@@ -505,7 +528,11 @@ class Bootstrap:
 
         values = np.asarray(deltas, dtype=np.float64)
         rng = np.random.default_rng(self.seed)
-        means = values[rng.integers(0, len(values), size=(self.resamples, len(values)))].mean(axis=1)
+        drawn = rng.integers(0, len(values), size=(self.resamples, len(values)))
+        with np.errstate(over="ignore", invalid="ignore"):
+            means = values[drawn].mean(axis=1)
+        if not np.isfinite(means).all():  # a sum overflowed: divide first (cannot overflow)
+            means = (values / len(values))[drawn].sum(axis=1)
         tail = (1.0 - float(self.level)) / 2.0
         low, high = np.quantile(means, [tail, 1.0 - tail])
         return float(low), float(high)
@@ -552,6 +579,11 @@ class PairedComparison:
     interval: Optional[tuple[float, float]] = field(init=False)
 
     def __post_init__(self) -> None:
+        for side, name in ((self.a, "a"), (self.b, "b")):
+            if not isinstance(side, GroupSummary):
+                raise ComparisonError(f"PairedComparison.{name} must be a GroupSummary, got {type(side).__name__}")
+        if self.bootstrap is not None and not isinstance(self.bootstrap, Bootstrap):
+            raise ComparisonError(f"bootstrap must be a Bootstrap or None, got {type(self.bootstrap).__name__}")
         _check_replicates(self.a, "a")
         _check_replicates(self.b, "b")
         differ = tuple(name for name in _differing((self.a, self.b)) if name != "config")
@@ -684,6 +716,11 @@ class ComparisonReport:
     comparisons: tuple[PairedComparison, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.summary, Summary):
+            raise ComparisonError(f"ComparisonReport.summary must be a Summary, got {type(self.summary).__name__}")
+        bad = [type(result).__name__ for result in self.comparisons if not isinstance(result, PairedComparison)]
+        if bad:
+            raise ComparisonError(f"ComparisonReport.comparisons must be PairedComparisons, got {bad}")
         known = {(item.metric.name, item.id): item.state() for item in self.summary.observations}
         for result in self.comparisons:
             stray = sorted(
@@ -926,6 +963,13 @@ def _identities(refs: Mapping[str, Any]) -> Optional[str]:
 
 
 def _metric_value(edp: Any, name: str) -> Optional[float]:
+    try:
+        return _raw_metric_value(edp, name)
+    except (TypeError, ValueError) as error:
+        raise ComparisonError(f"the record's {name!r} is not a number: {error}") from error
+
+
+def _raw_metric_value(edp: Any, name: str) -> Optional[float]:
     if edp is None:
         return None
     if name in edp.metrics:
@@ -946,7 +990,10 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE, _runs_root, _validate_run_id
     from .provenance import load_provenance
 
-    run_path = os.path.join(_runs_root(root), _validate_run_id(run_id))
+    try:
+        run_path = os.path.join(_runs_root(root), _validate_run_id(run_id))
+    except (TypeError, ValueError) as error:
+        raise ComparisonError(f"not a run id: {run_id!r} ({error})") from error
     try:
         with open(os.path.join(run_path, "run.yaml"), encoding="utf-8") as handle:
             run_state = yaml.safe_load(handle)
@@ -954,6 +1001,9 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
         raise ComparisonError(f"run {run_id}: run.yaml is missing or unreadable: {error}") from error
     if not isinstance(run_state, Mapping):
         raise ComparisonError(f"malformed run.yaml for run {run_id}")
+    for section in ("model", "train", "trainer"):
+        if run_state.get(section) is not None and not isinstance(run_state[section], Mapping):
+            raise ComparisonError(f"malformed run.yaml for run {run_id}: {section!r} is not a mapping")
     csv_path = os.path.join(run_path, "idps.csv")
     try:
         rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
@@ -1010,7 +1060,10 @@ def observations_from_runs(
     one) and the data and split identities from its manifest. A run's
     history is committed by its LAST checkpoint, so without an attempt
     record naming that checkpoint's epoch the committed epoch — and so the
-    value — is unknown.
+    value — is unknown. A legacy run (no commit marker) keeps its value,
+    but its status is unknown, so it is never counted in a group's ``n``.
+    A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
+    empty cell.
     """
     if not isinstance(metric, Metric):
         raise ComparisonError(f"metric must be a Metric, got {type(metric).__name__}")
@@ -1038,8 +1091,13 @@ def observations_from_runs(
         known = True
         if committed_by_last:
             last = None if attempt is None else attempt.last_committed
-            if last is not None and last.get("epoch") is not None:
-                committed = int(last["epoch"])
+            if last is not None and not isinstance(last, Mapping):
+                raise ComparisonError(f"run {run_id}: attempt.json's last_committed is not a mapping: {last!r}")
+            epoch = None if last is None else last.get("epoch")
+            if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
+                raise ComparisonError(f"run {run_id}: attempt.json's committed epoch is not an epoch: {epoch!r}")
+            if epoch is not None:
+                committed = epoch
             else:
                 known = False
         epochs: dict[int, Any] = {}
@@ -1085,7 +1143,10 @@ def observations_from_runs(
                     else f"unknown: epoch {chosen.epoch_idx} has no validation record"
                 )
             elif value is None:
-                evaluation = f"unknown: the epoch {chosen.epoch_idx} {split} record has no {metric.name!r}"
+                evaluation = (
+                    f"unknown: the epoch {chosen.epoch_idx} {split} record has no {metric.name!r} value "
+                    "(missing, or NaN — idps.csv writes NaN as an empty cell)"
+                )
             last = None if attempt is None else attempt.last_committed
             if last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"

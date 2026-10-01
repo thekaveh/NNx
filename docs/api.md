@@ -5347,7 +5347,10 @@ attempt id come from the run's attempt record (``"unknown"`` without
 one) and the data and split identities from its manifest. A run's
 history is committed by its LAST checkpoint, so without an attempt
 record naming that checkpoint's epoch the committed epoch — and so the
-value — is unknown.
+value — is unknown. A legacy run (no commit marker) keeps its value,
+but its status is unknown, so it is never counted in a group's ``n``.
+A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
+empty cell.
 ```
 
 

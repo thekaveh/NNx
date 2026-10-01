@@ -1749,8 +1749,10 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
 - **Reading runs.** `observations_from_runs(run_ids, metric=..., split=,
   selection=)` reads `run.yaml`, `idps.csv` and the provenance files once
   each. Train the runs with `provenance=` (FEAT-019): the attempt record
-  gives the status, the attempt id and the committed epoch, without which
-  the value is unknown. The value is the epoch record of the last committed
+  gives the status, the attempt id and the committed epoch. Without it, a
+  run whose history is committed by its LAST checkpoint has an unknown
+  value, and a legacy run (no commit marker) keeps its value but, of
+  unknown status, is never counted in `n`. The value is the epoch record of the last committed
   epoch (`selection="last"`) or of the epoch the run's monitor last elected
   (`"best"`, whose rule names the declared monitor; unknown without one or
   when it elected nothing), on the validation record or the whole-epoch
