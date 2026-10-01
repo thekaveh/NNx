@@ -466,3 +466,29 @@ def test_training_mode_restore_suppresses_direct_grandchild_hook_calls():
     _restore_training_modes(modes)
 
     assert calls == 1
+
+
+@pytest.mark.parametrize("dynamo", [False, True], ids=["torchscript", "dynamo"])
+def test_to_onnx_keeps_parameters_gradients_and_mixed_modes(tmp_path, dynamo: bool):
+    """Both exporters leave the model as they found it: parameters, the
+    gradients a caller is midway through accumulating, and a mixed
+    train / eval mode (FEAT-038; the conformance profiles record the same)."""
+    pytest.importorskip("onnx")
+    if dynamo:
+        pytest.importorskip("onnxscript")
+    model = _tiny_nnmodel()
+    module = model.net
+    module.train()
+    child = next(child for child in module.modules() if child is not module)
+    child.eval()
+    x = torch.randn(2, 4)
+    torch.nn.functional.cross_entropy(module(x), torch.tensor([0, 1])).backward()
+    params = {k: v.detach().clone() for k, v in module.state_dict().items()}
+    grads = {k: p.grad.detach().clone() for k, p in module.named_parameters() if p.grad is not None}
+    modes = [part.training for part in module.modules()]
+
+    model.to_onnx(str(tmp_path / "model.onnx"), example_input=x, dynamo=dynamo)
+
+    assert [part.training for part in module.modules()] == modes
+    assert all(torch.equal(params[k], v) for k, v in module.state_dict().items())
+    assert grads and all(p.grad is not None and torch.equal(grads[k], p.grad) for k, p in module.named_parameters())

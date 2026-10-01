@@ -612,6 +612,32 @@ Walkthrough and stock-runtime limitations at [Experimental GGUF export](gguf.md)
 
 @api nnx.interop.ollama.export_ollama_modelfile
 
+### 16.2. ONNX export conformance (`nnx.export_conformance`)
+
+Executable profiles that separate structural validity from numerical parity: `FeedFwdNN` 4-8-2 FP32 under both exporters, run in ONNX Runtime on CPU, with every stage's outcome and the evidence recorded. Walkthrough, failure classes and exit codes at [Export conformance](export-conformance.md). Opt-in via `pip install "thekaveh-nnx[onnx-runtime,onnx-dynamo]"`; `python scripts/check_export_conformance.py --output conformance.json` runs both profiles.
+
+@api nnx.export_conformance.Profile
+
+@api nnx.export_conformance.run_profile
+
+@api nnx.export_conformance.run_profiles
+
+@api nnx.export_conformance.execute
+
+@api nnx.export_conformance.verify_artifacts
+
+@api nnx.export_conformance.validate_record
+
+@api nnx.export_conformance.build_model
+
+@api nnx.export_conformance.exit_code
+
+@api nnx.export_conformance.save_report
+
+@api nnx.export_conformance.summary_lines
+
+@api nnx.export_conformance.ConformanceError
+
 ## 17. HuggingFace Hub + safetensors
 
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:

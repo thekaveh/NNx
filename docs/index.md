@@ -54,7 +54,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Warm-resume training** — restore model, validated optimizer topology, scheduler, scaler, completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG state from a matching generation-addressed sidecar.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** — opt-in via extras.
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `thekaveh-nnx[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter.
+- **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `thekaveh-nnx[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter. Both exporters' FP32 feed-forward profiles are executed in ONNX Runtime and checked for parity ([Export conformance](export-conformance.md)).
 
 ### 1.2. Specializations
 
