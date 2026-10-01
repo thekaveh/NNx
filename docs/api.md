@@ -5261,10 +5261,10 @@ Args:
     max_candidates: the most candidates evaluation materialises.
 
 Training negatives are drawn per epoch from ``(seed, epoch)``, so a
-stateful resume continues them as if uninterrupted; the objective
-checkpoints the seed and each epoch's first training pass, and refuses
-a resumed loader with another seed or one that stopped following the
-epoch.
+stateful resume continues them as if uninterrupted — when the training
+loop's ``set_epoch`` reaches the task's loader (directly, or through a
+wrapper that forwards it). The objective checkpoints the seed and
+refuses a resumed loader with another one.
 ```
 
 ##### `nnx.link_tasks.LinkTask.state`

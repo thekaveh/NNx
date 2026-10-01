@@ -753,7 +753,6 @@ class _Loader:
                 self.name,
                 current if self.name == "train" else None,
                 self.task._negatives_seed(self.seed),
-                self.epoch is not None,
             )
 
     def __len__(self) -> int:
@@ -777,10 +776,10 @@ class LinkTask:
         max_candidates: the most candidates evaluation materialises.
 
     Training negatives are drawn per epoch from ``(seed, epoch)``, so a
-    stateful resume continues them as if uninterrupted; the objective
-    checkpoints the seed and each epoch's first training pass, and refuses
-    a resumed loader with another seed or one that stopped following the
-    epoch.
+    stateful resume continues them as if uninterrupted — when the training
+    loop's ``set_epoch`` reaches the task's loader (directly, or through a
+    wrapper that forwards it). The objective checkpoints the seed and
+    refuses a resumed loader with another one.
     """
 
     split: LinkSplit
@@ -877,7 +876,7 @@ class LinkTask:
         shuffled = [rows[int(i)] for i in order]
         return [r[0] for r in shuffled], [r[1] for r in shuffled], [r[2] for r in shuffled]
 
-    def _batch(self, x, messages, candidates, targets, ids, name, passes=None, seed=None, followed=False) -> Any:
+    def _batch(self, x, messages, candidates, targets, ids, name, passes=None, seed=None) -> Any:
         from torch_geometric.data import Data
 
         index = torch.tensor(candidates, dtype=torch.long).t().reshape(2, -1)
@@ -893,7 +892,6 @@ class LinkTask:
         if passes is not None:
             batch.link_pass = passes  # the training pass (epoch) that drew its negatives and order
             batch.link_seed = seed  # ... from this seed: checkpointed, so a resume cannot change it
-            batch.link_followed = bool(followed)  # whether the pass was the epoch the training loop announced
         return batch
 
     def check_batch(self, batch: Any) -> None:
@@ -1057,11 +1055,9 @@ class LinkObjective(Objective):
             raise LinkTaskError(f"a LinkTask is needed, got {type(task).__name__}")
         self.task = task
         self.seed: Optional[int] = None  # the training negatives' seed, checkpointed
-        # (epoch, training pass, whether the pass followed the epoch) of each
-        # epoch's first batch, checkpointed
-        self.last: Optional[tuple[int, int, bool]] = None
+        self.epoch: Optional[int] = None  # the last epoch trained, checkpointed
         self._expect: Optional[int] = None
-        self._expect_last: Optional[tuple[int, int, bool]] = None
+        self._expect_epoch: Optional[int] = None
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         _no_extra_metrics(ctx)
@@ -1069,37 +1065,19 @@ class LinkObjective(Objective):
         self.task.check_batch(batch)  # before any forward pass: a leak never trains
         if batch.link_split != "train":
             raise LinkTaskError(f"the link objective trains on 'train' batches only, got a {batch.link_split!r} batch")
-        seed, drawn = getattr(batch, "link_seed", None), getattr(batch, "link_pass", None)
-        followed = bool(getattr(batch, "link_followed", False))
+        seed = getattr(batch, "link_seed", None)
         expect, self._expect = self._expect, None  # checked once, by the first batch after a restore
-        last, self._expect_last = self._expect_last, None
-        if last is not None and ctx.epoch_idx != last[0] + 1:
-            expect = last = None  # left armed by a resume that failed before training: this is another fit
+        epoch, self._expect_epoch = self._expect_epoch, None
+        if epoch is not None and ctx.epoch_idx != epoch + 1:
+            expect = None  # left armed by a resume that failed before training: this is another fit
         if seed is not None and expect is not None and seed != expect:
             raise LinkTaskError(
                 f"the checkpoint drew training negatives from seed {expect}, the resumed loader from "
                 f"seed {seed}: build the training loader with the same seed"
             )
-        if drawn is not None and last is not None:
-            epoch, previous, was_followed = last
-            # An epoch-following loader keeps following, at the same offset;
-            # a materialised list (which never followed) repeats its pass.
-            consistent = (
-                followed and drawn - ctx.epoch_idx == previous - epoch
-                if was_followed
-                else not followed and drawn == previous
-            )
-            if not consistent:
-                raise LinkTaskError(
-                    f"the resumed run draws training pass {drawn} at epoch {ctx.epoch_idx}"
-                    f"{'' if followed else ' (not following the epoch)'}, but the checkpoint drew pass {previous} at "
-                    f"epoch {epoch}{' following the epoch' if was_followed else ''}: forward set_epoch(epoch) to the "
-                    "link loader through any wrapper, or resume with the same materialised batches"
-                )
         if seed is not None:
             self.seed = int(seed)
-        if drawn is not None and ctx.batch_idx == 0:
-            self.last = (int(ctx.epoch_idx), int(drawn), followed)
+        self.epoch = int(ctx.epoch_idx)
         model = ctx.model
         model.net.train()
         logits = self.task._logits(model, batch)
@@ -1128,7 +1106,7 @@ class LinkObjective(Objective):
             "task": self.task.state(),
             "manifest": self.task.split.state(),
             "negatives_seed": self.seed,
-            "last_pass": None if self.last is None else list(self.last),
+            "epoch": self.epoch,
         }
 
     @staticmethod
@@ -1139,18 +1117,11 @@ class LinkObjective(Objective):
         raise ValueError(f"negatives_seed {seed!r}")
 
     @staticmethod
-    def _last_state(state: Mapping[str, Any]) -> Any:
-        last = state.get("last_pass")
-        if last is None:
-            return None
-        if (
-            isinstance(last, (list, tuple))
-            and len(last) == 3
-            and all(type(v) is int and v >= 0 for v in last[:2])
-            and type(last[2]) is bool
-        ):
-            return (int(last[0]), int(last[1]), bool(last[2]))
-        raise ValueError(f"last_pass {last!r}")
+    def _epoch_state(state: Mapping[str, Any]) -> Any:
+        epoch = state.get("epoch")
+        if epoch is None or (isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0):
+            return epoch
+        raise ValueError(f"epoch {epoch!r}")
 
     def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
         if not isinstance(state, Mapping):
@@ -1160,7 +1131,7 @@ class LinkObjective(Objective):
             problems.append("the link split (manifest) changed since the checkpoint")
         if state.get("task") != self.task.state():
             problems.append(f"the link task changed since the checkpoint: {state.get('task')} -> {self.task.state()}")
-        for read in (self._seed_state, self._last_state):
+        for read in (self._seed_state, self._epoch_state):
             try:
                 read(state)
             except ValueError as error:
@@ -1170,14 +1141,13 @@ class LinkObjective(Objective):
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
         """The manifest is configuration (checked, not restored). The
         training negatives' seed is restored and must match the resumed
-        loader's, and the first resumed batch must continue the passes —
-        an epoch-following loader keeps following at its offset from the
-        epoch, a materialised list repeats its one pass — or the resume is
-        refused. (A loader that never followed the epoch looks like a list:
-        a source run through a non-forwarding wrapper resumes unchecked.)"""
+        loader's. The passes need no state: the training loop announces
+        each epoch to the task's loader (``set_epoch``), so a resumed run
+        draws what the uninterrupted one would have — through any wrapper
+        that forwards ``set_epoch``."""
         # Assigned whatever they hold: a rollback restores None, which disarms.
         self.seed = self._expect = self._seed_state(state)
-        self.last = self._expect_last = self._last_state(state)
+        self.epoch = self._expect_epoch = self._epoch_state(state)
 
 
 class LinkEval:
