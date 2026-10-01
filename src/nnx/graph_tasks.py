@@ -238,7 +238,12 @@ class GraphCollection(torch.utils.data.Dataset):
 def check_graph_batch(batch: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """``(x, edge_index, batch_vector, ptr)`` of a graph-collection batch,
     checked: graph ids (unique), at least one node per graph, ``ptr`` and the
-    batch vector consistent, and no edge across graphs."""
+    batch vector consistent, and no edge across graphs. An edge-label (link)
+    batch is refused: pooling it would score candidate edges as graphs."""
+    if getattr(batch, "edge_label_index", None) is not None:
+        raise GraphTaskError(
+            "an edge-label (link) batch asks about candidate edges, not whole graphs; use nnx.link_tasks"
+        )
     if not is_graph_collection_batch(batch):
         raise GraphTaskError(
             "a graph classifier reads batches of whole graphs with graph ids (GraphCollection.loader()); "

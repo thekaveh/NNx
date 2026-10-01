@@ -33,6 +33,7 @@ from . import (
     embeddings,
     graph_tasks,
     interop,
+    link_tasks,
     models,
     monitors,
     objectives,
@@ -374,6 +375,8 @@ __all__ = [
     "FitResult",
     # Graph-level classification with explicit pooling and graph ids (FEAT-026)
     "graph_tasks",
+    # Leakage-aware link and edge prediction (FEAT-027)
+    "link_tasks",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

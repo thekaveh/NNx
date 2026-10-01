@@ -5115,7 +5115,7 @@ The registered recipe of a :class:`GraphClassifier`: ``encoder`` convolutions (`
 nnx.graph_tasks.check_graph_batch(batch: 'Any') -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]'
 ```
 
-``(x, edge_index, batch_vector, ptr)`` of a graph-collection batch, checked: graph ids (unique), at least one node per graph, ``ptr`` and the batch vector consistent, and no edge across graphs.
+``(x, edge_index, batch_vector, ptr)`` of a graph-collection batch, checked: graph ids (unique), at least one node per graph, ``ptr`` and the batch vector consistent, and no edge across graphs. An edge-label (link) batch is refused: pooling it would score candidate edges as graphs.
 
 
 #### `nnx.graph_tasks.GraphTaskError`
@@ -5125,6 +5125,278 @@ class nnx.graph_tasks.GraphTaskError
 ```
 
 A graph collection, batch or classifier setting NNx rejects.
+
+
+### 2.19. Link and edge prediction (`nnx.link_tasks`)
+
+#### `nnx.link_tasks.split_links`
+
+```python
+nnx.link_tasks.split_links(edge_index: 'Any', num_nodes: 'int', *, val: 'Any' = 0.1, test: 'Any' = 0.1, seed: 'int', directed: 'bool' = False, self_loops: 'str' = 'bar', negatives: 'int' = 1, edge_labels: 'Optional[Sequence[int]]' = None, categories: 'Optional[Sequence[str]]' = None, label_existence: 'str' = 'hidden') -> 'LinkSplit'
+```
+
+Split the graph's edges with a local generator seeded by ``seed``.
+
+**Details**
+
+```text
+Edges are canonicalised and de-duplicated first (an undirected reverse
+is the same edge), so no duplicate or reverse can cross splits.
+``val`` / ``test`` are fractions of the edges or exact counts.
+``negatives`` fixed non-edges per ``val`` / ``test`` positive come from
+the complement of every positive (and barred self-loops); a request
+beyond the complement's capacity fails before sampling. With
+``categories`` (and one category per input edge in ``edge_labels``) the
+split is an edge-label split: no negatives, and a duplicate edge must
+keep its category.
+```
+
+
+#### `nnx.link_tasks.LinkSplit`
+
+```python
+class nnx.link_tasks.LinkSplit(num_nodes: 'int', train: 'tuple[Edge, ...]', val: 'tuple[Edge, ...]' = (), test: 'tuple[Edge, ...]' = (), val_negatives: 'tuple[Edge, ...]' = (), test_negatives: 'tuple[Edge, ...]' = (), directed: 'bool' = False, self_loops: 'str' = 'bar', seed: 'Optional[int]' = None, categories: 'Optional[tuple[str, ...]]' = None, edge_labels: 'tuple[tuple[Edge, int], ...]' = (), label_existence: 'str' = 'hidden', version: 'int' = 1) -> 'None'
+```
+
+A versioned edge split (see the module docstring). Every edge is canonical; validation refuses an edge outside the graph, a barred self-loop, a positive in two splits (or twice in one), and a negative that is a positive or repeats.
+
+##### `nnx.link_tasks.LinkSplit.mode`
+
+```python
+property nnx.link_tasks.LinkSplit.mode
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.positives`
+
+```python
+nnx.link_tasks.LinkSplit.positives(self, name: 'str') -> 'tuple[Edge, ...]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.negatives`
+
+```python
+nnx.link_tasks.LinkSplit.negatives(self, name: 'str') -> 'tuple[Edge, ...]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.candidate_ids`
+
+```python
+nnx.link_tasks.LinkSplit.candidate_ids(self, name: 'str') -> 'dict[Edge, int]'
+```
+
+Stable integer ids of a split's fixed candidates (positives, then negatives): one global numbering over the manifest.
+
+##### `nnx.link_tasks.LinkSplit.labels`
+
+```python
+nnx.link_tasks.LinkSplit.labels(self) -> 'dict[Edge, int]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.message_edge_index`
+
+```python
+nnx.link_tasks.LinkSplit.message_edge_index(self) -> 'torch.Tensor'
+```
+
+The only edges messages pass over, for every split: the training edges (with reverses when undirected) — plus every labelled edge's existence in an edge-label split with ``label_existence="visible"``.
+
+##### `nnx.link_tasks.LinkSplit.state`
+
+```python
+nnx.link_tasks.LinkSplit.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.from_state`
+
+```python
+nnx.link_tasks.LinkSplit.from_state(state: 'Mapping[str, Any]') -> 'LinkSplit'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.digest`
+
+```python
+nnx.link_tasks.LinkSplit.digest(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkSplit.replay`
+
+```python
+nnx.link_tasks.LinkSplit.replay(self, edge_index: 'Any', *, edge_labels: 'Optional[Sequence[int]]' = None) -> 'LinkSplit'
+```
+
+Re-derive this split from the graph with its own seed and policy; a mismatch (different graph, settings or code) raises.
+
+
+#### `nnx.link_tasks.LinkTask`
+
+```python
+class nnx.link_tasks.LinkTask(split: 'LinkSplit', mode: 'str' = 'binary', train_negatives: 'int' = 1, max_candidates: 'int' = 1000000, version: 'int' = 1) -> 'None'
+```
+
+Link existence (``mode="binary"``) or edge categories (``"edge_label"``) over a :class:`LinkSplit` (see the module docstring).
+
+**Details**
+
+```text
+Args:
+    split: the manifest.
+    mode: ``"binary"`` or ``"edge_label"`` (the split must have
+        categories).
+    train_negatives: non-edges sampled per training positive, per pass
+        (binary only).
+    max_candidates: the most candidates evaluation materialises.
+```
+
+##### `nnx.link_tasks.LinkTask.state`
+
+```python
+nnx.link_tasks.LinkTask.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkTask.loader`
+
+```python
+nnx.link_tasks.LinkTask.loader(self, name: 'str', x: 'torch.Tensor', batch_size: 'int', *, seed: 'Optional[int]' = None) -> '_Loader'
+```
+
+Batches of ``name``'s candidates over the message graph, in a fixed order. Training negatives are re-drawn every pass from ``(seed, pass)`` (``seed`` defaults to the split's).
+
+##### `nnx.link_tasks.LinkTask.check_batch`
+
+```python
+nnx.link_tasks.LinkTask.check_batch(self, batch: 'Any') -> 'None'
+```
+
+Refuse a batch that would leak or does not fit the split: message edges outside the training topology (a held-out positive is named), candidates outside the batch's split or with the wrong target.
+
+##### `nnx.link_tasks.LinkTask.objective`
+
+```python
+nnx.link_tasks.LinkTask.objective(self, *, nonfinite: 'str' = 'fail') -> 'LinkObjective'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkTask.eval_step`
+
+```python
+nnx.link_tasks.LinkTask.eval_step(self) -> 'LinkEval'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkTask.metric_specs`
+
+```python
+nnx.link_tasks.LinkTask.metric_specs(self) -> 'list[Any]'
+```
+
+``MetricSpec``\ s for ``MonitorSpec("auroc")`` / ``("ap")`` (binary) — a one-class set leaves them unavailable, so it never wins BEST.
+
+##### `nnx.link_tasks.LinkTask.predict`
+
+```python
+nnx.link_tasks.LinkTask.predict(self, model: 'Any', batches: 'Any') -> 'LinkPrediction'
+```
+
+Every candidate's prediction, in batch order, aligned with its id, pair and target (eval mode, no gradients, modes restored).
+
+
+#### `nnx.link_tasks.LinkPredictor`
+
+```python
+class nnx.link_tasks.LinkPredictor(encoder: 'nn.Module', decoder: 'str' = 'dot', *, width: 'int' = 0, outputs: 'int' = 1) -> 'None'
+```
+
+``encoder`` (node rows from ``(x, edge_index)``) and an edge decoder: ``"dot"`` (one logit per candidate: ``h_u · h_v``) or ``"mlp"`` (a linear head on ``[h_u * h_v, |h_u - h_v|]``: one logit, or one per category).
+
+##### `nnx.link_tasks.LinkPredictor.forward`
+
+```python
+nnx.link_tasks.LinkPredictor.forward(self, x: 'torch.Tensor', edge_index: 'torch.Tensor', edge_label_index: 'torch.Tensor') -> 'torch.Tensor'
+```
+
+Define the computation performed at every call.
+
+**Details**
+
+```text
+Should be overridden by all subclasses.
+
+.. note::
+    Although the recipe for forward pass needs to be defined within
+    this function, one should call the :class:`Module` instance afterwards
+    instead of this since the former takes care of running the
+    registered hooks while the latter silently ignores them.
+```
+
+##### `nnx.link_tasks.LinkPredictor.unpack_batch`
+
+```python
+nnx.link_tasks.LinkPredictor.unpack_batch(self, batch: 'Any') -> 'tuple[tuple[torch.Tensor, ...], Optional[torch.Tensor]]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkPredictor.sample_ids`
+
+```python
+nnx.link_tasks.LinkPredictor.sample_ids(self, batch: 'Any') -> 'torch.Tensor'
+```
+
+The candidates' ids, one per output row.
+
+
+#### `nnx.link_tasks.link_predictor_spec`
+
+```python
+nnx.link_tasks.link_predictor_spec(*, input_dim: 'int', hidden_dims: 'Sequence[int]' = (32,), encoder: 'str' = 'graph_conv', decoder: 'str' = 'dot', num_categories: 'Optional[int]' = None, activation: 'str' = 'relu', dropout: 'float' = 0.0, seed: 'int' = 0) -> 'Any'
+```
+
+The registered recipe of a :class:`LinkPredictor` (pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module).
+
+
+#### `nnx.link_tasks.link_metrics`
+
+```python
+nnx.link_tasks.link_metrics(probabilities: 'Any', targets: 'Any') -> 'dict[str, MetricValue]'
+```
+
+Exact metrics over a whole candidate set. Binary (``probabilities`` of shape ``(K,)``): ``bce``, ``auroc``, ``ap`` (unavailable, with the reason, for a one-class set) and ``accuracy`` at 0.5. Categorical (``(K, C)``): ``nll`` and ``accuracy``.
+
+
+#### `nnx.link_tasks.LinkPrediction`
+
+```python
+class nnx.link_tasks.LinkPrediction(ids: 'np.ndarray', pairs: 'np.ndarray', logits: 'np.ndarray', probabilities: 'np.ndarray', targets: 'np.ndarray') -> 'None'
+```
+
+Candidates and their predictions, aligned row for row: ``ids``, ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (``(K,)`` binary, ``(K, C)`` categorical) and ``targets``.
+
+
+#### `nnx.link_tasks.LinkTaskError`
+
+```python
+class nnx.link_tasks.LinkTaskError
+```
+
+A split, batch or setting that would leak or cannot be served.
 
 
 ## 3. Params

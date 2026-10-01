@@ -63,6 +63,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "generation",
         "graph_tasks",
         "interop",
+        "link_tasks",
         "optimizers",
         "paradigms",
         "plans",

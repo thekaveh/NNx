@@ -625,7 +625,7 @@ factories for fresh ones. See
 
 ## 3. Beyond supervised classification
 
-For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
+For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. Link prediction with negative sampling is built in (§3.7). See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
 
 The same hook underpins the four specialization-paradigm pointers below.
 
@@ -665,3 +665,8 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 ### 3.6. Graph-level classification
 
 `nnx.graph_tasks` classifies whole graphs: build a `GraphCollection(graphs, ids, targets=...)` (flag graphs without a target with `unlabeled=[...]`), split it by graph id with `subset(ids)`, and train `NNModelParams(net=graph_classifier_spec(input_dim=..., num_classes=..., pool="mean"), loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(n, ignore_index=IGNORE))` on `collection.loader(batch_size)`. Loss and metrics are averaged over labeled graphs, `predict_proba` returns one row per graph with its graph id as the sample id, and a reload rebuilds the encoder, pool and head from the recipe. See [Concepts → Graph-level classification](concepts.md#21-graph-level-classification-nnxgraph_tasks) and [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).
+
+
+### 3.7. Link and edge prediction
+
+`nnx.link_tasks` splits edges, not nodes: `split = split_links(edge_index, num_nodes, val=0.1, test=0.1, seed=0)` gives a replayable manifest (canonical edges, fixed held-out negatives from the complement), and `task = LinkTask(split)` builds candidate batches over the training topology only — `task.loader("train" | "val" | "test", x, batch_size)`. Train `NNModelParams(net=link_predictor_spec(input_dim=...))` with `objective=task.objective()` and `eval_step_fn=task.eval_step()`, select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("auroc")`, and score candidates with `task.predict(model, loader)`. A held-out positive in a message graph fails before any update. See [Concepts → Link and edge prediction](concepts.md#22-link-and-edge-prediction-nnxlink_tasks) and [`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).

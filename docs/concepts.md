@@ -350,7 +350,7 @@ Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoar
 
 ## 6. Custom training paradigms
 
-`NNModel.train()` runs a supervised loop by default — for every batch, it does `loss_fn(net(X), Y)` → backward → step. If your task doesn't fit that shape (autoencoders, VAEs, link prediction with negative sampling, recommendation pairwise losses, diffusion noise prediction), pass a `train_step_fn`:
+`NNModel.train()` runs a supervised loop by default — for every batch, it does `loss_fn(net(X), Y)` → backward → step. If your task doesn't fit that shape (autoencoders, VAEs, recommendation pairwise losses, diffusion noise prediction), pass a `train_step_fn` (link prediction with leakage-checked edge splits and negatives is built in: `nnx.link_tasks`, §22):
 
 ```python
 from nnx import TrainStepContext, NNEvaluationDataPoint
@@ -1177,8 +1177,8 @@ dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="la
   manifest is used.
 - **Graph edges are excluded.** Plans split samples (rows, images, graph
   nodes), never edges. `NNGraphDataset` keeps its node masks, and
-  link-prediction edge splitting (message-passing vs supervision edges) is a
-  separate feature (FEAT-027). For node classification, plan over node ids
+  link-prediction edge splitting (message-passing vs supervision edges) is
+  `nnx.link_tasks` (§22). For node classification, plan over node ids
   and build masks from `resolve(...)`. For any other map-style dataset,
   `plan.resolve(ids)` returns `SplitIndices` for `torch.utils.data.Subset`.
 
@@ -1733,3 +1733,58 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
   written — `export_state_dict()` keeps the weights.
 
 See [`examples/graph_classification_offline.py`](../examples/graph_classification_offline.py).
+
+
+## 22. Link and edge prediction (`nnx.link_tasks`)
+
+Node masks cannot hold out edges: a held-out edge left in the graph the
+model passes messages over is a leaked answer. `nnx.link_tasks` splits
+**edges** on a static homogeneous graph and checks every batch against the
+split before any forward pass:
+
+```text
+split_links(edge_index, n, val=, test=, seed=)  ─►  LinkSplit (nnx.link-split/1)
+   train / val / test positives (canonical; undirected = (min, max)), fixed val / test negatives, seed, policy
+LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = training topology, edge_label_index, edge_label, candidate_id)
+   objective(): BCE (or CE) over candidates  ·  eval_step(): exact AUROC / AP / BCE over every candidate
+```
+
+- **The manifest.** Edges are canonicalised and de-duplicated before they
+  are split, so a duplicate or a reverse can never sit in two splits; an
+  explicit `LinkSplit` refuses non-canonical, repeated or cross-split
+  edges and barred self-loops. It records directedness, the self-loop
+  policy, the seed and the topology policy; `replay(edge_index)`
+  re-derives it with a local generator (never the global RNG) and refuses
+  a mismatch.
+- **Topology.** `message_edge_index()` — the training edges (and their
+  reverses when undirected) — is the only message graph, for every split:
+  evaluation topology is fixed to the training edges. An edge-label split
+  (`categories=`, one category per edge, in declared order) declares
+  whether labelled edges' **existence** is visible context
+  (`label_existence="visible"`); their categories never are.
+- **Negatives** come from the static complement: never a positive of any
+  split, a reverse, a duplicate or a barred self-loop. A request beyond the
+  complement's capacity fails before sampling; validation and test
+  negatives are fixed in the manifest; training negatives are re-drawn per
+  pass from `(seed, pass)`. An edge-label task samples none: a non-edge is
+  never a category.
+- **Checks.** A message edge outside the training topology — a held-out
+  positive is named — or a candidate outside its split fails before any
+  update; node-level nets and the graph-pooling adapter (§21) refuse link
+  batches.
+- **Shapes and metrics.** Binary candidates give one logit each, `(K,)`;
+  edge-label candidates `(K, categories)`; `predict()` keeps ids, pairs,
+  logits, probabilities and targets aligned, in candidate order.
+  Evaluation materialises every candidate (up to `max_candidates`) for
+  exact AUROC and AP — never per-batch averages; a one-class set reports
+  them unavailable with the reason, so `MonitorSpec("auroc")` never elects
+  it BEST.
+- **Recipe and checkpoints.** `link_predictor_spec(...)` (GCN / GraphSAGE /
+  GAT encoder, `"dot"` or `"mlp"` decoder) is rebuilt on reload. The
+  manifest — topology policy, candidate ids, fixed negatives — is component
+  state `"link.task"`: a resume with another split fails before the first
+  resumed update.
+
+Homogeneous static graphs only: temporal and heterogeneous graphs,
+distributed sampling and knowledge-graph ranking are out of scope. See
+[`examples/link_prediction_offline.py`](../examples/link_prediction_offline.py).
