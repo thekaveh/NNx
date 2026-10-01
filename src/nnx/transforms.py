@@ -286,8 +286,17 @@ class TransformRecipe:
             )
             raise RecipeError([(None, "recipe", None, reason)])
         if self.materialization == "fresh":
+            from .seeding import _capture_rng_state, _restore_rng_state
+
             _check_fresh_source(model)
-            _validate(model.net, self.operations, (), ())
+            # Checked against the base materialize would build — built here
+            # and discarded, leaving the global random streams untouched.
+            rng_state = _capture_rng_state(None)
+            try:
+                base = _fresh_base(model)
+            finally:
+                _restore_rng_state(rng_state, None)
+            _validate(base.net, self.operations, (), ())
         else:
             _validate(model.net, self.operations, _recorded_operations(model), list(optimizers))
 
@@ -298,8 +307,13 @@ class TransformRecipe:
         returned). The operations are recorded on the returned model, so
         its checkpoints and Hub saves rebuild the same topology.
         Transactional: a failure leaves the model as it was."""
-        self.validate(model, optimizers=optimizers)
-        target = _fresh_base(model) if self.materialization == "fresh" else model
+        if self.materialization == "fresh":
+            self.validate(model, optimizers=())  # the source's own checks, and a dry run on its base
+            target = _fresh_base(model)
+            _validate(target.net, self.operations, (), ())  # the base just built
+        else:
+            self.validate(model, optimizers=optimizers)
+            target = model
         replaced: list[tuple[str, nn.Module]] = []
         # Building a LoRA wrapper freezes its base and sets modes, so a
         # rollback also restores every flag and mode as it was.
@@ -377,18 +391,11 @@ def _fresh_base(model: NNModel) -> NNModel:
 
 def _registration_paths(net: nn.Module) -> dict[int, list[str]]:
     """Every dotted path each module object is registered under."""
+    from .peft._targets import _registrations
+
     paths: dict[int, list[str]] = {}
-
-    def walk(module: nn.Module, prefix: str, seen: set[int]) -> None:
-        for name, child in module._modules.items():
-            if child is None:
-                continue
-            path = f"{prefix}.{name}" if prefix else name
-            paths.setdefault(id(child), []).append(path)
-            if id(child) not in seen:
-                walk(child, path, seen | {id(child)})
-
-    walk(net, "", {id(net)})
+    for path, _, _, child in _registrations(net):
+        paths.setdefault(id(child), []).append(path)
     return paths
 
 
@@ -458,27 +465,27 @@ def _build(op: TransformOp, linear: nn.Module, *, allocate_only: bool) -> nn.Mod
     if op.id == LORA:
         from .peft.lora import LoRALinear
 
-        return LoRALinear(linear, r=op.config["r"], alpha=op.config["alpha"], dropout=op.config["dropout"])
-    rank = op.config["rank"]
+        def wrap() -> nn.Module:
+            return LoRALinear(linear, r=op.config["r"], alpha=op.config["alpha"], dropout=op.config["dropout"])
+
+        if not allocate_only:
+            return wrap()
+        from .seeding import _capture_rng_state, _restore_rng_state
+
+        # The adapter's initial values are overwritten by the saved ones, so
+        # a rebuild leaves the global random streams where they were.
+        rng_state = _capture_rng_state(None)
+        try:
+            return wrap()
+        finally:
+            _restore_rng_state(rng_state, None)
     if not allocate_only:
         from .surgery.low_rank import low_rank_factorize
 
-        return low_rank_factorize(linear, rank=rank, method=op.config["method"])
-    from typing import cast
+        return low_rank_factorize(linear, rank=op.config["rank"], method=op.config["method"])
+    from .surgery.low_rank import _allocate_factors
 
-    from torch.nn.utils import skip_init
-
-    from .surgery._utils import copy_param_roles
-
-    weight = linear.weight
-    bias = linear.bias is not None
-    down = skip_init(nn.Linear, linear.in_features, rank, bias=False, dtype=weight.dtype, device=weight.device)
-    up = skip_init(nn.Linear, rank, linear.out_features, bias=bias, dtype=weight.dtype, device=weight.device)
-    copy_param_roles(linear, cast(nn.Linear, down))
-    copy_param_roles(linear, cast(nn.Linear, up))
-    factors = nn.Sequential(down, up)
-    factors.train(linear.training)
-    return factors
+    return _allocate_factors(linear, op.config["rank"])
 
 
 def _replayable(transform: NNCheckpointTransform) -> bool:
@@ -598,7 +605,13 @@ def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
         if op.id != LORA:
             continue
         for path in op.targets:
-            wrapper = get_module(model.net, path)
+            try:
+                wrapper = get_module(model.net, path)
+            except (AttributeError, KeyError):
+                raise ValueError(
+                    f"the model's topology differs from its recorded recipe: {op.id} target {path!r} is gone "
+                    "(unrecorded surgery?)"
+                ) from None
             base, adapter = (
                 getattr(wrapper, "base", None),
                 (getattr(wrapper, "lora_A", None), getattr(wrapper, "lora_B", None)),

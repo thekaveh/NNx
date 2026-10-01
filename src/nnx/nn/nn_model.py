@@ -245,9 +245,10 @@ def _load_resume_source(
             f"{[t.state() for t in saved_recipe]}, but this model carries {[t.state() for t in live_recipe]}: "
             "materialize the same nnx.transforms.TransformRecipe on the model before resuming"
         )
-    # A model that already carries the checkpoint's transforms loads its
-    # weights directly.
-    if ckpt.transforms and resume_net_state is None and tuple(ckpt.transforms) != tuple(live_transforms):
+    # A checkpoint whose only transforms are the recipe the model already
+    # carries holds weights of the live topology, which load directly.
+    is_live_recipe = saved_recipe == tuple(ckpt.transforms) == tuple(live_transforms)
+    if ckpt.transforms and resume_net_state is None and not is_live_recipe:
         raise ValueError(
             "this transformed checkpoint has no pre-transform training state and cannot be warm-resumed; "
             "use NNModel.from_checkpoint() for inference or resume from an untransformed checkpoint"
@@ -1850,7 +1851,7 @@ class NNModel(_HubMixinBase):
         _replay_transforms(model, transforms)
         model._topology_transforms = transforms
         state_dict = load_file(weights_path, device=str(torch_load_device))
-        if not transforms:
+        if not transforms and strict:
             _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
         if net_params is None and strict:
             check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
@@ -3002,8 +3003,8 @@ class NNModel(_HubMixinBase):
             net_params=self.net_params,
             net_state=self.net.state_dict(),
             # FEAT-016: a recipe recorded before training rebuilds every tag's
-            # topology (none for an untransformed model, as before).
-            transforms=tuple(self._topology_transforms),
+            # topology (none for a model without one, as before).
+            transforms=_recipe_transforms(self._topology_transforms),
         )
         # Every checkpoint tag is a valid resume point, so each carries the
         # same stateful training bundle as LAST/BEST.

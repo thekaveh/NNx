@@ -245,11 +245,11 @@ def _loader() -> DataLoader:
     return DataLoader(TensorDataset(features, labels), batch_size=8)
 
 
-def _train(model: NNModel, n_epochs: int = 2, **train):
+def _train(model: NNModel, n_epochs: int = 2, callbacks=(), **train):
     params = NNTrainParams(
         n_epochs=n_epochs, seed=0, train_loader=_loader(), val_loader=_loader(), optim=_OPTIM, **train
     )
-    return model.train(params)
+    return model.train(params, callbacks=list(callbacks))
 
 
 @pytest.mark.parametrize("tag", [Checkpoints.LAST, Checkpoints.BEST, Checkpoints.FIRST])
@@ -472,3 +472,127 @@ def test_a_registered_module_raw_state_gets_the_recipe_error():
     )
     with pytest.raises(ValueError, match="record no transformation recipe"):
         NNModel.from_checkpoint(raw)
+
+
+# --- review round 2 ----------------------------------------------------------------------------------------
+
+
+def test_a_fresh_recipe_is_validated_against_the_base_it_builds():
+    from nnx.peft import apply_lora_to
+
+    model = _model()
+    apply_lora_to(model.net, "layers.0", r=2)  # an unrecorded change to the source only
+    fresh = TransformRecipe([lora("layers.0", r=4, alpha=8.0)], materialization="fresh")
+    rng = torch.get_rng_state()
+    fresh.validate(model)  # the base it builds has an nn.Linear there
+    assert torch.equal(torch.get_rng_state(), rng)  # the dry-run base leaves the random streams alone
+    assert type(fresh.materialize(model).net.layers[0]).__name__ == "LoRALinear"
+    widened = _model()
+    widened.net.layers[1] = nn.Linear(16, 40)  # rank 14 fits only the source's layer, not the base's (16→12)
+    with pytest.raises(RecipeError, match=r"operation 0 \(low_rank\), target 'layers.1': rank 14 exceeds"):
+        TransformRecipe([low_rank("layers.1", rank=14)], materialization="fresh").materialize(widened)
+
+
+def test_a_live_train_end_transform_does_not_bypass_the_pre_transform_guard():
+    from nnx.nn import nn_model as module
+
+    qat = NNCheckpointTransform(name="torchao_qat", version=1, options={"qat_config": "8da4w", "groupsize": 32})
+    model = _model()
+    converted = NNCheckpoint(
+        idp=_checkpoint(model).idp,
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+        transforms=(qat,),
+    )
+    with mock.patch.object(NNCheckpoint, "load_with_training_state", return_value=(converted, {})):
+        with pytest.raises(ValueError, match="no pre-transform training state"):
+            module._load_resume_source("a" * 32, "last", "auto", trainer=False, live_transforms=(qat,))
+
+
+def test_a_lora_rebuild_leaves_the_random_streams_alone():
+    from nnx.transforms import _replay
+
+    recorded = TransformRecipe([lora("layers.0", r=4, alpha=8.0)]).checkpoint_transforms()[0]
+    model = _model()
+    rng = torch.get_rng_state()
+    _replay(model, recorded)
+    assert type(model.net.layers[0]).__name__ == "LoRALinear"
+    assert torch.equal(torch.get_rng_state(), rng)
+
+
+def test_check_optimizer_reports_a_vanished_target_as_a_value_error():
+    model = _recipe().materialize(_model())
+    optimizer = build_optimizer(model.net, _OPTIM)
+    model.net.layers = nn.Sequential()  # unrecorded surgery removed every recorded target
+    with pytest.raises(ValueError, match="lora target 'layers.0' is gone"):
+        check_optimizer(model, optimizer)
+
+
+def test_unrecorded_snapshots_of_a_train_end_transform_are_unchanged():
+    from nnx.nn.callbacks import ModelCheckpoint
+
+    model = _model()
+    model._topology_transforms = (NNCheckpointTransform(name="preexisting"),)  # not a recipe
+    run = _train(model, n_epochs=1, callbacks=[ModelCheckpoint(epochs=[0], tag="snap")])
+    snapshot = NNCheckpoint.from_file(f"runs/{run.id}/checkpoints/snap_e0.pt")
+    assert snapshot is not None and snapshot.transforms == ()  # snapshots record recipes only, as before
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None and best.transforms == ()  # so do in-loop tags
+
+
+class _TrainEndTransform:
+    """A train-end topology change (a stand-in for a QAT conversion) on top of a recipe."""
+
+    def __init__(self):
+        self.completed = False
+
+    def on_train_end(self, ctx) -> None:  # noqa: ANN001 - callback context
+        ctx.model.net.register_buffer("converted_marker", torch.ones(1))
+        self.completed = True
+
+    def checkpoint_transforms(self) -> tuple[NNCheckpointTransform, ...]:
+        return (NNCheckpointTransform(name="test-transform"),) if self.completed else ()
+
+
+def test_a_recipe_with_a_train_end_transform_keeps_pre_transform_state_and_resumes():
+    from nnx import Callback
+
+    callback = type("TrainEnd", (_TrainEndTransform, Callback), {})()
+    parent = _train(_recipe().materialize(_model()), n_epochs=2, callbacks=[callback])
+    last, state = NNCheckpoint.load_with_training_state(run=parent.id, type=Checkpoints.LAST)
+    assert last is not None and state is not None
+    assert [t.name for t in last.transforms] == ["lora", "low_rank", "test-transform"]
+    assert "converted_marker" in last.net_state and "converted_marker" not in state["model"]
+    assert list(state["model"]) == list(_recipe().materialize(_model()).net.state_dict())
+    child = _train(_recipe().materialize(_model(seed=5)), n_epochs=1, resume_from_run_id=parent.id)
+    assert child.resume_status is not None and child.resume_status.mode == "stateful"
+
+
+def test_a_recipe_model_trains_and_resumes_through_the_trainer():
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    def step(ctx):
+        optimizer = ctx.optimizers["main"]
+        optimizer.zero_grad()
+        x, y = ctx.batch
+        loss = ctx.model.loss_fn(ctx.model.net(x), y)
+        loss.backward()
+        optimizer.step()
+        return NNEvaluationDataPoint(loss=float(loss))
+
+    def params(**resume):
+        return NNTrainerParams(n_epochs=2, seed=0, train_loader=_loader(), optims={"main": _OPTIM}, **resume)
+
+    model = _recipe().materialize(_model())
+    parent = Trainer(model).train(params(), trainer_step_fn=step)
+    last, state = NNCheckpoint.load_with_training_state(run=parent.id, type=Checkpoints.LAST)
+    assert last is not None and [t.name for t in last.transforms] == ["lora", "low_rank"]
+    assert state is not None and state.get("model") is None  # the weights are stored once
+    _same_model(model, NNModel.from_checkpoint(last))
+    child = Trainer(_recipe().materialize(_model(seed=5))).train(
+        params(resume_from_run_id=parent.id), trainer_step_fn=step
+    )
+    assert child.resume_status is not None and child.resume_status.mode == "stateful"
+    with pytest.raises(ValueError, match="materialize the same nnx.transforms.TransformRecipe"):
+        Trainer(_model()).train(params(resume_from_run_id=parent.id), trainer_step_fn=step)

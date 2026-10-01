@@ -407,3 +407,22 @@ def test_hub_load_refuses_an_unknown_recipe_operation_before_loading_tensors(tmp
     config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
     with pytest.raises(ValueError, match="record no transformation recipe"):
         NNModel.from_pretrained(str(tmp_path))
+
+
+def test_a_non_strict_hub_load_of_unrecorded_recipe_weights_still_loads_partially(tmp_path):
+    """FEAT-016: ``strict=False`` keeps its documented partial load — the
+    no-recipe refusal applies to strict loads only."""
+    from nnx.transforms import TransformRecipe, lora
+
+    model = _tiny_model()
+    first = next(name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear)
+    TransformRecipe([lora(first, r=2, alpha=4.0)]).materialize(model)
+    model.save_pretrained(str(tmp_path))
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
+    loaded = NNModel.from_pretrained(str(tmp_path), strict=False)
+    assert loaded._topology_transforms == ()
+    for name, tensor in loaded.net.state_dict().items():
+        if name in model.net.state_dict():
+            assert torch.equal(tensor, model.net.state_dict()[name])
