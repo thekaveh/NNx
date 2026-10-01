@@ -372,7 +372,7 @@ def test_seeds_and_custom_timesteps_are_validated_before_use():
     model.net.register_forward_hook(lambda *args: calls.append(1))
     ctx = ObjectiveContext(model=model, batch=(_points(3), torch.zeros(3)), epoch_idx=0, batch_idx=0)
     floats = diffusion_objective(SCHEDULE, noise_fn=lambda x_0, g: (torch.zeros(3), torch.zeros_like(x_0)))
-    with pytest.raises(ValueError, match="integer timesteps"):
+    with pytest.raises(ValueError, match="int64"):
         floats(ctx)
     late = diffusion_objective(
         SCHEDULE, noise_fn=lambda x_0, g: (torch.full((3,), SCHEDULE.T, dtype=torch.long), torch.zeros_like(x_0))
@@ -399,3 +399,25 @@ def test_only_objectives_with_per_commit_work_get_a_commit_hook():
 
     assert engine(supervised_objective()).commit_hooks == []
     assert engine(diffusion_objective(SCHEDULE)).commit_hooks == []
+
+
+# --- review round 2 ---------------------------------------------------------------------------------------
+
+
+def test_narrow_integer_timesteps_are_refused_and_numpy_seeds_accepted():
+    import numpy as np
+
+    model = _model()
+    ctx = ObjectiveContext(model=model, batch=(_points(3), torch.zeros(3)), epoch_idx=0, batch_idx=0)
+    for dtype in (torch.uint8, torch.int8, torch.int16):
+        narrow = diffusion_objective(
+            SCHEDULE, noise_fn=lambda x_0, g, dtype=dtype: (torch.full((3,), 5, dtype=dtype), torch.zeros_like(x_0))
+        )
+        with pytest.raises(ValueError, match="int64"):
+            narrow(ctx)
+    int32 = diffusion_objective(
+        SCHEDULE, noise_fn=lambda x_0, g: (torch.full((3,), 5, dtype=torch.int32), torch.zeros_like(x_0))
+    )
+    t, _ = int32.draw(_points(3))
+    assert t.dtype == torch.int64 and t.tolist() == [5, 5, 5]
+    assert diffusion_objective(SCHEDULE, seed=np.int64(7)).seed == 7

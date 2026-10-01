@@ -29,13 +29,14 @@ is then the same on every device and survives a resume onto another — at
 the cost of a host-to-device copy per microbatch; pass
 ``noise_fn(x_0, generator) -> (t, eps)`` to supply the timesteps and noise
 yourself (drawn on the device for large image batches, fixed values in
-tests, another timestep distribution). Its timesteps must be integers in
-``[0, T)``.
+tests, another timestep distribution). Its timesteps must be int64 (or
+int32) values in ``[0, T)``.
 """
 
 from __future__ import annotations
 
 import hashlib
+import numbers
 from collections.abc import Callable, Mapping
 from typing import Any, Optional
 
@@ -95,12 +96,14 @@ class DiffusionObjective(Objective):
         super().__init__(nonfinite=nonfinite)
         if not isinstance(schedule, NoiseSchedule):
             raise TypeError(f"schedule must be a NoiseSchedule, got {type(schedule).__name__}")
-        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64):
+        if seed is not None and (
+            isinstance(seed, bool) or not isinstance(seed, numbers.Integral) or not 0 <= int(seed) < 2**64
+        ):
             raise ValueError(f"seed must be an integer in [0, 2**64) or None, got {seed!r}")
         if noise_fn is not None and not callable(noise_fn):
             raise TypeError(f"noise_fn must be callable, got {type(noise_fn).__name__}")
         self.schedule = schedule
-        self.seed = seed
+        self.seed = None if seed is None else int(seed)
         self.noise_fn = noise_fn
         self._generator: Optional[torch.Generator] = None
         self._fingerprint = _schedule_fingerprint(schedule)
@@ -143,10 +146,12 @@ class DiffusionObjective(Objective):
         if self.noise_fn is not None:
             # Checked before t indexes the schedule (an out-of-range index is a
             # device-side assert on CUDA).
-            if t.dtype.is_floating_point or t.dtype.is_complex or t.dtype == torch.bool:
-                raise ValueError(f"noise_fn must return integer timesteps, got {t.dtype}")
-            if t.numel() and not (0 <= int(t.min()) and int(t.max()) < self.schedule.T):
+            # int32 / int64 only: uint8 would index as a boolean mask.
+            if t.dtype not in (torch.int32, torch.int64):
+                raise ValueError(f"noise_fn must return int64 (or int32) timesteps, got {t.dtype}")
+            if t.numel() and bool(((t < 0) | (t >= self.schedule.T)).any()):  # one sync
                 raise ValueError(f"noise_fn returned timesteps outside [0, {self.schedule.T})")
+            t = t.long()
         return t, eps
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:

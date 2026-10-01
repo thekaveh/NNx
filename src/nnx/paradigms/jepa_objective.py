@@ -104,7 +104,8 @@ class JEPAObjective(Objective):
     Args:
         target_encoder: the EMA copy of ``model.net``
             (:func:`~nnx.paradigms.build_target_encoder`); frozen and put in
-            eval mode here.
+            eval mode once :meth:`check_run` has validated it (never here,
+            so a misplaced target cannot freeze the online network).
         predictor: the predictor (:class:`~nnx.paradigms.JEPAPredictor` or
             the same ``forward(context_embeds, context_positions,
             target_positions)`` contract), registered under ``model.net``.
@@ -147,7 +148,9 @@ class JEPAObjective(Objective):
         self.ema_updates = 0
         self._predictor_path: Optional[str] = None
         self._online: Optional[nn.Module] = None
-        _freeze(target_encoder)
+        # The target is frozen only once check_run has validated it: freezing
+        # a module that turns out to be (part of) model.net would freeze the
+        # online network too.
 
     # ---------- before the run ----------
 
@@ -211,6 +214,7 @@ class JEPAObjective(Objective):
                 "correspondence and the predictor reference; train without them, or with the imperative step"
             )
         self._predictor_path = path
+        _freeze(self.target_encoder)
 
     # ---------- per microbatch ----------
 

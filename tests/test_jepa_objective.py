@@ -358,3 +358,16 @@ def test_a_trainer_with_two_optimizers_advances_the_ema_once_per_commit():
     events: list = []
     Trainer(model).train(params, objective=objective, callbacks=[_Events(events)])
     assert len(events) == 6 and objective.ema_updates == 3  # one event per optimizer, one EMA per commit
+
+
+# --- review round 2 ---------------------------------------------------------------------------------------
+
+
+def test_a_misplaced_target_never_freezes_the_online_network():
+    model, _, predictor = _parts()
+    objective = jepa_objective(model.net, predictor, _masks(FOUR))  # the online net passed as its own target
+    assert all(p.requires_grad for p in model.net.parameters()) and model.net.training
+    with pytest.raises(ValueError, match="must not be part of model.net"):
+        model.train(_params([_batch(_images(2))]), objective=objective)
+    assert all(p.requires_grad for p in model.net.parameters())
+    assert not os.path.exists("runs")
