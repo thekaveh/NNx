@@ -171,7 +171,9 @@ class GraphCollection(torch.utils.data.Dataset):
                 )
             raw = targets[position] if targets is not None else getattr(graph, "y", None)
             if graph_id in flagged:
-                if raw is not None and targets is not None:
+                # A target given as an argument or carried as ``y`` alike (an
+                # IGNORE ``y``, as a collection's own items carry, is none).
+                if raw is not None and torch.as_tensor(raw).reshape(-1).tolist() != [IGNORE]:
                     raise GraphTaskError(f"graph {graph_id} is flagged unlabeled but has a target")
                 label = IGNORE
             elif raw is None:
@@ -208,6 +210,7 @@ class GraphCollection(torch.utils.data.Dataset):
 
     def subset(self, ids: Sequence[int]) -> GraphCollection:
         """The graphs with these ids, in the order given."""
+        ids = list(ids)  # read more than once: an iterator would be spent
         positions = {graph_id: position for position, graph_id in enumerate(self.ids)}
         missing = sorted({i for i in ids if i not in positions})
         if missing:
@@ -224,10 +227,13 @@ class GraphCollection(torch.utils.data.Dataset):
 
     def loader(self, batch_size: int, *, shuffle: bool = False, seed: Optional[int] = None) -> Any:
         """A PyG loader over whole graphs (in collection order unless
-        ``shuffle``; a ``seed`` makes the shuffle reproducible)."""
+        ``shuffle``; a ``seed`` makes the shuffle reproducible and is refused
+        without it)."""
         from torch_geometric.loader import DataLoader
 
         batch_size = _count(batch_size, "batch_size", minimum=1)
+        if seed is not None and not shuffle:
+            raise GraphTaskError("a seed orders a shuffled loader; pass shuffle=True or no seed")
         generator = None if seed is None else torch.Generator().manual_seed(_count(seed, "seed", minimum=0))
         return DataLoader(self._items, batch_size=batch_size, shuffle=shuffle, generator=generator)
 
