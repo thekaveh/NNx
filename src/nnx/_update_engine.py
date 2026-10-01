@@ -307,7 +307,7 @@ class UpdateEngine:
             param.grad = combined
 
     def _gradients_finite(self) -> bool:
-        return all(param.grad is None or bool(torch.isfinite(param.grad).all()) for param in self._params)
+        return gradients_finite(self._params)
 
     # ---------- checkpointable component (FEAT-005) ----------
 
@@ -331,6 +331,13 @@ class UpdateEngine:
         self.skipped = int(state["skipped"])
         saved = state["update_counts"]
         self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
+
+
+def gradients_finite(params: Iterable[torch.Tensor]) -> bool:
+    """Whether every gradient is finite — reduced on device, one host sync
+    for the whole set (shared by the engine and the default step)."""
+    flags = [torch.isfinite(param.grad).all() for param in params if param.grad is not None]
+    return not flags or bool(torch.stack([flag.to(flags[0].device) for flag in flags]).all())
 
 
 def _is_count(value: Any) -> bool:

@@ -64,10 +64,15 @@ def _train_params(**fields) -> NNTrainParams:
     )
 
 
-def _cuda(monkeypatch, *, bf16: bool) -> None:
-    """Resolution-only stand-in for a CUDA host (no CUDA tensor is made)."""
+def _cuda(monkeypatch, *, bf16: bool, emulated: bool = False) -> None:
+    """Resolution-only stand-in for a CUDA host (no CUDA tensor is made):
+    native bf16, emulated bf16 (pre-Ampere), or none."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: bf16)
+
+    def is_bf16_supported(including_emulation: bool = True) -> bool:
+        return bf16 or (emulated and including_emulation)
+
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", is_bf16_supported)
 
 
 # --- the resolution matrix ---------------------------------------------------------------------------------
@@ -106,7 +111,7 @@ def test_bf16_on_cuda_needs_bf16_support(monkeypatch):
     _cuda(monkeypatch, bf16=True)
     assert PrecisionPolicy("bf16").resolve("cuda").effective == "bf16"
     _cuda(monkeypatch, bf16=False)
-    with pytest.raises(PrecisionUnsupportedError, match="is_bf16_supported"):
+    with pytest.raises(PrecisionUnsupportedError, match="native bf16 support"):
         PrecisionPolicy("bf16").resolve("cuda")
     assert PrecisionPolicy("bf16", fallback="fp32").resolve("cuda").effective == "fp32"
 
@@ -216,3 +221,94 @@ def test_a_fallback_is_recorded_on_the_run():
     assert (run.precision.requested, run.precision.effective) == ("fp16", "fp32")
     assert run.precision.fallback_reason is not None and "CUDA only" in run.precision.fallback_reason
     assert model.resolved_precision.effective == "fp32"
+
+
+# --- review round 1 ----------------------------------------------------------------------------------------
+
+
+def test_emulated_bf16_is_not_native_support(monkeypatch):
+    _cuda(monkeypatch, bf16=False, emulated=True)  # a pre-Ampere GPU: bf16 only emulated
+    with pytest.raises(PrecisionUnsupportedError, match="not emulation"):
+        PrecisionPolicy("bf16").resolve("cuda")
+    assert PrecisionPolicy("bf16", fallback="fp32").resolve("cuda").effective == "fp32"
+
+
+def test_tf32_set_through_the_new_api_does_not_break_resolution(monkeypatch):
+    class NewApiBackend:
+        """Torch >= 2.9 after `fp32_precision = "tf32"`: the legacy read raises."""
+
+        fp32_precision = "tf32"
+
+        @property
+        def allow_tf32(self):
+            raise RuntimeError("mix of the legacy and new APIs")
+
+    monkeypatch.setattr(torch.backends.cuda, "matmul", NewApiBackend())
+    model = NNModel(net_params=_NET, params=_params())  # no policy at all
+    assert model.resolved_precision.tf32["cuda_matmul"] is True
+    model.predict(torch.randn(2, 4))
+
+
+def test_a_record_claims_only_the_surfaces_it_applied_to(monkeypatch):
+    legacy = resolve_precision(_params(mixed_precision=True), "cpu").record()
+    assert legacy["covers"] == ["NNModel.train (default step and objectives)"]
+    assert {"evaluate()", "predict() / predict_proba()"} <= set(legacy["not_covered"])
+    run = NNModel(net_params=_NET, params=_params(precision=PrecisionPolicy("bf16"))).train(_train_params())
+    assert run.precision is not None and "Trainer.train(objective=...)" not in run.precision.record()["covers"]
+
+    from nnx import NNTrainerParams, Trainer
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    def step(ctx):
+        return NNEvaluationDataPoint(loss=0.0)
+
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_batches(2),
+        optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0)},
+        save_phase_checkpoints=False,
+    )
+    trainer_run = Trainer(NNModel(net_params=_NET, params=_params(precision=PrecisionPolicy("fp32")))).train(
+        params, trainer_step_fn=step
+    )
+    assert trainer_run.precision is not None
+    assert trainer_run.precision.record()["covers"] == ["evaluate()", "predict() / predict_proba()"]
+
+
+def test_a_changed_fallback_is_re_resolved():
+    from dataclasses import replace
+
+    model = NNModel(net_params=_NET, params=_params(precision=PrecisionPolicy("fp16", fallback="fp32")))
+    assert model.resolved_precision.effective == "fp32"
+    model.params = replace(model.params, precision=PrecisionPolicy("fp16"))
+    with pytest.raises(PrecisionUnsupportedError):
+        model.predict(torch.randn(2, 4))
+
+
+def test_finite_gradients_are_checked_in_one_pass():
+    from nnx._update_engine import gradients_finite
+
+    finite, broken, untouched = (torch.nn.Parameter(torch.ones(2)) for _ in range(3))
+    finite.grad, broken.grad = torch.ones(2), torch.tensor([1.0, float("nan")])
+    assert gradients_finite([finite, untouched]) and not gradients_finite([finite, broken, untouched])
+    assert gradients_finite([])
+
+
+def test_a_run_resolves_its_policy_once_and_reads_metadata_once(monkeypatch):
+    import yaml
+
+    import nnx.nn.nn_model as nn_model_module
+
+    model = NNModel(net_params=_NET, params=_params(precision=PrecisionPolicy("bf16")))
+    calls = []
+    real = nn_model_module.resolve_precision
+    monkeypatch.setattr(nn_model_module, "resolve_precision", lambda *a: calls.append(1) or real(*a))
+    run = model.train(_train_params())
+    assert len(calls) == 1  # the scaler comes from the run's own resolution
+    loads = []
+    real_load = yaml.safe_load
+    monkeypatch.setattr(
+        yaml, "safe_load", lambda stream: loads.append(getattr(stream, "name", "")) or real_load(stream)
+    )
+    NNRun.load(run.id)
+    assert sum(name.endswith("metadata.yaml") for name in loads) == 1

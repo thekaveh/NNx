@@ -430,10 +430,9 @@ def _load_provenance_tolerantly(run_id: str, root: Optional[str]) -> Optional[Pr
         return None
 
 
-def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
-    """The :class:`~nnx.ResumeStatus` recorded in ``metadata.yaml``
-    (FEAT-005); ``None`` for runs written before it or when unreadable —
-    it is provenance, never needed to reload the run itself."""
+def _read_metadata(metadata_path: str) -> Optional[dict[str, Any]]:
+    """``metadata.yaml`` parsed once for the readers below; ``None`` when
+    absent or unreadable — provenance, never needed to reload the run."""
     if not os.path.isfile(metadata_path):
         return None
     try:
@@ -441,7 +440,13 @@ def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
             metadata = yaml.safe_load(f)
     except (OSError, yaml.YAMLError):
         return None
-    resume = metadata.get("resume") if isinstance(metadata, dict) else None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _load_resume_status(metadata: Optional[Mapping[str, Any]]) -> Optional[ResumeStatus]:
+    """The :class:`~nnx.ResumeStatus` recorded in ``metadata.yaml``
+    (FEAT-005); ``None`` for runs written before it or when unreadable."""
+    resume = metadata.get("resume") if metadata is not None else None
     if not isinstance(resume, dict):
         return None
     try:
@@ -450,18 +455,10 @@ def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
         return None
 
 
-def _load_precision(metadata_path: str) -> Optional[ResolvedPrecision]:
+def _load_precision(metadata: Optional[Mapping[str, Any]]) -> Optional[ResolvedPrecision]:
     """The resolved precision recorded in ``metadata.yaml`` (FEAT-028);
-    ``None`` for runs written before it or when unreadable — inspection
-    only, never needed to reload the run."""
-    if not os.path.isfile(metadata_path):
-        return None
-    try:
-        with open(metadata_path, encoding="utf-8") as f:
-            metadata = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
-        return None
-    record = metadata.get("precision") if isinstance(metadata, dict) else None
+    ``None`` for runs written before it or when unreadable."""
+    record = metadata.get("precision") if metadata is not None else None
     if not isinstance(record, dict):
         return None
     try:
@@ -956,6 +953,7 @@ class NNRun:
                 trainer = None
 
             model = NNModelParams.from_state(rep["model"])
+            metadata = _read_metadata(os.path.join(run_path, "metadata.yaml"))
             return NNRun(
                 # resolve_from_state: a TRANSFORMER run's net params must
                 # come back as NNTransformerParams, not be downgraded to
@@ -966,8 +964,8 @@ class NNRun:
                 trainer=trainer,
                 salt=rep.get("salt"),
                 idps=idps,
-                resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
-                precision=_load_precision(os.path.join(run_path, "metadata.yaml")),
+                resume_status=_load_resume_status(metadata),
+                precision=_load_precision(metadata),
                 provenance=_load_provenance_tolerantly(id, root),
             )
         except KeyError as e:

@@ -75,7 +75,7 @@ device when the model is built and again, afresh, before a run is reserved:
 |---|---|---|
 | `"fp32"` (default) | full precision — no autocast, no scaler | every device |
 | `"fp16"` | `float16` autocast + a `torch.amp.GradScaler` | CUDA |
-| `"bf16"` | `bfloat16` autocast, no scaler | CPU; CUDA with `torch.cuda.is_bf16_supported()` |
+| `"bf16"` | `bfloat16` autocast, no scaler | CPU; CUDA with native bf16 (compute capability 8.0+ — emulated bf16 does not count) |
 
 A mode the device cannot run raises `PrecisionUnsupportedError` before any
 run directory exists, unless the policy names `fallback="fp32"`: the run then
@@ -90,8 +90,10 @@ rather than apply a non-finite one. Evaluation and `predict()` /
 their schemas are unchanged.
 
 `run.precision` records what happened — `requested`, `effective`,
-`fallback_reason`, TF32 (reported separately; NNx never sets it) and what the
-policy covers — and `NNRun.load` reads it back from `metadata.yaml`. The
+`fallback_reason`, TF32 (reported separately, from torch's `fp32_precision`
+setting when made; NNx never sets it) and which surfaces the precision
+actually applied to in that run (`covers` / `not_covered`) — and
+`NNRun.load` reads it back from `metadata.yaml`. The
 policy does not reach `nnx.lr_finder`, `nnx.diffusion.sampling` or
 generation. `nnx.precision_support()` reports each device's cells as
 `"verified"` (CPU FP32 and BF16, by NNx's seeded fixtures within

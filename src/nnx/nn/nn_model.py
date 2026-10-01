@@ -42,7 +42,10 @@ from ..monitors import (
     _MetricSet,
     _TrainEpochSummary,
 )
+from ..precision import EVALUATE as _PRECISION_EVALUATE
 from ..precision import FULL_PRECISION_ONLY as _FULL_PRECISION_ONLY
+from ..precision import PREDICT as _PRECISION_PREDICT
+from ..precision import TRAIN as _PRECISION_TRAIN
 from ..precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
@@ -682,11 +685,14 @@ def _check_resume_precision(training_state: Mapping[str, Any], precision: Resolv
         )
 
 
-def _requested_mode(params: Any) -> str:
-    policy = getattr(params, "precision", None)
-    if policy is not None:
-        return str(policy.mode)
-    return "fp16" if getattr(params, "mixed_precision", False) else "fp32"
+def _precision_key(params: Any, device: Any) -> tuple[Any, bool, str]:
+    """What a cached resolution depends on: the whole policy, the legacy
+    flag and the device type."""
+    return (
+        getattr(params, "precision", None),
+        bool(getattr(params, "mixed_precision", False)),
+        torch.device(device).type,
+    )
 
 
 def _inference_precision(model: Any) -> ResolvedPrecision:
@@ -702,13 +708,19 @@ def _inference_precision(model: Any) -> ResolvedPrecision:
 
 def _check_finite_gradients(module: torch.nn.Module) -> None:
     """Raise before a scaler-free reduced-precision update applies a
-    non-finite gradient (FEAT-028)."""
-    for name, parameter in module.named_parameters():
-        if parameter.grad is not None and not bool(torch.isfinite(parameter.grad).all()):
-            raise FloatingPointError(
-                f"non-finite gradient for {name!r} in a reduced-precision update; nothing was stepped. Check the "
-                "learning rate and loss scale, or train in fp32"
-            )
+    non-finite gradient (FEAT-028) — one host sync for the whole model."""
+    from .._update_engine import gradients_finite
+
+    if gradients_finite(module.parameters()):
+        return
+    name = next(
+        (n for n, p in module.named_parameters() if p.grad is not None and not bool(torch.isfinite(p.grad).all())),
+        "?",
+    )
+    raise FloatingPointError(
+        f"non-finite gradient for {name!r} in a reduced-precision update; nothing was stepped. Check the learning "
+        "rate and loss scale, or train in fp32"
+    )
 
 
 def _scale_gradients(module: torch.nn.Module, factor: float) -> None:
@@ -1370,7 +1382,7 @@ class NNModel(_HubMixinBase):
         self.device = self.params.device()
         # FEAT-028: the precision policy is resolved against this device
         # before anything is built, so an unsupported request fails here.
-        self._precision = resolve_precision(self.params, self.device)
+        self._precision = (_precision_key(self.params, self.device), resolve_precision(self.params, self.device))
         self.loss_fn = self.params.loss().to(self.device)
         net = self.params.net
         if module is not None:
@@ -1405,17 +1417,12 @@ class NNModel(_HubMixinBase):
         (FEAT-028): ``params.precision`` resolved against ``device`` — re-
         resolved, never read from saved metadata, whenever the device or the
         policy changes (a loaded model resolves on its destination device)."""
+        key = _precision_key(self.params, self.device)
         cached = getattr(self, "_precision", None)
-        device_type = torch.device(self.device).type
-        if (
-            cached is None
-            or cached.device_type != device_type
-            or (cached.source == "policy") != (getattr(self.params, "precision", None) is not None)
-            or cached.requested != _requested_mode(self.params)
-        ):
-            cached = resolve_precision(self.params, self.device)
+        if cached is None or cached[0] != key:
+            cached = (key, resolve_precision(self.params, self.device))
             self._precision = cached
-        return cached
+        return cached[1]
 
     def _check_task_preflight(self) -> None:
         """Reject a runtime ``loss_fn`` the declared task cannot score —
@@ -2062,7 +2069,9 @@ class NNModel(_HubMixinBase):
         apply a reduced precision (the built-in imperative paradigm steps,
         which run in full precision) before any work is done."""
         precision = resolve_precision(self.params, self.device)
-        self._precision = precision
+        if precision.source != "legacy":
+            precision = precision.scoped((_PRECISION_TRAIN, _PRECISION_EVALUATE, _PRECISION_PREDICT))
+        self._precision = (_precision_key(self.params, self.device), precision)
         if precision.reduced and getattr(train_step_fn, _FULL_PRECISION_ONLY, False):
             name = getattr(train_step_fn, "__qualname__", type(train_step_fn).__name__)
             raise PrecisionUnsupportedError(
@@ -3017,7 +3026,8 @@ class NNModel(_HubMixinBase):
         is used through the standard ``scale`` / ``unscale_`` / ``step`` /
         ``update`` / ``state_dict`` protocol.
         """
-        return resolve_precision(self.params, self.device).build_scaler()
+        resolved = self.resolved_precision if isinstance(self, NNModel) else resolve_precision(self.params, self.device)
+        return resolved.build_scaler()
 
     def _save_checkpoints(
         self,

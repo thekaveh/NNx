@@ -5013,7 +5013,7 @@ What this policy runs as on ``device`` (see the module table).
 #### `nnx.precision.ResolvedPrecision`
 
 ```python
-class nnx.precision.ResolvedPrecision(requested: 'str', effective: 'str', device_type: 'str', source: 'str' = 'default', fallback_reason: 'Optional[str]' = None, tf32: 'Mapping[str, bool]' = <factory>) -> 'None'
+class nnx.precision.ResolvedPrecision(requested: 'str', effective: 'str', device_type: 'str', source: 'str' = 'default', fallback_reason: 'Optional[str]' = None, tf32: 'Mapping[str, Optional[bool]]' = <factory>, covers: 'Optional[tuple[str, ...]]' = None) -> 'None'
 ```
 
 A policy resolved against a device: what was requested, what runs, and why a fallback happened.
@@ -5025,6 +5025,22 @@ A policy resolved against a device: what was requested, what runs, and why a fal
 ``GradScaler`` (FP16 only) and ``record()`` the run-inspection
 mapping (``NNRun.precision``).
 ```
+
+##### `nnx.precision.ResolvedPrecision.scoped`
+
+```python
+nnx.precision.ResolvedPrecision.scoped(self, covers: 'tuple[str, ...]') -> 'ResolvedPrecision'
+```
+
+This resolution, recording that it applies to ``covers`` only.
+
+##### `nnx.precision.ResolvedPrecision.applies_to`
+
+```python
+property nnx.precision.ResolvedPrecision.applies_to
+```
+
+No public description is currently available.
 
 ##### `nnx.precision.ResolvedPrecision.autocast_dtype`
 

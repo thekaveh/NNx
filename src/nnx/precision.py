@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Optional, Union
 
 import torch
@@ -59,12 +59,11 @@ PRECISION_FALLBACKS: tuple[str, ...] = ("error", "fp32")
 
 _AUTOCAST_DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 # What the policy applies to, and what it never reaches (run inspection).
-COVERS: tuple[str, ...] = (
-    "NNModel.train (default step and objectives)",
-    "Trainer.train(objective=...)",
-    "evaluate()",
-    "predict() / predict_proba()",
-)
+TRAIN = "NNModel.train (default step and objectives)"
+TRAINER_OBJECTIVE = "Trainer.train(objective=...)"
+EVALUATE = "evaluate()"
+PREDICT = "predict() / predict_proba()"
+COVERS: tuple[str, ...] = (TRAIN, TRAINER_OBJECTIVE, EVALUATE, PREDICT)
 NOT_COVERED: tuple[str, ...] = ("nnx.lr_finder", "nnx.diffusion.sampling", "generation")
 
 
@@ -146,13 +145,21 @@ class PrecisionPolicy:
         return _resolve(self.mode, self.fallback, device, source="policy")
 
 
-def _tf32() -> dict[str, bool]:
+def _tf32() -> dict[str, Optional[bool]]:
     """TF32 as torch is configured — reported beside the policy, never set
-    by it."""
-    return {
-        "cuda_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
-        "cudnn": bool(torch.backends.cudnn.allow_tf32),
-    }
+    by it. Torch >= 2.9's ``fp32_precision`` setting wins when made (its
+    legacy ``allow_tf32`` read then raises); ``None`` when unreadable."""
+    report: dict[str, Optional[bool]] = {}
+    for name, backend in (("cuda_matmul", torch.backends.cuda.matmul), ("cudnn", torch.backends.cudnn)):
+        setting = getattr(backend, "fp32_precision", None)
+        if isinstance(setting, str) and setting not in ("", "none"):
+            report[name] = setting == "tf32"
+            continue
+        try:
+            report[name] = bool(backend.allow_tf32)
+        except (AttributeError, RuntimeError):
+            report[name] = None
+    return report
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +176,21 @@ class ResolvedPrecision:
     device_type: str
     source: str = "default"
     fallback_reason: Optional[str] = None
-    tf32: Mapping[str, bool] = field(default_factory=_tf32)
+    tf32: Mapping[str, Optional[bool]] = field(default_factory=_tf32)
+    # What the effective precision applies to in this run (run inspection);
+    # None: every surface for a policy, NNModel.train only for the legacy
+    # flag. A run narrows it to the routes it took (scoped()).
+    covers: Optional[tuple[str, ...]] = None
+
+    def scoped(self, covers: tuple[str, ...]) -> ResolvedPrecision:
+        """This resolution, recording that it applies to ``covers`` only."""
+        return replace(self, covers=tuple(covers))
+
+    @property
+    def applies_to(self) -> tuple[str, ...]:
+        if self.covers is not None:
+            return self.covers
+        return (TRAIN,) if self.source == "legacy" else COVERS
 
     @property
     def autocast_dtype(self) -> Optional[torch.dtype]:
@@ -218,8 +239,8 @@ class ResolvedPrecision:
             "autocast_dtype": None if self.autocast_dtype is None else str(self.autocast_dtype).replace("torch.", ""),
             "grad_scaler": self.uses_scaler,
             "tf32": dict(self.tf32),
-            "covers": list(COVERS),
-            "not_covered": list(NOT_COVERED),
+            "covers": list(self.applies_to),
+            "not_covered": [item for item in COVERS if item not in self.applies_to] + list(NOT_COVERED),
         }
 
     @classmethod
@@ -231,6 +252,7 @@ class ResolvedPrecision:
             source=str(record.get("source", "default")),
             fallback_reason=record.get("fallback_reason"),
             tf32=dict(record.get("tf32") or {}),
+            covers=tuple(record["covers"]) if record.get("covers") is not None else None,
         )
 
 
@@ -250,12 +272,21 @@ def _unsupported(mode: str, device_type: str) -> Optional[str]:
         return f"fp16 runs as float16 autocast with a GradScaler on CUDA only; this device is {device_type!r}"
     if device_type == "cpu":
         return None
-    if device_type == "cuda" and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+    if device_type == "cuda" and torch.cuda.is_available() and _native_cuda_bf16():
         return None
     return (
-        f"bf16 runs on CPU and on CUDA devices with bf16 support (torch.cuda.is_bf16_supported()); this device "
-        f"is {device_type!r}"
+        f"bf16 runs on CPU and on CUDA devices with native bf16 support (compute capability 8.0+, not "
+        f"emulation); this device is {device_type!r}"
     )
+
+
+def _native_cuda_bf16() -> bool:
+    """Whether the current CUDA device runs bf16 natively — not the
+    emulation ``torch.cuda.is_bf16_supported()`` counts by default."""
+    try:
+        return bool(torch.cuda.is_bf16_supported(including_emulation=False))
+    except TypeError:  # a torch without the keyword: native means Ampere or newer
+        return bool(torch.cuda.is_bf16_supported()) and torch.cuda.get_device_capability()[0] >= 8
 
 
 def _resolve(mode: str, fallback: str, device: Any, *, source: str) -> ResolvedPrecision:

@@ -71,6 +71,7 @@ from ..nn.nn_model import (
     _objective_microbatch,
     _optimizer_topology,
     _plan_component_restore,
+    _precision_key,
     _restore_weights_only,
     _rollback_resume,
     _step_monitored_plateau,
@@ -82,7 +83,14 @@ from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
-from ..precision import PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
+from ..precision import (
+    EVALUATE,
+    PREDICT,
+    TRAINER_OBJECTIVE,
+    PrecisionUnsupportedError,
+    ResolvedPrecision,
+    resolve_precision,
+)
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
 from ..utils import Utils
@@ -146,14 +154,15 @@ def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) ->
     update in full precision, so they refuse a reduced policy. The legacy
     ``mixed_precision`` flag keeps its meaning here: never applied."""
     resolved = resolve_precision(model.params, model.device)
-    model._precision = resolved
+    model._precision = (_precision_key(model.params, model.device), resolved)
     if resolved.source == "policy":
         if resolved.reduced and objective is None:
             raise PrecisionUnsupportedError(
                 f"Trainer step functions run in full precision (they own every optimizer update), so they cannot "
                 f"apply the {resolved.effective} policy; pass objective= to train in it, or set precision fp32"
             )
-        return resolved
+        trained = (TRAINER_OBJECTIVE,) if objective is not None else ()
+        return resolved.scoped((*trained, EVALUATE, PREDICT))
     if objective is not None:
         _warn_full_precision_objective(model)
     if resolved.requested == "fp32":
@@ -165,6 +174,7 @@ def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) ->
         source="legacy",
         fallback_reason=resolved.fallback_reason
         or "Trainer.train does not apply mixed_precision=True (NNModel.train does); set NNModelParams.precision",
+        covers=(),
     )
 
 
