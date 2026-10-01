@@ -1141,3 +1141,46 @@ def test_a_fresh_dry_run_builds_its_base_on_the_cpu():
     with mock.patch.object(transforms, "_fresh_base", side_effect=spy):
         _recipe("fresh").validate(_model())
     assert built == [(True, Devices.CPU)]
+
+
+# --- review round 13 ---------------------------------------------------------------------------------------
+
+
+def _only_run_id() -> str:
+    import os
+    import re
+
+    return next(name for name in os.listdir("runs") if re.fullmatch(r"[0-9a-f]{32}", name))
+
+
+def test_undeclared_surgery_at_train_end_keeps_the_last_epoch_loadable():
+    from nnx import Callback
+    from nnx.surgery._utils import set_module
+
+    class SurgeryAtTrainEnd(Callback):
+        def on_train_end(self, ctx):
+            set_module(ctx.model.net, "layers.2", low_rank_factorize(ctx.model.net.layers[2], rank=2))
+
+    with pytest.raises(ValueError, match="refused before the checkpoint is written"):
+        _train(_recipe().materialize(_model()), n_epochs=1, callbacks=[SurgeryAtTrainEnd()])
+    last = NNCheckpoint.load(run=_only_run_id(), type=Checkpoints.LAST)
+    assert last is not None
+    NNModel.from_checkpoint(last)  # the epoch's LAST was kept, and it rebuilds
+
+
+def test_a_recipe_materialized_mid_training_is_refused_before_any_checkpoint_records_it():
+    from nnx import Callback
+
+    class RecipeAtEpochOne(Callback):
+        def on_epoch_end(self, ctx):
+            if ctx.epoch == 1:
+                TransformRecipe([lora("layers.2", r=2, alpha=4.0)]).materialize(ctx.model)
+
+    with pytest.raises(ValueError, match="were applied or declared during it"):
+        _train(_recipe().materialize(_model()), n_epochs=3, callbacks=[RecipeAtEpochOne()])
+    run_id = _only_run_id()
+    last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST)
+    assert last is not None and last.idp.epoch_idx == 0
+    assert [t.name for t in last.transforms] == ["lora", "low_rank"]  # never the late operation
+    child = _train(_recipe().materialize(_model(seed=5)), n_epochs=1, resume_from_run_id=run_id)
+    assert child.resume_status is not None and child.resume_status.mode == "stateful"

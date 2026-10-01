@@ -410,29 +410,47 @@ def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tup
     return lora_layers, low_rank_layers
 
 
+def _check_trained_recipe(
+    model: NNModel,
+    trained_recipe: Sequence[NNCheckpointTransform],
+    declared: Sequence[NNCheckpointTransform] = (),
+) -> None:
+    """Refuse, before a checkpoint is written, a model whose topology no
+    checkpoint of this run could rebuild (FEAT-016): recipe operations a
+    callback applied or declared during training (a recipe is materialized
+    before training — the one the run id records), or unrecorded surgery
+    on a recipe model. A train-end transform callbacks declared (QAT)
+    rebuilds its own topology, so drift is not checked against it."""
+    live = _recipe_transforms(model._topology_transforms)
+    late = [t for t in declared if _replayable(t)]
+    if live != tuple(trained_recipe) or late:
+        added = live[len(trained_recipe) :] if live[: len(trained_recipe)] == tuple(trained_recipe) else live
+        raise ValueError(
+            "a transformation recipe is materialized before training, but recipe operations "
+            f"{[t.state() for t in (*added, *late)]} were applied or declared during it, which no checkpoint could "
+            "resume — materialize the nnx.transforms.TransformRecipe before calling train() (LAST keeps the last "
+            "completed epoch)"
+        )
+    if trained_recipe and all(_replayable(t) for t in declared):
+        drift = model._topology_drift()
+        if drift is not None:
+            raise ValueError(
+                f"{drift}; refused before the checkpoint is written (LAST keeps the last completed epoch) — apply "
+                "topology changes through nnx.transforms.TransformRecipe before training"
+            )
+
+
 def _final_transforms(
     model: NNModel, callbacks: list[Callback], trained_recipe: Sequence[NNCheckpointTransform]
 ) -> tuple[tuple[NNCheckpointTransform, ...], bool]:
     """The transforms the final LAST records — the model's own followed by
     those its callbacks applied at train end — and whether that LAST keeps
     the pre-transform state for resuming. A recipe recorded before training
-    (FEAT-016) is the live topology already, so it alone keeps none.
-
-    A recipe is materialized before training (``trained_recipe``, the one
-    the run id records): recipe operations a callback applies or declares
-    during training are refused before LAST is rewritten, since no
-    checkpoint could resume them."""
-    own = tuple(model._topology_transforms)
+    (FEAT-016) is the live topology already, so it alone keeps none; the
+    model is checked first (:func:`_check_trained_recipe`)."""
     declared = _collect_checkpoint_transforms(callbacks)
-    late = [t for t in declared if _replayable(t)]
-    if _recipe_transforms(own) != tuple(trained_recipe) or late:
-        added = [t.state() for t in (*_recipe_transforms(own)[len(trained_recipe) :], *late)]
-        raise ValueError(
-            f"a transformation recipe is materialized before training, but recipe operations {added} were applied or "
-            "declared during it, which no checkpoint could resume — materialize the nnx.transforms.TransformRecipe "
-            "before calling train() (LAST keeps the last completed epoch)"
-        )
-    final = (*own, *declared)
+    _check_trained_recipe(model, trained_recipe, declared)
+    final = (*model._topology_transforms, *declared)
     return final, any(not _replayable(t) for t in final)
 
 
@@ -2489,6 +2507,7 @@ class NNModel(_HubMixinBase):
                         optimizer_factory=resume_optimizer_factory,
                         components=registry.collect(),
                         is_best=record.improved if record is not None else None,
+                        trained_recipe=run.transforms,
                     )
                 except BaseException:
                     # LAST is the epoch commit marker. If it cannot be
@@ -3060,10 +3079,15 @@ class NNModel(_HubMixinBase):
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
+        trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
     ) -> NNCheckpoint:
         """Publish LAST, the due phase tag and — when this epoch is the best
         so far — BEST. ``is_best`` is the monitor's decision (FEAT-003);
-        ``None`` keeps the legacy comparison."""
+        ``None`` keeps the legacy comparison. ``trained_recipe`` (the
+        recipe the run id records, FEAT-016) refuses, before anything is
+        written, a topology no checkpoint of the run could rebuild."""
+        if trained_recipe is not None:
+            _check_trained_recipe(self, trained_recipe)
         checkpoint = NNCheckpoint(
             idp=idp,
             model_params=self.params,

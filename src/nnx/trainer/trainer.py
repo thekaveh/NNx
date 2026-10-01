@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -75,7 +75,7 @@ from ..nn.nn_model import (
     _step_monitored_plateau,
     _with_attempt,
 )
-from ..nn.params.nn_checkpoint import NNCheckpoint, _snapshot_state_dict
+from ..nn.params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
@@ -658,6 +658,7 @@ class Trainer:
                         components=registry.collect(),
                         optimizer_factories=optimizer_factories,
                         is_best=record.improved if record is not None else None,
+                        trained_recipe=run.transforms,
                     )
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
@@ -729,6 +730,7 @@ class Trainer:
         components: Optional[dict[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
+        trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
     ) -> NNCheckpoint:
         """Delegates to NNModel._save_checkpoints — the same
         FIRST/Q1/Q2/Q3/LAST/BEST cadence — with the named optimizers and
@@ -749,6 +751,7 @@ class Trainer:
             schedulers=schedulers,
             optimizer_factories=optimizer_factories,
             is_best=is_best,
+            trained_recipe=trained_recipe,
         )
 
     def _resume(
