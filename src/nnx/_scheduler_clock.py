@@ -33,6 +33,8 @@ import warnings
 from collections.abc import Mapping
 from typing import Any, Optional
 
+from torch.optim import lr_scheduler
+
 CLOCK = "optimizer_update"
 # Scheduler kinds with a hard ``total_steps`` budget (shared with the
 # resume-horizon check in ``nn_model``).
@@ -105,10 +107,6 @@ def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Opti
     return planned
 
 
-def is_cosine(scheduler_params: Any) -> bool:
-    return str(getattr(scheduler_params, "kind", None)) == "cosine_annealing"
-
-
 def component_name(owner: Optional[str] = None) -> str:
     """The checkpointed component name of an optimizer's clock: a
     filename-safe slug of its name, with a short hash of the original when
@@ -135,7 +133,6 @@ class SchedulerClock:
         attached: bool = True,
         component_name: str = "nnx.scheduler_clock",
         default_budget: bool = False,
-        cosine: bool = False,
         configured_period: Optional[int] = None,
     ) -> None:
         self.owner = owner
@@ -147,11 +144,11 @@ class SchedulerClock:
         # Whether the horizon is the planned updates (total_steps unset), so
         # an overrun names len(train_loader) as its source.
         self.default_budget = default_budget
-        # A cosine schedule warns once when it passes its live T_max (past
-        # it the rate climbs back up), unless this run configured exactly
-        # that T_max — torch lets a schedule run past it on purpose. Live,
-        # because a stateful resume restores the checkpoint's T_max.
-        self.cosine = cosine
+        # A cosine schedule (as built, a subclass's included) warns once
+        # when it passes its live T_max (past it the rate climbs back up),
+        # unless this run configured exactly that T_max — torch lets a
+        # schedule run past it on purpose. Live, because a stateful resume
+        # restores the checkpoint's T_max.
         self.configured_period = configured_period
         self._period_warned = False
         # (scheduler step, learning rate after it) since the epoch began.
@@ -171,8 +168,7 @@ class SchedulerClock:
             horizon=horizon,
             planned=planned,
             default_budget=horizon is not None and scheduler_params.total_steps is None,
-            cosine=is_cosine(scheduler_params),
-            configured_period=scheduler_params.T_max if is_cosine(scheduler_params) else None,
+            configured_period=getattr(scheduler_params, "T_max", None),
             **options,
         )
 
@@ -201,9 +197,9 @@ class SchedulerClock:
             )
         self.scheduler.step()
         self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
-        if self.cosine and not self._period_warned:
-            period = getattr(self.scheduler, "T_max", None)  # the live period, a restored one included
-            if isinstance(period, int) and self.count > period and period != self.configured_period:
+        if not self._period_warned and isinstance(self.scheduler, lr_scheduler.CosineAnnealingLR):
+            period = self.scheduler.T_max  # the live period, a restored one included
+            if self.count > period and period != self.configured_period:
                 self._period_warned = True
                 warnings.warn(
                     f"optimizer {self.owner!r}'s cosine schedule passed its T_max of {period} optimizer updates, "

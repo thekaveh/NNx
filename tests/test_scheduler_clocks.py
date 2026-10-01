@@ -932,3 +932,31 @@ def test_a_default_period_cosine_run_resumes_and_warns_past_the_restored_period(
     warned = [w for w in caught if "passed its T_max of 5" in str(w.message)]
     assert len(warned) == 1
     assert "stateful resume keeps the checkpoint's T_max" in str(warned[0].message)
+
+
+# --- review round 12 ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.filterwarnings("ignore:Detected call of `lr_scheduler.step\\(\\)`:UserWarning")
+def test_the_period_warning_follows_the_built_scheduler():
+    class Cosine(NNModel):  # a subclass building a cosine schedule for another kind
+        def _build_scheduler(self, optimizer, params):
+            return lr_scheduler.CosineAnnealingLR(optimizer, T_max=4)
+
+    torch.manual_seed(0)
+    model = Cosine(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    with pytest.warns(UserWarning, match="passed its T_max of 4"):
+        _train(model, accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1))
+
+
+def test_a_detached_primary_records_the_rate_each_batch_trained_with():
+    def step(ctx):
+        result = _two_rate_step(ctx)
+        ctx.schedulers["a"].step()  # the step function owns its schedule
+        return result
+
+    run = Trainer(_model()).train(_two_optimizer_params(auto_step=False), trainer_step_fn=step)
+    assert [idp.lr for idp in run.idps] == pytest.approx([0.1 * 0.5**k for k in range(6)])

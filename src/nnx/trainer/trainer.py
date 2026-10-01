@@ -523,8 +523,6 @@ class Trainer:
             )
             ctx.update_count = engine.commits
 
-        primary_steps_on_updates = primary in clocks and clocks[primary].attached
-
         def report_update(name: str) -> None:
             if name not in optimizers:
                 raise ValueError(
@@ -599,8 +597,9 @@ class Trainer:
                 )
                 for idx_batch, batch, is_last_batch in batches:
                     # The rate this batch trains with, for an update clock
-                    # (read before the step, which may step its scheduler).
-                    lr_used = float(optimizers[primary].param_groups[0]["lr"]) if primary_steps_on_updates else None
+                    # (read before the step, which may step its scheduler —
+                    # through the clock, or itself when detached).
+                    lr_used = float(optimizers[primary].param_groups[0]["lr"]) if primary in clocks else None
                     if engine is not None:
                         assert objective is not None
                         train_edp = _objective_microbatch(

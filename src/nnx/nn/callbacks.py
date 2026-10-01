@@ -511,7 +511,9 @@ class LRMonitor(Callback):
     epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
     scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
     after that update's scheduler step)`` for the primary optimizer, a
-    separate trace (empty on the epoch clock)."""
+    separate trace of the steps NNx takes — empty on the epoch clock and
+    under ``Trainer``'s ``auto_step_schedulers=False``, where the step
+    function steps the schedule itself."""
 
     def __init__(self):
         self.history: list[float] = []
