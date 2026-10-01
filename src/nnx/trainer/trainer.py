@@ -299,11 +299,6 @@ class Trainer:
                 any optim's NNOptimParams.is_valid() returns False.
         """
         # One owner per optimizer update, decided before anything else.
-        if trainer_step_fn is not None and objective is not None:
-            raise ValueError(
-                "pass trainer_step_fn or objective, not both: a step function owns its optimizer updates, an "
-                "objective hands them to NNx's shared update engine"
-            )
         _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
         _check_provenance(provenance)
         if params is None:

@@ -9949,6 +9949,14 @@ Args:
     nonfinite: the engine's non-finite policy (``"fail"`` / ``"skip"``).
 ```
 
+##### `nnx.diffusion.objective.DiffusionObjective.check_run`
+
+```python
+nnx.diffusion.objective.DiffusionObjective.check_run(self, model: 'Any', *, optimizers: 'Mapping[str, torch.optim.Optimizer]', callbacks: 'Any') -> 'None'
+```
+
+A new run starts the noise stream afresh — from ``seed``, or from one draw of the (just seeded) global RNG — whatever an earlier run of this instance drew; a stateful resume then restores the saved stream.
+
 ##### `nnx.diffusion.objective.DiffusionObjective.generator`
 
 ```python

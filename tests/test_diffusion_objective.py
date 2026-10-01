@@ -348,3 +348,54 @@ def test_plans_apply_the_same_owner_rule():
     report = base.with_step_fns(train_step_fn=diffusion_objective(SCHEDULE)).validate()
     assert report.paths == ("train_step_fn",) and "an objective" in report.diagnostics[0].message
     assert base.with_objective(diffusion_objective(SCHEDULE)).validate().ok
+
+
+# --- review round 1 ---------------------------------------------------------------------------------------
+
+
+def test_a_reused_objective_restarts_its_stream_for_each_run():
+    objective = diffusion_objective(SCHEDULE)  # seeded from the (just seeded) global RNG at first use
+    loader = [(_points(4, seed=s), torch.zeros(4)) for s in range(2)]
+    first, second = _model(), _model()
+    run_a = first.train(_params(loader, seed=0), objective=objective)
+    run_b = second.train(_params(loader, seed=0), objective=objective)
+    assert [idp.train_edp.loss for idp in run_a.idps] == [idp.train_edp.loss for idp in run_b.idps]
+    for key, value in first.net.state_dict().items():
+        torch.testing.assert_close(second.net.state_dict()[key], value, msg=key)
+
+
+def test_seeds_and_custom_timesteps_are_validated_before_use():
+    with pytest.raises(ValueError, match=r"\[0, 2\*\*64\)"):
+        diffusion_objective(SCHEDULE, seed=2**70)
+    model = _model()
+    calls: list[int] = []
+    model.net.register_forward_hook(lambda *args: calls.append(1))
+    ctx = ObjectiveContext(model=model, batch=(_points(3), torch.zeros(3)), epoch_idx=0, batch_idx=0)
+    floats = diffusion_objective(SCHEDULE, noise_fn=lambda x_0, g: (torch.zeros(3), torch.zeros_like(x_0)))
+    with pytest.raises(ValueError, match="integer timesteps"):
+        floats(ctx)
+    late = diffusion_objective(
+        SCHEDULE, noise_fn=lambda x_0, g: (torch.full((3,), SCHEDULE.T, dtype=torch.long), torch.zeros_like(x_0))
+    )
+    with pytest.raises(ValueError, match=r"outside \[0, 50\)"):
+        late(ctx)
+    assert calls == []
+
+
+def test_only_objectives_with_per_commit_work_get_a_commit_hook():
+    from nnx import supervised_objective
+    from nnx.nn.nn_model import _objective_engine
+
+    model = _model()
+
+    def engine(objective):
+        return _objective_engine(
+            objective,
+            optimizers={"default": torch.optim.SGD(model.net.parameters(), lr=0.1)},
+            clip_norms={},
+            scaler=None,
+            device=torch.device("cpu"),
+        )
+
+    assert engine(supervised_objective()).commit_hooks == []
+    assert engine(diffusion_objective(SCHEDULE)).commit_hooks == []

@@ -207,7 +207,10 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   every target parameter needs a same-named, same-shaped online one; and
   callbacks that change the net's topology (`checkpoint_transforms`,
   e.g. QAT) are refused. The imperative step passed as `objective=` is
-  refused too.
+  refused too. A callback that renames the net's parameters without
+  declaring it (say, `torch.nn.utils.prune`, which turns `weight` into
+  `weight_orig`) is not detected: `update_ema` then raises a `KeyError`
+  naming the parameter at the next committed update.
 * **Checkpoints and resume.** `JEPAObjective` is a checkpointable
   component named `jepa.objective`: the spec (loss, momentum), the
   predictor's **reference** (its name inside `model.net` — its weights

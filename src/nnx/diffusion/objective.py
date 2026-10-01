@@ -22,19 +22,26 @@ The timesteps and noise come from the objective's **own** generator (a CPU
 of the global RNG at first use). Its state is checkpointed component state
 (``"diffusion.objective"``), so a stateful warm resume continues the
 stream, and a :func:`~nnx.diffusion.sample` preview with its own generator
-never perturbs it. Pass ``noise_fn(x_0, generator) -> (t, eps)`` to supply
-the timesteps and noise yourself (fixed values in tests, a different
-timestep distribution).
+never perturbs it. Each run starts the stream afresh (a stateful resume
+then restores the saved one), so an instance reused for a second, equally
+seeded run draws the same noise. The draws happen on the CPU — the stream
+is then the same on every device and survives a resume onto another — at
+the cost of a host-to-device copy per microbatch; pass
+``noise_fn(x_0, generator) -> (t, eps)`` to supply the timesteps and noise
+yourself (drawn on the device for large image batches, fixed values in
+tests, another timestep distribution). Its timesteps must be integers in
+``[0, T)``.
 """
 
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 import torch
 
+from .._step_helpers import first_input, full_precision
 from ..components import ComponentSpec
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
@@ -53,25 +60,6 @@ def _schedule_fingerprint(schedule: NoiseSchedule) -> str:
     from them)."""
     betas = schedule.betas.detach().to("cpu", torch.float64).contiguous()
     return hashlib.sha256(betas.numpy().tobytes()).hexdigest()
-
-
-def _full_precision(tensor: torch.Tensor) -> torch.Tensor:
-    """A mixed-precision (float16 / bfloat16) output as float32, so the
-    squared-error sum accumulates in full precision; other dtypes unchanged."""
-    return tensor.float() if tensor.dtype in (torch.float16, torch.bfloat16) else tensor
-
-
-def _clean_input(model: Any, batch: Any) -> torch.Tensor:
-    """The clean sample ``x_0`` of a batch — the same unpacking the
-    imperative step uses (``unpack_batch`` when the net has one, else the
-    first element of a tuple / list, else the batch itself)."""
-    if hasattr(model.net, "unpack_batch"):
-        (x_0,), _ = cast(Any, model.net).unpack_batch(batch)
-    elif isinstance(batch, (list, tuple)):
-        x_0 = batch[0]
-    else:
-        x_0 = batch
-    return x_0.to(model.device)
 
 
 class DiffusionObjective(Objective):
@@ -107,8 +95,8 @@ class DiffusionObjective(Objective):
         super().__init__(nonfinite=nonfinite)
         if not isinstance(schedule, NoiseSchedule):
             raise TypeError(f"schedule must be a NoiseSchedule, got {type(schedule).__name__}")
-        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
-            raise ValueError(f"seed must be a non-negative integer or None, got {seed!r}")
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64):
+            raise ValueError(f"seed must be an integer in [0, 2**64) or None, got {seed!r}")
         if noise_fn is not None and not callable(noise_fn):
             raise TypeError(f"noise_fn must be callable, got {type(noise_fn).__name__}")
         self.schedule = schedule
@@ -116,6 +104,14 @@ class DiffusionObjective(Objective):
         self.noise_fn = noise_fn
         self._generator: Optional[torch.Generator] = None
         self._fingerprint = _schedule_fingerprint(schedule)
+
+    # ---------- before each run ----------
+
+    def check_run(self, model: Any, *, optimizers: Mapping[str, torch.optim.Optimizer], callbacks: Any) -> None:
+        """A new run starts the noise stream afresh — from ``seed``, or from
+        one draw of the (just seeded) global RNG — whatever an earlier run of
+        this instance drew; a stateful resume then restores the saved stream."""
+        self._generator = None
 
     # ---------- the objective ----------
 
@@ -144,12 +140,19 @@ class DiffusionObjective(Objective):
                 f"noise_fn must return t of shape ({x_0.shape[0]},) and eps of shape {tuple(x_0.shape)}; got "
                 f"{tuple(t.shape)} and {tuple(eps.shape)}"
             )
+        if self.noise_fn is not None:
+            # Checked before t indexes the schedule (an out-of-range index is a
+            # device-side assert on CUDA).
+            if t.dtype.is_floating_point or t.dtype.is_complex or t.dtype == torch.bool:
+                raise ValueError(f"noise_fn must return integer timesteps, got {t.dtype}")
+            if t.numel() and not (0 <= int(t.min()) and int(t.max()) < self.schedule.T):
+                raise ValueError(f"noise_fn returned timesteps outside [0, {self.schedule.T})")
         return t, eps
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         model = ctx.model
         model.net.train()
-        x_0 = _clean_input(model, ctx.batch)
+        x_0 = first_input(model, ctx.batch)
         if x_0.shape[0] == 0 or x_0.numel() == 0:
             raise ValueError("diffusion_objective got an empty batch: there is no noise to predict")
         t, eps = self.draw(x_0)
@@ -157,7 +160,7 @@ class DiffusionObjective(Objective):
         sqrt_1ma = _extract(self.schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
         eps_pred = model.net(x_t, t)
-        error = _full_precision(eps_pred) - _full_precision(eps)
+        error = full_precision(eps_pred) - full_precision(eps)
         term = LossTerm(_TERM, error.pow(2).sum(), error.numel(), "mean")
         value = term.value
         assert value is not None  # a non-empty batch always has elements

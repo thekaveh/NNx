@@ -1072,9 +1072,12 @@ def _objective_engine(
     around the objective, the scaler for the update) only where the
     supervised path uses it — a CUDA device with a scaler."""
     from .._update_engine import UpdateEngine
+    from ..objectives import Objective
 
     amp = scaler is not None and device.type == "cuda"
     after_update = getattr(objective, "after_update", None)
+    if isinstance(objective, Objective) and type(objective).after_update is Objective.after_update:
+        after_update = None  # the base class's no-op: no per-commit work to schedule
     return UpdateEngine(
         optimizers=optimizers,
         scaler=scaler if amp else None,

@@ -695,7 +695,9 @@ microbatch or after a skipped window). Both adapters are checkpointable
 components (`"diffusion.objective"`: the spec and the objective's own
 generator; `"jepa.objective"`: the spec, the predictor's reference inside
 `model.net`, the EMA target and its update counter), so a stateful resume
-continues where an uninterrupted run would be.
+continues where an uninterrupted run would be. Pass an objective itself,
+not a wrapper: a `lambda` or `functools.partial` around it hides its
+`check_run`, `after_update` and component state from the run.
 
 A run has exactly one update owner: passing both `train_step_fn` (or
 `trainer_step_fn`) and `objective` fails before any callback runs, any

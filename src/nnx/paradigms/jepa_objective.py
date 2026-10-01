@@ -32,6 +32,7 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 
+from .._step_helpers import first_input, full_precision
 from ..components import ComponentSpec
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult, UpdateEvent
@@ -43,12 +44,6 @@ MaskFn = Callable[[int, torch.device], "tuple[torch.Tensor, torch.Tensor]"]
 
 _TERM = "latent_mse"
 _STATE_KEYS = frozenset({"spec", "predictor", "target_encoder", "ema_updates"})
-
-
-def _full_precision(tensor: torch.Tensor) -> torch.Tensor:
-    """A mixed-precision (float16 / bfloat16) output as float32, so the
-    squared-error sum accumulates in full precision; other dtypes unchanged."""
-    return tensor.float() if tensor.dtype in (torch.float16, torch.bfloat16) else tensor
 
 
 def _submodule_path(root: nn.Module, module: nn.Module) -> Optional[str]:
@@ -72,26 +67,15 @@ def _check_masks(context: torch.Tensor, target: torch.Tensor, n_patches: int) ->
         )
     if context.dtype != torch.bool or target.dtype != torch.bool:
         raise ValueError(f"mask_fn must return BoolTensors, got {context.dtype} and {target.dtype}")
-    if not torch.equal(context, ~target):
-        raise ValueError(
-            "context_mask and target_mask must be complementary (every patch is either context or target)."
-        )
-    if not bool(target.any()):
-        raise ValueError("the target mask is empty: there is nothing to predict (every patch is context)")
-    if not bool(context.any()):
+    # One device sync in the common case; the precise reason only on failure.
+    if bool((context == target).any() | ~target.any() | ~context.any()):
+        if not torch.equal(context, ~target):
+            raise ValueError(
+                "context_mask and target_mask must be complementary (every patch is either context or target)."
+            )
+        if not bool(target.any()):
+            raise ValueError("the target mask is empty: there is nothing to predict (every patch is context)")
         raise ValueError("the context mask is empty: there is nothing to predict from (every patch is a target)")
-
-
-def _clean_input(model: Any, batch: Any) -> torch.Tensor:
-    """The images of a batch — the imperative step's unpacking."""
-    net = cast(Any, model.net)
-    if hasattr(net, "unpack_batch"):
-        (x,), _ = net.unpack_batch(batch)
-    elif isinstance(batch, (list, tuple)):
-        x = batch[0]
-    else:
-        x = batch
-    return x.to(model.device)
 
 
 class JEPAObjective(Objective):
@@ -236,7 +220,7 @@ class JEPAObjective(Objective):
         n_patches = int(net.n_patches)
         context_1d, target_1d = self.mask_fn(n_patches, model.device)
         _check_masks(context_1d, target_1d, n_patches)  # before any forward pass
-        x = _clean_input(model, ctx.batch)
+        x = first_input(model, ctx.batch)
         if x.shape[0] == 0:
             raise ValueError("jepa_objective got an empty batch")
         self._online = model.net
@@ -252,7 +236,7 @@ class JEPAObjective(Objective):
         with torch.no_grad():
             target_embeds = self.target_encoder(x)[:, target_positions, :]
         predicted = self.predictor(context_embeds, context_positions, target_positions)
-        error = _full_precision(predicted) - _full_precision(target_embeds)
+        error = full_precision(predicted) - full_precision(target_embeds)
         term = LossTerm(_TERM, error.pow(2).sum(), error.numel(), "mean")
         value = term.value
         assert value is not None  # a non-empty target mask always has elements

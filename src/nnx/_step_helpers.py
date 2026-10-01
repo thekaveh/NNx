@@ -15,7 +15,7 @@ coupling beyond the TrainStepContext type.
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import torch
@@ -29,6 +29,26 @@ from .nn.nn_model import TrainStepContext
 IMPERATIVE_STEP = "__nnx_imperative_step__"
 
 _StepT = TypeVar("_StepT")
+
+
+def first_input(model: Any, batch: Any) -> torch.Tensor:
+    """A self-supervised paradigm's input from a batch, on the model's
+    device: ``unpack_batch`` when the net has one, else the first element of
+    a tuple / list, else the batch itself (labels, if any, are ignored)."""
+    net = cast(Any, model.net)
+    if hasattr(net, "unpack_batch"):
+        (x,), _ = net.unpack_batch(batch)
+    elif isinstance(batch, (list, tuple)):
+        x = batch[0]
+    else:
+        x = batch
+    return x.to(model.device)
+
+
+def full_precision(tensor: torch.Tensor) -> torch.Tensor:
+    """A mixed-precision (float16 / bfloat16) output as float32, so a loss
+    sum accumulates in full precision; other dtypes unchanged."""
+    return tensor.float() if tensor.dtype in (torch.float16, torch.bfloat16) else tensor
 
 
 def imperative_step(step: _StepT, *, paradigm: str) -> _StepT:
