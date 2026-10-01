@@ -896,9 +896,9 @@ def test_reports_are_authoritative():
 # --- review round 9 ----------------------------------------------------------------------------------------
 
 
-def test_a_cosine_schedule_past_a_default_period_warns_but_an_explicit_one_does_not():
+def test_a_cosine_schedule_past_a_default_period_warns_but_a_configured_one_does_not():
     # len() says 6 batches (12 planned updates over 2 epochs); 8 are yielded per epoch.
-    with pytest.warns(UserWarning, match=r"passed its default T_max of 12 .*set T_max") as caught:
+    with pytest.warns(UserWarning, match=r"passed its T_max of 12 .*set T_max") as caught:
         _train(
             _model(), accumulate=1, loader=_UnderReported(_batches(8)), scheduler=_sched(Schedulers.COSINE_ANNEALING)
         )
@@ -914,7 +914,7 @@ def test_a_cosine_schedule_past_a_default_period_warns_but_an_explicit_one_does_
 
 
 @pytest.mark.parametrize("t_max", [None, 10])
-def test_a_default_period_cosine_run_resumes(t_max):
+def test_a_default_period_cosine_run_resumes_and_warns_past_the_restored_period(t_max):
     parent = _train(_model(), epochs=1, accumulate=1, scheduler=_sched(Schedulers.COSINE_ANNEALING), data_id="cos")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -927,5 +927,8 @@ def test_a_default_period_cosine_run_resumes(t_max):
             resume_from_run_id=parent.id,
         )
     assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
-    warned = [w for w in caught if "passed its default T_max of 5" in str(w.message)]
-    assert len(warned) == (1 if t_max is None else 0)  # the restored period is the parent's planned updates
+    # The restored period is the parent's 5 planned updates, whatever this run configures (round 11): passing
+    # it warns, and the warning says a resume keeps the checkpoint's T_max.
+    warned = [w for w in caught if "passed its T_max of 5" in str(w.message)]
+    assert len(warned) == 1
+    assert "stateful resume keeps the checkpoint's T_max" in str(warned[0].message)

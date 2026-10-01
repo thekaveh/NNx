@@ -105,11 +105,8 @@ def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Opti
     return planned
 
 
-def defaults_cosine_period(scheduler_params: Any) -> bool:
-    """A cosine schedule whose ``T_max`` defaults to the planned updates:
-    past it the rate climbs back up, which the clock warns about (an
-    explicit ``T_max`` may be run past on purpose, as torch allows)."""
-    return str(getattr(scheduler_params, "kind", None)) == "cosine_annealing" and scheduler_params.T_max is None
+def is_cosine(scheduler_params: Any) -> bool:
+    return str(getattr(scheduler_params, "kind", None)) == "cosine_annealing"
 
 
 def component_name(owner: Optional[str] = None) -> str:
@@ -138,7 +135,8 @@ class SchedulerClock:
         attached: bool = True,
         component_name: str = "nnx.scheduler_clock",
         default_budget: bool = False,
-        default_period: bool = False,
+        cosine: bool = False,
+        configured_period: Optional[int] = None,
     ) -> None:
         self.owner = owner
         self.scheduler = scheduler
@@ -147,10 +145,14 @@ class SchedulerClock:
         self.attached = attached
         self.component_name = component_name
         # Whether the horizon is the planned updates (total_steps unset), so
-        # an overrun names len(train_loader) as its source; and whether a
-        # cosine T_max was defaulted, so passing it warns once.
+        # an overrun names len(train_loader) as its source.
         self.default_budget = default_budget
-        self.default_period = default_period
+        # A cosine schedule warns once when it passes its live T_max (past
+        # it the rate climbs back up), unless this run configured exactly
+        # that T_max — torch lets a schedule run past it on purpose. Live,
+        # because a stateful resume restores the checkpoint's T_max.
+        self.cosine = cosine
+        self.configured_period = configured_period
         self._period_warned = False
         # (scheduler step, learning rate after it) since the epoch began.
         self.trace: list[tuple[int, float]] = []
@@ -169,7 +171,8 @@ class SchedulerClock:
             horizon=horizon,
             planned=planned,
             default_budget=horizon is not None and scheduler_params.total_steps is None,
-            default_period=defaults_cosine_period(scheduler_params),
+            cosine=is_cosine(scheduler_params),
+            configured_period=scheduler_params.T_max if is_cosine(scheduler_params) else None,
             **options,
         )
 
@@ -198,16 +201,17 @@ class SchedulerClock:
             )
         self.scheduler.step()
         self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
-        period = getattr(self.scheduler, "T_max", None)  # the live period, a restored one included
-        if self.default_period and not self._period_warned and isinstance(period, int) and self.count > period:
-            self._period_warned = True
-            warnings.warn(
-                f"optimizer {self.owner!r}'s cosine schedule passed its default T_max of {period} optimizer "
-                "updates (the planned updates of the run that built it), so its learning rate now rises again; "
-                "set T_max to cover every update of the run",
-                UserWarning,
-                stacklevel=2,
-            )
+        if self.cosine and not self._period_warned:
+            period = getattr(self.scheduler, "T_max", None)  # the live period, a restored one included
+            if isinstance(period, int) and self.count > period and period != self.configured_period:
+                self._period_warned = True
+                warnings.warn(
+                    f"optimizer {self.owner!r}'s cosine schedule passed its T_max of {period} optimizer updates, "
+                    "so its learning rate now rises again; set T_max to cover every update of the run (a "
+                    "stateful resume keeps the checkpoint's T_max, so set it in the run that starts the schedule)",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
     def report_update(self, *names: Any) -> None:
         """``TrainStepContext.report_update()`` in ``NNModel.train``: one

@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Optional
 
 from torch.optim import Optimizer, lr_scheduler
 
+from ..._scheduler_clock import uses_update_clock
+
 if TYPE_CHECKING:
     from ..params.nn_scheduler_params import NNSchedulerParams
 
@@ -41,7 +43,7 @@ class Schedulers(Enum):
         # its default horizon is the run's planned updates (``n_updates``,
         # None when the loader has no length — then an explicit budget is
         # required); the "epoch" clock keeps counting epochs.
-        updates = getattr(params, "clock", "epoch") == "optimizer_update"
+        updates = uses_update_clock(params)
         horizon = n_updates if updates else n_epochs
 
         def budget(value: Optional[int], field: str) -> int:
@@ -88,10 +90,10 @@ class Schedulers(Enum):
                 )
             case Schedulers.LINEAR_WARMUP_DECAY:
                 total_steps = budget(params.total_steps, "total_steps")
-                # The default warm-up is a tenth of the schedule: of its
-                # epochs on the epoch clock (unchanged), of its total_steps
-                # updates on the update clock — never of one run's length,
-                # so a split run warms up exactly as the whole one.
+                # The default warm-up is a tenth of the schedule: of the
+                # run's epochs on the epoch clock (unchanged), and of its
+                # total_steps updates on the update clock, so a split
+                # update-clock run warms up exactly as the whole one.
                 default_warmup = max(1, (total_steps if updates else n_epochs) // 10)
                 warmup_steps = params.warmup_steps if params.warmup_steps is not None else default_warmup
                 _reject_short_total_steps(total_steps, horizon, updates=updates)
