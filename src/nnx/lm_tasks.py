@@ -121,6 +121,7 @@ class CausalLMTask:
             raise LMTaskError(f"vocab_size must be at least 2, got {vocab}")
         if self.alignment not in ALIGNMENTS:
             raise LMTaskError(f"alignment must be one of {ALIGNMENTS}, got {self.alignment!r}")
+        object.__setattr__(self, "alignment", str(self.alignment))  # builtin str: weights_only-safe state
         ignore = _integer(self.ignore_id, "ignore_id")
         if 0 <= ignore < vocab:
             raise LMTaskError(f"ignore_id {ignore} is a real token id (vocabulary 0..{vocab - 1}); use a negative id")
@@ -138,6 +139,8 @@ class CausalLMTask:
         object.__setattr__(self, "vocab_axis", -1)
         if self.tokenizer is not None and (not isinstance(self.tokenizer, str) or not self.tokenizer):
             raise LMTaskError(f"tokenizer must be a non-empty identity string or None, got {self.tokenizer!r}")
+        if self.tokenizer is not None:
+            object.__setattr__(self, "tokenizer", str(self.tokenizer))
         if isinstance(self.version, bool) or self.version != TASK_VERSION:
             raise LMTaskError(f"this NNx supports causal-LM task version {TASK_VERSION}, got {self.version!r}")
         object.__setattr__(self, "version", TASK_VERSION)
@@ -176,14 +179,15 @@ class CausalLMTask:
         the module docstring), with shapes, dtypes and ids checked.
 
         ``"shift_inputs"`` takes token ids ``(B, T)``, ``(ids,)``, ``(ids,
-        loss_mask)`` or a mapping ``{"input_ids", "labels"?, "loss_mask"?}``
-        — HuggingFace-style ``labels`` sit at the ids' positions (unshifted,
-        ``ignore_id`` where not scored) and are shifted with them.
-        ``"pre_shifted"`` takes ``(inputs, targets[, loss_mask])`` or a
-        mapping ``{"inputs", "targets", "loss_mask"?}``. A loss mask is
-        boolean or 0/1 and covers the ids (``"shift_inputs"``) or the
-        targets (``"pre_shifted"``). A mapping's ``attention_mask`` is
-        ignored: a loss mask is never an attention mask."""
+        loss_mask)`` with a boolean mask, or a mapping ``{"input_ids",
+        "labels"?, "loss_mask"?}`` — HuggingFace-style ``labels`` sit at the
+        ids' positions (unshifted, ``ignore_id`` where not scored) and are
+        shifted with them. ``"pre_shifted"`` takes ``(inputs, targets[,
+        loss_mask])`` or a mapping ``{"inputs", "targets", "loss_mask"?}``.
+        A loss mask (boolean, or 0/1 except in the ``(ids, loss_mask)``
+        tuple) covers the ids (``"shift_inputs"``) or the targets
+        (``"pre_shifted"``). A mapping's ``attention_mask`` is never a loss
+        mask, but a position it pads that would still be scored is refused."""
         if isinstance(batch, Mapping):
             return self._split_mapping(batch)
         if isinstance(batch, torch.Tensor):
@@ -199,12 +203,13 @@ class CausalLMTask:
                     f"{len(parts)} parts — pass alignment='pre_shifted' for (inputs, targets) batches"
                 )
             mask = parts[1] if len(parts) == 2 else None
-            if isinstance(mask, torch.Tensor) and not mask.is_floating_point() and mask.dtype != torch.bool:
-                if not bool(((mask == 0) | (mask == 1)).all()):
-                    raise LMTaskError(
-                        "alignment='shift_inputs' reads (ids, loss_mask), and the second part is not a 0/1 mask; "
-                        "for (inputs, targets) batches pass alignment='pre_shifted'"
-                    )
+            if mask is not None and not (isinstance(mask, torch.Tensor) and mask.dtype == torch.bool):
+                # An integer second part is ambiguous with targets: refused, never guessed.
+                raise LMTaskError(
+                    "alignment='shift_inputs' reads (ids, loss_mask) with a boolean mask; for (inputs, targets) "
+                    "batches pass alignment='pre_shifted', and pass a 0/1 integer mask as "
+                    "{'input_ids': ..., 'loss_mask': ...}"
+                )
             return self._shifted(parts[0], None, mask)
         if len(parts) not in (2, 3):
             raise LMTaskError(
@@ -222,7 +227,9 @@ class CausalLMTask:
                     f"got keys {sorted(keys)}"
                     + (" — pass alignment='pre_shifted' for inputs/targets" if unknown else "")
                 )
-            return self._shifted(batch["input_ids"], batch.get("labels"), batch.get("loss_mask"))
+            inputs, targets, loss_mask = self._shifted(batch["input_ids"], batch.get("labels"), batch.get("loss_mask"))
+            self._padding_unscored(batch.get("attention_mask"), targets, loss_mask, shift=True)
+            return inputs, targets, loss_mask
         unknown = sorted(keys - {"inputs", "targets", "loss_mask", "attention_mask"})
         if not {"inputs", "targets"} <= keys or unknown:
             hint = (
@@ -234,7 +241,30 @@ class CausalLMTask:
                 f"alignment='pre_shifted' reads a mapping {{'inputs', 'targets', 'loss_mask'?}}; got keys {sorted(keys)}"
                 + hint
             )
-        return self._aligned(batch["inputs"], batch["targets"], batch.get("loss_mask"))
+        inputs, targets, loss_mask = self._aligned(batch["inputs"], batch["targets"], batch.get("loss_mask"))
+        self._padding_unscored(batch.get("attention_mask"), targets, loss_mask, shift=False)
+        return inputs, targets, loss_mask
+
+    def _padding_unscored(
+        self, attention_mask: Any, targets: torch.Tensor, loss_mask: Optional[torch.Tensor], *, shift: bool
+    ) -> None:
+        """An attention mask is never a loss mask, but a position it zeroes
+        that would still be scored is refused (padding scored as tokens)."""
+        if attention_mask is None:
+            return
+        if not isinstance(attention_mask, torch.Tensor):
+            raise LMTaskError(f"attention_mask must be a tensor, got {type(attention_mask).__name__}")
+        padded = attention_mask == 0
+        if shift:
+            padded = padded[:, 1:]
+        if padded.shape != targets.shape:
+            raise LMTaskError(f"attention_mask {tuple(attention_mask.shape)} does not fit the batch's tokens")
+        scored = self.valid(targets, loss_mask).to(padded.device) & padded
+        if bool(scored.any()):
+            raise LMTaskError(
+                f"{int(scored.sum())} padded position(s) (attention_mask 0) would be scored: declare pad_id, mark "
+                "them with labels=ignore_id or pass a loss_mask — an attention mask is never used as a loss mask"
+            )
 
     def _shifted(
         self, ids: Any, labels: Any, loss_mask: Any
@@ -333,10 +363,12 @@ class CausalLMTask:
         return logits
 
     def token_sums(
-        self, logits: torch.Tensor, targets: torch.Tensor, valid: torch.Tensor
+        self, logits: torch.Tensor, targets: torch.Tensor, valid: torch.Tensor, *, with_ce: bool = True
     ) -> tuple[torch.Tensor, float, int, int]:
         """``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct,
-        valid count)`` over the valid positions; flattened once, here."""
+        valid count)`` over the valid positions; flattened once, here.
+        ``with_ce=False`` (evaluation) skips the cross-entropy pass and
+        returns an empty sum in its place."""
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
@@ -344,11 +376,17 @@ class CausalLMTask:
             return logits.reshape(-1)[:0].sum(), 0.0, 0, 0
         flat = logits[valid]  # (n, V)
         chosen = targets[valid]
-        ce = torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
+        ce = (
+            torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
+            if with_ce
+            else flat.reshape(-1)[:0].sum()
+        )
         with torch.no_grad():
             detached = flat.detach()
-            # Per-token NLL in the logits' dtype (no full-vocabulary float64
-            # copy), summed in float64.
+            if detached.dtype in (torch.float16, torch.bfloat16):
+                detached = detached.float()  # half precision would round confident tokens' NLL to 0
+            # Per-token NLL in (at least) float32 — no full-vocabulary float64
+            # copy — summed in float64.
             per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
             nll = float(per_token.double().sum())
             correct = int((detached.argmax(dim=-1) == chosen).sum())
@@ -391,8 +429,10 @@ class CausalLMObjective(Objective):
     unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component
     ``"lm.causal_task"``: the task configuration and the valid tokens the
     run's objective has scored (counted from 0 for each fresh run, restored
-    on resume; a window the engine then skips — a non-finite loss, an AMP
-    overflow — is still counted)."""
+    on a stateful resume; a window the engine then skips — a non-finite
+    loss, an AMP overflow — is still counted). Pass a fresh objective to a
+    ``weights_only`` resume: it restores no component state, so a reused
+    instance keeps its own count."""
 
     def __init__(self, task: CausalLMTask, *, nonfinite: str = "fail") -> None:
         super().__init__(nonfinite=nonfinite)
@@ -470,7 +510,7 @@ class CausalLMEval:
                     inputs, targets, loss_mask = self.task.split(batch)
                     valid = self.task.valid(targets, loss_mask)
                     logits = self.task.logits(model, inputs, targets)
-                    _, nll, correct, n = self.task.token_sums(logits, targets, valid)
+                    _, nll, correct, n = self.task.token_sums(logits, targets, valid, with_ce=False)
                     total_nll += nll
                     total_correct += correct
                     total += n

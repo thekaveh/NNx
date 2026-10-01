@@ -375,7 +375,7 @@ def test_batch_forms_are_read_one_way_and_huggingface_labels_shift_with_the_ids(
     assert torch.equal(inputs, ids[:, :-1]) and torch.equal(targets, labels[:, 1:]) and mask is None
     assert shifted.valid(targets, mask).tolist() == [[True, False, True]]
     with pytest.raises(
-        LMTaskError, match="not a 0/1 mask; for \\(inputs, targets\\) batches pass alignment='pre_shifted'"
+        LMTaskError, match="with a boolean mask; for \\(inputs, targets\\) batches pass alignment='pre_shifted'"
     ):
         shifted.split((ids[:, :-1], ids[:, 1:]))
     with pytest.raises(LMTaskError, match="labels .* must have the ids' shape"):
@@ -464,3 +464,35 @@ def test_the_nll_matches_a_float64_reference_without_a_float64_vocabulary_copy(m
     monkeypatch.setattr(torch.Tensor, "double", spy)
     _, nll, _, _ = task.token_sums(logits, targets, valid)
     assert nll == pytest.approx(expected, rel=1e-6) and V not in widths  # only per-token values are widened
+
+
+def test_round_two_edges():
+    import io
+
+    import numpy as np
+
+    task = CausalLMTask(vocab_size=V)
+    ids = torch.tensor([[1, 2, 3, 0, 0]])
+    with pytest.raises(LMTaskError, match="padded position"):
+        task.split({"input_ids": ids, "attention_mask": torch.tensor([[1, 1, 1, 0, 0]])})
+    padded = CausalLMTask(vocab_size=V, pad_id=0)
+    padded.split({"input_ids": ids, "attention_mask": torch.tensor([[1, 1, 1, 0, 0]])})  # pad_id: unscored
+    for second in (torch.tensor([[1, 0, 1, 1, 0]]), torch.tensor([[0, 1, 1, 0, 1]])):  # 0/1 ints: could be targets
+        with pytest.raises(LMTaskError, match="boolean mask"):
+            CausalLMTask(vocab_size=2).split((torch.tensor([[1, 0, 1, 1, 0]]), second))
+    _, _, mask = task.split({"input_ids": ids, "loss_mask": torch.tensor([[1, 1, 1, 0, 0]])})
+    assert mask is not None and mask.dtype == torch.bool
+    named = CausalLMTask(vocab_size=V, alignment=np.str_("pre_shifted"), tokenizer=np.str_("sha256:abc"))
+    assert type(named.state()["alignment"]) is str and type(named.state()["tokenizer"]) is str
+    buffer = io.BytesIO()
+    torch.save(named.state(), buffer)
+    buffer.seek(0)
+    assert CausalLMTask.from_state(torch.load(buffer, weights_only=True)) == named
+    # Half precision: the reported NLL is computed in float32.
+    logits = torch.randn(64, V, generator=torch.Generator().manual_seed(0)) * 20
+    targets = logits.argmax(dim=-1)  # confident tokens: tiny NLLs half precision rounds to 0
+    valid = torch.ones(64, dtype=torch.bool)
+    _, exact, _, _ = task.token_sums(logits.double(), targets, valid)
+    _, half, _, _ = task.token_sums(logits.to(torch.bfloat16), targets, valid)
+    reference = float(-F.log_softmax(logits.to(torch.bfloat16).double(), dim=-1).gather(1, targets[:, None]).sum())
+    assert half == pytest.approx(reference, rel=1e-4, abs=1e-6) and exact > 0

@@ -282,12 +282,20 @@ purely opt-in.
     tokens the run's objective scored (from 0 for each fresh run; a window
     the engine then skips is still counted); a resume with another
     configuration is refused before the first resumed update.
-  - Batches: `"shift_inputs"` reads token ids, `(ids, loss_mask)` or a
-    mapping `{"input_ids", "labels"?, "loss_mask"?}` whose HuggingFace-style
-    `labels` (unshifted, `-100` where not scored) shift with the ids;
-    `"pre_shifted"` reads `(inputs, targets[, loss_mask])` or
+  - Batches: `"shift_inputs"` reads token ids, `(ids, loss_mask)` with a
+    **boolean** mask (an integer second part is refused: it could be
+    targets) or a mapping `{"input_ids", "labels"?, "loss_mask"?}` whose
+    HuggingFace-style `labels` (unshifted, `-100` where not scored) shift
+    with the ids; `"pre_shifted"` reads `(inputs, targets[, loss_mask])` or
     `{"inputs", "targets", "loss_mask"?}`. A mapping's `attention_mask` is
-    ignored. `extra_metrics` do not apply to the task and are refused.
+    never a loss mask, but a padded position it marks that would still be
+    scored is refused (declare `pad_id`, use `labels=-100` or a
+    `loss_mask`). `extra_metrics` do not apply to the task and are refused.
+    Half-precision logits are widened to float32 for the reported NLL.
+    A run with no monitor elects BEST from the validation NLL; an epoch
+    whose validation is unavailable never replaces an earlier BEST, though
+    an unavailable first epoch stands in until one has a value — declare
+    `MonitorSpec("nll")` to elect only epochs with a value.
 
   A custom `train_step_fn` still works for anything else (diffusion / KD /
   SimCLR / Mixup / CutMix follow that pattern).

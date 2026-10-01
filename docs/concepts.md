@@ -398,7 +398,10 @@ fields are simply absent, while NaN and ±inf are rejected with one
 `RuntimeWarning` per epoch that names the rejected field/split and the
 value actually used. An epoch with no finite signal anywhere skips the
 plateau step (a distinct "no metric available" warning) and compares as an
-unavailable BEST baseline. The raw observations are retained unchanged in
+unavailable BEST baseline. A validation *task record* that is unavailable —
+every target masked (`status="empty"`), or no error and no loss — ends the
+walk instead: the epoch has no signal, the plateau step is skipped, and the
+training metrics are never compared in its place. The raw observations are retained unchanged in
 the live history and checkpoint payloads; CSV readback keeps mapping NaN
 cells to `None`. `EarlyStopping` is separate and never falls back from
 validation to training metrics. Its default (`monitor=None`) picks one

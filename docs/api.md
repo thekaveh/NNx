@@ -5005,14 +5005,15 @@ nnx.lm_tasks.CausalLMTask.split(self, batch: 'Any') -> 'tuple[torch.Tensor, torc
 
 ```text
 ``"shift_inputs"`` takes token ids ``(B, T)``, ``(ids,)``, ``(ids,
-loss_mask)`` or a mapping ``{"input_ids", "labels"?, "loss_mask"?}``
-— HuggingFace-style ``labels`` sit at the ids' positions (unshifted,
-``ignore_id`` where not scored) and are shifted with them.
-``"pre_shifted"`` takes ``(inputs, targets[, loss_mask])`` or a
-mapping ``{"inputs", "targets", "loss_mask"?}``. A loss mask is
-boolean or 0/1 and covers the ids (``"shift_inputs"``) or the
-targets (``"pre_shifted"``). A mapping's ``attention_mask`` is
-ignored: a loss mask is never an attention mask.
+loss_mask)`` with a boolean mask, or a mapping ``{"input_ids",
+"labels"?, "loss_mask"?}`` — HuggingFace-style ``labels`` sit at the
+ids' positions (unshifted, ``ignore_id`` where not scored) and are
+shifted with them. ``"pre_shifted"`` takes ``(inputs, targets[,
+loss_mask])`` or a mapping ``{"inputs", "targets", "loss_mask"?}``.
+A loss mask (boolean, or 0/1 except in the ``(ids, loss_mask)``
+tuple) covers the ids (``"shift_inputs"``) or the targets
+(``"pre_shifted"``). A mapping's ``attention_mask`` is never a loss
+mask, but a position it pads that would still be scored is refused.
 ```
 
 ##### `nnx.lm_tasks.CausalLMTask.valid`
@@ -5034,10 +5035,10 @@ The model's logits ``(B, T, V)`` for ``inputs``, checked.
 ##### `nnx.lm_tasks.CausalLMTask.token_sums`
 
 ```python
-nnx.lm_tasks.CausalLMTask.token_sums(self, logits: 'torch.Tensor', targets: 'torch.Tensor', valid: 'torch.Tensor') -> 'tuple[torch.Tensor, float, int, int]'
+nnx.lm_tasks.CausalLMTask.token_sums(self, logits: 'torch.Tensor', targets: 'torch.Tensor', valid: 'torch.Tensor', *, with_ce: 'bool' = True) -> 'tuple[torch.Tensor, float, int, int]'
 ```
 
-``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct, valid count)`` over the valid positions; flattened once, here.
+``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct, valid count)`` over the valid positions; flattened once, here. ``with_ce=False`` (evaluation) skips the cross-entropy pass and returns an empty sum in its place.
 
 ##### `nnx.lm_tasks.CausalLMTask.objective`
 
@@ -5062,7 +5063,7 @@ No public description is currently available.
 class nnx.lm_tasks.CausalLMObjective(task: 'CausalLMTask', *, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-The task's training objective (see :meth:`CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens the run's objective has scored (counted from 0 for each fresh run, restored on resume; a window the engine then skips — a non-finite loss, an AMP overflow — is still counted).
+The task's training objective (see :meth:`CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens the run's objective has scored (counted from 0 for each fresh run, restored on a stateful resume; a window the engine then skips — a non-finite loss, an AMP overflow — is still counted). Pass a fresh objective to a ``weights_only`` resume: it restores no component state, so a reused instance keeps its own count.
 
 ##### `nnx.lm_tasks.CausalLMObjective.component_spec`
 
