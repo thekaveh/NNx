@@ -324,7 +324,9 @@ def _read_idps_csv(csv_path: str, *, exact: bool = False) -> list[NNIterationDat
     (``migrate_history``, FEAT-036); ``NNRun.load`` keeps pandas' default
     parser, as it always has."""
     try:
-        frame = pd.read_csv(csv_path, float_precision="round_trip") if exact else pd.read_csv(csv_path)
+        # "round_trip" is accepted by every supported pandas, though pandas 2.x
+        # leaves it out of the parameter's annotation.
+        frame = pd.read_csv(csv_path, float_precision=cast(Any, "round_trip")) if exact else pd.read_csv(csv_path)
         raw_idps = frame.to_dict(orient="records")
     except pd.errors.EmptyDataError as e:
         # A zero-byte file (external truncation — our own atomic

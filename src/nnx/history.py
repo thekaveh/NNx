@@ -891,10 +891,10 @@ def _first_epoch(
     if reader is not None:
         return reader.first_epoch(committed)
     try:
-        frame = pd.read_csv(os.path.join(_run_path(run_id, root), "idps.csv"), nrows=1, usecols=["epoch_idx"])
+        frame = pd.read_csv(os.path.join(_run_path(run_id, root), "idps.csv"), nrows=1)
     except (OSError, ValueError, pd.errors.EmptyDataError):
         return None
-    if frame.empty:
+    if frame.empty or "epoch_idx" not in frame.columns:
         return None
     first = int(frame["epoch_idx"].iloc[0])
     return None if committed is not None and first > committed else first
