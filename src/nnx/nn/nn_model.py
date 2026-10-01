@@ -42,7 +42,7 @@ from ..monitors import (
     _TrainEpochSummary,
 )
 from ..provenance import ExperimentManifest
-from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
+from ..seeding import _capture_rng_state, _global_rng_kept, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
 from ..transforms import _recipe_transforms, _replayable
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
@@ -1400,24 +1400,27 @@ class NNModel(_HubMixinBase):
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
 
+    def _base_state(self) -> Optional[dict[str, Optional[tuple[int, ...]]]]:
+        """``{key: shape}`` of the tensors the descriptor rebuilds (shapes
+        ``None`` for a registered factory, whose layout is recorded by name
+        when it builds the module — never a second construction, FEAT-006);
+        ``None`` for a runtime module, which nothing rebuilds."""
+        net = self.params.net
+        if isinstance(net, ModelSpec):
+            return dict.fromkeys(getattr(self, "_reference_state_keys", ()))
+        if isinstance(net, Nets):
+            assert self.net_params is not None
+            with _global_rng_kept():  # a throwaway build leaves the random streams alone
+                fresh = net(params=self.net_params).state_dict()
+            return {key: tuple(value.shape) for key, value in fresh.items() if isinstance(value, torch.Tensor)}
+        return None
+
     def _assert_reconstructible_topology(self) -> None:
         transforms = tuple(self._topology_transforms)
         if transforms and not all(_replayable(t) for t in transforms):
             return  # train-end transforms (QAT) rebuild their own topology
-        net = self.params.net
-        base_state: dict[str, Optional[tuple[int, ...]]]
-        if isinstance(net, ModelSpec):
-            # The factory's own layout, recorded when it built the module —
-            # never a second construction (FEAT-006); names only.
-            base_state = dict.fromkeys(getattr(self, "_reference_state_keys", ()))
-        elif isinstance(net, Nets):
-            assert self.net_params is not None
-            from ..transforms import _random_streams_kept
-
-            with _random_streams_kept():  # a throwaway build reads no CUDA stream it would create
-                fresh = net(params=self.net_params).state_dict()
-            base_state = {key: tuple(value.shape) for key, value in fresh.items() if isinstance(value, torch.Tensor)}
-        else:
+        base_state = self._base_state()
+        if base_state is None:
             return  # a runtime module is marked reconstructible=False instead
         if transforms:
             # FEAT-016: the live topology must be exactly the base plus its

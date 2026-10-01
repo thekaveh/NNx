@@ -230,7 +230,7 @@ def test_a_stale_optimizer_is_refused_with_a_rebuild_instruction():
         _recipe().materialize(model, optimizers=[stale])
     assert model._topology_transforms == ()  # refused before anything changed
     _recipe().materialize(model)
-    with pytest.raises(ValueError, match="stale for the model's current topology.*build the optimizer after"):
+    with pytest.raises(ValueError, match="stale for the model's current topology.*build the optimizer.*after"):
         check_optimizer(model, stale)
     check_optimizer(model, build_optimizer(model.net, _OPTIM))  # rebuilt after: fine
 
@@ -693,12 +693,19 @@ def test_dry_runs_and_rebuilds_leave_an_unused_cuda_context_alone():
 # --- review round 4 ----------------------------------------------------------------------------------------
 
 
-def test_a_recipe_on_a_layer_the_base_lacks_is_refused_before_training():
+def test_a_recipe_on_a_layer_the_base_lacks_is_refused():
+    from nnx.peft import apply_lora_to
+
     model = _model()
     model.net.extra = nn.Linear(4, 4, bias=False)  # unrecorded surgery adds a layer
-    TransformRecipe([lora("extra", r=2, alpha=4.0)]).materialize(model)
+    recipe = TransformRecipe([lora("extra", r=2, alpha=4.0)])
+    with pytest.raises(RecipeError, match="'extra': is not a layer of the model's base"):
+        recipe.materialize(model)  # refused before anything is recorded or saved
+    assert type(model.net.extra) is nn.Linear and model._topology_transforms == ()
+    apply_lora_to(model.net, "extra", r=2, alpha=4.0)  # recorded by hand, bypassing validation
+    model._topology_transforms = recipe.checkpoint_transforms()
     with pytest.raises(ValueError, match="lora target 'extra' is not a layer of the base"):
-        model._assert_reconstructible_topology()
+        model._assert_reconstructible_topology()  # the pre-training check refuses it too
 
 
 @pytest.mark.parametrize("materialization", ["fresh", "in_place"])
@@ -750,3 +757,47 @@ def test_the_pre_training_topology_check_leaves_an_unused_cuda_context_alone():
         with mock.patch.object(seeding, "_capture_rng_state", side_effect=spy):
             model._assert_reconstructible_topology()
     assert captured == [False]
+
+
+# --- review round 5 ----------------------------------------------------------------------------------------
+
+
+def test_an_in_place_target_resized_by_unrecorded_surgery_is_refused():
+    model = _model()
+    model.net.layers[1] = nn.Linear(16, 40)  # the base gives Linear(16, 12)
+    with pytest.raises(RecipeError, match=r"'layers.1': has shape \(40, 16\), the model's base gives \(12, 16\)"):
+        TransformRecipe([lora("layers.1", r=2, alpha=4.0)]).materialize(model)
+
+
+def test_a_failed_fresh_base_build_leaves_the_random_streams_alone():
+    from nnx import transforms
+
+    model = _model()
+    torch.manual_seed(1)
+    before = torch.get_rng_state()
+
+    def failing(source):
+        torch.rand(3)  # the build draws from the streams, then fails
+        raise RuntimeError("the base could not be built")
+
+    with mock.patch.object(transforms, "_fresh_base", side_effect=failing):
+        with pytest.raises(RuntimeError, match="could not be built"):
+            _recipe("fresh").materialize(model)
+    assert torch.equal(torch.get_rng_state(), before)
+
+
+def test_integer_and_float_lora_numbers_are_one_recipe_with_one_run_id():
+    from nnx.nn.params.nn_run import NNRun
+
+    ints = TransformRecipe([lora("layers.0", r=2, alpha=4, dropout=0)])
+    floats = TransformRecipe([lora("layers.0", r=2, alpha=4.0, dropout=0.0)])
+    assert ints == floats and ints.checkpoint_transforms() == floats.checkpoint_transforms()
+    assert dict(ints.operations[0].config) == {"r": 2, "alpha": 4.0, "dropout": 0.0}
+    model = _model()
+    params = NNTrainParams(n_epochs=1, seed=0, train_loader=_loader(), optim=_OPTIM)
+
+    def run_id(recipe):
+        transforms = recipe.checkpoint_transforms()
+        return NNRun(train=params, model=model.params, net=model.net_params, transforms=transforms).id
+
+    assert run_id(ints) == run_id(floats)

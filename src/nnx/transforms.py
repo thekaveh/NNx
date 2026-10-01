@@ -42,7 +42,6 @@ untransformed model, as before).
 
 from __future__ import annotations
 
-import contextlib
 import math
 import weakref
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -71,32 +70,11 @@ LOW_RANK = "low_rank"
 _VERSIONS = {LORA: (1,), LOW_RANK: (1,)}
 _PATH_CHARACTERS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")
 _Problem = tuple[Optional[int], str, Optional[str], str]
+_Shape = tuple[Optional[int], ...]
 # Per model, the parameters its recipe made stale for an optimizer: the
 # layers a low-rank operation replaced, or the source of a fresh
 # materialization. Weak on both sides, so nothing is kept alive.
 _SUPERSEDED: weakref.WeakKeyDictionary[Any, dict[int, weakref.ref]] = weakref.WeakKeyDictionary()
-
-
-def _random_streams() -> dict[str, Any]:
-    """The global random streams, read without creating a CUDA context."""
-    import torch
-
-    from .seeding import _capture_rng_state
-
-    return _capture_rng_state(None, cuda=torch.cuda.is_initialized())
-
-
-@contextlib.contextmanager
-def _random_streams_kept() -> Iterator[None]:
-    """Run a build whose initial values are discarded without moving the
-    global random streams."""
-    from .seeding import _restore_rng_state
-
-    state = _random_streams()
-    try:
-        yield
-    finally:
-        _restore_rng_state(state, None)
 
 
 class RecipeError(ValueError):
@@ -177,7 +155,13 @@ class TransformOp:
         if isinstance(self.targets, (str, bytes)):
             raise TypeError(f"targets must be a sequence of module paths, got the string {self.targets!r}")
         object.__setattr__(self, "targets", tuple(self.targets))
-        object.__setattr__(self, "config", _FrozenConfig(dict(self.config)))
+        config = dict(self.config)
+        if self.id == LORA:
+            # alpha=4 and alpha=4.0 are one recipe, with one run id.
+            for key in ("alpha", "dropout"):
+                if type(config.get(key)) is int:
+                    config[key] = float(config[key])
+        object.__setattr__(self, "config", _FrozenConfig(config))
 
     def state(self) -> dict[str, Any]:
         """The JSON-ready form a checkpoint records (``options`` of its
@@ -308,14 +292,18 @@ class TransformRecipe:
         (a fresh base's parameters belong to no existing optimizer)."""
         if self.materialization == "fresh":
             _check_source(model, fresh=True)
+            from .seeding import _global_rng_kept
+
             # Checked against the base materialize would build — built here
             # and discarded, leaving the global random streams untouched.
-            with _random_streams_kept():
+            with _global_rng_kept():
                 base = _fresh_base(model)
             _validate(base.net, self.operations, (), ())
         else:
             _check_source(model, fresh=False)
-            _validate(model.net, self.operations, _recorded_operations(model), list(optimizers))
+            _validate(
+                model.net, self.operations, _recorded_operations(model), list(optimizers), base=model._base_state()
+            )
 
     def materialize(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> NNModel:
         """Validate the whole recipe (as :meth:`validate`), then apply it —
@@ -326,40 +314,38 @@ class TransformRecipe:
         Transactional: a failure leaves the model — and the global random
         streams a fresh base or a LoRA initialization draws from — as they
         were."""
-        from .seeding import _restore_rng_state
-
-        streams = _random_streams()
-        if self.materialization == "fresh":
-            _check_source(model, fresh=True)
-            target = _fresh_base(model)  # built once, then checked as validate would
-            try:
-                _validate(target.net, self.operations, (), ())
-            except BaseException:
-                _restore_rng_state(streams, None)
-                raise
-        else:
-            self.validate(model, optimizers=optimizers)
-            target = model
-        replaced: list[tuple[str, nn.Module]] = []
-        # Building a LoRA wrapper freezes its base and sets modes, so a
-        # rollback also restores every flag and mode as it was.
-        flags = [(p, p.requires_grad) for p in target.net.parameters()]
-        modes = [(m, m.training) for m in target.net.modules()]
+        from .seeding import _global_rng_state, _restore_rng_state
         from .surgery._utils import get_module, set_module
 
+        streams = _global_rng_state()
+        replaced: list[tuple[str, nn.Module]] = []
         try:
-            for op in self.operations:
-                for path in op.targets:
-                    original = get_module(target.net, path)
-                    set_module(target.net, path, _build(op, original, allocate_only=False))
-                    replaced.append((path, original))
+            if self.materialization == "fresh":
+                _check_source(model, fresh=True)
+                target = _fresh_base(model)  # built once, then checked as validate would
+                _validate(target.net, self.operations, (), ())
+            else:
+                self.validate(model, optimizers=optimizers)
+                target = model
+            # Building a LoRA wrapper freezes its base and sets modes, so a
+            # rollback also restores every flag and mode as it was.
+            flags = [(p, p.requires_grad) for p in target.net.parameters()]
+            modes = [(m, m.training) for m in target.net.modules()]
+            try:
+                for op in self.operations:
+                    for path in op.targets:
+                        original = get_module(target.net, path)
+                        set_module(target.net, path, _build(op, original, allocate_only=False))
+                        replaced.append((path, original))
+            except BaseException:
+                for path, original in reversed(replaced):
+                    set_module(target.net, path, original)
+                for parameter, requires_grad in flags:
+                    parameter.requires_grad_(requires_grad)
+                for module, training in modes:
+                    module.training = training
+                raise
         except BaseException:
-            for path, original in reversed(replaced):
-                set_module(target.net, path, original)
-            for parameter, requires_grad in flags:
-                parameter.requires_grad_(requires_grad)
-            for module, training in modes:
-                module.training = training
             _restore_rng_state(streams, None)
             raise
         target._topology_transforms = (*target._topology_transforms, *self.checkpoint_transforms())
@@ -453,7 +439,11 @@ def _validate(
     optimizers: Sequence[Any],
     *,
     indexed: bool = True,
+    base: Optional[Mapping[str, Optional[_Shape]]] = None,
 ) -> None:
+    """Every problem of ``operations`` on ``net``. ``base`` — the
+    ``{key: shape}`` the model's descriptor rebuilds, for an in-place
+    materialization — refuses a target a rebuild could not reproduce."""
     problems: list[_Problem] = []
     paths = _registration_paths(net)
     owners = [(op, path) for op in recorded for path in op.targets]
@@ -481,6 +471,19 @@ def _validate(
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:
                 problems.append((index, op.id, path, f"the same nn.Linear is registered under {aliases}"))
+            if base is not None:
+                key = f"{path}.weight"
+                if key not in base:
+                    reason = (
+                        "is not a layer of the model's base (unrecorded surgery?), so no checkpoint could rebuild it"
+                    )
+                    problems.append((index, op.id, path, reason))
+                elif base[key] is not None and tuple(module.weight.shape) != base[key]:
+                    reason = (
+                        f"has shape {tuple(module.weight.shape)}, the model's base gives {base[key]} (unrecorded "
+                        "surgery?), so no checkpoint could rebuild it"
+                    )
+                    problems.append((index, op.id, path, reason))
             if op.id == LOW_RANK and isinstance(op.config.get("rank"), int):
                 limit = min(module.in_features, module.out_features)
                 if op.config["rank"] > limit:
@@ -517,9 +520,11 @@ def _build(op: TransformOp, linear: nn.Module, *, allocate_only: bool) -> nn.Mod
 
         if not allocate_only:
             return wrap()
+        from .seeding import _global_rng_kept
+
         # The adapter's initial values are overwritten by the saved ones, so
         # a rebuild leaves the global random streams where they were.
-        with _random_streams_kept():
+        with _global_rng_kept():
             return wrap()
     if not allocate_only:
         from .surgery.low_rank import low_rank_factorize
@@ -556,9 +561,6 @@ def _replay(model: NNModel, transform: NNCheckpointTransform) -> None:
     for path in op.targets:
         set_module(model.net, path, _build(op, get_module(model.net, path), allocate_only=True))
     model._topology_transforms = (*model._topology_transforms, transform)
-
-
-_Shape = tuple[Optional[int], ...]
 
 
 def _expected_state(
@@ -656,9 +658,11 @@ def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
     """Refuse an optimizer built before the model's recipe: one holding
     parameters the recipe replaced (a low-rank operation's layers, or the
     model a fresh materialization started from), or holding a LoRA
-    target's frozen base weights but not the adapter built around them. An
-    optimizer built afterwards — over every parameter, a subset, or with
-    parameters outside ``model.net`` — passes."""
+    target's frozen base weights but none of the adapter built around them
+    — whenever it was built, since the adapter would never train. An
+    optimizer built afterwards over the trainable parameters — all, a
+    subset, with parameters outside ``model.net``, or BitFit-style over
+    unfrozen base tensors — passes."""
     from .surgery._utils import get_module
 
     held = [p for group in optimizer.param_groups for p in group["params"]]
@@ -693,6 +697,7 @@ def check_optimizer(model: NNModel, optimizer: torch.optim.Optimizer) -> None:
     if stale or unadapted:
         raise ValueError(
             f"this optimizer is stale for the model's current topology ({stale} parameters it holds were replaced by its "
-            f"recipe; it holds the frozen base but not the adapter of {unadapted}): build the optimizer after "
+            f"recipe; it holds the frozen base but not the adapter of {unadapted}, which would never train): build the "
+            "optimizer over the trainable parameters after "
             "materializing the recipe, e.g. nnx.optimizers.build_optimizer(model.net, optim_params)"
         )

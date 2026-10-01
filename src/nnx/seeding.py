@@ -183,6 +183,24 @@ def _restore_rng_state(state: dict[str, Any], train_loader: Optional[Iterable[An
 _SEED_ENV = ("PYTHONHASHSEED", "CUBLAS_WORKSPACE_CONFIG")
 
 
+def _global_rng_state() -> dict[str, Any]:
+    """The global random streams, read without creating a CUDA context: a
+    CPU-only process never touched the CUDA streams, so there is nothing
+    of theirs to keep."""
+    return _capture_rng_state(None, cuda=torch.cuda.is_initialized())
+
+
+@contextlib.contextmanager
+def _global_rng_kept() -> Iterator[None]:
+    """Run a build whose initial values are discarded without moving the
+    global random streams."""
+    state = _global_rng_state()
+    try:
+        yield
+    finally:
+        _restore_rng_state(state, None)
+
+
 def _capture_seed_settings() -> dict:
     cudnn = torch.backends.cudnn
     return {
