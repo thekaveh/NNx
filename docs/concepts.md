@@ -161,7 +161,7 @@ The factory lifecycle:
 
 Built-in nets return **raw logits**; `predict().logits` is always that raw output. Native `torch.nn.NLLLoss` (`Losses.NEGATIVE_LOG_LIKELIHOOD`) requires log-probabilities, so the supervised loop, `evaluate()` and the NNx-owned classifier step factories (KD, feature-KD, MoE, Mixup, CutMix, and Born-Again through KD) apply `log_softmax` over the class axis internally before calling the exact native loss — the reported loss is the normalized NLL and the backpropagated gradient carries the competing-class term, matching cross-entropy from the same weights. The loss object's class weights, `ignore_index` and reduction remain authoritative. Any other loss module — including an `NLLLoss` *subclass* with its own `forward`, a custom `train_step_fn`, or the standalone `lr_finder` callable — receives the raw output unchanged and owns its own normalization.
 
-**Probability-aware prediction.** `predict()` and `PredictResult` stay logits + classes (for a model with a task, §6.3, `classes` holds the task's decoded values). `NNModel.predict_proba(X, spec)` is the opt-in alternative — `spec` may be omitted when the model declares a task, and a regression task returns `probabilities=None`, `spec=None` with its continuous values in `decoded`: a `ProbabilitySpec(kind, class_axis, labels)` *declares* the task — `"categorical"` (softmax over `class_axis`, rows sum to 1, argmax decoding) or `"bernoulli"` (independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators) — rather than inferring it from the loss or the output shape. The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values, the spec (class axis and ordered labels) and `sample_ids` (the input row index for arrays and tensors, the iteration position for an ordinary loader — a shuffling loader warns — and the global node index for graph seed rows). It runs through the same inference path as `predict()` — the same inputs, graph seed-row slicing, `no_grad`, and non-destructive mode handling (§13.2) — and never touches parameters or gradients. `class_indices` exists only for categorical results, so Bernoulli indicators cannot be fed to class-index consumers such as `VisUtils.confusion_matrix` by mistake; `prediction_from_logits(logits, spec)` exposes the same computation for logits obtained elsewhere.
+**Probability-aware prediction.** `predict()` and `PredictResult` stay logits + classes (for a model with a task, §6.3, `classes` holds the task's decoded values). `NNModel.predict_proba(X, spec)` is the opt-in alternative — `spec` may be omitted when the model declares a task, and a regression task returns `probabilities=None`, `spec=None` with its continuous values in `decoded`: a `ProbabilitySpec(kind, class_axis, labels)` *declares* the task — `"categorical"` (softmax over `class_axis`, rows sum to 1, argmax decoding) or `"bernoulli"` (independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators) — rather than inferring it from the loss or the output shape. The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values, the spec (class axis and ordered labels) and `sample_ids` (the input row index for arrays and tensors, the iteration position for an ordinary loader — a shuffling loader warns — the global node index for graph seed rows, and the graph id for a graph classifier's rows, §21). It runs through the same inference path as `predict()` — the same inputs, graph seed-row slicing, `no_grad`, and non-destructive mode handling (§13.2) — and never touches parameters or gradients. `class_indices` exists only for categorical results, so Bernoulli indicators cannot be fed to class-index consumers such as `VisUtils.confusion_matrix` by mistake; `prediction_from_logits(logits, spec)` exposes the same computation for logits obtained elsewhere.
 
 ### 3.2. Arbitrary modules and registered model factories
 
@@ -1692,3 +1692,44 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+
+## 21. Graph-level classification (`nnx.graph_tasks`)
+
+NNx's graph nets (`Nets.GRAPH_CONV` / `GRAPH_SAGE` / `GRAPH_ATT`) and
+`NNGraphDataset` classify the **nodes** of one graph. `nnx.graph_tasks`
+classifies **whole graphs** — one row per graph, keyed by a stable graph
+id — through the ordinary training, evaluation, prediction and reload paths:
+
+```text
+GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►  Batch(x, edge_index, batch, ptr, y[G], graph_id[G])
+   GraphClassifier: encoder(x, edge_index) ─► GraphPool("mean" | "sum") over each graph's own nodes ─► head ─► (G, classes)
+   NNModelParams(net=graph_classifier_spec(...), task=TaskSpec.categorical(n, ignore_index=IGNORE))
+```
+
+- **The collection** checks every graph once: unique non-negative integer
+  ids, at least one node, one feature width, edges inside the graph, and a
+  target for every graph not flagged `unlabeled` (a flagged graph's target
+  is `IGNORE`). It never splits itself: split by graph id (`subset(ids)`),
+  remembering that correlated graphs leak across splits whatever their ids.
+- **The classifier** validates every batch before the forward pass — graph
+  ids present and unique, no zero-node graph, `ptr` and the batch vector
+  consistent, no edge across graphs, one target per graph — and pools node
+  rows into graph rows: `"mean"` or `"sum"`, graph-local and invariant to
+  node order. `graph_classifier_spec(input_dim, num_classes, hidden_dims,
+  encoder="graph_conv" | "graph_sage" | "graph_att", pool=...)` is a
+  registered recipe: a reload rebuilds the same encoder, pool and head.
+- **Per-graph normalisation.** With a categorical task, loss and metrics
+  are averaged over **labeled graphs** — never batches or nodes (NLLs
+  `[1, 2, 3]` in batches of 2 then 1 give 2, not 2.25) — so records,
+  BEST selection and the run chart count labeled graphs.
+- **Identity.** `predict_proba` reports each row's graph id as its sample
+  id, through shuffling, device moves and concatenation; a graph
+  classifier never triggers seed-row slicing.
+- **Refusals.** Node-level nets, `NNGraphDataset` (a dataset of more than
+  one graph) and `two_dim_tsne_checkpoint_logits` refuse collection
+  batches rather than scoring graphs as nodes; ONNX export of a graph
+  classifier (`to_onnx`, `netron_export`) is refused before anything is
+  written — `export_state_dict()` keeps the weights.
+
+See [`examples/graph_classification_offline.py`](../examples/graph_classification_offline.py).

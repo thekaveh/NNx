@@ -53,6 +53,20 @@ def _factory_text(optim: NNOptimFactoryParams) -> str:
     return f"{optim.factory} {config}" if config else str(optim.factory)
 
 
+def _mean_field(records: list[Any], name: str) -> float:
+    """The epoch mean of a per-batch field: weighted by each record's
+    ``count`` (labeled targets, FEAT-002 / FEAT-026) when every record
+    carries one, else the plain mean; NaN when no record has the field."""
+    present = [record for record in records if getattr(record, name) is not None]
+    if not present:
+        return float("nan")
+    if all(getattr(record, "count", None) is not None for record in present):
+        total = sum(record.count for record in present)
+        if total:
+            return sum(getattr(record, name) * record.count for record in present) / total
+    return sum(getattr(record, name) for record in present) / len(present)
+
+
 def _optim_summary(optim: object) -> str:
     """``str(NNRun)`` optimizer fields. A registered factory is named by its
     ``id@vN`` and config — no fabricated ``momentum`` / ``name``."""
@@ -627,14 +641,9 @@ class NNRun:
                 series["train_loss"].append(summary.loss if summary.loss is not None else nan)
                 series["train_err"].append(summary.error if summary.error is not None else nan)
             else:
-                losses = [
-                    i.train_edp.loss for i in idp_list if i.train_edp is not None and i.train_edp.loss is not None
-                ]
-                errs = [
-                    i.train_edp.error for i in idp_list if i.train_edp is not None and i.train_edp.error is not None
-                ]
-                series["train_loss"].append(sum(losses) / len(losses) if losses else nan)
-                series["train_err"].append(sum(errs) / len(errs) if errs else nan)
+                records = [i.train_edp for i in idp_list if i.train_edp is not None]
+                series["train_loss"].append(_mean_field(records, "loss"))
+                series["train_err"].append(_mean_field(records, "error"))
             # val_edp is set only on the last idp of each epoch (when a
             # val_loader was supplied). Use the last non-None val_edp found.
             val_idp = next((i for i in reversed(idp_list) if i.val_edp is not None), None)

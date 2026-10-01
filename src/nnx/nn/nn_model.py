@@ -1385,7 +1385,12 @@ class NNModel(_HubMixinBase):
                 `pip install thekaveh-nnx[onnx-dynamo]`.
 
         Returns the path written. Network is put in eval mode for tracing.
+        A network that declares ``onnx_export_unsupported`` (a graph
+        classifier, FEAT-026) is refused before anything is written.
         """
+        unsupported = getattr(self.net, "onnx_export_unsupported", None)
+        if unsupported:
+            raise NotImplementedError(f"to_onnx(): {unsupported}")
         if dynamo:
             # Lazy-import: keep `onnxscript` out of NNx's required deps so
             # plain `pip install thekaveh-nnx[onnx]` (legacy path) still works. If
@@ -2594,7 +2599,11 @@ class NNModel(_HubMixinBase):
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
 
-        if isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
+        if (
+            isinstance(X, DataLoader)
+            and isinstance(X.sampler, torch.utils.data.RandomSampler)
+            and not callable(getattr(self.net, "sample_ids", None))  # rows that carry their own ids
+        ):
             warnings.warn(
                 "predict_proba() over a shuffling DataLoader: sample_ids are iteration positions, not "
                 "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
@@ -2665,6 +2674,15 @@ class NNModel(_HubMixinBase):
                                     node_ids = getattr(batch, "input_id", None)
                                 if node_ids is not None:
                                     ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
+                        ids_of = getattr(self.net, "sample_ids", None)
+                        if ids is None and callable(ids_of):
+                            # Rows with their own identity (graph ids, FEAT-026):
+                            # stable through shuffling and concatenation.
+                            ids = np.asarray(torch.as_tensor(ids_of(batch)).cpu(), dtype=np.int64).reshape(-1)
+                            if ids.shape[0] != logits.shape[0]:
+                                raise ValueError(
+                                    f"{caller}: the network gave {ids.shape[0]} sample ids for {logits.shape[0]} rows"
+                                )
                         if ids is None:
                             ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
                         offset += logits.shape[0]

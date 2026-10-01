@@ -31,6 +31,7 @@ from . import (
     data_splits,
     decisions,
     embeddings,
+    graph_tasks,
     interop,
     models,
     monitors,
@@ -371,6 +372,8 @@ __all__ = [
     "plans",
     "ExperimentPlan",
     "FitResult",
+    # Graph-level classification with explicit pooling and graph ids (FEAT-026)
+    "graph_tasks",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

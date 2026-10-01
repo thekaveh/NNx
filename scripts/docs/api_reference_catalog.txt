@@ -316,6 +316,20 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
+### 2.18. Graph-level classification (`nnx.graph_tasks`)
+
+@api nnx.graph_tasks.GraphCollection
+
+@api nnx.graph_tasks.GraphClassifier
+
+@api nnx.graph_tasks.GraphPool
+
+@api nnx.graph_tasks.graph_classifier_spec
+
+@api nnx.graph_tasks.check_graph_batch
+
+@api nnx.graph_tasks.GraphTaskError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Optional, cast
+from typing import Any, Literal, Optional, cast
 
 import torch
 from torch_geometric.data import Data as PyGData
@@ -127,6 +127,14 @@ class NNGraphDataset(NNDatasetBase):
         # This replaces the historical private `dataset._data` access, which
         # was renamed/removed across PyG versions.
         data = cast(PyGData, dataset[0])
+        # FEAT-026: a collection of graphs is never read as one graph's nodes.
+        count = len(cast(Any, dataset)) if callable(getattr(type(dataset), "__len__", None)) else None
+        if (count is not None and count != 1) or getattr(data, "graph_id", None) is not None:
+            raise ValueError(
+                f"NNGraphDataset classifies the nodes of ONE graph; {self.ds_class.__name__} holds "
+                f"{count if count is not None else 'several'} graphs — classify whole graphs with "
+                "nnx.graph_tasks.GraphCollection and GraphClassifier"
+            )
 
         object.__setattr__(self, "name", self.ds_class.__name__)
 

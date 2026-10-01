@@ -71,6 +71,9 @@ def netron_export(
     if isinstance(model, NNModel):
         net = model.net
         device = model.device
+        unsupported = getattr(net, "onnx_export_unsupported", None)
+        if unsupported:
+            raise NotImplementedError(f"netron_export(): {unsupported}")
     else:
         net = model
         # Best-effort device probe — fall back to CPU for stateless
