@@ -142,6 +142,18 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 
 NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's notebook ergonomics.
 
+### 3.11. Label-conditioned (zero-shot) decisions
+
+| Aspect | NNx | HF Transformers | GLiClass |
+|---|---|---|---|
+| Labels supplied at inference | `nnx.decisions.NLIProvider` over a caller-supplied NLI cross-encoder; typed `Choice` / `Boolean` results keyed by bookkeeping ids | [`zero-shot-classification` pipeline](https://huggingface.co/docs/transformers/main_classes/pipelines#transformers.ZeroShotClassificationPipeline) over an NLI model | [GLiClass](https://github.com/Knowledgator/GLiClass) — a dedicated label-conditioned encoder ([paper](https://arxiv.org/abs/2508.07662)) |
+| Model loading | Never: the caller passes a loaded model and tokenizer (and records the revision) | Downloads by name through the Hub | Downloads by name through the Hub |
+| Scoring recorded with each result | Templates, label ids, scoring method, truncation, revision; `calibrated: False` | Scores only | Scores only |
+
+NNx ships only the NLI baseline as a provider; transfer to a decision task is
+measured on labelled records, never assumed, and GLiClass is a follow-on
+comparison under the same provider contract rather than a shipped adapter.
+
 ## 4. When to use what
 
 **Use NNx when** any combination of these matters:

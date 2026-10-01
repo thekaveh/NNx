@@ -4,7 +4,9 @@
 typed question and get labelled probabilities back, instead of reading
 positional logits. A question is one of three primitives; a **provider**
 declares what it can answer and returns validated results; the fixed-head
-adapter turns a trained NNx classifier into such a provider. Nothing here
+adapter turns a trained NNx classifier into such a provider, and the NLI
+adapter scores candidates supplied at inference with a caller-supplied NLI
+model. Nothing here
 trains, exports or executes actions, and importing it starts no provider or
 model backend and needs no hosted-SDK extra.
 
@@ -125,7 +127,71 @@ answer:
 - **Failures.** An exception from the model itself becomes `ProviderFailure`,
   with the original error as `__cause__`.
 
-## 5. Errors
+## 5. The NLI baseline adapter
+
+A fixed head answers only the labels it was trained on. `NLIProvider`
+(FEAT-011) is a **local label-conditioned baseline**: it scores a text (the
+premise) against candidate descriptions that arrive with each request, each
+rendered into a hypothesis, with a natural-language-inference (NLI)
+cross-encoder **the caller supplies** — so no candidate needs to exist when
+the provider is built, and no output head is resized.
+
+```python
+from nnx.decisions import Boolean, Choice, NLIProvider
+
+provider = NLIProvider(
+    model, tokenizer,                    # loaded by the caller (a local path, a pinned revision)
+    entailment_id="entailment",          # or the class id; names resolve through model.config.label2id
+    contradiction_id="contradiction",
+    hypothesis_template="This text is about {}.",
+    revision="<the revision you loaded>",
+)
+provider.decide(Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"))), texts)
+provider.decide(Boolean("This review is positive."), texts)
+```
+
+- **Scoring, explicit.** A `Choice` scores every (text, candidate) pair and
+  softmaxes the **entailment logits across the candidates**
+  (`choice_scoring="entailment_softmax"`): logits `log(3)` and `0` give
+  `(0.75, 0.25)`, keyed by the request's option ids in its order. A
+  `Boolean` scores one pair per text — its prompt rendered by
+  `boolean_template` — and softmaxes that pair's **contradiction and
+  entailment** logits alone (`boolean_scoring="entailment_vs_contradiction"`):
+  `0` and `log(4)` give `p_true = 0.8`; texts are never normalized together.
+  `Score` is unsupported and refused before any model call.
+- **Validated settings.** The entailment and contradiction ids must differ
+  and fit the model's class count (when its config declares one); a label
+  name must be one its config knows. Templates hold exactly one `{}`.
+  Unknown scoring or truncation policies are refused at construction.
+- **The provider contract.** NNx imports no NLI library and downloads
+  nothing; importing `nnx.decisions` or constructing the provider calls no
+  `from_pretrained`. The tokenizer is called HuggingFace-style
+  (`tokenizer(premises, hypotheses, truncation=..., max_length=...,
+  padding=True, return_tensors="pt")`) and the model as `model(**encoded)`,
+  returning logits or an object with `.logits`. Pairs go in chunks of
+  `pair_batch_size` (the last may be shorter) to the model's device; the
+  model runs in eval mode under no-grad and every submodule's training flag
+  is restored on success and failure. A model error becomes
+  `ProviderFailure`.
+- **Truncation, reported.** Pairs are measured untruncated first.
+  `truncation="only_first"` (default) cuts the premise to `max_length` and
+  marks which pairs were cut in `raw["truncated"]`; `truncation="error"`
+  refuses an over-long request before any model call.
+- **Records, never calibrated.** Each result's `raw` holds the pair logits,
+  the truncation report and `provider.record()` — the templates, label ids,
+  scoring methods, truncation policy and model `revision` — with
+  `"calibrated": False`. These are zero-shot scores from a model trained for
+  another task: they are not calibrated probabilities, and how well they
+  transfer to a decision task stays empirical — measure it on labelled
+  records, as [`examples/decision_nli.py`](../examples/decision_nli.py) does
+  (accuracy, macro-F1, categorical NLL and Brier, with the split, revision and
+  settings recorded).
+
+It does not extend `nnx.embeddings.embed_texts` or the FAISS export, whose
+signatures are unchanged: those embed texts with a bi-encoder you trained;
+this scores pairs with a cross-encoder you supply.
+
+## 6. Errors
 
 All are `nnx.decisions.DecisionError`s, and their names are stable:
 
@@ -136,22 +202,22 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `UnsupportedCapability` | undeclared primitives, modalities, batch sizes or label spaces — before any model call |
 | `ProviderFailure` (also a `RuntimeError`) | the backend failing on a valid, supported request |
 
-## 6. Consumers
+## 7. Consumers
 
 Planned decision features share this digest, the `kind` discriminators and
 `validate_response` rather than defining their own: the optional Jev SDK
-adapter ([#220](https://github.com/thekaveh/NNx/issues/220)), a local
-label-conditioned baseline adapter
-([#234](https://github.com/thekaveh/NNx/issues/234)), a reproducible
+adapter ([#220](https://github.com/thekaveh/NNx/issues/220)), a reproducible
 decision-provider benchmark ([#243](https://github.com/thekaveh/NNx/issues/243)),
 offline teacher-distribution datasets
 ([#244](https://github.com/thekaveh/NNx/issues/244)), applicative batching for
 independent decisions ([#245](https://github.com/thekaveh/NNx/issues/245)) and an
 optional `Result` at fallible boundaries
 ([#263](https://github.com/thekaveh/NNx/issues/263)). None of them has landed;
-`nnx.decisions` does not depend on any of them.
+`nnx.decisions` does not depend on any of them. The local label-conditioned
+baseline ([#234](https://github.com/thekaveh/NNx/issues/234)) is
+`NLIProvider` (§5).
 
-## 7. What this does not do
+## 8. What this does not do
 
 - It does not claim every classifier is a universal decision-maker: the
   fixed-head adapter answers only what its head justifies.
@@ -160,3 +226,5 @@ optional `Result` at fallible boundaries
   events; each question is answered on its own.
 - It does not call hosted models; a hosted provider is a separate adapter
   that declares its own capabilities.
+- It does not download or train models: `NLIProvider` uses the NLI model the
+  caller supplies, as is, and its scores are not calibrated.
