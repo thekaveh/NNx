@@ -4998,7 +4998,7 @@ The graphs with these ids, in the order given.
 nnx.graph_tasks.GraphCollection.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'Any'
 ```
 
-A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed`` makes the shuffle reproducible).
+A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed`` makes the shuffle reproducible and is refused without it).
 
 
 #### `nnx.graph_tasks.GraphClassifier`

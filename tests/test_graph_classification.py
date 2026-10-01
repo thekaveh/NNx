@@ -455,3 +455,20 @@ def test_round_one_edges(tmp_path):
 
     with pytest.raises(ValueError, match="graph-collection item"):
         NNGraphDataset(ds_class=Tagged, sampler="full")
+
+
+# --- review round 2 ------------------------------------------------------------------------------
+
+
+def test_round_two_unlabeled_y_subset_iterators_and_unshuffled_seeds():
+    labelled = _graph(2, 1)
+    labelled.y = torch.tensor([1])
+    with pytest.raises(GraphTaskError, match="flagged unlabeled but has a target"):
+        GraphCollection([labelled, _graph(3, 1)], [1, 2], targets=None, unlabeled=[1])
+    collection = GraphCollection([_graph(2, 1), _graph(3, 1)], [1, 2], targets=[0, None], unlabeled=[2])
+    again = GraphCollection(list(collection), [1, 2], unlabeled=[2])  # its own items carry IGNORE as y
+    assert again.labels == collection.labels
+    assert collection.subset(iter([2, 1])).ids == (2, 1)
+    with pytest.raises(GraphTaskError, match="shuffled loader"):
+        collection.loader(batch_size=1, seed=3)
+    assert len(list(collection.loader(batch_size=1, shuffle=True, seed=3))) == 2
