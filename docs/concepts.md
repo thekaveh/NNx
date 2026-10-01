@@ -1770,8 +1770,10 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   `Trainer.train` announce each epoch to a loader that defines
   `set_epoch(epoch)` — so a stateful resume draws exactly what the
   uninterrupted run would have, and an extra iteration of the training
-  loader (a callback scoring it) changes nothing. The negatives' seed is
-  checkpointed, and a resumed loader with another seed is refused. An
+  loader (a callback scoring it) changes nothing. The negatives' seed and
+  the last training pass are checkpointed: a resumed loader with another
+  seed, or one that does not follow the epoch (a wrapper that does not
+  forward `set_epoch`), is refused before any update. An
   edge-label task samples none: a non-edge is never a category
   (`LinkTask(split)` takes the split's mode).
 - **Checks.** A message edge outside the training topology — a held-out

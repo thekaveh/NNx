@@ -563,3 +563,75 @@ def test_round_two_batch_and_setting_contracts():
     loader = LinkTask(categories).loader("train", torch.randn(13, 2), batch_size=100, seed=0)
     orders = [next(iter(loader)).edge_label_index.t().tolist() for _ in range(2)]
     assert orders[0] != orders[1] and sorted(orders[0]) == sorted(orders[1])
+
+
+# --- review round 3 ------------------------------------------------------------------------------------------
+
+
+def test_a_resumed_loader_that_does_not_follow_the_epoch_is_refused():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+
+    class Wrapper:  # a prefetch-style wrapper that does not forward set_epoch
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __iter__(self):
+            return iter(self.inner)
+
+        def __len__(self):
+            return len(self.inner)
+
+    def fit(loader, objective, epochs, salt=None, **resume):
+        model = _model()
+        run = model.train(
+            params=NNTrainParams(
+                n_epochs=epochs,
+                train_loader=loader,
+                optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+                seed=0,
+                **resume,
+            ),
+            objective=objective,
+            salt=salt,
+        )
+        return model, run
+
+    task = LinkTask(split)
+    first, run = fit(Wrapper(task.loader("train", x, batch_size=32, seed=0)), task.objective(), 2)
+    objective = task.objective()
+    with pytest.raises(LinkTaskError, match="forward set_epoch"):
+        fit(Wrapper(task.loader("train", x, batch_size=32, seed=0)), objective, 2, resume_from_run_id=run.id)
+    # The refusal leaves nothing behind: the same objective then trains a fresh run.
+    fit(task.loader("train", x, batch_size=32, seed=1), objective, 1, salt="fresh")
+
+    # A materialised list repeats its one pass, so it resumes.
+    fixed = list(task.loader("train", x, batch_size=32, seed=0))
+    _, listed = fit(fixed, task.objective(), 2, salt="listed")
+    fit(fixed, task.objective(), 1, resume_from_run_id=listed.id)
+
+
+def test_out_of_graph_message_ids_cannot_alias_a_training_edge():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    (batch,) = list(task.loader("val", x, batch_size=10_000))
+    u, v = (int(i) for i in batch.edge_index[:, 0])
+    for alias in ((u + 1, v - 30), (u - 1, v + 30)):  # u*30+v keys that collide with a message edge
+        forged = batch.edge_index.clone()
+        forged[:, 0] = torch.tensor(alias)
+        assert not split._is_message_graph(forged)
+        bad = batch.clone()
+        bad.edge_index = forged
+        with pytest.raises(LinkTaskError, match="training topology"):
+            task.check_batch(bad)
+
+
+def test_the_loader_seed_is_validated():
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    for seed in (-1, 0.9, True, "7"):
+        with pytest.raises(LinkTaskError, match="seed"):
+            task.loader("train", x, batch_size=8, seed=seed)
+    with pytest.raises(LinkTaskError, match="candidates are fixed"):
+        task.loader("val", x, batch_size=8, seed=0)

@@ -302,6 +302,8 @@ class LinkSplit:
         not a Python set per batch."""
         if edge_index.is_floating_point() or edge_index.is_complex():
             return False
+        if edge_index.numel() and (int(edge_index.min()) < 0 or int(edge_index.max()) >= self.num_nodes):
+            return False  # out-of-graph ids would alias keys: the exact check names them
         keys = edge_index[0].long() * self.num_nodes + edge_index[1].long()
         allowed = self._cached(f"message_keys:{keys.device}", lambda: self._message_keys().to(keys.device))
         return keys.shape == allowed.shape and bool(torch.equal(torch.sort(keys).values, allowed))
@@ -724,7 +726,8 @@ class _Loader:
     is the epoch the training loop announced (``set_epoch``) — so an
     uninterrupted run and one resumed at that epoch draw the same batches,
     and extra iterations (a callback scoring the training set) change
-    nothing — or, outside training, the count of earlier iterations."""
+    nothing. Before any epoch was announced, the pass is the count of
+    earlier iterations; after a fit, it stays the last announced epoch."""
 
     def __init__(self, task: LinkTask, name: str, x: torch.Tensor, batch_size: int, seed: Optional[int]) -> None:
         self.task, self.name, self.x, self.batch_size, self.seed = task, name, x, batch_size, seed
@@ -822,6 +825,10 @@ class LinkTask:
         LinkSplit._split(name)
         if not isinstance(x, torch.Tensor) or x.ndim != 2 or x.shape[0] != self.split.num_nodes:
             raise LinkTaskError(f"x must be ({self.split.num_nodes}, features) node features")
+        if seed is not None:
+            if name != "train":
+                raise LinkTaskError(f"a seed draws training negatives; the {name!r} candidates are fixed")
+            seed = _count(seed, "seed", minimum=0)
         return _Loader(self, name, x, _count(batch_size, "batch_size", minimum=1), seed)
 
     def _negatives_seed(self, seed: Optional[int]) -> int:
@@ -1045,7 +1052,9 @@ class LinkObjective(Objective):
             raise LinkTaskError(f"a LinkTask is needed, got {type(task).__name__}")
         self.task = task
         self.seed: Optional[int] = None  # the training negatives' seed, checkpointed
+        self.last: Optional[tuple[int, int]] = None  # (epoch, training pass) of the last batch, checkpointed
         self._expect: Optional[int] = None
+        self._expect_last: Optional[tuple[int, int]] = None
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         _no_extra_metrics(ctx)
@@ -1053,15 +1062,28 @@ class LinkObjective(Objective):
         self.task.check_batch(batch)  # before any forward pass: a leak never trains
         if batch.link_split != "train":
             raise LinkTaskError(f"the link objective trains on 'train' batches only, got a {batch.link_split!r} batch")
-        seed = getattr(batch, "link_seed", None)
-        if seed is not None:
-            if self._expect is not None and seed != self._expect:
+        seed, drawn = getattr(batch, "link_seed", None), getattr(batch, "link_pass", None)
+        expect, self._expect = self._expect, None  # checked once, by the first batch after a restore
+        last, self._expect_last = self._expect_last, None
+        if seed is not None and expect is not None and seed != expect:
+            raise LinkTaskError(
+                f"the checkpoint drew training negatives from seed {expect}, the resumed loader from "
+                f"seed {seed}: build the training loader with the same seed"
+            )
+        if drawn is not None and last is not None:
+            epoch, previous = last
+            # A loader that follows the epoch keeps its offset from it; a
+            # materialised list repeats its one pass. Anything else re-draws.
+            if drawn != previous and drawn - ctx.epoch_idx != previous - epoch:
                 raise LinkTaskError(
-                    f"the checkpoint drew training negatives from seed {self._expect}, the resumed loader from "
-                    f"seed {seed}: build the training loader with the same seed"
+                    f"the resumed run draws training pass {drawn} at epoch {ctx.epoch_idx}, but the checkpoint drew "
+                    f"pass {previous} at epoch {epoch}: the training loader is not following the epoch — forward "
+                    "set_epoch(epoch) to the link loader through any wrapper"
                 )
-            self._expect = None
+        if seed is not None:
             self.seed = int(seed)
+        if drawn is not None:
+            self.last = (int(ctx.epoch_idx), int(drawn))
         model = ctx.model
         model.net.train()
         logits = self.task._logits(model, batch)
@@ -1086,7 +1108,12 @@ class LinkObjective(Objective):
         return ComponentSpec("link.task", version=1)
 
     def component_state(self) -> dict[str, Any]:
-        return {"task": self.task.state(), "manifest": self.task.split.state(), "negatives_seed": self.seed}
+        return {
+            "task": self.task.state(),
+            "manifest": self.task.split.state(),
+            "negatives_seed": self.seed,
+            "last_pass": None if self.last is None else list(self.last),
+        }
 
     def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
         if not isinstance(state, Mapping):
@@ -1101,10 +1128,15 @@ class LinkObjective(Objective):
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
         """The manifest is configuration (checked, not restored). The
         training negatives' seed is restored and must match the resumed
-        loader's (passes follow the epoch, so they continue by themselves)."""
+        loader's, and the first resumed batch must continue the passes —
+        an epoch-following loader keeps its offset from the epoch, a
+        materialised list its one pass — or the resume is refused."""
         seed = state.get("negatives_seed")
         if isinstance(seed, int) and not isinstance(seed, bool):
             self.seed = self._expect = seed
+        last = state.get("last_pass")
+        if isinstance(last, (list, tuple)) and len(last) == 2 and all(type(v) is int for v in last):
+            self.last = self._expect_last = (int(last[0]), int(last[1]))
 
 
 class LinkEval:
