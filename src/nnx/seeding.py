@@ -187,7 +187,7 @@ def _global_rng_state() -> dict[str, Any]:
     """The global random streams, read without creating a CUDA context: a
     CPU-only process never touched the CUDA streams, so there is nothing
     of theirs to keep."""
-    return _capture_rng_state(None, cuda=torch.cuda.is_initialized())
+    return _capture_rng_state(None, cuda=_cuda_in_use())
 
 
 @contextlib.contextmanager
