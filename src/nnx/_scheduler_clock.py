@@ -5,10 +5,17 @@ A scheduler configured with ``clock="optimizer_update"`` steps once per
 all-masked window or a skipped AMP step. The update source is explicit:
 
 - the shared update engine (FEAT-004) for an objective run;
-- ``default_train_step``, after each optimizer step it actually takes;
+- ``default_train_step`` and ``finalize_step`` (so every built-in paradigm
+  step), after each optimizer step they take;
 - a custom step function that calls ``ctx.report_update()`` (``NNModel``)
-  or ``ctx.report_update(name)`` (``Trainer``) after each update — NNx
-  never infers updates around an opaque step.
+  or ``ctx.report_update(name)`` (``Trainer``) after each optimizer step it
+  takes itself — NNx never infers updates around an opaque step.
+
+A report counts only when its optimizer has stepped since the last counted
+report (an optimizer step post-hook tells the clock), so a report of an AMP
+step the scaler skipped, or a second report of one step (a step built on
+``default_train_step`` / ``finalize_step`` that reports again), never
+advances the schedule.
 
 A :class:`SchedulerClock` steps the scheduler after each committed update of
 its optimizer while attached (``Trainer``'s ``auto_step_schedulers=False``
@@ -32,19 +39,37 @@ CLOCK = "optimizer_update"
 HORIZON_KINDS = frozenset({"one_cycle", "linear_warmup_decay"})
 
 
-class _NoUpdateListener:
-    """The default ``report_update`` of a step context built outside a
-    training loop: nothing listens, so a report does nothing (a stable
-    ``repr`` keeps generated signatures deterministic)."""
+def refuse_optimizer_name(names: tuple[Any, ...]) -> None:
+    """``NNModel.train`` trains one optimizer: its steps report without a
+    name, and a name is refused rather than ignored."""
+    if names:
+        raise TypeError(
+            f"report_update() takes no optimizer name in NNModel.train (it trains one optimizer); got "
+            f"{names[0]!r}. Trainer step functions report by name"
+        )
 
-    def __call__(self, *_: Any) -> None:
-        return None
+
+class _NoUpdateListener:
+    """The ``report_update`` of a step context nothing listens to (built
+    outside a training loop, or a run without an update clock): a report
+    does nothing. ``refuse_names`` holds an ``NNModel`` step to its
+    nameless form whatever the clock (a stable ``repr`` keeps generated
+    signatures deterministic)."""
+
+    def __init__(self, *, refuse_names: bool = False) -> None:
+        self.refuse_names = refuse_names
+
+    def __call__(self, *names: Any) -> None:
+        if self.refuse_names:
+            refuse_optimizer_name(names)
 
     def __repr__(self) -> str:
         return "<no update listener>"
 
 
+# ``TrainerStepContext`` (reports by name) and ``TrainStepContext`` (no name).
 NO_UPDATE_LISTENER = _NoUpdateListener()
+NO_UPDATE_REPORTER = _NoUpdateListener(refuse_names=True)
 
 
 def uses_update_clock(scheduler_params: Any) -> bool:
@@ -109,6 +134,16 @@ class SchedulerClock:
         self.component_name = component_name
         # (scheduler step, learning rate after it) since the epoch began.
         self.trace: list[tuple[int, float]] = []
+        # Optimizer steps no report has claimed yet (see the module
+        # docstring); without step hooks every report counts.
+        self._unclaimed_steps = 0
+        register = getattr(scheduler.optimizer, "register_step_post_hook", None)
+        self._guarded = register is not None
+        if register is not None:
+            register(self._optimizer_stepped)
+
+    def _optimizer_stepped(self, *_: Any) -> None:
+        self._unclaimed_steps += 1
 
     @property
     def count(self) -> int:
@@ -116,11 +151,16 @@ class SchedulerClock:
         clock is attached — restored with the scheduler's own state."""
         return int(self.scheduler.last_epoch)
 
-    def committed(self, optimizer: Optional[str] = None) -> None:
-        """One committed update of ``optimizer`` (this clock's owner when
-        ``None``): step the scheduler, unless the clock is detached."""
-        if not self.attached or (optimizer is not None and optimizer != self.owner):
+    def committed(self) -> None:
+        """One committed update of this clock's optimizer: step the
+        scheduler, unless the clock is detached or the optimizer has not
+        stepped since the last counted report."""
+        if not self.attached:
             return
+        if self._guarded:
+            if self._unclaimed_steps == 0:
+                return
+            self._unclaimed_steps -= 1
         if self.horizon is not None and self.count >= self.horizon:
             raise ValueError(
                 f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's budget of "
@@ -133,11 +173,7 @@ class SchedulerClock:
         """``TrainStepContext.report_update()`` in ``NNModel.train``: one
         committed update of the run's one optimizer. A name is refused
         rather than ignored (``Trainer`` steps report by name)."""
-        if names:
-            raise TypeError(
-                f"report_update() takes no optimizer name in NNModel.train (it trains one optimizer); got "
-                f"{names[0]!r}. Trainer step functions report by name"
-            )
+        refuse_optimizer_name(names)
         self.committed()
 
     # ---------- checkpointable component (FEAT-005) ----------

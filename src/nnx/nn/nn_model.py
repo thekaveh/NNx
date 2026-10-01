@@ -20,13 +20,12 @@ from typing_extensions import Self
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from .._scheduler_clock import (
     HORIZON_KINDS,
-    NO_UPDATE_LISTENER,
+    NO_UPDATE_REPORTER,
     SchedulerClock,
     planned_updates,
     update_horizon,
     uses_update_clock,
 )
-from .._update_engine import scaler_step
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
     BatchAdapter,
@@ -459,11 +458,13 @@ class TrainStepContext:
     # or a monitor keeps; `default_train_step` reports each batch's outputs
     # and denominators to it. Custom steps may ignore it.
     epoch_summary: Optional[_TrainEpochSummary] = None
-    # FEAT-014: call once after each optimizer update the step actually
-    # commits; an ``optimizer_update``-clock scheduler steps on it.
-    # ``default_train_step`` calls it (never for a masked window or a skipped
-    # AMP step); a custom step drives such a scheduler only by calling it.
-    report_update: Callable[[], None] = NO_UPDATE_LISTENER
+    # FEAT-014: call (without a name) once after each optimizer step the
+    # step function takes itself; an ``optimizer_update``-clock scheduler
+    # steps on it. ``default_train_step`` and ``finalize_step`` report their
+    # own steps, and a report counts only if the optimizer stepped since the
+    # last counted one (a step the AMP scaler skipped, or a second report of
+    # one step, does not advance the schedule).
+    report_update: Callable[[], None] = NO_UPDATE_REPORTER
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -1173,20 +1174,14 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
         if amp_enabled:
             assert scaler is not None
-            if ctx.report_update is NO_UPDATE_LISTENER:
-                # Nothing listens for updates: skip the scale comparison's
-                # host syncs.
-                scaler.step(ctx.optimizer)
-                scaler.update()
-                committed = False
-            else:
-                committed = scaler_step(scaler, (ctx.optimizer,))
+            scaler.step(ctx.optimizer)
+            scaler.update()
         else:
             ctx.optimizer.step()
-            committed = True
         _reset_accumulation(accumulation_state)
-        if committed:
-            ctx.report_update()
+        # The clock counts the report only if the optimizer stepped: an AMP
+        # step the scaler skipped does not advance the schedule.
+        ctx.report_update()
 
     if adapter is not None:
         assert terms.valid is not None
@@ -2204,7 +2199,7 @@ class NNModel(_HubMixinBase):
         # FEAT-014: a step's committed updates drive an optimizer_update
         # clock (an objective's engine reports to the clock directly).
         report_update: Callable[[], None] = (
-            clock.report_update if clock is not None and engine is None else NO_UPDATE_LISTENER
+            clock.report_update if clock is not None and engine is None else NO_UPDATE_REPORTER
         )
         if engine is not None:
             assert objective is not None
@@ -2213,7 +2208,7 @@ class NNModel(_HubMixinBase):
             if clock is not None:
                 # After the callbacks: they see the learning rate the update
                 # was taken with; the clock then steps the schedule.
-                engine.listeners.append(lambda event: clock.committed(event.optimizer))
+                engine.listeners.append(lambda event: clock.committed())
             step_fn = _ObjectiveStep(objective, engine)
             ctx.update_count = engine.commits
 
@@ -2906,11 +2901,7 @@ class NNModel(_HubMixinBase):
         self,
         optimizer: torch.optim.Optimizer,
         params: NNTrainParams,
-        *,
-        n_updates: Optional[int] = None,
     ):
-        if n_updates is None:
-            n_updates = self._planned_scheduler_updates
         # If params.scheduler has a `kind` attribute (set by the Schedulers
         # enum), dispatch on it; otherwise fall back to ReduceLROnPlateau
         # for backwards compatibility with existing notebook code.
@@ -2930,10 +2921,15 @@ class NNModel(_HubMixinBase):
 
         # When a `kind` is supplied, the params dataclass carries kind-specific
         # config. The enum's __call__ knows how to construct.
-        # ``n_updates``: the run's planned committed updates, the default
-        # horizon of an optimizer_update clock (FEAT-014); train() supplies
-        # it through ``_planned_scheduler_updates``.
-        return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs, n_updates=n_updates)
+        # The run's planned committed updates (the default horizon of an
+        # optimizer_update clock, FEAT-014) come from train() through
+        # ``_planned_scheduler_updates``, keeping this signature unchanged.
+        return kind(
+            optimizer=optimizer,
+            params=sched_params,
+            n_epochs=params.n_epochs,
+            n_updates=self._planned_scheduler_updates,
+        )
 
     def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:
         """The AMP loss scaler for this model, or ``None``.

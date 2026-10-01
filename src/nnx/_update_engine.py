@@ -255,7 +255,11 @@ class UpdateEngine:
                 if norm is not None:
                     torch.nn.utils.clip_grad_norm_([self._params[i] for i in self._owner[name]], norm)
             if self.scaler is not None:
-                if not scaler_step(self.scaler, self.optimizers.values()):
+                scale_before = float(self.scaler.get_scale())
+                for optimizer in self.optimizers.values():
+                    self.scaler.step(optimizer)
+                self.scaler.update()
+                if float(self.scaler.get_scale()) < scale_before:
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
             else:
@@ -330,18 +334,6 @@ class UpdateEngine:
         self.skipped = int(state["skipped"])
         saved = state["update_counts"]
         self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
-
-
-def scaler_step(scaler: Any, optimizers: Iterable[torch.optim.Optimizer]) -> bool:
-    """``scaler.step`` every optimizer, then ``update``; whether the update
-    was committed. A lowered scale means the scaler found inf/NaN gradients
-    and skipped the step — shared by the engine and ``default_train_step``,
-    so both agree on what a committed update is (FEAT-004 / FEAT-014)."""
-    scale_before = float(scaler.get_scale())
-    for optimizer in optimizers:
-        scaler.step(optimizer)
-    scaler.update()
-    return float(scaler.get_scale()) >= scale_before
 
 
 def _is_count(value: Any) -> bool:

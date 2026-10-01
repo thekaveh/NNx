@@ -71,7 +71,8 @@ class NNSchedulerParamsBuilder:
 
         `from_params(params).build()` equals `params`, with the same
         `state()` (key order and omitted defaults included). A variant
-        call afterwards replaces the whole configuration, as usual.
+        call afterwards replaces the whole configuration, as usual,
+        except the clock (FEAT-014), which it keeps.
 
         Raises:
             TypeError: if `params` is not exactly an `NNSchedulerParams`.

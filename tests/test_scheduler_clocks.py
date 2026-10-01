@@ -196,16 +196,13 @@ def test_a_skipped_update_does_not_advance_the_clock():
 
 
 def test_a_skipped_amp_step_is_not_a_committed_update():
-    from nnx._update_engine import scaler_step
+    from nnx._scheduler_clock import SchedulerClock
 
     class FakeScaler:
-        """A CPU stand-in for GradScaler: the second step finds inf gradients."""
+        """A CPU stand-in for GradScaler: the second step finds inf gradients and skips the optimizer."""
 
         def __init__(self):
-            self.value, self.steps = 1024.0, 0
-
-        def get_scale(self):
-            return self.value
+            self.steps = 0
 
         def step(self, optimizer):
             self.steps += 1
@@ -213,17 +210,18 @@ def test_a_skipped_amp_step_is_not_a_committed_update():
                 optimizer.step()
 
         def update(self):
-            if self.steps == 2:
-                self.value /= 2.0  # backoff after the skipped step
+            pass
 
     param = torch.nn.Parameter(torch.ones(1))
     optimizer = torch.optim.SGD([param], lr=0.1)
+    clock = SchedulerClock("default", lr_scheduler.StepLR(optimizer, step_size=1), horizon=None)
     scaler = FakeScaler()
-    committed = []
-    for _ in range(3):
+    for _ in range(3):  # what default_train_step does under AMP: step, update, report
         param.grad = torch.ones(1)
-        committed.append(scaler_step(scaler, (optimizer,)))
-    assert committed == [True, False, True]
+        scaler.step(optimizer)
+        scaler.update()
+        clock.committed()
+    assert clock.count == 2  # the skipped step's report did not count
 
 
 def test_the_default_step_reports_each_committed_update_once():
@@ -702,3 +700,34 @@ def test_an_nnmodel_step_cannot_report_by_optimizer_name():
 
     with pytest.raises(TypeError, match="takes no optimizer name in NNModel.train"):
         _train(_model(), scheduler=_sched(Schedulers.STEP, step_size=1), step=named)
+
+
+# --- review round 5 ----------------------------------------------------------------------------------------
+
+
+def test_a_second_report_of_one_step_does_not_count():
+    from nnx._step_helpers import finalize_step
+
+    def custom(ctx):
+        x, y = ctx.batch
+        ctx.optimizer.zero_grad()
+        loss = ctx.model.loss_fn(ctx.model.net(x), y)
+        value = finalize_step(loss, ctx, paradigm="custom")  # steps and reports
+        ctx.report_update()  # the documented habit: report after the step
+        return NNEvaluationDataPoint(loss=value)
+
+    monitor = LRMonitor()
+    _train(_model(), accumulate=1, scheduler=_one_cycle(total_steps=10), callbacks=[monitor], step=custom)
+    assert [k for k, _ in monitor.update_history] == list(range(1, 11))  # 10 updates, no overrun
+
+
+def test_an_nnmodel_step_reports_without_a_name_on_the_epoch_clock_too():
+    from nnx.nn.nn_model import default_train_step
+
+    def named(ctx):
+        result = default_train_step(ctx)
+        ctx.report_update("default")
+        return result
+
+    with pytest.raises(TypeError, match="takes no optimizer name in NNModel.train"):
+        _train(_model(), scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1), step=named)
