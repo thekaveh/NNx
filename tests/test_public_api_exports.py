@@ -55,6 +55,7 @@ def test_specialized_public_facades_are_available_from_top_level():
     facades = [
         "abstention",
         "calibration",
+        "comparison",
         "data_splits",
         "decisions",
         "diffusion",

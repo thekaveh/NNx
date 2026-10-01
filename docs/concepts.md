@@ -1692,3 +1692,68 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+## 21. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+
+One seed is one draw. `nnx.comparison` (FEAT-032) reports repeated runs as a
+population, read-only: it builds and loads no model, reads no checkpoint,
+elects no `runs/best` pointer and writes nothing into a run.
+
+Four identities are kept apart:
+
+- **run** — a run directory (`run.id`); its configuration includes the seed;
+- **attempt** — one training attempt of a run (FEAT-019's `attempt.json`),
+  with its completion status (`completed`, `failed`, `cancelled`, `running`
+  or `unknown` when no attempt record exists);
+- **replicate** — what a comparison pairs on, such as `seed=3`. Equal keys
+  only pair two runs when you declare what the key means (the `pairing=`
+  text): an equal seed does not prove the same data order or split;
+- **split** — the evaluation split's identity (a split manifest digest),
+  separate from the evaluation split's name (`validation`).
+
+```text
+Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, status,
+            split, selection, config, data, split_id, replicate, evaluation)
+   │  (unknown facts stay None)
+   ├── summarize(observations) ──► Summary: one GroupSummary per poolable group
+   │        n, mean, std (n - 1), n_attempts, n_failed, n_nonfinite; `differing` fields
+   ├── compare(a, b, pairing="...") ──► PairedComparison: per replicate, delta = B - A (signed)
+   │        unmatched replicates listed; optional Bootstrap(seed) interval = seed variability
+   └── ComparisonReport.build(...) ──► table() / text() / save() / load()   (nnx.comparison/1)
+```
+
+- **Pooling.** Observations pool only when they share the metric, the
+  evaluation split, the checkpoint-selection rule, the configuration and
+  the data and split identity. Anything else is stratified: one group per
+  combination, with the differing fields named, and `Summary.pooled()`
+  refuses. A known identity never pools with an unknown one.
+- **Statistics.** `n` counts completed attempts with a finite value; the
+  standard deviation uses `n - 1` (unavailable for `n = 1`; mean and
+  deviation both unavailable for `n = 0`). Failed and non-finite attempts
+  stay listed and counted (`n_failed`, `n_nonfinite`), never silently
+  dropped. A duplicate attempt (per metric) is refused.
+- **Pairing.** Each side must be one poolable group with a unique replicate
+  key per observation, and the sides must agree on everything but the
+  configuration. The delta is `B - A` and is never flipped: for a metric to
+  minimize, a negative delta means B is lower. A replicate on one side only
+  is listed as unmatched, and a pair with a failed side has no delta.
+- **Intervals.** A `Bootstrap(seed=...)` resamples the replicate pairs
+  (its unit) and records its seed, method and resamples; its interval
+  describes seed variability over these replicates, not a significance
+  claim.
+- **Reports.** `table()` gives one plain-JSON row per group, observation,
+  pair and unmatched replicate; `text()` a concise view with every run and
+  attempt id, status, selection rule and signed delta. Input order never
+  changes either. `save` writes strict JSON; `load` re-derives the results
+  from the stored observations and refuses a file whose results disagree.
+- **Reading runs.** `observations_from_runs(run_ids, metric=..., split=,
+  selection=)` reads `run.yaml`, `idps.csv` and the provenance files once
+  each. The value is the epoch record of the last committed epoch
+  (`selection="last"`) or of the epoch the run's monitor last elected
+  (`"best"`; unknown without a monitor), on the validation record or the
+  training summary. The configuration identity is a digest of the run's
+  configuration without its seed and salt (or a label you pass).
+
+This is about **your own runs**. The comparison against other toolkits is a
+separate page: [`docs/comparison.md`](comparison.md). See
+[`examples/compare_seeds.py`](../examples/compare_seeds.py).

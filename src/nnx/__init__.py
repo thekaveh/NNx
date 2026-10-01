@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover — Python <3.8.
 from . import (
     abstention,
     calibration,
+    comparison,
     components,
     data_splits,
     decisions,
@@ -367,6 +368,8 @@ __all__ = [
     "calibration",
     # Abstention policies and risk-coverage evaluation (FEAT-008)
     "abstention",
+    # Multi-seed experiment summaries and paired comparisons (FEAT-032)
+    "comparison",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",

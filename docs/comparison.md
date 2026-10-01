@@ -1,7 +1,9 @@
 # 14. NNx vs Lightning / HF / fastai / Composer
 
 An evidence-oriented, scope-explicit comparison of NNx against nearby PyTorch
-training and specialization toolkits. Competitor behavior was last checked
+training and specialization toolkits. (Comparing your own runs — repeated
+seeds, paired configurations — is `nnx.comparison`, described in
+[`docs/concepts.md` §21](concepts.md).) Competitor behavior was last checked
 against official documentation on **2026-08-08**; follow the linked sources
 before making a version-sensitive platform decision.
 

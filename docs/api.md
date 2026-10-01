@@ -4948,6 +4948,419 @@ catches it.
 ```
 
 
+### 2.18. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+
+#### `nnx.comparison.Metric`
+
+```python
+class nnx.comparison.Metric(name: 'str', direction: 'str', unit: 'Optional[str]' = None) -> 'None'
+```
+
+What a value measures: its ``name``, whether larger or smaller is better (``direction``: ``"maximize"`` / ``"minimize"``) and its ``unit`` (``None``: unitless or not declared).
+
+##### `nnx.comparison.Metric.state`
+
+```python
+nnx.comparison.Metric.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.Metric.from_state`
+
+```python
+nnx.comparison.Metric.from_state(state: 'Mapping[str, Any]') -> 'Metric'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.Observation`
+
+```python
+class nnx.comparison.Observation(run_id: 'str', metric: 'Metric', value: 'Optional[float]', split: 'str', selection: 'str', status: 'str' = 'completed', attempt_id: 'Optional[str]' = None, config: 'Optional[str]' = None, data: 'Optional[str]' = None, split_id: 'Optional[str]' = None, replicate: 'Optional[str]' = None, evaluation: 'Optional[str]' = None) -> 'None'
+```
+
+One attempt's committed evaluation of one metric.
+
+**Details**
+
+```text
+Attributes:
+    run_id: the run that produced it.
+    attempt_id: the attempt within that run (FEAT-019), when known.
+    metric: what ``value`` measures.
+    value: the value (``None`` when the attempt has none; NaN and
+        infinities are kept and counted as non-finite).
+    status: the attempt's completion status: ``"completed"``,
+        ``"failed"``, ``"cancelled"``, ``"running"`` or ``"unknown"``.
+    split: the evaluation split the value was measured on (for example
+        ``"validation"``).
+    selection: the checkpoint-selection rule behind the value (for
+        example ``"last"``, or ``"best:loss"`` for a monitor's election).
+    config: the configuration identity.
+    data: the data identity.
+    split_id: the split identity (a split manifest digest, for example).
+    replicate: the replicate key (for example ``"seed=3"``) — what
+        :func:`compare` pairs on.
+    evaluation: the committed evaluation behind the value (for example
+        the epoch record and the checkpoint it was committed with).
+
+``config``, ``data``, ``split_id``, ``replicate``, ``attempt_id`` and
+``evaluation`` are ``None`` when unknown.
+```
+
+##### `nnx.comparison.Observation.id`
+
+```python
+property nnx.comparison.Observation.id
+```
+
+The attempt id, or ``run:<run id>`` when the attempt is unknown.
+
+##### `nnx.comparison.Observation.finite`
+
+```python
+property nnx.comparison.Observation.finite
+```
+
+Whether this is a completed attempt with a finite value.
+
+##### `nnx.comparison.Observation.state`
+
+```python
+nnx.comparison.Observation.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.Observation.from_state`
+
+```python
+nnx.comparison.Observation.from_state(state: 'Mapping[str, Any]') -> 'Observation'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.summarize`
+
+```python
+nnx.comparison.summarize(observations: 'Iterable[Observation]') -> 'Summary'
+```
+
+Group ``observations`` into poolable groups (same metric, split, selection rule, configuration, data and split identity) and summarize each; see :class:`GroupSummary`. Duplicate attempts are refused. A known identity never pools with an unknown one.
+
+
+#### `nnx.comparison.Summary`
+
+```python
+class nnx.comparison.Summary(groups: 'tuple[GroupSummary, ...]') -> 'None'
+```
+
+A stratified summary: one :class:`GroupSummary` per poolable group, and the fields that differ between groups (``differing``).
+
+##### `nnx.comparison.Summary.differing`
+
+```python
+property nnx.comparison.Summary.differing
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.Summary.observations`
+
+```python
+property nnx.comparison.Summary.observations
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.Summary.pooled`
+
+```python
+nnx.comparison.Summary.pooled(self) -> 'GroupSummary'
+```
+
+The single group, when every observation may be pooled; otherwise :class:`IncompatibleObservations` naming the differing fields.
+
+##### `nnx.comparison.Summary.state`
+
+```python
+nnx.comparison.Summary.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.GroupSummary`
+
+```python
+class nnx.comparison.GroupSummary(metric: 'Metric', split: 'str', selection: 'str', config: 'Optional[str]', data: 'Optional[str]', split_id: 'Optional[str]', observations: 'tuple[Observation, ...]') -> 'None'
+```
+
+One poolable group: the shared fields (``metric``, ``split``, ``selection``, ``config``, ``data``, ``split_id``), every observation (sorted), and the statistics over its completed, finite values.
+
+**Details**
+
+```text
+``n`` counts those values; ``n_attempts`` every observation,
+``n_failed`` those not completed (failed, cancelled, running or of
+unknown status) and ``n_nonfinite`` completed ones without a finite
+value. ``std`` is the sample standard deviation (``n - 1``): ``None``
+when ``n < 2``; ``mean`` is ``None`` when ``n == 0``. ``unknown`` names
+the identity fields that are not known.
+```
+
+##### `nnx.comparison.GroupSummary.unknown`
+
+```python
+property nnx.comparison.GroupSummary.unknown
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.GroupSummary.label`
+
+```python
+nnx.comparison.GroupSummary.label(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.GroupSummary.state`
+
+```python
+nnx.comparison.GroupSummary.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.compare`
+
+```python
+nnx.comparison.compare(a: 'Iterable[Observation]', b: 'Iterable[Observation]', *, pairing: 'str', bootstrap: 'Optional[Bootstrap]' = None) -> 'PairedComparison'
+```
+
+Pair configuration ``b`` against ``a`` by replicate key.
+
+**Details**
+
+```text
+Each side must be one poolable group with a unique replicate key per
+observation, and the sides must agree on everything but the
+configuration (metric, split, selection rule, data and split identity).
+``pairing`` declares what a shared replicate key means (for example
+``"same seed for initialisation and data order, same split"``): NNx
+cannot prove it, so it is required and recorded. Deltas are signed
+``B - A``.
+```
+
+
+#### `nnx.comparison.PairedComparison`
+
+```python
+class nnx.comparison.PairedComparison(a: 'GroupSummary', b: 'GroupSummary', pairing: 'str', bootstrap: 'Optional[Bootstrap]' = None) -> 'None'
+```
+
+Configuration B against A over shared replicate keys.
+
+**Details**
+
+```text
+``pairs`` holds every matched replicate (``delta`` is ``B - A``, never
+flipped: for a metric to minimize, a negative delta means B is lower);
+``unmatched_a`` / ``unmatched_b`` list the replicate keys found on one
+side only, with their attempt ids. ``n``, ``mean`` and ``std`` (``n - 1``)
+summarize the finite deltas; ``interval`` is the bootstrap's, when one
+was requested and ``n >= 2``.
+```
+
+##### `nnx.comparison.PairedComparison.metric`
+
+```python
+property nnx.comparison.PairedComparison.metric
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.PairedComparison.state`
+
+```python
+nnx.comparison.PairedComparison.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.Pair`
+
+```python
+class nnx.comparison.Pair(replicate: 'str', a: 'str', b: 'str', delta: 'Optional[float]') -> 'None'
+```
+
+One replicate key on both sides: the observations' ids and the signed delta ``b - a`` (``None`` unless both are completed and finite).
+
+##### `nnx.comparison.Pair.state`
+
+```python
+nnx.comparison.Pair.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.Bootstrap`
+
+```python
+class nnx.comparison.Bootstrap(seed: 'int', resamples: 'int' = 2000, level: 'float' = 0.95) -> 'None'
+```
+
+A percentile bootstrap of the mean paired delta: ``resamples`` resamples of the replicate pairs (the unit), drawn with replacement by ``numpy.random.default_rng(seed)``, giving a ``level`` interval. It describes **seed variability** over these replicates — not a population-level or significance claim.
+
+##### `nnx.comparison.Bootstrap.state`
+
+```python
+nnx.comparison.Bootstrap.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.Bootstrap.interval`
+
+```python
+nnx.comparison.Bootstrap.interval(self, deltas: 'Sequence[float]') -> 'Optional[tuple[float, float]]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.ComparisonReport`
+
+```python
+class nnx.comparison.ComparisonReport(summary: 'Summary', comparisons: 'tuple[PairedComparison, ...]' = ()) -> 'None'
+```
+
+A summary of ``observations`` and any paired comparisons, as one artifact: :meth:`table` (machine-readable rows), :meth:`text` (a concise view), :meth:`state` / :meth:`save` / :meth:`load` (strict JSON, ``nnx.comparison/1``).
+
+##### `nnx.comparison.ComparisonReport.build`
+
+```python
+nnx.comparison.ComparisonReport.build(observations: 'Iterable[Observation]', comparisons: 'Sequence[tuple[Iterable[Observation], Iterable[Observation], str]]' = (), *, bootstrap: 'Optional[Bootstrap]' = None) -> 'ComparisonReport'
+```
+
+Summarize ``observations`` and run each ``(a, b, pairing)`` comparison (every compared observation must be among them).
+
+##### `nnx.comparison.ComparisonReport.table`
+
+```python
+nnx.comparison.ComparisonReport.table(self) -> 'list[dict[str, Any]]'
+```
+
+One row per observation, group, pair and unmatched replicate, each with a ``row`` kind; values are plain JSON types.
+
+##### `nnx.comparison.ComparisonReport.text`
+
+```python
+nnx.comparison.ComparisonReport.text(self) -> 'str'
+```
+
+A concise, fixed-order text view.
+
+##### `nnx.comparison.ComparisonReport.state`
+
+```python
+nnx.comparison.ComparisonReport.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.ComparisonReport.to_json`
+
+```python
+nnx.comparison.ComparisonReport.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.ComparisonReport.save`
+
+```python
+nnx.comparison.ComparisonReport.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.comparison.ComparisonReport.from_state`
+
+```python
+nnx.comparison.ComparisonReport.from_state(state: 'Mapping[str, Any]') -> 'ComparisonReport'
+```
+
+Rebuild a report from its observations and comparison specs; the stored results must equal the re-derived ones.
+
+##### `nnx.comparison.ComparisonReport.load`
+
+```python
+nnx.comparison.ComparisonReport.load(path: 'Union[str, os.PathLike[str]]') -> 'ComparisonReport'
+```
+
+No public description is currently available.
+
+
+#### `nnx.comparison.observations_from_runs`
+
+```python
+nnx.comparison.observations_from_runs(run_ids: 'Iterable[str]', *, metric: 'Metric', split: 'str' = 'validation', selection: 'str' = 'last', root: 'Optional[str]' = None, replicate: 'Optional[str]' = 'seed', config: 'Optional[Mapping[str, str]]' = None) -> 'list[Observation]'
+```
+
+Observations of ``metric`` read from saved runs, without loading a model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance files are read once each, and nothing is written).
+
+**Details**
+
+```text
+Args:
+    run_ids: the runs (under ``root``'s ``runs/``).
+    metric: the metric to read — a named metric (``train.metrics``), a
+        built-in field (``loss``, ``error``, ``accuracy``, ``f1``,
+        ``recall``, ``precision``) or an ``extra_metrics`` name.
+    split: ``"validation"`` (the epoch's validation record) or
+        ``"train"`` (its training summary).
+    selection: ``"last"`` (the last committed epoch) or ``"best"`` (the
+        last committed epoch the run's monitor elected; unknown for a
+        run without one).
+    replicate: ``"seed"`` keys each observation ``seed=<train.seed>``
+        (unknown for an unseeded run); ``None`` leaves it unknown.
+    config: run id → declared configuration label; by default, a digest
+        of the run's configuration without its seed and salt.
+
+The status and attempt id come from the run's attempt record
+(FEAT-019; ``"unknown"`` without one), the data and split identities
+from its manifest. When the run's history is committed by its LAST
+checkpoint and no attempt record names that checkpoint's epoch, the
+committed epoch is unknown and so is the value.
+```
+
+
+#### `nnx.comparison.ComparisonError`
+
+```python
+class nnx.comparison.ComparisonError
+```
+
+A malformed observation, a duplicate attempt, an invalid pairing or a report file that does not hold what it claims.
+
+
+#### `nnx.comparison.IncompatibleObservations`
+
+```python
+class nnx.comparison.IncompatibleObservations(message: 'str', *, fields: 'Sequence[str]') -> 'None'
+```
+
+Observations that may not be pooled or paired: ``fields`` names what differs.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`

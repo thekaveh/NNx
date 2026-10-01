@@ -316,6 +316,34 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
+### 2.18. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+
+@api nnx.comparison.Metric
+
+@api nnx.comparison.Observation
+
+@api nnx.comparison.summarize
+
+@api nnx.comparison.Summary
+
+@api nnx.comparison.GroupSummary
+
+@api nnx.comparison.compare
+
+@api nnx.comparison.PairedComparison
+
+@api nnx.comparison.Pair
+
+@api nnx.comparison.Bootstrap
+
+@api nnx.comparison.ComparisonReport
+
+@api nnx.comparison.observations_from_runs
+
+@api nnx.comparison.ComparisonError
+
+@api nnx.comparison.IncompatibleObservations
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
