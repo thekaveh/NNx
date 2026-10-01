@@ -340,6 +340,7 @@ class GroupSummary:
     std: Optional[float] = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "observations", tuple(self.observations))  # an iterator is read once
         if not isinstance(self.metric, Metric):
             raise ComparisonError(f"GroupSummary.metric must be a Metric, got {type(self.metric).__name__}")
         _text(self.split, "GroupSummary.split")
@@ -426,6 +427,7 @@ class Summary:
     groups: tuple[GroupSummary, ...]
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "groups", tuple(self.groups))  # an iterator is read once
         bad = [type(group).__name__ for group in self.groups if not isinstance(group, GroupSummary)]
         if bad:
             raise ComparisonError(f"Summary.groups must be GroupSummary objects, got {bad}")
@@ -483,6 +485,7 @@ def summarize(observations: Iterable[Observation]) -> Summary:
 
 
 MAX_RESAMPLES = 1_000_000
+BOOTSTRAP_BLOCK = 1 << 22  # resampled pairs held at once
 
 
 @dataclass(frozen=True)
@@ -527,12 +530,18 @@ class Bootstrap:
         import numpy as np
 
         values = np.asarray(deltas, dtype=np.float64)
+        n = len(values)
         rng = np.random.default_rng(self.seed)
-        drawn = rng.integers(0, len(values), size=(self.resamples, len(values)))
-        with np.errstate(over="ignore", invalid="ignore"):
-            means = values[drawn].mean(axis=1)
-        if not np.isfinite(means).all():  # a sum overflowed: divide first (cannot overflow)
-            means = (values / len(values))[drawn].sum(axis=1)
+        means = np.empty(self.resamples, dtype=np.float64)
+        chunk = max(1, BOOTSTRAP_BLOCK // n)  # resamples drawn at once: memory bounded whatever the pair count
+        for start in range(0, self.resamples, chunk):
+            stop = min(start + chunk, self.resamples)
+            drawn = rng.integers(0, n, size=(stop - start, n))
+            with np.errstate(over="ignore", invalid="ignore"):
+                block = values[drawn].mean(axis=1)
+            if not np.isfinite(block).all():  # a sum overflowed: divide first (cannot overflow)
+                block = (values / n)[drawn].sum(axis=1)
+            means[start:stop] = block
         tail = (1.0 - float(self.level)) / 2.0
         low, high = np.quantile(means, [tail, 1.0 - tail])
         return float(low), float(high)
@@ -716,6 +725,7 @@ class ComparisonReport:
     comparisons: tuple[PairedComparison, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "comparisons", tuple(self.comparisons))  # an iterator is read once; hashable
         if not isinstance(self.summary, Summary):
             raise ComparisonError(f"ComparisonReport.summary must be a Summary, got {type(self.summary).__name__}")
         bad = [type(result).__name__ for result in self.comparisons if not isinstance(result, PairedComparison)]
@@ -860,9 +870,10 @@ class ComparisonReport:
             bootstrap_states = []
             for result in state["comparisons"]:
                 metric = result["metric"]["name"]
+                sides = (result["a"], result["b"])  # a missing key is a malformed report
                 try:
-                    a = [by_id[(metric, attempt)] for attempt in result["a"]]
-                    b = [by_id[(metric, attempt)] for attempt in result["b"]]
+                    a = [by_id[(metric, attempt)] for attempt in sides[0]]
+                    b = [by_id[(metric, attempt)] for attempt in sides[1]]
                 except KeyError as error:
                     raise ComparisonError(f"a comparison names an attempt the report does not hold: {error}") from error
                 specs.append((a, b, result["pairing"]))
@@ -1007,7 +1018,10 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     csv_path = os.path.join(run_path, "idps.csv")
     try:
         rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
-        idps = [NNIterationDataPoint.from_state(row) for row in rows]
+        last_rows: dict[Any, Any] = {}
+        for row in rows:  # only each epoch's last record is ever read
+            last_rows[row.get("epoch_idx")] = row
+        idps = [NNIterationDataPoint.from_state(row) for row in last_rows.values()]
     except Exception as error:  # an empty or damaged history is not an empty one
         raise ComparisonError(f"run {run_id}: malformed idps.csv: {type(error).__name__}: {error}") from error
     committed_by_last = os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE))
@@ -1089,10 +1103,10 @@ def observations_from_runs(
             status = "unknown"
         committed: Optional[int] = None
         known = True
+        last = None if attempt is None else attempt.last_committed
+        if last is not None and not isinstance(last, Mapping):
+            raise ComparisonError(f"run {run_id}: attempt.json's last_committed is not a mapping: {last!r}")
         if committed_by_last:
-            last = None if attempt is None else attempt.last_committed
-            if last is not None and not isinstance(last, Mapping):
-                raise ComparisonError(f"run {run_id}: attempt.json's last_committed is not a mapping: {last!r}")
             epoch = None if last is None else last.get("epoch")
             if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
                 raise ComparisonError(f"run {run_id}: attempt.json's committed epoch is not an epoch: {epoch!r}")
@@ -1147,8 +1161,7 @@ def observations_from_runs(
                     f"unknown: the epoch {chosen.epoch_idx} {split} record has no {metric.name!r} value "
                     "(missing, or NaN — idps.csv writes NaN as an empty cell)"
                 )
-            last = None if attempt is None else attempt.last_committed
-            if last is not None and last.get("checkpoint") is not None:
+            if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
         train = run_state.get("train") or {}
         manifest = None if provenance is None else provenance.manifest

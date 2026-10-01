@@ -743,3 +743,42 @@ def test_round_four_reader_edges(tmp_path, monkeypatch):
             observations_from_runs(ids[1:2], metric=LOSS)
     (item,) = observations_from_runs(ids[2:], metric=Metric("acc", "maximize"))
     assert "missing, or NaN" in item.evaluation
+
+
+def test_round_five_edges(monkeypatch):
+    import nnx.comparison as module
+    from nnx.comparison import GroupSummary, PairedComparison, Summary
+
+    a = replicates([0.3, 0.4, 0.2, 0.5], config="cfg-a")
+    b = replicates([0.5, 0.6, 0.7, 0.4], config="cfg-b")
+    whole = compare(a, b, pairing="same seed", bootstrap=Bootstrap(seed=3, resamples=500)).interval
+    sizes = []
+    real = np.random.default_rng
+
+    class Recording:
+        def __init__(self, seed):
+            self.rng = real(seed)
+
+        def integers(self, *args, size=None, **kwargs):
+            sizes.append(size)
+            return self.rng.integers(*args, size=size, **kwargs)
+
+    monkeypatch.setattr(module, "BOOTSTRAP_BLOCK", 9)  # two resamples of four pairs per block
+    monkeypatch.setattr(np.random, "default_rng", Recording)
+    blocked = compare(a, b, pairing="same seed", bootstrap=Bootstrap(seed=3, resamples=500)).interval
+    assert blocked == whole and max(rows for rows, _ in sizes) == 2  # bounded memory, same interval
+    monkeypatch.undo()
+    # One-shot iterables are kept, not consumed by validation.
+    group = GroupSummary(ACC, "validation", "last", "cfg-a", "data:v1", "split:v1", (o for o in a))
+    assert group.n_attempts == 4
+    summary = Summary(iter([group]))
+    assert len(summary.groups) == 1
+    other = summarize(b).pooled()
+    pc = PairedComparison(group, other, "same seed")
+    report = ComparisonReport(summarize([*a, *b]), (x for x in [pc]))
+    assert len(report.comparisons) == 1 and hash(ComparisonReport(summarize([*a, *b]), [pc]))
+    state = json.loads(report.to_json())
+    del state["comparisons"][0]["b"]
+    with pytest.raises(ComparisonError, match="malformed|'b'") as caught:
+        ComparisonReport.from_state(state)
+    assert "does not hold" not in str(caught.value)
