@@ -5340,7 +5340,9 @@ Args:
         run without a training seed. ``None`` leaves it unknown.
     config: run id → declared configuration label, for every run; by
         default, a digest of the run's configuration without its salt,
-        seeds, resume lineage and device.
+        seeds, parent run id and device — a resumed run keeps the shape
+        of its lineage (checkpoint tag, resume mode, first epoch), so
+        it never pools with fresh runs or with its own parent.
 
 Runs should be trained with ``provenance=`` (FEAT-019): the status and
 attempt id come from the run's attempt record (``"unknown"`` without

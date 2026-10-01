@@ -459,6 +459,36 @@ def test_trainer_and_resumed_runs_pool_across_seeds(tmp_path, monkeypatch):
     assert len(summarize(resumed).groups) == 1  # the resume lineage is per replicate, not configuration
 
 
+def test_a_report_state_that_is_not_json_is_a_comparison_error():
+    state = _report(0).state()
+    state["summary"] = {"groups": {1, 2}}  # a set is not JSON
+    with pytest.raises(ComparisonError, match="malformed comparison report"):
+        ComparisonReport.from_state(state)
+
+
+def test_a_continuation_never_pools_with_fresh_runs_or_its_parent(tmp_path, monkeypatch):
+    """``n_epochs`` counts the epochs a run adds: a stateful continuation
+    trained longer than a fresh run, and a weights-only warm start began
+    from other weights, so neither is a replicate of a fresh run."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    fresh = [_model().train(params=_fit_params(seed), provenance=MANIFEST) for seed in (0, 1, 2)]
+    stateful = _model().train(params=_fit_params(3, resume_from_run_id=fresh[0].id), provenance=MANIFEST)
+    warm = _model().train(
+        params=_fit_params(4, resume_from_run_id=fresh[0].id, resume_mode="weights_only"), provenance=MANIFEST
+    )
+    found = observations_from_runs([run.id for run in [*fresh, stateful, warm]], metric=Metric("loss", "minimize"))
+    groups = summarize(found).groups
+    assert sorted(group.n for group in groups) == [1, 1, 3]
+    assert len({item.config for item in found[:3]}) == 1 and len({item.config for item in found}) == 3
+
+    # A run plus its own same-seed continuation are two configurations, not two seed=1 replicates.
+    same_seed = _model().train(params=_fit_params(1, resume_from_run_id=fresh[1].id), provenance=MANIFEST)
+    pair = observations_from_runs([fresh[1].id, same_seed.id], metric=Metric("loss", "minimize"))
+    assert pair[0].config != pair[1].config
+    assert pair[1].config == found[3].config  # continuations with one schedule still pool
+
+
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
     from nnx import MonitorSpec
 

@@ -1760,8 +1760,12 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   monitor — never a last batch). The configuration identity is a digest of
   the run's configuration without its salt, seeds (the training or
   `Trainer` seed and a registered `ModelSpec`'s initialization seed),
-  resume lineage and device, for `NNModel.train` and `Trainer` runs alike
-  (or a label for every run, passed as `config=`). The replicate key is
+  parent run id and device, for `NNModel.train` and `Trainer` runs alike
+  (or a label for every run, passed as `config=`). A resumed run keeps the
+  shape of its lineage — the checkpoint tag, the resume mode and the epoch
+  it began at — because `n_epochs` counts the epochs a run adds: a
+  continuation never pools with fresh runs or with its own parent, while
+  continuations on one schedule still do. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and
   unknown for a run without a training seed. The text view counts attempts
   that did not complete as `not_completed`, and a matched pair whose delta
