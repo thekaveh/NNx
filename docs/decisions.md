@@ -214,7 +214,10 @@ result.calls                                           # provider calls made
   The provider's hooks (`check`, `capabilities()`, `count_tokens`) are
   synchronous and run on the event loop in `arun`: keep them local and
   fast (no network round trip). The timeout is checked between hook
-  calls, so a slow hook overruns it by at most one call.
+  calls, so a slow hook overruns it by at most one call. `arun` still needs the provider's synchronous
+  `decide` (the decision protocol); `adecide` / `adecide_many` are used
+  when present. A cancel set in the same tick as the last answer still
+  cancels the run: its result has no value.
 - **Outcomes.** `result.outcomes[id].kind` is `"answered"` (rows may still
   be `"abstained"` under a policy), `"failed"` (with `error`), `"skipped"`
   (never sent: a failure, a limit or the timeout stopped scheduling) or

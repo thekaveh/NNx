@@ -3036,7 +3036,9 @@ Attributes:
     max_requests: the most provider calls in the run (``None``:
         unbounded).
     timeout: seconds for the whole run (``None``: none). ``run`` checks
-        it between calls; ``arun`` also cancels in-flight calls.
+        it between calls and provider hooks; ``arun`` also cancels
+        in-flight asynchronous calls (a synchronous provider's call in
+        its worker thread is waited for).
     max_concurrency: ``arun``'s concurrent provider calls.
 ```
 

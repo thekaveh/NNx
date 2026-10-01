@@ -988,3 +988,45 @@ def test_a_refused_continuation_question_reports_its_siblings_too():
             job.run(Refuses(), state=TEXTS)
         kinds = {q: o.kind for q, o in caught.value.outcomes.items()}
         assert kinds == {"a": "answered", "c": "skipped", "d": "skipped"}
+
+
+def test_round_six_edges():
+    class SlowCount(TextProvider):
+        calls = []
+
+        def count_tokens(self, questions, texts):
+            SlowCount.calls.append(time.monotonic())
+            time.sleep(0.3)
+            return 10 * len(questions)
+
+    SlowCount.calls = []
+    with pytest.raises(JobTimeout):
+        Job.collect(_questions(4)).run(SlowCount(), state=TEXTS, limits=Limits(max_tokens=15, timeout=0.4))
+    assert len(SlowCount.calls) <= 2  # never a third call past the deadline
+
+    class Refuses(TextProvider):
+        def check(self, question, inputs):
+            if question.prompt == "Mentions boom":
+                raise RuntimeError("capability service down")
+
+    job = Job.ask(TOPIC, id="a").then(
+        lambda _: Follow(Job.collect({k: Job.ask(Boolean(f"Mentions {k}"), id=k) for k in ("b", "boom", "c")}), TEXTS)
+    )
+    with pytest.raises(JobFailed, match="checking question 'boom'") as caught:
+        job.run(Refuses(), state=TEXTS)
+    assert set(caught.value.skipped) == {"b", "boom", "c"}
+    dup = Job.ask(TOPIC, id="a").then(
+        lambda _: Follow(
+            Job.collect(
+                {
+                    "b": Job.ask(Boolean("Mentions b"), id="b"),
+                    "x": Job.ask(TOPIC, id="a"),
+                    "c": Job.ask(Boolean("Mentions c"), id="c"),
+                }
+            ),
+            TEXTS,
+        )
+    )
+    with pytest.raises(InvalidJob, match="duplicate question id 'a'") as refused:
+        dup.run(TextProvider(), state=TEXTS)
+    assert {q: o.kind for q, o in refused.value.outcomes.items()} == {"a": "answered", "b": "skipped", "c": "skipped"}

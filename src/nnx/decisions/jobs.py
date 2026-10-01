@@ -258,7 +258,9 @@ class Limits:
         max_requests: the most provider calls in the run (``None``:
             unbounded).
         timeout: seconds for the whole run (``None``: none). ``run`` checks
-            it between calls; ``arun`` also cancels in-flight calls.
+            it between calls and provider hooks; ``arun`` also cancels
+            in-flight asynchronous calls (a synchronous provider's call in
+            its worker thread is waited for).
         max_concurrency: ``arun``'s concurrent provider calls.
     """
 
@@ -538,9 +540,10 @@ class _ProviderError(Exception):
     """A provider hook (``check``, ``capabilities``, ``count_tokens``) raised
     something other than a declared refusal; carried to fail-fast."""
 
-    def __init__(self, error: BaseException) -> None:
+    def __init__(self, error: BaseException, question: Optional[str] = None) -> None:
         super().__init__(str(error))
         self.error = error
+        self.question = question  # the question whose check failed, when one did
 
 
 def _modality(state: Any) -> tuple[str, int]:
@@ -621,10 +624,14 @@ class _Runner:
     def _register(self, asks: Sequence[tuple[_Ask, int]]) -> None:
         """Register every ask first (so a refusal reports them all), then
         check each against the provider."""
+        duplicates = []
         for ask, _ in asks:
             if ask.id in self.registered:
-                raise InvalidJob(f"duplicate question id {ask.id!r}", outcomes=self._ordered())
-            self.registered[ask.id] = None
+                duplicates.append(ask.id)
+            else:
+                self.registered[ask.id] = None  # known (reported as skipped if refused), even past a duplicate
+        if duplicates:
+            raise InvalidJob(f"duplicate question id {duplicates[0]!r}", outcomes=self._ordered())
         for ask, group in asks:
             self._deadline()
             self._check(ask, group)
@@ -646,7 +653,7 @@ class _Runner:
         except (UnsupportedCapability, InvalidDecisionRequest) as error:
             raise InvalidJob(f"question {ask.id!r} cannot be served: {error}", outcomes=self._ordered()) from error
         except Exception as error:  # the provider's own check failed: a provider failure
-            raise _ProviderError(error) from error
+            raise _ProviderError(error, ask.id) from error
 
     # ---------- evaluation ----------
 
@@ -728,8 +735,9 @@ class _Runner:
             raise
         except _ProviderError as wrapped:  # fail-fast: answers already received are kept
             skipped = skip_known()
+            where = f" checking question {wrapped.question!r}" if wrapped.question is not None else ""
             failure = JobFailed(
-                f"a provider hook failed ({type(wrapped.error).__name__}: {wrapped.error}); "
+                f"a provider hook failed{where} ({type(wrapped.error).__name__}: {wrapped.error}); "
                 f"{len(skipped)} question(s) skipped",
                 outcomes=self._ordered(),
                 failed=(),
@@ -778,6 +786,7 @@ class _Runner:
                 )
             chunks.append(current)
             current = [item]
+            self._deadline()  # one hook call at most between deadline checks
             alone = self._count_tokens([item.ask.question], item.state)
             if alone > self.limits.max_tokens:
                 raise InvalidJob(
