@@ -52,7 +52,6 @@ from .._scheduler_clock import (
     planned_updates,
     update_horizon,
     uses_update_clock,
-    watching_steps,
 )
 from ..components import ComponentRegistry, ResumeStatus
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
@@ -560,7 +559,6 @@ class Trainer:
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
-            watching_steps(clocks.values()),
         ):
             callback_lifecycle.start()
             # FEAT-005: reset hooks have run once; restore the validated
@@ -601,8 +599,9 @@ class Trainer:
                     else ((idx, batch, False) for idx, batch in enumerate(params.train_loader))
                 )
                 for idx_batch, batch, is_last_batch in batches:
-                    # The rate this batch trains with (read before the step).
-                    lr_used = float(optimizers[primary].param_groups[0]["lr"])
+                    # The rate this batch trains with, for an update clock
+                    # (read before the step, which may step its scheduler).
+                    lr_used = float(optimizers[primary].param_groups[0]["lr"]) if primary_steps_on_updates else None
                     if engine is not None:
                         assert objective is not None
                         train_edp = _objective_microbatch(
@@ -640,7 +639,7 @@ class Trainer:
                             train_edp=train_edp,
                             # The rate this batch trained with when the primary
                             # schedule steps on updates inside the step (FEAT-014).
-                            lr=lr_used if primary_steps_on_updates else optimizers[primary].param_groups[0]["lr"],
+                            lr=lr_used if lr_used is not None else optimizers[primary].param_groups[0]["lr"],
                             update_count=engine.commits if engine is not None else None,
                         )
                     )
@@ -699,7 +698,7 @@ class Trainer:
                     warnings.warn(
                         f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
                         "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
-                        "after each optimizer.step() the step function takes (a report counts only after a step)",
+                        "after each optimizer.step() the step function takes",
                         UserWarning,
                         stacklevel=4,
                     )

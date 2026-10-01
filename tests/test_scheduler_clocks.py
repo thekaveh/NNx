@@ -217,7 +217,7 @@ class _FakeScaler:
 
 @pytest.mark.parametrize("fused", [False, True])
 def test_a_skipped_amp_step_is_not_a_committed_update(fused):
-    from nnx._scheduler_clock import SchedulerClock, watching_steps
+    from nnx._scheduler_clock import SchedulerClock
     from nnx._update_engine import scaler_step
 
     param = torch.nn.Parameter(torch.ones(1))
@@ -225,12 +225,11 @@ def test_a_skipped_amp_step_is_not_a_committed_update(fused):
     clock = SchedulerClock("default", lr_scheduler.StepLR(optimizer, step_size=1), horizon=None)
     scaler = _FakeScaler(fused)
     committed = []
-    with watching_steps([clock]):
-        for _ in range(3):  # what default_train_step does under AMP when a clock listens
-            param.grad = torch.ones(1)
-            committed.append(scaler_step(scaler, (optimizer,)))
-            if committed[-1]:
-                clock.committed()
+    for _ in range(3):  # what default_train_step does under AMP when a clock listens
+        param.grad = torch.ones(1)
+        committed.append(scaler_step(scaler, (optimizer,)))
+        if committed[-1]:
+            clock.committed()
     assert committed == [True, False, True]
     assert clock.count == 2
 
@@ -716,20 +715,20 @@ def test_an_nnmodel_step_cannot_report_by_optimizer_name():
 # --- review round 5 ----------------------------------------------------------------------------------------
 
 
-def test_a_second_report_of_one_step_does_not_count():
+def test_a_step_built_on_finalize_step_needs_no_report_of_its_own():
     from nnx._step_helpers import finalize_step
 
     def custom(ctx):
         x, y = ctx.batch
         ctx.optimizer.zero_grad()
         loss = ctx.model.loss_fn(ctx.model.net(x), y)
-        value = finalize_step(loss, ctx, paradigm="custom")  # steps and reports
-        ctx.report_update()  # the documented habit: report after the step
-        return NNEvaluationDataPoint(loss=value)
+        return NNEvaluationDataPoint(loss=finalize_step(loss, ctx, paradigm="custom"))  # steps and reports
 
     monitor = LRMonitor()
-    _train(_model(), accumulate=1, scheduler=_one_cycle(total_steps=10), callbacks=[monitor], step=custom)
-    assert [k for k, _ in monitor.update_history] == list(range(1, 11))  # 10 updates, no overrun
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # reported: no silent-step warning
+        _train(_model(), accumulate=1, scheduler=_one_cycle(total_steps=10), callbacks=[monitor], step=custom)
+    assert [k for k, _ in monitor.update_history] == list(range(1, 11))  # 10 updates, each reported once
 
 
 def test_an_nnmodel_step_reports_without_a_name_on_the_epoch_clock_too():
@@ -777,7 +776,7 @@ def _factory_optim(factory_id: str, factory) -> Any:
     return NNOptimFactoryParams(factory=OptimizerFactorySpec(id=factory_id, version=1), max_lr=0.1)
 
 
-def test_an_optimizer_without_step_hooks_still_drives_the_clock():
+def test_a_wrapper_optimizer_drives_the_clock():
     from nnx.optimizers import unregister_optimizer_factory
 
     optim = _factory_optim("clock-lookahead", lambda groups, config: _Lookahead(torch.optim.SGD(groups)))
@@ -797,24 +796,6 @@ def test_an_optimizer_without_step_hooks_still_drives_the_clock():
     finally:
         unregister_optimizer_factory("clock-lookahead", 1)
     assert [k for k, _ in monitor.update_history] == list(range(1, 11))  # every report counts
-
-
-def test_no_step_hook_outlives_the_run():
-    seen = {}
-
-    class Grab(Callback):
-        def on_train_begin(self, ctx):
-            seen["model"] = ctx.optimizer
-
-    _train(_model(), scheduler=_sched(Schedulers.STEP, step_size=1), callbacks=[Grab()])
-    assert not seen["model"]._optimizer_step_post_hooks
-
-    def step(ctx):
-        seen["trainer"] = ctx.optimizers
-        return _two_rate_step(ctx)
-
-    Trainer(_model()).train(_two_optimizer_params(), trainer_step_fn=step)
-    assert not any(optimizer._optimizer_step_post_hooks for optimizer in seen["trainer"].values())
 
 
 def test_iteration_records_snapshot_a_tensor_learning_rate():
@@ -840,3 +821,71 @@ def test_iteration_records_snapshot_a_tensor_learning_rate():
     finally:
         unregister_optimizer_factory("clock-tensor-lr", 1)
     assert [idp.lr for idp in run.idps] == pytest.approx([0.1, 0.05, 0.025])
+
+
+# --- review round 7 ----------------------------------------------------------------------------------------
+
+
+class _TwoStep(torch.optim.Optimizer):
+    """A SAM-style optimizer: it calls ``Optimizer.__init__`` but updates the weights through an inner
+    optimizer, so its own ``step`` is never called."""
+
+    def __init__(self, groups) -> None:
+        self.base = torch.optim.SGD(groups)
+        super().__init__(self.base.param_groups, self.base.defaults)
+
+    def first_step(self) -> None:
+        pass
+
+    def second_step(self) -> None:
+        self.base.step()
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Detected call of `lr_scheduler.step\\(\\)`:UserWarning"
+)  # the outer step() never runs
+def test_reports_are_authoritative():
+    from nnx.optimizers import unregister_optimizer_factory
+
+    def sam_step(ctx):
+        x, y = ctx.batch
+        ctx.optimizer.zero_grad()
+        loss = ctx.model.loss_fn(ctx.model.net(x), y)
+        loss.backward()
+        ctx.optimizer.first_step()
+        ctx.optimizer.second_step()
+        ctx.report_update()
+        return NNEvaluationDataPoint(loss=float(loss.detach()))
+
+    optim = _factory_optim("clock-two-step", lambda groups, config: _TwoStep(groups))
+    try:
+        sam = LRMonitor()
+        _model().train(
+            NNTrainParams(
+                n_epochs=2,
+                train_loader=_batches(),
+                optim=optim,
+                scheduler=_sched(Schedulers.STEP, step_size=1),
+                save_phase_checkpoints=False,
+                overwrite_existing=True,
+            ),
+            callbacks=[sam],
+            train_step_fn=sam_step,
+        )
+    finally:
+        unregister_optimizer_factory("clock-two-step", 1)
+    assert [k for k, _ in sam.update_history] == list(range(1, 11))  # its own step() never runs
+
+    def two_updates(ctx):  # two updates on one batch, reported together afterwards
+        x, y = ctx.batch
+        for _ in range(2):
+            ctx.optimizer.zero_grad()
+            ctx.model.loss_fn(ctx.model.net(x), y).backward()
+            ctx.optimizer.step()
+        ctx.report_update()
+        ctx.report_update()
+        return NNEvaluationDataPoint(loss=0.0)
+
+    twice = LRMonitor()
+    _train(_model(), accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1), callbacks=[twice], step=two_updates)
+    assert len(twice.update_history) == 20
