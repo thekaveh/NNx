@@ -44,7 +44,7 @@ from ..monitors import (
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
-from ..transforms import _canonical_transforms, _recipe_transforms, _replayable
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -888,18 +888,6 @@ def _tensor_keys(state: Mapping[str, Any]) -> set[str]:
     return {key for key, value in state.items() if isinstance(value, torch.Tensor)}
 
 
-def _state_shapes(state: Mapping[str, Any]) -> dict[str, Optional[tuple[int, ...]]]:
-    """``{key: shape}`` of a state's tensors; ``None`` for an uninitialized
-    lazy parameter, whose shape is not known yet."""
-    from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
-
-    return {
-        key: None if isinstance(value, (UninitializedParameter, UninitializedBuffer)) else tuple(value.shape)
-        for key, value in state.items()
-        if isinstance(value, torch.Tensor)
-    }
-
-
 def _to_device(value: Any, device: torch.device) -> Any:
     """Move a tensor (or anything with ``.to``, e.g. a graph batch) to the
     device; other values pass through."""
@@ -1422,7 +1410,35 @@ class NNModel(_HubMixinBase):
         uninitialized lazy parameter); ``None`` for a runtime module, which
         nothing rebuilds."""
         recorded = getattr(self, "_reference_state", None)
-        return None if recorded is None else dict(recorded)
+        if recorded is not None:
+            return dict(recorded)
+        net_params = getattr(self, "net_params", None)
+        if isinstance(self.params.net, Nets) and net_params is not None:
+            # An object that never ran __init__ (a stand-in, an old pickle):
+            # rebuild the reference as before, off the global random streams.
+            from ..seeding import _global_rng_kept
+
+            with _global_rng_kept():
+                return _state_shapes(self.params.net(params=net_params).state_dict())
+        return None
+
+    def _topology_drift(self) -> list[str]:
+        """How the live topology differs from the descriptor plus the
+        recorded recipe (FEAT-016) — names, shapes, each target's module and
+        configuration — as problem lines naming the cause; empty when it
+        matches, or when nothing could tell (a runtime module, a train-end
+        transform that rebuilds its own topology)."""
+        base_state = self._base_state()
+        if base_state is None:
+            return []
+        from ..transforms import _topology_problems
+
+        problems = _topology_problems(self.net, base_state, tuple(self._topology_transforms))
+        return [
+            f"the model's topology differs from its descriptor plus its recorded transformation recipe (unrecorded "
+            f"surgery?): {problem}"
+            for problem in problems[:5]
+        ]
 
     def _assert_reconstructible_topology(self) -> None:
         transforms = tuple(self._topology_transforms)
@@ -1433,15 +1449,11 @@ class NNModel(_HubMixinBase):
             return  # a runtime module is marked reconstructible=False instead
         if transforms:
             # FEAT-016: the live topology must be exactly the base plus its
-            # recorded recipe — names, shapes and each target's module and
-            # configuration; surgery outside the recipe stays unrecorded.
-            from ..transforms import _topology_problems
-
-            problems = _topology_problems(self.net, base_state, transforms)
-            if problems:
+            # recorded recipe; surgery outside the recipe stays unrecorded.
+            drift = self._topology_drift()
+            if drift:
                 raise ValueError(
-                    "the model's topology differs from its recorded transformation recipe (unrecorded surgery?): "
-                    + "; ".join(problems[:5])
+                    "; ".join(drift)
                     + "; apply topology changes through nnx.transforms.TransformRecipe so checkpoints can rebuild them"
                 )
             return

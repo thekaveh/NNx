@@ -280,7 +280,7 @@ def test_a_recipe_run_resumes_from_its_checkpoint():
 def test_unrecorded_surgery_on_a_recipe_model_is_still_refused():
     model = _recipe().materialize(_model())
     model.net.layers[2] = low_rank_factorize(model.net.layers[2], rank=2)  # outside the recipe
-    with pytest.raises(ValueError, match="differs from its recorded transformation recipe"):
+    with pytest.raises(ValueError, match="differs from its descriptor plus its recorded transformation recipe"):
         _train(model)
 
 
@@ -387,7 +387,7 @@ def test_the_trainer_refuses_surgery_outside_the_recipe():
     model = _recipe().materialize(_model())
     model.net.layers[2] = low_rank_factorize(model.net.layers[2], rank=2)
     params = NNTrainerParams(n_epochs=1, train_loader=_loader(), optims={"main": _OPTIM})
-    with pytest.raises(ValueError, match="differs from its recorded transformation recipe"):
+    with pytest.raises(ValueError, match="differs from its descriptor plus its recorded transformation recipe"):
         Trainer(model).train(params, trainer_step_fn=lambda ctx: NNEvaluationDataPoint(loss=0.5))
 
 
@@ -407,7 +407,7 @@ def test_a_custom_step_on_a_recipe_model_is_checked_too():
     model = _recipe().materialize(_model())
     model.net.layers[2] = low_rank_factorize(model.net.layers[2], rank=2)
     params = NNTrainParams(n_epochs=1, train_loader=_loader(), optim=_OPTIM)
-    with pytest.raises(ValueError, match="differs from its recorded transformation recipe"):
+    with pytest.raises(ValueError, match="differs from its descriptor plus its recorded transformation recipe"):
         model.train(params, train_step_fn=lambda ctx: NNEvaluationDataPoint(loss=0.5))
 
 
@@ -705,7 +705,7 @@ def test_a_recipe_on_a_layer_the_base_lacks_is_refused():
     recipe = TransformRecipe([lora("extra", r=2, alpha=4.0)])
     with pytest.raises(
         RecipeError,
-        match=r"differs from its descriptor plus its recorded recipe.*unexpected tensors \['extra.weight'\]",
+        match=r"differs from its descriptor plus its recorded transformation recipe.*unexpected tensors \['extra.weight'\]",
     ):
         recipe.materialize(model)  # refused before anything is recorded or saved
     assert type(model.net.extra) is nn.Linear and model._topology_transforms == ()
@@ -820,7 +820,7 @@ def test_unrecorded_surgery_anywhere_refuses_an_in_place_recipe(surgery):
         model.net.layers[0] = nn.Linear(6, 16, bias=False)  # same weight shape, no bias
     else:
         model.net.layers[2] = nn.Linear(12, 5)  # a layer the recipe does not touch
-    with pytest.raises(RecipeError, match="differs from its descriptor plus its recorded recipe"):
+    with pytest.raises(RecipeError, match="differs from its descriptor plus its recorded transformation recipe"):
         TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(model)
     assert model._topology_transforms == ()
 
@@ -904,3 +904,76 @@ def test_an_in_place_validation_rebuilds_nothing():
         TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).validate(model)
         model._assert_reconstructible_topology()
     assert built == []  # the base was recorded when the model was built
+
+
+# --- review round 7 ----------------------------------------------------------------------------------------
+
+
+def _lazy_model(name: str) -> NNModel:
+    from nnx.models import ModelSpec, register_model_factory
+
+    register_model_factory(name, 1, lambda config: nn.Sequential(nn.LazyLinear(8), nn.ReLU(), nn.Linear(8, 3)))
+    params = NNModelParams(net=ModelSpec(name, 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    return NNModel(params=params)
+
+
+def test_a_recipe_on_a_layer_that_was_lazy_at_build_is_refused():
+    model = _lazy_model("tests.lazy_target")
+    model.net(torch.randn(2, 6))  # the lazy layer is initialized now, but a rebuild starts lazy again
+    with pytest.raises(RecipeError, match="'0': was an uninitialized lazy layer when the model was built"):
+        TransformRecipe([low_rank("0", rank=2)]).materialize(model)
+
+
+def test_an_uninitialized_lazy_layer_does_not_break_the_checks():
+    model = _lazy_model("tests.lazy_other")  # no forward yet: '0' is still uninitialized
+    recipe = TransformRecipe([lora("2", r=2, alpha=4.0)])
+    recipe.validate(model)
+    recipe.materialize(model)
+    model._assert_reconstructible_topology()
+
+
+def test_a_model_without_a_recorded_base_keeps_the_low_rank_refusal():
+    model = _model()
+    del model._reference_state  # e.g. an object restored without running __init__
+    model.net.layers[1] = low_rank_factorize(model.net.layers[1], rank=4)
+    with pytest.raises(ValueError, match="low-rank surgery topology has no reconstruction recipe"):
+        model._assert_reconstructible_topology()
+
+
+def test_a_rollback_restores_flags_after_a_custom_train_hook(monkeypatch):
+    from nnx import transforms
+    from nnx.models import ModelSpec, register_model_factory
+
+    class Gated(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a, self.b = nn.Linear(6, 8), nn.Linear(8, 3)
+            self.gate = nn.Parameter(torch.ones(1))
+
+        def forward(self, x):
+            return self.b(torch.relu(self.a(x))) * self.gate
+
+        def train(self, mode=True):
+            super().train(mode)
+            self.gate.requires_grad_(mode)  # the hook derives trainability from the mode
+            return self
+
+    register_model_factory("tests.gated", 1, lambda config: Gated())
+    params = NNModelParams(net=ModelSpec("tests.gated", 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    model = NNModel(params=params)
+    model.net.eval()
+    model.net.gate.requires_grad_(True)  # deliberately trainable while in eval mode
+    before = [(n, p.requires_grad) for n, p in model.net.named_parameters()]
+    real, calls = transforms._build, []
+
+    def failing(op, linear, *, allocate_only):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("interrupted")
+        return real(op, linear, allocate_only=allocate_only)
+
+    monkeypatch.setattr(transforms, "_build", failing)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        TransformRecipe([lora("a", r=2, alpha=4.0), lora("b", r=2, alpha=4.0)]).materialize(model)
+    assert [(n, p.requires_grad) for n, p in model.net.named_parameters()] == before
+    assert model.net.training is False

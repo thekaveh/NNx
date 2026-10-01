@@ -310,12 +310,17 @@ class TransformRecipe:
         else:
             _check_source(model, fresh=False)
             recorded = _recorded_operations(model)
-            base = model._base_state()
             # The model must already be its descriptor plus its recorded
             # recipe, or nothing recorded on it could ever be rebuilt.
-            drift = [] if base is None else _topology_problems(model.net, base, model._topology_transforms)
-            reason = "the model differs from its descriptor plus its recorded recipe (unrecorded surgery?): "
-            preexisting = [(None, "recipe", None, reason + problem) for problem in drift[:5]]
+            preexisting: list[_Problem] = [(None, "recipe", None, problem) for problem in model._topology_drift()]
+            base = model._base_state() or {}
+            for index, op in enumerate(self.operations):
+                for path in op.targets:
+                    if isinstance(path, str) and f"{path}.weight" in base and base[f"{path}.weight"] is None:
+                        reason = (
+                            "was an uninitialized lazy layer when the model was built, so a rebuild could not replay it"
+                        )
+                        preexisting.append((index, op.id, path, reason))
             _validate(model.net, self.operations, recorded, list(optimizers), problems=preexisting)
 
     def materialize(self, model: NNModel, *, optimizers: Iterable[torch.optim.Optimizer] = ()) -> NNModel:
@@ -354,9 +359,11 @@ class TransformRecipe:
             except BaseException:
                 for path, original in reversed(replaced):
                     set_module(target.net, path, original)
+                # Modes first: a module's own train() may change flags,
+                # which are then set exactly as they were.
+                _restore_training_modes(modes)
                 for parameter, requires_grad in flags:
                     parameter.requires_grad_(requires_grad)
-                _restore_training_modes(modes)
                 raise
         except BaseException:
             _restore_rng_state(streams, None)
@@ -572,19 +579,15 @@ def _canonical_transforms(transforms: Iterable[NNCheckpointTransform]) -> tuple[
 
 
 def _expected_state(
-    base: Mapping[str, Any], transforms: Sequence[NNCheckpointTransform]
-) -> Optional[tuple[dict[str, Optional[_Shape]], list[str]]]:
+    base: Mapping[str, Any], operations: Sequence[TransformOp]
+) -> tuple[dict[str, Optional[_Shape]], list[str]]:
     """``{key: shape}`` of a base's tensors after the recorded recipe
-    ``transforms`` — a shape is ``None``, or a dimension of it is, where the
-    base gives only names (a registered factory's reference keys) — and the
-    recorded targets the base has no layer for; ``None`` when one is not a
-    recipe operation."""
+    ``operations`` — a shape is ``None``, or a dimension of it is, where the
+    base does not give it (an uninitialized lazy parameter) — and the
+    recorded targets the base has no layer for."""
     state: dict[str, Optional[_Shape]] = dict(base)
     absent: list[str] = []
-    for transform in transforms:
-        if not _replayable(transform):
-            return None
-        op = TransformOp.from_checkpoint_transform(transform)
+    for op in operations:
         for path in op.targets:
             if f"{path}.weight" not in state:
                 # Added by unrecorded surgery: a rebuild from the base could
@@ -613,23 +616,34 @@ def _expected_state(
     return state, absent
 
 
+def _state_shapes(state: Mapping[str, Any]) -> dict[str, Optional[tuple[int, ...]]]:
+    """``{key: shape}`` of a state's tensors; ``None`` for an uninitialized
+    lazy parameter or buffer, whose shape is not known yet."""
+    import torch
+    from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
+
+    return {
+        key: None if isinstance(value, (UninitializedParameter, UninitializedBuffer)) else tuple(value.shape)
+        for key, value in state.items()
+        if isinstance(value, torch.Tensor)
+    }
+
+
 def _topology_problems(
     net: nn.Module, base_state: Mapping[str, Optional[_Shape]], transforms: Sequence[NNCheckpointTransform]
 ) -> list[str]:
     """How ``net`` differs from its base plus the recorded recipe: tensor
     names, the shapes the recipe and the base fix, and each target's
     module and configuration."""
-    import torch
-
     from .peft.lora import LoRALinear
 
-    outcome = _expected_state(base_state, transforms)
-    if outcome is None:
-        return []
-    expected, absent = outcome
+    if not all(_replayable(t) for t in transforms):
+        return []  # a train-end transform (QAT) rebuilds its own topology
+    operations = [TransformOp.from_checkpoint_transform(t) for t in transforms]
+    expected, absent = _expected_state(base_state, operations)
     if absent:
         return absent
-    actual = {key: tuple(value.shape) for key, value in net.state_dict().items() if isinstance(value, torch.Tensor)}
+    actual = _state_shapes(net.state_dict())
     problems: list[str] = []
     unexpected, missing = sorted(set(actual) - set(expected)), sorted(set(expected) - set(actual))
     if unexpected or missing:
@@ -642,8 +656,7 @@ def _topology_problems(
             want is not None and want != got for want, got in zip(shape, live, strict=False)
         ):
             problems.append(f"{key} has shape {live}, its recipe and base give {shape}")
-    for transform in _recipe_transforms(transforms):
-        op = TransformOp.from_checkpoint_transform(transform)
+    for op in operations:
         for path in op.targets:
             try:
                 module = net.get_submodule(path)
