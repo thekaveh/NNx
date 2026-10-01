@@ -74,7 +74,14 @@ model = GenerativeNNModel(net_params=net_params, params=model_params,
 
 # 3. Train with the causal-LM task: (inputs, targets) windows are already
 #    aligned, so nothing is shifted again; see examples/11_tinystories_lm.py.
+from torch.utils.data import TensorDataset
+
 from nnx.lm_tasks import CausalLMTask
+
+ids = [i for text in corpus for i in tk.encode(text).ids]
+windows = torch.tensor([ids[i : i + 5] for i in range(len(ids) - 4)])
+train_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4, shuffle=True)
+val_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4)
 
 task = CausalLMTask(vocab_size=tokenizer.vocab_size, alignment="pre_shifted")
 run = model.train(
@@ -258,8 +265,10 @@ purely opt-in.
     valid positions with the valid count as its denominator, so gradient
     accumulation normalizes by the window's **valid tokens**, not by the
     batch count. An all-masked microbatch contributes nothing; an
-    all-masked window takes no optimizer, scaler or scheduler step and its
-    gradients are cleared.
+    all-masked window takes no optimizer or scaler step and its gradients
+    are cleared. Schedulers still advance once per epoch; a plateau
+    scheduler skips an epoch whose validation record is unavailable, and
+    such an epoch is never elected BEST in place of a training loss.
   - `task.eval_step()` reports the epoch's **unsmoothed** NLL — total
     valid-token NLL over the valid-token count, independent of batching and
     padding — as the record's `loss` and `metrics["nll"]`, plus
@@ -270,8 +279,15 @@ purely opt-in.
     validation NLL.
   - The task configuration (and an optional declared tokenizer identity)
     is checkpointed component state `"lm.causal_task"` with the valid
-    tokens trained on; a resume with another configuration is refused
-    before the first resumed update.
+    tokens the run's objective scored (from 0 for each fresh run; a window
+    the engine then skips is still counted); a resume with another
+    configuration is refused before the first resumed update.
+  - Batches: `"shift_inputs"` reads token ids, `(ids, loss_mask)` or a
+    mapping `{"input_ids", "labels"?, "loss_mask"?}` whose HuggingFace-style
+    `labels` (unshifted, `-100` where not scored) shift with the ids;
+    `"pre_shifted"` reads `(inputs, targets[, loss_mask])` or
+    `{"inputs", "targets", "loss_mask"?}`. A mapping's `attention_mask` is
+    ignored. `extra_metrics` do not apply to the task and are refused.
 
   A custom `train_step_fn` still works for anything else (diffusion / KD /
   SimCLR / Mixup / CutMix follow that pattern).

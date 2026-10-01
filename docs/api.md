@@ -5001,6 +5001,20 @@ nnx.lm_tasks.CausalLMTask.split(self, batch: 'Any') -> 'tuple[torch.Tensor, torc
 
 ``(inputs, targets, loss_mask)`` for one batch, aligned once (see the module docstring), with shapes, dtypes and ids checked.
 
+**Details**
+
+```text
+``"shift_inputs"`` takes token ids ``(B, T)``, ``(ids,)``, ``(ids,
+loss_mask)`` or a mapping ``{"input_ids", "labels"?, "loss_mask"?}``
+— HuggingFace-style ``labels`` sit at the ids' positions (unshifted,
+``ignore_id`` where not scored) and are shifted with them.
+``"pre_shifted"`` takes ``(inputs, targets[, loss_mask])`` or a
+mapping ``{"inputs", "targets", "loss_mask"?}``. A loss mask is
+boolean or 0/1 and covers the ids (``"shift_inputs"``) or the
+targets (``"pre_shifted"``). A mapping's ``attention_mask`` is
+ignored: a loss mask is never an attention mask.
+```
+
 ##### `nnx.lm_tasks.CausalLMTask.valid`
 
 ```python
@@ -5048,7 +5062,7 @@ No public description is currently available.
 class nnx.lm_tasks.CausalLMObjective(task: 'CausalLMTask', *, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-The task's training objective (see :meth:`CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens trained on.
+The task's training objective (see :meth:`CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens the run's objective has scored (counted from 0 for each fresh run, restored on resume; a window the engine then skips — a non-finite loss, an AMP overflow — is still counted).
 
 ##### `nnx.lm_tasks.CausalLMObjective.component_spec`
 

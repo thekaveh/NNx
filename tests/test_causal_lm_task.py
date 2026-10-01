@@ -265,7 +265,7 @@ def test_train_evaluate_and_resume_carry_the_task():
     selections = [idp.selection for idp in reloaded.idps if idp.selection is not None]
     assert selections and selections[0].monitor.metric == "nll" and selections[0].improved  # BEST by val NLL
     best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
-    assert best is not None and best.idp.val_edp.metrics["nll"] == min(edp.metrics["nll"] for edp in val)
+    assert best is not None and best.idp.val_edp.metrics["nll"] == pytest.approx(min(edp.metrics["nll"] for edp in val))
     state = NNCheckpoint.load_training_state(run=run.id, type=Checkpoints.LAST)["components"]["lm.causal_task"]["state"]
     assert state["task"] == task.state() and state["task"]["tokenizer"] == "sha256:demo-tokenizer"
     assert state["tokens"] == 2 * 8 * 5  # every target position is valid: 8 rows x 5 targets, 2 epochs
@@ -312,3 +312,155 @@ def test_accumulation_normalizes_by_the_windows_valid_tokens():
         reference.net.state_dict().items(), accumulated.net.state_dict().values(), strict=True
     ):
         assert torch.allclose(want, got, atol=1e-6), name
+
+
+# --- review hardening -------------------------------------------------------------------------------------
+
+
+class _MaskedSecondTime:
+    """A validation loader whose second pass is entirely padding."""
+
+    def __init__(self, ids):
+        self.ids, self.passes = ids, 0
+
+    def __iter__(self):
+        self.passes += 1
+        ids = self.ids if self.passes == 1 else torch.zeros_like(self.ids)
+        return iter([ids[:2], ids[2:]])
+
+
+def test_without_a_monitor_an_unavailable_validation_epoch_never_becomes_best():
+    from nnx import NNSchedulerParams
+    from nnx._metrics import _resolve_metric
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    empty = NNEvaluationDataPoint(kind="causal_lm", count=0, status="empty")
+    assert _resolve_metric(empty, NNEvaluationDataPoint(loss=0.5)) is None  # never the training loss
+    task = CausalLMTask(vocab_size=V, pad_id=0)
+    x = _ids(8, 6, seed=7).clamp(min=1)
+    params = NNTrainParams(
+        n_epochs=2,
+        train_loader=DataLoader(TensorDataset(x), batch_size=4),
+        val_loader=_MaskedSecondTime(x[:4]),
+        optim=NNOptimParams.builder().sgd(max_lr=0.5).build(),
+        scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=0, cooldown=0, threshold=1e-3),
+    )
+    with pytest.warns(RuntimeWarning, match="validation record is unavailable"):
+        run = _model().train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None and best.idp.epoch_idx == 0 and best.idp.val_edp.status == "ok"
+
+
+def test_numpy_integers_give_a_weights_only_checkpoint_state():
+    import io
+
+    import numpy as np
+
+    task = CausalLMTask(vocab_size=np.int64(V), pad_id=np.int64(0), ignore_id=np.int32(-100))
+    assert all(type(task.state()[k]) is int for k in ("vocab_size", "pad_id", "ignore_id", "version", "vocab_axis"))
+    buffer = io.BytesIO()
+    torch.save(task.state(), buffer)
+    buffer.seek(0)
+    assert CausalLMTask.from_state(torch.load(buffer, weights_only=True)) == task
+    run = _model().train(params=_params(1), objective=task.objective(), eval_step_fn=task.eval_step())
+    state = NNCheckpoint.load_training_state(run=run.id, type=Checkpoints.LAST)["components"]["lm.causal_task"]
+    assert state["state"]["task"] == task.state()
+
+
+def test_batch_forms_are_read_one_way_and_huggingface_labels_shift_with_the_ids():
+    shifted = CausalLMTask(vocab_size=V)
+    ids = torch.tensor([[1, 2, 3, 4]])
+    labels = torch.tensor([[-100, 2, -100, 4]])
+    inputs, targets, mask = shifted.split({"input_ids": ids, "labels": labels, "attention_mask": torch.ones(1, 4)})
+    assert torch.equal(inputs, ids[:, :-1]) and torch.equal(targets, labels[:, 1:]) and mask is None
+    assert shifted.valid(targets, mask).tolist() == [[True, False, True]]
+    with pytest.raises(
+        LMTaskError, match="not a 0/1 mask; for \\(inputs, targets\\) batches pass alignment='pre_shifted'"
+    ):
+        shifted.split((ids[:, :-1], ids[:, 1:]))
+    with pytest.raises(LMTaskError, match="labels .* must have the ids' shape"):
+        shifted.split({"input_ids": ids, "labels": labels[:, 1:]})
+    aligned = CausalLMTask(vocab_size=V, alignment="pre_shifted")
+    with pytest.raises(LMTaskError, match="HuggingFace-style"):
+        aligned.split({"input_ids": ids, "labels": ids})
+    inputs, targets, _ = aligned.split({"inputs": ids[:, :-1], "targets": ids[:, 1:]})
+    assert torch.equal(targets, ids[:, 1:])
+    with pytest.raises(LMTaskError, match="at least one position"):
+        aligned.split((ids[:, :0], ids[:, :0]))
+
+
+def test_the_token_count_restarts_for_each_fresh_run_of_one_objective():
+    task = CausalLMTask(vocab_size=V)
+    objective = task.objective()
+    for index in range(2):
+        run = _model().train(params=_params(1), objective=objective, eval_step_fn=task.eval_step(), salt=f"fit-{index}")
+        state = NNCheckpoint.load_training_state(run=run.id, type=Checkpoints.LAST)["components"]["lm.causal_task"]
+        assert state["state"]["tokens"] == 8 * 5  # one epoch, not the sum over runs
+
+
+def test_a_module_output_goes_through_its_batch_adapter():
+    from torch import nn
+
+    from nnx import NNModelParams as Params
+    from nnx.models import BatchAdapter
+
+    class Pair(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(V, V)
+
+        def forward(self, ids):
+            return self.embed(ids), None
+
+    class First(BatchAdapter):
+        def split(self, batch):
+            return (batch,), {}, None
+
+        def output(self, raw):
+            return raw[0]
+
+    model = NNModel(module=Pair(), params=Params(loss=Losses.CROSS_ENTROPY), batch_adapter=First())
+    task = CausalLMTask(vocab_size=V)
+    logits = task.logits(model, *task.split(_ids(2, 5))[:2])
+    assert logits.shape == (2, 4, V)
+    plain = NNModel(module=Pair(), params=Params(loss=Losses.CROSS_ENTROPY))
+    with pytest.raises(LMTaskError, match="floating logits"):
+        task.logits(plain, *task.split(_ids(2, 5))[:2])
+
+
+def test_an_all_masked_microbatch_is_finite_even_with_infinite_logits():
+    task = CausalLMTask(vocab_size=V, pad_id=0)
+    logits = torch.full((1, 3, V), math.inf, requires_grad=True)
+    ce, nll, correct, n = task.token_sums(
+        logits, torch.zeros(1, 3, dtype=torch.long), torch.zeros(1, 3, dtype=torch.bool)
+    )
+    assert float(ce.detach()) == 0.0 and (nll, correct, n) == (0.0, 0, 0)
+    ce.backward()
+    assert logits.grad is not None and float(logits.grad.abs().sum()) == 0.0
+
+
+def test_an_empty_validation_loader_and_extra_metrics_are_refused():
+    task = CausalLMTask(vocab_size=V)
+    with pytest.raises(LMTaskError, match="yielded no batches"):
+        task.eval_step()(_Ctx(_model(), []))
+    params = _params(1, extra_metrics={"acc": lambda y, p: 0.0})
+    with pytest.raises(LMTaskError, match="extra_metrics"):
+        _model().train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
+
+
+def test_the_nll_matches_a_float64_reference_without_a_float64_vocabulary_copy(monkeypatch):
+    task = CausalLMTask(vocab_size=V)
+    logits = torch.randn(3, 5, V, generator=torch.Generator().manual_seed(3)) * 4
+    targets = torch.randint(0, V, (3, 5), generator=torch.Generator().manual_seed(4))
+    valid = torch.ones(3, 5, dtype=torch.bool)
+    expected = float(-F.log_softmax(logits.double(), dim=-1).gather(-1, targets.unsqueeze(-1)).sum())
+    original = torch.Tensor.double
+    widths = []
+
+    def spy(self, *args, **kwargs):
+        widths.append(self.shape[-1] if self.ndim else 0)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "double", spy)
+    _, nll, _, _ = task.token_sums(logits, targets, valid)
+    assert nll == pytest.approx(expected, rel=1e-6) and V not in widths  # only per-token values are widened

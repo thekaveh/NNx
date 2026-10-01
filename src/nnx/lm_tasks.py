@@ -23,8 +23,10 @@ checked before any forward pass.
   term per microbatch, the (smoothed) cross-entropy **sum** over valid
   positions with the valid count as its denominator, so accumulation
   windows normalize by the window's valid tokens. An all-masked microbatch
-  contributes nothing, and an all-masked window takes no optimizer, scaler
-  or scheduler step (its gradients are cleared). The task configuration is
+  contributes nothing, and an all-masked window takes no optimizer or
+  scaler step (its gradients are cleared; schedulers still advance once per
+  epoch, and a plateau scheduler skips an epoch whose validation record is
+  unavailable). The task configuration is
   checkpointed component state (``"lm.causal_task"``): a resume with another
   configuration is refused before the first resumed update.
 - :meth:`CausalLMTask.eval_step` — an ``eval_step_fn``: the epoch's
@@ -126,16 +128,19 @@ class CausalLMTask:
             pad = _integer(self.pad_id, "pad_id")
             if not 0 <= pad < vocab:
                 raise LMTaskError(f"pad_id {pad} is outside the vocabulary 0..{vocab - 1}")
+            object.__setattr__(self, "pad_id", pad)  # a builtin int: checkpoint state stays weights_only-safe
         smoothing = self.smoothing
         if isinstance(smoothing, bool) or not isinstance(smoothing, numbers.Real) or not 0.0 <= smoothing < 1.0:
             raise LMTaskError(f"smoothing must be in [0, 1), got {smoothing!r}")
         object.__setattr__(self, "smoothing", float(smoothing))
-        if self.vocab_axis not in (-1,):
+        if isinstance(self.vocab_axis, bool) or self.vocab_axis not in (-1,):
             raise LMTaskError(f"vocab_axis must be -1 (the logits' last axis), got {self.vocab_axis!r}")
+        object.__setattr__(self, "vocab_axis", -1)
         if self.tokenizer is not None and (not isinstance(self.tokenizer, str) or not self.tokenizer):
             raise LMTaskError(f"tokenizer must be a non-empty identity string or None, got {self.tokenizer!r}")
-        if self.version != TASK_VERSION:
+        if isinstance(self.version, bool) or self.version != TASK_VERSION:
             raise LMTaskError(f"this NNx supports causal-LM task version {TASK_VERSION}, got {self.version!r}")
+        object.__setattr__(self, "version", TASK_VERSION)
         object.__setattr__(self, "vocab_size", vocab)
         object.__setattr__(self, "ignore_id", ignore)
 
@@ -168,49 +173,102 @@ class CausalLMTask:
 
     def split(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """``(inputs, targets, loss_mask)`` for one batch, aligned once (see
-        the module docstring), with shapes, dtypes and ids checked."""
-        loss_mask = None
+        the module docstring), with shapes, dtypes and ids checked.
+
+        ``"shift_inputs"`` takes token ids ``(B, T)``, ``(ids,)``, ``(ids,
+        loss_mask)`` or a mapping ``{"input_ids", "labels"?, "loss_mask"?}``
+        — HuggingFace-style ``labels`` sit at the ids' positions (unshifted,
+        ``ignore_id`` where not scored) and are shifted with them.
+        ``"pre_shifted"`` takes ``(inputs, targets[, loss_mask])`` or a
+        mapping ``{"inputs", "targets", "loss_mask"?}``. A loss mask is
+        boolean or 0/1 and covers the ids (``"shift_inputs"``) or the
+        targets (``"pre_shifted"``). A mapping's ``attention_mask`` is
+        ignored: a loss mask is never an attention mask."""
         if isinstance(batch, Mapping):
-            ids = batch.get("input_ids")
-            labels = batch.get("labels")
-            loss_mask = batch.get("loss_mask")
-            parts: tuple[Any, ...] = (ids,) if labels is None else (ids, labels)
-        elif isinstance(batch, torch.Tensor):
-            parts = (batch,)
+            return self._split_mapping(batch)
+        if isinstance(batch, torch.Tensor):
+            parts: tuple[Any, ...] = (batch,)
         elif isinstance(batch, Sequence) and not isinstance(batch, (str, bytes)):
             parts = tuple(batch)
         else:
             raise LMTaskError(f"a causal-LM batch is a tensor, a tuple or a mapping, got {type(batch).__name__}")
         if self.alignment == "shift_inputs":
-            if len(parts) not in (1, 2) or (len(parts) == 2 and loss_mask is not None):
+            if len(parts) not in (1, 2):
                 raise LMTaskError(
                     "alignment='shift_inputs' takes token ids, (ids,) or (ids, loss_mask); got "
                     f"{len(parts)} parts — pass alignment='pre_shifted' for (inputs, targets) batches"
                 )
-            ids = self._ids(parts[0], "token ids")
-            if len(parts) == 2:
-                loss_mask = parts[1]
-            if ids.shape[1] < 2:
-                raise LMTaskError(f"alignment='shift_inputs' needs sequences of at least 2 tokens, got {ids.shape[1]}")
-            inputs, targets = ids[:, :-1], ids[:, 1:]
-            if loss_mask is not None:
-                loss_mask = self._mask(loss_mask, ids.shape)[:, 1:]  # a mask over ids scores the target positions
+            mask = parts[1] if len(parts) == 2 else None
+            if isinstance(mask, torch.Tensor) and not mask.is_floating_point() and mask.dtype != torch.bool:
+                if not bool(((mask == 0) | (mask == 1)).all()):
+                    raise LMTaskError(
+                        "alignment='shift_inputs' reads (ids, loss_mask), and the second part is not a 0/1 mask; "
+                        "for (inputs, targets) batches pass alignment='pre_shifted'"
+                    )
+            return self._shifted(parts[0], None, mask)
+        if len(parts) not in (2, 3):
+            raise LMTaskError(
+                f"alignment='pre_shifted' takes (inputs, targets) or (inputs, targets, loss_mask); got {len(parts)} parts"
+            )
+        return self._aligned(parts[0], parts[1], parts[2] if len(parts) == 3 else None)
+
+    def _split_mapping(self, batch: Mapping[str, Any]) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        keys = set(batch)
+        if self.alignment == "shift_inputs":
+            unknown = sorted(keys - {"input_ids", "labels", "loss_mask", "attention_mask"})
+            if "input_ids" not in keys or unknown:
+                raise LMTaskError(
+                    "alignment='shift_inputs' reads a mapping {'input_ids', 'labels'?, 'loss_mask'?}; "
+                    f"got keys {sorted(keys)}"
+                    + (" — pass alignment='pre_shifted' for inputs/targets" if unknown else "")
+                )
+            return self._shifted(batch["input_ids"], batch.get("labels"), batch.get("loss_mask"))
+        unknown = sorted(keys - {"inputs", "targets", "loss_mask", "attention_mask"})
+        if not {"inputs", "targets"} <= keys or unknown:
+            hint = (
+                " — {'input_ids', 'labels'} is HuggingFace-style (labels unshifted): pass alignment='shift_inputs'"
+                if "input_ids" in keys
+                else ""
+            )
+            raise LMTaskError(
+                f"alignment='pre_shifted' reads a mapping {{'inputs', 'targets', 'loss_mask'?}}; got keys {sorted(keys)}"
+                + hint
+            )
+        return self._aligned(batch["inputs"], batch["targets"], batch.get("loss_mask"))
+
+    def _shifted(
+        self, ids: Any, labels: Any, loss_mask: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        ids = self._ids(ids, "token ids")
+        if ids.shape[1] < 2:
+            raise LMTaskError(f"alignment='shift_inputs' needs sequences of at least 2 tokens, got {ids.shape[1]}")
+        if labels is None:
+            source = ids
         else:
-            if len(parts) not in (2, 3) or (len(parts) == 3 and loss_mask is not None):
-                raise LMTaskError(
-                    "alignment='pre_shifted' takes (inputs, targets) or (inputs, targets, loss_mask); got "
-                    f"{len(parts)} parts"
-                )
-            inputs = self._ids(parts[0], "inputs")
-            targets = self._ids(parts[1], "targets")
-            if inputs.shape != targets.shape:
-                raise LMTaskError(
-                    f"pre-shifted inputs {tuple(inputs.shape)} and targets {tuple(targets.shape)} differ in shape"
-                )
-            if len(parts) == 3:
-                loss_mask = parts[2]
-            if loss_mask is not None:
-                loss_mask = self._mask(loss_mask, targets.shape)
+            source = self._ids(labels, "labels")
+            if source.shape != ids.shape:
+                raise LMTaskError(f"labels {tuple(source.shape)} must have the ids' shape {tuple(ids.shape)}")
+        inputs, targets = ids[:, :-1], source[:, 1:]
+        mask = None if loss_mask is None else self._mask(loss_mask, ids.shape)[:, 1:]  # scores the target positions
+        return self._checked(inputs, targets, mask)
+
+    def _aligned(
+        self, inputs: Any, targets: Any, loss_mask: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        inputs = self._ids(inputs, "inputs")
+        targets = self._ids(targets, "targets")
+        if inputs.shape != targets.shape:
+            raise LMTaskError(
+                f"pre-shifted inputs {tuple(inputs.shape)} and targets {tuple(targets.shape)} differ in shape"
+            )
+        if inputs.shape[1] < 1:
+            raise LMTaskError("pre-shifted windows need at least one position")
+        mask = None if loss_mask is None else self._mask(loss_mask, targets.shape)
+        return self._checked(inputs, targets, mask)
+
+    def _checked(
+        self, inputs: torch.Tensor, targets: torch.Tensor, loss_mask: Optional[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         bad_inputs = (inputs < 0) | (inputs >= self.vocab_size)
         if bool(bad_inputs.any()):
             raise LMTaskError(f"input ids must be in 0..{self.vocab_size - 1}; found {inputs[bad_inputs][:5].tolist()}")
@@ -256,8 +314,14 @@ class CausalLMTask:
 
     def logits(self, model: Any, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """The model's logits ``(B, T, V)`` for ``inputs``, checked."""
-        output = model.net(inputs.to(model.device))
-        logits = getattr(output, "logits", output)
+        raw = model.net(inputs.to(model.device))
+        logits = getattr(raw, "logits", None)
+        if logits is None:
+            adapter = getattr(model, "_batch_adapter", None)  # a registered module's own output rule (FEAT-006)
+            try:
+                logits = raw if adapter is None else adapter.output(raw)
+            except TypeError as error:
+                raise LMTaskError(f"the model must return floating logits: {error}") from error
         if not isinstance(logits, torch.Tensor) or not logits.is_floating_point():
             raise LMTaskError(f"the model must return floating logits, got {type(logits).__name__}")
         expected = (*targets.shape, self.vocab_size)
@@ -276,15 +340,18 @@ class CausalLMTask:
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
-        if n == 0:
-            return logits.sum() * 0.0, 0.0, 0, 0
+        if n == 0:  # an empty sum keeps the graph and stays finite whatever the logits hold
+            return logits.reshape(-1)[:0].sum(), 0.0, 0, 0
         flat = logits[valid]  # (n, V)
         chosen = targets[valid]
         ce = torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
         with torch.no_grad():
-            log_p = torch.log_softmax(flat.detach().double(), dim=-1)
-            nll = float(-log_p.gather(1, chosen.unsqueeze(1)).sum())
-            correct = int((flat.detach().argmax(dim=-1) == chosen).sum())
+            detached = flat.detach()
+            # Per-token NLL in the logits' dtype (no full-vocabulary float64
+            # copy), summed in float64.
+            per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
+            nll = float(per_token.double().sum())
+            correct = int((detached.argmax(dim=-1) == chosen).sum())
         return ce, nll, correct, n
 
     # ---------- training and evaluation ----------
@@ -308,23 +375,36 @@ def _record(*, loss: Optional[float], nll: float, correct: int, n: int, with_per
     return NNEvaluationDataPoint(loss=loss, kind=KIND, count=n, status="ok", metrics=metrics)
 
 
+def _no_extra_metrics(ctx: Any) -> None:
+    if getattr(ctx, "extra_metrics", None):
+        raise LMTaskError(
+            "extra_metrics (y_true, y_pred callables) do not apply to the causal-LM task; its records carry "
+            "nll, perplexity and token_accuracy — compute anything else in your own eval_step_fn"
+        )
+
+
 class CausalLMObjective(Objective):
     """The task's training objective (see :meth:`CausalLMTask.objective`):
     a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid
     positions (smoothed when the task smooths) over the valid count. Its
     record's ``loss`` is that microbatch's term value and ``metrics`` its
     unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component
-    ``"lm.causal_task"``: the task configuration and the valid tokens
-    trained on."""
+    ``"lm.causal_task"``: the task configuration and the valid tokens the
+    run's objective has scored (counted from 0 for each fresh run, restored
+    on resume; a window the engine then skips — a non-finite loss, an AMP
+    overflow — is still counted)."""
 
     def __init__(self, task: CausalLMTask, *, nonfinite: str = "fail") -> None:
         super().__init__(nonfinite=nonfinite)
         if not isinstance(task, CausalLMTask):
             raise LMTaskError(f"a CausalLMTask is needed, got {type(task).__name__}")
         self.task = task
-        self.tokens = 0  # valid target tokens seen in training (all runs of this objective)
+        self.tokens = 0  # valid target tokens scored in this run (restored on resume)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
+        _no_extra_metrics(ctx)
+        if ctx.epoch_idx == 0 and ctx.batch_idx == 0:
+            self.tokens = 0  # a fresh run (a resume starts at a later epoch, its count restored)
         model = ctx.model
         model.net.train()
         inputs, targets, loss_mask = self.task.split(ctx.batch)
@@ -378,13 +458,15 @@ class CausalLMEval:
     def __call__(self, ctx: Any) -> Any:
         from .utils import _capture_training_modes, _restore_training_modes
 
+        _no_extra_metrics(ctx)
         model = ctx.model
         modes = _capture_training_modes(model.net)
-        total_nll, total_correct, total = 0.0, 0, 0
+        total_nll, total_correct, total, batches = 0.0, 0, 0, 0
         try:
             model.net.eval()
             with torch.no_grad():
                 for batch in ctx.val_loader:
+                    batches += 1
                     inputs, targets, loss_mask = self.task.split(batch)
                     valid = self.task.valid(targets, loss_mask)
                     logits = self.task.logits(model, inputs, targets)
@@ -394,5 +476,7 @@ class CausalLMEval:
                     total += n
         finally:
             _restore_training_modes(modes)
+        if batches == 0:
+            raise LMTaskError("the validation loader yielded no batches")
         mean = total_nll / total if total else None
         return _record(loss=mean, nll=total_nll, correct=total_correct, n=total, with_perplexity=True)
