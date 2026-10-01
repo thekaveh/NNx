@@ -670,6 +670,44 @@ def test_a_child_of_a_parent_still_training_or_retrained_since_is_named_by_what_
     assert pair[0].config != pair[1].config
 
 
+def test_continuations_of_killed_replicate_parents_pool_by_the_epoch_they_started_from(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+
+    class Kill(Callback):
+        def __init__(self, at):
+            self.at = at
+
+        def on_epoch_end(self, ctx):
+            if ctx.epoch == self.at:
+                raise RuntimeError("preempted")
+
+    def saved_runs():
+        entries = os.listdir("runs") if os.path.isdir("runs") else []
+        return {e for e in entries if os.path.isfile(os.path.join("runs", e, "run.yaml")) and e != "best"}
+
+    parents = []
+    for seed, at in ((0, 2), (1, 2), (2, 1)):
+        before = saved_runs()
+        with pytest.raises(RuntimeError, match="preempted"):
+            _model().train(params=_fit_params(seed, n_epochs=4), provenance=MANIFEST, callbacks=[Kill(at)])
+        (run_id,) = saved_runs() - before
+        path = os.path.join("runs", run_id, "attempt.json")
+        state = json.loads(open(path).read())
+        state.update(status="running", finished_at=None)  # what a SIGKILL leaves behind
+        with open(path, "w") as handle:
+            json.dump(state, handle)
+        parents.append(run_id)
+    children = [
+        _model().train(params=_fit_params(10 + i, n_epochs=4, resume_from_run_id=parent), provenance=MANIFEST)
+        for i, parent in enumerate(parents)
+    ]
+    found = observations_from_runs([run.id for run in children], metric=loss)
+    assert found[0].config == found[1].config  # replicate parents killed at one epoch: their continuations pool
+    assert found[2].config != found[0].config  # one killed earlier started from another epoch
+
+
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
     from nnx import MonitorSpec
 
