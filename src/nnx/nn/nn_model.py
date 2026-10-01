@@ -24,7 +24,6 @@ from .._scheduler_clock import (
     SchedulerClock,
     listens,
     planned_updates,
-    update_horizon,
     uses_update_clock,
 )
 from .._update_engine import scaler_step
@@ -2062,14 +2061,7 @@ class NNModel(_HubMixinBase):
         scheduler = _monitored_plateau(built, optimizer, monitor)
         clock: Optional[SchedulerClock] = None
         if update_clock:
-            horizon = update_horizon(params.scheduler, n_updates)
-            clock = SchedulerClock(
-                "default",
-                scheduler,
-                horizon=horizon,
-                planned=n_updates,
-                default_budget=horizon is not None and params.scheduler.total_steps is None,
-            )
+            clock = SchedulerClock.for_schedule("default", scheduler, params.scheduler, planned=n_updates)
             registry.register(clock)
         scaler = self._build_grad_scaler()
         # FEAT-004: an objective's updates belong to the shared engine; its

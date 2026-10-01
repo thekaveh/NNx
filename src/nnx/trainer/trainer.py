@@ -50,7 +50,6 @@ from .._scheduler_clock import (
     SchedulerClock,
     component_name,
     planned_updates,
-    update_horizon,
     uses_update_clock,
 )
 from ..components import ComponentRegistry, ResumeStatus
@@ -459,14 +458,13 @@ class Trainer:
         # own optimizer's committed updates; auto_step_schedulers=False
         # detaches them (counted, never stepped), restored state included.
         clocks = {
-            name: SchedulerClock(
+            name: SchedulerClock.for_schedule(
                 name,
                 schedulers[name],
-                horizon=update_horizon(params.schedulers[name], planned),
+                params.schedulers[name],
                 planned=planned,
                 attached=params.auto_step_schedulers,
                 component_name=component_name(name),
-                default_budget=params.schedulers[name].total_steps is None,
             )
             for name in optimizers
             if uses_update_clock(params.schedulers.get(name))

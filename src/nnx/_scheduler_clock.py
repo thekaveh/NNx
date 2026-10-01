@@ -93,16 +93,18 @@ def planned_updates(loader: Any, window: int, n_epochs: int) -> Optional[int]:
     return max(1, n_epochs * math.ceil(batches / max(1, window)))
 
 
-def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Optional[int]:
-    """The hard budget an update-clock scheduler may not step past: a
-    one-cycle / warmup-decay schedule's ``total_steps``, or the planned
-    updates it defaults to (``None`` for the open-ended kinds)."""
-    kind = getattr(scheduler_params, "kind", None)
-    if kind is None or str(kind) not in HORIZON_KINDS:
-        return None
-    if scheduler_params.total_steps is not None:
-        return scheduler_params.total_steps
-    return planned
+def budget_field(scheduler_params: Any) -> Optional[str]:
+    """The field holding an update-clock scheduler's hard budget: a
+    one-cycle / warmup-decay schedule's ``total_steps``, or the ``T_max``
+    of a cosine schedule that defaults it to the planned updates (past it
+    the rate would climb back up). ``None`` for the open-ended kinds and an
+    explicit ``T_max``, which torch lets a schedule run past on purpose."""
+    kind = str(getattr(scheduler_params, "kind", None))
+    if kind in HORIZON_KINDS:
+        return "total_steps"
+    if kind == "cosine_annealing" and getattr(scheduler_params, "T_max", None) is None:
+        return "T_max"
+    return None
 
 
 def component_name(owner: Optional[str] = None) -> str:
@@ -130,6 +132,7 @@ class SchedulerClock:
         planned: Optional[int] = None,
         attached: bool = True,
         component_name: str = "nnx.scheduler_clock",
+        budget_field: str = "total_steps",
         default_budget: bool = False,
     ) -> None:
         self.owner = owner
@@ -138,11 +141,31 @@ class SchedulerClock:
         self.planned = planned
         self.attached = attached
         self.component_name = component_name
-        # Whether the horizon is the planned updates (no explicit
-        # total_steps), so an overrun names len(train_loader) as its source.
+        # The field the horizon configures, and whether the horizon is the
+        # planned updates (the field unset), so an overrun names
+        # len(train_loader) as its source.
+        self.budget_field = budget_field
         self.default_budget = default_budget
         # (scheduler step, learning rate after it) since the epoch began.
         self.trace: list[tuple[int, float]] = []
+
+    @classmethod
+    def for_schedule(
+        cls, owner: str, scheduler: Any, scheduler_params: Any, *, planned: Optional[int], **options: Any
+    ) -> SchedulerClock:
+        """A clock for ``scheduler`` configured by ``scheduler_params``, its
+        horizon the configured budget or, unset, the ``planned`` updates."""
+        field = budget_field(scheduler_params)
+        explicit = getattr(scheduler_params, field) if field is not None else None
+        return cls(
+            owner,
+            scheduler,
+            horizon=explicit if explicit is not None else (planned if field is not None else None),
+            planned=planned,
+            budget_field=field or "total_steps",
+            default_budget=field is not None and explicit is None,
+            **options,
+        )
 
     @property
     def count(self) -> int:
@@ -161,11 +184,12 @@ class SchedulerClock:
                     f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's default "
                     f"budget of {self.horizon} optimizer updates, planned from len(train_loader); the loader "
                     "yielded more batches than its len() reports (an IterableDataset read by several workers "
-                    "can), so set total_steps to cover every update of the run"
+                    f"can), so set {self.budget_field} to cover every update of the run"
                 )
             raise ValueError(
                 f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's budget of "
-                f"{self.horizon} optimizer updates (total_steps); set total_steps to cover every update of the run"
+                f"{self.horizon} optimizer updates ({self.budget_field}); set {self.budget_field} to cover every "
+                "update of the run"
             )
         self.scheduler.step()
         self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
@@ -197,7 +221,7 @@ class SchedulerClock:
         if state.get("horizon") != self.horizon:
             problems.append(
                 f"the checkpoint's scheduler budget is {state.get('horizon')} optimizer updates, this run's is "
-                f"{self.horizon}; configure the same total_steps"
+                f"{self.horizon}; configure the same {self.budget_field}"
             )
         count = state.get("count")
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
@@ -205,7 +229,8 @@ class SchedulerClock:
         elif self.horizon is not None and self.planned is not None and count + self.planned > self.horizon:
             problems.append(
                 f"resuming at update {count} with {self.planned} planned updates would pass the scheduler's budget "
-                f"of {self.horizon} (total_steps); configure one horizon covering the original and resumed updates"
+                f"of {self.horizon} ({self.budget_field}); configure one horizon covering the original and resumed "
+                "updates"
             )
         return problems
 

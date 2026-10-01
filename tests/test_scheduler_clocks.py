@@ -891,3 +891,17 @@ def test_reports_are_authoritative():
     twice = LRMonitor()
     _train(_model(), accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1), callbacks=[twice], step=two_updates)
     assert len(twice.update_history) == 20
+
+
+# --- review round 9 ----------------------------------------------------------------------------------------
+
+
+def test_a_default_cosine_horizon_is_guarded_but_an_explicit_one_is_not():
+    # len() says 6 batches (12 planned updates over 2 epochs); 8 are yielded per epoch.
+    with pytest.raises(ValueError, match=r"default budget of 12 .*len\(train_loader\).*set T_max"):
+        _train(
+            _model(), accumulate=1, loader=_UnderReported(_batches(8)), scheduler=_sched(Schedulers.COSINE_ANNEALING)
+        )
+    monitor = LRMonitor()  # an explicit T_max may be passed on purpose, as torch allows
+    _train(_model(), accumulate=1, scheduler=_sched(Schedulers.COSINE_ANNEALING, T_max=4), callbacks=[monitor])
+    assert len(monitor.update_history) == 10
