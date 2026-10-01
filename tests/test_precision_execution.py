@@ -369,3 +369,71 @@ def test_from_checkpoint_re_resolves_on_the_destination_device():
         NNModel.from_checkpoint(cuda_fp16, device=Devices.CPU)
     overridden = NNModel.from_checkpoint(cuda_fp16, device=Devices.CPU, precision=PrecisionPolicy("bf16"))
     assert overridden.resolved_precision.effective == "bf16" and overridden.params.mixed_precision is False
+
+
+# --- review round 3 ----------------------------------------------------------------------------------------
+
+
+class _PerOptimizerScaler:
+    """Like GradScaler: one optimizer's gradients overflow at unscale_, step() skips only that optimizer, and
+    update() backs the scale off."""
+
+    def __init__(self, poisoned: torch.optim.Optimizer) -> None:
+        self.poisoned, self.value, self.seen_inf = poisoned, 4.0, False
+
+    def scale(self, tensor):
+        return tensor * self.value
+
+    def unscale_(self, optimizer):
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                if parameter.grad is not None:
+                    parameter.grad /= self.value
+                    if optimizer is self.poisoned:
+                        parameter.grad.fill_(float("inf"))
+                        self.seen_inf = True
+
+    def step(self, optimizer):
+        if optimizer is not self.poisoned:
+            optimizer.step()
+
+    def update(self):
+        if self.seen_inf:
+            self.value /= 2.0
+
+    def get_scale(self):
+        return self.value
+
+
+def test_a_multi_optimizer_fp16_window_is_all_or_nothing():
+    from nnx._update_engine import UpdateEngine
+    from nnx.nn.nn_model import _objective_microbatch
+
+    model = _model()
+    first, second = model.net.layers[0], model.net.layers[-1]
+    optimizers = {
+        "encoder": torch.optim.SGD(first.parameters(), lr=0.1),
+        "head": torch.optim.SGD([p for n, p in model.net.named_parameters() if not n.startswith("layers.0")], lr=0.1),
+    }
+    before = {key: value.clone() for key, value in model.net.state_dict().items()}
+    events: list = []
+    engine = UpdateEngine(
+        optimizers=optimizers,
+        scaler=_PerOptimizerScaler(optimizers["encoder"]),
+        clip_norms={},
+        listeners=[events.append],
+    )
+    _objective_microbatch(
+        engine,
+        supervised_objective(),
+        model=model,
+        batch=_batches(1)[0],
+        epoch_idx=0,
+        batch_idx=0,
+        extra_metrics=None,
+        close_window=True,
+    )
+    after = model.net.state_dict()
+    assert all(torch.equal(before[key], after[key]) for key in before)  # the head did not step alone
+    assert events == [] and engine.skipped == 1 and engine.commits == 0
+    assert second.weight.grad is None  # the window was released

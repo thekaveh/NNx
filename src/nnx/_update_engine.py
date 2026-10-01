@@ -242,6 +242,13 @@ class UpdateEngine:
             if self.scaler is not None:
                 for optimizer in self.optimizers.values():
                     self.scaler.unscale_(optimizer)
+                if not self._gradients_finite():
+                    # One window, one decision: the scaler would skip only the
+                    # optimizers that overflowed, so none steps (the update
+                    # still backs the scale off, from what unscale_ found).
+                    self.scaler.update()
+                    self.skipped += 1
+                    return ()
             elif not self._gradients_finite():
                 if self.nonfinite == "fail":
                     raise FloatingPointError(
@@ -342,9 +349,15 @@ def gradients_finite(params: Iterable[torch.Tensor]) -> bool:
         grad = param.grad
         if grad is None:
             continue
-        values = grad.coalesce().values() if grad.is_sparse else grad
-        by_device.setdefault(values.device, []).append(torch.isfinite(values).all())
-    return all(bool(torch.stack(flags).all()) for flags in by_device.values())
+        values = grad._values() if grad.is_sparse else grad
+        by_device.setdefault(values.device, []).append(values)
+    for grads in by_device.values():
+        # Max-abs norms: inf / nan exactly when an element is, and never an
+        # overflow of finite values; a few multi-tensor kernels per device.
+        norms = torch._foreach_norm(grads, float("inf"))
+        if not bool(torch.isfinite(torch.stack(norms)).all()):
+            return False
+    return True
 
 
 def _is_count(value: Any) -> bool:

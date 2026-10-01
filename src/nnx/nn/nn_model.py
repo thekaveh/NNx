@@ -669,11 +669,14 @@ def _classification_edp_for_loss(
     )
 
 
-def _check_resume_precision(training_state: Mapping[str, Any], precision: ResolvedPrecision) -> None:
+def _check_resume_precision(
+    training_state: Mapping[str, Any], precision: ResolvedPrecision, scaler: Optional[Any]
+) -> None:
     """Refuse a stateful resume into a different effective precision
-    (FEAT-028), before anything is restored. A sidecar written before
-    precision was recorded trained in fp16 exactly when it saved a scaler;
-    a weights-only warm start may switch."""
+    (FEAT-028), or with a scaler that appears or disappears, before anything
+    is restored. A sidecar written before precision was recorded trained in
+    fp16 exactly when it saved a scaler; a weights-only warm start may
+    switch."""
     record = training_state.get("precision")
     if isinstance(record, Mapping) and record.get("effective") is not None:
         saved = str(record["effective"])
@@ -683,6 +686,10 @@ def _check_resume_precision(training_state: Mapping[str, Any], precision: Resolv
         raise ValueError(
             f"resume precision mismatch: the checkpoint trained in {saved}, this run resolves {precision.effective}; "
             "resume with the same precision, or start from its weights with resume_mode='weights_only' to switch"
+        )
+    if (training_state.get("scaler") is None) != (scaler is None):
+        raise ValueError(
+            "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
         )
 
 
@@ -2226,11 +2233,7 @@ class NNModel(_HubMixinBase):
                 expected_topology = training_state.get("optimizer_topology")
                 if expected_topology is not None and expected_topology != resume_optimizer_topology:
                     raise ValueError("resume optimizer parameter topology does not match the checkpoint")
-                _check_resume_precision(training_state, precision)
-                if (training_state.get("scaler") is None) != (scaler is None):
-                    raise ValueError(
-                        "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
-                    )
+                _check_resume_precision(training_state, precision, scaler)
                 _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
                 completed_epoch = training_state.get("completed_epoch")
                 if completed_epoch is not None:

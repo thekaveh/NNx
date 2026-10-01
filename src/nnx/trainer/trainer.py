@@ -162,11 +162,9 @@ def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) ->
         return resolved
     if objective is not None:
         _warn_full_precision_objective(model)
-    return ResolvedPrecision(
-        requested=resolved.requested,
+    return replace(
+        resolved,
         effective="fp32",
-        device_type=resolved.device_type,
-        source="legacy",
         fallback_reason=(
             "Trainer.train never applies mixed_precision=True, on any device (NNModel.train applies it on CUDA); "
             "set NNModelParams.precision"
@@ -896,11 +894,7 @@ class Trainer:
         if precision is not None:
             # FEAT-028: the same effective precision, and a scaler exactly
             # when the checkpoint saved one — checked before anything moves.
-            _check_resume_precision(training_state, precision)
-        if (training_state.get("scaler") is None) != (scaler is None):
-            raise ValueError(
-                "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
-            )
+            _check_resume_precision(training_state, precision, scaler)
         component_plan = _plan_component_restore(registry, training_state)
         warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
 

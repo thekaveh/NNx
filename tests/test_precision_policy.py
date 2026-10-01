@@ -206,7 +206,7 @@ def test_run_inspection_reports_requested_effective_fallback_and_tf32_separately
     assert record is not None
     assert (record["requested"], record["effective"], record["fallback_reason"]) == ("bf16", "bf16", None)
     assert record["autocast_dtype"] == "bfloat16" and record["grad_scaler"] is False
-    assert set(record["tf32"]) == {"cuda_matmul", "cudnn"}  # reported, never set
+    assert set(record["tf32"]) == {"cuda_matmul", "cudnn_conv", "cudnn_rnn"}  # reported, never set
     assert record["tf32"]["cuda_matmul"] == torch.backends.cuda.matmul.allow_tf32
     assert not any("lr_finder" in item or "diffusion" in item for item in record["covers"])
     assert {"nnx.lr_finder", "nnx.diffusion.sampling"} <= set(record["not_covered"])
@@ -403,3 +403,31 @@ def test_inference_without_a_policy_does_not_read_tf32(monkeypatch):
     model.predict(torch.randn(2, 4))
     model.evaluate([(torch.randn(2, 4), torch.zeros(2, dtype=torch.long))])
     assert CountingBackend.reads == 0
+
+
+# --- review round 3 ----------------------------------------------------------------------------------------
+
+
+def test_cudnn_tf32_per_op_settings_are_reported_separately(monkeypatch):
+    from types import SimpleNamespace
+
+    from nnx.precision import _tf32
+
+    class Cudnn:
+        """Torch >= 2.9 with per-op settings: conv tf32, rnn ieee, the top level unset."""
+
+        fp32_precision = "none"
+        conv = SimpleNamespace(fp32_precision="tf32")
+        rnn = SimpleNamespace(fp32_precision="ieee")
+
+        @property
+        def allow_tf32(self):
+            raise RuntimeError("mix of the legacy and new APIs")
+
+    monkeypatch.setattr(torch.backends, "cudnn", Cudnn())
+    report = _tf32()
+    assert (report["cudnn_conv"], report["cudnn_rnn"]) == (True, False)
+
+
+def test_support_for_other_device_types_never_claims_a_reduced_mode():
+    assert precision_support("xpu")["xpu"] == {"fp32": "unverified", "fp16": "unsupported", "bf16": "unsupported"}

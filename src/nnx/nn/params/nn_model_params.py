@@ -64,20 +64,6 @@ class NNModelParams:
                     f"precision={self.precision.mode!r}; set precision alone"
                 )
 
-    def __setstate__(self, state: Any) -> None:
-        # A pickle stores the fields positionally; one written before a
-        # trailing field existed (task, precision) restores the fields it
-        # has and leaves the rest at their defaults.
-        for spec, value in zip(fields(self), state, strict=False):
-            object.__setattr__(self, spec.name, value)
-        for spec in fields(self)[len(state) :]:
-            if spec.default is MISSING:
-                raise TypeError(f"cannot restore NNModelParams: the pickle lacks {spec.name!r}")
-            object.__setattr__(self, spec.name, spec.default)
-
-    def __getstate__(self) -> list[Any]:
-        return [getattr(self, spec.name) for spec in fields(self)]
-
     def __str__(self) -> str:
         task = f", task={self.task}" if self.task is not None else ""
         precision = f", precision={self.precision.mode}" if self.precision is not None else ""
@@ -143,3 +129,25 @@ class NNModelParams:
             task=task,
             precision=PrecisionPolicy.from_state(state["precision"]) if state.get("precision") is not None else None,
         )
+
+
+def _getstate(self: NNModelParams) -> list[Any]:
+    return [getattr(self, spec.name) for spec in fields(self)]
+
+
+def _setstate(self: NNModelParams, state: Any) -> None:
+    # A pickle stores the fields positionally; one written before a trailing
+    # field existed (task, precision) restores the fields it has and leaves
+    # the rest at their defaults.
+    for spec, value in zip(fields(self), state, strict=False):
+        object.__setattr__(self, spec.name, value)
+    for spec in fields(self)[len(state) :]:
+        if spec.default is MISSING:
+            raise TypeError(f"cannot restore NNModelParams: the pickle lacks {spec.name!r}")
+        object.__setattr__(self, spec.name, spec.default)
+
+
+# Attached after the class exists: on Python 3.10, dataclass(slots=True)
+# replaces pickling hooks defined in the class body with its own.
+NNModelParams.__getstate__ = _getstate  # type: ignore[method-assign]
+NNModelParams.__setstate__ = _setstate  # type: ignore[method-assign]

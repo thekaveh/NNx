@@ -680,7 +680,8 @@ named optimizer once per committed update — each clipped with its own
 `grad_clip_norm`, all sharing one `accumulate_grad_batches` — and emits one
 event per named optimizer. An explicit `NNModelParams.precision` (FEAT-028)
 applies to `Trainer` objectives too — autocast around the objective, an FP16
-scaler checkpointed with the run — while `Trainer` step functions own every
+scaler checkpointed with the run, and an all-or-nothing window: when any
+optimizer's unscaled gradients overflow, none of them steps — while `Trainer` step functions own every
 update in full precision and refuse a reduced policy before any run is
 reserved. The legacy `mixed_precision` flag is not applied by `Trainer`: it
 runs objectives in full precision and warns when the flag asks for it on

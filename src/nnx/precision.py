@@ -149,17 +149,24 @@ def _tf32() -> dict[str, Optional[bool]]:
     """TF32 as torch is configured — reported beside the policy, never set
     by it. Torch >= 2.9's ``fp32_precision`` setting wins when made (its
     legacy ``allow_tf32`` read then raises); ``None`` when unreadable."""
-    report: dict[str, Optional[bool]] = {}
-    for name, backend in (("cuda_matmul", torch.backends.cuda.matmul), ("cudnn", torch.backends.cudnn)):
-        setting = getattr(backend, "fp32_precision", None)
+    cudnn = torch.backends.cudnn
+    return {
+        "cuda_matmul": _tf32_setting((torch.backends.cuda.matmul,), torch.backends.cuda.matmul),
+        # cuDNN's per-op settings (torch >= 2.9) win over its top-level one.
+        "cudnn_conv": _tf32_setting((getattr(cudnn, "conv", None), cudnn), cudnn),
+        "cudnn_rnn": _tf32_setting((getattr(cudnn, "rnn", None), cudnn), cudnn),
+    }
+
+
+def _tf32_setting(new_api: tuple[Any, ...], legacy: Any) -> Optional[bool]:
+    for backend in new_api:
+        setting = getattr(backend, "fp32_precision", None) if backend is not None else None
         if isinstance(setting, str) and setting not in ("", "none"):
-            report[name] = setting == "tf32"
-            continue
-        try:
-            report[name] = bool(backend.allow_tf32)
-        except (AttributeError, RuntimeError):
-            report[name] = None
-    return report
+            return setting == "tf32"
+    try:
+        return bool(legacy.allow_tf32)
+    except (AttributeError, RuntimeError):
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,8 +357,8 @@ def precision_support(device: Union[str, torch.device, None] = None) -> dict[str
         for mode in PRECISION_MODES:
             if (device_type, mode) in verified:
                 row[mode] = "verified"
-            elif device_type == "mps" and mode != "fp32" or device_type == "cpu" and mode == "fp16":
-                row[mode] = "unsupported"
+            elif mode != "fp32" and device_type != "cuda":
+                row[mode] = "unsupported"  # only CPU bf16 (above) and CUDA run a reduced mode
             elif not present.get(device_type, False):
                 row[mode] = "unverified"
             else:
