@@ -597,9 +597,12 @@ class Trainer:
                 )
                 for idx_batch, batch, is_last_batch in batches:
                     # The rate this batch trains with, for an update clock
-                    # (read before the step, which may step its scheduler —
-                    # through the clock, or itself when detached).
-                    lr_used = float(optimizers[primary].param_groups[0]["lr"]) if primary in clocks else None
+                    # NNx steps (read before the step, which may step it).
+                    lr_used = (
+                        float(optimizers[primary].param_groups[0]["lr"])
+                        if primary in clocks and clocks[primary].attached
+                        else None
+                    )
                     if engine is not None:
                         assert objective is not None
                         train_edp = _objective_microbatch(
@@ -696,7 +699,8 @@ class Trainer:
                     warnings.warn(
                         f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
                         "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
-                        "after each optimizer.step() the step function takes",
+                        "after each optimizer.step() the step function takes (no report is due for an epoch whose "
+                        "updates were all skipped)",
                         UserWarning,
                         stacklevel=4,
                     )

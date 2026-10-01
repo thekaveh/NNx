@@ -107,6 +107,16 @@ def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Opti
     return planned
 
 
+def chosen_period(scheduler: Any, scheduler_params: Any) -> Optional[int]:
+    """The cosine period a run built on purpose: the built scheduler's
+    ``T_max``, unless the configuration left it to default to the planned
+    updates (``None`` then, and for a non-cosine scheduler)."""
+    if not isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
+        return None
+    defaulted = str(getattr(scheduler_params, "kind", None)) == "cosine_annealing" and scheduler_params.T_max is None
+    return None if defaulted else int(scheduler.T_max)
+
+
 def component_name(owner: Optional[str] = None) -> str:
     """The checkpointed component name of an optimizer's clock: a
     filename-safe slug of its name, with a short hash of the original when
@@ -144,10 +154,10 @@ class SchedulerClock:
         # Whether the horizon is the planned updates (total_steps unset), so
         # an overrun names len(train_loader) as its source.
         self.default_budget = default_budget
-        # A cosine schedule (as built, a subclass's included) warns once
-        # when it passes its live T_max (past it the rate climbs back up),
-        # unless this run configured exactly that T_max — torch lets a
-        # schedule run past it on purpose. Live, because a stateful resume
+        # A cosine schedule warns once when it passes its live T_max (past
+        # it the rate climbs back up), unless that is the period this run
+        # chose — an explicit T_max, or a subclass's own — which torch lets
+        # a schedule run past on purpose. Live, because a stateful resume
         # restores the checkpoint's T_max.
         self.configured_period = configured_period
         self._period_warned = False
@@ -168,7 +178,7 @@ class SchedulerClock:
             horizon=horizon,
             planned=planned,
             default_budget=horizon is not None and scheduler_params.total_steps is None,
-            configured_period=getattr(scheduler_params, "T_max", None),
+            configured_period=chosen_period(scheduler, scheduler_params),
             **options,
         )
 

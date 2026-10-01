@@ -934,12 +934,11 @@ def test_a_default_period_cosine_run_resumes_and_warns_past_the_restored_period(
     assert "stateful resume keeps the checkpoint's T_max" in str(warned[0].message)
 
 
-# --- review round 12 ---------------------------------------------------------------------------------------
+# --- review rounds 12-13 ---------------------------------------------------------------------------------------
 
 
-@pytest.mark.filterwarnings("ignore:Detected call of `lr_scheduler.step\\(\\)`:UserWarning")
-def test_the_period_warning_follows_the_built_scheduler():
-    class Cosine(NNModel):  # a subclass building a cosine schedule for another kind
+def test_a_subclass_cosine_period_is_its_own_choice():
+    class Cosine(NNModel):  # a subclass building a short cosine period on purpose
         def _build_scheduler(self, optimizer, params):
             return lr_scheduler.CosineAnnealingLR(optimizer, T_max=4)
 
@@ -948,15 +947,8 @@ def test_the_period_warning_follows_the_built_scheduler():
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
-    with pytest.warns(UserWarning, match="passed its T_max of 4"):
-        _train(model, accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1))
-
-
-def test_a_detached_primary_records_the_rate_each_batch_trained_with():
-    def step(ctx):
-        result = _two_rate_step(ctx)
-        ctx.schedulers["a"].step()  # the step function owns its schedule
-        return result
-
-    run = Trainer(_model()).train(_two_optimizer_params(auto_step=False), trainer_step_fn=step)
-    assert [idp.lr for idp in run.idps] == pytest.approx([0.1 * 0.5**k for k in range(6)])
+    monitor = LRMonitor()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # run past on purpose: no period warning
+        _train(model, accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1), callbacks=[monitor])
+    assert len(monitor.update_history) == 10

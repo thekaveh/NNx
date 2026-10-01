@@ -2346,7 +2346,8 @@ class NNModel(_HubMixinBase):
                         warnings.warn(
                             f"epoch {idx_epoch}: the step function reported no optimizer update, so the "
                             "optimizer_update-clock scheduler did not step; call ctx.report_update() after each "
-                            "optimizer.step() the step function takes itself",
+                            "optimizer.step() the step function takes itself (default_train_step and finalize_step "
+                            "report theirs, and no report is due for an epoch whose updates were all skipped)",
                             UserWarning,
                             stacklevel=4,
                         )
