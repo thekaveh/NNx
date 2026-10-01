@@ -119,10 +119,13 @@ def decision_benchmark_offline_workflow(workdir: Path | None = None) -> None:
     write_records(path, collection.records)
     calls_after_collection = provider.model_calls
 
-    # 3. Replay: no provider, no network, no fitting.
+    # 3. Replay: no provider, no network, no fitting — the interval and the exports included.
     with _offline():
         records = read_records(path)
         report = evaluate(samples, records, split="animals-demo-v1")
+        interval = bootstrap_interval(samples, records, metric="nll", seed=0, resamples=500)
+        (workdir / "report.json").write_text(report.to_json())
+        (workdir / "report.csv").write_text(report.to_csv())
     assert provider.model_calls == calls_after_collection  # replay never called the provider
     print(report.text(), end="")
     pets, heldout = report.slices["in_family"], report.slices["heldout"]
@@ -130,13 +133,11 @@ def decision_benchmark_offline_workflow(workdir: Path | None = None) -> None:
     assert heldout.coverage.unsupported == 1 and heldout.metrics["accuracy"].reason == "no eligible rows"
     assert report.slices["perturbation:permutation"].metrics["accuracy"].value == 1.0
 
-    # 4. An interval over grouping units (the originals and their variants), and the exports.
-    interval = bootstrap_interval(samples, records, metric="nll", seed=0, resamples=500)
+    # 4. An interval over grouping units (the originals and their variants).
     print(
-        f"nll {interval.estimate:.4f}, 95% [{interval.low:.4f}, {interval.high:.4f}] over {interval.units} {interval.unit}s (seed {interval.seed})"
+        f"nll {interval.estimate:.4f}, 95% [{interval.low:.4f}, {interval.high:.4f}] over {interval.units} "
+        f"{interval.unit}s (seed {interval.seed})"
     )
-    (workdir / "report.json").write_text(report.to_json())
-    (workdir / "report.csv").write_text(report.to_csv())
     assert interval.units == 6 and not interval.degenerate
 
 

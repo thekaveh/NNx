@@ -159,17 +159,24 @@ print(report.text())
 - **Coverage statuses.** Records join samples by sample id **and** question
   digest, never by row position. Each sample is `eligible` (one answered
   record), `missing`, `duplicate`, `mismatched` (a record for another
-  question digest), `unsupported` or `failed` (both with their reasons);
-  records for no sample count as `extra`.
+  question digest), `invalid` (an answer that does not fit its question),
+  `unsupported` or `failed` (each with its reasons); records for no sample
+  are the report's `extra` count. The CSV carries every count, so they add
+  up to each slice's samples.
 - **Capabilities.** A provider that declares it cannot serve a request —
-  `FixedHeadProvider` outside its label space, for instance — gives
-  `unsupported` records with its own reason, counted in each slice's
-  denominator and never scored as wrong.
+  `FixedHeadProvider` outside its label space, for instance, through its
+  declared `capabilities()` (or its own `check(question, inputs)`) — gives
+  `unsupported` records with its own reason, before any call and without
+  spending budget. They are counted in the slice's coverage, never in a
+  metric's denominator, and never scored as wrong.
 - **Budgets.** `collect` needs an explicit provider, provider id and
   `Budget(max_calls, max_samples=None)`. It attempts each batch once
   (retries are the provider's own), stops when the budget is spent (the
-  rest is `missing`) and marks a batch the sample budget cut short as
-  `partial_batch`.
+  rest is `missing`, and `Collection.stopped` says why) and marks a batch
+  the sample budget cut short as `partial_batch`. Each answer is checked
+  against its sample's question (digest) and put into the question's
+  option order; a provider error, a malformed answer or inputs that cannot
+  form one batch give `failed` records rather than ending the collection.
 - **Metrics,** per slice (`in_family`, `heldout`, `family:<name>`,
   `perturbation:<name>`): accuracy, macro-F1, NLL (exact by default:
   `+inf` when a true label has probability 0; `epsilon=` floors it), Brier,
@@ -183,8 +190,11 @@ print(report.text())
   numbers were `measured` (hardware required) or `supplied`; anything not
   declared stays `null`.
 - **Intervals.** `bootstrap_interval` resamples grouping units (whole
-  groups, never single rows of one) with a recorded seed, and flags a
-  degenerate sample (fewer than two units, or no variation).
+  groups, never single rows of one) with a recorded seed, over the same
+  provider's records `evaluate` scores, and flags a degenerate sample
+  (fewer than two units, no variation, or a non-finite bound such as an
+  exact NLL of `+inf`). Perturbation helpers give each variant a distinct id
+  (the kind plus a digest of the change), or the `id=` you pass.
 - **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
   eligible and failure counts and unavailable states. `compare_reports`
   gives `b - a` per slice and metric only for reports of the same split and

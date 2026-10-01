@@ -3099,7 +3099,7 @@ Args:
 #### `nnx.decisions.benchmark.BenchmarkReport`
 
 ```python
-class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>) -> 'None'
+class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0) -> 'None'
 ```
 
 A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared :class:`Resources`.
@@ -3126,7 +3126,7 @@ No public description is currently available.
 nnx.decisions.benchmark.BenchmarkReport.csv_rows(self) -> 'list[dict[str, Any]]'
 ```
 
-One row per slice and metric: value, unit, denominator, the unavailable reason, and the slice's eligible / failed / unsupported / missing counts.
+One row per slice and metric: value, unit, denominator, the unavailable reason, and every coverage count of the slice (samples, eligible, failed, unsupported, missing, duplicate, mismatched, invalid), so the counts add up to the slice's samples.
 
 ##### `nnx.decisions.benchmark.BenchmarkReport.to_csv`
 
@@ -3181,10 +3181,10 @@ No public description is currently available.
 #### `nnx.decisions.benchmark.Coverage`
 
 ```python
-class nnx.decisions.benchmark.Coverage(samples: 'int', eligible: 'int', missing: 'int', duplicate: 'int', mismatched: 'int', unsupported: 'int', failed: 'int', extra: 'int' = 0, reasons: 'Mapping[str, int]' = <factory>) -> 'None'
+class nnx.decisions.benchmark.Coverage(samples: 'int', eligible: 'int', missing: 'int', duplicate: 'int', mismatched: 'int', invalid: 'int', unsupported: 'int', failed: 'int', reasons: 'Mapping[str, int]' = <factory>) -> 'None'
 ```
 
-How the samples of a slice joined their records: ``eligible`` (one answered record with the sample's digest), ``missing`` (no record), ``duplicate`` (several), ``mismatched`` (a record for another question digest), ``unsupported`` and ``failed`` (with their reasons). ``extra`` counts records for no sample (whole benchmark only).
+How the samples of a slice joined their records: ``eligible`` (one answered record with the sample's digest), ``missing`` (no record), ``duplicate`` (several), ``mismatched`` (a record for another question digest), ``invalid`` (an answered record that does not fit its question: options in another order or set, a Boolean answer for a Choice), ``unsupported`` and ``failed`` (with their reasons). Records for no sample are the report's ``extra`` count.
 
 ##### `nnx.decisions.benchmark.Coverage.state`
 
@@ -3248,10 +3248,10 @@ No public description is currently available.
 #### `nnx.decisions.benchmark.bootstrap_interval`
 
 ```python
-nnx.decisions.benchmark.bootstrap_interval(samples: 'Sequence[Sample]', records: 'Sequence[Record]', *, metric: 'str', seed: 'int', slice: 'str' = 'in_family', resamples: 'int' = 1000, level: 'float' = 0.95, epsilon: 'Optional[float]' = None) -> 'Interval'
+nnx.decisions.benchmark.bootstrap_interval(samples: 'Sequence[Sample]', records: 'Sequence[Record]', *, metric: 'str', seed: 'int', slice: 'str' = 'in_family', resamples: 'int' = 1000, level: 'float' = 0.95, epsilon: 'Optional[float]' = None, provider: 'Optional[str]' = None) -> 'Interval'
 ```
 
-Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows of ``slice``, resampling grouping units — every row of a drawn unit comes along — with ``numpy.random.default_rng(seed)``.
+Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows of ``slice`` (of ``provider``'s records, as :func:`evaluate` selects them), resampling grouping units — every row of a drawn unit comes along — with ``numpy.random.default_rng(seed)``. The bounds are resampled values (no interpolation); a non-finite bound (an exact NLL of ``+inf``) flags the interval degenerate.
 
 
 #### `nnx.decisions.benchmark.Interval`
@@ -3283,7 +3283,7 @@ nnx.decisions.benchmark.compare_reports(a: 'Union[BenchmarkReport, Mapping[str, 
 #### `nnx.decisions.benchmark.permute_options`
 
 ```python
-nnx.decisions.benchmark.permute_options(sample: 'Sample', order: 'Sequence[str]') -> 'Sample'
+nnx.decisions.benchmark.permute_options(sample: 'Sample', order: 'Sequence[str]', *, id: 'Optional[str]' = None) -> 'Sample'
 ```
 
 The same options in another order (``order``: every option id once). A Score's levels are ordered, so it is refused.
@@ -3292,7 +3292,7 @@ The same options in another order (``order``: every option id once). A Score's l
 #### `nnx.decisions.benchmark.redescribe`
 
 ```python
-nnx.decisions.benchmark.redescribe(sample: 'Sample', descriptions: 'Mapping[str, str]') -> 'Sample'
+nnx.decisions.benchmark.redescribe(sample: 'Sample', descriptions: 'Mapping[str, str]', *, id: 'Optional[str]' = None) -> 'Sample'
 ```
 
 New descriptions for some options (``id -> description``): the label space is the same, the text the provider sees is not.
@@ -3301,7 +3301,7 @@ New descriptions for some options (``id -> description``): the label space is th
 #### `nnx.decisions.benchmark.add_distractors`
 
 ```python
-nnx.decisions.benchmark.add_distractors(sample: 'Sample', distractors: 'Sequence[Union[Option, tuple[str, str]]]') -> 'Sample'
+nnx.decisions.benchmark.add_distractors(sample: 'Sample', distractors: 'Sequence[Union[Option, tuple[str, str]]]', *, id: 'Optional[str]' = None) -> 'Sample'
 ```
 
 Extra wrong options appended to a Choice.
@@ -3310,7 +3310,7 @@ Extra wrong options appended to a Choice.
 #### `nnx.decisions.benchmark.add_none_of_the_above`
 
 ```python
-nnx.decisions.benchmark.add_none_of_the_above(sample: 'Sample', option: 'Union[Option, tuple[str, str]]' = ('none', 'None of the above'), *, remove_label: 'bool' = True) -> 'Sample'
+nnx.decisions.benchmark.add_none_of_the_above(sample: 'Sample', option: 'Union[Option, tuple[str, str]]' = ('none', 'None of the above'), *, remove_label: 'bool' = True, id: 'Optional[str]' = None) -> 'Sample'
 ```
 
 A none-of-the-above option; with ``remove_label`` the true option is removed, so none-of-the-above becomes the answer.
@@ -3319,7 +3319,7 @@ A none-of-the-above option; with ``remove_label`` the true option is removed, so
 #### `nnx.decisions.benchmark.add_context`
 
 ```python
-nnx.decisions.benchmark.add_context(sample: 'Sample', context: 'str', *, kind: 'str' = 'long_context') -> 'Sample'
+nnx.decisions.benchmark.add_context(sample: 'Sample', context: 'str', *, kind: 'str' = 'long_context', id: 'Optional[str]' = None) -> 'Sample'
 ```
 
 Irrelevant context appended to a text input.
@@ -3328,7 +3328,7 @@ Irrelevant context appended to a text input.
 #### `nnx.decisions.benchmark.rewrite_input`
 
 ```python
-nnx.decisions.benchmark.rewrite_input(sample: 'Sample', text: 'str', *, kind: 'str') -> 'Sample'
+nnx.decisions.benchmark.rewrite_input(sample: 'Sample', text: 'str', *, kind: 'str', id: 'Optional[str]' = None) -> 'Sample'
 ```
 
 The same question over a rewritten text input — a translation (``kind="multilingual"``) or an adversarial rewrite (``kind="adversarial"``).

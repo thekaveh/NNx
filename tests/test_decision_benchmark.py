@@ -86,8 +86,9 @@ def test_reversed_rows_match():
         Record("ghost", AB.digest(), "stub", "answered", distribution=(("a", 0.5), ("b", 0.5))),  # extra
         Record("s3", other.digest(), "stub", "answered", distribution=(("a", 0.5), ("b", 0.5))),  # mismatched
     ]
-    coverage = evaluate(samples, messy, split="test-v1").slices["in_family"].coverage
-    assert (coverage.eligible, coverage.duplicate, coverage.missing, coverage.extra, coverage.mismatched) == (
+    report = evaluate(samples, messy, split="test-v1")
+    coverage = report.slices["in_family"].coverage
+    assert (coverage.eligible, coverage.duplicate, coverage.missing, coverage.mismatched, report.extra) == (
         1,
         1,
         1,
@@ -452,3 +453,131 @@ def test_unsupported_from_decide_is_recorded_as_unsupported():
     samples = [Sample("b0", Boolean("Mentions goal"), "a goal", True)]
     collection = collect(Refusing(), samples, provider_id="refusing", budget=Budget(max_calls=2))
     assert collection.records[0].status == "unsupported" and collection.calls == 1
+
+
+# --- review hardening -----------------------------------------------------------------------------------------
+
+
+def test_intervals_flag_non_finite_bounds_and_select_one_provider():
+    samples, records = fixture()
+    samples = [Sample(s.id, s.question, s.input, s.label, group=f"g{i}") for i, s in enumerate(samples)]
+    zero = list(records)
+    zero[1] = Record("s1", AB.digest(), "stub", "answered", distribution=(("a", 1.0), ("b", 0.0)))
+    interval = bootstrap_interval(samples, zero, metric="nll", seed=0, resamples=200)
+    assert interval.degenerate and interval.reason == "a resample gave a non-finite value" and interval.high == math.inf
+    other = [Record(r.sample_id, r.question_digest, "other", r.status, distribution=r.distribution) for r in records]
+    with pytest.raises(BenchmarkError, match="several providers"):
+        bootstrap_interval(samples, records + other, metric="accuracy", seed=0)
+    picked = bootstrap_interval(samples, records + other, metric="accuracy", seed=0, provider="other")
+    assert picked.units == 4 and picked.estimate == 0.75
+    with pytest.raises(BenchmarkError, match="epsilon"):
+        bootstrap_interval(samples, records, metric="nll", seed=0, epsilon=2)
+
+
+def test_collected_answers_are_validated_reordered_and_never_end_the_collection():
+    from nnx.decisions import ChoiceResult
+
+    question = AB
+    samples = [Sample(f"s{i}", question, f"text {i}", "a") for i in range(2)]
+
+    class Reordered(KeywordProvider):
+        def decide(self, q, texts):
+            return [ChoiceResult(q.digest(), (("b", 0.3), ("a", 0.7))) for _ in texts]
+
+    collection = collect(Reordered(), samples, provider_id="r", budget=Budget(max_calls=2))
+    assert [r.distribution for r in collection.records] == [(("a", 0.7), ("b", 0.3))] * 2  # the question's order
+
+    class WrongQuestion(KeywordProvider):
+        def decide(self, q, texts):
+            return [ChoiceResult(TOPIC.digest(), (("sport", 0.5), ("economy", 0.5))) for _ in texts]
+
+    class NotNormalized(KeywordProvider):
+        def decide(self, q, texts):
+            return [
+                type("R", (), {"question_digest": q.digest(), "distribution": (("a", float("nan")), ("b", 0.5))})()
+                for _ in texts
+            ]
+
+    for provider in (WrongQuestion(), NotNormalized()):
+        failed = collect(provider, samples, provider_id="x", budget=Budget(max_calls=2))
+        assert [r.status for r in failed.records] == ["failed", "failed"] and failed.calls == 1
+
+    tensors = [Sample("t0", question, torch.zeros(3), "a"), Sample("t1", question, torch.zeros(4), "a")]
+    unbatchable = collect(KeywordProvider(), tensors, provider_id="x", budget=Budget(max_calls=2))
+    assert [r.status for r in unbatchable.records] == ["failed", "failed"] and unbatchable.calls == 0
+    with pytest.raises(BenchmarkError, match="revision"):
+        collect(KeywordProvider(), samples, provider_id="x", budget=Budget(max_calls=1), revision="")
+
+
+def test_records_must_sum_to_one_and_malformed_answers_are_invalid_coverage():
+    with pytest.raises(BenchmarkError, match="sums to"):
+        Record("s0", AB.digest(), "stub", "answered", distribution=(("a", 0.9), ("b", 0.9)))
+    samples, records = fixture()
+    records[2] = Record("s2", AB.digest(), "stub", "answered", distribution=(("b", 0.4), ("a", 0.6)))  # other order
+    records[3] = Record("s3", AB.digest(), "stub", "answered", p_true=0.5)  # a Boolean answer for a Choice
+    report = evaluate(samples, records, split="x")
+    coverage = report.slices["in_family"].coverage
+    assert (coverage.eligible, coverage.invalid) == (2, 2)
+    assert any(reason.startswith("invalid:") for reason in coverage.reasons)
+
+
+def test_a_cut_short_batch_keeps_the_stop_reason_and_refusals_spend_no_budget():
+    texts = [f"goal number {i}" for i in range(5)]
+    samples = [Sample(f"g{i}", TOPIC, text, "sport") for i, text in enumerate(texts)]
+
+    class Failing(KeywordProvider):
+        def decide(self, question, texts):
+            self.calls += 1
+            raise RuntimeError("503")
+
+    failed = collect(Failing(), samples, provider_id="f", budget=Budget(max_calls=5, max_samples=3), batch_size=5)
+    assert len(failed.records) == 3 and not failed.complete and "max_samples=3" in failed.stopped
+
+    class Refusing(KeywordProvider):
+        def check(self, question, inputs):
+            raise UnsupportedCapability("not today")
+
+    refused = collect(Refusing(), samples, provider_id="r", budget=Budget(max_calls=1, max_samples=2), batch_size=5)
+    assert len(refused.records) == 5 and refused.calls == 0  # the whole planned batch, no budget spent
+
+    species = Choice("Which animal?", (("cat", "A cat"), ("dog", "A dog"), ("fox", "A fox")))
+    cows = Choice("Which farm animal?", (("cat", "A cat"), ("dog", "A dog"), ("cow", "A cow")))
+    rows = torch.tensor([[1.5, 0.0], [0.5, 2.0]])
+    head = FixedHeadProvider(_species_head())
+    mixed = [
+        Sample("c0", cows, rows[0], "cow"),
+        Sample("p0", species, rows[0], "cat"),
+        Sample("p1", species, rows[1], "dog"),
+    ]
+    collection = collect(head, mixed, provider_id="head", budget=Budget(max_calls=1))
+    assert collection.complete and collection.calls == 1  # the refused farm batch spent nothing
+    assert [r.status for r in collection.records] == ["unsupported", "answered", "answered"]
+
+
+def test_perturbation_ids_never_collide():
+    base = Sample("t1", TOPIC, "the striker scored a goal", "sport")
+    a = permute_options(base, ["economy", "sport"])
+    b = permute_options(add_distractors(base, [("x", "y z")]), ["x", "economy", "sport"])
+    c, d = rewrite_input(base, "le but", kind="multilingual"), rewrite_input(base, "das Tor", kind="multilingual")
+    assert len({a.id, b.id, c.id, d.id}) == 4
+    assert rewrite_input(base, "x", kind="multilingual", id="t1-fr").id == "t1-fr"
+    evaluate([base, c, d], [], split="x")  # no duplicate-id refusal
+
+
+def test_exports_carry_every_count_and_inputs_are_bounded():
+    samples, records = fixture()
+    held = [Sample(s.id, s.question, s.input, s.label, heldout=True) for s in samples]
+    ghost = Record("ghost", AB.digest(), "stub", "answered", distribution=(("a", 0.5), ("b", 0.5)))
+    report = evaluate(held, records + [ghost], split="x")
+    assert report.extra == 1 and json.loads(report.to_json())["extra"] == 1 and "extra_records=1" in report.text()
+    for row in csv.DictReader(io.StringIO(report.to_csv())):
+        counts = sum(
+            int(row[k]) for k in ("eligible", "failed", "unsupported", "missing", "duplicate", "mismatched", "invalid")
+        )
+        assert counts == int(row["samples"])
+    with pytest.raises(BenchmarkError, match="n_bins"):
+        evaluate(samples, records, split="x", n_bins=10**7)
+    with pytest.raises(BenchmarkError, match="seconds"):
+        Resources(seconds=float("nan"), source="supplied")
+    with pytest.raises(BenchmarkError, match="seconds"):
+        Resources(seconds=-1.0, source="supplied")

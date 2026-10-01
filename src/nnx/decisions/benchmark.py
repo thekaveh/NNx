@@ -59,13 +59,16 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 
 from .schema import (
+    PROBABILITY_TOLERANCE,
     Boolean,
     Choice,
     DecisionError,
     InvalidDecisionRequest,
+    InvalidDecisionResponse,
     Option,
     Score,
     UnsupportedCapability,
+    validate_response,
 )
 
 __all__ = [
@@ -193,10 +196,33 @@ class Sample:
         return self.label
 
 
-def _derived(sample: Sample, kind: str, **changes: Any) -> Sample:
-    """A perturbed copy: a new id, the perturbation recorded, the original's
-    grouping unit kept (so intervals resample them together)."""
-    return replace(sample, id=f"{sample.id}~{kind}", perturbation=kind, group=sample.unit, **changes)
+def _fingerprint(value: Any) -> str:
+    if isinstance(value, str):
+        data = value.encode("utf-8")
+    else:
+        try:
+            import numpy as np
+
+            data = np.ascontiguousarray(
+                np.asarray(value.detach().cpu() if hasattr(value, "detach") else value)
+            ).tobytes()
+        except Exception:  # an input of another kind: its repr
+            data = repr(value).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _derived(sample: Sample, kind: str, id: Optional[str] = None, **changes: Any) -> Sample:
+    """A perturbed copy: a new id (by default the original's, the kind and a
+    digest of what changed, so two different perturbations of one kind never
+    collide), the perturbation recorded and the original's grouping unit kept
+    (so intervals resample them together)."""
+    if id is None:
+        question = changes.get("question", sample.question)
+        change = hashlib.sha256(
+            f"{question.digest()}|{_fingerprint(changes.get('input', sample.input))}|{changes.get('label', sample.label)}".encode()
+        ).hexdigest()[:8]
+        id = f"{sample.id}~{kind}~{change}"
+    return replace(sample, id=id, perturbation=kind, group=sample.unit, **changes)
 
 
 def _options(sample: Sample) -> tuple[Option, ...]:
@@ -211,7 +237,7 @@ def _with_options(sample: Sample, options: Sequence[Option]) -> Question:
     return Choice(sample.question.prompt, tuple(options))
 
 
-def permute_options(sample: Sample, order: Sequence[str]) -> Sample:
+def permute_options(sample: Sample, order: Sequence[str], *, id: Optional[str] = None) -> Sample:
     """The same options in another order (``order``: every option id once).
     A Score's levels are ordered, so it is refused."""
     if isinstance(sample.question, Score):
@@ -219,29 +245,35 @@ def permute_options(sample: Sample, order: Sequence[str]) -> Sample:
     by_id = {option.id: option for option in _options(sample)}
     if sorted(order) != sorted(by_id):
         raise BenchmarkError(f"order must name every option id once: {sorted(by_id)}")
-    return _derived(sample, "permutation", question=_with_options(sample, [by_id[i] for i in order]))
+    return _derived(sample, "permutation", id, question=_with_options(sample, [by_id[i] for i in order]))
 
 
-def redescribe(sample: Sample, descriptions: Mapping[str, str]) -> Sample:
+def redescribe(sample: Sample, descriptions: Mapping[str, str], *, id: Optional[str] = None) -> Sample:
     """New descriptions for some options (``id -> description``): the label
     space is the same, the text the provider sees is not."""
     options = [Option(o.id, descriptions.get(o.id, o.description)) for o in _options(sample)]
     unknown = sorted(set(descriptions) - {o.id for o in options})
     if unknown:
         raise BenchmarkError(f"no options {unknown} to redescribe")
-    return _derived(sample, "new_descriptions", question=_with_options(sample, options))
+    return _derived(sample, "new_descriptions", id, question=_with_options(sample, options))
 
 
-def add_distractors(sample: Sample, distractors: Sequence[Union[Option, tuple[str, str]]]) -> Sample:
+def add_distractors(
+    sample: Sample, distractors: Sequence[Union[Option, tuple[str, str]]], *, id: Optional[str] = None
+) -> Sample:
     """Extra wrong options appended to a Choice."""
     if not isinstance(sample.question, Choice):
         raise BenchmarkError("distractors apply to a Choice")
     extra = [o if isinstance(o, Option) else Option(*o) for o in distractors]
-    return _derived(sample, "distractors", question=_with_options(sample, [*_options(sample), *extra]))
+    return _derived(sample, "distractors", id, question=_with_options(sample, [*_options(sample), *extra]))
 
 
 def add_none_of_the_above(
-    sample: Sample, option: Union[Option, tuple[str, str]] = ("none", "None of the above"), *, remove_label: bool = True
+    sample: Sample,
+    option: Union[Option, tuple[str, str]] = ("none", "None of the above"),
+    *,
+    remove_label: bool = True,
+    id: Optional[str] = None,
 ) -> Sample:
     """A none-of-the-above option; with ``remove_label`` the true option is
     removed, so none-of-the-above becomes the answer."""
@@ -250,24 +282,24 @@ def add_none_of_the_above(
     none = option if isinstance(option, Option) else Option(*option)
     kept = [o for o in _options(sample) if not (remove_label and o.id == sample.label)]
     label = none.id if remove_label else sample.label
-    return _derived(sample, "none_of_the_above", question=_with_options(sample, [*kept, none]), label=label)
+    return _derived(sample, "none_of_the_above", id, question=_with_options(sample, [*kept, none]), label=label)
 
 
-def add_context(sample: Sample, context: str, *, kind: str = "long_context") -> Sample:
+def add_context(sample: Sample, context: str, *, kind: str = "long_context", id: Optional[str] = None) -> Sample:
     """Irrelevant context appended to a text input."""
     if not isinstance(sample.input, str):
         raise BenchmarkError("context applies to a text input")
-    return _derived(sample, kind, input=f"{sample.input}\n\n{_text(context, 'context')}")
+    return _derived(sample, kind, id, input=f"{sample.input}\n\n{_text(context, 'context')}")
 
 
-def rewrite_input(sample: Sample, text: str, *, kind: str) -> Sample:
+def rewrite_input(sample: Sample, text: str, *, kind: str, id: Optional[str] = None) -> Sample:
     """The same question over a rewritten text input — a translation
     (``kind="multilingual"``) or an adversarial rewrite
     (``kind="adversarial"``)."""
     if not isinstance(sample.input, str):
         raise BenchmarkError("a rewrite applies to a text input")
     _text(kind, "kind")
-    return _derived(sample, kind, input=_text(text, "text"))
+    return _derived(sample, kind, id, input=_text(text, "text"))
 
 
 # --- records ------------------------------------------------------------------------------------
@@ -319,6 +351,11 @@ class Record:
                 raise BenchmarkError(f"record {self.sample_id!r}: a {self.status} record has no answer")
         if self.distribution is not None:
             pairs = tuple((str(k), _finite_probability(p, "a record probability")) for k, p in self.distribution)
+            if len({k for k, _ in pairs}) != len(pairs) or len(pairs) < 2:
+                raise BenchmarkError(f"record {self.sample_id!r}: a distribution needs 2+ distinct option ids")
+            total = math.fsum(p for _, p in pairs)
+            if abs(total - 1.0) > PROBABILITY_TOLERANCE:
+                raise BenchmarkError(f"record {self.sample_id!r}: the distribution sums to {total!r}, not 1")
             object.__setattr__(self, "distribution", pairs)
         if self.p_true is not None:
             object.__setattr__(self, "p_true", _finite_probability(self.p_true, "Record.p_true"))
@@ -454,10 +491,23 @@ def _identity(provider: Any) -> Optional[str]:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _answer(sample: Sample, result: Any) -> dict[str, Any]:
+def _answer(sample: Sample, result: Any, provider_id: str) -> dict[str, Any]:
+    """A provider result as a record's answer: it must answer this sample's
+    question (its digest); the shared validator checks it and puts a
+    distribution into the question's option order."""
+    digest = getattr(result, "question_digest", None)
+    if digest != sample.digest:
+        raise InvalidDecisionResponse(
+            f"sample {sample.id!r}: the result answers question {digest!r}, not {sample.digest!r}"
+        )
     if isinstance(sample.question, Boolean):
-        return {"p_true": float(result.p_true)}
-    return {"distribution": tuple((option_id, float(p)) for option_id, p in result.distribution)}
+        checked: Any = validate_response(sample.question, getattr(result, "p_true", None), provider=provider_id)
+        return {"p_true": float(checked.p_true)}
+    pairs = getattr(result, "distribution", None)
+    if pairs is None:
+        raise InvalidDecisionResponse(f"sample {sample.id!r}: the result carries no distribution")
+    reordered: Any = validate_response(sample.question, dict(pairs), provider=provider_id)
+    return {"distribution": tuple((option_id, float(p)) for option_id, p in reordered.distribution)}
 
 
 def _records(
@@ -507,6 +557,8 @@ def collect(
     if provider is None or not callable(getattr(provider, "decide", None)):
         raise BenchmarkError("collect() needs an explicit provider with decide(question, inputs)")
     _text(provider_id, "provider_id")
+    _text(revision, "revision", optional=True)
+    _text(prompt_identity, "prompt_identity", optional=True)
     if not isinstance(budget, Budget):
         raise BenchmarkError(f"collect() needs an explicit Budget, got {budget!r}")
     if isinstance(batch_size, bool) or not isinstance(batch_size, numbers.Integral) or batch_size < 1:
@@ -521,11 +573,22 @@ def collect(
     records: list[Record] = []
     calls = sent = 0
     stopped = None
-    check = getattr(provider, "check", None)
+    common = {"provider": provider_id, "revision": revision, "prompt_identity": identity}
     for index, planned in enumerate(plan):
         if calls >= budget.max_calls:
             stopped = f"budget exhausted: max_calls={budget.max_calls}"
             break
+        question = planned[0].question
+        execution = {"batch": index, "batch_size": len(planned), "partial_batch": False, "attempt": 1}
+        try:
+            inputs = _batch_input([sample.input for sample in planned])
+        except Exception as error:  # inputs that cannot form one batch: no call is made
+            records += _records(planned, "failed", f"{type(error).__name__}: {error}", None, execution, common)
+            continue
+        refusal = _refusal(provider, question, inputs, len(planned))
+        if refusal is not None:  # declared before any call: the whole planned batch, no budget spent
+            records += _records(planned, "unsupported", refusal, None, execution, common)
+            continue
         batch = planned
         if budget.max_samples is not None:
             room = budget.max_samples - sent
@@ -534,16 +597,9 @@ def collect(
                 break
             batch = planned[:room]
         partial = len(batch) < len(planned)
-        question = batch[0].question
-        inputs = _batch_input([sample.input for sample in batch])
-        execution = {"batch": index, "batch_size": len(batch), "partial_batch": partial, "attempt": 1}
-        common = {"provider": provider_id, "revision": revision, "prompt_identity": identity}
-        if callable(check):
-            try:
-                check(question, inputs)
-            except (UnsupportedCapability, InvalidDecisionRequest) as error:
-                records += _records(batch, "unsupported", f"{type(error).__name__}: {error}", None, execution, common)
-                continue
+        execution = {**execution, "batch_size": len(batch), "partial_batch": partial}
+        if partial:
+            inputs = _batch_input([sample.input for sample in batch])
         calls += 1
         sent += len(batch)
         started = time.perf_counter()
@@ -551,23 +607,40 @@ def collect(
             results = list(provider.decide(question, inputs))
             if len(results) != len(batch):
                 raise DecisionError(f"the provider returned {len(results)} results for {len(batch)} inputs")
-            answers = [_answer(sample, result) for sample, result in zip(batch, results, strict=True)]
+            answers = [_answer(sample, result, provider_id) for sample, result in zip(batch, results, strict=True)]
+            timed = {**execution, "seconds": time.perf_counter() - started}
+            records += _records(batch, "answered", None, answers, timed, common)
         except UnsupportedCapability as error:
             timed = {**execution, "seconds": time.perf_counter() - started}
             records += _records(batch, "unsupported", f"UnsupportedCapability: {error}", None, timed, common)
-            continue
         except Exception as error:  # one attempt per batch; retries are the provider's
             timed = {**execution, "seconds": time.perf_counter() - started}
             records += _records(batch, "failed", f"{type(error).__name__}: {error}", None, timed, common)
-            continue
-        timed = {**execution, "seconds": time.perf_counter() - started}
-        records += _records(batch, "answered", None, answers, timed, common)
-        if partial:
+        if partial:  # the sample budget cut this batch short, whatever its outcome
             stopped = f"budget exhausted: max_samples={budget.max_samples}"
             break
     attempted = {record.sample_id for record in records}
     complete = stopped is None and len(attempted) == len({sample.id for sample in samples})
     return Collection(tuple(records), calls, complete, stopped)
+
+
+def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optional[str]:
+    """The provider's own refusal before any call — its ``check(question,
+    inputs)`` when it has one, else its declared ``capabilities()`` — or
+    ``None``."""
+    try:
+        check = getattr(provider, "check", None)
+        if callable(check):
+            check(question, inputs)
+            return None
+        capabilities = getattr(provider, "capabilities", None)
+        if callable(capabilities):
+            modality = "text" if isinstance(inputs, list) and inputs and isinstance(inputs[0], str) else "tensor"
+            declared: Any = capabilities()
+            declared.check(question, modality=modality, batch_size=rows)
+    except (UnsupportedCapability, InvalidDecisionRequest) as error:
+        return f"{type(error).__name__}: {error}"
+    return None
 
 
 # --- metrics ------------------------------------------------------------------------------------------
@@ -667,17 +740,19 @@ class Coverage:
     """How the samples of a slice joined their records: ``eligible`` (one
     answered record with the sample's digest), ``missing`` (no record),
     ``duplicate`` (several), ``mismatched`` (a record for another question
-    digest), ``unsupported`` and ``failed`` (with their reasons). ``extra``
-    counts records for no sample (whole benchmark only)."""
+    digest), ``invalid`` (an answered record that does not fit its question:
+    options in another order or set, a Boolean answer for a Choice),
+    ``unsupported`` and ``failed`` (with their reasons). Records for no
+    sample are the report's ``extra`` count."""
 
     samples: int
     eligible: int
     missing: int
     duplicate: int
     mismatched: int
+    invalid: int
     unsupported: int
     failed: int
-    extra: int = 0
     reasons: Mapping[str, int] = field(default_factory=dict)
 
     def state(self) -> dict[str, Any]:
@@ -687,9 +762,9 @@ class Coverage:
             "missing": self.missing,
             "duplicate": self.duplicate,
             "mismatched": self.mismatched,
+            "invalid": self.invalid,
             "unsupported": self.unsupported,
             "failed": self.failed,
-            "extra": self.extra,
             "reasons": dict(sorted(self.reasons.items())),
         }
 
@@ -732,8 +807,16 @@ class Resources:
             raise BenchmarkError(f"Resources.source must be 'measured', 'supplied' or None, got {self.source!r}")
         if self.source == "measured" and not self.hardware:
             raise BenchmarkError("measured resources need the hardware they were measured on")
-        if self.seconds is not None and self.source is None:
-            raise BenchmarkError("a time needs its source: 'measured' or 'supplied'")
+        if self.seconds is not None:
+            if self.source is None:
+                raise BenchmarkError("a time needs its source: 'measured' or 'supplied'")
+            seconds = self.seconds
+            if (
+                isinstance(seconds, bool)
+                or not isinstance(seconds, numbers.Real)
+                or not (math.isfinite(seconds) and seconds >= 0)
+            ):
+                raise BenchmarkError(f"Resources.seconds must be a finite number >= 0, got {seconds!r}")
         for name in ("warmup", "concurrency", "batch_count"):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 0):
@@ -774,6 +857,13 @@ def _join(samples: Sequence[Sample], records: Sequence[Record]) -> tuple[dict[st
             joined[sample.id] = ("duplicate", None)
         elif found[0].question_digest != sample.digest:
             joined[sample.id] = ("mismatched", found[0])
+        elif found[0].status == "answered":
+            try:
+                _row(sample, found[0])
+            except BenchmarkError:
+                joined[sample.id] = ("invalid", found[0])
+            else:
+                joined[sample.id] = ("answered", found[0])
         else:
             joined[sample.id] = (found[0].status, found[0])
     extra = sum(len(found) for sample_id, found in by_id.items() if sample_id not in ids)
@@ -866,7 +956,6 @@ def _slice(
     name: str,
     members: Sequence[Sample],
     joined: Mapping[str, tuple[str, Optional[Record]]],
-    extra: int,
     **settings: Any,
 ) -> SliceReport:
     statuses = Counter(joined[sample.id][0] for sample in members)
@@ -876,6 +965,11 @@ def _slice(
         status, record = joined[sample.id]
         if status in ("unsupported", "failed") and record is not None and record.reason:
             reasons[f"{status}: {record.reason}"] += 1
+        elif status == "invalid" and record is not None:
+            try:
+                _row(sample, record)
+            except BenchmarkError as error:
+                reasons[f"invalid: {error}"] += 1
         if status == "answered" and record is not None:
             rows.append(_row(sample, record))
     coverage = Coverage(
@@ -884,13 +978,35 @@ def _slice(
         missing=statuses["missing"],
         duplicate=statuses["duplicate"],
         mismatched=statuses["mismatched"],
+        invalid=statuses["invalid"],
         unsupported=statuses["unsupported"],
         failed=statuses["failed"],
-        extra=extra,
         reasons=dict(reasons),
     )
     metrics, bins = _metrics(rows, **settings)
     return SliceReport(name, coverage, metrics, bins)
+
+
+def _for_provider(records: Sequence[Record], provider: Optional[str]) -> tuple[list[Record], list[str]]:
+    """The records of ``provider`` (all, when ``None`` — then they must come
+    from one provider) and the providers seen."""
+    records = list(records)
+    bad = [type(record).__name__ for record in records if not isinstance(record, Record)]
+    if bad:
+        raise BenchmarkError(f"records must be Records, got {bad}")
+    if provider is not None:
+        records = [record for record in records if record.provider == provider]
+    providers = sorted({record.provider for record in records})
+    if provider is None and len(providers) > 1:
+        raise BenchmarkError(f"records come from several providers {providers}; pass provider=")
+    return records, providers
+
+
+def _check_epsilon(epsilon: Optional[float]) -> None:
+    if epsilon is not None and (
+        isinstance(epsilon, bool) or not isinstance(epsilon, numbers.Real) or not 0 < float(epsilon) < 1
+    ):
+        raise BenchmarkError(f"epsilon must be in (0, 1) or None, got {epsilon!r}")
 
 
 def evaluate(
@@ -925,18 +1041,10 @@ def evaluate(
     bad = [type(s).__name__ for s in samples if not isinstance(s, Sample)]
     if bad:
         raise BenchmarkError(f"evaluate() needs Samples, got {bad}")
-    records = list(records)
-    if provider is not None:
-        records = [record for record in records if record.provider == provider]
-    providers = sorted({record.provider for record in records})
-    if provider is None and len(providers) > 1:
-        raise BenchmarkError(f"records come from several providers {providers}; pass provider=")
-    if epsilon is not None and (
-        isinstance(epsilon, bool) or not isinstance(epsilon, numbers.Real) or not 0 < float(epsilon) < 1
-    ):
-        raise BenchmarkError(f"epsilon must be in (0, 1) or None, got {epsilon!r}")
-    if isinstance(n_bins, bool) or not isinstance(n_bins, numbers.Integral) or n_bins < 1:
-        raise BenchmarkError(f"n_bins must be a positive integer, got {n_bins!r}")
+    records, providers = _for_provider(records, provider)
+    _check_epsilon(epsilon)
+    if isinstance(n_bins, bool) or not isinstance(n_bins, numbers.Integral) or not 1 <= n_bins <= 10_000:
+        raise BenchmarkError(f"n_bins must be an integer in [1, 10000], got {n_bins!r}")
     if policy is not None:
         from ..abstention import AbstentionPolicy
 
@@ -945,10 +1053,7 @@ def evaluate(
         _text(model_id, "model_id")
     joined, extra = _join(samples, records)
     settings = {"epsilon": epsilon, "n_bins": int(n_bins), "policy": policy, "model_id": model_id}
-    slices = {
-        name: _slice(name, members, joined, extra if name == "in_family" else 0, **settings)
-        for name, members in _slice_members(samples).items()
-    }
+    slices = {name: _slice(name, members, joined, **settings) for name, members in _slice_members(samples).items()}
     identity = {
         "format": FORMAT,
         "metrics": list(METRICS),
@@ -962,6 +1067,7 @@ def evaluate(
         metric_identity=identity,
         slices=slices,
         resources=resources if resources is not None else Resources(),
+        extra=extra,
     )
 
 
@@ -1002,10 +1108,14 @@ def bootstrap_interval(
     resamples: int = 1000,
     level: float = 0.95,
     epsilon: Optional[float] = None,
+    provider: Optional[str] = None,
 ) -> Interval:
     """Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the
-    eligible rows of ``slice``, resampling grouping units — every row of a
-    drawn unit comes along — with ``numpy.random.default_rng(seed)``."""
+    eligible rows of ``slice`` (of ``provider``'s records, as
+    :func:`evaluate` selects them), resampling grouping units — every row of
+    a drawn unit comes along — with ``numpy.random.default_rng(seed)``. The
+    bounds are resampled values (no interpolation); a non-finite bound (an
+    exact NLL of ``+inf``) flags the interval degenerate."""
     import numpy as np
 
     if metric not in (*_STATISTICS, "nll"):
@@ -1016,10 +1126,12 @@ def bootstrap_interval(
         raise BenchmarkError(f"resamples must be a positive integer, got {resamples!r}")
     if isinstance(level, bool) or not isinstance(level, numbers.Real) or not 0 < level < 1:
         raise BenchmarkError(f"level must be in (0, 1), got {level!r}")
+    _check_epsilon(epsilon)
+    records, _ = _for_provider(records, provider)
     members = _slice_members(list(samples)).get(slice)
     if members is None:
         raise BenchmarkError(f"no slice {slice!r}")
-    joined, _ = _join(list(samples), list(records))
+    joined, _ = _join(list(samples), records)
     rows = [_row(s, joined[s.id][1]) for s in members if joined[s.id][0] == "answered"]  # type: ignore[arg-type]
 
     def statistic(chosen: Sequence[_Row]) -> float:
@@ -1041,14 +1153,20 @@ def bootstrap_interval(
         drawn = rng.integers(0, len(keys), size=len(keys))
         values.append(statistic([row for index in drawn for row in units[keys[index]]]))
     tail = (1.0 - float(level)) / 2.0
-    low, high = (float(v) for v in np.quantile(np.array(values, dtype=np.float64), [tail, 1.0 - tail]))
-    degenerate = low == high
+    drawn_values = np.array(values, dtype=np.float64)
+    low = float(np.quantile(drawn_values, tail, method="lower"))
+    high = float(np.quantile(drawn_values, 1.0 - tail, method="higher"))
+    reason = None
+    if not (math.isfinite(low) and math.isfinite(high)):
+        reason = "a resample gave a non-finite value"
+    elif low == high:
+        reason = "every resample gave the same value"
     return Interval(
         estimate=statistic(rows),
         low=low,
         high=high,
-        degenerate=degenerate,
-        reason="every resample gave the same value" if degenerate else None,
+        degenerate=reason is not None,
+        reason=reason,
         **base,
     )
 
@@ -1066,6 +1184,7 @@ class BenchmarkReport:
     metric_identity: Mapping[str, Any]
     slices: Mapping[str, SliceReport]
     resources: Resources = field(default_factory=Resources)
+    extra: int = 0  # records for no sample (benchmark-wide)
 
     def state(self) -> dict[str, Any]:
         return {
@@ -1073,6 +1192,7 @@ class BenchmarkReport:
             "split": self.split,
             "provider": self.provider,
             "metric_identity": dict(self.metric_identity),
+            "extra": self.extra,
             "resources": self.resources.state(),
             "slices": {name: report.state() for name, report in self.slices.items()},
         }
@@ -1082,8 +1202,9 @@ class BenchmarkReport:
 
     def csv_rows(self) -> list[dict[str, Any]]:
         """One row per slice and metric: value, unit, denominator, the
-        unavailable reason, and the slice's eligible / failed / unsupported
-        / missing counts."""
+        unavailable reason, and every coverage count of the slice (samples,
+        eligible, failed, unsupported, missing, duplicate, mismatched,
+        invalid), so the counts add up to the slice's samples."""
         rows = []
         for name, report in self.slices.items():
             coverage = report.coverage
@@ -1097,30 +1218,34 @@ class BenchmarkReport:
                         "unit": value.unit,
                         "denominator": value.denominator,
                         "unavailable": value.reason or "",
+                        "samples": coverage.samples,
                         "eligible": coverage.eligible,
                         "failed": coverage.failed,
                         "unsupported": coverage.unsupported,
                         "missing": coverage.missing,
+                        "duplicate": coverage.duplicate,
+                        "mismatched": coverage.mismatched,
+                        "invalid": coverage.invalid,
                     }
                 )
         return rows
 
     def to_csv(self) -> str:
         buffer = io.StringIO()
-        fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "eligible", "failed"]
-        fields += ["unsupported", "missing"]
+        fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "samples", "eligible", "failed"]
+        fields += ["unsupported", "missing", "duplicate", "mismatched", "invalid"]
         writer = csv.DictWriter(buffer, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(self.csv_rows())
         return buffer.getvalue()
 
     def text(self) -> str:
-        lines = [f"{FORMAT} split={self.split} provider={self.provider or 'unknown'}"]
+        lines = [f"{FORMAT} split={self.split} provider={self.provider or 'unknown'} extra_records={self.extra}"]
         for name, report in self.slices.items():
             c = report.coverage
             lines.append(
                 f"[{name}] samples={c.samples} eligible={c.eligible} failed={c.failed} unsupported={c.unsupported}"
-                f" missing={c.missing} duplicate={c.duplicate} mismatched={c.mismatched} extra={c.extra}"
+                f" missing={c.missing} duplicate={c.duplicate} mismatched={c.mismatched} invalid={c.invalid}"
             )
             for reason, count in sorted(c.reasons.items()):
                 lines.append(f"    {count} x {reason}")
