@@ -454,6 +454,8 @@ class _JournalReader:
                     manifest = json.load(handle)
             except FileNotFoundError:
                 raise HistoryCorruptionError(f"the history journal at {directory} has no {_MANIFEST}") from None
+            except OSError as exc:
+                raise HistoryCorruptionError(f"the history journal manifest at {path} is unreadable: {exc}") from None
             except ValueError as exc:
                 raise HistoryCorruptionError(f"the history journal manifest at {path} is not JSON: {exc}") from None
         if not isinstance(manifest, dict) or manifest.get("format") != JOURNAL_FORMAT:
@@ -578,10 +580,15 @@ def _journal_epoch_series(directory: str, max_epoch: int) -> dict[str, list[Any]
     nan = float("nan")
     series: dict[str, list[Any]] = {name: [] for name in ("epochs", *_SERIES, "improved")}
     for row in _JournalReader(directory, index=False).epoch_rows(max_epoch):
+        try:
+            values = [nan if row[name] is None else float(row[name]) for name in _SERIES]
+            improved = bool(row["improved"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HistoryCorruptionError(f"a committed epoch row in {directory} is malformed: {exc!r}") from None
         series["epochs"].append(row["epoch"])
-        for name in _SERIES:
-            series[name].append(nan if row[name] is None else row[name])
-        series["improved"].append(bool(row["improved"]))
+        for name, value in zip(_SERIES, values, strict=True):
+            series[name].append(value)
+        series["improved"].append(improved)
     return series
 
 
@@ -623,6 +630,11 @@ class _EagerHistory:
     def window(self) -> list[NNIterationDataPoint]:
         return self.records
 
+    def lend_view(self, callback: Any, *, tolerant: bool = False) -> Optional[list[NNIterationDataPoint]]:
+        """What to lend ``callback`` as ``ctx.idps`` — nothing: an eager run's
+        callbacks share the running list, as always."""
+        return None
+
     def save_epoch(self, run: NNRun) -> None:
         run.with_idps(self.records).save(update_best=False)
 
@@ -641,10 +653,14 @@ class _JournalHistory:
         from .nn.params.nn_run import _runs_root
 
         self.spec = spec
-        self.directory = os.path.abspath(os.path.join(_runs_root(None), run.id, HISTORY_DIR))
-        self._window: collections.deque[NNIterationDataPoint] = collections.deque(maxlen=spec.retention)
+        self.directory = os.path.realpath(os.path.join(_runs_root(None), run.id, HISTORY_DIR))
+        # A live list (as an eager run's ctx.idps is), trimmed to the window
+        # on every append, so it never holds more than `retention` records.
+        self._window: list[NNIterationDataPoint] = []
         self._writer = _JournalWriter(self.directory, spec)
         self._epoch_records = 0
+        self._full: Optional[list[NNIterationDataPoint]] = None  # the read-back, until the next record
+        self._unreadable = False
 
     def begin_epoch(self) -> None:
         self._epoch_records = 0
@@ -653,26 +669,55 @@ class _JournalHistory:
         return self._epoch_records == 0
 
     def append(self, record: NNIterationDataPoint) -> None:
-        self._window.append(record)
         self._writer.append(record)
+        self._window.append(record)
+        if len(self._window) > self.spec.retention:
+            del self._window[0]
         self._epoch_records += 1
+        self._full = None
 
     @property
     def last(self) -> NNIterationDataPoint:
         return self._window[-1]
 
     def replace_last(self, record: NNIterationDataPoint) -> None:
-        self._window[-1] = record
         self._writer.replace_last(record)
+        self._window[-1] = record
+        self._full = None
 
     def __bool__(self) -> bool:
         return bool(self._window)
 
     def window(self) -> list[NNIterationDataPoint]:
-        return list(self._window)
+        return self._window
 
     def full(self) -> list[NNIterationDataPoint]:
         return self._writer.materialize()
+
+    def lend_view(self, callback: Any, *, tolerant: bool = False) -> Optional[list[NNIterationDataPoint]]:
+        """The whole history — read back once per change — for a callback
+        declaring ``history_access = "full"``; nothing for any other. With
+        ``tolerant`` (``on_train_end``, where cleanup must run) a history
+        that cannot be read back is warned about once and the window lent."""
+        if not _wants_full(callback):
+            return None
+        if self._unreadable:
+            return self._window
+        if self._full is None:
+            try:
+                self._full = self.full()
+            except Exception as exc:  # noqa: BLE001 — re-raised unless tolerant
+                if not tolerant:
+                    raise
+                self._unreadable = True
+                warnings.warn(
+                    f"the history journal could not be read back for on_train_end ({type(exc).__name__}: {exc}); "
+                    f"callbacks declaring history_access='full' get the last {self.spec.retention} records",
+                    RuntimeWarning,
+                    stacklevel=4,
+                )
+                return self._window
+        return self._full
 
     def _run(self, run: NNRun) -> NNRun:
         return run.with_idps(list(self._window)).with_history(self.directory)
@@ -745,46 +790,8 @@ def _dispatch_epoch_end(callbacks: Sequence[Any], ctx: Any, history: TrainingHis
     or — for a callback declaring ``history_access = "full"`` — the whole
     history, read back once per epoch."""
     ctx.idps = history.window()
-    full: Optional[list[NNIterationDataPoint]] = None
     for callback in callbacks:
-        view = None  # ctx.idps as the previous callback left it, as always
-        if isinstance(history, _JournalHistory) and _wants_full(callback):
-            if full is None:
-                full = history.full()
-            view = full
-        _lend_idps(ctx, view, lambda callback=callback: callback.on_epoch_end(ctx))
-
-
-class _TrainEndViews:
-    """The whole history (read back at most once) lent as ``ctx.idps`` to a
-    journal run's ``history_access = "full"`` callbacks at ``on_train_end``;
-    ``None`` — ``ctx.idps`` as the epoch loop left it — for every other
-    callback and for an eager run. A history that cannot be read back is
-    warned about once and the callback still runs, with the window."""
-
-    def __init__(self, history: Optional[TrainingHistory]) -> None:
-        self._history = history if isinstance(history, _JournalHistory) else None
-        self._full: Optional[list[NNIterationDataPoint]] = None
-        self._unreadable = False
-
-    def for_callback(self, callback: Any) -> Optional[list[NNIterationDataPoint]]:
-        if self._history is None or not _wants_full(callback):
-            return None
-        if self._unreadable:
-            return self._history.window()
-        if self._full is None:
-            try:
-                self._full = self._history.full()
-            except Exception as exc:  # noqa: BLE001 — cleanup hooks must still run
-                self._unreadable = True
-                warnings.warn(
-                    f"the history journal could not be read back for on_train_end ({type(exc).__name__}: {exc}); "
-                    f"callbacks declaring history_access='full' get the last {self._history.spec.retention} records",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
-                return self._history.window()
-        return self._full
+        _lend_idps(ctx, history.lend_view(callback), lambda callback=callback: callback.on_epoch_end(ctx))
 
 
 # --- reading a run's history -----------------------------------------------------------------

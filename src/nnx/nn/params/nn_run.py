@@ -700,7 +700,7 @@ class NNRun:
             last_epoch = self.idps[-1].epoch_idx if self.idps else -1
             try:
                 return _journal_epoch_series(self.history, last_epoch)
-            except HistoryCorruptionError as exc:
+            except (HistoryCorruptionError, OSError) as exc:
                 warnings.warn(
                     f"run {self.id}'s history journal is unreadable ({exc}); the chart shows only the "
                     f"{len(self.idps or [])} records in memory, and their oldest epoch may be partial",
@@ -1041,7 +1041,8 @@ class NNRun:
                 idps=idps,
                 resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
                 provenance=_load_provenance_tolerantly(id, root),
-                history=os.path.abspath(journal.directory) if journal is not None else None,
+                # realpath: a run loaded through runs/best keeps its own journal.
+                history=os.path.realpath(journal.directory) if journal is not None else None,
             )
         except KeyError as e:
             # A hand-edited / truncated run.yaml otherwise surfaces as a

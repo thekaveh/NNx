@@ -24,7 +24,6 @@ from ..history import (
     _check_history,
     _dispatch_epoch_end,
     _lend_idps,
-    _TrainEndViews,
     _training_history,
 )
 from ..models import (
@@ -381,12 +380,13 @@ class _CallbackFinalizer:
 
     def __exit__(self, exc_type, exc, tb):
         cleanup_errors: list[BaseException] = []
-        # FEAT-036: in a journal run, each callback's ctx.idps is the window or,
-        # for history_access="full", the whole history (read back once).
-        views = _TrainEndViews(getattr(self._ctx, "history_records", None))
+        # FEAT-036: a journal run lends history_access="full" callbacks the
+        # whole history (read back once); everyone else sees ctx.idps as is.
+        history = getattr(self._ctx, "history_records", None)
         for cb in reversed(self._started):
             try:
-                _lend_idps(self._ctx, views.for_callback(cb), lambda cb=cb: cb.on_train_end(self._ctx))
+                view = history.lend_view(cb, tolerant=True) if history is not None else None
+                _lend_idps(self._ctx, view, lambda cb=cb: cb.on_train_end(self._ctx))
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
 

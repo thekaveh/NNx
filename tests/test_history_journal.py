@@ -744,7 +744,7 @@ def test_on_train_end_reads_the_history_back_once(monkeypatch):
     monkeypatch.setattr(history_module._JournalHistory, "full", counted)
     first, second = _Full(), _Full()
     _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[first, second])
-    assert len(calls) == 3 + 1  # once per epoch, once at the end — not once per callback
+    assert len(calls) == 3  # once per epoch; on_train_end reuses the last one — never once per callback
     assert first.lengths == second.lengths == [5, 10, 15, 15]
 
 
@@ -1064,3 +1064,56 @@ def test_the_best_pointer_is_not_followed_as_a_lineage_parent():
         assert {r.epoch_idx for r in iter_history(child.id, lineage=True)} == {2}
     with pytest.raises(ValueError, match="not through the runs/best pointer"):
         migrate_history("best")
+
+
+def test_a_run_loaded_through_the_best_pointer_keeps_its_own_journal():
+    run = _fit("model", HistoryJournal(retention=3, chunk_size=2))
+    loaded = NNRun.load("best")
+    assert loaded.id == run.id
+    assert loaded.history == os.path.realpath(os.path.join("runs", run.id, "history"))
+
+
+def test_a_malformed_recorded_source_epoch_is_dropped_like_other_bad_status(tmp_path):
+    from nnx import ResumeStatus
+    from nnx.nn.params.nn_run import _load_resume_status
+
+    with pytest.raises(ValueError, match="source_epoch"):
+        ResumeStatus(mode="stateful", source_run_id="x", source_epoch="3")  # type: ignore[arg-type]
+    metadata = tmp_path / "metadata.yaml"
+    metadata.write_text("resume:\n  mode: stateful\n  source_run_id: x\n  source_epoch: '3'\n")
+    assert _load_resume_status(str(metadata)) is None
+
+
+def test_a_malformed_epoch_row_falls_back_to_the_window():
+    run = _fit("model", HistoryJournal(retention=7, chunk_size=2))
+    rows = os.path.join(run.history, "epochs.jsonl")
+    data = open(rows, "rb").read()
+    with open(rows, "wb") as handle:
+        handle.write(data.replace(b'"improved"', b'"improvex"', 1))  # same length: still committed bytes
+    with pytest.warns(RuntimeWarning, match="journal is unreadable"):
+        assert run._epoch_series()["epochs"] == [1, 2]
+
+
+@pytest.mark.parametrize("journal", [False, True], ids=["eager", "journal"])
+def test_ctx_idps_is_the_live_running_list_during_an_epoch(journal):
+    held: dict = {}
+    seen: list[tuple[int, int]] = []
+
+    class _Hold(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            held.setdefault("idps", ctx.idps)
+
+    def step(ctx):
+        if "idps" in held:
+            last = held["idps"][-1]
+            seen.append((last.epoch_idx, last.batch_idx))
+        return NNEvaluationDataPoint(loss=0.5, error=0.5)
+
+    batches = [(torch.zeros(2, 4), torch.zeros(2, dtype=torch.long))] * 3
+    params = NNTrainParams(n_epochs=3, train_loader=batches, optim=_OPTIM)
+    history = HistoryJournal(retention=4, chunk_size=2) if journal else None
+    _model().train(params, train_step_fn=step, callbacks=[_Hold()], history=history)
+    # The list a callback holds keeps growing with each new record, in both modes.
+    assert seen == [(0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1)]
+    if journal:
+        assert len(held["idps"]) == 4  # and stays within the window

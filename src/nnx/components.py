@@ -187,6 +187,9 @@ class ResumeStatus:
     def __post_init__(self) -> None:
         if self.mode not in ("fresh", "stateful", "weights_only"):
             raise ValueError(f"ResumeStatus mode must be 'fresh', 'stateful' or 'weights_only', got {self.mode!r}")
+        epoch = self.source_epoch
+        if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
+            raise ValueError(f"ResumeStatus source_epoch must be a non-negative integer or None, got {epoch!r}")
 
 
 @dataclass
