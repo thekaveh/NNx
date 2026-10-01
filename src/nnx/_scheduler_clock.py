@@ -107,14 +107,18 @@ def update_horizon(scheduler_params: Any, planned: Optional[int] = None) -> Opti
     return planned
 
 
-def chosen_period(scheduler: Any, scheduler_params: Any) -> Optional[int]:
+def chosen_period(scheduler: Any, scheduler_params: Any, planned: Optional[int]) -> Optional[int]:
     """The cosine period a run built on purpose: the built scheduler's
-    ``T_max``, unless the configuration left it to default to the planned
-    updates (``None`` then, and for a non-cosine scheduler)."""
+    ``T_max``, unless it is the planned-updates default the configuration
+    left it to (``None`` then, and for a non-cosine scheduler). A subclass
+    building its own period is its choice, whatever the configuration."""
     if not isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
         return None
-    defaulted = str(getattr(scheduler_params, "kind", None)) == "cosine_annealing" and scheduler_params.T_max is None
-    return None if defaulted else int(scheduler.T_max)
+    period = int(scheduler.T_max)
+    left_to_default = (
+        str(getattr(scheduler_params, "kind", None)) == "cosine_annealing" and scheduler_params.T_max is None
+    )
+    return None if left_to_default and period == planned else period
 
 
 def component_name(owner: Optional[str] = None) -> str:
@@ -145,6 +149,19 @@ class SchedulerClock:
         default_budget: bool = False,
         configured_period: Optional[int] = None,
     ) -> None:
+        # The clock steps its scheduler without a metric and positions it by
+        # last_epoch: a plateau scheduler, or one without last_epoch (such as
+        # torch's ChainedScheduler), cannot run on it.
+        if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau) or not hasattr(scheduler, "last_epoch"):
+            reason = (
+                "reads a monitored metric at the epoch boundary"
+                if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau)
+                else "has no last_epoch to position it by"
+            )
+            raise ValueError(
+                f"optimizer {owner!r}'s scheduler {type(scheduler).__name__} {reason}, so it cannot run on the "
+                "optimizer_update clock; use clock='epoch' for it"
+            )
         self.owner = owner
         self.scheduler = scheduler
         self.horizon = horizon
@@ -178,7 +195,7 @@ class SchedulerClock:
             horizon=horizon,
             planned=planned,
             default_budget=horizon is not None and scheduler_params.total_steps is None,
-            configured_period=chosen_period(scheduler, scheduler_params),
+            configured_period=chosen_period(scheduler, scheduler_params, planned),
             **options,
         )
 

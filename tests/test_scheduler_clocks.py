@@ -952,3 +952,42 @@ def test_a_subclass_cosine_period_is_its_own_choice():
         warnings.simplefilter("error")  # run past on purpose: no period warning
         _train(model, accumulate=1, scheduler=_sched(Schedulers.STEP, step_size=1), callbacks=[monitor])
     assert len(monitor.update_history) == 10
+
+
+# --- review round 14 ---------------------------------------------------------------------------------------
+
+
+def _subclass_model(build):
+    class Custom(NNModel):
+        def _build_scheduler(self, optimizer, params):
+            return build(optimizer)
+
+    torch.manual_seed(0)
+    return Custom(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def test_a_subclass_cosine_period_is_its_own_choice_under_a_cosine_configuration_too():
+    model = _subclass_model(lambda optimizer: lr_scheduler.CosineAnnealingLR(optimizer, T_max=3))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _train(model, accumulate=1, scheduler=_sched(Schedulers.COSINE_ANNEALING))  # T_max left unset
+
+
+@pytest.mark.parametrize(
+    "build, reason",
+    [
+        (
+            lambda optimizer: lr_scheduler.ChainedScheduler(
+                [lr_scheduler.LinearLR(optimizer), lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)]
+            ),
+            "ChainedScheduler has no last_epoch",
+        ),
+        (lambda optimizer: lr_scheduler.ReduceLROnPlateau(optimizer), "ReduceLROnPlateau reads a monitored metric"),
+    ],
+)
+def test_a_scheduler_the_update_clock_cannot_drive_is_refused_up_front(build, reason):
+    with pytest.raises(ValueError, match=f"{reason}.*use clock='epoch'"):
+        _train(_subclass_model(build), scheduler=_sched(Schedulers.STEP, step_size=1))
