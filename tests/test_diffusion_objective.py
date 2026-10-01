@@ -421,3 +421,30 @@ def test_narrow_integer_timesteps_are_refused_and_numpy_seeds_accepted():
     t, _ = int32.draw(_points(3))
     assert t.dtype == torch.int64 and t.tolist() == [5, 5, 5]
     assert diffusion_objective(SCHEDULE, seed=np.int64(7)).seed == 7
+
+
+# --- review round 3 ---------------------------------------------------------------------------------------
+
+
+def test_the_objective_splits_batches_through_the_models_adapter():
+    from nnx import NNModelParams as Params
+    from nnx.models import KeywordInputs, PositionalInputs
+
+    set_seed(0)
+    keyword = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=KeywordInputs(["x"], target=None),
+    )
+    run = keyword.train(
+        _params([{"x": _points(4)}, {"x": _points(3, seed=2)}]), objective=diffusion_objective(SCHEDULE)
+    )
+    assert run.idps[-1].update_count == 2 and all(idp.train_edp.loss is not None for idp in run.idps)
+
+    two = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=PositionalInputs(2),
+    )
+    with pytest.raises(ValueError, match="exactly one input"):
+        two.train(_params([(_points(2), _points(2), torch.zeros(2))]), objective=diffusion_objective(SCHEDULE))

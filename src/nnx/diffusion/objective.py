@@ -28,9 +28,12 @@ seeded run draws the same noise. The draws happen on the CPU — the stream
 is then the same on every device and survives a resume onto another — at
 the cost of a host-to-device copy per microbatch; pass
 ``noise_fn(x_0, generator) -> (t, eps)`` to supply the timesteps and noise
-yourself (drawn on the device for large image batches, fixed values in
-tests, another timestep distribution). Its timesteps must be int64 (or
-int32) values in ``[0, T)``.
+yourself (fixed values in tests, another timestep distribution). The
+``generator`` it receives is the objective's CPU generator: a ``noise_fn``
+that draws on a CUDA device for large image batches must use its own CUDA
+generator or the global RNG instead (which a stateful resume restores, but
+which a ``sample`` preview without its own generator would advance). Its
+timesteps must be int64 (or int32) values in ``[0, T)``.
 """
 
 from __future__ import annotations
@@ -157,7 +160,7 @@ class DiffusionObjective(Objective):
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         model = ctx.model
         model.net.train()
-        x_0 = first_input(model, ctx.batch)
+        x_0 = first_input(model, ctx.batch, who="diffusion_objective")
         if x_0.shape[0] == 0 or x_0.numel() == 0:
             raise ValueError("diffusion_objective got an empty batch: there is no noise to predict")
         t, eps = self.draw(x_0)

@@ -677,7 +677,9 @@ objective; subclass `Objective` to declare `nonfinite`.
 noise prediction, §9) and `jepa_objective(target_encoder, predictor,
 mask_fn, ema_momentum=...)` ([I-JEPA §5](jepa.md#5-objective-mode)) are the
 objective counterparts of `diffusion_train_step_factory` and
-`jepa_train_step_factory`, which stay available and unchanged. Each returns
+`jepa_train_step_factory`, which stay available and unchanged. Each reads
+one input per batch — split by the model's batch adapter when it has one
+(FEAT-006), which must then yield exactly one input — and returns
 one normalized term — `"noise_mse"` / `"latent_mse"`: the squared-error
 **sum** over every valid element, over the element count — with detached
 metrics (`metrics={term: value}`, no classification fields), and never

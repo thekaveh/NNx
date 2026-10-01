@@ -203,6 +203,16 @@ class JEPAObjective(Objective):
                 f"JEPA target-encoder parameters {unmatched} have no same-named, same-shaped counterpart in "
                 "model.net, so the EMA cannot track them; rebuild the target from the current net"
             )
+        moved = [
+            n
+            for n, p in self.target_encoder.named_parameters()
+            if sources[n].device != p.device or sources[n].dtype != p.dtype
+        ]
+        if moved:
+            raise ValueError(
+                f"JEPA target-encoder parameters {moved} are on another device or dtype than model.net's; move the "
+                "target with the net (target.to(...)) or rebuild it from the current net"
+            )
         changing = [
             type(cb).__name__
             for cb in callbacks
@@ -224,7 +234,7 @@ class JEPAObjective(Objective):
         n_patches = int(net.n_patches)
         context_1d, target_1d = self.mask_fn(n_patches, model.device)
         _check_masks(context_1d, target_1d, n_patches)  # before any forward pass
-        x = first_input(model, ctx.batch)
+        x = first_input(model, ctx.batch, who="jepa_objective")
         if x.shape[0] == 0:
             raise ValueError("jepa_objective got an empty batch")
         self._online = model.net

@@ -371,3 +371,11 @@ def test_a_misplaced_target_never_freezes_the_online_network():
         model.train(_params([_batch(_images(2))]), objective=objective)
     assert all(p.requires_grad for p in model.net.parameters())
     assert not os.path.exists("runs")
+
+
+def test_a_target_on_another_dtype_is_refused_before_any_run():
+    model, target, predictor = _parts()
+    model.net.double()  # the target stayed float32
+    with pytest.raises(ValueError, match="another device or dtype"):
+        model.train(_params([_batch(_images(2).double())]), objective=jepa_objective(target, predictor, _masks(FOUR)))
+    assert not os.path.exists("runs")
