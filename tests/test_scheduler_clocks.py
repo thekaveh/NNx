@@ -896,12 +896,36 @@ def test_reports_are_authoritative():
 # --- review round 9 ----------------------------------------------------------------------------------------
 
 
-def test_a_default_cosine_horizon_is_guarded_but_an_explicit_one_is_not():
+def test_a_cosine_schedule_past_a_default_period_warns_but_an_explicit_one_does_not():
     # len() says 6 batches (12 planned updates over 2 epochs); 8 are yielded per epoch.
-    with pytest.raises(ValueError, match=r"default budget of 12 .*len\(train_loader\).*set T_max"):
+    with pytest.warns(UserWarning, match=r"passed its default T_max of 12 .*set T_max") as caught:
         _train(
             _model(), accumulate=1, loader=_UnderReported(_batches(8)), scheduler=_sched(Schedulers.COSINE_ANNEALING)
         )
-    monitor = LRMonitor()  # an explicit T_max may be passed on purpose, as torch allows
-    _train(_model(), accumulate=1, scheduler=_sched(Schedulers.COSINE_ANNEALING, T_max=4), callbacks=[monitor])
+    assert len([w for w in caught if "T_max" in str(w.message)]) == 1  # once per run
+    monitor = LRMonitor()  # an explicit T_max may be run past on purpose, as torch allows
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _train(_model(), accumulate=1, scheduler=_sched(Schedulers.COSINE_ANNEALING, T_max=4), callbacks=[monitor])
     assert len(monitor.update_history) == 10
+
+
+# --- review round 10 ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("t_max", [None, 10])
+def test_a_default_period_cosine_run_resumes(t_max):
+    parent = _train(_model(), epochs=1, accumulate=1, scheduler=_sched(Schedulers.COSINE_ANNEALING), data_id="cos")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resumed = _train(
+            _model(seed=9),
+            epochs=1,
+            accumulate=1,
+            scheduler=_sched(Schedulers.COSINE_ANNEALING, T_max=t_max),
+            data_id="cos",
+            resume_from_run_id=parent.id,
+        )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+    warned = [w for w in caught if "passed its default T_max of 5" in str(w.message)]
+    assert len(warned) == (1 if t_max is None else 0)  # the restored period is the parent's planned updates
