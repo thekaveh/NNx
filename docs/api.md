@@ -5004,7 +5004,7 @@ A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed
 #### `nnx.graph_tasks.GraphClassifier`
 
 ```python
-class nnx.graph_tasks.GraphClassifier(encoder: 'nn.Module', pool: 'Any' = 'mean', head: 'Optional[nn.Module]' = None) -> 'None'
+class nnx.graph_tasks.GraphClassifier(encoder: 'nn.Module', pool: 'Any' = 'mean', head: 'Optional[nn.Module]' = None, *, input_dim: 'Optional[int]' = None) -> 'None'
 ```
 
 ``encoder`` (node rows from ``(x, edge_index)``) → :class:`GraphPool` → optional ``head``: one output row per graph.

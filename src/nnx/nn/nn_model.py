@@ -857,6 +857,9 @@ def _batch_sample_count(net: Any, batch: Any) -> int:
         n_seed = seed_count(batch)
         if n_seed is not None:
             return int(cast(int, n_seed))
+    sample_ids = getattr(net, "sample_ids", None)
+    if callable(sample_ids):  # rows with their own identity (graph ids, FEAT-026): one sample per row
+        return int(torch.as_tensor(sample_ids(batch)).numel())
     first = batch
     while (isinstance(first, (tuple, list)) and first) or (isinstance(first, Mapping) and first):
         # Mapping batches (keyword-input modules, FEAT-006): the first value.

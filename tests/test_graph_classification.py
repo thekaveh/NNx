@@ -403,3 +403,55 @@ def test_recipe_settings_are_validated():
         spec = graph_classifier_spec(input_dim=3, num_classes=3, hidden_dims=[8, 8], encoder=encoder, pool="sum")
         model = NNModel(params=NNModelParams(net=spec, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(3)))
         assert model.predict_proba(_synthetic(4).subset([1000, 1001, 1002]).loader(3)).probabilities.shape == (3, 3)
+
+
+# --- review round 1 -------------------------------------------------------------------------------------
+
+
+def test_round_one_edges(tmp_path):
+    from nnx.models import build_module
+    from nnx.nn.nn_model import _batch_sample_count
+    from nnx.viz.netron import netron_export
+
+    collection = _synthetic(6)
+    feed_fwd = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=3, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    with pytest.raises(ValueError, match="graph-collection batch"):
+        feed_fwd.predict(collection.loader(batch_size=3))
+    module = build_module(graph_classifier_spec(input_dim=3, num_classes=3, pool="sum"))
+    (batch,) = list(collection.loader(batch_size=6))
+    path = tmp_path / "bare.onnx"
+    with pytest.raises(NotImplementedError, match="export_state_dict"):
+        netron_export(module, str(path), (batch.x, batch.edge_index, batch.batch, batch.ptr))
+    assert not path.exists()
+    # float64 features (NumPy's default) run through a float32 model.
+    doubles = GraphCollection(
+        [Data(x=g.x.double(), edge_index=g.edge_index) for g in (collection[0], collection[1])], [1, 2], targets=[0, 1]
+    )
+    assert _recipe_model().predict_proba(doubles.loader(2)).probabilities.shape == (2, 3)
+    # The recipe takes an Activations member and checks the feature width.
+    spec = graph_classifier_spec(input_dim=3, num_classes=3, activation=Activations.RELU)
+    assert spec.config["activation"] == "relu"
+    wide = GraphCollection([_graph(3, 1.0, width=5)], [1], targets=[0])
+    with pytest.raises(GraphTaskError, match="5 node features; the classifier reads 3"):
+        _recipe_model().predict(wide.loader(1))
+    # Custom training steps weigh a graph batch by its graphs, not as one sample.
+    model = _recipe_model()
+    assert _batch_sample_count(model.net, batch) == 6
+
+    class Tagged:
+        def __init__(self, root, transform=None):
+            self.graph = collection[0]
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, index):
+            return self.graph
+
+    from nnx import NNGraphDataset
+
+    with pytest.raises(ValueError, match="graph-collection item"):
+        NNGraphDataset(ds_class=Tagged, sampler="full")

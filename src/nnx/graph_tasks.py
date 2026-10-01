@@ -42,6 +42,7 @@ refused before anything is written (its pooling is not exported).
 from __future__ import annotations
 
 import numbers
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
@@ -130,7 +131,7 @@ class GraphCollection(torch.utils.data.Dataset):
             raise GraphTaskError(f"{len(graphs)} graphs but {len(ids)} ids")
         if not graphs:
             raise GraphTaskError("a graph collection needs at least one graph")
-        repeated = sorted({i for i in ids if ids.count(i) > 1})
+        repeated = sorted(i for i, n in Counter(ids).items() if n > 1)
         if repeated:
             raise GraphTaskError(f"duplicate graph ids {repeated}")
         flagged = {_count(i, "an unlabeled id", minimum=0) for i in unlabeled}
@@ -212,12 +213,12 @@ class GraphCollection(torch.utils.data.Dataset):
         if missing:
             raise GraphTaskError(f"no graphs with ids {missing}")
         chosen = [self._items[positions[i]] for i in ids]
-        flagged = [i for i in ids if self.labels[positions[i]] == IGNORE]
+        flagged = {i for i in ids if self.labels[positions[i]] == IGNORE}
         return GraphCollection(
             chosen,
             list(ids),
             targets=[None if i in flagged else self.labels[positions[i]] for i in ids],
-            unlabeled=flagged,
+            unlabeled=sorted(flagged),
             num_classes=self.num_classes,
         )
 
@@ -324,17 +325,28 @@ class GraphClassifier(nn.Module):
 
     onnx_export_unsupported = ONNX_UNSUPPORTED
 
-    def __init__(self, encoder: nn.Module, pool: Any = "mean", head: Optional[nn.Module] = None) -> None:
+    def __init__(
+        self,
+        encoder: nn.Module,
+        pool: Any = "mean",
+        head: Optional[nn.Module] = None,
+        *,
+        input_dim: Optional[int] = None,
+    ) -> None:
         super().__init__()
         if not isinstance(encoder, nn.Module):
             raise GraphTaskError(f"encoder must be an nn.Module, got {type(encoder).__name__}")
         self.encoder = encoder
         self.pool = pool if isinstance(pool, GraphPool) else GraphPool(pool)
         self.head = head
+        self.input_dim = None if input_dim is None else _count(input_dim, "input_dim", minimum=1)
 
     def forward(
         self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor, ptr: torch.Tensor
     ) -> torch.Tensor:
+        parameter = next(self.parameters(), None)
+        if parameter is not None and x.is_floating_point() and x.dtype != parameter.dtype:
+            x = x.to(parameter.dtype)  # e.g. float64 features from NumPy for a float32 model
         nodes = self.encoder(x, edge_index)
         if not isinstance(nodes, torch.Tensor) or nodes.shape[0] != x.shape[0]:
             raise GraphTaskError("the encoder must return one row per node")
@@ -343,11 +355,14 @@ class GraphClassifier(nn.Module):
 
     def unpack_batch(self, batch: Any) -> tuple[tuple[torch.Tensor, ...], Optional[torch.Tensor]]:
         x, edge_index, vector, ptr = check_graph_batch(batch)
+        if self.input_dim is not None and x.shape[1] != self.input_dim:
+            raise GraphTaskError(f"the batch has {x.shape[1]} node features; the classifier reads {self.input_dim}")
         return (x, edge_index, vector, ptr), _targets(batch, int(ptr.shape[0]) - 1)
 
     def sample_ids(self, batch: Any) -> torch.Tensor:
         """The batch's graph ids, one per output row, in batch order."""
-        check_graph_batch(batch)
+        if not is_graph_collection_batch(batch):
+            check_graph_batch(batch)  # raises with the reason
         return batch.graph_id
 
 
@@ -394,9 +409,12 @@ def _check_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise GraphTaskError(f"pool must be one of {POOLS}, got {pool!r}")
     from .nn.enum.activations import Activations
 
-    activation = config.get("activation", "relu")
-    if activation not in {a.value for a in Activations}:
-        raise GraphTaskError(f"unknown activation {activation!r}")
+    try:
+        activation = Activations(
+            getattr(config.get("activation", "relu"), "value", config.get("activation", "relu"))
+        ).value
+    except ValueError as error:
+        raise GraphTaskError(f"unknown activation {config.get('activation')!r}") from error
     return {
         "encoder": encoder,
         "input_dim": _count(config.get("input_dim"), "input_dim", minimum=1),
@@ -412,7 +430,9 @@ def _build(config: Mapping[str, Any]) -> GraphClassifier:
     settings = _check_config(config)
     dims = [settings["input_dim"], *settings["hidden_dims"]]
     encoder = _Encoder(settings["encoder"], dims, settings["activation"], settings["dropout"])
-    return GraphClassifier(encoder, settings["pool"], nn.Linear(dims[-1], settings["num_classes"]))
+    return GraphClassifier(
+        encoder, settings["pool"], nn.Linear(dims[-1], settings["num_classes"]), input_dim=settings["input_dim"]
+    )
 
 
 def graph_classifier_spec(
