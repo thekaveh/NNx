@@ -159,6 +159,13 @@ def test_a_paraphrased_description_is_rescored_under_the_same_id():
         ({"hypothesis_template": "no placeholder"}, "exactly one"),
         ({"hypothesis_template": "{} and {}"}, "exactly one"),
         ({"boolean_template": "{prompt}"}, "exactly one"),
+        ({"hypothesis_template": "About {!r}."}, "exactly one bare"),
+        ({"hypothesis_template": "About {:.3}."}, "exactly one bare"),
+        ({"hypothesis_template": "About {:>40}."}, "exactly one bare"),
+        ({"hypothesis_template": "About {:{}}."}, "exactly one bare"),
+        ({"boolean_template": "{:d}"}, "exactly one bare"),
+        ({"boolean_template": "{!x}"}, "exactly one bare"),
+        ({"hypothesis_template": "About {."}, "not a valid format string"),
         ({"choice_scoring": "renormalized_probability"}, "choice_scoring"),
         ({"boolean_scoring": "joint"}, "boolean_scoring"),
         ({"truncation": "longest_first"}, "truncation"),
@@ -197,28 +204,38 @@ def test_boolean_questions_are_never_normalised_together():
 
 
 def test_importing_and_constructing_download_nothing(tmp_path):
+    # Network and every from_pretrained entry point are refused BEFORE nnx is
+    # imported, so importing, constructing and deciding are all covered.
     script = textwrap.dedent(
         f"""
         import socket, sys
+        calls = []
         def refuse(*args, **kwargs):
-            raise AssertionError("network access")
+            calls.append(args)
+            raise AssertionError("network access or from_pretrained")
         socket.socket.connect = refuse
         socket.create_connection = refuse
         sys.path.insert(0, {str(tmp_path)!r})
-        import nnx
-        try:  # where transformers is installed, any from_pretrained call would fail loudly
+        try:
             import transformers
-            transformers.PreTrainedModel.from_pretrained = classmethod(refuse)
-            transformers.PreTrainedTokenizerBase.from_pretrained = classmethod(refuse)
+            for name in ("PreTrainedModel", "PreTrainedTokenizerBase", "AutoModel", "AutoTokenizer",
+                         "AutoModelForSequenceClassification", "AutoConfig"):
+                if hasattr(transformers, name):
+                    setattr(getattr(transformers, name), "from_pretrained", classmethod(refuse))
         except ImportError:
             pass
-        before = set(sys.modules)  # the baseline: nnx and the patching above
-        import nnx.decisions.nli
+        try:
+            import huggingface_hub
+            huggingface_hub.hf_hub_download = refuse
+            huggingface_hub.snapshot_download = refuse
+        except ImportError:
+            pass
+        import nnx
+        from nnx.decisions import Boolean, NLIProvider
         from stub import OverlapNLI, WordTokenizer
-        provider = nnx.decisions.NLIProvider(OverlapNLI(), WordTokenizer(), entailment_id=2, contradiction_id=0)
-        result = provider.decide(nnx.decisions.Boolean("late goal"), ["a late goal"])
-        added = sorted(m for m in set(sys.modules) - before if m.startswith(("transformers", "huggingface_hub")))
-        assert not added, f"the provider imported {{added}}"
+        provider = NLIProvider(OverlapNLI(), WordTokenizer(), entailment_id=2, contradiction_id=0)
+        result = provider.decide(Boolean("late goal"), ["a late goal"])
+        assert calls == [], calls
         print(result[0].p_true)
         """
     )
@@ -227,6 +244,31 @@ def test_importing_and_constructing_download_nothing(tmp_path):
     run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=False)
     assert run.returncode == 0, run.stderr
     assert float(run.stdout.strip().splitlines()[-1]) == pytest.approx(0.75)
+
+
+def test_the_provider_module_imports_no_nli_library():
+    import ast
+
+    import nnx.decisions.nli as module
+
+    tree = ast.parse(inspect.getsource(module))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported <= {
+        "__future__",
+        "collections",
+        "dataclasses",
+        "math",
+        "numbers",
+        "string",
+        "typing",
+        "numpy",
+        "torch",
+    }
 
 
 def test_embed_texts_and_the_faiss_export_keep_their_signatures():
@@ -284,6 +326,41 @@ def test_long_inputs_are_reported_or_refused():
     assert refusing.model_calls == 0 and refusing.model.seen == []
 
 
+def test_a_hypothesis_that_cannot_fit_is_refused_before_the_model():
+    long_description = ("t-long", "one two three four five six")
+    question = Choice("Topic?", (SPORT, long_description))
+    quiet = _provider(max_length=6)  # this stub cuts the premise to nothing and still overflows
+    with pytest.raises(InvalidDecisionRequest, match="does not fit max_length=6"):
+        quiet.decide(question, [TEXT])
+    assert quiet.model_calls == 0 and quiet.model.seen == []
+
+    class Strict(WordTokenizer):  # like a HuggingFace fast tokenizer: refuses instead
+        def __call__(self, premises, hypotheses, *, truncation, max_length=None, **kwargs):
+            if truncation == "only_first" and any(len(self.ids(h)) + 3 > max_length for h in hypotheses):
+                raise ValueError("Truncation error: Sequence to truncate too short to respect the provided max_length")
+            return super().__call__(premises, hypotheses, truncation=truncation, max_length=max_length, **kwargs)
+
+    strict = _provider(max_length=6, tokenizer=Strict())
+    with pytest.raises(InvalidDecisionRequest, match="too short") as caught:
+        strict.decide(question, [TEXT])
+    assert isinstance(caught.value.__cause__, ValueError) and strict.model_calls == 0
+
+
+def test_malformed_model_outputs_are_provider_failures():
+    class Scalar(OverlapNLI):
+        def forward(self, input_ids, token_type_ids, attention_mask):
+            return torch.tensor(1.0)
+
+    class Ragged(OverlapNLI):
+        def forward(self, input_ids, token_type_ids, attention_mask):
+            return torch.zeros(int(input_ids.shape[0]), 3 + int(input_ids.shape[0]))  # width varies per chunk
+
+    with pytest.raises(ProviderFailure, match="inconsistent shapes"):
+        _provider(model=Scalar()).decide(Boolean("late goal"), [TEXT])
+    with pytest.raises(ProviderFailure, match="inconsistent shapes"):
+        _provider(model=Ragged(), pair_batch_size=2).decide(Choice("Topic?", (SPORT, ECON, ("t-x", "x"))), [TEXT])
+
+
 def test_unknown_entailment_labels_never_reach_the_model():
     model = OverlapNLI()
     model.config.label2id = {"yes": 0, "no": 1}
@@ -332,6 +409,19 @@ def test_modes_survive_a_truncation_refusal_and_a_model_failure():
         failing.decide(Boolean("late goal"), [TEXT])
     assert isinstance(caught.value.__cause__, RuntimeError)
     assert [part.training for part in failing.model.modules()] == before
+
+    class FailingTensors(WordTokenizer):  # fails while building the truncated model inputs
+        def __call__(self, premises, hypotheses, *, return_tensors=None, **kwargs):
+            if return_tensors == "pt":
+                raise RuntimeError("tokenizer failure while truncating")
+            return super().__call__(premises, hypotheses, return_tensors=return_tensors, **kwargs)
+
+    truncating = _provider(max_length=8, tokenizer=FailingTensors())
+    before = _mixed_modes(truncating.model)
+    with pytest.raises(ProviderFailure, match="while truncating"):
+        truncating.decide(Choice("Topic?", (SPORT, ECON)), [TEXT])  # an over-long pair, cut under only_first
+    assert [part.training for part in truncating.model.modules()] == before
+    assert next(truncating.model.parameters()).device.type == "cpu" and truncating.model.seen == []
 
 
 # --- AC7: records and unsupported requests ----------------------------------------------------------------

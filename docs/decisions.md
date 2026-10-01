@@ -161,7 +161,7 @@ provider.decide(Boolean("This review is positive."), texts)
   `Score` is unsupported and refused before any model call.
 - **Validated settings.** The entailment and contradiction ids must differ
   and fit the model's class count (when its config declares one); a label
-  name must be one its config knows. Templates hold exactly one `{}`.
+  name must be one its config knows. Templates hold exactly one bare `{}` (no conversion or format spec).
   Unknown scoring or truncation policies are refused at construction.
 - **The provider contract.** NNx imports no NLI library and downloads
   nothing; importing `nnx.decisions` or constructing the provider calls no
@@ -175,8 +175,10 @@ provider.decide(Boolean("This review is positive."), texts)
   `ProviderFailure`.
 - **Truncation, reported.** Pairs are measured untruncated first.
   `truncation="only_first"` (default) cuts the premise to `max_length` and
-  marks which pairs were cut in `raw["truncated"]`; `truncation="error"`
-  refuses an over-long request before any model call.
+  marks which pairs were cut in `raw["truncated"]`; a hypothesis that does
+  not fit even with the premise cut is refused (`InvalidDecisionRequest`)
+  before any model call. `truncation="error"` refuses an over-long request
+  before any model call.
 - **Records, never calibrated.** Each result's `raw` holds the pair logits,
   the truncation report and `provider.record()` — the templates, label ids,
   scoring methods, truncation policy and model `revision` — with

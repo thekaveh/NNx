@@ -48,9 +48,10 @@ success and on failure.
 
 **Truncation (explicit, reported).** Every pair is measured untruncated
 first. ``truncation="only_first"`` cuts the premise to fit ``max_length``
-and reports which pairs were cut in each result's ``raw["truncated"]``;
-``truncation="error"`` rejects a request with an over-long pair before any
-model call.
+and reports which pairs were cut in each result's ``raw["truncated"]``; a
+hypothesis that does not fit even with the premise cut rejects the request
+before any model call. ``truncation="error"`` rejects a request with an
+over-long pair before any model call.
 
 Each result's ``raw`` records the pair logits, the truncation report and
 the provider's :meth:`NLIProvider.record` — the NLI template, label ids,
@@ -89,21 +90,20 @@ BOOLEAN_SCORING = ("entailment_vs_contradiction",)
 TRUNCATION = ("only_first", "error")
 
 
-def _placeholders(template: str) -> list[Optional[str]]:
-    return [name for _, name, _, _ in string.Formatter().parse(template) if name is not None]
-
-
 def _check_template(template: Any, what: str) -> str:
-    """A template with exactly one ``{}`` placeholder (the description or
-    the prompt) and no other fields."""
+    """A template with exactly one bare ``{}`` placeholder (the description
+    or the prompt): no other field, conversion or format spec, which could
+    fail at request time or silently change the text."""
     if not isinstance(template, str) or not template.strip():
         raise InvalidDecisionRequest(f"{what} must be a non-empty string, got {template!r}")
     try:
-        names = _placeholders(template)
+        fields = [(name, spec, conversion) for _, name, spec, conversion in string.Formatter().parse(template)]
     except ValueError as error:
         raise InvalidDecisionRequest(f"{what} {template!r} is not a valid format string: {error}") from error
-    if names != [""]:
-        raise InvalidDecisionRequest(f"{what} must hold exactly one '{{}}' placeholder, got {template!r}")
+    if [field for field in fields if field[0] is not None] != [("", "", None)]:
+        raise InvalidDecisionRequest(
+            f"{what} must hold exactly one bare '{{}}' placeholder (no conversion or format spec), got {template!r}"
+        )
     return template
 
 
@@ -306,21 +306,41 @@ class NLIProvider:
         return results
 
     def _truncation_report(self, premises: list[str], hypotheses: list[str]) -> list[bool]:
-        """Which pairs exceed ``max_length`` untruncated; under
-        ``truncation="error"`` any such pair rejects the request before the
-        model is called."""
+        """Which pairs exceed ``max_length`` untruncated, checked before the
+        model is called: under ``truncation="error"`` any such pair rejects
+        the request; under ``"only_first"`` each must fit once its premise
+        is cut — a hypothesis that alone overflows ``max_length`` rejects it."""
         try:
             encoded = self.tokenizer(premises, hypotheses, truncation=False, padding=False)
             lengths = [len(ids) for ids in encoded["input_ids"]]
         except Exception as error:
             raise ProviderFailure(f"{self.name}: the tokenizer failed: {error}") from error
         truncated = [length > self.max_length for length in lengths]
-        if self.truncation == "error" and any(truncated):
-            longest = max(lengths)
+        if not any(truncated):
+            return truncated
+        if self.truncation == "error":
             raise InvalidDecisionRequest(
                 f"{sum(truncated)} premise/hypothesis pair(s) exceed max_length={self.max_length} tokens (the longest "
-                f"has {longest}) and truncation='error'; shorten the inputs or use truncation='only_first'"
+                f"has {max(lengths)}) and truncation='error'; shorten the inputs or use truncation='only_first'"
             )
+        long = [i for i, cut in enumerate(truncated) if cut]
+        overflow = (
+            f"the hypothesis plus special tokens does not fit max_length={self.max_length} even with the premise "
+            "cut; raise max_length or shorten the description or prompt"
+        )
+        try:
+            cut = self.tokenizer(
+                [premises[i] for i in long],
+                [hypotheses[i] for i in long],
+                truncation="only_first",
+                max_length=self.max_length,
+                padding=False,
+            )
+            cut_lengths = [len(ids) for ids in cut["input_ids"]]
+        except Exception as error:  # a tokenizer that refuses to cut a too-short premise
+            raise InvalidDecisionRequest(f"{overflow} ({error})") from error
+        if any(length > self.max_length for length in cut_lengths):
+            raise InvalidDecisionRequest(overflow)
         return truncated
 
     def _pair_logits(self, premises: list[str], hypotheses: list[str]) -> np.ndarray:
@@ -355,7 +375,12 @@ class NLIProvider:
             raise ProviderFailure(f"{self.name}: the NLI model failed: {error}") from error
         finally:
             _restore_training_modes(modes)
-        logits = np.concatenate(chunks, axis=0)
+        try:
+            logits = np.concatenate(chunks, axis=0)
+        except ValueError as error:  # 0-d output, or a class count that differs between chunks
+            raise ProviderFailure(
+                f"{self.name}: the NLI model returned logits of inconsistent shapes {[c.shape for c in chunks]}"
+            ) from error
         width = max(cast(int, self.entailment_id), cast(int, self.contradiction_id)) + 1
         if logits.ndim != 2 or logits.shape[0] != len(premises) or logits.shape[1] < width:
             raise ProviderFailure(
