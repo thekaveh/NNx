@@ -342,26 +342,31 @@ def test_a_profile_owns_its_artifact_directory(tmp_path):
 
 def test_core_import_does_not_need_the_runtime_extra():
     """With onnx / onnxruntime / onnxscript absent, ``import nnx`` and the
-    conformance module import, and nothing even tries to import them (a
-    spy on ``__import__``, checked by a control import at the end)."""
+    conformance module import, and no NNx module even tries to import them
+    (a spy on ``__import__`` that names the importing module). Torch's own
+    guarded probes are not NNx's: torch 2.4's ``torch.onnx`` tries
+    ``import onnx`` and ``import onnxscript`` and carries on without them.
+    Two controls check the spy: an import from an NNx module is seen, one
+    from a third-party module is not."""
     code = (
         "import builtins, sys\n"
         "blocked = ('onnx', 'onnxruntime', 'onnxscript')\n"
         "for name in blocked:\n"
         "    sys.modules[name] = None  # not installed\n"
         "tried, real = [], builtins.__import__\n"
-        "def spy(name, *args, **kwargs):\n"
-        "    if name.split('.')[0] in blocked:\n"
+        "def spy(name, globals=None, *args, **kwargs):\n"
+        "    importer = str((globals or {}).get('__name__', ''))\n"
+        "    if name.split('.')[0] in blocked and importer.split('.')[0] == 'nnx':\n"
         "        tried.append(name)\n"
-        "    return real(name, *args, **kwargs)\n"
+        "    return real(name, globals, *args, **kwargs)\n"
         "builtins.__import__ = spy\n"
         "import nnx, nnx.export_conformance as c\n"
         "assert c.PROFILES and tried == [], tried\n"
-        "try:\n"
-        "    import onnxruntime\n"
-        "except ImportError:\n"
-        "    pass\n"
-        "assert tried == ['onnxruntime'], tried  # the spy works\n"
+        "probe = 'try:\\n    import {}\\nexcept ImportError:\\n    pass\\n'\n"
+        "exec(probe.format('onnx'), {'__name__': 'torch.onnx._internal.onnxruntime'})\n"
+        "assert tried == [], tried  # a dependency's guarded probe is not NNx's\n"
+        "exec(probe.format('onnxruntime'), {'__name__': 'nnx._probe'})\n"
+        "assert tried == ['onnxruntime'], tried  # the spy sees NNx's own imports\n"
     )
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")])}
     subprocess.run([sys.executable, "-c", code], check=True, env=env, timeout=120)
