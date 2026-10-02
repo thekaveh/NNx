@@ -870,13 +870,54 @@ def test_a_record_holds_only_what_run_profile_writes(tmp_path, monkeypatch):
     assert not (tmp_path / "mutated").exists()
 
 
-def test_a_non_finite_native_reference_is_a_classified_mismatch(tmp_path):
+def test_a_non_finite_native_reference_is_a_classified_mismatch(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     from nnx.export_conformance import MODEL
 
     _runtime()
-    huge = Profile("huge", "torchscript", model={**MODEL, "weights": {**MODEL["weights"], "std": 6.46e18}})
-    record = run_profile(huge, tmp_path)
+    real = NNModel.predict
+
+    def overflowing(self, *args, **kwargs):
+        logits = torch.as_tensor(real(self, *args, **kwargs).logits)
+        return SimpleNamespace(logits=torch.full_like(logits, float("inf")))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(NNModel, "predict", overflowing)
+        record = run_profile("feedfwd-fp32-torchscript", tmp_path / "native")
     validate_record(record)  # every outcome is classified, as strict JSON
     assert record["failure"] == "mismatch"
-    assert any("non-finite logits" in (case["detail"] or "") for case in record["input_cases"])
+    compared = [case for case in record["input_cases"] if case["expect"] == "match"]
+    assert all(case["detail"] == "the native model gave non-finite logits" for case in compared)
     save_report({"format": FORMAT, "status": "failed", "profiles": [record]}, tmp_path / "report.json")
+
+    # Weights so large that gradients overflow to NaN: NaN stays NaN, so the export changed nothing.
+    huge = Profile("huge", "torchscript", model={**MODEL, "weights": {**MODEL["weights"], "std": 1e30}})
+    record = run_profile(huge, tmp_path / "huge")
+    validate_record(record)
+    assert record["stages"]["export"]["status"] == "passed" and record["failure"] == "mismatch"
+
+
+def test_a_model_changed_in_place_or_by_a_failing_exporter_is_recorded_as_it_ran(tmp_path, monkeypatch):
+    _runtime()
+    tuple_dims = Profile("tuple-dims", "torchscript")
+    tuple_dims.model["hidden_dims"] = (8,)  # changed in place: still the same model
+    record = run_profile(tuple_dims, tmp_path)
+    validate_record(record)
+    assert record["config"]["hidden_dims"] == [8] and record["level"] == "executed"
+
+    original = NNModel.to_onnx
+
+    def mutate_then_raise(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        with torch.no_grad():
+            next(self.net.parameters()).add_(1.0)
+        raise RuntimeError("exporter gave up")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(NNModel, "to_onnx", mutate_then_raise)
+        record = run_profile("feedfwd-fp32-torchscript", tmp_path / "raised")
+    validate_record(record)
+    assert record["failure"] == "state-changed" and record["model_state"]["parameters"] is False
+    assert "exporter gave up" in record["stages"]["export"]["detail"]["export"]["error"]
+    assert exit_code({"profiles": [record]}) == EXIT_CODES["state-changed"]

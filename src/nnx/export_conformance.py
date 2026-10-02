@@ -112,6 +112,8 @@ _STAGE_FAILURES = {
     "load": ("hash-mismatch", "load-error"),
     "parity": ("mismatch", "input-contract", "runtime-error"),
 }
+# A failed parity stage names the first of these its failing cases name.
+_PARITY_RANK = ("runtime-error", "mismatch", "input-contract")
 MODEL_FILE = "model.onnx"
 _PLAIN = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -662,7 +664,11 @@ def _same(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
         other = after[key]
         if (value is None) != (other is None):
             return False
-        if value is not None and not torch.equal(value, other):
+        if value is not None and not (
+            value.dtype == other.dtype
+            and value.shape == other.shape
+            and torch.allclose(value, other, rtol=0, atol=0, equal_nan=True)  # NaN stays NaN: unchanged
+        ):
             return False
     return True
 
@@ -694,17 +700,24 @@ def _export(profile: Profile, model: Any, root: str) -> tuple[dict[str, Any], Op
             )
         caught = sorted({f"{w.category.__name__}: {(str(w.message).splitlines() or [''])[0][:200]}" for w in seen})
     except Exception as error:  # every exporter failure is a classified outcome
-        tail = printed.getvalue().strip().splitlines()[-5:]
-        return _stage("failed", "export-error", {"error": f"{type(error).__name__}: {error}", "log": tail}), None
+        failed: Optional[dict[str, Any]] = {
+            "error": f"{type(error).__name__}: {error}",
+            "log": printed.getvalue().strip().splitlines()[-5:],
+        }
+    else:
+        failed = None
     after_params, after_grads, after_modes = _model_state(net)
     unchanged = {
         "parameters": _same(params, after_params),
         "gradients": _same(grads, after_grads),
         "modes": modes == after_modes,
     }
-    if not all(unchanged.values()):
+    if not all(unchanged.values()):  # a changed model is reported first, even when the exporter then raised
         changed = sorted(name for name, same in unchanged.items() if not same)
-        return _stage("failed", "state-changed", {"changed": changed, "warnings": caught}), unchanged
+        detail = {"changed": changed, "warnings": caught, **({} if failed is None else {"export": failed})}
+        return _stage("failed", "state-changed", detail), unchanged
+    if failed is not None:
+        return _stage("failed", "export-error", failed), unchanged
     if not os.path.isfile(os.path.join(root, MODEL_FILE)):
         return _stage("failed", "export-error", {"error": f"the exporter wrote no {MODEL_FILE}"}), unchanged
     return _stage("passed", detail={"warnings": caught}), unchanged
@@ -812,8 +825,9 @@ def _parity(profile_cases: Sequence[Mapping[str, Any]], session: Any, model: Any
                 outcome="mismatch", failure="mismatch", detail=f"{got} for native float32 {list(reference.shape)}"
             )
             continue
-        if not np.all(np.isfinite(out)) or not np.all(np.isfinite(reference)):
-            which = "the runtime" if not np.all(np.isfinite(out)) else "the native model"
+        finite_out = bool(np.all(np.isfinite(out)))
+        if not finite_out or not np.all(np.isfinite(reference)):
+            which = "the native model" if finite_out else "the runtime"
             result.update(outcome="mismatch", failure="mismatch", detail=f"{which} gave non-finite logits")
             continue
         error = np.abs(out.astype(np.float64) - reference)
@@ -821,13 +835,13 @@ def _parity(profile_cases: Sequence[Mapping[str, Any]], session: Any, model: Any
         result["max_rel_error"] = float((error / np.maximum(np.abs(reference), 1e-30)).max()) if error.size else 0.0
         within = bool(np.all(error <= atol + rtol * np.abs(reference)))
         result.update(outcome="match" if within else "mismatch", passed=within, failure=None if within else "mismatch")
-    failed = [r for r in results if not r["passed"]]
+    failing = [r for r in results if not r["passed"]]
     compared = sum(1 for r in results if r["outcome"] == "match")
-    if not failed:  # a profile always has a valid case, so one was compared
+    if not failing:  # a profile always has a valid case, so one was compared
         return _stage("passed", detail={"cases": len(results), "compared": compared}), results
-    kinds = {r["failure"] for r in failed}
-    failure = next(kind for kind in ("runtime-error", "mismatch", "input-contract") if kind in kinds)
-    return _stage("failed", failure, {"failed_cases": [r["name"] for r in failed]}), results
+    kinds = {r["failure"] for r in failing}
+    failure = next(kind for kind in _PARITY_RANK if kind in kinds)
+    return _stage("failed", failure, {"failed_cases": [r["name"] for r in failing]}), results
 
 
 def _finish(record: dict[str, Any]) -> dict[str, Any]:
@@ -872,7 +886,7 @@ def run_profile(
         raise ConformanceError(f"{root!r} must be a new or empty directory: a profile owns its artifacts")
     os.makedirs(root, exist_ok=True)
     model = build_model(profile.model)
-    config = {**copy.deepcopy(dict(profile.model)), "weights_sha256": _weights_digest(model.net)}
+    config = {**_canonical_model(profile.model), "weights_sha256": _weights_digest(model.net)}
     record: dict[str, Any] = {
         "format": FORMAT,
         "profile": profile.name,
@@ -1136,7 +1150,7 @@ def validate_record(record: Any) -> None:
     elif status("parity") == "failed":
         # The stage names the first class its failing cases name, in the order _parity ranks them.
         named = [case.get("failure") for case in cases if case.get("passed") is False]
-        ranked = next((kind for kind in ("runtime-error", "mismatch", "input-contract") if kind in named), None)
+        ranked = next((kind for kind in _PARITY_RANK if kind in named), None)
         if ranked is None or stages["parity"].get("failure") != ranked:
             problems.append(
                 f"parity failed with {stages['parity'].get('failure')!r}; its failing cases name {ranked!r}"
