@@ -186,9 +186,7 @@ class Profile:
             raise ConformanceError(f"provider must name an ONNX Runtime execution provider, got {self.provider!r}")
         _check_model(self.model)
         object.__setattr__(self, "model", _canonical_model(self.model))  # a private copy, not the caller's
-        width = self.model["input_dim"]
-        if max((*batches, self.export_batch)) * width > MAX_ELEMENTS:
-            raise ConformanceError(f"an input batch of width {width} may hold at most {MAX_ELEMENTS} values")
+        _check_size(batches, self.export_batch, self.model)
 
     @property
     def requires(self) -> tuple[str, ...]:
@@ -215,7 +213,7 @@ class Profile:
 # A conformance profile is a small model: anything larger is refused before it is built or run.
 MAX_DIM = 1 << 16  # units per layer, and the largest batch
 MAX_LAYERS = 64  # hidden layers
-MAX_ELEMENTS = 1 << 24  # weights in the model, and values in one input batch
+MAX_ELEMENTS = 1 << 24  # weights in the model, and values one batch holds in any layer
 MAX_CASES = 64  # valid input cases
 
 
@@ -270,6 +268,17 @@ def _check_model(config: Any) -> None:
             problems.append(f"the model exceeds {MAX_LAYERS} hidden layers or {MAX_ELEMENTS} weights")
     if problems:
         raise ConformanceError("malformed model config: " + "; ".join(problems))
+
+
+def _check_size(batches: Sequence[int], export_batch: int, model: Mapping[str, Any]) -> None:
+    """Refuse a profile whose largest batch, through its widest layer (input,
+    hidden activations or logits), holds more than :data:`MAX_ELEMENTS` values."""
+    batch = max((*batches, export_batch))
+    widest = max(model["input_dim"], *model["hidden_dims"], model["output_dim"])
+    if batch * widest > MAX_ELEMENTS:
+        raise ConformanceError(
+            f"a batch of {batch} through a layer of {widest} units holds more than {MAX_ELEMENTS} values"
+        )
 
 
 def _settings(
@@ -601,7 +610,7 @@ def verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLik
     except OSError as error:
         raise ConformanceError(f"artifacts cannot be read: {type(error).__name__}: {error}") from error
     except (KeyError, TypeError, AttributeError) as error:
-        raise ConformanceError(f"the record's artifacts are malformed: {type(error).__name__}: {error}") from error
+        raise ConformanceError(f"the record or directory is malformed: {type(error).__name__}: {error}") from error
 
 
 def _verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLike[str]]) -> None:
@@ -803,8 +812,9 @@ def _parity(profile_cases: Sequence[Mapping[str, Any]], session: Any, model: Any
                 outcome="mismatch", failure="mismatch", detail=f"{got} for native float32 {list(reference.shape)}"
             )
             continue
-        if not np.all(np.isfinite(out)):
-            result.update(outcome="mismatch", failure="mismatch", detail="the runtime gave non-finite logits")
+        if not np.all(np.isfinite(out)) or not np.all(np.isfinite(reference)):
+            which = "the runtime" if not np.all(np.isfinite(out)) else "the native model"
+            result.update(outcome="mismatch", failure="mismatch", detail=f"{which} gave non-finite logits")
             continue
         error = np.abs(out.astype(np.float64) - reference)
         result["max_abs_error"] = float(error.max()) if error.size else 0.0
@@ -852,6 +862,7 @@ def run_profile(
             raise ConformanceError(f"unknown profile {profile!r}; tested profiles are {sorted(PROFILES)}")
         profile = PROFILES[profile]
     _check_model(profile.model)  # again: the model mapping may have changed since the profile was made
+    _check_size(profile.batches, profile.export_batch, profile.model)
     if profile.name in _TESTED and _profile_settings(profile) != _TESTED[profile.name]:
         raise ConformanceError(
             f"{profile.name!r} names a tested profile; a profile with other settings needs its own name"
@@ -1045,7 +1056,8 @@ def validate_record(record: Any) -> None:
         raise ConformanceError(f"a conformance record is a mapping, got {type(record).__name__}")
     problems: list[str] = []
     try:
-        json.dumps(record, allow_nan=False)
+        if json.loads(json.dumps(record, sort_keys=True, allow_nan=False)) != record:
+            problems.append("a conformance record is strict JSON: it does not survive a round trip unchanged")
     except (TypeError, ValueError, RecursionError) as error:
         problems.append(f"a conformance record is strict JSON: {type(error).__name__}: {error}")
     unknown, missing = sorted(set(record) - _KEYS), sorted(_KEYS - set(record))
@@ -1121,12 +1133,14 @@ def validate_record(record: Any) -> None:
     if status("parity") not in ("passed", "failed"):
         if any(set(case) == _CASE_KEYS and dict(case) != _blank(case) for case in cases):
             problems.append("parity did not run, so no input case may carry an outcome")
-    elif status("parity") == "passed" and any(case.get("failure") is not None for case in cases):
-        problems.append("parity passed but an input case names a failure")
     elif status("parity") == "failed":
+        # The stage names the first class its failing cases name, in the order _parity ranks them.
         named = [case.get("failure") for case in cases if case.get("passed") is False]
-        if stages["parity"].get("failure") not in named:
-            problems.append("parity failed with a class no failing input case names")
+        ranked = next((kind for kind in ("runtime-error", "mismatch", "input-contract") if kind in named), None)
+        if ranked is None or stages["parity"].get("failure") != ranked:
+            problems.append(
+                f"parity failed with {stages['parity'].get('failure')!r}; its failing cases name {ranked!r}"
+            )
     for case in cases:
         if type(case.get("passed")) is not bool:
             problems.append(f"input case {case.get('name')!r} must say passed as a bool")
@@ -1142,10 +1156,16 @@ def validate_record(record: Any) -> None:
                     f"input case {case.get('name')!r} {outcome!r} names failure {failure!r} and "
                     f"passed={case['passed']}, not {given[expect]!r} and passed={given[expect] is None}"
                 )
-        if case.get("outcome") == "match" and not all(
-            _finite(case.get(key)) for key in ("max_abs_error", "max_rel_error")
-        ):
-            problems.append(f"input case {case.get('name')!r} matched without its errors")
+            else:
+                # A compared case carries its errors and no detail; any other outcome, a detail and no errors.
+                compared = all(_finite(case.get(key)) for key in ("max_abs_error", "max_rel_error"))
+                uncompared = case.get("max_abs_error") is None and case.get("max_rel_error") is None
+                described = isinstance(case.get("detail"), str)
+                if not (
+                    (compared and case.get("detail") is None and outcome in ("match", "mismatch"))
+                    or (uncompared and described and outcome != "match")
+                ):
+                    problems.append(f"input case {case.get('name')!r} {outcome!r} carries the wrong errors or detail")
     if status("parity") == "passed" and not all(
         case.get("passed") is True and case.get("outcome") == ("match" if case.get("expect") == "match" else "rejected")
         for case in cases
@@ -1160,6 +1180,8 @@ def validate_record(record: Any) -> None:
     elif status("export") == "failed" and stages["export"].get("failure") == "state-changed":
         if not kept or all(state.values()):
             problems.append(f"the export changed the model state, but model_state says otherwise: {state!r}")
+    elif status("export") == "failed" and kept and not all(state.values()):
+        problems.append(f"the model state changed, so the export failed as state-changed: {state!r}")
     elif status("export") not in ("passed", "failed") and state is not None:
         problems.append("the export did not run, so there is no model_state")
     elif state is not None and not kept:

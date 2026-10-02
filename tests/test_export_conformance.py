@@ -738,6 +738,16 @@ def test_every_input_case_states_an_outcome_a_run_gives(tmp_path, monkeypatch):
         (passed, lambda r: r["input_cases"][0].update(max_rel_error="big")),
         (passed, lambda r: r["input_cases"][0].update(max_abs_error=None)),
         (passed, lambda r: r["input_cases"][0].update(detail=7)),
+        (passed, lambda r: r["input_cases"][0].update(detail="forged")),  # a compared case has no detail
+        (passed, lambda r: r["input_cases"][-1].update(max_abs_error=0.5)),  # a refused input compares nothing
+        (  # the stage names the highest-ranked class its failing cases name (mismatch before input-contract)
+            failed,
+            lambda r: (
+                r["input_cases"][-1].update(outcome="accepted", passed=False, failure="input-contract")
+                or r["stages"]["parity"].update(failure="input-contract")
+                or r.update(failure="input-contract")
+            ),
+        ),
     ):
         broken = edited(record, edit)
         with pytest.raises(ConformanceError):
@@ -780,6 +790,13 @@ def test_a_profile_and_a_record_are_bounded_in_size(tmp_path):
             execute(forged, tmp_path)  # refused before anything is built or run
     with pytest.raises(ConformanceError, match="malformed"):
         verify_artifacts({}, tmp_path)
+    wide = {**MODEL, "input_dim": 1, "hidden_dims": [65536], "output_dim": 1}  # 2**32 hidden activations
+    with pytest.raises(ConformanceError, match="through a layer of 65536 units"):
+        Profile("wide", "torchscript", batches=(65536,), model=wide)
+    grown = Profile("grown", "torchscript", batches=(65536,), model={**MODEL, "input_dim": 256, "hidden_dims": [8]})
+    grown.model["input_dim"] = 257  # changed in place after it was checked
+    with pytest.raises(ConformanceError, match="holds more than"):
+        run_profile(grown, tmp_path / "grown")
     nan = json.loads(json.dumps(record))
     nan["stages"]["check"]["detail"]["producer"] = float("nan")
     with pytest.raises(ConformanceError, match="strict JSON"):
@@ -797,6 +814,8 @@ def test_a_record_holds_only_what_run_profile_writes(tmp_path, monkeypatch):
         return copy_
 
     for edit, message in (
+        (lambda r: r.update(source={1: "a"}), "round trip"),
+        (lambda r: r["source"].update(revision=("a", "b")), "round trip"),
         (lambda r: r["exporter"].update(quantization="int8"), "exporter must hold exactly"),
         (lambda r: r["runtime"].update(provider_options={"device_id": 1}), "runtime must hold exactly"),
         (lambda r: r["opset"].update(converted_to=18), "opset must hold exactly"),
@@ -833,8 +852,31 @@ def test_a_record_holds_only_what_run_profile_writes(tmp_path, monkeypatch):
     with pytest.raises(ConformanceError, match="model_state says otherwise"):
         validate_record(changed)
 
+    def raise_(*args, **kwargs):
+        raise RuntimeError("exporter dispatch failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(NNModel, "to_onnx", raise_)
+        failed = run_profile("feedfwd-fp32-torchscript", tmp_path / "failed")
+    validate_record(failed)
+    failed["model_state"] = {"parameters": False, "gradients": True, "modes": True}
+    with pytest.raises(ConformanceError, match="failed as state-changed"):
+        validate_record(failed)  # a changed model state is reported as state-changed, never export-error
+
     # A tested profile changed in place is no longer what its name stands for.
     monkeypatch.setitem(PROFILES["feedfwd-fp32-torchscript"].model, "dropout", 0.5)
     with pytest.raises(ConformanceError, match="names a tested profile"):
         run_profile("feedfwd-fp32-torchscript", tmp_path / "mutated")
     assert not (tmp_path / "mutated").exists()
+
+
+def test_a_non_finite_native_reference_is_a_classified_mismatch(tmp_path):
+    from nnx.export_conformance import MODEL
+
+    _runtime()
+    huge = Profile("huge", "torchscript", model={**MODEL, "weights": {**MODEL["weights"], "std": 6.46e18}})
+    record = run_profile(huge, tmp_path)
+    validate_record(record)  # every outcome is classified, as strict JSON
+    assert record["failure"] == "mismatch"
+    assert any("non-finite logits" in (case["detail"] or "") for case in record["input_cases"])
+    save_report({"format": FORMAT, "status": "failed", "profiles": [record]}, tmp_path / "report.json")
