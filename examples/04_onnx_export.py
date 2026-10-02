@@ -107,7 +107,11 @@ def describe(result: dict) -> str:
             "so no parity is claimed (install thekaveh-nnx[onnx-runtime] to execute it)"
         )
     verdict = "match" if result["parity"] else "DO NOT match"
-    error = "shapes differ" if result["max_abs_error"] is None else f"max abs error {result['max_abs_error']:.2e}"
+    error = (
+        "outputs differ in number or shape"
+        if result["max_abs_error"] is None
+        else f"max abs error {result['max_abs_error']:.2e}"
+    )
     return (
         f"  executed: ONNX Runtime ({result['provider']}) outputs {verdict} the model "
         f"({error}, rtol={result['rtol']:g}, atol={result['atol']:g})"

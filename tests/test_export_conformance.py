@@ -546,7 +546,7 @@ def test_a_hand_edited_record_of_a_tested_profile_is_refused(tmp_path):
     loosened = json.loads(json.dumps(record))
     loosened["tolerances"] = {"rtol": 1e9, "atol": 1e9}
     loosened["input_cases"] = loosened["input_cases"][:1]
-    with pytest.raises(ConformanceError, match="tested profile, but its input cases, tolerances differ"):
+    with pytest.raises(ConformanceError, match="tested profile, but its settings differ"):
         validate_record(loosened)
     with pytest.raises(ConformanceError, match="tested profile"):
         execute(loosened, tmp_path)
@@ -583,3 +583,58 @@ def test_an_unreadable_artifact_and_a_broken_install_are_classified(tmp_path, mo
     monkeypatch.setattr(conformance.importlib, "import_module", broken)
     broke = run_profile("feedfwd-fp32-torchscript", tmp_path / "broken")
     assert broke["failure"] == "missing-dependency" and "onnxruntime" in broke["stages"]["dependencies"]["detail"]
+
+
+# --- review round 3 ------------------------------------------------------------------------------------------
+
+
+def test_every_record_states_only_what_this_module_runs(tmp_path):
+    record = _valid_record(tmp_path)
+
+    def edited(edit):
+        copy_ = json.loads(json.dumps(record))
+        edit(copy_)
+        return copy_
+
+    custom = edited(lambda r: r.update(profile="custom", dtype="float16"))
+    custom["runtime"]["name"] = "tensorrt"
+    custom["artifacts"]["directory"] = "custom"
+    for broken, message in (
+        (custom, "dtype 'float16'"),
+        (edited(lambda r: r["runtime"]["session"].update(intra_op_num_threads=8)), "session options"),
+        (edited(lambda r: r["exporter"].update(name="dynamo")), "exporter.name"),
+        (edited(lambda r: r["opset"].update(requested=18)), "opset.requested"),
+        (edited(lambda r: r["artifacts"].update(directory="elsewhere")), "artifacts.directory"),
+        (edited(lambda r: r["input_cases"][0].update(seed=2**70)), "malformed name, seed or shape"),
+    ):
+        with pytest.raises(ConformanceError, match=message):
+            validate_record(broken)
+    stale = edited(lambda r: None)
+    stale["stages"]["load"] = {"status": "failed", "failure": "load-error", "detail": "x"}
+    stale["stages"]["parity"] = {"status": "not_run", "failure": None, "detail": None}
+    stale.update(status="failed", failure="load-error", level="structural")
+    for case in stale["input_cases"]:
+        case.update(outcome=None, passed=False)  # max_abs_error and detail left over
+    with pytest.raises(ConformanceError, match="no input case may carry an outcome"):
+        validate_record(stale)
+
+
+def test_a_profile_is_compared_canonically_and_checked_before_it_runs(tmp_path):
+    from nnx.export_conformance import MODEL
+
+    with pytest.raises(ConformanceError, match="names a tested profile"):
+        run_profile(Profile("feedfwd-fp32-torchscript", "torchscript", dynamic_batch=1), tmp_path)  # type: ignore[arg-type]
+    assert not (tmp_path / "feedfwd-fp32-torchscript").exists()  # refused before anything was written
+    for settings in ({"export_batch": 0}, {"export_batch": 2.0}, {"model": {**MODEL, "activation": "bogus"}}):
+        with pytest.raises(ConformanceError):
+            Profile("custom", "torchscript", **settings)  # type: ignore[arg-type]
+
+
+def test_a_symlinked_artifact_never_verifies(tmp_path):
+    record = _valid_record(tmp_path)
+    folder = tmp_path / "feedfwd-fp32-torchscript"
+    outside = tmp_path / "outside.onnx"
+    (folder / "model.onnx").rename(outside)
+    (folder / "model.onnx").symlink_to(outside)
+    with pytest.raises(ConformanceError, match="a symlink"):
+        verify_artifacts(record, tmp_path)
