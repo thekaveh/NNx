@@ -161,9 +161,16 @@ class Profile:
             raise ConformanceError(
                 f"profiles run FP32 inputs in ONNX Runtime; got runtime={self.runtime!r}, dtype={self.dtype!r}"
             )
-        batches = tuple(self.batches)
-        if not batches or not all(isinstance(b, int) and not isinstance(b, bool) and b >= 1 for b in batches):
-            raise ConformanceError(f"batches must be a non-empty list of positive batch sizes, got {self.batches!r}")
+        try:
+            batches = tuple(self.batches)
+        except TypeError:
+            batches = ()
+        if not 1 <= len(batches) <= MAX_CASES or not all(
+            isinstance(b, int) and not isinstance(b, bool) and 1 <= b <= MAX_DIM for b in batches
+        ):
+            raise ConformanceError(
+                f"batches must list 1..{MAX_CASES} batch sizes in 1..{MAX_DIM}, got {self.batches!r}"
+            )
         object.__setattr__(self, "batches", batches)
         for name in ("rtol", "atol"):
             value = getattr(self, name)
@@ -172,13 +179,16 @@ class Profile:
         for name in ("export_batch", "opset_version"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_DIM:
-                raise ConformanceError(f"{name} must be a positive integer, got {value!r}")
+                raise ConformanceError(f"{name} must be an integer in 1..{MAX_DIM}, got {value!r}")
         if not isinstance(self.dynamic_batch, bool):
             raise ConformanceError(f"dynamic_batch must be a bool, got {self.dynamic_batch!r}")
         if not isinstance(self.provider, str) or not self.provider:
             raise ConformanceError(f"provider must name an ONNX Runtime execution provider, got {self.provider!r}")
         _check_model(self.model)
         object.__setattr__(self, "model", _canonical_model(self.model))  # a private copy, not the caller's
+        width = self.model["input_dim"]
+        if max((*batches, self.export_batch)) * width > MAX_ELEMENTS:
+            raise ConformanceError(f"an input batch of width {width} may hold at most {MAX_ELEMENTS} values")
 
     @property
     def requires(self) -> tuple[str, ...]:
@@ -202,7 +212,11 @@ class Profile:
         return cases
 
 
-MAX_DIM = 1 << 16  # a conformance profile is a small model: wider layers are refused before building
+# A conformance profile is a small model: anything larger is refused before it is built or run.
+MAX_DIM = 1 << 16  # units per layer, and the largest batch
+MAX_LAYERS = 64  # hidden layers
+MAX_ELEMENTS = 1 << 24  # weights in the model, and values in one input batch
+MAX_CASES = 64  # valid input cases
 
 
 def _finite(value: Any) -> bool:
@@ -250,6 +264,10 @@ def _check_model(config: Any) -> None:
         == {k: MODEL["weights"][k] for k in ("generator", "distribution")}
     ):
         problems.append(f"weights {weights!r}")
+    if not problems:
+        widths = [config["input_dim"], *hidden, config["output_dim"]]
+        if len(hidden) > MAX_LAYERS or sum(a * b + b for a, b in zip(widths, widths[1:], strict=False)) > MAX_ELEMENTS:
+            problems.append(f"the model exceeds {MAX_LAYERS} hidden layers or {MAX_ELEMENTS} weights")
     if problems:
         raise ConformanceError("malformed model config: " + "; ".join(problems))
 
@@ -361,6 +379,8 @@ PROFILES: Mapping[str, Profile] = {
     "feedfwd-fp32-torchscript": Profile("feedfwd-fp32-torchscript", "torchscript"),
     "feedfwd-fp32-dynamo": Profile("feedfwd-fp32-dynamo", "dynamo"),
 }
+# What each tested name stands for, fixed at import: a profile changed in place later is not it.
+_TESTED = {name: _profile_settings(profile) for name, profile in PROFILES.items()}
 
 
 # --- the model ----------------------------------------------------------------------------------------
@@ -580,6 +600,8 @@ def verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLik
         _verify_artifacts(record, directory)
     except OSError as error:
         raise ConformanceError(f"artifacts cannot be read: {type(error).__name__}: {error}") from error
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ConformanceError(f"the record's artifacts are malformed: {type(error).__name__}: {error}") from error
 
 
 def _verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLike[str]]) -> None:
@@ -722,7 +744,7 @@ def _session_options() -> dict[str, Any]:
 def _load(record: Mapping[str, Any], directory: str, provider: str) -> tuple[dict[str, Any], Any]:
     try:
         verify_artifacts(record, directory)
-    except (ConformanceError, OSError) as error:  # unreadable is unverified
+    except ConformanceError as error:  # changed, missing, unlisted or unreadable: unverified
         return _stage("failed", "hash-mismatch", f"{type(error).__name__}: {error}"), None
     try:
         import onnxruntime as ort
@@ -791,10 +813,8 @@ def _parity(profile_cases: Sequence[Mapping[str, Any]], session: Any, model: Any
         result.update(outcome="match" if within else "mismatch", passed=within, failure=None if within else "mismatch")
     failed = [r for r in results if not r["passed"]]
     compared = sum(1 for r in results if r["outcome"] == "match")
-    if not failed and compared:
+    if not failed:  # a profile always has a valid case, so one was compared
         return _stage("passed", detail={"cases": len(results), "compared": compared}), results
-    if not failed:
-        return _stage("failed", "input-contract", {"failed_cases": [], "reason": "no valid input case"}), results
     kinds = {r["failure"] for r in failed}
     failure = next(kind for kind in ("runtime-error", "mismatch", "input-contract") if kind in kinds)
     return _stage("failed", failure, {"failed_cases": [r["name"] for r in failed]}), results
@@ -832,7 +852,7 @@ def run_profile(
             raise ConformanceError(f"unknown profile {profile!r}; tested profiles are {sorted(PROFILES)}")
         profile = PROFILES[profile]
     _check_model(profile.model)  # again: the model mapping may have changed since the profile was made
-    if profile.name in PROFILES and _profile_settings(profile) != _profile_settings(PROFILES[profile.name]):
+    if profile.name in _TESTED and _profile_settings(profile) != _TESTED[profile.name]:
         raise ConformanceError(
             f"{profile.name!r} names a tested profile; a profile with other settings needs its own name"
         )
@@ -979,6 +999,15 @@ _CASE_KEYS = {
     "max_rel_error",
     "detail",
 }
+# Each outcome a run of an input case gives, by what the case expects, and the
+# failure it names (``None``: the case passed).
+_OUTCOMES: Mapping[str, Mapping[str, Optional[str]]] = {
+    "match": {"match": None},
+    "mismatch": {"match": "mismatch"},
+    "rejected": {"match": "input-contract", "rejected": None},
+    "accepted": {"rejected": "input-contract"},
+    "error": {"match": "runtime-error", "rejected": "runtime-error"},
+}
 _KEYS = {
     "format",
     "profile",
@@ -1002,16 +1031,23 @@ _KEYS = {
 
 def validate_record(record: Any) -> None:
     """Refuse a record that does not follow ``nnx.export-conformance/1``:
-    missing or unknown keys, unknown statuses or failure classes, a failure
-    in the wrong stage, a stage that ran after a failed one, inconsistent
-    ``status`` / ``failure`` / ``level``, a passed stage its own evidence
-    contradicts (parity without a compared valid case or with a failed
-    case, an export that changed the model, a check without an opset or a
-    listed model file), malformed hashes or paths, or non-finite
-    tolerances. Every problem is named."""
+    missing or unknown keys (in the record and in its ``runtime``,
+    ``exporter`` and ``opset``), anything but strict JSON, unknown statuses
+    or failure classes, a failure in the wrong stage (an input case's
+    included), an input case outcome no run gives, a stage that ran after a
+    failed one, inconsistent ``status`` / ``failure`` / ``level``, a passed
+    stage its own evidence contradicts (parity without a compared valid
+    case or with a failed case, an export that changed the model, a check
+    without an opset or a listed model file), malformed hashes or paths,
+    non-finite tolerances, or settings no profile produces (a model or
+    batch larger than a profile allows included)."""
     if not isinstance(record, Mapping):
         raise ConformanceError(f"a conformance record is a mapping, got {type(record).__name__}")
     problems: list[str] = []
+    try:
+        json.dumps(record, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as error:
+        problems.append(f"a conformance record is strict JSON: {type(error).__name__}: {error}")
     unknown, missing = sorted(set(record) - _KEYS), sorted(_KEYS - set(record))
     if unknown:
         problems.append(f"unknown keys {unknown}")
@@ -1074,36 +1110,60 @@ def validate_record(record: Any) -> None:
             and 0 <= case["seed"] < 2**63
             and isinstance(case["shape"], list)
             and len(case["shape"]) == 2
-            and all(isinstance(d, int) and not isinstance(d, bool) and d >= 1 for d in case["shape"])
+            and all(isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= MAX_DIM + 1 for d in case["shape"])
+            and case["shape"][0] * case["shape"][1] <= MAX_ELEMENTS
         ):
             problems.append(f"input case {case.get('name')!r} has a malformed name, seed or shape")
+        elif not (case["detail"] is None or isinstance(case["detail"], str)) or not all(
+            case[key] is None or (_finite(case[key]) and case[key] >= 0) for key in ("max_abs_error", "max_rel_error")
+        ):
+            problems.append(f"input case {case['name']!r} has a malformed detail or error")
     if status("parity") not in ("passed", "failed"):
         if any(set(case) == _CASE_KEYS and dict(case) != _blank(case) for case in cases):
             problems.append("parity did not run, so no input case may carry an outcome")
     elif status("parity") == "passed" and any(case.get("failure") is not None for case in cases):
         problems.append("parity passed but an input case names a failure")
     elif status("parity") == "failed":
-        named = {case.get("failure") for case in cases if case.get("passed") is False}
+        named = [case.get("failure") for case in cases if case.get("passed") is False]
         if stages["parity"].get("failure") not in named:
             problems.append("parity failed with a class no failing input case names")
     for case in cases:
         if type(case.get("passed")) is not bool:
             problems.append(f"input case {case.get('name')!r} must say passed as a bool")
-        elif case["passed"] and (
-            case.get("failure") is not None
-            or case.get("outcome") != ("match" if case.get("expect") == "match" else "rejected")
+        elif status("parity") in ("passed", "failed"):
+            # Parity ran every case: its outcome, the failure it names and whether it passed agree.
+            outcome, failure = case.get("outcome"), case.get("failure")
+            given = _OUTCOMES.get(outcome) if isinstance(outcome, str) else None
+            expect = case.get("expect")
+            if given is None or not isinstance(expect, str) or expect not in given:
+                problems.append(f"input case {case.get('name')!r} has an outcome {outcome!r} no run of it gives")
+            elif failure != given[expect] or case["passed"] is not (given[expect] is None):
+                problems.append(
+                    f"input case {case.get('name')!r} {outcome!r} names failure {failure!r} and "
+                    f"passed={case['passed']}, not {given[expect]!r} and passed={given[expect] is None}"
+                )
+        if case.get("outcome") == "match" and not all(
+            _finite(case.get(key)) for key in ("max_abs_error", "max_rel_error")
         ):
-            problems.append(f"input case {case.get('name')!r} passed with a failure or the wrong outcome")
+            problems.append(f"input case {case.get('name')!r} matched without its errors")
     if status("parity") == "passed" and not all(
         case.get("passed") is True and case.get("outcome") == ("match" if case.get("expect") == "match" else "rejected")
         for case in cases
     ):
         problems.append("parity passed but an input case did not")
     state = record["model_state"]
-    if status("export") == "passed" and not (
-        isinstance(state, Mapping) and set(state) == {"parameters", "gradients", "modes"} and all(state.values())
-    ):
+    kept = isinstance(state, Mapping) and set(state) == {"parameters", "gradients", "modes"}
+    if kept and not all(type(value) is bool for value in state.values()):
+        problems.append(f"model_state holds bools, got {state!r}")
+    elif status("export") == "passed" and not (kept and all(state.values())):
         problems.append(f"the export passed but the model state was not kept: {state!r}")
+    elif status("export") == "failed" and stages["export"].get("failure") == "state-changed":
+        if not kept or all(state.values()):
+            problems.append(f"the export changed the model state, but model_state says otherwise: {state!r}")
+    elif status("export") not in ("passed", "failed") and state is not None:
+        problems.append("the export did not run, so there is no model_state")
+    elif state is not None and not kept:
+        problems.append(f"model_state is None or holds parameters, gradients and modes, got {state!r}")
 
     artifacts = record["artifacts"]
     files = artifacts.get("files") if isinstance(artifacts, Mapping) else None
@@ -1158,8 +1218,13 @@ def validate_record(record: Any) -> None:
     for key in ("source", "exporter", "opset", "versions", "runtime"):
         if not isinstance(record[key], Mapping):
             problems.append(f"{key} must be a mapping")
-    if isinstance(record["runtime"], Mapping) and not {"name", "version", "provider"} <= set(record["runtime"]):
-        problems.append("runtime must name its name, version and provider")
+    for key, keys in (
+        ("runtime", {"name", "version", "provider", "session"}),
+        ("exporter", {"name", "options"}),
+        ("opset", {"requested", "model"}),
+    ):
+        if isinstance(record[key], Mapping) and set(record[key]) != keys:
+            problems.append(f"{key} must hold exactly {sorted(keys)}, got {sorted(record[key])}")
     # Every record states a profile this module runs, exactly as run_profile writes it:
     # its settings are rebuilt as a Profile (checked like one) and compared as canonical text,
     # against the tested profile of that name or against the rebuilt profile itself.
@@ -1169,19 +1234,23 @@ def validate_record(record: Any) -> None:
     except ConformanceError as error:
         problems.append(str(error))
     else:
-        if _record_settings(record) != _profile_settings(PROFILES.get(claimed.name, claimed)):
+        if _record_settings(record) != _TESTED.get(claimed.name, _profile_settings(claimed)):
             what = (
-                "a tested profile, but its settings differ from it"
-                if claimed.name in PROFILES
-                else ("settings no profile produces")
+                "names a tested profile, but its settings differ from it"
+                if claimed.name in _TESTED
+                else "states settings no profile produces"
             )
-            problems.append(f"{record['profile']!r} has {what}")
+            problems.append(f"{record['profile']!r} {what}")
     if not isinstance(runtime, Mapping) or runtime.get("session") != _session_options():
         problems.append("runtime must carry the session options this module runs")
     options = exporter.get("options") if isinstance(exporter, Mapping) else None
     if not isinstance(options, Mapping) or exporter.get("name") != options.get("exporter"):
         problems.append("exporter.name must be the exporter its options name")
-    elif not isinstance(opset, Mapping) or opset.get("requested") != options.get("opset_version"):
+    elif (
+        not isinstance(opset, Mapping)
+        or type(opset.get("requested")) is not int
+        or opset.get("requested") != options.get("opset_version")
+    ):
         problems.append("opset.requested must be the exporter options' opset_version")
     if isinstance(artifacts, Mapping) and artifacts.get("model") != MODEL_FILE:
         problems.append(f"artifacts.model must be {MODEL_FILE!r}, the file a profile loads")

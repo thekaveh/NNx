@@ -688,3 +688,153 @@ def test_a_forged_custom_record_cannot_replay_as_executed(tmp_path):
     linked["profile"] = linked["artifacts"]["directory"] = "linked"
     with pytest.raises(ConformanceError, match="symlink"):
         verify_artifacts(linked, tmp_path)
+
+
+# --- review round 5 ------------------------------------------------------------------------------------------
+
+
+def _parity_failed_record(tmp_path, monkeypatch):
+    """A genuine record whose parity failed: the runtime's logits drift."""
+    _runtime()
+    import onnxruntime
+
+    real_session = onnxruntime.InferenceSession
+
+    class Drifting:
+        def __init__(self, *args, **kwargs):
+            self.inner = real_session(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def run(self, *args, **kwargs):
+            return [out + np.float32(1e-3) for out in self.inner.run(*args, **kwargs)]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(onnxruntime, "InferenceSession", Drifting)
+        return run_profile("feedfwd-fp32-torchscript", tmp_path)
+
+
+def test_every_input_case_states_an_outcome_a_run_gives(tmp_path, monkeypatch):
+    failed = _parity_failed_record(tmp_path / "failed", monkeypatch)
+    validate_record(failed)
+    assert failed["failure"] == "mismatch"
+    passed = _valid_record(tmp_path / "passed")
+
+    def edited(record, edit):
+        copy_ = json.loads(json.dumps(record))
+        edit(copy_)
+        return copy_
+
+    for record, edit in (
+        (failed, lambda r: r["input_cases"][0].update(failure=["x"])),
+        (failed, lambda r: r["input_cases"][0].update(failure={})),
+        (failed, lambda r: r["stages"]["parity"].update(failure=[])),
+        (failed, lambda r: r["input_cases"][0].update(failure="bogus", outcome="teleported")),
+        (failed, lambda r: r["input_cases"][0].update(failure="hash-mismatch")),  # a load-stage class
+        (failed, lambda r: r["input_cases"][0].update(failure="runtime-error")),  # not what a mismatch names
+        (failed, lambda r: r["input_cases"][-1].update(outcome="mismatch")),  # a refused input never mismatches
+        (passed, lambda r: r["input_cases"][0].update(max_abs_error=-3)),
+        (passed, lambda r: r["input_cases"][0].update(max_rel_error="big")),
+        (passed, lambda r: r["input_cases"][0].update(max_abs_error=None)),
+        (passed, lambda r: r["input_cases"][0].update(detail=7)),
+    ):
+        broken = edited(record, edit)
+        with pytest.raises(ConformanceError):
+            validate_record(broken)
+        with pytest.raises(ConformanceError):
+            save_report({"format": FORMAT, "status": "failed", "profiles": [broken]}, tmp_path / "report.json")
+
+
+def test_a_profile_and_a_record_are_bounded_in_size(tmp_path):
+    from nnx.export_conformance import MODEL
+
+    for settings in (
+        {"batches": (1, 2**40)},
+        {"batches": 5},
+        {"batches": tuple(range(1, 66))},
+        {"model": {**MODEL, "input_dim": 4096}, "batches": (4097,)},  # one batch of more than 2**24 values
+        {"model": {**MODEL, "input_dim": 65536, "hidden_dims": [16384]}},  # 2**30 weights
+        {"model": {**MODEL, "hidden_dims": [1] * 65}},
+    ):
+        with pytest.raises(ConformanceError):
+            Profile("custom", "torchscript", **settings)  # type: ignore[arg-type]
+    with pytest.raises(ConformanceError, match="integer in 1"):
+        Profile("custom", "torchscript", opset_version=70000)
+    Profile("custom", "torchscript", model={**MODEL, "hidden_dims": [8] * 64}, batches=tuple(range(1, 65)))
+
+    record = _valid_record(tmp_path)
+
+    def custom(edit):
+        forged = json.loads(json.dumps(record))
+        forged["profile"] = forged["artifacts"]["directory"] = "custom"
+        edit(forged)
+        return forged
+
+    huge_batch = custom(lambda r: r["input_cases"][0].update(shape=[2**40, 4], seed=1000 + 2**40))
+    huge_model = custom(lambda r: r["config"].update(input_dim=65536, hidden_dims=[16384]))
+    for forged in (huge_batch, huge_model):
+        with pytest.raises(ConformanceError):
+            validate_record(forged)
+        with pytest.raises(ConformanceError):
+            execute(forged, tmp_path)  # refused before anything is built or run
+    with pytest.raises(ConformanceError, match="malformed"):
+        verify_artifacts({}, tmp_path)
+    nan = json.loads(json.dumps(record))
+    nan["stages"]["check"]["detail"]["producer"] = float("nan")
+    with pytest.raises(ConformanceError, match="strict JSON"):
+        validate_record(nan)
+    with pytest.raises(ConformanceError, match="strict JSON"):
+        save_report({"format": FORMAT, "status": "passed", "profiles": [nan]}, tmp_path / "report.json")
+
+
+def test_a_record_holds_only_what_run_profile_writes(tmp_path, monkeypatch):
+    record = _valid_record(tmp_path / "valid")
+
+    def edited(edit):
+        copy_ = json.loads(json.dumps(record))
+        edit(copy_)
+        return copy_
+
+    for edit, message in (
+        (lambda r: r["exporter"].update(quantization="int8"), "exporter must hold exactly"),
+        (lambda r: r["runtime"].update(provider_options={"device_id": 1}), "runtime must hold exactly"),
+        (lambda r: r["opset"].update(converted_to=18), "opset must hold exactly"),
+        (lambda r: r["opset"].update(requested=17.0), "opset.requested"),
+        (lambda r: r["model_state"].update(modes="yes"), "model_state holds bools"),
+    ):
+        with pytest.raises(ConformanceError, match=message):
+            validate_record(edited(edit))
+
+    real = importlib.util.find_spec
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            conformance.importlib.util, "find_spec", lambda name, *a: None if name == "onnxruntime" else real(name, *a)
+        )
+        missing = run_profile("feedfwd-fp32-torchscript", tmp_path / "missing")
+    validate_record(missing)
+    missing["model_state"] = {"parameters": True, "gradients": True, "modes": True}
+    with pytest.raises(ConformanceError, match="no model_state"):
+        validate_record(missing)
+
+    original = NNModel.to_onnx
+
+    def mutate(self, *args, **kwargs):
+        out = original(self, *args, **kwargs)
+        with torch.no_grad():
+            next(self.net.parameters()).add_(1.0)
+        return out
+
+    with monkeypatch.context() as patch:
+        patch.setattr(NNModel, "to_onnx", mutate)
+        changed = run_profile("feedfwd-fp32-torchscript", tmp_path / "changed")
+    validate_record(changed)
+    changed["model_state"]["parameters"] = True
+    with pytest.raises(ConformanceError, match="model_state says otherwise"):
+        validate_record(changed)
+
+    # A tested profile changed in place is no longer what its name stands for.
+    monkeypatch.setitem(PROFILES["feedfwd-fp32-torchscript"].model, "dropout", 0.5)
+    with pytest.raises(ConformanceError, match="names a tested profile"):
+        run_profile("feedfwd-fp32-torchscript", tmp_path / "mutated")
+    assert not (tmp_path / "mutated").exists()

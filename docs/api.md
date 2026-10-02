@@ -10998,7 +10998,7 @@ Refuse artifacts that differ from the record: a file missing, a SHA-256 or size 
 nnx.export_conformance.validate_record(record: 'Any') -> 'None'
 ```
 
-Refuse a record that does not follow ``nnx.export-conformance/1``: missing or unknown keys, unknown statuses or failure classes, a failure in the wrong stage, a stage that ran after a failed one, inconsistent ``status`` / ``failure`` / ``level``, a passed stage its own evidence contradicts (parity without a compared valid case or with a failed case, an export that changed the model, a check without an opset or a listed model file), malformed hashes or paths, or non-finite tolerances. Every problem is named.
+Refuse a record that does not follow ``nnx.export-conformance/1``: missing or unknown keys (in the record and in its ``runtime``, ``exporter`` and ``opset``), anything but strict JSON, unknown statuses or failure classes, a failure in the wrong stage (an input case's included), an input case outcome no run gives, a stage that ran after a failed one, inconsistent ``status`` / ``failure`` / ``level``, a passed stage its own evidence contradicts (parity without a compared valid case or with a failed case, an export that changed the model, a check without an opset or a listed model file), malformed hashes or paths, non-finite tolerances, or settings no profile produces (a model or batch larger than a profile allows included).
 
 
 #### `nnx.export_conformance.build_model`
