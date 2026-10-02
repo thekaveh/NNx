@@ -645,7 +645,9 @@ def test_a_wrapper_that_forwards_set_epoch_and_materialised_batches_resume_at_pa
     resumed, _ = _fit(wrapped(), task.objective(), 2, resume_from_run_id=half.id)
     assert _same_weights(whole, resumed)
 
-    twice = [*task.loader("train", x, batch_size=32, seed=0), *task.loader("train", x, batch_size=32, seed=0)]
+    loader = task.loader("train", x, batch_size=32, seed=0)
+    twice = [*loader, *loader]  # one loader iterated twice: passes 0 and 1
+    assert {batch.link_pass for batch in twice} == {0, 1}
     whole, _ = _fit(twice, task.objective(), 3, salt="listed-whole")
     _, half = _fit(twice, task.objective(), 1, salt="listed-half")
     resumed, _ = _fit(twice, task.objective(), 2, resume_from_run_id=half.id)
