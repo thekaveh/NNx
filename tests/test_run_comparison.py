@@ -708,6 +708,46 @@ def test_continuations_of_killed_replicate_parents_pool_by_the_epoch_they_starte
     assert found[2].config != found[0].config  # one killed earlier started from another epoch
 
 
+def test_a_completed_parents_stopping_epoch_is_an_outcome_and_an_unknown_lineage_never_pools(tmp_path, monkeypatch):
+    from nnx import EarlyStopping, MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+    monitor = MonitorSpec("loss", split="val")
+    # Early-stopped replicate parents complete at different epochs: their `last` continuations still pool.
+    parents = [
+        _model().train(
+            params=_fit_params(seed, n_epochs=6, monitor=monitor),
+            provenance=MANIFEST,
+            callbacks=[EarlyStopping(patience=0)],
+        )
+        for seed in (0, 1, 2)
+    ]
+    epochs = {len({idp.epoch_idx for idp in parent.idps}) for parent in parents}
+    children = [
+        _model().train(
+            params=_fit_params(10 + i, resume_from_run_id=p.id, resume_mode="weights_only"), provenance=MANIFEST
+        )
+        for i, p in enumerate(parents)
+    ]
+    found = observations_from_runs([c.id for c in children], metric=loss)
+    assert len({item.config for item in found}) == 1, epochs
+
+    # A child that recorded nothing (lineage only) of a parent still training never pools.
+    spawned = {}
+
+    class Spawn(Callback):
+        def on_epoch_end(self, ctx):
+            if "early" not in spawned and ctx.epoch == 0:
+                spawned["early"] = _model().train(params=_fit_params(30, parent_run_id=ctx.run.id), provenance=MANIFEST)
+
+    teacher = _model().train(params=_fit_params(20, n_epochs=3), provenance=MANIFEST, callbacks=[Spawn()])
+    late = _model().train(params=_fit_params(31, parent_run_id=teacher.id), provenance=MANIFEST)
+    early, final = observations_from_runs([spawned["early"].id, late.id], metric=loss)
+    assert early.config != final.config
+
+
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):
     from nnx import MonitorSpec
 

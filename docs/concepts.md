@@ -1764,20 +1764,24 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   every run, passed as `config=`). A run with a parent — a continuation, a
   fine-tune, a born-again generation — has the parent's id replaced by the
   parent's own identity (followed back through every ancestor), the data
-  and split identities its provenance declares, how its attempt ended, the
-  checkpoint tag and the resume mode from `metadata.yaml`: `n_epochs`
+  and split identities its provenance declares, the checkpoint tag and the
+  resume mode from `metadata.yaml`: `n_epochs`
   counts the epochs a run adds, so it pools only with runs descended the
   same way from identically configured parents — never with fresh runs,
-  with its parent, or with fine-tunes of other pretraining. A resumed run
-  also carries the epoch it started from, as recorded in its `attempt.json`
-  (except for a `best` start, whose epoch is an outcome of the parent's
-  training). A parent is followed when its current attempt is the one the
-  child recorded — finished, still training or killed — or, with nothing
-  recorded, when it was not retrained in place after the child started.
-  Otherwise (the moving `best` alias, a deleted run, a retrained parent) it
-  is named by the parent checkpoint (else attempt) the child recorded, so
-  only siblings of that checkpoint pool; without a record, a deleted parent
-  keeps its raw id and any other parent names nothing shared. A cycle,
+  with its parent, or with fine-tunes of other pretraining. Only recorded
+  facts decide, and an unknown lineage never pools. A resumed run carries
+  the epoch it started from, as recorded in its `attempt.json`, when that
+  epoch is part of the procedure: a fixed checkpoint tag, or a parent that
+  had not completed (still training, killed); from a completed parent's
+  `last` or `best` the epoch is an outcome of its training (early
+  stopping, the elected epoch) and is left out. A parent is followed when
+  its current attempt is the one the child recorded or, with nothing
+  recorded, when it had completed before the child started. Otherwise (the
+  moving `best` alias, a deleted run, a retrained parent, an unrecorded
+  child of an unfinished one) it is named by the parent checkpoint (else
+  attempt) the child recorded, so only siblings of that checkpoint pool;
+  without a record, a deleted parent keeps its raw id and any other parent
+  names nothing shared. A cycle,
   more than 64 ancestors or an ancestor's unreadable files are refused,
   whatever order the runs are listed in. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and

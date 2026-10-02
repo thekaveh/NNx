@@ -1008,19 +1008,19 @@ def _nonempty(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _parent_retrained_since(own: Any, current: Any, run_id: str) -> bool:
-    """With nothing recorded about the parent, whether its current attempt
-    began after the child started — the parent was retrained in place since
-    (UTC ISO timestamps of one precision compare as strings). A parent still
-    training, or one killed before it finished, began before its children."""
-    child = None if own is None else own.attempt
+def _completed_before(own: Any, current: Any) -> Optional[bool]:
+    """Whether the parent's current attempt had completed when the child
+    started (``None`` when the child's start is unknown: then whether it
+    completed at all). Recorded facts only, fixed once the parent ends: a
+    parent still training, killed or retrained after the child started had
+    not."""
     parent = None if current is None else current.attempt
-    if child is None or parent is None:
+    if parent is None or parent.status != "completed" or not isinstance(parent.finished_at, str):
         return False
-    started, began = child.started_at, parent.started_at
-    if not isinstance(started, str) or not isinstance(began, str):
-        raise ComparisonError(f"run {run_id}: attempt.json holds a malformed started_at timestamp")
-    return began > started
+    child = None if own is None else own.attempt
+    if child is None:
+        return None
+    return isinstance(child.started_at, str) and parent.finished_at <= child.started_at
 
 
 def _parent_facts(provenance: Any) -> dict[str, Any]:
@@ -1044,17 +1044,20 @@ def _run_identity(
     generation is the procedure *parent then child*, so it pools only with
     runs whose parents had the same configuration, data and splits, ended
     the same way, and were continued the same way from the same checkpoint
-    tag — and the epoch it started at, which the child recorded in its
-    ``attempt.json`` (except for a ``best`` start, whose epoch is an outcome
-    of the parent's training). A parent is followed when its current
-    attempt is the one the child recorded — whether it then finished, is
-    still training or was killed — or, with nothing recorded, when it was
-    not retrained in place after the child started. Otherwise (the moving
-    ``best`` alias, a deleted run, a retrained parent) it is named by the
-    recorded parent checkpoint generation (else attempt), so only siblings
-    of that checkpoint pool; without a record, a deleted parent keeps its
-    raw id and anything else names nothing shared. Errors in an ancestor's
-    files are raised, as for the run's own."""
+    tag — and the epoch it started at, as the child recorded it in its
+    ``attempt.json``, when that epoch is part of the procedure: a fixed
+    checkpoint tag, or a parent that had not completed (still training,
+    killed). From a completed parent's ``last`` or ``best`` the epoch is an
+    outcome of the parent's training and is left out. A parent is followed
+    when its current attempt is the one the child recorded or, with nothing
+    recorded, when it had completed before the child started (or has no
+    provenance). Otherwise (the moving ``best`` alias, a deleted run, a
+    retrained parent, or an unrecorded child of an unfinished one) it is
+    named by the recorded parent checkpoint generation (else attempt), so
+    only siblings of that checkpoint pool; without a record, a deleted
+    parent keeps its raw id and anything else names nothing shared — an
+    unknown lineage never pools. Errors in an ancestor's files are raised,
+    as for the run's own."""
     return _resolve(run_id, root, cache, (), known)[0]
 
 
@@ -1084,19 +1087,24 @@ def _resolve(
         recorded, generation = _nonempty(record.get("attempt_id")), _nonempty(record.get("generation"))
         resolvable = _resolvable(parent_id, root)
         current = _provenance(parent_id, root) if resolvable else None
+        done = _completed_before(own, current)
         if resolvable and (
             recorded == _attempt_id(current)
             if recorded is not None
-            else not _parent_retrained_since(own, current, run_id)
+            # Nothing recorded: only a parent known to have completed first (or one without provenance).
+            else (current is None or current.attempt is None or done is not False)
         ):
             # The parent attempt the run started from (a parent without
-            # provenance has only its run.yaml to declare). Which epoch it
-            # started at is part of the procedure, unless it continued the
-            # parent's elected ``best`` epoch, an outcome of its training.
+            # provenance has only its run.yaml to declare). The epoch it
+            # started at is part of the procedure for a fixed checkpoint tag,
+            # or when the parent had not completed (still training, killed);
+            # from a completed parent's ``last`` or ``best`` it is an outcome
+            # of that parent's training (early stopping, the elected epoch).
             identity, above = _resolve(parent_id, root, cache, (*path, run_id))
             lineage.update(parent=identity, **_parent_facts(current))
             epoch = record.get("epoch")
-            if record.get("checkpoint") != "best" and isinstance(epoch, int) and not isinstance(epoch, bool):
+            fixed = record.get("checkpoint") not in ("last", "best")
+            if (fixed or not done) and isinstance(epoch, int) and not isinstance(epoch, bool):
                 lineage["start_epoch"] = epoch
             ancestors = above + 1
         else:
