@@ -600,11 +600,11 @@ def test_every_record_states_only_what_this_module_runs(tmp_path):
     custom["runtime"]["name"] = "tensorrt"
     custom["artifacts"]["directory"] = "custom"
     for broken, message in (
-        (custom, "dtype 'float16'"),
+        (custom, "profiles run FP32 inputs in ONNX Runtime"),
         (edited(lambda r: r["runtime"]["session"].update(intra_op_num_threads=8)), "session options"),
         (edited(lambda r: r["exporter"].update(name="dynamo")), "exporter.name"),
         (edited(lambda r: r["opset"].update(requested=18)), "opset.requested"),
-        (edited(lambda r: r["artifacts"].update(directory="elsewhere")), "artifacts.directory"),
+        (edited(lambda r: r["artifacts"].update(directory="elsewhere")), "settings differ"),
         (edited(lambda r: r["input_cases"][0].update(seed=2**70)), "malformed name, seed or shape"),
     ):
         with pytest.raises(ConformanceError, match=message):
@@ -623,9 +623,24 @@ def test_a_profile_is_compared_canonically_and_checked_before_it_runs(tmp_path):
     from nnx.export_conformance import MODEL
 
     with pytest.raises(ConformanceError, match="names a tested profile"):
-        run_profile(Profile("feedfwd-fp32-torchscript", "torchscript", dynamic_batch=1), tmp_path)  # type: ignore[arg-type]
+        run_profile(Profile("feedfwd-fp32-torchscript", "torchscript", rtol=1e-3), tmp_path)
     assert not (tmp_path / "feedfwd-fp32-torchscript").exists()  # refused before anything was written
-    for settings in ({"export_batch": 0}, {"export_batch": 2.0}, {"model": {**MODEL, "activation": "bogus"}}):
+    same = Profile(
+        "feedfwd-fp32-torchscript", "torchscript", model={**MODEL, "dropout": 0}
+    )  # 0 and 0.0 are one setting
+    assert conformance._profile_settings(same) == conformance._profile_settings(PROFILES["feedfwd-fp32-torchscript"])
+    for settings in (
+        {"export_batch": 0},
+        {"export_batch": 2.0},
+        {"dynamic_batch": 1},
+        {"opset_version": "17"},
+        {"provider": ""},
+        {"rtol": 10**400},
+        {"model": {**MODEL, "activation": "bogus"}},
+        {"model": {**MODEL, "activation": []}},
+        {"model": {**MODEL, "input_dim": 2**62}},
+        {"model": {**MODEL, "weights": {**MODEL["weights"], "std": 10**400}}},
+    ):
         with pytest.raises(ConformanceError):
             Profile("custom", "torchscript", **settings)  # type: ignore[arg-type]
 
@@ -638,3 +653,38 @@ def test_a_symlinked_artifact_never_verifies(tmp_path):
     (folder / "model.onnx").symlink_to(outside)
     with pytest.raises(ConformanceError, match="a symlink"):
         verify_artifacts(record, tmp_path)
+
+
+# --- review round 4 ------------------------------------------------------------------------------------------
+
+
+def test_a_forged_custom_record_cannot_replay_as_executed(tmp_path):
+    record = _valid_record(tmp_path)
+
+    def custom(edit):
+        forged = json.loads(json.dumps(record))
+        forged["profile"] = forged["artifacts"]["directory"] = "custom"
+        edit(forged)
+        return forged
+
+    for edit in (
+        lambda r: r["exporter"].update(name="tensorrt") or r["exporter"]["options"].update(exporter="tensorrt"),
+        lambda r: r["exporter"]["options"].update(dynamo=True),
+        lambda r: r["exporter"]["options"].update(quantize="int8"),
+        lambda r: r["exporter"]["options"].update(input_names=["x"]),
+        lambda r: r["input_cases"][0].update(seed=1),
+        lambda r: r["artifacts"].update(model="net.onnx"),
+        lambda r: r["config"].update(activation=[]),
+        lambda r: r["tolerances"].update(rtol=10**400),
+    ):
+        with pytest.raises(ConformanceError):
+            validate_record(custom(edit))
+    renamed = custom(lambda r: None)
+    (tmp_path / "feedfwd-fp32-torchscript").rename(tmp_path / "custom")
+    validate_record(renamed)  # a custom profile with the same settings is a profile this module runs
+    assert execute(renamed, tmp_path)["level"] == "executed"
+    (tmp_path / "linked").symlink_to(tmp_path / "custom")
+    linked = json.loads(json.dumps(renamed))
+    linked["profile"] = linked["artifacts"]["directory"] = "linked"
+    with pytest.raises(ConformanceError, match="symlink"):
+        verify_artifacts(linked, tmp_path)

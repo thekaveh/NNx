@@ -167,11 +167,18 @@ class Profile:
         object.__setattr__(self, "batches", batches)
         for name in ("rtol", "atol"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            if not _finite(value) or value < 0:
                 raise ConformanceError(f"{name} must be finite and non-negative, got {value!r}")
-        if isinstance(self.export_batch, bool) or not isinstance(self.export_batch, int) or self.export_batch < 1:
-            raise ConformanceError(f"export_batch must be a positive integer, got {self.export_batch!r}")
+        for name in ("export_batch", "opset_version"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_DIM:
+                raise ConformanceError(f"{name} must be a positive integer, got {value!r}")
+        if not isinstance(self.dynamic_batch, bool):
+            raise ConformanceError(f"dynamic_batch must be a bool, got {self.dynamic_batch!r}")
+        if not isinstance(self.provider, str) or not self.provider:
+            raise ConformanceError(f"provider must name an ONNX Runtime execution provider, got {self.provider!r}")
         _check_model(self.model)
+        object.__setattr__(self, "model", _canonical_model(self.model))  # a private copy, not the caller's
 
     @property
     def requires(self) -> tuple[str, ...]:
@@ -195,12 +202,25 @@ class Profile:
         return cases
 
 
+MAX_DIM = 1 << 16  # a conformance profile is a small model: wider layers are refused before building
+
+
+def _finite(value: Any) -> bool:
+    """A real, finite number (a huge integer that overflows a float is not)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _check_model(config: Any) -> None:
     """Refuse a model config :func:`build_model` cannot build exactly."""
     from .nn.enum.activations import Activations
 
     def positive(value: Any) -> bool:
-        return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+        return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_DIM
 
     problems = []
     if not isinstance(config, Mapping) or set(config) != set(MODEL):
@@ -208,14 +228,14 @@ def _check_model(config: Any) -> None:
     if config["net"] != "feed_fwd":
         problems.append(f"net {config['net']!r} (only feed_fwd)")
     if not all(positive(config[key]) for key in ("input_dim", "output_dim")):
-        problems.append("input_dim / output_dim must be positive integers")
+        problems.append(f"input_dim / output_dim must be integers in 1..{MAX_DIM}")
     hidden = config["hidden_dims"]
     if not isinstance(hidden, (list, tuple)) or not all(positive(h) for h in hidden):
-        problems.append("hidden_dims must be positive integers")
-    if config["activation"] not in {a.value for a in Activations}:
+        problems.append(f"hidden_dims must be integers in 1..{MAX_DIM}")
+    if not isinstance(config["activation"], str) or config["activation"] not in {a.value for a in Activations}:
         problems.append(f"unknown activation {config['activation']!r}")
     dropout = config["dropout"]
-    if isinstance(dropout, bool) or not isinstance(dropout, (int, float)) or not 0 <= dropout < 1:
+    if not _finite(dropout) or not 0 <= dropout < 1:
         problems.append(f"dropout {dropout!r}")
     weights = config["weights"]
     if not (
@@ -224,9 +244,7 @@ def _check_model(config: Any) -> None:
         and isinstance(weights["seed"], int)
         and not isinstance(weights["seed"], bool)
         and 0 <= weights["seed"] < 2**63
-        and isinstance(weights["std"], (int, float))
-        and not isinstance(weights["std"], bool)
-        and math.isfinite(weights["std"])
+        and _finite(weights["std"])
         and weights["std"] > 0
         and {k: weights[k] for k in ("generator", "distribution")}
         == {k: MODEL["weights"][k] for k in ("generator", "distribution")}
@@ -258,17 +276,72 @@ def _settings(
         raise ConformanceError(f"the profile settings are not JSON: {error}") from error
 
 
+def _canonical_model(model: Mapping[str, Any]) -> dict[str, Any]:
+    """A model config with its real-valued fields as floats (0 and 0.0 are one setting)."""
+    canonical = copy.deepcopy(dict(model))
+    canonical["dropout"] = float(canonical["dropout"])
+    canonical["weights"] = {**canonical["weights"], "std": float(canonical["weights"]["std"])}
+    canonical["hidden_dims"] = list(canonical["hidden_dims"])
+    return canonical
+
+
 def _profile_settings(profile: Profile) -> str:
     return _settings(
-        tolerances={"rtol": profile.rtol, "atol": profile.atol},
+        tolerances={"rtol": float(profile.rtol), "atol": float(profile.atol)},
         cases=[{k: c[k] for k in ("name", "shape", "seed", "expect")} for c in profile.cases()],
         dtype=profile.dtype,
         runtime=profile.runtime,
         provider=profile.provider,
         options=profile.options(),
-        model=copy.deepcopy(dict(profile.model)),
+        model=_canonical_model(profile.model),
         directory=profile.name,
     )
+
+
+def _record_profile(record: Mapping[str, Any]) -> Profile:
+    """The :class:`Profile` a record claims to have run (its settings, rebuilt
+    and checked as a ``Profile`` is), or a refusal."""
+    try:
+        options = record["exporter"]["options"]
+        runtime = record["runtime"]
+        return Profile(
+            name=record["profile"],
+            exporter=options["exporter"],
+            opset_version=options["opset_version"],
+            export_batch=options["export_batch"],
+            dynamic_batch=options["dynamic_batch"],
+            batches=tuple(c["shape"][0] for c in record["input_cases"] if c.get("expect") == "match"),
+            rtol=record["tolerances"]["rtol"],
+            atol=record["tolerances"]["atol"],
+            runtime=runtime["name"],
+            provider=runtime["provider"],
+            dtype=record["dtype"],
+            model={k: v for k, v in record["config"].items() if k != "weights_sha256"},
+        )
+    except ConformanceError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, OverflowError) as error:
+        raise ConformanceError(f"the record's settings are not a profile: {type(error).__name__}: {error}") from error
+
+
+def _record_settings(record: Mapping[str, Any]) -> str:
+    """The canonical settings text a record states (refusals as text)."""
+    try:
+        config = record["config"]
+        return _settings(
+            tolerances={"rtol": float(record["tolerances"]["rtol"]), "atol": float(record["tolerances"]["atol"])},
+            cases=[{k: c.get(k) for k in ("name", "shape", "seed", "expect")} for c in record["input_cases"]],
+            dtype=record["dtype"],
+            runtime=record["runtime"]["name"],
+            provider=record["runtime"]["provider"],
+            options=record["exporter"]["options"],
+            model=_canonical_model({k: v for k, v in config.items() if k != "weights_sha256"}),
+            directory=record["artifacts"]["directory"],
+        )
+    except ConformanceError as error:
+        return str(error)
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as error:
+        return f"{type(error).__name__}: {error}"
 
 
 def _blank(case: Mapping[str, Any]) -> dict[str, Any]:
@@ -501,8 +574,18 @@ def verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLik
     """Refuse artifacts that differ from the record: a file missing, a
     SHA-256 or size mismatch (external tensors included), or a file the
     record does not list. ``directory`` is the root the record's
-    ``artifacts.directory`` lives under."""
+    ``artifacts.directory`` lives under. An unreadable file or folder is a
+    refusal too."""
+    try:
+        _verify_artifacts(record, directory)
+    except OSError as error:
+        raise ConformanceError(f"artifacts cannot be read: {type(error).__name__}: {error}") from error
+
+
+def _verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLike[str]]) -> None:
     root = _artifact_dir(record, directory)
+    if os.path.islink(root):
+        raise ConformanceError(f"the artifact directory {root!r} is a symlink, not the profile's own folder")
     listed = record["artifacts"]["files"]
     names = {_relative(entry["path"]) for entry in listed}
     problems = []
@@ -748,7 +831,8 @@ def run_profile(
         if profile not in PROFILES:
             raise ConformanceError(f"unknown profile {profile!r}; tested profiles are {sorted(PROFILES)}")
         profile = PROFILES[profile]
-    elif profile.name in PROFILES and _profile_settings(profile) != _profile_settings(PROFILES[profile.name]):
+    _check_model(profile.model)  # again: the model mapping may have changed since the profile was made
+    if profile.name in PROFILES and _profile_settings(profile) != _profile_settings(PROFILES[profile.name]):
         raise ConformanceError(
             f"{profile.name!r} names a tested profile; a profile with other settings needs its own name"
         )
@@ -835,7 +919,7 @@ def execute(record: Mapping[str, Any], directory: Union[str, os.PathLike[str]]) 
         model = build_model(config)
     except ConformanceError:
         raise
-    except (KeyError, TypeError, ValueError) as error:
+    except (KeyError, TypeError, ValueError, RuntimeError, OverflowError, MemoryError) as error:
         raise ConformanceError(
             f"the recorded config cannot rebuild the model: {type(error).__name__}: {error}"
         ) from error
@@ -843,7 +927,6 @@ def execute(record: Mapping[str, Any], directory: Union[str, os.PathLike[str]]) 
         raise ConformanceError("the recorded config no longer rebuilds the recorded weights")
     replay["versions"] = _versions()
     replay["runtime"]["version"] = _version("onnxruntime")
-    replay["runtime"]["session"] = _session_options()  # what _load runs, whatever the record said
     return _execute(replay, os.fspath(directory), model)
 
 
@@ -999,8 +1082,18 @@ def validate_record(record: Any) -> None:
             problems.append("parity did not run, so no input case may carry an outcome")
     elif status("parity") == "passed" and any(case.get("failure") is not None for case in cases):
         problems.append("parity passed but an input case names a failure")
-    elif status("parity") == "failed" and all(case.get("passed") is True for case in cases):
-        problems.append("parity failed but every input case passed")
+    elif status("parity") == "failed":
+        named = {case.get("failure") for case in cases if case.get("passed") is False}
+        if stages["parity"].get("failure") not in named:
+            problems.append("parity failed with a class no failing input case names")
+    for case in cases:
+        if type(case.get("passed")) is not bool:
+            problems.append(f"input case {case.get('name')!r} must say passed as a bool")
+        elif case["passed"] and (
+            case.get("failure") is not None
+            or case.get("outcome") != ("match" if case.get("expect") == "match" else "rejected")
+        ):
+            problems.append(f"input case {case.get('name')!r} passed with a failure or the wrong outcome")
     if status("parity") == "passed" and not all(
         case.get("passed") is True and case.get("outcome") == ("match" if case.get("expect") == "match" else "rejected")
         for case in cases
@@ -1058,10 +1151,7 @@ def validate_record(record: Any) -> None:
     tolerances = record["tolerances"]
     if not isinstance(tolerances, Mapping) or set(tolerances) != {"rtol", "atol"}:
         problems.append("tolerances must hold rtol and atol")
-    elif not all(
-        isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
-        for v in tolerances.values()
-    ):
+    elif not all(_finite(v) and v >= 0 for v in tolerances.values()):
         problems.append(f"tolerances must be finite and non-negative, got {dict(tolerances)}")
     if not isinstance(record["config"], Mapping) or "weights_sha256" not in record["config"]:
         problems.append("config must carry weights_sha256")
@@ -1070,46 +1160,31 @@ def validate_record(record: Any) -> None:
             problems.append(f"{key} must be a mapping")
     if isinstance(record["runtime"], Mapping) and not {"name", "version", "provider"} <= set(record["runtime"]):
         problems.append("runtime must name its name, version and provider")
-    # Every record: it states only what this module runs.
+    # Every record states a profile this module runs, exactly as run_profile writes it:
+    # its settings are rebuilt as a Profile (checked like one) and compared as canonical text,
+    # against the tested profile of that name or against the rebuilt profile itself.
     runtime, exporter, opset = record["runtime"], record["exporter"], record["opset"]
-    options = exporter.get("options") if isinstance(exporter, Mapping) else None
-    if record["dtype"] != "float32":
-        problems.append(f"dtype {record['dtype']!r}: profiles run float32 inputs")
-    if isinstance(runtime, Mapping) and (
-        runtime.get("name") != "onnxruntime" or runtime.get("session") != _session_options()
-    ):
-        problems.append("runtime must be onnxruntime with the session options this module runs")
-    if not isinstance(options, Mapping) or (
-        isinstance(exporter, Mapping) and exporter.get("name") != options.get("exporter")
-    ):
-        problems.append("exporter.name must be the exporter its options name")
-    elif isinstance(opset, Mapping) and opset.get("requested") != options.get("opset_version"):
-        problems.append("opset.requested must be the exporter options' opset_version")
-    if isinstance(artifacts, Mapping) and artifacts.get("directory") != record["profile"]:
-        problems.append("artifacts.directory must be the profile's name")
-    if isinstance(record["config"], Mapping):
-        try:
-            _check_model({k: v for k, v in record["config"].items() if k != "weights_sha256"})
-        except ConformanceError as error:
-            problems.append(str(error))
-    tested = PROFILES.get(record["profile"]) if isinstance(record["profile"], str) else None
-    if tested is not None:  # a tested profile's name stands for its exact settings
-        config = record["config"] if isinstance(record["config"], Mapping) else {}
-        try:
-            actual = _settings(
-                tolerances=record["tolerances"],
-                cases=[{k: c.get(k) for k in ("name", "shape", "seed", "expect")} for c in cases],
-                dtype=record["dtype"],
-                runtime=runtime.get("name") if isinstance(runtime, Mapping) else None,
-                provider=runtime.get("provider") if isinstance(runtime, Mapping) else None,
-                options=options,
-                model={k: v for k, v in config.items() if k != "weights_sha256"},
-                directory=artifacts.get("directory") if isinstance(artifacts, Mapping) else None,
+    try:
+        claimed = _record_profile(record)
+    except ConformanceError as error:
+        problems.append(str(error))
+    else:
+        if _record_settings(record) != _profile_settings(PROFILES.get(claimed.name, claimed)):
+            what = (
+                "a tested profile, but its settings differ from it"
+                if claimed.name in PROFILES
+                else ("settings no profile produces")
             )
-        except ConformanceError as error:
-            actual = str(error)
-        if actual != _profile_settings(tested):
-            problems.append(f"{record['profile']!r} is a tested profile, but its settings differ from it")
+            problems.append(f"{record['profile']!r} has {what}")
+    if not isinstance(runtime, Mapping) or runtime.get("session") != _session_options():
+        problems.append("runtime must carry the session options this module runs")
+    options = exporter.get("options") if isinstance(exporter, Mapping) else None
+    if not isinstance(options, Mapping) or exporter.get("name") != options.get("exporter"):
+        problems.append("exporter.name must be the exporter its options name")
+    elif not isinstance(opset, Mapping) or opset.get("requested") != options.get("opset_version"):
+        problems.append("opset.requested must be the exporter options' opset_version")
+    if isinstance(artifacts, Mapping) and artifacts.get("model") != MODEL_FILE:
+        problems.append(f"artifacts.model must be {MODEL_FILE!r}, the file a profile loads")
     if problems:
         raise ConformanceError("malformed conformance record: " + "; ".join(problems))
 

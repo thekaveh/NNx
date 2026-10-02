@@ -10989,7 +10989,7 @@ Re-run the load and parity stages of a saved record against its artifacts under 
 nnx.export_conformance.verify_artifacts(record: 'Mapping[str, Any]', directory: 'Union[str, os.PathLike[str]]') -> 'None'
 ```
 
-Refuse artifacts that differ from the record: a file missing, a SHA-256 or size mismatch (external tensors included), or a file the record does not list. ``directory`` is the root the record's ``artifacts.directory`` lives under.
+Refuse artifacts that differ from the record: a file missing, a SHA-256 or size mismatch (external tensors included), or a file the record does not list. ``directory`` is the root the record's ``artifacts.directory`` lives under. An unreadable file or folder is a refusal too.
 
 
 #### `nnx.export_conformance.validate_record`
