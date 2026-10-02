@@ -666,20 +666,21 @@ def test_a_child_of_a_parent_still_training_or_retrained_since_is_named_by_what_
 
     parent = _model().train(params=_fit_params(0, n_epochs=4), provenance=MANIFEST, callbacks=[Spawn()])
     late = _model().train(params=_fit_params(11, resume_from_run_id=parent.id, **warm), provenance=MANIFEST)
+    later = _model().train(params=_fit_params(12, resume_from_run_id=parent.id, **warm), provenance=MANIFEST)
     early, final = observations_from_runs([spawned["early"].id, late.id], metric=loss)
     assert early.config != final.config  # a 1-epoch-pretrained fine-tune is not a replicate of a 4-epoch one
     assert early.config == spawned["while_running"]  # and its identity does not change when the parent finishes
 
     # Once the parent is retrained, a record without its checkpoint generation still names the epoch.
     _model().train(params=_fit_params(0, n_epochs=4, overwrite_existing=True), provenance=MANIFEST)
-    for child in (spawned["early"], late):
+    for child in (spawned["early"], late, later):
         path = os.path.join("runs", child.id, "attempt.json")
         state = json.loads(open(path).read())
         state["parent"]["generation"] = None
         with open(path, "w") as handle:
             json.dump(state, handle)
-    early, final = observations_from_runs([spawned["early"].id, late.id], metric=loss)
-    assert early.config != final.config
+    early, final, sibling = observations_from_runs([spawned["early"].id, late.id, later.id], metric=loss)
+    assert early.config != final.config == sibling.config  # siblings at one epoch of that attempt still pool
 
     # Lineage without resume (parent_run_id) records no parent attempt: a child that started before the
     # parent's current attempt finished is not followed into the retrained parent.
@@ -729,6 +730,12 @@ def test_continuations_of_killed_replicate_parents_pool_by_the_epoch_they_starte
     found = observations_from_runs([run.id for run in children], metric=loss)
     assert found[0].config == found[1].config  # replicate parents killed at one epoch: their continuations pool
     assert found[2].config != found[0].config  # one killed earlier started from another epoch
+    for child in children:  # a run whose resume mode predates metadata.yaml may have resumed: its epoch counts
+        os.rename(os.path.join("runs", child.id, "metadata.yaml"), os.path.join("runs", child.id, "metadata.bak"))
+    older = observations_from_runs([run.id for run in children], metric=loss)
+    assert older[0].config == older[1].config != older[2].config
+    for child in children:
+        os.rename(os.path.join("runs", child.id, "metadata.bak"), os.path.join("runs", child.id, "metadata.yaml"))
 
     def edit_record(run, **changes):
         path = os.path.join("runs", run.id, "attempt.json")
@@ -744,6 +751,8 @@ def test_continuations_of_killed_replicate_parents_pool_by_the_epoch_they_starte
     edit_record(children[0], epoch=None)
     unknown, sibling, completed = observations_from_runs([children[0].id, children[1].id, after.id], metric=loss)
     assert len({unknown.config, sibling.config, completed.config}) == 3
+    edit_record(children[1], epoch=None)  # two unknown start epochs are not one
+    assert len({item.config for item in observations_from_runs([c.id for c in children[:2]], metric=loss)}) == 2
 
 
 def test_a_completed_parents_stopping_epoch_is_an_outcome_and_an_unknown_lineage_never_pools(tmp_path, monkeypatch):
@@ -824,6 +833,13 @@ def test_with_nothing_recorded_only_a_parent_known_to_have_completed_first_is_fo
         )
         for i in (0, 1)
     ]
+    assert len(set(configs(*resumed))) == 1
+    for run in resumed:  # followed into the teacher, not named by the checkpoint they recorded
+        path = os.path.join("runs", run.id, "attempt.json")
+        state = json.loads(open(path).read())
+        state["parent"]["generation"] = None
+        with open(path, "w") as handle:
+            json.dump(state, handle)
     assert len(set(configs(*resumed))) == 1
 
 

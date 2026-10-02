@@ -1783,9 +1783,13 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   retrained parent, a child whose order with its parent is unknown) it is
   named by the parent checkpoint (else attempt and start epoch) the child
   recorded, so only siblings of that checkpoint pool; without a record the
-  lineage is unknown and pools with nothing. A cycle,
-  more than 64 ancestors or an ancestor's unreadable files are refused,
-  whatever order the runs are listed in. The replicate key is
+  lineage is unknown and pools with nothing. Along the parents it
+  follows, a cycle, more than 64 ancestors or an ancestor's unreadable
+  files are refused, whatever order the runs are listed in. Lineages are
+  recorded only for runs trained with `provenance=`: `born_again_train`
+  takes none, so its generations are unknown lineages; train each
+  generation with `NNModel.train(..., parent_run_id=..., provenance=...)`
+  to compare them across seeds. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and
   unknown for a run without a training seed. The text view counts attempts
   that did not complete as `not_completed`, and a matched pair whose delta
