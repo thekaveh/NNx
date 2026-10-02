@@ -516,12 +516,14 @@ def test_a_child_pools_only_with_children_of_identically_configured_parents(tmp_
     generations = observations_from_runs([gen0.id, gen1.id, gen2.id], metric=loss)
     assert len({item.config for item in generations}) == 3
 
-    # A deleted parent keeps its raw id: its children pool only with each other.
-    orphan = _model().train(params=_fit_params(23, parent_run_id=gen0.id), provenance=MANIFEST)
-    assert observations_from_runs([orphan.id], metric=loss)[0].config == generations[1].config
+    # A deleted parent leaves an unknown lineage: its children no longer pool, not even with each other.
+    orphans = [_model().train(params=_fit_params(23 + i, parent_run_id=gen0.id), provenance=MANIFEST) for i in (0, 1)]
+    assert {item.config for item in observations_from_runs([o.id for o in orphans], metric=loss)} == {
+        generations[1].config
+    }
     shutil.rmtree(os.path.join("runs", gen0.id))
-    (alone,) = observations_from_runs([orphan.id], metric=loss)
-    assert alone.config != generations[1].config
+    alone = observations_from_runs([o.id for o in orphans], metric=loss)
+    assert len({item.config for item in alone} | {generations[1].config}) == 3
 
     # A resumed run whose metadata.yaml cannot be read is refused; a fresh one never reads it.
     with open(os.path.join("runs", children[0].id, "metadata.yaml"), "wb") as handle:
@@ -534,6 +536,8 @@ def test_a_child_pools_only_with_children_of_identically_configured_parents(tmp_
 
 
 def test_a_parents_declared_data_and_lineage_errors_are_part_of_the_identity(tmp_path, monkeypatch):
+    import shutil
+
     import yaml
 
     monkeypatch.chdir(tmp_path)
@@ -558,12 +562,20 @@ def test_a_parents_declared_data_and_lineage_errors_are_part_of_the_identity(tmp
     assert sorted(group.n for group in summarize(found).groups) == [2, 2]
 
     # Lineages are resolved the same whatever order the runs are listed in.
-    def fake(run_id, parent_id):
-        state = yaml.safe_load(open(os.path.join("runs", children[0].id, "run.yaml")))
+    def fake(run_id, parent_id, recorded=True):
+        source = os.path.join("runs", children[0].id)
+        state = yaml.safe_load(open(os.path.join(source, "run.yaml")))
         state["train"]["parent_run_id"] = parent_id
         os.makedirs(os.path.join("runs", run_id))
         with open(os.path.join("runs", run_id, "run.yaml"), "w") as handle:
             yaml.safe_dump(state, handle)
+        if recorded:  # each run records the parent attempt it started from
+            shutil.copy(os.path.join(source, "provenance.json"), os.path.join("runs", run_id))
+            attempt = json.loads(open(os.path.join(source, "attempt.json")).read())
+            parent = {"attempt_id": f"a{parent_id}", "checkpoint": "last", "epoch": 1, "run_id": parent_id}
+            attempt.update(attempt_id=f"a{run_id}", run_id=run_id, parent=parent if parent_id else None)
+            with open(os.path.join("runs", run_id, "attempt.json"), "w") as handle:
+                json.dump(attempt, handle)
 
     from nnx.comparison import MAX_LINEAGE
 
@@ -582,8 +594,8 @@ def test_a_parents_declared_data_and_lineage_errors_are_part_of_the_identity(tmp
     fake("b" * 32, "a" * 32)
     with pytest.raises(ComparisonError, match="cycle"):
         observations_from_runs(["a" * 32], metric=loss)
-    fake("c" * 32, "best")
-    fake("d" * 32, "best")
+    fake("c" * 32, "best", recorded=False)
+    fake("d" * 32, "best", recorded=False)
     pair = observations_from_runs(["c" * 32, "d" * 32], metric=loss)
     assert len({pair[0].config, pair[1].config, found[0].config}) == 3
     # An ancestor's unreadable provenance is raised, not swallowed.
@@ -658,6 +670,17 @@ def test_a_child_of_a_parent_still_training_or_retrained_since_is_named_by_what_
     assert early.config != final.config  # a 1-epoch-pretrained fine-tune is not a replicate of a 4-epoch one
     assert early.config == spawned["while_running"]  # and its identity does not change when the parent finishes
 
+    # Once the parent is retrained, a record without its checkpoint generation still names the epoch.
+    _model().train(params=_fit_params(0, n_epochs=4, overwrite_existing=True), provenance=MANIFEST)
+    for child in (spawned["early"], late):
+        path = os.path.join("runs", child.id, "attempt.json")
+        state = json.loads(open(path).read())
+        state["parent"]["generation"] = None
+        with open(path, "w") as handle:
+            json.dump(state, handle)
+    early, final = observations_from_runs([spawned["early"].id, late.id], metric=loss)
+    assert early.config != final.config
+
     # Lineage without resume (parent_run_id) records no parent attempt: a child that started before the
     # parent's current attempt finished is not followed into the retrained parent.
     on_x = ExperimentManifest(data={"train": hash_bytes(b"x")})
@@ -707,6 +730,21 @@ def test_continuations_of_killed_replicate_parents_pool_by_the_epoch_they_starte
     assert found[0].config == found[1].config  # replicate parents killed at one epoch: their continuations pool
     assert found[2].config != found[0].config  # one killed earlier started from another epoch
 
+    def edit_record(run, **changes):
+        path = os.path.join("runs", run.id, "attempt.json")
+        state = json.loads(open(path).read())
+        state["parent"].update(changes)
+        with open(path, "w") as handle:
+            json.dump(state, handle)
+
+    # The start epoch of a child of an unfinished parent is needed: unrecorded, the child pools with
+    # nothing — not even with the continuation of a completed replicate, whose start epoch is an outcome.
+    done = _model().train(params=_fit_params(3, n_epochs=4), provenance=MANIFEST)
+    after = _model().train(params=_fit_params(13, n_epochs=4, resume_from_run_id=done.id), provenance=MANIFEST)
+    edit_record(children[0], epoch=None)
+    unknown, sibling, completed = observations_from_runs([children[0].id, children[1].id, after.id], metric=loss)
+    assert len({unknown.config, sibling.config, completed.config}) == 3
+
 
 def test_a_completed_parents_stopping_epoch_is_an_outcome_and_an_unknown_lineage_never_pools(tmp_path, monkeypatch):
     from nnx import EarlyStopping, MonitorSpec
@@ -746,6 +784,67 @@ def test_a_completed_parents_stopping_epoch_is_an_outcome_and_an_unknown_lineage
     late = _model().train(params=_fit_params(31, parent_run_id=teacher.id), provenance=MANIFEST)
     early, final = observations_from_runs([spawned["early"].id, late.id], metric=loss)
     assert early.config != final.config
+
+
+def test_with_nothing_recorded_only_a_parent_known_to_have_completed_first_is_followed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loss = Metric("loss", "minimize")
+    students = {}
+
+    class Spawn(Callback):  # a lineage-only student that starts while its teacher still trains
+        def on_epoch_end(self, ctx):
+            if ctx.run.id not in students:
+                students[ctx.run.id] = _model().train(
+                    params=_fit_params(40 + len(students), parent_run_id=ctx.run.id), provenance=MANIFEST
+                )
+
+    def configs(*runs):
+        return [item.config for item in observations_from_runs([run.id for run in runs], metric=loss)]
+
+    # A teacher with provenance: students that started after it completed pool, an early one does not.
+    teacher = _model().train(params=_fit_params(0, n_epochs=3), provenance=MANIFEST, callbacks=[Spawn()])
+    late = [_model().train(params=_fit_params(50 + i, parent_run_id=teacher.id), provenance=MANIFEST) for i in (0, 1)]
+    early, *after = configs(students[teacher.id], *late)
+    assert after[0] == after[1] != early
+
+    # A teacher without provenance has no recorded order with its students: none of them pools.
+    bare = _model().train(params=_fit_params(1, n_epochs=3), callbacks=[Spawn()])
+    late = [_model().train(params=_fit_params(60 + i, parent_run_id=bare.id), provenance=MANIFEST) for i in (0, 1)]
+    assert len(set(configs(students[bare.id], *late))) == 3
+
+    # Students without provenance never recorded when they started: they pool with nothing.
+    blind = [_model().train(params=_fit_params(70 + i, parent_run_id=teacher.id)) for i in (0, 1)]
+    assert len({*configs(*blind), after[0]}) == 3
+
+    # A resumed child of a teacher without provenance carries the start epoch it recorded.
+    resumed = [
+        _model().train(
+            params=_fit_params(80 + i, resume_from_run_id=bare.id, resume_mode="weights_only"), provenance=MANIFEST
+        )
+        for i in (0, 1)
+    ]
+    assert len(set(configs(*resumed))) == 1
+
+
+def test_recorded_timestamps_are_compared_as_instants():
+    from types import SimpleNamespace
+
+    from nnx.comparison import _completed_before
+
+    def run(status="completed", started=None, finished=None):
+        return SimpleNamespace(attempt=SimpleNamespace(status=status, started_at=started, finished_at=finished))
+
+    # 01:00 at UTC+2 is 23:00 UTC the day before: completed before a midnight UTC start ("Z").
+    assert _completed_before(run(started="2026-01-01T00:00:00Z"), run(finished="2026-01-01T01:00:00+02:00"))
+    assert not _completed_before(run(started="2026-01-01T00:00:00+00:00"), run(finished="2026-01-01T00:30:00+00:00"))
+    for started, finished in (
+        ("not a time", "2026-01-01T00:00:00+00:00"),
+        ("2026-01-02T00:00:00", "2026-01-01T00:00:00"),
+    ):
+        assert not _completed_before(run(started=started), run(finished=finished))  # unknown or naive: no order
+    assert not _completed_before(run(started="2026-01-02T00:00:00Z"), run("failed", finished="2026-01-01T00:00:00Z"))
+    assert not _completed_before(SimpleNamespace(attempt=None), run(finished="2026-01-01T00:00:00Z"))
 
 
 def test_best_selection_names_the_declared_monitor_even_without_an_election(tmp_path, monkeypatch):

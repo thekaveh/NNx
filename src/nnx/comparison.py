@@ -48,6 +48,7 @@ import os
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional, Union
 
@@ -1008,19 +1009,29 @@ def _nonempty(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _completed_before(own: Any, current: Any) -> Optional[bool]:
-    """Whether the parent's current attempt had completed when the child
-    started (``None`` when the child's start is unknown: then whether it
-    completed at all). Recorded facts only, fixed once the parent ends: a
-    parent still training, killed or retrained after the child started had
-    not."""
-    parent = None if current is None else current.attempt
-    if parent is None or parent.status != "completed" or not isinstance(parent.finished_at, str):
-        return False
-    child = None if own is None else own.attempt
-    if child is None:
+def _instant(value: Any) -> Optional[datetime]:
+    """A recorded ISO timestamp as an aware instant, or ``None`` when it is
+    not one (an unknown time orders nothing)."""
+    if not isinstance(value, str):
         return None
-    return isinstance(child.started_at, str) and parent.finished_at <= child.started_at
+    try:
+        moment = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def _completed_before(own: Any, current: Any) -> bool:
+    """Whether the parent's current attempt had completed when the child
+    started — recorded facts only, fixed once the parent ends. A parent
+    still training, killed or retrained after the child started had not;
+    when either time is unknown, it is not known to have."""
+    parent = None if current is None else current.attempt
+    child = None if own is None else own.attempt
+    if parent is None or child is None or parent.status != "completed":
+        return False
+    finished, started = _instant(parent.finished_at), _instant(child.started_at)
+    return finished is not None and started is not None and finished <= started
 
 
 def _parent_facts(provenance: Any) -> dict[str, Any]:
@@ -1042,22 +1053,23 @@ def _run_identity(
     """:func:`_config_identity` of a saved run, with the identity of every
     run it descends from: a continuation, a fine-tune or a born-again
     generation is the procedure *parent then child*, so it pools only with
-    runs whose parents had the same configuration, data and splits, ended
-    the same way, and were continued the same way from the same checkpoint
+    runs whose parents had the same configuration, data and splits, and
+    were continued the same way from the same checkpoint
     tag — and the epoch it started at, as the child recorded it in its
     ``attempt.json``, when that epoch is part of the procedure: a fixed
     checkpoint tag, or a parent that had not completed (still training,
     killed). From a completed parent's ``last`` or ``best`` the epoch is an
     outcome of the parent's training and is left out. A parent is followed
     when its current attempt is the one the child recorded or, with nothing
-    recorded, when it had completed before the child started (or has no
-    provenance). Otherwise (the moving ``best`` alias, a deleted run, a
-    retrained parent, or an unrecorded child of an unfinished one) it is
-    named by the recorded parent checkpoint generation (else attempt), so
-    only siblings of that checkpoint pool; without a record, a deleted
-    parent keeps its raw id and anything else names nothing shared — an
-    unknown lineage never pools. Errors in an ancestor's files are raised,
-    as for the run's own."""
+    recorded, when it had completed before the child started, or has no
+    provenance and the child recorded the epoch it started at; a needed
+    start epoch that was not recorded follows nothing. Otherwise (the moving
+    ``best`` alias, a deleted run, a retrained parent, or a child whose order
+    with its parent is unknown) it is named by the recorded parent
+    checkpoint generation (else attempt and start epoch), so only siblings
+    of that checkpoint pool; without a record, the lineage is unknown and
+    names nothing shared — an unknown lineage never pools. Errors in an
+    ancestor's files are raised, as for the run's own."""
     return _resolve(run_id, root, cache, (), known)[0]
 
 
@@ -1088,39 +1100,46 @@ def _resolve(
         resolvable = _resolvable(parent_id, root)
         current = _provenance(parent_id, root) if resolvable else None
         done = _completed_before(own, current)
-        if resolvable and (
-            recorded == _attempt_id(current)
-            if recorded is not None
-            # Nothing recorded: only a parent known to have completed first (or one without provenance).
-            else (current is None or current.attempt is None or done is not False)
+        epoch = record.get("epoch")
+        epoch = epoch if isinstance(epoch, int) and not isinstance(epoch, bool) else None
+        fixed = record.get("checkpoint", lineage["checkpoint"]) not in ("last", "best")
+        # A resumed run (or one whose mode predates the record) started at an epoch
+        # of its parent; a born-again generation (``fresh``) at none. That epoch is
+        # part of the procedure for a fixed checkpoint tag, or when the parent had
+        # not completed (still training, killed); from a completed parent's
+        # ``last`` or ``best`` it is an outcome of its training.
+        needs_epoch = lineage["mode"] != "fresh" and (fixed or not done)
+        unrecorded_parent = current is None or current.attempt is None  # a parent without provenance
+        if (
+            resolvable
+            and (epoch is not None or not needs_epoch)
+            and (
+                recorded == _attempt_id(current)
+                if recorded is not None
+                # Nothing recorded about the attempt: a parent known to have completed
+                # before the child started, or a provenance-less one the child resumed.
+                else (done or (unrecorded_parent and epoch is not None))
+            )
         ):
             # The parent attempt the run started from (a parent without
-            # provenance has only its run.yaml to declare). The epoch it
-            # started at is part of the procedure for a fixed checkpoint tag,
-            # or when the parent had not completed (still training, killed);
-            # from a completed parent's ``last`` or ``best`` it is an outcome
-            # of that parent's training (early stopping, the elected epoch).
+            # provenance has only its run.yaml to declare).
             identity, above = _resolve(parent_id, root, cache, (*path, run_id))
             lineage.update(parent=identity, **_parent_facts(current))
-            epoch = record.get("epoch")
-            fixed = record.get("checkpoint") not in ("last", "best")
-            if (fixed or not done) and isinstance(epoch, int) and not isinstance(epoch, bool):
+            if needs_epoch:
                 lineage["start_epoch"] = epoch
             ancestors = above + 1
         else:
-            # An alias (``best`` moves), a deleted parent or one retrained in
-            # place since: the parent checkpoint generation (else attempt)
-            # recorded when the run started names it; with no record, only a
-            # deleted parent's raw id is shared, and anything else names
-            # nothing shared.
+            # An alias (``best`` moves), a deleted parent, one retrained in place
+            # since, or one whose order with the child is unknown: the parent
+            # checkpoint generation (else attempt, with its start epoch) recorded
+            # when the run started names it; with neither, the lineage is
+            # unknown and names nothing shared.
             if generation is not None:
                 lineage["parent"] = f"parent checkpoint {generation}"
-            elif recorded is not None:
-                lineage["parent"] = f"parent attempt {recorded}"
-            elif parent_id in ALIASES or resolvable:
-                lineage["parent"] = f"unresolved parent {parent_id!r} of run {run_id}"
+            elif recorded is not None and epoch is not None:
+                lineage["parent"] = f"parent attempt {recorded} at epoch {epoch}"
             else:
-                lineage["parent"] = f"unresolved parent {parent_id!r}"
+                lineage["parent"] = f"unknown lineage of run {run_id}"
             ancestors = 1
     if ancestors > MAX_LINEAGE:
         raise ComparisonError(f"run {run_id}: a lineage of more than {MAX_LINEAGE} ancestors")
@@ -1271,9 +1290,10 @@ def observations_from_runs(
     model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance
     files are read once each — plus, for a run with a parent, its
     ``metadata.yaml`` and every ancestor's ``run.yaml`` and provenance
-    files, whose data and split identities and attempt status join the
-    configuration identity; an ancestor's unreadable file is refused — and
-    nothing is written).
+    files, whose data and split identities join the configuration identity
+    and whose attempt records decide which parent attempt a child started
+    from; an ancestor's unreadable file is refused — and nothing is
+    written).
 
     Args:
         run_ids: the runs (under ``root``'s ``runs/``).
@@ -1294,9 +1314,11 @@ def observations_from_runs(
         config: run id → declared configuration label, for every run; by
             default, a digest of the run's configuration without its salt,
             seeds and device, in which a parent run's id is replaced by the
-            parent's own identity, the checkpoint tag and the resume mode —
+            parent's own identity, the checkpoint tag, the resume mode and,
+            when it is part of the procedure, the epoch the run started at —
             so a continuation, fine-tune or later generation pools only
-            with runs descended the same way from the same configuration.
+            with runs descended the same way from the same configuration
+            (an unknown lineage pools with nothing).
 
     Runs should be trained with ``provenance=`` (FEAT-019): the status and
     attempt id come from the run's attempt record (``"unknown"`` without
