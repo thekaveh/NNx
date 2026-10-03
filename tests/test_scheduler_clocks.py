@@ -195,6 +195,25 @@ def test_a_skipped_update_does_not_advance_the_clock():
     assert len(skipped.history) == 2  # still one LR snapshot per epoch
 
 
+def test_a_bounded_lr_monitor_keeps_the_updates_of_its_retained_epochs():
+    """FEAT-014 with FEAT-036: in a run with a history journal, `.update_history`
+    is bounded like `.history` — the updates of the last ``retention`` epochs."""
+    from nnx.history import HistoryJournal
+
+    bounded, every = LRMonitor(), LRMonitor(bounded=False)
+    params = NNTrainParams(
+        n_epochs=4,
+        train_loader=_batches(),
+        optim=_sgd(),
+        scheduler=_sched(Schedulers.STEP, step_size=1),
+        save_phase_checkpoints=False,
+    )
+    _model().train(params, callbacks=[bounded, every], history=HistoryJournal(retention=2, chunk_size=2))
+    assert [k for k, _ in every.update_history] == list(range(1, 13))  # three updates per epoch
+    assert len(bounded.history) == 2 and [k for k, _ in bounded.update_history] == list(range(7, 13))
+    assert bounded.update_history == every.update_history[6:]
+
+
 class _FakeScaler:
     """A CPU stand-in for GradScaler: the second step finds inf gradients, so the scale backs off. A fused
     optimizer is still called (its kernel skips the update itself); a classic one is not."""

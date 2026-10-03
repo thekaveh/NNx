@@ -623,6 +623,53 @@ callback instances you pass are borrowed and shared by every fit; pass
 factories for fresh ones. See
 [Concepts §20](concepts.md#20-experiment-plans-nnxplans).
 
+### 2.21. Stream predictions and merge metrics
+
+Stream a large loader instead of holding every batch's outputs:
+
+```python
+from nnx import MetricSpec, StreamingMetrics, streaming_eval_step
+
+with model.iter_predict(loader) as stream:          # one PredictionBatch per loader batch, in order
+    for batch in stream:
+        save(batch.sample_ids, batch.classes)        # keep what you need, not the batches
+
+metrics = StreamingMetrics([MetricSpec("nll"), MetricSpec("brier")], "categorical")
+with model.iter_predict(loader, rich=True) as stream: # PredictionResult per batch (model with a task)
+    for batch in stream:
+        metrics.update(targets[batch.sample_ids], probabilities=batch.probabilities)
+metrics.finalize().values                             # {"nll": ..., "brier": ...}
+total = shard_a.merge(shard_b).finalize()             # order-independent; refuses different declarations
+
+model.train(params, eval_step_fn=streaming_eval_step) # the validation record from counts and sums
+```
+
+Concatenated, the streamed batches equal `predict()` / `predict_proba()`.
+Each batch restores the network's training mode, closing the stream drops
+its references, and the loader stays yours. See
+[Concepts §21](concepts.md#21-streaming-prediction-and-mergeable-metrics-nnxstreaming).
+
+### 2.22. Share a run as a data-only bundle
+
+A run bundle carries a checkpoint's weights, training state and calibrators
+as safetensors plus JSON, so it can be checked and rebuilt without
+unpickling anything:
+
+```python
+from nnx.bundles import export_bundle, inspect_bundle, reconstruct_bundle, validate_bundle
+
+export_bundle(run.id, "bundle", calibrators=[calibrator])  # reads your own run's LAST checkpoint
+inspect_bundle("bundle")                                    # BundleInfo: capability, epoch, model, calibrators
+validate_bundle("bundle")                                   # every payload's SHA-256, before any tensor is read
+rebuilt = reconstruct_bundle("bundle", factories={("my.encoder", 1): my_factory})  # a registered module
+rebuilt.model.predict(X)                                    # bit-for-bit the source model
+rebuilt.resume(train_params)                                # continues the run from the bundle's training state
+```
+
+A weights-only checkpoint (a `ModelCheckpoint` snapshot) exports an
+`"inference"` bundle, which rebuilds the model but refuses `resume()`. See
+[Concepts §22](concepts.md#22-run-bundles-nnxbundles).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).

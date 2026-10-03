@@ -241,7 +241,10 @@ def save_lora_weights(module: nn.Module, path: Union[str, Path]) -> str:
     owned by the :class:`LoRALinear` wrappers in ``module`` — selected by
     registered ownership, not by key substring, so a module *named*
     ``lora_A_projection`` never leaks its frozen base weights. Loadable
-    via :func:`load_lora_weights`.
+    via :func:`load_lora_weights`. An adapter-only export records no
+    transformation recipe (``nnx.transforms``): it cannot rebuild the
+    wrapped topology alone — apply the same adapters (or materialize the
+    recipe) first.
 
     Args:
         module: any module that has been processed by

@@ -1305,8 +1305,23 @@ def model_fingerprint(model: Any) -> str:
         if not isinstance(inner, torch.nn.Module):
             break
         module = inner
-    digest = hashlib.sha256(b"nnx.calibration.model\0")
-    entries = cast(Mapping[str, Any], module.state_dict())
+    return _state_fingerprint(cast(Mapping[str, Any], module.state_dict()))
+
+
+_FINGERPRINT_SEED = b"nnx.calibration.model\0"
+
+
+def _fingerprint_header(name: str, kind: str, dtype: Any, shape: Sequence[int], numel: int) -> bytes:
+    """The bytes :func:`model_fingerprint` hashes before one tensor's data."""
+    return f"{name}\0{kind}\0{dtype}\0{tuple(shape)}\0{numel}\0".encode()
+
+
+def _state_fingerprint(entries: Mapping[str, Any]) -> str:
+    """:func:`model_fingerprint` of a ``state_dict()`` itself — the same
+    digest, for weights held without their module (``nnx.bundles``)."""
+    import torch
+
+    digest = hashlib.sha256(_FINGERPRINT_SEED)
     for name, value in sorted(entries.items()):
         if isinstance(value, torch.Tensor):
             kind = "tensor"
@@ -1330,8 +1345,7 @@ def model_fingerprint(model: Any) -> str:
             if sys.byteorder == "big" and flat.element_size() > 1:  # hash little-endian bytes on every host
                 unit = flat.element_size() // (2 if flat.is_complex() else 1)
                 raw = flat.view(torch.uint8).reshape(-1, unit).flip(-1).contiguous().numpy().data
-            header = f"{name}\0{kind}\0{flat.dtype}\0{tuple(value.shape)}\0{flat.numel()}\0"
-            digest.update(header.encode("utf-8"))
+            digest.update(_fingerprint_header(name, kind, flat.dtype, tuple(value.shape), flat.numel()))
             digest.update(raw)
             continue
         try:  # get_extra_state() entries: JSON-like values (str keys, finite numbers) hash canonically

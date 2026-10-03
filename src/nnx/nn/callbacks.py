@@ -23,6 +23,7 @@ from .._metrics import _resolve_metric_with_provenance
 from .._validation import require_count, require_finite_real
 from ..components import ComponentSpec
 from ..monitors import MetricSpec, MonitorSpec, MonitorTracker
+from ..transforms import _snapshot_transforms
 from .params.nn_checkpoint import _MODEL_CHECKPOINT_TAG, NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from .params.nn_iteration_data_point import NNIterationDataPoint
 
@@ -87,8 +88,11 @@ class _LegacyCallback(Callback):
         self._fn(ctx.idps)
 
 
-def _warn_at_user_frame(message: str) -> None:
-    """Emit a ``RuntimeWarning`` attributed to the first caller outside nnx.
+def _warn_at_user_frame(
+    message: str, category: type[Warning] = RuntimeWarning, *, once_per_location: bool = False
+) -> None:
+    """Emit a warning (``RuntimeWarning`` by default) attributed to the first
+    caller outside nnx.
 
     ``warnings.warn(stacklevel=...)`` would point at a fixed line inside the
     training loop, and Python's default filter shows a given message from a
@@ -96,17 +100,20 @@ def _warn_at_user_frame(message: str) -> None:
     the same notebook would be silent. A fresh registry per call keeps user
     filters (``ignore`` / ``error`` / ``once``) authoritative while callers
     bound the volume themselves (``EarlyStopping`` reports once per run).
+    ``once_per_location`` uses that caller's registry instead, as
+    ``warnings.warn`` does, so the default filter shows a warning once per
+    user call site.
     """
     frame = sys._getframe(1)
     while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).split(".")[0] == "nnx":
         frame = frame.f_back
     warnings.warn_explicit(
         message,
-        RuntimeWarning,
+        category,
         frame.f_code.co_filename,
         frame.f_lineno,
         module=frame.f_globals.get("__name__"),
-        registry=None,
+        registry=frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None,
         module_globals=frame.f_globals,
     )
 
@@ -489,6 +496,8 @@ class ModelCheckpoint(Callback):
             net_params=ctx.model.net_params,
             net_state=_snapshot_state_dict(ctx.model.net.state_dict()),
             training_state_present=False,
+            # FEAT-016: a recorded recipe rebuilds this snapshot's topology too.
+            transforms=_snapshot_transforms(getattr(ctx.model, "_topology_transforms", ())),
         )
         # Same cwd-relative `runs/<id>/checkpoints/` layout NNCheckpoint.save
         # uses through _checkpoint_path; we hand-build the path here because
@@ -513,16 +522,33 @@ class LRMonitor(Callback):
     after that update's scheduler step)`` for the primary optimizer, a
     separate trace of the steps NNx takes — empty on the epoch clock and
     under ``Trainer``'s ``auto_step_schedulers=False``, where the step
-    function steps the schedule itself."""
+    function steps the schedule itself.
 
-    def __init__(self):
+    In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+    bounded too: it keeps the LRs of the last ``retention`` epochs (the
+    journal's bound, applied per epoch), and `.update_history` the updates
+    of those epochs. ``bounded=False`` keeps every epoch's LR (one float
+    each), and every update's, in any run.
+    """
+
+    def __init__(self, bounded: bool = True):
         self.history: list[float] = []
         self.update_history: list[tuple[int, float]] = []
+        self.bounded = bounded
+        self._epoch_updates: list[int] = []  # `.update_history` entries per retained epoch
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
-        self.update_history.extend(getattr(ctx, "update_lrs", ()))
+        updates = tuple(getattr(ctx, "update_lrs", ()))
+        self.update_history.extend(updates)
+        epoch_updates = self.__dict__.setdefault("_epoch_updates", [])
+        epoch_updates.append(len(updates))
+        retention = getattr(ctx, "history_retention", None)
+        if retention is not None and getattr(self, "bounded", True) and len(self.history) > retention:
+            del self.history[:-retention]
+            del self.update_history[: sum(epoch_updates[:-retention])]
+            del epoch_updates[:-retention]
 
 
 def _edp_metric_iter(edp):
