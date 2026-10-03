@@ -276,7 +276,7 @@ class _FailAt(Callback):
             raise RuntimeError("boom in epoch 1")
 
 
-def _fit(lr: float, seed: int, *, fail: bool = False):
+def _fit(lr: float, seed: int, *, fail: bool = False, history=None):
     X = torch.randn(32, 4, generator=torch.Generator().manual_seed(0))
     y = (X[:, 0] > 0).long()
     train = DataLoader(TensorDataset(X[:24], y[:24]), batch_size=8, generator=torch.Generator().manual_seed(seed))
@@ -298,7 +298,7 @@ def _fit(lr: float, seed: int, *, fail: bool = False):
         with pytest.raises(RuntimeError, match="boom"):
             model.train(params=params, provenance=manifest, callbacks=[_FailAt()])
         return None
-    return model.train(params=params, provenance=manifest)
+    return model.train(params=params, provenance=manifest, history=history)
 
 
 def _tree_digest(root: str) -> dict[str, str]:
@@ -368,6 +368,31 @@ def test_reading_runs_loads_no_model_elects_no_best_and_changes_nothing(tmp_path
     assert ComparisonReport.load(tmp_path / "comparison.json").to_json() == report.to_json()
     assert _tree_digest("runs") == before  # nothing written, no checkpoint, no best pointer elected
     assert len(report.summary.groups) == 2 and report.comparisons[0].n == 2
+
+
+def test_a_journaled_run_is_read_from_its_history_journal(tmp_path, monkeypatch):
+    from nnx.history import HistoryJournal
+
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    (tmp_path / "csv").mkdir()
+    (tmp_path / "journal").mkdir()
+    monkeypatch.chdir(tmp_path / "csv")
+    torch.manual_seed(0)  # the same initial weights for both runs
+    plain = _fit(0.1, 5)
+    (a,) = observations_from_runs([plain.id], metric=LOSS)
+    (a_train,) = observations_from_runs([plain.id], metric=LOSS, split="train")
+    monkeypatch.chdir(tmp_path / "journal")
+    torch.manual_seed(0)
+    journaled = _fit(0.1, 5, history=HistoryJournal(retention=2, chunk_size=2))  # 6 records, 2 kept in memory
+    assert not os.path.exists(os.path.join("runs", journaled.id, "idps.csv"))
+    before = _tree_digest("runs")
+    (b,) = observations_from_runs([journaled.id], metric=LOSS)
+    (b_train,) = observations_from_runs([journaled.id], metric=LOSS, split="train")
+    assert (
+        b.status == "completed" and b.finite and b.evaluation.startswith("epoch 1 validation record (history journal)")
+    )
+    assert b.value == pytest.approx(a.value) and b_train.value == pytest.approx(a_train.value)
+    assert _tree_digest("runs") == before
 
 
 def test_selection_best_reads_the_monitor_election_or_stays_unknown(tmp_path, monkeypatch):

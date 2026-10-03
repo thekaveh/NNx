@@ -32,8 +32,8 @@ nothing here builds or loads a model, reads a checkpoint, elects a
   saved as strict JSON (``nnx.comparison/1``) and reloaded with its results
   re-derived and checked. Input order never changes a report.
 - :func:`observations_from_runs` — reads observations from saved runs
-  (``run.yaml``, ``idps.csv`` and the FEAT-019 provenance files, each read
-  once; for a run with a parent, ``metadata.yaml`` and every ancestor's
+  (``run.yaml``, ``idps.csv`` — or a FEAT-036 history journal's committed
+  records — and the FEAT-019 provenance files, each read once; for a run with a parent, ``metadata.yaml`` and every ancestor's
   ``run.yaml`` and provenance files) without loading a model or a
   checkpoint.
 """
@@ -1251,20 +1251,32 @@ def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any]
 def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, bool, str]:
     import pandas as pd
 
+    from .history import has_journal, iter_history
     from .nn.params.nn_iteration_data_point import NNIterationDataPoint
     from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE
     from .provenance import load_provenance
 
     run_state, run_path = _read_run_state(run_id, root)
-    csv_path = os.path.join(run_path, "idps.csv")
-    try:
-        rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
-        last_rows: dict[Any, Any] = {}
-        for row in rows:  # only each epoch's last record is ever read
-            last_rows[row.get("epoch_idx")] = row
-        idps = [NNIterationDataPoint.from_state(row) for row in last_rows.values()]
-    except Exception as error:  # an empty or damaged history is not an empty one
-        raise ComparisonError(f"run {run_id}: malformed idps.csv: {type(error).__name__}: {error}") from error
+    if has_journal(run_path):  # a FEAT-036 history journal writes no idps.csv
+        try:
+            last_records: dict[Any, Any] = {}
+            for record in iter_history(run_id, root):  # its committed records, checked chunk by chunk
+                last_records[record.epoch_idx] = record
+        except Exception as error:
+            raise ComparisonError(
+                f"run {run_id}: unreadable history journal: {type(error).__name__}: {error}"
+            ) from error
+        idps = list(last_records.values())
+    else:
+        csv_path = os.path.join(run_path, "idps.csv")
+        try:
+            rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
+            last_rows: dict[Any, Any] = {}
+            for row in rows:  # only each epoch's last record is ever read
+                last_rows[row.get("epoch_idx")] = row
+            idps = [NNIterationDataPoint.from_state(row) for row in last_rows.values()]
+        except Exception as error:  # an empty or damaged history is not an empty one
+            raise ComparisonError(f"run {run_id}: malformed idps.csv: {type(error).__name__}: {error}") from error
     committed_by_last = os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE))
     try:
         provenance = load_provenance(run_id, root)
@@ -1287,8 +1299,9 @@ def observations_from_runs(
     config: Optional[Mapping[str, str]] = None,
 ) -> list[Observation]:
     """Observations of ``metric`` read from saved runs, without loading a
-    model or a checkpoint (``run.yaml``, ``idps.csv`` and the provenance
-    files are read once each — plus, for a run with a parent, its
+    model or a checkpoint (``run.yaml``, ``idps.csv`` — or, for a run
+    trained with a ``HistoryJournal``, the journal's committed records,
+    each chunk checked — and the provenance files are read once each — plus, for a run with a parent, its
     ``metadata.yaml`` and every ancestor's ``run.yaml`` and provenance
     files, whose data and split identities join the configuration identity
     and whose attempt records decide which parent attempt a child started
@@ -1345,10 +1358,13 @@ def observations_from_runs(
         unlabelled = [run_id for run_id in run_ids if run_id not in config]
         if unlabelled:
             raise ComparisonError(f"config= labels some runs but not {unlabelled}; label every run or none")
+    from .history import has_journal
+
     observations = []
     identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
     for run_id in run_ids:
         run_state, idps, provenance, committed_by_last, run_path = _read_run(run_id, root)
+        source = "history journal" if has_journal(run_path) else "idps.csv"
         attempt = None if provenance is None else provenance.attempt
         status = "unknown" if attempt is None else attempt.status
         if status not in STATUSES:
@@ -1374,7 +1390,7 @@ def observations_from_runs(
         rule = selection
         unknown_reason = "unknown: the committed epoch is not recorded" if not known else None
         if known and not epochs:
-            unknown_reason = "unknown: the run records no committed epoch (idps.csv)"
+            unknown_reason = f"unknown: the run records no committed epoch ({source})"
         if selection == "best":
             # The rule is the run's declared monitor, whether or not any epoch was elected.
             monitor = _declared_monitor(run_state)
@@ -1401,7 +1417,7 @@ def observations_from_runs(
             else:  # the whole-epoch summary only: a last batch is not an epoch's value
                 edp = chosen.train_summary
             value = _metric_value(edp, metric.name)
-            evaluation = f"epoch {chosen.epoch_idx} {split} record (idps.csv)"
+            evaluation = f"epoch {chosen.epoch_idx} {split} record ({source})"
             if edp is None:
                 evaluation = (
                     "unknown: no whole-epoch training summary (declare metrics or a monitor)"
@@ -1409,9 +1425,10 @@ def observations_from_runs(
                     else f"unknown: epoch {chosen.epoch_idx} has no validation record"
                 )
             elif value is None:
-                evaluation = (
-                    f"unknown: the epoch {chosen.epoch_idx} {split} record has no {metric.name!r} value "
+                evaluation = f"unknown: the epoch {chosen.epoch_idx} {split} record has no {metric.name!r} value " + (
                     "(missing, or NaN — idps.csv writes NaN as an empty cell)"
+                    if source == "idps.csv"
+                    else "(missing, or NaN)"
                 )
             if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"

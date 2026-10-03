@@ -2061,8 +2061,9 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   changes either. `save` writes strict JSON; `load` re-derives the results
   from the stored observations and refuses a file whose results disagree.
 - **Reading runs.** `observations_from_runs(run_ids, metric=..., split=,
-  selection=)` reads `run.yaml`, `idps.csv` and the provenance files once
-  each. Train the runs with `provenance=` (FEAT-019): the attempt record
+  selection=)` reads `run.yaml`, `idps.csv` (or, for a run trained with a
+  `HistoryJournal`, the journal's committed records) and the provenance
+  files once each. Train the runs with `provenance=` (FEAT-019): the attempt record
   gives the status, the attempt id and the committed epoch. Without it, a
   run whose history is committed by its LAST checkpoint has an unknown
   value, and a legacy run (no commit marker) keeps its value but, of
