@@ -32,6 +32,7 @@ from . import (
     data_splits,
     decisions,
     embeddings,
+    history,
     interop,
     models,
     monitors,
@@ -372,6 +373,8 @@ __all__ = [
     "abstention",
     # Portable, data-only run bundles (FEAT-015)
     "bundles",
+    # Bounded training history with an append journal (FEAT-036)
+    "history",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",

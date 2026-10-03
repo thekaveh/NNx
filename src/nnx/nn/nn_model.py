@@ -22,6 +22,13 @@ from typing_extensions import Self
 from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..components import ComponentRegistry, ResumeStatus
+from ..history import (
+    HistoryJournal,
+    _check_history,
+    _dispatch_epoch_end,
+    _lend_idps,
+    _training_history,
+)
 from ..models import (
     BatchAdapter,
     MissingModelFactoryError,
@@ -388,9 +395,13 @@ class _CallbackFinalizer:
 
     def __exit__(self, exc_type, exc, tb):
         cleanup_errors: list[BaseException] = []
+        # FEAT-036: a journal run lends history_access="full" callbacks the
+        # whole history (read back once); everyone else sees ctx.idps as is.
+        history = getattr(self._ctx, "history_records", None)
+        view = history.lender(tolerant=True) if history is not None else (lambda callback: None)
         for cb in reversed(self._started):
             try:
-                cb.on_train_end(self._ctx)
+                _lend_idps(self._ctx, view(cb), lambda cb=cb: cb.on_train_end(self._ctx))
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
 
@@ -2075,6 +2086,7 @@ class NNModel(_HubMixinBase):
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         provenance: Optional[ExperimentManifest] = None,
+        history: Optional[HistoryJournal] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -2110,6 +2122,13 @@ class NNModel(_HubMixinBase):
                 fresh attempt (``attempt.json``: parent attempt and
                 checkpoint generation on resume; final status and last
                 committed checkpoint). Never part of the run id.
+            history: Optional :class:`~nnx.history.HistoryJournal`
+                (FEAT-036): keep only its ``retention`` most recent records
+                in memory (``ctx.idps``, the returned ``NNRun.idps``) and
+                append every record once to ``runs/<id>/history/`` instead
+                of rewriting ``idps.csv`` each epoch. ``None`` (the default)
+                keeps the eager in-memory list and CSV. Never part of the
+                run id.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -2138,6 +2157,7 @@ class NNModel(_HubMixinBase):
         if objective is not None and not callable(objective):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         _check_provenance(provenance)
+        _check_history(history, callbacks)
         if train_step_fn is None:
             # NNx owns the update (default step or objective): the run's
             # checkpoints must be reconstructible from the params recipe.
@@ -2199,6 +2219,7 @@ class NNModel(_HubMixinBase):
                     eval_step_fn=eval_step_fn,
                     components=components,
                     objective=objective,
+                    history=history,
                 ),
             )
 
@@ -2212,6 +2233,7 @@ class NNModel(_HubMixinBase):
         eval_step_fn: Optional[EvalStepFn] = None,
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
+        history: Optional[HistoryJournal] = None,
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -2384,6 +2406,7 @@ class NNModel(_HubMixinBase):
                     mode="stateful",
                     source_run_id=params.resume_from_run_id,
                     source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
                     fresh_components=tuple(component_plan.fresh),
                 )
             else:
@@ -2401,10 +2424,13 @@ class NNModel(_HubMixinBase):
                     mode="weights_only",
                     source_run_id=params.resume_from_run_id,
                     source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
                     fresh_components=registry.names,
                 )
 
-        idps: list[NNIterationDataPoint] = []
+        # Every record in a list (idps.csv), or a bounded window plus the run's
+        # history journal (FEAT-036); either way saved before LAST each epoch.
+        records = _training_history(run, history)
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
@@ -2416,6 +2442,8 @@ class NNModel(_HubMixinBase):
         Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
         ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
+        ctx.history_retention = history.retention if history is not None else None
+        ctx.history_records = records
         # Default to the standard supervised step when the caller doesn't
         # override. Custom step gets dispatched from inside the batch loop
         # below so the rest of train() (scheduler, callbacks, checkpoint
@@ -2464,7 +2492,7 @@ class NNModel(_HubMixinBase):
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
-                n_idps_before_epoch = len(idps)
+                records.begin_epoch()
                 accumulation_state = GradientAccumulationState()
                 epoch_summary = (
                     _TrainEpochSummary(train_metrics, metric_domain, metric_ignore_index, metric_threshold)
@@ -2490,7 +2518,7 @@ class NNModel(_HubMixinBase):
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
 
-                    idps.append(
+                    records.append(
                         NNIterationDataPoint(
                             iter_idx=idx_iter,
                             epoch_idx=idx_epoch,
@@ -2504,9 +2532,9 @@ class NNModel(_HubMixinBase):
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                if len(idps) == n_idps_before_epoch:
+                if records.epoch_is_empty():
                     # Zero batches this epoch: first epoch would crash on
-                    # idps[-1] below; later epochs would silently attach
+                    # records.last below; later epochs would silently attach
                     # this epoch's val_edp to the PREVIOUS epoch's last
                     # idp and reuse its stale train_edp.
                     raise ValueError(
@@ -2542,7 +2570,7 @@ class NNModel(_HubMixinBase):
                     )
                 else:
                     val_edp = None
-                idps[-1] = idps[-1].with_val_edp(val_edp)
+                records.replace_last(records.last.with_val_edp(val_edp))
                 record: Optional[MonitorRecord] = None
                 if epoch_summary is not None:
                     train_summary = epoch_summary.result()
@@ -2550,25 +2578,26 @@ class NNModel(_HubMixinBase):
                         assert monitor is not None
                         value = monitor.value(train=train_summary or train_edp, val=val_edp)
                         record = tracker.observe(value, epoch=idx_epoch)
-                    idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
+                    records.replace_last(records.last.with_epoch_summary(train_summary, record))
 
                 if record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
                     _step_monitored_plateau(scheduler, record)
                 else:
                     self._step_scheduler(scheduler, val_edp, train_edp, epoch_idx=idx_epoch)
 
-                ctx.idp = idps[-1]
-                ctx.idps = idps
+                ctx.idp = records.last
                 ctx.deferred_checkpoint_writes.clear()
-                for cb in normalized_callbacks:
-                    cb.on_epoch_end(ctx)
+                # ctx.idps: the running list, or the journal's window (the whole
+                # history, read back, for a callback declaring history_access="full").
+                _dispatch_epoch_end(normalized_callbacks, ctx, records)
 
-                # Prepare run history first; the checkpoint is the epoch's
-                # commit marker and is never allowed to get ahead of idps.csv.
-                run.with_idps(idps).save(update_best=False)
+                # Prepare run history first (idps.csv, or the journal's chunks
+                # and manifest); the checkpoint is the epoch's commit marker and
+                # is never allowed to get ahead of the history.
+                records.save_epoch(run)
                 try:
                     checkpoint = self._save_checkpoints(
-                        idp=idps[-1],
+                        idp=records.last,
                         run_id=run.id,
                         idx_epoch=local_epoch,
                         n_epochs=params.n_epochs,
@@ -2588,7 +2617,7 @@ class NNModel(_HubMixinBase):
                     # published, restore history to the preceding epoch.
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
                     if committed is None or committed.idp.epoch_idx != idx_epoch:
-                        run.with_idps(idps[:n_idps_before_epoch]).save(update_best=False)
+                        records.rollback_epoch(run)
                     raise
                 for deferred_checkpoint in ctx.deferred_checkpoint_writes:
                     deferred_checkpoint()
@@ -2625,11 +2654,11 @@ class NNModel(_HubMixinBase):
         # in-memory checkpoint even though the disk copy is pre-mutation.
         # Costs one extra checkpoint write per training run. BEST is
         # deliberately untouched — it tracks the best *training-time* state.
-        if idps:
+        if records:
             final_transforms = (*self._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
             self._topology_transforms = final_transforms
             NNCheckpoint(
-                idp=idps[-1],
+                idp=records.last,
                 model_params=self.params,
                 net_params=self.net_params,
                 net_state=self.net.state_dict(),
@@ -2641,7 +2670,7 @@ class NNModel(_HubMixinBase):
                 scheduler_state=scheduler.state_dict(),
                 scaler_state=scaler.state_dict() if scaler is not None else None,
                 rng_state=(pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader)),
-                completed_epoch=idps[-1].epoch_idx,
+                completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if final_transforms else None,
                 optimizer_type=_component_type(optimizer),
                 scheduler_type=_component_type(scheduler),
@@ -2650,7 +2679,7 @@ class NNModel(_HubMixinBase):
                 components=registry.collect(),
             )
 
-        saved = run.with_idps(idps).save()
+        saved = records.finish(run)
         _print_run_saved(run.id)
         return saved
 
@@ -3303,6 +3332,10 @@ class _CallbackContext:
         self.epoch: int = 0
         self.idp: Optional[NNIterationDataPoint] = None
         self.idps: list[NNIterationDataPoint] = []
+        # FEAT-036: the history journal's retention when the run keeps a
+        # bounded window (built-in callbacks bound their own logs by it).
+        self.history_retention: Optional[int] = None
+        self.history_records: Any = None  # the loop's history (nnx.history), for on_train_end
         self.should_stop: bool = False
         self.optimizers: Any = None
         self.trainer: Any = None

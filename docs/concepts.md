@@ -201,6 +201,7 @@ runs/<id>/
 ├── run.yaml          # NNRun.state() — config-only, hashes to <id>
 ├── metadata.yaml     # env snapshot (nnx/torch/python/git) — NOT in hash
 ├── idps.csv          # per-iteration metrics, flushed every epoch
+│                     #   (history/ instead with a HistoryJournal — §4.5)
 ├── checkpoints/
 │   ├── first.pt      # NNCheckpoint at epoch 0
 │   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs
@@ -225,7 +226,7 @@ Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by
 
 Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a destination-local tmp-then-rename helper. A `KeyboardInterrupt` leaves either the previous file or the new file at a destination, never a half-written file. The text writer creates its temp next to the resolved destination (also for a bare filename, so the rename never crosses filesystems) and owns it until the rename: a failure while opening, writing, flushing or closing it — or in the rename itself — releases the descriptor, unlinks that temp and re-raises the original exception (a cleanup error never masks it); an `fsync` error is tolerated, and after a successful rename the temp name is never touched. This is per-file cleanup for ordinary exceptions, not a multi-file transaction: `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another, and a SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried. Each checkpoint names an immutable generation-addressed training-state sidecar, with the sidecar committed first and checkpoint committed last; an interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
 
-The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history.
+The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history. A run with a history journal (§4.5) follows the same transaction: its chunks and manifest are the "history" step.
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
@@ -326,6 +327,37 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   verified on read (format and fingerprint); unreadable ones are ignored with a
   warning, so they never stop a run from loading or resuming.
 
+
+### 4.5. Bounded history: the history journal
+
+By default both loops keep every per-batch `NNIterationDataPoint` in memory and rewrite the whole `idps.csv` each epoch, so memory and bytes written grow with the run. `history=HistoryJournal(retention=..., chunk_size=...)` (FEAT-036, `nnx.history`; on `NNModel.train` and `Trainer.train`, never part of the run id) switches one run to a bounded **history journal**:
+
+```python
+from nnx.history import HistoryJournal, export_history_csv, iter_history
+
+run = model.train(params, history=HistoryJournal(retention=1000, chunk_size=250))
+len(run.idps)                                   # ≤ 1000: the window, not the whole run
+for record in iter_history(run.id): ...         # the committed history, chunk by chunk
+export_history_csv(run.id, "idps.csv")           # the legacy CSV layout, on request
+```
+
+```
+runs/<id>/history/
+├── chunk-00000000.jsonl   # immutable: up to chunk_size records, one JSON line each
+├── index.jsonl            # appended: one hash-chained line per chunk (counts, epochs, SHA-256)
+├── epochs.jsonl           # appended: one summary row per epoch (the notebook chart's series)
+└── journal.json           # small manifest (counts, byte lengths, index chain), replaced atomically
+```
+
+- **Memory and bytes.** Only the last `retention` records stay in memory (`ctx.idps`, `NNRun.idps`); `chunk_size ≤ retention` (default `min(250, retention)`, resolved as `HistoryJournal.chunk`), so records waiting for their chunk are always inside the window. Every record is written once, so bytes written grow linearly with the records; `idps.csv` is not written.
+- **Commit protocol.** Each epoch's records are written as chunks and indexed, its summary row appended, every file the epoch wrote flushed to disk once (chunks written mid-epoch are not fsynced one by one), and the manifest published *before* LAST — the journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker. A crash while a chunk is written, or before the manifest is replaced, leaves the previous manifest; a crash before LAST is replaced leaves an **uncommitted tail** on disk that no reader shows (records newer than LAST's epoch are filtered, as for `idps.csv`). If LAST fails, the previous manifest is republished. A committed chunk whose bytes no longer match its SHA-256, a missing chunk and an altered index raise `HistoryCorruptionError` (a `ValueError`).
+- **Lazy reads.** `NNRun.load` reads only the committed tail — the last `retention` records, from the chunks holding them — and returns a run whose `history` is the journal directory. The notebook chart (`_repr_html_`) reads the per-epoch rows, BEST and the `runs/best` election read checkpoints and the manifest and index, and a resume reads only the source's checkpoint: none of them reads records. `NNRun.all` lists CSV and journal runs side by side. `save()` never rewrites the journal — `idps` is only its window — and a journal run saved under another runs root is refused (the copy would have no history); use `export_history_csv` to take the history elsewhere.
+- **Callbacks.** The built-in callbacks read `ctx.idp` (the epoch's last record) and are unaffected; `LRMonitor.history` is bounded too, keeping the LRs of the last `retention` epochs (`LRMonitor(bounded=False)` keeps every epoch). A `Callback` that needs every record declares `history_access = "full"` and receives the materialised history — read-only, like the window — as `ctx.idps` at `on_epoch_end` and `on_train_end` (read back from the journal once per dispatch — each epoch, and once at the end — and released with it, so its cost grows with the run; if the read-back fails at the end, a warning is issued and the callback gets the window). Every other callback sees `ctx.idps` as a live, read-only sequence over the window: it grows with each record as the eager list does (trimmed to `retention`), supports `len`, indexing, iteration, `reversed` and slicing (a new list), but no in-place change (item assignment raises `TypeError`; `append` and the other list mutators do not exist) — the journal, LAST and `NNRun.idps` keep the records as recorded; a callback that reassigns `ctx.idps` is seen by the next. Without a journal, `ctx.idps` is the running list exactly as before. A plain function callback — `callbacks=[lambda idps: ...]`, which by contract receives the full list — or an unknown `history_access` is refused with a `ValueError` before any run is reserved.
+- **Continuations and lineage.** A resumed run owns its own run directory and chunk files and never writes to the source run, which stays byte-for-byte unchanged. `iter_history(run_id, lineage=True)` and `export_history_csv(..., lineage=True)` yield the committed records of the run the child resumed from, up to the epoch it resumed from — recorded in its resume status (`ResumeStatus.source_epoch`, in `metadata.yaml`) when it resumed; for runs recorded before that, the epoch of that checkpoint now — then the child's, recursively: each epoch once, never the parent's later epochs, also when the child resumed from an earlier checkpoint than the parent's last or has no committed record yet (the cut never passes the child's first record). When the branch epoch cannot be known (the checkpoint, or the parent's LAST, is unreadable), the parent's records before the child's first record are used, with a `RuntimeWarning`; when neither is known, the parent run is gone, or the child resumed through the `runs/best` pointer (which may name another run by now), the lineage starts at the child, with a `RuntimeWarning`. Lineage follows resumes: a run that started fresh — a born-again generation naming its teacher's run as `parent_run_id`, say — starts its own epochs, and its lineage is its own history.
+- **Export and migration.** `export_history_csv` writes the same columns, order and index `NNRun.save` writes for an eager run (it holds the records in memory while it builds the table; stream `iter_history` for larger histories). `migrate_history(run_id, spec=...)` moves an existing run's `idps.csv` into a journal explicitly — floats parsed round-trip; the journal read back and checked before it is published and the CSV removed; an unpublished leftover of an interrupted migration replaced, and one interrupted after publishing finished — keeping `run.yaml` and the run id. It refuses a run being trained (its lease is held), the `runs/best` pointer (migrate a run by its own id) and, unless `discard_uncommitted=True`, a CSV holding records past LAST's epoch, which readers hide but a migration would delete. Nothing is migrated or deleted by default.
+
+Out of scope: concurrent writers to one run, mid-epoch recovery (an epoch is the unit of commit) and remote tracking. Because an epoch's records must be on disk when its LAST lands, every epoch ends its own chunk: full-batch training writes one small chunk per epoch, and reading the tail opens up to `retention` of them. [`examples/history_journal.py`](https://github.com/thekaveh/NNx/blob/main/examples/history_journal.py) trains with a journal, resumes lazily, renders the summary and exports the CSV with and without the parent's prefix.
+
 ## 5. Callbacks
 
 `Callback` has four hooks (`on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`) each receiving a `_CallbackContext`:
@@ -338,7 +370,7 @@ ctx.optimizers    # dict[str, Optimizer]  (Trainer mode only)
 ctx.trainer       # Trainer  (Trainer mode only)
 ctx.epoch         # int
 ctx.idp           # current NNIterationDataPoint
-ctx.idps          # running list of all idps so far
+ctx.idps          # running list of all idps so far (with a HistoryJournal: the last `retention` — §4.5)
 ctx.should_stop   # writable — set True to break out of training
 ```
 
@@ -1293,7 +1325,7 @@ Built-in components are `EarlyStopping` (`early_stopping`, optional) and the ste
 
 ### 14.2. Resume modes and status
 
-`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
+`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint (and that checkpoint's epoch, `source_epoch`), and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 

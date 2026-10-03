@@ -46,6 +46,7 @@ from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
 from ..components import ComponentRegistry, ResumeStatus
+from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
@@ -249,6 +250,7 @@ class Trainer:
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         provenance: Optional[ExperimentManifest] = None,
+        history: Optional[HistoryJournal] = None,
     ) -> NNRun:
         """Run the multi-optimizer training loop and return the resulting NNRun.
 
@@ -273,6 +275,10 @@ class Trainer:
             provenance: an optional ``nnx.provenance.ExperimentManifest``
                 (FEAT-019): the declared intent, recorded with a fresh
                 attempt exactly as ``NNModel.train`` records it.
+            history: an optional ``nnx.history.HistoryJournal`` (FEAT-036):
+                a bounded in-memory window and an append journal instead of
+                the eager list and ``idps.csv``, exactly as in
+                ``NNModel.train``.
             callbacks: optional list of Callback instances. The callback
                 context exposes `ctx.optimizer` (primary, sorted-first), plus
                 a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -306,6 +312,7 @@ class Trainer:
         if objective is not None and not callable(objective):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         _check_provenance(provenance)
+        _check_history(history, callbacks)
         if params is None:
             raise ValueError("trainer params must not be None")
         if params.train_loader is None:
@@ -403,6 +410,7 @@ class Trainer:
                     components=components,
                     objective=objective,
                     objective_window=objective_window,
+                    history=history,
                 ),
             )
 
@@ -417,6 +425,7 @@ class Trainer:
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         objective_window: int = 1,
+        history: Optional[HistoryJournal] = None,
     ) -> NNRun:
         """Execute a validated multi-optimizer training session."""
         assert params.train_loader is not None
@@ -484,7 +493,9 @@ class Trainer:
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
             ctx.update_count = engine.commits
 
-        idps: list[NNIterationDataPoint] = []
+        records = _training_history(run, history)  # FEAT-036: eager list or bounded journal
+        ctx.history_retention = history.retention if history is not None else None
+        ctx.history_records = records
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
@@ -532,7 +543,7 @@ class Trainer:
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
-                n_idps_before_epoch = len(idps)
+                records.begin_epoch()
                 # FEAT-003 whole-epoch summary of the step's records (no named
                 # training metrics: Trainer steps are custom).
                 epoch_summary = _TrainEpochSummary((), None, None) if summarize else None
@@ -573,7 +584,7 @@ class Trainer:
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.model.net, batch))
 
-                    idps.append(
+                    records.append(
                         NNIterationDataPoint(
                             iter_idx=idx_iter,
                             epoch_idx=idx_epoch,
@@ -586,9 +597,9 @@ class Trainer:
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                if len(idps) == n_idps_before_epoch:
+                if records.epoch_is_empty():
                     # Same guard as NNModel.train: zero batches would
-                    # crash on idps[-1] (first epoch) or corrupt the
+                    # crash on records.last (first epoch) or corrupt the
                     # previous epoch's logged metrics (later epochs).
                     raise ValueError(
                         f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
@@ -607,7 +618,7 @@ class Trainer:
                     )
                 else:
                     val_edp = None
-                idps[-1] = idps[-1].with_val_edp(val_edp)
+                records.replace_last(records.last.with_val_edp(val_edp))
                 record: Optional[MonitorRecord] = None
                 if epoch_summary is not None:
                     train_summary = epoch_summary.result()
@@ -615,7 +626,7 @@ class Trainer:
                         assert monitor is not None
                         value = monitor.value(train=train_summary or train_edp, val=val_edp)
                         record = tracker.observe(value, epoch=idx_epoch)
-                    idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
+                    records.replace_last(records.last.with_epoch_summary(train_summary, record))
 
                 # Each scheduler steps on its own optimizer's signal.
                 # We feed the SAME (val_edp, train_edp) pair to all of
@@ -627,19 +638,20 @@ class Trainer:
                 if params.auto_step_schedulers:
                     _step_schedulers(schedulers.values(), val_edp, train_edp, epoch_idx=idx_epoch, record=record)
 
-                ctx.idp = idps[-1]
-                ctx.idps = idps
+                ctx.idp = records.last
                 ctx.deferred_checkpoint_writes.clear()
-                for cb in normalized_callbacks:
-                    cb.on_epoch_end(ctx)
+                # ctx.idps: the running list, or the journal's window (the whole
+                # history, read back, for a callback declaring history_access="full").
+                _dispatch_epoch_end(normalized_callbacks, ctx, records)
 
-                # Prepare history before the checkpoint commit marker so a
-                # completed checkpoint can never outrun idps.csv.
-                run.with_idps(idps).save(update_best=False)
+                # Prepare history (idps.csv, or the journal) before the
+                # checkpoint commit marker so a completed checkpoint can never
+                # outrun it.
+                records.save_epoch(run)
 
                 try:
                     checkpoint = self._save_checkpoint(
-                        idp=idps[-1],
+                        idp=records.last,
                         run_id=run.id,
                         idx_epoch=local_epoch,
                         n_epochs=params.n_epochs,
@@ -656,7 +668,7 @@ class Trainer:
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
                     if committed is None or committed.idp.epoch_idx != idx_epoch:
-                        run.with_idps(idps[:n_idps_before_epoch]).save(update_best=False)
+                        records.rollback_epoch(run)
                     raise
                 for deferred_checkpoint in ctx.deferred_checkpoint_writes:
                     deferred_checkpoint()
@@ -682,11 +694,11 @@ class Trainer:
         # mutate the net (for example, by converting modules). Refresh LAST
         # from the live model so it matches the state returned to the caller.
         # BEST remains the best state observed during training.
-        if idps:
+        if records:
             final_transforms = (*self.model._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
             self.model._topology_transforms = final_transforms
             NNCheckpoint(
-                idp=idps[-1],
+                idp=records.last,
                 model_params=self.model.params,
                 net_params=self.model.net_params,
                 net_state=self.model.net.state_dict(),
@@ -699,12 +711,12 @@ class Trainer:
                 # resumes the continuous states.
                 **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
                 rng_state=pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader),
-                completed_epoch=idps[-1].epoch_idx,
+                completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if final_transforms else None,
                 components=registry.collect(),
             )
 
-        saved = run.with_idps(idps).save()
+        saved = records.finish(run)
         _print_run_saved(run.id)
         return saved
 
@@ -790,6 +802,7 @@ class Trainer:
                 mode="weights_only",
                 source_run_id=params.resume_from_run_id,
                 source_checkpoint=source.label,
+                source_epoch=source.checkpoint.idp.epoch_idx,
                 fresh_components=registry.names,
             )
             return source.checkpoint.idp.epoch_idx + 1, None, status, None
@@ -867,6 +880,7 @@ class Trainer:
             mode="stateful",
             source_run_id=params.resume_from_run_id,
             source_checkpoint=source.label,
+            source_epoch=source.checkpoint.idp.epoch_idx,
             fresh_components=tuple(component_plan.fresh),
         )
         return start_epoch, component_plan, status, rollback

@@ -320,7 +320,7 @@ Returns ``path`` so calls can be chained.
 ##### `nnx.nn.nn_model.NNModel.train`
 
 ```python
-nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None) -> 'NNRun'
+nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None, history: 'Optional[HistoryJournal]' = None) -> 'NNRun'
 ```
 
 Train the model and return its persisted run history.
@@ -360,6 +360,13 @@ Args:
         fresh attempt (``attempt.json``: parent attempt and
         checkpoint generation on resume; final status and last
         committed checkpoint). Never part of the run id.
+    history: Optional :class:`~nnx.history.HistoryJournal`
+        (FEAT-036): keep only its ``retention`` most recent records
+        in memory (``ctx.idps``, the returned ``NNRun.idps``) and
+        append every record once to ``runs/<id>/history/`` instead
+        of rewriting ``idps.csv`` each epoch. ``None`` (the default)
+        keeps the eager in-memory list and CSV. Never part of the
+        run id.
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
@@ -735,7 +742,7 @@ configuration on disk.
 ##### `nnx.trainer.trainer.Trainer.train`
 
 ```python
-nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'Optional[TrainerStepFn]' = None, callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None) -> 'NNRun'
+nnx.trainer.trainer.Trainer.train(self, params: 'NNTrainerParams', trainer_step_fn: 'Optional[TrainerStepFn]' = None, callbacks: 'Optional[list[CallbackLike]]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None, history: 'Optional[HistoryJournal]' = None) -> 'NNRun'
 ```
 
 Run the multi-optimizer training loop and return the resulting NNRun.
@@ -764,6 +771,10 @@ Args:
     provenance: an optional ``nnx.provenance.ExperimentManifest``
         (FEAT-019): the declared intent, recorded with a fresh
         attempt exactly as ``NNModel.train`` records it.
+    history: an optional ``nnx.history.HistoryJournal`` (FEAT-036):
+        a bounded in-memory window and an append journal instead of
+        the eager list and ``idps.csv``, exactly as in
+        ``NNModel.train``.
     callbacks: optional list of Callback instances. The callback
         context exposes `ctx.optimizer` (primary, sorted-first), plus
         a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -1804,7 +1815,7 @@ Saved component state that cannot be restored: every problem found (missing, unk
 #### `nnx.components.ResumeStatus`
 
 ```python
-class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = ()) -> 'None'
+class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = (), source_epoch: 'Optional[int]' = None) -> 'None'
 ```
 
 How a training session started.
@@ -1818,6 +1829,9 @@ Attributes:
         ``"weights_only"`` (model weights only — the checkpoint had no
         training state, or ``resume_mode="weights_only"`` was asked).
     source_run_id / source_checkpoint: where the resume came from.
+    source_epoch: the epoch of that checkpoint when the session resumed
+        from it (FEAT-036's lineage reads it); ``None`` for a fresh run
+        and for status recorded before it existed.
     restored_components: names of the components whose state was
         restored, in registration order.
     fresh_components: registered components that kept their fresh
@@ -6519,10 +6533,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -6560,6 +6574,14 @@ No public description is currently available.
 
 ```python
 nnx.nn.params.nn_run.NNRun.with_provenance(self, value: 'Optional[ProvenanceRecord]') -> 'NNRun'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_run.NNRun.with_history`
+
+```python
+nnx.nn.params.nn_run.NNRun.with_history(self, value: 'Optional[str]') -> 'NNRun'
 ```
 
 No public description is currently available.
@@ -6611,7 +6633,7 @@ No public description is currently available.
 nnx.nn.params.nn_run.NNRun.load(id: 'str', root: 'Optional[str]' = None) -> 'NNRun'
 ```
 
-No public description is currently available.
+Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with a history journal (FEAT-036), the journal's committed tail: the last ``retention`` records, from the chunks that hold them. Either way records past the LAST checkpoint's epoch are left out.
 
 ##### `nnx.nn.params.nn_run.NNRun.all`
 
@@ -7051,6 +7073,104 @@ nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint.from_state(state: '
 ```
 
 No public description is currently available.
+
+
+### 3.1. Bounded history journal (`nnx.history`)
+
+#### `nnx.history.HistoryJournal`
+
+```python
+class nnx.history.HistoryJournal(retention: 'int' = 1000, chunk_size: 'Optional[int]' = None) -> 'None'
+```
+
+Opt-in bounded history for one training run.
+
+**Details**
+
+```text
+Args:
+    retention: how many of the most recent records stay in memory (the
+        ``ctx.idps`` window, ``NNRun.idps`` of the returned and of a
+        loaded run).
+    chunk_size: records per journal chunk file, at most ``retention``
+        (so the records waiting for their chunk are always inside the
+        window). ``None`` (the default) means ``min(250, retention)``;
+        :attr:`chunk` is the resolved size.
+```
+
+##### `nnx.history.HistoryJournal.chunk`
+
+```python
+property nnx.history.HistoryJournal.chunk
+```
+
+Records per chunk file: ``chunk_size``, or ``min(250, retention)``.
+
+
+#### `nnx.history.iter_history`
+
+```python
+nnx.history.iter_history(run_id: 'str', root: 'Optional[str]' = None, *, lineage: 'bool' = False) -> 'Iterator[NNIterationDataPoint]'
+```
+
+Stream a run's committed history in order: a journal chunk by chunk (each checked against its SHA-256), a legacy ``idps.csv`` whole (floats parsed round-trip, so its export reproduces the file). Records past the LAST checkpoint's epoch are never yielded.
+
+**Details**
+
+```text
+With ``lineage=True`` a resumed run is preceded by the committed records
+of the run it resumed from, up to and including the epoch it resumed
+from (recorded in its resume status; for runs recorded before that, the
+epoch of that checkpoint now) and never past the run's own first record,
+recursively: each epoch once, never the parent's later epochs. When
+that epoch cannot be known (the checkpoint, or the parent's LAST, is
+unreadable), the parent's records before the run's first record are
+used, with a ``RuntimeWarning``; when neither is known, or the parent
+run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
+Lineage follows resumes: a run that started fresh (a born-again
+generation naming its teacher's run as ``parent_run_id``, say) starts
+its own epochs, and its lineage is its own history.
+```
+
+
+#### `nnx.history.export_history_csv`
+
+```python
+nnx.history.export_history_csv(run_id: 'str', path: 'Union[str, os.PathLike[str]]', root: 'Optional[str]' = None, *, lineage: 'bool' = False) -> 'int'
+```
+
+Write a run's committed history (see :func:`iter_history`) to ``path`` in the legacy ``idps.csv`` layout — the same columns, order and index ``NNRun.save`` writes — atomically. Returns the number of records. The export holds the records in memory while it builds the table; stream :func:`iter_history` for histories that do not fit.
+
+
+#### `nnx.history.migrate_history`
+
+```python
+nnx.history.migrate_history(run_id: 'str', root: 'Optional[str]' = None, *, spec: 'Optional[HistoryJournal]' = None, discard_uncommitted: 'bool' = False) -> 'None'
+```
+
+Move a legacy run's ``idps.csv`` into a history journal, explicitly.
+
+**Details**
+
+```text
+The committed records are written as a journal (with per-epoch summary
+rows), published and read back, and only then is ``idps.csv`` removed;
+``run.yaml`` — and so the run id — is untouched. A leftover journal from
+an interrupted migration (never published) is replaced. Refused: a run
+that already keeps a journal, a run that is being trained (its lease is
+held), and — unless ``discard_uncommitted=True`` — a CSV holding records
+past the LAST checkpoint's epoch, which readers hide but a migration
+would delete.
+```
+
+
+#### `nnx.history.HistoryCorruptionError`
+
+```python
+class nnx.history.HistoryCorruptionError
+```
+
+A history journal whose committed files do not match its manifest: a chunk whose bytes changed, a broken index chain, a missing file.
 
 
 ## 4. Networks
@@ -8556,10 +8676,19 @@ No public description is currently available.
 #### `nnx.nn.callbacks.LRMonitor`
 
 ```python
-class nnx.nn.callbacks.LRMonitor()
+class nnx.nn.callbacks.LRMonitor(bounded: 'bool' = True)
 ```
 
 Logs the current LR each epoch. History exposed at `.history`.
+
+**Details**
+
+```text
+In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+bounded too: it keeps the LRs of the last ``retention`` epochs (the
+journal's bound, applied per epoch). ``bounded=False`` keeps every
+epoch's LR (one float each) in any run.
+```
 
 ##### `nnx.nn.callbacks.LRMonitor.on_epoch_end`
 
