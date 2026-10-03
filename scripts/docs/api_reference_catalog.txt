@@ -316,7 +316,61 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
-### 2.18. Execution precision (`nnx.precision`)
+### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+@api nnx.streaming.PredictionStream
+
+@api nnx.streaming.PredictionBatch
+
+@api nnx.streaming.concatenate_predictions
+
+@api nnx.streaming.StreamingMetrics
+
+@api nnx.streaming.MetricSnapshot
+
+@api nnx.streaming.streaming_eval_step
+
+@api nnx.streaming.StreamClosedError
+
+@api nnx.streaming.MetricMergeError
+
+### 2.19. Run bundles (`nnx.bundles`)
+
+@api nnx.bundles.export_bundle
+
+@api nnx.bundles.inspect_bundle
+
+@api nnx.bundles.validate_bundle
+
+@api nnx.bundles.reconstruct_bundle
+
+@api nnx.bundles.BundleInfo
+
+@api nnx.bundles.ReconstructedBundle
+
+@api nnx.bundles.BundleError
+
+@api nnx.bundles.BundleIntegrityError
+
+@api nnx.bundles.BundleCapabilityError
+
+@api nnx.bundles.BundleReconstructionError
+
+### 2.20. Replayable transformation recipes (`nnx.transforms`)
+
+@api nnx.transforms.TransformRecipe
+
+@api nnx.transforms.TransformOp
+
+@api nnx.transforms.lora
+
+@api nnx.transforms.low_rank
+
+@api nnx.transforms.check_optimizer
+
+@api nnx.transforms.RecipeError
+
+### 2.21. Execution precision (`nnx.precision`)
 
 @api nnx.precision.PrecisionPolicy
 
@@ -369,6 +423,18 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint
 
 @api nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
+
+### 3.1. Bounded history journal (`nnx.history`)
+
+@api nnx.history.HistoryJournal
+
+@api nnx.history.iter_history
+
+@api nnx.history.export_history_csv
+
+@api nnx.history.migrate_history
+
+@api nnx.history.HistoryCorruptionError
 
 ## 4. Networks
 

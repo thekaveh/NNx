@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -45,8 +45,16 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from .._metrics import _resolve_scheduler_metric
+from .._scheduler_clock import (
+    NO_UPDATE_LISTENER,
+    SchedulerClock,
+    component_name,
+    planned_updates,
+    uses_update_clock,
+)
 from .._update_engine import check_scaler_ownership
 from ..components import ComponentRegistry, ResumeStatus
+from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
@@ -60,10 +68,10 @@ from ..nn.nn_model import (
     _check_resume_horizon,
     _check_resume_precision,
     _check_scaler_hook,
-    _collect_checkpoint_transforms,
     _component_type,
     _dispatch_update,
     _enumerate_with_last,
+    _final_transforms,
     _load_resume_source,
     _loader_num_workers,
     _monitored_plateau,
@@ -78,7 +86,7 @@ from ..nn.nn_model import (
     _step_monitored_plateau,
     _with_attempt,
 )
-from ..nn.params.nn_checkpoint import NNCheckpoint, _snapshot_state_dict
+from ..nn.params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
@@ -93,6 +101,7 @@ from ..precision import (
 )
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
+from ..transforms import _recipe_transforms
 from ..utils import Utils
 from .params import NNTrainerParams
 
@@ -118,6 +127,11 @@ class TrainerStepContext:
     extra_metrics: Optional[Mapping[str, Callable]]
     batch_idx: int
     epoch_idx: int
+    # FEAT-014: call ``report_update(name)`` once after each update the step
+    # commits on optimizer ``name``; that optimizer's optimizer_update-clock
+    # scheduler steps on it (each optimizer keeps its own count). NNx never
+    # infers updates around a step function.
+    report_update: Callable[[str], None] = NO_UPDATE_LISTENER
 
 
 TrainerStepFn = Callable[[TrainerStepContext], NNEvaluationDataPoint]
@@ -223,7 +237,7 @@ def _representative_train_params(params: NNTrainerParams) -> NNTrainParams:
     )
 
 
-def _build_scheduler(opt, sched_params, n_epochs):
+def _build_scheduler(opt, sched_params, n_epochs, n_updates=None):
     """Same dispatch logic as NNModel._build_scheduler — duplicated rather
     than promoted to a shared helper because it's a small body and lifting
     it would expand the public surface."""
@@ -238,7 +252,7 @@ def _build_scheduler(opt, sched_params, n_epochs):
             patience=sched_params.patience,
             threshold=sched_params.threshold,
         )
-    return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs)
+    return kind(optimizer=opt, params=sched_params, n_epochs=n_epochs, n_updates=n_updates)
 
 
 def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int, record: Optional[MonitorRecord] = None) -> None:
@@ -292,6 +306,7 @@ class Trainer:
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         provenance: Optional[ExperimentManifest] = None,
+        history: Optional[HistoryJournal] = None,
     ) -> NNRun:
         """Run the multi-optimizer training loop and return the resulting NNRun.
 
@@ -316,6 +331,10 @@ class Trainer:
             provenance: an optional ``nnx.provenance.ExperimentManifest``
                 (FEAT-019): the declared intent, recorded with a fresh
                 attempt exactly as ``NNModel.train`` records it.
+            history: an optional ``nnx.history.HistoryJournal`` (FEAT-036):
+                a bounded in-memory window and an append journal instead of
+                the eager list and ``idps.csv``, exactly as in
+                ``NNModel.train``.
             callbacks: optional list of Callback instances. The callback
                 context exposes `ctx.optimizer` (primary, sorted-first), plus
                 a `ctx.optimizers` dict and `ctx.trainer` reference for
@@ -349,6 +368,11 @@ class Trainer:
         if objective is not None and not callable(objective):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         _check_provenance(provenance)
+        _check_history(history, callbacks)
+        if _recipe_transforms(self.model._topology_transforms):
+            # FEAT-016: a recipe model's topology must be its base plus its
+            # recorded recipe, or its checkpoints could not be rebuilt.
+            self.model._assert_reconstructible_topology()
         if params is None:
             raise ValueError("trainer params must not be None")
         if params.train_loader is None:
@@ -439,6 +463,7 @@ class Trainer:
             # (the GAN composite idiom) still produce a saveable run.
             net=self.model.net_params,
             salt=salt,
+            transforms=_recipe_transforms(self.model._topology_transforms),  # FEAT-016
         )
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
@@ -454,6 +479,7 @@ class Trainer:
                     components=components,
                     objective=objective,
                     objective_window=objective_window,
+                    history=history,
                     precision=precision,
                     scaler=scaler,
                 ),
@@ -470,6 +496,7 @@ class Trainer:
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         objective_window: int = 1,
+        history: Optional[HistoryJournal] = None,
         precision: ResolvedPrecision,
         scaler: Optional[Any],
     ) -> NNRun:
@@ -480,17 +507,37 @@ class Trainer:
 
         monitor = params.monitor.resolve(params.metrics) if params.monitor is not None else None
         tracker = MonitorTracker(monitor, warn_missing=True) if monitor is not None else None
+        # FEAT-014: an optimizer_update-clock scheduler's default horizon is
+        # the planned updates only for an objective (NNx owns its windows);
+        # a step function's updates are its own, so budgets are explicit.
+        planned = planned_updates(train_loader, objective_window, params.n_epochs) if objective is not None else None
         schedulers = {
             name: _monitored_plateau(
                 _build_scheduler(
                     opt=optimizers[name],
                     sched_params=params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS),
                     n_epochs=params.n_epochs,
+                    n_updates=planned,  # used by an optimizer_update-clock schedule only
                 ),
                 optimizers[name],
                 monitor,
             )
             for name in optimizers
+        }
+        # One clock per optimizer_update-clock scheduler, each counting its
+        # own optimizer's committed updates; auto_step_schedulers=False
+        # detaches them (counted, never stepped), restored state included.
+        clocks = {
+            name: SchedulerClock.for_schedule(
+                name,
+                schedulers[name],
+                params.schedulers[name],
+                planned=planned,
+                attached=params.auto_step_schedulers,
+                component_name=component_name(name),
+            )
+            for name in optimizers
+            if uses_update_clock(params.schedulers.get(name))
         }
 
         from ..optimizers import optimizer_factory_state
@@ -507,6 +554,8 @@ class Trainer:
         )
         if tracker is not None:
             registry.register(tracker)  # its best continues across a stateful resume
+        for clock in clocks.values():
+            registry.register(clock)
         # FEAT-004: an objective's updates belong to the shared engine, which
         # steps every named optimizer once per committed update; its counters
         # are component state, so they continue across a stateful resume.
@@ -537,9 +586,25 @@ class Trainer:
         ctx.trainer = self
         if engine is not None:
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            # After the callbacks, which see the learning rate the update was
+            # taken with; each optimizer's clock then steps its schedule.
+            engine.listeners.append(
+                lambda event: clocks[event.optimizer].committed() if event.optimizer in clocks else None
+            )
             ctx.update_count = engine.commits
 
-        idps: list[NNIterationDataPoint] = []
+        def report_update(name: str) -> None:
+            if name not in optimizers:
+                raise ValueError(
+                    f"report_update({name!r}): no optimizer of that name; this Trainer has {sorted(optimizers)}"
+                )
+            clock = clocks.get(name)
+            if clock is not None:
+                clock.committed()
+
+        records = _training_history(run, history)  # FEAT-036: eager list or bounded journal
+        ctx.history_retention = history.retention if history is not None else None
+        ctx.history_records = records
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
@@ -587,7 +652,10 @@ class Trainer:
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
-                n_idps_before_epoch = len(idps)
+                records.begin_epoch()
+                for clock in clocks.values():
+                    clock.trace.clear()
+                updates_before_epoch = {name: clock.count for name, clock in clocks.items()}
                 # FEAT-003 whole-epoch summary of the step's records (no named
                 # training metrics: Trainer steps are custom).
                 epoch_summary = _TrainEpochSummary((), None, None) if summarize else None
@@ -600,6 +668,13 @@ class Trainer:
                     else ((idx, batch, False) for idx, batch in enumerate(params.train_loader))
                 )
                 for idx_batch, batch, is_last_batch in batches:
+                    # The rate this batch trains with, for an update clock
+                    # NNx steps (read before the step, which may step it).
+                    lr_used = (
+                        float(optimizers[primary].param_groups[0]["lr"])
+                        if primary in clocks and clocks[primary].attached
+                        else None
+                    )
                     if engine is not None:
                         assert objective is not None
                         train_edp = _objective_microbatch(
@@ -623,27 +698,30 @@ class Trainer:
                             extra_metrics=params.extra_metrics,
                             batch_idx=idx_batch,
                             epoch_idx=idx_epoch,
+                            report_update=report_update,
                         )
                         train_edp = trainer_step_fn(step_ctx)
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.model.net, batch))
 
-                    idps.append(
+                    records.append(
                         NNIterationDataPoint(
                             iter_idx=idx_iter,
                             epoch_idx=idx_epoch,
                             batch_idx=idx_batch,
                             train_edp=train_edp,
-                            lr=optimizers[primary].param_groups[0]["lr"],
+                            # The rate this batch trained with when the primary
+                            # schedule steps on updates inside the step (FEAT-014).
+                            lr=lr_used if lr_used is not None else optimizers[primary].param_groups[0]["lr"],
                             update_count=engine.commits if engine is not None else None,
                         )
                     )
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                if len(idps) == n_idps_before_epoch:
+                if records.epoch_is_empty():
                     # Same guard as NNModel.train: zero batches would
-                    # crash on idps[-1] (first epoch) or corrupt the
+                    # crash on records.last (first epoch) or corrupt the
                     # previous epoch's logged metrics (later epochs).
                     raise ValueError(
                         f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
@@ -662,7 +740,7 @@ class Trainer:
                     )
                 else:
                     val_edp = None
-                idps[-1] = idps[-1].with_val_edp(val_edp)
+                records.replace_last(records.last.with_val_edp(val_edp))
                 record: Optional[MonitorRecord] = None
                 if epoch_summary is not None:
                     train_summary = epoch_summary.result()
@@ -670,7 +748,7 @@ class Trainer:
                         assert monitor is not None
                         value = monitor.value(train=train_summary or train_edp, val=val_edp)
                         record = tracker.observe(value, epoch=idx_epoch)
-                    idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
+                    records.replace_last(records.last.with_epoch_summary(train_summary, record))
 
                 # Each scheduler steps on its own optimizer's signal.
                 # We feed the SAME (val_edp, train_edp) pair to all of
@@ -680,21 +758,41 @@ class Trainer:
                 # clear benefit. Custom hooks can own scheduler timing by
                 # setting auto_step_schedulers=False.
                 if params.auto_step_schedulers:
-                    _step_schedulers(schedulers.values(), val_edp, train_edp, epoch_idx=idx_epoch, record=record)
+                    # Optimizer_update-clock schedulers step on committed
+                    # updates instead (FEAT-014).
+                    epoch_scheds = [sched for name, sched in schedulers.items() if name not in clocks]
+                    _step_schedulers(epoch_scheds, val_edp, train_edp, epoch_idx=idx_epoch, record=record)
+                silent = [
+                    name
+                    for name, clock in clocks.items()
+                    if clock.attached and clock.count == updates_before_epoch[name]
+                ]
+                if silent and engine is None:
+                    warnings.warn(
+                        f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
+                        "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
+                        "after each optimizer.step() the step function takes (no report is due for an epoch whose "
+                        "updates were all skipped)",
+                        UserWarning,
+                        stacklevel=4,
+                    )
+                primary_clock = clocks.get(primary)
+                ctx.update_lrs = list(primary_clock.trace) if primary_clock is not None else []
 
-                ctx.idp = idps[-1]
-                ctx.idps = idps
+                ctx.idp = records.last
                 ctx.deferred_checkpoint_writes.clear()
-                for cb in normalized_callbacks:
-                    cb.on_epoch_end(ctx)
+                # ctx.idps: the running list, or the journal's window (the whole
+                # history, read back, for a callback declaring history_access="full").
+                _dispatch_epoch_end(normalized_callbacks, ctx, records)
 
-                # Prepare history before the checkpoint commit marker so a
-                # completed checkpoint can never outrun idps.csv.
-                run.with_idps(idps).save(update_best=False)
+                # Prepare history (idps.csv, or the journal) before the
+                # checkpoint commit marker so a completed checkpoint can never
+                # outrun it.
+                records.save_epoch(run)
 
                 try:
                     checkpoint = self._save_checkpoint(
-                        idp=idps[-1],
+                        idp=records.last,
                         run_id=run.id,
                         idx_epoch=local_epoch,
                         n_epochs=params.n_epochs,
@@ -707,13 +805,14 @@ class Trainer:
                         components=registry.collect(),
                         optimizer_factories=optimizer_factories,
                         is_best=record.improved if record is not None else None,
+                        trained_recipe=run.transforms,
                         scaler=scaler,
                         precision=precision.record(),
                     )
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
                     if committed is None or committed.idp.epoch_idx != idx_epoch:
-                        run.with_idps(idps[:n_idps_before_epoch]).save(update_best=False)
+                        records.rollback_epoch(run)
                     raise
                 for deferred_checkpoint in ctx.deferred_checkpoint_writes:
                     deferred_checkpoint()
@@ -739,11 +838,11 @@ class Trainer:
         # mutate the net (for example, by converting modules). Refresh LAST
         # from the live model so it matches the state returned to the caller.
         # BEST remains the best state observed during training.
-        if idps:
-            final_transforms = (*self.model._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
+        if records:
+            final_transforms, keeps_pre_transform = _final_transforms(self.model, normalized_callbacks, run.transforms)
             self.model._topology_transforms = final_transforms
             NNCheckpoint(
-                idp=idps[-1],
+                idp=records.last,
                 model_params=self.model.params,
                 net_params=self.model.net_params,
                 net_state=self.model.net.state_dict(),
@@ -755,15 +854,15 @@ class Trainer:
                 # named optimizer / scheduler and component, so a completed run
                 # resumes the continuous states.
                 **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
-                rng_state=pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader),
-                completed_epoch=idps[-1].epoch_idx,
-                resume_net_state=pre_transform_net_state if final_transforms else None,
+                rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
+                completed_epoch=records.last.epoch_idx,
+                resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 components=registry.collect(),
                 scaler_state=scaler.state_dict() if scaler is not None else None,
                 precision=precision.record(),
             )
 
-        saved = run.with_idps(idps).save()
+        saved = records.finish(run)
         _print_run_saved(run.id)
         return saved
 
@@ -782,6 +881,7 @@ class Trainer:
         components: Optional[dict[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
+        trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
         scaler: Optional[Any] = None,
         precision: Optional[dict[str, Any]] = None,
     ) -> NNCheckpoint:
@@ -804,6 +904,7 @@ class Trainer:
             schedulers=schedulers,
             optimizer_factories=optimizer_factories,
             is_best=is_best,
+            trained_recipe=trained_recipe,
             scaler=scaler,
             precision=precision,
         )
@@ -839,7 +940,11 @@ class Trainer:
             for name, sched_params in scheduler_params.items():
                 _check_resume_horizon(sched_params, n_epochs=params.n_epochs, owner=f" for {name!r}")
         source = _load_resume_source(
-            params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=True
+            params.resume_from_run_id,
+            params.resume_from_checkpoint,
+            params.resume_mode,
+            trainer=True,
+            live_transforms=self.model._topology_transforms,
         )
         net = self.model.net
         training_state = source.training_state
@@ -856,6 +961,7 @@ class Trainer:
                 mode="weights_only",
                 source_run_id=params.resume_from_run_id,
                 source_checkpoint=source.label,
+                source_epoch=source.checkpoint.idp.epoch_idx,
                 fresh_components=registry.names,
             )
             return source.checkpoint.idp.epoch_idx + 1, None, status, None
@@ -939,6 +1045,7 @@ class Trainer:
             mode="stateful",
             source_run_id=params.resume_from_run_id,
             source_checkpoint=source.label,
+            source_epoch=source.checkpoint.idp.epoch_idx,
             fresh_components=tuple(component_plan.fresh),
         )
         return start_epoch, component_plan, status, rollback

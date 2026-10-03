@@ -346,6 +346,106 @@ def test_hub_rejects_runtime_modules_before_writing_files(tmp_path):
     assert (existing / "config.json").read_text() == "{}"  # an existing artifact is untouched
 
 
+def test_hub_save_and_load_replays_a_transformation_recipe(tmp_path):
+    """FEAT-016: a LoRA-then-low-rank recipe rebuilds from config.json —
+    same ordered keys, trainability and predictions, no SVD rerun."""
+    from unittest import mock
+
+    from nnx.transforms import TransformRecipe, lora, low_rank
+
+    model = _tiny_model()
+    linears = [name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear]
+    recipe = TransformRecipe(
+        [lora(linears[0], r=2, alpha=4.0), low_rank(linears[1], rank=2)], materialization="in_place"
+    )
+    recipe.materialize(model)
+    with torch.no_grad():
+        model.net.get_submodule(linears[0]).lora_B.normal_(0, 0.1, generator=torch.Generator().manual_seed(1))
+    model.save_pretrained(str(tmp_path))
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert [item["name"] for item in config["transforms"]] == ["lora", "low_rank"]
+    with mock.patch("torch.linalg.svd", side_effect=AssertionError("SVD rerun during reload")):
+        rebuilt = NNModel.from_pretrained(str(tmp_path))
+    assert rebuilt._topology_transforms == model._topology_transforms
+    saved, loaded = model.net.state_dict(), rebuilt.net.state_dict()
+    assert list(saved) == list(loaded)
+    assert [(n, p.requires_grad) for n, p in model.net.named_parameters()] == [
+        (n, p.requires_grad) for n, p in rebuilt.net.named_parameters()
+    ]
+    model.net.eval(), rebuilt.net.eval()
+    x = torch.randn(4, model.net_params.input_dim)
+    with torch.no_grad():
+        torch.testing.assert_close(rebuilt.net(x), model.net(x), rtol=1e-5, atol=1e-6)
+
+
+def test_hub_load_refuses_an_unknown_recipe_operation_before_loading_tensors(tmp_path):
+    """FEAT-016: local ``from_pretrained`` rejects an unknown recorded
+    operation or version, naming its index, before any tensor is read; a
+    transformed artifact whose config records no recipe says so."""
+    from unittest import mock
+
+    from nnx.transforms import TransformRecipe, lora, low_rank
+
+    model = _tiny_model()
+    linears = [name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear]
+    TransformRecipe([lora(linears[0], r=2, alpha=4.0), low_rank(linears[1], rank=2)]).materialize(model)
+    model.save_pretrained(str(tmp_path))
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    cases = (
+        (
+            {**config["transforms"][1], "version": 7},
+            r"topology transform 1 \('low_rank' version 7\).*unknown version 7",
+        ),
+        ({"name": "prune", "version": 1, "options": {}}, r"topology transform 1 \('prune' version 1\).*unsupported"),
+    )
+    for bad, pattern in cases:
+        config_path.write_text(json.dumps({**config, "transforms": [config["transforms"][0], bad]}))
+        with mock.patch("safetensors.torch.load_file", side_effect=AssertionError("tensors loaded")):
+            with pytest.raises(ValueError, match=pattern):
+                NNModel.from_pretrained(str(tmp_path))
+    config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
+    with pytest.raises(ValueError, match="record no transformation recipe"):
+        NNModel.from_pretrained(str(tmp_path))
+
+
+def test_a_non_strict_hub_load_of_unrecorded_recipe_weights_still_loads_partially(tmp_path):
+    """FEAT-016: ``strict=False`` keeps its documented partial load — the
+    no-recipe refusal applies to strict loads only."""
+    from nnx.transforms import TransformRecipe, lora
+
+    model = _tiny_model()
+    first = next(name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear)
+    TransformRecipe([lora(first, r=2, alpha=4.0)]).materialize(model)
+    model.save_pretrained(str(tmp_path))
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
+    loaded = NNModel.from_pretrained(str(tmp_path), strict=False)
+    assert loaded._topology_transforms == ()
+    for name, tensor in loaded.net.state_dict().items():
+        if name in model.net.state_dict():
+            assert torch.equal(tensor, model.net.state_dict()[name])
+
+
+def test_save_pretrained_refuses_a_recipe_model_its_recipe_cannot_rebuild(tmp_path):
+    """FEAT-016: unrecorded surgery after a recipe is refused before any
+    file is written, instead of failing when the artifact is loaded."""
+    from nnx.surgery import low_rank_factorize
+    from nnx.transforms import TransformRecipe, lora
+
+    model = _tiny_model()
+    linears = [name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear]
+    TransformRecipe([lora(linears[0], r=2, alpha=4.0)]).materialize(model)
+    parent, _, attr = linears[1].rpartition(".")
+    owner = model.net.get_submodule(parent) if parent else model.net
+    setattr(owner, attr, low_rank_factorize(model.net.get_submodule(linears[1]), rank=2))  # unrecorded
+    target = tmp_path / "artifact"
+    with pytest.raises(ValueError, match="save_pretrained refused before writing anything"):
+        model.save_pretrained(str(target))
+    assert not target.exists()
+
+
 def test_hub_loading_re_resolves_the_precision_policy_on_the_destination_device(tmp_path):
     """FEAT-028: the saved policy is re-resolved on ``map_location`` — never
     taken from saved metadata — and ``precision=`` replaces it."""

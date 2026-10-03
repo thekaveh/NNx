@@ -9,6 +9,9 @@ NNx ships first-class interop with the HuggingFace ecosystem:
    `push_to_hub` / `from_pretrained` for distributing models via the
    Hub.
 
+A third, Hub-independent format — the **run bundle** (`nnx.bundles`, §3) —
+carries a run checkpoint's training state and calibrators as data too.
+
 Both paths require the `hub` extra:
 
 ```bash
@@ -130,7 +133,13 @@ This writes three files into `./my-model/`:
 - `config.json` — `{"net_params": <state>, "params": <state>}`, using
   the same public `state()` form NNRun hashes for `run.id` grouping. A
   model built from a registered factory (§2.6) has no `net_params`; its
-  `params.net` is the `ModelSpec` descriptor.
+  `params.net` is the `ModelSpec` descriptor. A model whose topology was
+  changed by a recorded recipe (`nnx.transforms`, see
+  [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
+  also writes `"transforms"`: the ordered operations, each with its id,
+  version, targets and config. Such a model is saved only while its
+  topology is exactly its base plus that recipe: unrecorded surgery is
+  refused before anything is written, rather than failing at load.
 - `README.md` — auto-generated model card from the mixin.
 
 ### 2.3. Load from a local directory
@@ -141,8 +150,11 @@ model = NNModel.from_pretrained("./my-model")
 ```
 
 `from_pretrained` reads `config.json`, rebuilds `NNParams` and
-`NNModelParams` via their public `from_state` constructors, then loads
-the safetensors weights into the freshly-built `self.net`. Bit-exact
+`NNModelParams` via their public `from_state` constructors, replays any
+recorded `"transforms"` on the fresh base (LoRA wrappers rebuilt, low-rank
+factors allocated in their recorded shape — no SVD), then loads the
+safetensors weights into the freshly-built `self.net`. An unknown
+operation or version is refused before any tensor is loaded. Bit-exact
 round-trip on tensors; `state()` form identical on the params.
 
 ### 2.4. Publish to the Hub
@@ -184,15 +196,56 @@ no factory to rebuild it, so `save_pretrained` / `push_to_hub` reject it
 with `MissingModelFactoryError` before any directory or file is written.
 Register a factory and train from a `ModelSpec` to publish it.
 
-## 3. What this does NOT do
+## 3. Three artifact formats and their trust boundaries
+
+NNx writes three kinds of artifact. Each has one reader, and no reader opens
+another's files:
+
+| Format | Written by | Holds | Read by | Trust boundary |
+|---|---|---|---|---|
+| Pickle checkpoint `runs/<id>/checkpoints/<tag>.pt` (+ `.opt.<generation>.pt` sidecar) | `NNModel.train`, `NNCheckpoint.save` / `to_file()` | weights, params, epoch record, and the training state that resumes the run | `NNCheckpoint.from_file` / `load`, `train(resume_from_run_id=...)` | **Unpickles** (`torch.load(weights_only=False)`): only files you produced. |
+| safetensors checkpoint / Hub distribution | `to_file(format="safetensors")`, `save_pretrained` / `push_to_hub` | weights and params (no optimizer or RNG state) | `NNCheckpoint.from_file`, `NNModel.from_pretrained` | Data only; `from_pretrained` downloads from the Hub when given a repo id. |
+| Run bundle `<dir>/bundle.json` + `g-<generation>/` | `nnx.bundles.export_bundle` | weights, params, epoch record, training state (a `"resume"` bundle) or none (`"inference"`), calibrator records | `inspect_bundle`, `validate_bundle`, `reconstruct_bundle` | Data only: safetensors plus schema-validated JSON, checked against SHA-256 sums before any tensor is read; never unpickles, imports code or downloads. |
+
+- **Export reads your own run.** `export_bundle(run_id, "bundle")` opens the
+  run's pickle checkpoint — the legacy trust boundary, files NNx wrote
+  locally — and publishes it as data. From then on the bundle can travel:
+  `validate_bundle` checks every payload's size and SHA-256, the generation
+  id, and that nothing is missing, unlisted, symlinked or outside the
+  bundle, before any tensor is read.
+- **Reconstruction takes caller-supplied registries.** A registered module
+  (`ModelSpec`) is rebuilt only from the factories you pass
+  (`reconstruct_bundle(path, factories={(id, version): factory})`, or the
+  process registry by default); the bundle names none to import. A missing
+  factory or component is reported before any model is allocated.
+- **The formats stay distinguishable.** `NNCheckpoint.from_file` refuses a
+  bundle directory and a bundle's payload files; `from_pretrained` refuses a
+  bundle directory; the bundle readers refuse a pickle checkpoint, a run
+  directory and a Hub distribution (`config.json`), and never fall back to
+  unpickling or downloading.
+- **What does not fit is refused.** Module extra state that is not a tensor,
+  a custom object in optimizer or component state, a runtime-only module, a
+  recorded topology transform NNx cannot replay from data (named by index
+  and id) and an unknown bundle version fail with a message, with no pickle
+  fallback.
+
+See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
+[`examples/run_bundle.py`](../examples/run_bundle.py).
+
+## 4. What this does NOT do
 
 - **`NNRun` is not Hub-published.** The Hub layout is per-model, not
   per-training-run. If you want to publish a full training run
   (idps.csv + run.yaml + every per-phase checkpoint), upload the
   `runs/<id>/` directory directly via `huggingface_hub.upload_folder`.
+- **A raw state dict or adapter-only export does not rebuild a recipe.**
+  `export_state_dict()` and `save_lora_weights` write tensors only; the
+  recipe that produced the topology lives in checkpoints and
+  `config.json`. Materialize the recipe before loading such a file.
 - **Optimizer state is not in the Hub config.** `save_pretrained`
   writes only the network weights; resuming optimizer state from a
-  Hub-loaded model isn't supported. Use `NNCheckpoint` for warm-resume
+  Hub-loaded model isn't supported. Use `NNCheckpoint` — or a run bundle
+  (§3), which carries the training state as data — for warm-resume
   workflows.
 - **The Hub mixin doesn't rewrite `NNModel`'s constructor.** It still
   takes `(net_params, params)` keyword args at `__init__` (plus the
