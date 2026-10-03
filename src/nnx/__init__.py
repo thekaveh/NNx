@@ -26,30 +26,39 @@ except ImportError:  # pragma: no cover — Python <3.8.
 
 from . import (
     abstention,
+    bundles,
     calibration,
+    comparison,
     components,
     data_splits,
     decisions,
     embeddings,
+    history,
     interop,
+    lm_tasks,
     models,
     monitors,
     objectives,
     optimizers,
     plans,
+    precision,
     prediction,
     preprocessing,
     provenance,
     prune,
     ranking,
+    streaming,
     tasks,
+    transforms,
     viz,
 )
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
+    DiffusionObjective,
     NoiseSchedule,
     NoiseSchedulers,
+    diffusion_objective,
     diffusion_train_step_factory,
     sample,
 )
@@ -182,6 +191,7 @@ from .optimizers import (
     unregister_optimizer_factory,
 )
 from .paradigms import (
+    JEPAObjective,
     JEPAPredictor,
     JEPATrainStep,
     born_again_train,
@@ -189,6 +199,7 @@ from .paradigms import (
     cutmix_train_step_factory,
     dpo_train_step_factory,
     feature_kd_train_step_factory,
+    jepa_objective,
     jepa_train_step_factory,
     kd_train_step_factory,
     mixup_train_step_factory,
@@ -218,9 +229,11 @@ from .peft import (
     save_prompt_weights,
 )
 from .plans import ExperimentPlan, FitResult
+from .precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, precision_support
 from .prediction import PredictionResult, PredictionValidationError, ProbabilitySpec, prediction_from_logits
 from .quantize import QATLifecycleCallback, qat_train_step_factory, quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
+from .streaming import MetricSnapshot, PredictionBatch, PredictionStream, StreamingMetrics, streaming_eval_step
 from .surgery import (
     deepen,
     drop_layer,
@@ -270,6 +283,12 @@ __all__ = [
     "ComponentRestoreError",
     "StatefulComponent",
     "ResumeStatus",
+    # Execution precision (opt-in via NNModelParams(precision=...); FEAT-028)
+    "precision",
+    "PrecisionPolicy",
+    "ResolvedPrecision",
+    "PrecisionUnsupportedError",
+    "precision_support",
     # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
     "tasks",
     "TaskSpec",
@@ -368,10 +387,27 @@ __all__ = [
     "calibration",
     # Abstention policies and risk-coverage evaluation (FEAT-008)
     "abstention",
+    # Portable, data-only run bundles (FEAT-015)
+    "bundles",
+    # Bounded training history with an append journal (FEAT-036)
+    "history",
+    # Replayable model transformation recipes (FEAT-016)
+    "transforms",
+    # Multi-seed experiment summaries and paired comparisons (FEAT-032)
+    "comparison",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",
     "FitResult",
+    # Streaming prediction and mergeable metrics (FEAT-020)
+    "streaming",
+    "PredictionStream",
+    "PredictionBatch",
+    "StreamingMetrics",
+    "MetricSnapshot",
+    "streaming_eval_step",
+    # Causal language-model task with token-weighted evaluation (FEAT-034)
+    "lm_tasks",
     # Query-grouped ranking and retrieval evaluation (FEAT-035)
     "ranking",
     # Arbitrary modules and registered model factories (FEAT-006)
@@ -404,6 +440,8 @@ __all__ = [
     "NoiseSchedule",
     "NoiseSchedulers",
     "diffusion_train_step_factory",
+    "diffusion_objective",
+    "DiffusionObjective",
     "sample",
     # Training paradigms
     "paradigms",
@@ -416,6 +454,8 @@ __all__ = [
     "cutmix_train_step_factory",
     # I-JEPA (joint embedding predictive architecture)
     "jepa_train_step_factory",
+    "jepa_objective",
+    "JEPAObjective",
     "build_target_encoder",
     "update_ema",
     "random_block_mask",

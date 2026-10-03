@@ -344,7 +344,8 @@ class ExperimentManifest:
     ) -> ExperimentManifest:
         """A manifest from an existing model's declarations: its task and
         label order (FEAT-002), its model descriptor and built-in net params
-        (FEAT-006), and — when given — the training configuration
+        (FEAT-006), its recorded transformation recipe when it has one
+        (FEAT-016), and — when given — the training configuration
         (``NNTrainParams.state()`` without ``n_epochs`` and the resume
         lineage, which describe an attempt; loaders are never read) and a
         fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as
@@ -358,6 +359,12 @@ class ExperimentManifest:
         net_params = getattr(model, "net_params", None)
         if net_params is not None:
             model_state["net_params"] = net_params.state()
+        from .transforms import _recipe_transforms
+
+        recipe = _recipe_transforms(getattr(model, "_topology_transforms", ()))
+        if recipe:
+            # FEAT-016: the recorded transformation recipe is part of the model.
+            model_state["transforms"] = [transform.state() for transform in recipe]
         merged = dict(config or {})
         if train is not None:
             train_state = dict(train.state() if hasattr(train, "state") else train)
@@ -494,11 +501,15 @@ def _checkpoint_summary(run_id: str, checkpoint: Any, root: Optional[str]) -> Op
     """Tag, epoch and generation of a run's checkpoint, or ``None``."""
     import torch
 
-    from .nn.nn_model import _resume_checkpoint_type
+    from .nn.nn_model import _IN_MEMORY_RESUME, _resume_checkpoint_type
     from .nn.params.nn_checkpoint import NNCheckpoint, _checkpoint_path
 
     try:
         tag = _resume_checkpoint_type(checkpoint)
+        in_memory = _IN_MEMORY_RESUME.get()
+        if in_memory is not None and in_memory[:2] == (run_id, str(tag)):  # a run bundle's: nothing on disk
+            source = in_memory[2]
+            return {"checkpoint": str(tag), "epoch": int(source.idp.epoch_idx), "generation": source.training_state_id}
         path = _checkpoint_path(run_id, tag, root=root)
         if not os.path.isfile(path):
             return None
@@ -535,8 +546,20 @@ class _AttemptRecorder:
         self.root = root
         parent = None
         if parent_run_id is not None:
+            from .nn.nn_model import _IN_MEMORY_RESUME, _resume_checkpoint_type
+
+            in_memory = _IN_MEMORY_RESUME.get()
             try:
-                prior = load_provenance(parent_run_id, root)
+                bundled = in_memory is not None and in_memory[:2] == (
+                    parent_run_id,
+                    str(_resume_checkpoint_type(parent_checkpoint)),
+                )
+            except ValueError:
+                bundled = False
+            try:
+                # A run bundle's parent lives in the bundle: a local run that shares
+                # its (content-derived) id is not its attempt.
+                prior = None if bundled else load_provenance(parent_run_id, root)
             except (OSError, ValueError, KeyError, TypeError) as error:  # linkage is optional; the fit is not
                 warnings.warn(
                     f"parent run {parent_run_id}'s provenance is unreadable ({error}); its attempt is not linked",

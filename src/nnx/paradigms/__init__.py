@@ -22,6 +22,9 @@ Public surface — re-exported from the top-level ``nnx`` package:
     + :func:`update_ema` + :func:`random_block_mask` +
     :class:`JEPAPredictor` — I-JEPA self-supervised learning in
     latent space.
+  - :func:`jepa_objective` / :class:`JEPAObjective` — I-JEPA as an
+    objective (FEAT-040): the shared update engine owns the update and the
+    EMA target advances once per committed update.
   - :func:`dpo_train_step_factory` — Direct Preference Optimization
     (Rafailov et al., 2023): chosen-vs-rejected log-ratio objective
     against a frozen reference policy.
@@ -42,6 +45,7 @@ from .jepa import (
     random_block_mask,
     update_ema,
 )
+from .jepa_objective import JEPAObjective, jepa_objective
 from .moe import moe_train_step_factory
 
 __all__ = [
@@ -58,6 +62,8 @@ __all__ = [
     "update_ema",
     "random_block_mask",
     "JEPAPredictor",
+    "JEPAObjective",
+    "jepa_objective",
     "JEPATrainStep",
     "dpo_train_step_factory",
 ]

@@ -4,7 +4,9 @@
 typed question and get labelled probabilities back, instead of reading
 positional logits. A question is one of three primitives; a **provider**
 declares what it can answer and returns validated results; the fixed-head
-adapter turns a trained NNx classifier into such a provider. Nothing here
+adapter turns a trained NNx classifier into such a provider, and the NLI
+adapter scores candidates supplied at inference with a caller-supplied NLI
+model. Nothing here
 trains, exports or executes actions, and importing it starts no provider or
 model backend and needs no hosted-SDK extra.
 
@@ -124,8 +126,294 @@ answer:
   training mode, on success and on failure.
 - **Failures.** An exception from the model itself becomes `ProviderFailure`,
   with the original error as `__cause__`.
+- **Checking without calling.** `check(question, inputs)` runs every check
+  `decide` makes before the model call (question, modality, batch size and
+  label space) and calls nothing; a decision job (§6) uses it to refuse a
+  request up front.
 
-## 5. Errors
+## 5. The NLI baseline adapter
+
+A fixed head answers only the labels it was trained on. `NLIProvider`
+(FEAT-011) is a **local label-conditioned baseline**: it scores a text (the
+premise) against candidate descriptions that arrive with each request, each
+rendered into a hypothesis, with a natural-language-inference (NLI)
+cross-encoder **the caller supplies** — so no candidate needs to exist when
+the provider is built, and no output head is resized.
+
+```python
+from nnx.decisions import Boolean, Choice, NLIProvider
+
+provider = NLIProvider(
+    model, tokenizer,                    # loaded by the caller (a local path, a pinned revision)
+    entailment_id="entailment",          # or the class id; names resolve through model.config.label2id
+    contradiction_id="contradiction",
+    hypothesis_template="This text is about {}.",
+    revision="<the revision you loaded>",
+)
+provider.decide(Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"))), texts)
+provider.decide(Boolean("This review is positive."), texts)
+```
+
+- **Scoring, explicit.** A `Choice` scores every (text, candidate) pair and
+  softmaxes the **entailment logits across the candidates**
+  (`choice_scoring="entailment_softmax"`): logits `log(3)` and `0` give
+  `(0.75, 0.25)`, keyed by the request's option ids in its order. Only the
+  descriptions are scored — the Choice's prompt is not part of any
+  hypothesis, so write it into `hypothesis_template` when it matters. A
+  `Boolean` scores one pair per text — its prompt rendered by
+  `boolean_template` — and softmaxes that pair's **contradiction and
+  entailment** logits alone (`boolean_scoring="entailment_vs_contradiction"`):
+  `0` and `log(4)` give `p_true = 0.8`; texts are never normalized together.
+  `Score` is unsupported and refused before any model call.
+- **Validated settings.** The entailment and contradiction ids — given or
+  resolved from names — must differ; when the model's config declares a
+  class count (`num_labels`), they must fit it and the logits must have
+  exactly that many classes. A label name must be one its config knows,
+  and an integer id that contradicts the config's own `entailment` /
+  `contradiction` names is refused. Templates hold exactly one bare `{}`
+  (no conversion or format spec).
+  Unknown scoring or truncation policies are refused at construction.
+- **The provider contract.** NNx imports no NLI library and downloads
+  nothing; importing `nnx.decisions` or constructing the provider calls no
+  `from_pretrained`. The tokenizer is called HuggingFace-style
+  (`tokenizer(premises, hypotheses, truncation=..., max_length=...,
+  padding=True, return_tensors="pt")`, plus unpadded measurement calls with
+  `truncation=False, padding=False` whose `attention_mask` sums or
+  `input_ids` row lengths give each pair's token count) and the model as
+  `model(**encoded)`,
+  returning logits or an object with `.logits`. Pairs go in chunks of
+  `pair_batch_size` (the last may be shorter) to the model's device; the
+  model runs in eval mode under no-grad and every submodule's training flag
+  is restored on success and failure. A model error becomes
+  `ProviderFailure`.
+- **Truncation, reported.** Pairs are measured untruncated first.
+  `truncation="only_first"` (default) cuts the premise to `max_length` and
+  marks which pairs were cut in `raw["truncated"]`; a hypothesis that leaves
+  no room for the premise (measured with an empty premise) is refused
+  (`InvalidDecisionRequest`) before any model call. `truncation="error"` refuses an over-long request
+  before any model call.
+- **Records, never calibrated.** Each result's `raw` holds the pair logits,
+  the truncation report and `provider.record()` — the templates, label ids,
+  scoring methods, truncation policy and model `revision` — with
+  `"calibrated": False`. These are zero-shot scores from a model trained for
+  another task: they are not calibrated probabilities, and how well they
+  transfer to a decision task stays empirical — measure it on labelled
+  records, as [`examples/decision_nli.py`](../examples/decision_nli.py) does
+  (accuracy, macro-F1, categorical NLL and Brier, with the split, revision and
+  settings recorded).
+
+It does not extend `nnx.embeddings.embed_texts` or the FAISS export, whose
+signatures are unchanged: those embed texts with a bi-encoder you trained;
+this scores pairs with a cross-encoder you supply.
+
+## 6. Decision jobs: batching and chaining
+
+A `DecisionJob` is an **immutable, deferred description** of decision work.
+Building one calls no provider, runs no callback and draws no RNG; `run` and
+`arun` are the only effect boundaries.
+
+```python
+from nnx.decisions import DecisionJob as Job, Follow, Limits
+
+flags = Job.collect({                                   # independent questions, keyed
+    "goal": Job.ask(Boolean("Mentions goal"), id="goal"),
+    "bank": Job.ask(Boolean("Mentions bank"), id="bank"),
+})
+routed = Job.ask(topic, id="topic").then(               # a dependent question
+    lambda answers: Follow(Job.ask(keeper, id="keeper"), state=sports_texts(answers))
+)
+result = Job.collect({"flags": flags, "routed": routed}).run(provider, state=texts, limits=Limits(max_questions=8))
+result.value["flags"]["goal"]                          # one result per text
+result.outcomes["keeper"].kind                         # "answered"
+result.calls                                           # provider calls made
+```
+
+| Builder | Value |
+|---|---|
+| `Job.ask(question, id=..., policy=None, model_id=None)` | the provider's results, one per input row; with an abstention `policy` ([concepts §19](concepts.md)), the selective decisions |
+| `Job.collect({key: job, ...})` | a mapping of each key to its job's value, in the given key order |
+| `job.map(fn)` | `fn(value)`: a pure function, no provider call |
+| `job.then(fn)` | `fn(value)` returns `Follow(next_job, state=...)`; the value is the next job's |
+
+- **Batching.** Independent questions over the same state are sent in the
+  fewest calls: `ceil(count / cap)` per state object (continuations that
+  return the same object share it; equal but distinct objects do not), in
+  the order they were collected, keeping their ids and the `collect` key order. `cap` is the
+  provider's: a provider with `decide_many(questions, inputs)` declares
+  `max_questions` (`None`: any number per call); a provider with only
+  `decide`, such as `FixedHeadProvider`, answers one question per call.
+  `Limits.max_questions` lowers it.
+- **Refused before any call.** Duplicate question ids, a question the
+  provider cannot serve (its `check(question, inputs)` when it has one, else
+  `capabilities().check(...)`) and a `Limits.max_tokens` cap the provider
+  cannot enforce (it needs `count_tokens(questions, inputs)`) raise
+  `InvalidJob` with no call made; so does an abstention `policy` whose
+  labels or `model_id` do not fit its question (checked by `ask`). A continuation's questions are checked
+  when the continuation runs, before they are sent.
+- **Dependent questions.** A `then` continuation runs **once**, after its
+  prerequisite succeeded, and maps the answer explicitly into the follow-up
+  `state`; it never feeds a sibling question. `Limits.max_depth` bounds
+  nesting and `Limits.max_requests` the run's calls (`JobLimitExceeded`).
+- **Answers are checked.** A call's answers must hold one result list per
+  question, one result per input row, each a result of that question (its
+  digest): answers in the wrong order, short rows or a flat list are an
+  `InvalidDecisionResponse` failure, never filed under the wrong id.
+- **Fail-fast.** When a call raises — or a provider hook fails: its
+  `check`, `capabilities()` or `count_tokens` raising anything but a
+  declared refusal — nothing more is scheduled. `JobFailed`
+  carries `outcomes` (every outcome so far, in scheduling order),
+  `completed` (the answered ones), `failed` (the questions of that call) and
+  `skipped` (known questions never sent); continuations
+  waiting on a failed answer never run, and nothing completed is re-run.
+  A job refused before any call has no outcomes and nothing skipped. The
+  error pickles across a process boundary: a provider error that does not
+  survive the round trip is replaced by a `ProviderFailure` naming it.
+  The job never retries: retries belong to the provider. A **partial
+  result** is only what the error carries: `JobFailed` has no `value`.
+- **Async and cancellation.** `await job.arun(provider, state=..., limits=...,
+  cancel=None)` runs up to `Limits.max_concurrency` calls at once through
+  the provider's `adecide_many` / `adecide`. A provider with only
+  synchronous methods is called in a worker thread, never alongside another
+  call (its methods need not be thread-safe); a running thread cannot be
+  interrupted, so the run waits for it before returning, and a cancellation
+  that arrives meanwhile is delivered once it is done. Setting the `cancel`
+  event (an `asyncio.Event` of the running loop — one bound to another loop
+  is an `InvalidJob`, never a cancellation; set at any point, even if
+  cleared again) stops
+  scheduling — no continuation runs after it — and returns a `JobResult`
+  with `status="cancelled"` and no value. A cancellation the provider
+  raises itself is a provider failure, not a cancelled job. Cancelling the task cancels only the
+  job's own tasks and re-raises. `Limits.timeout` raises `JobTimeout`; a
+  request or depth limit lets the calls already in flight finish, then
+  raises `JobLimitExceeded`. A request whose call began is reported with
+  `sent=True`, never as rolled back: whatever the provider did with it
+  stays done.
+  The provider's hooks (`check`, `capabilities()`, `count_tokens`) are
+  synchronous and run on the event loop in `arun`: keep them local and
+  fast (no network round trip). The timeout is checked between hook
+  calls, so a slow hook overruns it by at most one call. `arun` still needs the provider's synchronous
+  `decide` (the decision protocol); `adecide` / `adecide_many` are used
+  when present. A cancel set in the same tick as the last answer still
+  cancels the run: its result has no value.
+- **Outcomes.** `result.outcomes[id].kind` is `"answered"` (rows may still
+  be `"abstained"` under a policy), `"failed"` (with `error`), `"skipped"`
+  (never sent: a failure, a limit or the timeout stopped scheduling) or
+  `"cancelled"` (with `sent`); the four never blur.
+- **The provider is borrowed.** `run` and `arun` never close it, and it
+  stays usable after a failure or a cancellation.
+- **Serialisation.** A job of `ask` and `collect` only pickles as plain data
+  (`job.state()`). A job holding a runtime function (`map`, `then`) refuses
+  to pickle: rebuild it where it runs.
+
+**Limits of value equivalence.** `job.map(lambda x: x)` and `job` have the
+same value, and `job.map(f).map(g)` equals `job.map(lambda x: g(f(x)))`,
+**when the provider is deterministic and answers a question the same way
+whatever it is batched with**. A sampling provider, or one whose answer
+depends on the other questions in its call, keeps the job's call structure
+but not that equality. Batching is computational, not statistical: answers
+asked together are separate marginals, and the job never multiplies them
+into a joint probability.
+
+**What it is not.** It is not `LogitsChainBuilder`: that is a mutable
+builder of LM-decoding processors that `build()` sorts into a canonical
+order, while a job is immutable and describes provider requests. It is not
+an `ExperimentPlan` (`nnx.plans`): a plan compiles a training run, while a
+job only asks questions of an already-trained or hosted provider.
+
+[`examples/decision_jobs.py`](../examples/decision_jobs.py) runs batching, a
+continuation, fail-fast and the async path end to end.
+
+## 7. Benchmarking providers
+
+`nnx.decisions.benchmark` (FEAT-021) scores decision providers on
+**identical samples**, offline first: a live collection runs once, and every
+report after that is a replay of saved records — no provider call, no
+credentials, no network, nothing fitted.
+
+```python
+from nnx.decisions.benchmark import Budget, Sample, collect, evaluate, read_records, write_records
+
+samples = [Sample("pet-0", question, row, "cat", family="pets"), ...]
+collection = collect(provider, samples, provider_id="fixed-head-v1", budget=Budget(max_calls=20))
+write_records("records.jsonl", collection.records)           # once, live
+report = evaluate(samples, read_records("records.jsonl"), split="animals-v1")   # any time, offline
+print(report.text())
+```
+
+- **Samples** carry the join key (`id`), the typed question (its digest is
+  the schema identity), the provider input, the true label, the task
+  `family` (`heldout=True` families report apart), the grouping unit
+  (`group`) and the `perturbation` that produced them. `permute_options`,
+  `redescribe` (new label descriptions), `add_distractors`,
+  `add_none_of_the_above`, `add_context` (long irrelevant context) and
+  `rewrite_input` (multilingual or adversarial state) derive perturbed
+  samples that keep their original's grouping unit. A sample's input is a
+  text, a tensor or array, or a tuple of them (several inputs per sample,
+  batched part by part).
+- **Replay format.** One `Record` per provider output, one JSON object per
+  line (`nnx.decision-record/1`, strict JSON): sample id, question digest,
+  provider, status, the answer (`distribution` or `p_true`) or the
+  `reason` there is none, model `revision`, `prompt_identity` (by default a
+  digest of the provider's `record()`) and `execution` metadata (batch,
+  size, `partial_batch`, seconds, attempt).
+- **Coverage statuses.** Records join samples by sample id **and** question
+  digest, never by row position. Each sample is `eligible` (one answered
+  record), `missing`, `duplicate`, `mismatched` (a record for another
+  question digest), `invalid` (an answer that does not fit its question),
+  `unsupported` or `failed` (each with its reasons); records for no sample
+  are the report's `extra` count. The CSV carries every count, so they add
+  up to each slice's samples.
+- **Capabilities.** A provider that declares it cannot serve a request —
+  `FixedHeadProvider` outside its label space (or its `option_map`), for
+  instance, through its own `check(question, inputs)` (or, without one, its
+  declared `capabilities()`) — gives `unsupported` records with its own
+  reason, before any call and without spending budget; a check that itself
+  raises gives `failed` records, also without a call. Batches never exceed
+  the provider's declared `max_batch`. They are counted in the slice's coverage, never in a
+  metric's denominator, and never scored as wrong.
+- **Budgets.** `collect` needs an explicit provider, provider id and
+  `Budget(max_calls, max_samples=None)`. It attempts each batch once
+  (retries are the provider's own), stops when the budget is spent (the
+  rest is `missing`, and `Collection.stopped` says why) and marks a batch
+  the sample budget cut short as `partial_batch`. Each answer is checked
+  against its sample's question (digest) and put into the question's
+  option order, one by one: a malformed answer fails its own sample only;
+  a provider error or inputs that cannot form one batch fail the batch.
+  Neither ends the collection.
+- **Metrics,** per slice (`in_family`, `heldout`, `family:<name>`,
+  `perturbation:<name>`): accuracy, macro-F1, NLL (exact by default:
+  `+inf` when a true label has probability 0; `epsilon=` floors it), Brier,
+  ECE with reliability bins and — given an `nnx.abstention` policy, applied
+  as given — selective coverage and risk. Each is a `MetricValue` with its
+  denominator, or unavailable with the reason. NLL and Brier are the named
+  `nll` / `brier` metrics' terms; a Boolean is the options `("true",
+  "false")`.
+- **Resources** (`Resources`) say how cost was obtained — warmup, hardware,
+  timing boundary, concurrency, batch count, seconds and whether the
+  numbers were `measured` (hardware required) or `supplied`; anything not
+  declared stays `null`.
+- **Intervals.** `bootstrap_interval` resamples grouping units (whole
+  groups, never single rows of one) with a recorded seed, over the same
+  provider's records `evaluate` scores, and flags a degenerate sample
+  (fewer than two units, no variation, or a non-finite bound such as an
+  exact NLL of `+inf`). Perturbation helpers give each variant a distinct id
+  (the kind plus a digest of the change — the same in every process for
+  text, numeric arrays and tensors, tuples of them and JSON-able values), or
+  the `id=` you pass; an input with no stable digest needs `id=`.
+- **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
+  eligible, failure and `extra` counts and unavailable states (a non-finite
+  value is `"Infinity"` in the JSON and the CSV). `compare_reports` gives
+  `b - a` per slice and metric only for reports of the same split, metric
+  identity (metric set, `epsilon`, `n_bins`, policy) and sample set (a
+  digest of the samples' ids, questions, labels and slicing). `collect`
+  refuses duplicate sample ids before any call.
+
+It is not a leaderboard: no paid remote run is a default, and it never
+tunes a threshold or a prompt on test outcomes.
+[`examples/decision_benchmark_offline.py`](../examples/decision_benchmark_offline.py)
+collects once and replays with sockets disabled.
+
+## 8. Errors
 
 All are `nnx.decisions.DecisionError`s, and their names are stable:
 
@@ -135,23 +423,28 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `InvalidDecisionResponse` (also a `ValueError`) | responses that do not fit their question (see §2) |
 | `UnsupportedCapability` | undeclared primitives, modalities, batch sizes or label spaces — before any model call |
 | `ProviderFailure` (also a `RuntimeError`) | the backend failing on a valid, supported request |
+| `JobError` | the base of the decision-job errors (§6); `outcomes` holds every outcome so far, `completed` the answered ones |
+| `InvalidJob` (also a `ValueError`) | a job that cannot run as described — before any call |
+| `JobFailed` | a provider call failing inside a job (fail-fast): `failed`, `skipped`, `__cause__` |
+| `JobLimitExceeded` | a job's `max_depth` or `max_requests` stopping it before the next call |
+| `JobTimeout` (also a `TimeoutError`) | a job's `timeout` elapsing |
 
-## 6. Consumers
+## 9. Consumers
 
 Planned decision features share this digest, the `kind` discriminators and
 `validate_response` rather than defining their own: the optional Jev SDK
-adapter ([#220](https://github.com/thekaveh/NNx/issues/220)), a local
-label-conditioned baseline adapter
-([#234](https://github.com/thekaveh/NNx/issues/234)), a reproducible
-decision-provider benchmark ([#243](https://github.com/thekaveh/NNx/issues/243)),
-offline teacher-distribution datasets
-([#244](https://github.com/thekaveh/NNx/issues/244)), applicative batching for
-independent decisions ([#245](https://github.com/thekaveh/NNx/issues/245)) and an
-optional `Result` at fallible boundaries
-([#263](https://github.com/thekaveh/NNx/issues/263)). None of them has landed;
-`nnx.decisions` does not depend on any of them.
+adapter ([#220](https://github.com/thekaveh/NNx/issues/220)), offline
+teacher-distribution datasets
+([#244](https://github.com/thekaveh/NNx/issues/244)) and an optional `Result`
+at fallible boundaries ([#263](https://github.com/thekaveh/NNx/issues/263)).
+`nnx.decisions` does not depend on any of them. Decision jobs (§6, from
+[#245](https://github.com/thekaveh/NNx/issues/245)) were the first consumer to
+land, followed by the provider benchmark (§7, from
+[#243](https://github.com/thekaveh/NNx/issues/243)). The local
+label-conditioned baseline ([#234](https://github.com/thekaveh/NNx/issues/234))
+is `NLIProvider` (§5).
 
-## 7. What this does not do
+## 10. What this does not do
 
 - It does not claim every classifier is a universal decision-maker: the
   fixed-head adapter answers only what its head justifies.
@@ -160,3 +453,5 @@ optional `Result` at fallible boundaries
   events; each question is answered on its own.
 - It does not call hosted models; a hosted provider is a separate adapter
   that declares its own capabilities.
+- It does not download or train models: `NLIProvider` uses the NLI model the
+  caller supplies, as is, and its scores are not calibrated.

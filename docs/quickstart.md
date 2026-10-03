@@ -58,39 +58,98 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 # Devices.get() picks MPS > CUDA > CPU.
 ```
 
-### 2.2. Mixed precision (CUDA)
+### 2.2. Precision: FP32, FP16 and BF16
 
 ```python
-NNModelParams(..., mixed_precision=True)   # silently no-op on CPU/MPS
+from nnx import PrecisionPolicy
+NNModelParams(..., precision=PrecisionPolicy("bf16"))                   # CPU, or CUDA with bf16 support
+NNModelParams(..., precision=PrecisionPolicy("fp16"))                   # CUDA only
+NNModelParams(..., precision=PrecisionPolicy("fp16", fallback="fp32"))  # fp16 where it can run, else fp32
 ```
 
-`mixed_precision=True` activates only when the model runs on CUDA: the
-default training step wraps the forward in `torch.amp.autocast("cuda")` and
-the loop owns one `torch.amp.GradScaler("cuda")` — scale → backward →
-`unscale_` (so `grad_clip_norm` clips true gradients) → `step` → `update`. On
-CPU / MPS no scaler is built (`TrainStepContext.scaler is None`) and training
-is plain FP32. A custom `train_step_fn` sees the scaler through the standard
-`scale` / `unscale_` / `step` / `update` / `state_dict` protocol and never
-needs to branch on its concrete class. The scaler's state dictionary travels
-with every checkpoint's training-state sidecar, so a warm resume continues from
-the saved scale factor and growth tracker, and a resume whose configuration
-turns AMP on or off relative to the checkpoint is rejected
-(`resume GradScaler presence mismatch`) rather than silently continuing:
+`NNModelParams.precision` (FEAT-028) declares the precision training,
+evaluation and prediction run in. The policy is resolved against the model's
+device when the model is built and again, afresh, before a run is reserved:
+
+| mode | runs as | where |
+|---|---|---|
+| `"fp32"` (default) | full precision — no autocast, no scaler | every device |
+| `"fp16"` | `float16` autocast + a `torch.amp.GradScaler` | CUDA |
+| `"bf16"` | `bfloat16` autocast, no scaler | CPU; CUDA with native bf16 (compute capability 8.0+ — emulated bf16 does not count) |
+
+An explicit `PrecisionPolicy("fp32")` is the default (it normalizes to no
+policy, so it keeps the default's run id). A mode the device cannot run
+raises `PrecisionUnsupportedError` before any run directory exists, unless the policy names `fallback="fp32"`: the run then
+trains in full precision and records why. Autocast wraps only the forward
+pass and loss — the backward runs outside it, parameters stay `float32` (never
+`model.half()`), and the update keeps its unscale → normalize → finite-check
+→ clip → step order: FP16 `unscale_`s first (so `grad_clip_norm` clips true
+gradients) and steps through the scaler, which skips a non-finite update;
+scaler-free BF16 checks its gradients itself and raises `FloatingPointError`
+rather than apply a non-finite one. Evaluation and `predict()` /
+`predict_proba()` run under the same policy and return `float32` outputs, so
+their schemas are unchanged.
+
+`run.precision` records what happened — `requested`, `effective`,
+`fallback_reason`, TF32 (reported separately, from torch's `fp32_precision`
+setting when made; NNx never sets it) and which NNx surfaces apply it
+(`covers`: the run's training where NNx runs the default step or an
+objective, and `evaluate()` / `predict()` whenever they are called;
+`not_covered`: surfaces that never do) — custom `train_step_fn` /
+`eval_step_fn` code is outside both (a training step reads `ctx.precision`
+and applies it itself) — and `NNRun.load` reads it back from
+`metadata.yaml`. The
+policy does not reach `nnx.lr_finder`, `nnx.diffusion.sampling` or
+generation. `nnx.precision_support()` reports each device's cells as
+`"verified"` (CPU FP32 and BF16, by NNx's seeded fixtures within
+`nnx.precision.REFERENCE_TOLERANCES`), `"supported"`, `"unverified"` (the
+hardware is absent here — nothing is claimed) or `"unsupported"`.
+
+The scaler's state dictionary and the precision record travel with every
+checkpoint's training-state sidecar, so a warm resume continues from the
+saved scale factor and growth tracker. A stateful resume into a different
+effective precision is rejected (`resume precision mismatch`) before the
+model is touched; a weights-only warm start (`resume_mode="weights_only"`)
+may switch:
 
 ```python
-amp = NNModelParams(net=Nets.FEED_FWD, device=Devices.CUDA, loss=Losses.CROSS_ENTROPY, mixed_precision=True)
-first = NNModel(net_params=net_params, params=amp).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
+bf16 = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16"))
+first = NNModel(net_params=net_params, params=bf16).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
+print(first.precision.record()["effective"])   # "bf16"
 state = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)
-print(state["scaler"]["scale"])       # None on CPU/MPS; the current scale factor on CUDA
-resumed = NNModel(net_params=net_params, params=amp).train(
+print(state["precision"]["effective"], state["scaler"])   # "bf16", None (fp16 keeps the scaler's state)
+resumed = NNModel(net_params=net_params, params=bf16).train(
     params=NNTrainParams(n_epochs=1, train_loader=train_loader, resume_from_run_id=first.id),
 )
 ```
 
+`NNModel.from_checkpoint(..., device=...)` and Hub loading re-resolve the
+policy on the destination device — never from saved metadata — and take
+`precision=` to replace it (say, a CUDA FP16 model loaded on a CPU). The
+built-in imperative paradigm steps (`finalize_step`) run in full precision
+and refuse a reduced policy before any work is done (a wrapper keeps that
+refusal when it is written with `functools.wraps`, which carries the
+marker, or marked with `nnx.precision.full_precision_only`; otherwise
+`finalize_step` refuses at the first step); a custom
+`train_step_fn` applies `ctx.precision.autocast()` and `ctx.scaler` itself.
+In `Trainer`, an objective runs in the policy, while step functions (which
+own every update) refuse a reduced one.
+
+The legacy `NNModelParams(mixed_precision=True)` keeps its meaning and run
+id: FP16 autocast with a scaler in `NNModel.train` on CUDA, silently plain
+FP32 elsewhere, and no effect on evaluation, prediction or `Trainer`.
+Combining it with a policy other than `fp16` is refused. A stateful resume
+of a checkpoint written before precision was recorded counts it as FP16
+exactly when it saved a scaler (`resume GradScaler presence mismatch` still
+names a scaler that appears or disappears).
+
 The scaler factory is why NNx declares the PyTorch floor it does — see the
 [support matrix](external-contracts.md#21-pytorch-support-matrix) for the
 tested torch / torchvision / Python combinations and which of them carry real
-CUDA evidence. [`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
+CUDA evidence. [`examples/01_synthetic_classification.py`](https://github.com/thekaveh/NNx/blob/main/examples/01_synthetic_classification.py)'s
+`precision_workflow()` (also `--precision bf16`) runs a bounded CPU FP32
+workflow and a BF16 one gated on `precision_support`;
+[`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
 `amp_resume_compatibility()` runs the CPU no-scaler cycle everywhere and the
 enabled-AMP cycle only on a CUDA host.
 
@@ -118,7 +177,8 @@ full-batch list — and the worker warning only appears for a real loader with
 `num_workers > 0`.
 
 Callback and step state resumes too. `EarlyStopping`'s best value and
-patience counter, the I-JEPA target encoder and any object registered through
+patience counter, the I-JEPA target encoder (and the `jepa_objective` /
+`diffusion_objective` state: EMA target and counter, generator) and any object registered through
 `train(..., components=[...])` are written into every checkpoint and restored
 after the callbacks' reset hooks, so a split run stops at the same epoch as
 the uninterrupted one
@@ -623,6 +683,53 @@ callback instances you pass are borrowed and shared by every fit; pass
 factories for fresh ones. See
 [Concepts §20](concepts.md#20-experiment-plans-nnxplans).
 
+### 2.21. Stream predictions and merge metrics
+
+Stream a large loader instead of holding every batch's outputs:
+
+```python
+from nnx import MetricSpec, StreamingMetrics, streaming_eval_step
+
+with model.iter_predict(loader) as stream:          # one PredictionBatch per loader batch, in order
+    for batch in stream:
+        save(batch.sample_ids, batch.classes)        # keep what you need, not the batches
+
+metrics = StreamingMetrics([MetricSpec("nll"), MetricSpec("brier")], "categorical")
+with model.iter_predict(loader, rich=True) as stream: # PredictionResult per batch (model with a task)
+    for batch in stream:
+        metrics.update(targets[batch.sample_ids], probabilities=batch.probabilities)
+metrics.finalize().values                             # {"nll": ..., "brier": ...}
+total = shard_a.merge(shard_b).finalize()             # order-independent; refuses different declarations
+
+model.train(params, eval_step_fn=streaming_eval_step) # the validation record from counts and sums
+```
+
+Concatenated, the streamed batches equal `predict()` / `predict_proba()`.
+Each batch restores the network's training mode, closing the stream drops
+its references, and the loader stays yours. See
+[Concepts §21](concepts.md#21-streaming-prediction-and-mergeable-metrics-nnxstreaming).
+
+### 2.22. Share a run as a data-only bundle
+
+A run bundle carries a checkpoint's weights, training state and calibrators
+as safetensors plus JSON, so it can be checked and rebuilt without
+unpickling anything:
+
+```python
+from nnx.bundles import export_bundle, inspect_bundle, reconstruct_bundle, validate_bundle
+
+export_bundle(run.id, "bundle", calibrators=[calibrator])  # reads your own run's LAST checkpoint
+inspect_bundle("bundle")                                    # BundleInfo: capability, epoch, model, calibrators
+validate_bundle("bundle")                                   # every payload's SHA-256, before any tensor is read
+rebuilt = reconstruct_bundle("bundle", factories={("my.encoder", 1): my_factory})  # a registered module
+rebuilt.model.predict(X)                                    # bit-for-bit the source model
+rebuilt.resume(train_params)                                # continues the run from the bundle's training state
+```
+
+A weights-only checkpoint (a `ModelCheckpoint` snapshot) exports an
+`"inference"` bundle, which rebuilds the model but refuses `resume()`. See
+[Concepts §22](concepts.md#22-run-bundles-nnxbundles).
+
 ## 3. Beyond supervised classification
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, link prediction with negative sampling, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
@@ -651,7 +758,7 @@ When per-batch updates need multiple optimizers (G + D for GANs, policy + value 
 
 ### 3.3. Diffusion (DDPM)
 
-For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
+For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. `diffusion_objective(schedule)` is the same loss as an objective (`model.train(..., objective=...)`): the shared update engine adds gradient accumulation (exact for uneven microbatches), mixed precision and clipping, and the timesteps and noise come from the objective's own checkpointed generator, which a `sample(..., generator=...)` preview never perturbs; `jepa_objective` does the same for I-JEPA, advancing its EMA target once per committed update ([I-JEPA §5](jepa.md#5-objective-mode)). See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
 
 ### 3.4. Training paradigms (KD, SimCLR, Mixup, CutMix)
 
@@ -661,7 +768,11 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 
 `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}` plus DoRA / IA3 / PrefixTuner / PromptTuner. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual; DoRA layers in a per-output magnitude vector; IA3 is a per-output scaling; PrefixTuner / PromptTuner attach learned prefixes to a frozen `TransformerNN`; `AdapterLayer` is a bottleneck residual the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).
 
+### 3.6. Causal language models
 
-### 3.6. Ranking and retrieval evaluation
+`nnx.lm_tasks.CausalLMTask(vocab_size=..., alignment="shift_inputs" | "pre_shifted", ignore_id=-100, pad_id=None, smoothing=0.0)` is the built-in next-token path for a `TransformerNN`: pass `objective=task.objective()` and `eval_step_fn=task.eval_step()` to `train()`. The ignore id, padding id and an optional loss mask pick the valid tokens; the objective divides by the window's valid-token count (so accumulation is token-weighted), and validation reports the unsmoothed token NLL as its loss with `perplexity = exp(NLL)` and token accuracy — no placeholder classification metrics. See [`docs/lm.md` §6](lm.md) and [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py).
 
-`nnx.ranking.RankingTask(k=(10,), max_relevance=2, weighting="query", candidate_sets="sampled")` trains and evaluates a scorer per query: pass `objective=task.objective()` (pairwise logistic loss over unequal-relevance pairs within a query) and `eval_step_fn=task.eval_step()` (MRR@k, Recall@k and NDCG@k per complete query, ties broken by candidate id, queries without a relevant candidate excluded and counted), and select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("ndcg_at_10")`. Batches are `(features, query_ids, candidate_ids, relevance)`. See [Concepts → Query-grouped ranking](concepts.md#21-query-grouped-ranking-nnxranking) and [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py).
+
+### 3.7. Ranking and retrieval evaluation
+
+`nnx.ranking.RankingTask(k=(10,), max_relevance=2, weighting="query", candidate_sets="sampled")` trains and evaluates a scorer per query: pass `objective=task.objective()` (pairwise logistic loss over unequal-relevance pairs within a query) and `eval_step_fn=task.eval_step()` (MRR@k, Recall@k and NDCG@k per complete query, ties broken by candidate id, queries without a relevant candidate excluded and counted), and select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("ndcg_at_10")`. Batches are `(features, query_ids, candidate_ids, relevance)`. See [Concepts → Query-grouped ranking](concepts.md#24-query-grouped-ranking-nnxranking) and [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py).

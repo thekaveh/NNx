@@ -20,6 +20,7 @@ ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
 | `nnx.update_ema(source, target, momentum)` | In-place EMA update: `target ← momentum · target + (1 - momentum) · source`. Name-keyed against the target's params so a source with extra submodules (the typical "predictor under model.net" idiom) is fine. |
 | `nnx.random_block_mask(n_patches, grid_size, …)` | Sample one rectangular block as the prediction target. Returns `(context_mask, target_mask)` 1-D BoolTensors. |
 | `nnx.jepa_train_step_factory(target_encoder, predictor, mask_fn, *, ema_momentum=0.996)` | Returns a `TrainStepFn` for `NNModel.train(..., train_step_fn=...)`. |
+| `nnx.jepa_objective(target_encoder, predictor, mask_fn, *, ema_momentum=0.996, nonfinite="fail")` | The same loss as an objective (`JEPAObjective`, §5) for `NNModel.train(..., objective=...)` / `Trainer.train(..., objective=...)`: the shared update engine owns the update, and the EMA target advances once per committed update. |
 
 ## 2. How a step runs
 
@@ -148,8 +149,9 @@ a signal to lock onto. The other classification fields stay zero.
   custom step doesn't implement.
 * **`NNOptimParams.accumulate_grad_batches != 1`** is also rejected
   for the same reason. JEPA's reference recipe uses large batches
-  rather than accumulation; if you need accumulation, write a
-  custom step that calls `update_ema` only at the cycle boundary.
+  rather than accumulation; if you need accumulation (or mixed
+  precision), train with `jepa_objective` (§5), whose EMA advances
+  once per committed update.
 * **Resume-from-checkpoint** restores the EMA target encoder too.
   `jepa_train_step_factory` returns a `JEPATrainStep`, a
   checkpointable component named `jepa.target_encoder`
@@ -164,3 +166,61 @@ a signal to lock onto. The other classification fields stay zero.
   without it fails before anything is restored, and a checkpoint
   written before component state existed resumes with a fresh target
   copy and a warning.
+
+## 5. Objective mode
+
+`jepa_objective(target_encoder, predictor, mask_fn, ema_momentum=...)`
+(FEAT-040) describes the same latent-prediction loss as an objective
+([Concepts §6.5](concepts.md#65-objectives-and-the-shared-update-engine)):
+
+```python
+from nnx import jepa_objective
+
+objective = jepa_objective(target_encoder, predictor, mask_fn, ema_momentum=0.996)
+model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_batches=4)), objective=objective)
+```
+
+* **Loss.** One `"latent_mse"` term per microbatch: the **sum** of squared
+  errors between the predicted and target embeddings at the masked
+  positions, normalized by the number of those elements (rows × target
+  patches × embedding width). Microbatches with different target masks
+  therefore combine as `(sum_1 + sum_2) / (count_1 + count_2)`, and
+  uneven microbatches give exactly the full-batch update. The record
+  carries the loss and `metrics={"latent_mse": ...}` — no classification
+  fields. Masks are checked before any forward pass: they must be
+  complementary `BoolTensor[n_patches]` with at least one context and one
+  target patch.
+* **Update.** The shared engine owns backward, accumulation, mixed
+  precision, clipping and the optimizer step, with the objective's
+  non-finite policy (`nonfinite="fail"` or `"skip"`).
+* **EMA, once per committed update.** The target advances in the
+  objective's `after_update` hook — after every named optimizer stepped,
+  from the updated online weights, and before callbacks see the update
+  event — never per microbatch and never for a skipped window
+  (`ema_momentum` is fixed in `[0, 1)`; `ema_updates` counts this run's EMA steps and continues across a stateful resume).
+  A `Trainer` with separate encoder and predictor optimizers still
+  advances it once per committed update.
+* **Ownership, checked before any run is reserved.** The predictor must
+  be a submodule of `model.net` whose trainable parameters the run's
+  optimizers own exactly once; the target encoder must stay outside
+  `model.net`, share none of its parameters and be owned by no optimizer;
+  every target parameter needs a same-named, same-shaped online one; and
+  callbacks that change the net's topology (`checkpoint_transforms`,
+  e.g. QAT) are refused. The imperative step passed as `objective=` is
+  refused too. A callback that renames the net's parameters without
+  declaring it (say, `torch.nn.utils.prune`, which turns `weight` into
+  `weight_orig`) is not detected: `update_ema` then raises a `KeyError`
+  naming the parameter at the next committed update.
+* **Checkpoints and resume.** `JEPAObjective` is a checkpointable
+  component named `jepa.objective`: the spec (loss, momentum), the
+  predictor's **reference** (its name inside `model.net` — its weights
+  are saved once, with the net, in LAST and in `ModelCheckpoint`
+  snapshots), the EMA target's weights and the EMA counter. Two epochs
+  and one epoch plus a stateful resume end in the same encoder,
+  predictor, target and counter; a saved state with a second predictor
+  payload, another predictor reference or another spec is rejected
+  before anything is restored.
+
+`examples/16_ijepa_image_plumbing.py --objective` trains the demo this
+way, and its bounded `objective_mode()` helper checks one EMA step per
+committed update.
