@@ -2981,6 +2981,14 @@ nnx.decisions.FixedHeadProvider.capabilities(self) -> 'Capabilities'
 
 No public description is currently available.
 
+##### `nnx.decisions.FixedHeadProvider.check`
+
+```python
+nnx.decisions.FixedHeadProvider.check(self, question: 'Question', inputs: 'Any') -> 'None'
+```
+
+Every check :meth:`decide` makes before calling the model — the question, the inputs' modality and batch size, and the label space (through ``option_map``) — so a caller (a decision job) can validate a request without calling the model.
+
 ##### `nnx.decisions.FixedHeadProvider.decide`
 
 ```python
@@ -3101,6 +3109,216 @@ class nnx.decisions.ProviderFailure
 ```
 
 The provider's backend failed while answering a supported, valid request (the original error is the ``__cause__``).
+
+
+#### `nnx.decisions.DecisionJob`
+
+```python
+class nnx.decisions.DecisionJob(node: '_Node') -> 'None'
+```
+
+An immutable, deferred description of decision work — see the module docstring. Build with :meth:`ask` and :meth:`collect`, transform with :meth:`map`, chain with :meth:`then`; run with :meth:`run` / :meth:`arun`.
+
+##### `nnx.decisions.DecisionJob.ask`
+
+```python
+nnx.decisions.DecisionJob.ask(question: 'Question', *, id: 'str', policy: 'Any' = None, model_id: 'Optional[str]' = None) -> 'DecisionJob'
+```
+
+One question over the state. ``id`` keys its outcome (unique in a run); an abstention ``policy`` (with the ``model_id`` it was tuned for) turns each row's result into a selective decision.
+
+##### `nnx.decisions.DecisionJob.collect`
+
+```python
+nnx.decisions.DecisionJob.collect(jobs: 'Mapping[str, DecisionJob]') -> 'DecisionJob'
+```
+
+Independent jobs; the value maps each key to its job's value, in ``jobs``' order.
+
+##### `nnx.decisions.DecisionJob.map`
+
+```python
+nnx.decisions.DecisionJob.map(self, fn: 'Callable[[Any], Any]') -> 'DecisionJob'
+```
+
+This job with ``fn`` applied to its value (pure: no provider calls).
+
+##### `nnx.decisions.DecisionJob.then`
+
+```python
+nnx.decisions.DecisionJob.then(self, fn: 'Callable[[Any], Follow]') -> 'DecisionJob'
+```
+
+A dependent job: after this one succeeds, ``fn(value)`` returns a :class:`Follow` (the next job and its state), run once.
+
+##### `nnx.decisions.DecisionJob.question_ids`
+
+```python
+nnx.decisions.DecisionJob.question_ids(self) -> 'tuple[str, ...]'
+```
+
+The ids of the questions known before running (not those a continuation will create), in scheduling order.
+
+##### `nnx.decisions.DecisionJob.state`
+
+```python
+nnx.decisions.DecisionJob.state(self) -> 'dict[str, Any]'
+```
+
+Plain data for a job of ``ask`` / ``collect`` only. A job holding a function (``map``, ``then``) is a runtime value: refused.
+
+##### `nnx.decisions.DecisionJob.run`
+
+```python
+nnx.decisions.DecisionJob.run(self, provider: 'Any', *, state: 'Any', limits: 'Optional[Limits]' = None) -> 'JobResult'
+```
+
+Run the job synchronously with ``provider`` (borrowed, never closed) over ``state``.
+
+##### `nnx.decisions.DecisionJob.arun`
+
+```python
+nnx.decisions.DecisionJob.arun(self, provider: 'Any', *, state: 'Any', limits: 'Optional[Limits]' = None, cancel: 'Optional[asyncio.Event]' = None) -> 'JobResult'
+```
+
+Run the job on the event loop: up to ``limits.max_concurrency`` calls at once; setting ``cancel`` stops scheduling and returns a cancelled result (see the module docstring).
+
+
+#### `nnx.decisions.Follow`
+
+```python
+class nnx.decisions.Follow(job: 'DecisionJob', state: 'Any') -> 'None'
+```
+
+What a continuation returns: the next ``job`` and the ``state`` it reads (the answer mapped explicitly into follow-up inputs).
+
+
+#### `nnx.decisions.Limits`
+
+```python
+class nnx.decisions.Limits(max_questions: 'Optional[int]' = None, max_tokens: 'Optional[int]' = None, max_depth: 'int' = 8, max_requests: 'Optional[int]' = None, timeout: 'Optional[float]' = None, max_concurrency: 'int' = 1) -> 'None'
+```
+
+What a run may do.
+
+**Details**
+
+```text
+Attributes:
+    max_questions: the most questions per provider call (``None``: the
+        provider's own cap; a provider without one answers one per call).
+    max_tokens: the most tokens per provider call — enforceable only by
+        a provider with ``count_tokens(questions, state)``; any other is
+        refused before any call.
+    max_depth: the most nested continuations (``then``).
+    max_requests: the most provider calls in the run (``None``:
+        unbounded).
+    timeout: seconds for the whole run (``None``: none). ``run`` checks
+        it between calls and provider hooks; ``arun`` also cancels
+        in-flight asynchronous calls (a synchronous provider's call in
+        its worker thread is waited for).
+    max_concurrency: ``arun``'s concurrent provider calls.
+```
+
+
+#### `nnx.decisions.JobResult`
+
+```python
+class nnx.decisions.JobResult(value: 'Any', outcomes: 'Mapping[str, QuestionOutcome]', calls: 'int', status: 'str' = 'completed') -> 'None'
+```
+
+A finished run: the job's ``value``, every question's outcome in the order it was scheduled, the provider ``calls`` made and the ``status`` (``"completed"`` or ``"cancelled"``; a cancelled run has no value).
+
+
+#### `nnx.decisions.QuestionOutcome`
+
+```python
+class nnx.decisions.QuestionOutcome(id: 'str', kind: 'str', rows: 'tuple[RowOutcome, ...]' = (), error: 'Optional[BaseException]' = None, sent: 'bool' = False) -> 'None'
+```
+
+What happened to one question.
+
+**Details**
+
+```text
+``kind`` is ``"answered"`` (the provider answered; rows may still
+abstain), ``"failed"`` (its provider call raised — ``error``),
+``"skipped"`` (never sent: a failure, a limit or the timeout stopped
+scheduling) or ``"cancelled"`` (the run was cancelled, or a sibling call
+failed first; ``sent`` says whether the request had already gone out —
+a sent request is not rolled back).
+```
+
+##### `nnx.decisions.QuestionOutcome.abstained`
+
+```python
+property nnx.decisions.QuestionOutcome.abstained
+```
+
+No public description is currently available.
+
+
+#### `nnx.decisions.RowOutcome`
+
+```python
+class nnx.decisions.RowOutcome(kind: 'str', result: 'DecisionResult', decision: 'Any' = None) -> 'None'
+```
+
+One input row's answer: ``"answered"``, or ``"abstained"`` when the question's abstention policy declined it (the result is kept either way).
+
+
+#### `nnx.decisions.JobError`
+
+```python
+class nnx.decisions.JobError(message: 'str', *, outcomes: 'Optional[Mapping[str, QuestionOutcome]]' = None) -> 'None'
+```
+
+Base of the decision-job errors. ``outcomes`` maps question ids to every :class:`QuestionOutcome` known when the error was raised (answered, failed, skipped or cancelled — a request already sent says so), in scheduling order; ``completed`` is the answered subset. Both are empty when the job was refused before any call.
+
+**Details**
+
+```text
+The error pickles (a process-pool worker's error reaches its parent): a
+provider error that would not survive the round trip — on its own or as
+a ``__cause__`` — is replaced by a :class:`ProviderFailure` naming it,
+and an answer's provider ``raw`` output that would not is dropped.
+```
+
+
+#### `nnx.decisions.InvalidJob`
+
+```python
+class nnx.decisions.InvalidJob(message: 'str', *, outcomes: 'Optional[Mapping[str, QuestionOutcome]]' = None) -> 'None'
+```
+
+A job that cannot run as described: duplicate question ids, an unsupported question, a token cap the provider cannot enforce, a continuation that returns something other than a :class:`Follow`.
+
+
+#### `nnx.decisions.JobFailed`
+
+```python
+class nnx.decisions.JobFailed(message: 'str', *, outcomes: 'Mapping[str, QuestionOutcome]', failed: 'Sequence[str]', skipped: 'Sequence[str]') -> 'None'
+```
+
+A provider call failed (fail-fast): ``failed`` names the questions of that call, ``skipped`` the known questions that were never sent (none when the job was refused before any call); the provider's error is the ``__cause__``.
+
+
+#### `nnx.decisions.JobLimitExceeded`
+
+```python
+class nnx.decisions.JobLimitExceeded(message: 'str', *, outcomes: 'Optional[Mapping[str, QuestionOutcome]]' = None) -> 'None'
+```
+
+A request or depth limit stopped the job before the next call.
+
+
+#### `nnx.decisions.JobTimeout`
+
+```python
+class nnx.decisions.JobTimeout(message: 'str', *, outcomes: 'Optional[Mapping[str, QuestionOutcome]]' = None) -> 'None'
+```
+
+The run's ``timeout`` elapsed; in-flight requests were sent and are not rolled back.
 
 
 ### 2.12. Experiment provenance (`nnx.provenance`)

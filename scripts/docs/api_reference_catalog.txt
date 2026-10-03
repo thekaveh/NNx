@@ -194,6 +194,28 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.ProviderFailure
 
+@api nnx.decisions.DecisionJob
+
+@api nnx.decisions.Follow
+
+@api nnx.decisions.Limits
+
+@api nnx.decisions.JobResult
+
+@api nnx.decisions.QuestionOutcome
+
+@api nnx.decisions.RowOutcome
+
+@api nnx.decisions.JobError
+
+@api nnx.decisions.InvalidJob
+
+@api nnx.decisions.JobFailed
+
+@api nnx.decisions.JobLimitExceeded
+
+@api nnx.decisions.JobTimeout
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest
