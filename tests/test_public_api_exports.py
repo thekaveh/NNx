@@ -76,6 +76,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "streaming",
         "surgery",
         "trainer",
+        "transforms",
         "viz",
     ]
 
@@ -159,6 +160,15 @@ def test_history_api_is_public_and_complete():
     assert set(history.__all__) == expected
     assert all(getattr(history, name, None) is not None for name in history.__all__)
     assert "history" in nnx.__all__
+
+
+def test_transforms_api_is_public_and_complete():
+    from nnx import transforms
+
+    expected = {"RecipeError", "TransformOp", "TransformRecipe", "check_optimizer", "lora", "low_rank"}
+    assert set(transforms.__all__) == expected
+    assert all(getattr(transforms, name, None) is not None for name in transforms.__all__)
+    assert "transforms" in nnx.__all__
 
 
 def test_calibration_api_is_public_and_complete():

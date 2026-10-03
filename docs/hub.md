@@ -133,7 +133,13 @@ This writes three files into `./my-model/`:
 - `config.json` — `{"net_params": <state>, "params": <state>}`, using
   the same public `state()` form NNRun hashes for `run.id` grouping. A
   model built from a registered factory (§2.6) has no `net_params`; its
-  `params.net` is the `ModelSpec` descriptor.
+  `params.net` is the `ModelSpec` descriptor. A model whose topology was
+  changed by a recorded recipe (`nnx.transforms`, see
+  [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
+  also writes `"transforms"`: the ordered operations, each with its id,
+  version, targets and config. Such a model is saved only while its
+  topology is exactly its base plus that recipe: unrecorded surgery is
+  refused before anything is written, rather than failing at load.
 - `README.md` — auto-generated model card from the mixin.
 
 ### 2.3. Load from a local directory
@@ -144,8 +150,11 @@ model = NNModel.from_pretrained("./my-model")
 ```
 
 `from_pretrained` reads `config.json`, rebuilds `NNParams` and
-`NNModelParams` via their public `from_state` constructors, then loads
-the safetensors weights into the freshly-built `self.net`. Bit-exact
+`NNModelParams` via their public `from_state` constructors, replays any
+recorded `"transforms"` on the fresh base (LoRA wrappers rebuilt, low-rank
+factors allocated in their recorded shape — no SVD), then loads the
+safetensors weights into the freshly-built `self.net`. An unknown
+operation or version is refused before any tensor is loaded. Bit-exact
 round-trip on tensors; `state()` form identical on the params.
 
 ### 2.4. Publish to the Hub
@@ -215,8 +224,9 @@ another's files:
   directory and a Hub distribution (`config.json`), and never fall back to
   unpickling or downloading.
 - **What does not fit is refused.** Module extra state that is not a tensor,
-  a custom object in optimizer or component state, a runtime-only module
-  and an unknown bundle version fail with a message, with no pickle
+  a custom object in optimizer or component state, a runtime-only module, a
+  recorded topology transform NNx cannot replay from data (named by index
+  and id) and an unknown bundle version fail with a message, with no pickle
   fallback.
 
 See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
@@ -228,6 +238,10 @@ See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
   per-training-run. If you want to publish a full training run
   (idps.csv + run.yaml + every per-phase checkpoint), upload the
   `runs/<id>/` directory directly via `huggingface_hub.upload_folder`.
+- **A raw state dict or adapter-only export does not rebuild a recipe.**
+  `export_state_dict()` and `save_lora_weights` write tensors only; the
+  recipe that produced the topology lives in checkpoints and
+  `config.json`. Materialize the recipe before loading such a file.
 - **Optimizer state is not in the Hub config.** `save_pretrained`
   writes only the network weights; resuming optimizer state from a
   Hub-loaded model isn't supported. Use `NNCheckpoint` — or a run bundle

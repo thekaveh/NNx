@@ -45,6 +45,7 @@ from . import (
     prune,
     streaming,
     tasks,
+    transforms,
     viz,
 )
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
@@ -375,6 +376,8 @@ __all__ = [
     "bundles",
     # Bounded training history with an append journal (FEAT-036)
     "history",
+    # Replayable model transformation recipes (FEAT-016)
+    "transforms",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",

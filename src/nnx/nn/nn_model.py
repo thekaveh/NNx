@@ -10,6 +10,7 @@ import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -54,6 +55,7 @@ from ..monitors import (
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, _bounded_extra_metrics_error, task_adapter
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _snapshot_transforms, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -240,7 +242,9 @@ _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint,
 )
 
 
-def _load_resume_source(run_id: str, checkpoint: Any, mode: str, *, trainer: bool) -> _ResumeSource:
+def _load_resume_source(
+    run_id: str, checkpoint: Any, mode: str, *, trainer: bool, live_transforms: Sequence[Any] = ()
+) -> _ResumeSource:
     """Read the checkpoint a resume starts from — shared by ``NNModel.train``
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
@@ -254,7 +258,22 @@ def _load_resume_source(run_id: str, checkpoint: Any, mode: str, *, trainer: boo
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
     resume_net_state = training_state.get("model") if training_state is not None else None
-    if ckpt.transforms and resume_net_state is None:
+    # FEAT-016: the resuming model must carry exactly the recipe the source
+    # was trained with (ids, versions, targets and config) — its weights
+    # only fit that topology and that configuration.
+    saved_recipe, live_recipe = _recipe_transforms(ckpt.transforms), _recipe_transforms(live_transforms)
+    if saved_recipe != live_recipe:
+        raise ValueError(
+            f"resume_from_run_id={run_id!r}/{ckpt_type} was trained with the transformation recipe "
+            f"{[t.state() for t in saved_recipe]}, but this model carries {[t.state() for t in live_recipe]}: "
+            "materialize the same nnx.transforms.TransformRecipe on the model before resuming"
+        )
+    # A checkpoint whose transforms are exactly the ones the model already
+    # carries (its recipe, or a recipe and the conversion of a converted
+    # model trained again) holds weights of the live topology, which load
+    # directly; any other transformed checkpoint needs its pre-transform
+    # state.
+    if ckpt.transforms and resume_net_state is None and tuple(ckpt.transforms) != tuple(live_transforms):
         raise ValueError(
             "this transformed checkpoint has no pre-transform training state and cannot be warm-resumed; "
             "use NNModel.from_checkpoint() for inference or resume from an untransformed checkpoint"
@@ -356,6 +375,14 @@ def _collect_checkpoint_transforms(callbacks: list[Callback]) -> tuple[NNCheckpo
 
 
 def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform) -> None:
+    if _replayable(transform):
+        # FEAT-016: a recorded recipe operation — its topology is rebuilt
+        # (low-rank factors allocated, never re-factorized) before the
+        # saved tensors are loaded.
+        from ..transforms import _replay
+
+        _replay(model, transform)
+        return
     if transform.name == "torchao_qat" and transform.version == 1:
         from ..quantize.qat import _build_quantizer
 
@@ -373,6 +400,113 @@ def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform
         f"unsupported checkpoint transform {transform.name!r} version {transform.version}; "
         "upgrade NNx or load the checkpoint with the producer's compatible version"
     )
+
+
+def _unportable_transform(transforms: Sequence[NNCheckpointTransform]) -> Optional[str]:
+    """Why the first recorded transform NNx cannot replay from data alone
+    (``"topology transform <index> (<id> version <v>) ..."``), or ``None``.
+    Recipe operations (FEAT-016) of a known version and the torchao QAT
+    conversion replay; any other id is an operation only its producer can
+    rebuild — a callback's own train-end transform, say."""
+    from ..transforms import _VERSIONS, RecipeError, TransformOp
+
+    for index, transform in enumerate(transforms):
+        where = f"topology transform {index} ({transform.name!r} version {transform.version})"
+        if _replayable(transform):
+            if transform.version not in _VERSIONS[transform.name]:
+                return f"{where} has a version this NNx does not know"
+            try:
+                TransformOp.from_checkpoint_transform(transform)
+            except RecipeError as error:
+                return f"{where} has malformed options: {error}"
+        elif not (transform.name == "torchao_qat" and transform.version == 1):
+            return f"{where} is not an operation NNx can replay; only its producer can rebuild it"
+    return None
+
+
+def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransform]) -> None:
+    """Replay a checkpoint's recorded transforms in order — before any saved
+    tensor is loaded — naming the transform that cannot be replayed."""
+    for index, transform in enumerate(transforms):
+        try:
+            _apply_checkpoint_transform(model, transform)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"topology transform {index} ({transform.name!r} version {transform.version}) cannot be replayed: "
+                f"{error}"
+            ) from error
+
+
+def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
+    """The base layers ``X`` a state holds as LoRA wrappers (``X.base.weight``
+    or ``X.lora_A``) and as low-rank factors (``X.0.weight`` and
+    ``X.1.weight``) instead of ``X.weight`` — the topology an nnx.transforms
+    recipe (FEAT-016) records and unrecorded surgery leaves behind."""
+    keys = set(state_keys)
+    lora_layers: list[str] = []
+    low_rank_layers: list[str] = []
+    for key in base_keys:
+        if not key.endswith(".weight") or key in keys:
+            continue
+        layer = key[: -len(".weight")]
+        if f"{layer}.lora_A" in keys or f"{layer}.base.weight" in keys:
+            lora_layers.append(layer)
+        if f"{layer}.0.weight" in keys and f"{layer}.1.weight" in keys:
+            low_rank_layers.append(layer)
+    return lora_layers, low_rank_layers
+
+
+def _check_trained_recipe(
+    model: NNModel,
+    trained_recipe: Sequence[NNCheckpointTransform],
+    declared: Sequence[NNCheckpointTransform] = (),
+) -> None:
+    """Refuse, before a checkpoint is written, a model whose topology no
+    checkpoint of this run could rebuild (FEAT-016): recipe operations a
+    callback applied or declared during training (a recipe is materialized
+    before training — the one the run id records), or unrecorded surgery
+    on a recipe model. A train-end transform callbacks declared (QAT)
+    rebuilds its own topology, so drift is not checked against it."""
+    live = _recipe_transforms(model._topology_transforms)
+    late = [t for t in declared if _replayable(t)]
+    if live != tuple(trained_recipe) or late:
+        added = live[len(trained_recipe) :] if live[: len(trained_recipe)] == tuple(trained_recipe) else live
+        raise ValueError(
+            "a transformation recipe is materialized before training, but recipe operations "
+            f"{[t.state() for t in (*added, *late)]} were applied or declared during it, which no checkpoint could "
+            "resume — materialize the nnx.transforms.TransformRecipe before calling train() (refused before this "
+            "checkpoint was written; the run's earlier checkpoints are kept)"
+        )
+    if trained_recipe and all(_replayable(t) for t in declared):
+        drift = model._topology_drift()
+        if drift is not None:
+            raise ValueError(
+                f"{drift}; refused before the checkpoint is written (the run's earlier checkpoints are kept) — apply "
+                "topology changes through nnx.transforms.TransformRecipe before training"
+            )
+
+
+def _final_transforms(
+    model: NNModel, callbacks: list[Callback], trained_recipe: Sequence[NNCheckpointTransform]
+) -> tuple[tuple[NNCheckpointTransform, ...], bool]:
+    """The transforms the final LAST records — the model's own followed by
+    those its callbacks applied at train end — and whether that LAST keeps
+    the pre-transform state for resuming. A recipe recorded before training
+    (FEAT-016) is the live topology already, so it alone keeps none; the
+    model is checked first (:func:`_check_trained_recipe`)."""
+    declared = _collect_checkpoint_transforms(callbacks)
+    _check_trained_recipe(model, trained_recipe, declared)
+    final = (*model._topology_transforms, *declared)
+    return final, any(not _replayable(t) for t in final)
+
+
+def _refuse_unrecorded_recipe_state(net_state: Mapping[str, Any], base_state: Mapping[str, Any]) -> None:
+    if any(_replaced_layers(net_state, base_state)):
+        raise ValueError(
+            "the weights come from a transformed topology (LoRA wrappers or low-rank factors) but record no "
+            "transformation recipe: a raw state dict or an adapter-only export cannot rebuild the topology alone — "
+            "materialize the same nnx.transforms.TransformRecipe on a fresh model, then load the weights into it"
+        )
 
 
 def _looks_like_converted_qat_state(net_state: Mapping[str, Any]) -> bool:
@@ -1558,10 +1692,15 @@ class NNModel(_HubMixinBase):
             self.net = module.to(self.device)
         elif isinstance(net, ModelSpec):
             self.net = build_module(net).to(self.device)
-            self._reference_state_keys = tuple(_tensor_keys(self.net.state_dict()))
         else:
             assert isinstance(net, Nets) and net_params is not None
             self.net = net(params=net_params).to(self.device)
+        if module is None:
+            # The tensors the descriptor rebuilds, recorded once from the
+            # module just built — never a second construction (FEAT-006) —
+            # for the reconstructibility checks (FEAT-016); a shape is None
+            # where a rebuild leaves the tensor uninitialized (a lazy layer).
+            self._reference_state = _state_shapes(self.net.state_dict())
         # Built-in nets keep their own unpack_batch (the legacy path); other
         # modules see batches through an adapter (FEAT-006).
         self._batch_adapter: Optional[BatchAdapter] = (
@@ -1586,33 +1725,81 @@ class NNModel(_HubMixinBase):
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
 
+    def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
+        """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
+        when the model built its module (a shape is ``None`` for an
+        uninitialized lazy parameter); ``None`` for a runtime module, which
+        nothing rebuilds."""
+        recorded = getattr(self, "_reference_state", None)
+        if recorded is None:
+            # An object that never ran this __init__ (a stand-in, an older
+            # pickle) gets the reference develop used: a factory's recorded
+            # names, or a rebuild of a built-in net off the global random
+            # streams — computed once.
+            net, net_params = self.params.net, getattr(self, "net_params", None)
+            legacy_keys = getattr(self, "_reference_state_keys", None)
+            if isinstance(net, ModelSpec) and legacy_keys is not None:
+                recorded = dict.fromkeys(legacy_keys)
+                self._reference_names_only = True  # shapes, lazy layers included, are unknown
+            elif isinstance(net, Nets) and net_params is not None:
+                from ..seeding import _global_rng_kept
+
+                with _global_rng_kept():
+                    recorded = _state_shapes(net(params=net_params).state_dict())
+            else:
+                return None
+            self._reference_state = recorded
+        return MappingProxyType(recorded)
+
+    def _lazy_base_keys(self) -> frozenset[str]:
+        """The base tensors a rebuild leaves uninitialized (lazy layers):
+        those recorded without a shape — unknown for an older factory
+        model whose reference holds names only."""
+        base = self._base_state()
+        if base is None or getattr(self, "_reference_names_only", False):
+            return frozenset()
+        return frozenset(key for key, shape in base.items() if shape is None)
+
+    def _topology_drift(self) -> Optional[str]:
+        """How the live topology differs from the descriptor plus the
+        recorded recipe (FEAT-016) — names, shapes, each target's module and
+        configuration — as one message; ``None`` when it matches, or when
+        nothing could tell (a runtime module, a train-end transform that
+        rebuilds its own topology)."""
+        base_state = self._base_state()
+        if base_state is None:
+            return None
+        from ..transforms import _topology_problems
+
+        problems = _topology_problems(self.net, base_state, tuple(self._topology_transforms))
+        if not problems:
+            return None
+        return (
+            "the model's topology differs from its descriptor plus its recorded transformation recipe (unrecorded "
+            "surgery?): " + "; ".join(problems[:5])
+        )
+
     def _assert_reconstructible_topology(self) -> None:
-        if self._topology_transforms:
-            return
-        net = self.params.net
-        if isinstance(net, ModelSpec):
-            # The factory's own layout, recorded when it built the module —
-            # never a second construction (FEAT-006).
-            expected_keys = set(getattr(self, "_reference_state_keys", ()))
-        elif isinstance(net, Nets):
-            assert self.net_params is not None
-            rng_state = _capture_rng_state(None)
-            try:
-                expected_keys = _tensor_keys(net(params=self.net_params).state_dict())
-            finally:
-                _restore_rng_state(rng_state, None)
-        else:
+        transforms = tuple(self._topology_transforms)
+        if transforms and not all(_replayable(t) for t in transforms):
+            return  # train-end transforms (QAT) rebuild their own topology
+        base_state = self._base_state()
+        if base_state is None:
             return  # a runtime module is marked reconstructible=False instead
+        if transforms:
+            # FEAT-016: the live topology must be exactly the base plus its
+            # recorded recipe; surgery outside the recipe stays unrecorded.
+            drift = self._topology_drift()
+            if drift is not None:
+                raise ValueError(
+                    drift
+                    + "; apply topology changes through nnx.transforms.TransformRecipe so checkpoints can rebuild "
+                    "them"
+                )
+            return
+        expected_keys = set(base_state)
         actual_keys = _tensor_keys(self.net.state_dict())
-        low_rank_replacements = [
-            key
-            for key in expected_keys
-            if key.endswith(".weight")
-            and key not in actual_keys
-            and f"{key[:-7]}.0.weight" in actual_keys
-            and f"{key[:-7]}.1.weight" in actual_keys
-        ]
-        if low_rank_replacements:
+        if _replaced_layers(actual_keys, expected_keys)[1]:
             raise ValueError(
                 "low-rank surgery topology has no reconstruction recipe; train before surgery, "
                 "or use export_state_dict() for the modified module"
@@ -1783,6 +1970,15 @@ class NNModel(_HubMixinBase):
         """
         model_params = checkpoint.model_params if device is None else replace(checkpoint.model_params, device=device)
         net = model_params.net
+        transforms = tuple(getattr(checkpoint, "transforms", ()))
+        if isinstance(net, RuntimeModule) and _recipe_transforms(transforms):
+            # A recipe is refused on a runtime-only module (FEAT-016); refused
+            # before module= is wrapped (or moved), so the caller's module is
+            # left exactly as given.
+            raise ValueError(
+                f"this checkpoint of the runtime-only module {net} records a transformation recipe, which nothing can "
+                "replay on a caller-owned module"
+            )
         if batch_adapter is not None:
             # Only passed when set: subclasses keep their own constructors.
             model_kwargs["batch_adapter"] = batch_adapter
@@ -1800,10 +1996,10 @@ class NNModel(_HubMixinBase):
         else:
             model = cls(params=model_params, net_params=checkpoint.net_params, **model_kwargs)
 
-        transforms = getattr(checkpoint, "transforms", ())
-        for transform in transforms:
-            _apply_checkpoint_transform(model, transform)
-        model._topology_transforms = tuple(transforms)
+        _replay_transforms(model, transforms)
+        model._topology_transforms = _canonical_transforms(transforms)
+        if not transforms:
+            _refuse_unrecorded_recipe_state(checkpoint.net_state, model.net.state_dict())
         if not isinstance(net, Nets):
             check_state_schema(model.net, checkpoint.net_state, what=f"checkpoint of {net}")
 
@@ -1842,6 +2038,12 @@ class NNModel(_HubMixinBase):
         so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
         before any file or directory is written."""
         self._require_portable("save_pretrained")
+        if _recipe_transforms(self._topology_transforms):
+            # FEAT-016: an artifact whose recipe cannot rebuild its weights
+            # would fail only when someone loads it.
+            drift = self._topology_drift()
+            if drift is not None:
+                raise ValueError(f"save_pretrained refused before writing anything: {drift}")
         return super().save_pretrained(save_directory, *args, **kwargs)
 
     def _require_portable(self, operation: str) -> None:
@@ -2032,10 +2234,11 @@ class NNModel(_HubMixinBase):
         if batch_adapter is not None:
             reconstruction_kwargs["batch_adapter"] = batch_adapter
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
-        for transform in transforms:
-            _apply_checkpoint_transform(model, transform)
-        model._topology_transforms = transforms
+        _replay_transforms(model, transforms)
+        model._topology_transforms = _canonical_transforms(transforms)
         state_dict = load_file(weights_path, device=str(torch_load_device))
+        if not transforms and strict:
+            _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
         if net_params is None and strict:
             check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
         model.net.load_state_dict(state_dict, strict=strict)
@@ -2069,7 +2272,11 @@ class NNModel(_HubMixinBase):
         :func:`nnx.finetune.load_pretrained` for the fine-tuning round-trip.
         Companion to the NNCheckpoint format, which carries the params +
         idp wrapper alongside the weights; ``export_state_dict`` strips
-        all of that and leaves just the weights.
+        all of that and leaves just the weights. It records no
+        transformation recipe (FEAT-016, ``nnx.transforms``): it cannot
+        rebuild a recipe's topology alone — materialize the recipe on a
+        fresh model before loading it, or keep a checkpoint or
+        ``save_pretrained`` artifact, which carry the recipe.
 
         Returns ``path`` so calls can be chained.
         """
@@ -2158,9 +2365,10 @@ class NNModel(_HubMixinBase):
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         _check_provenance(provenance)
         _check_history(history, callbacks)
-        if train_step_fn is None:
-            # NNx owns the update (default step or objective): the run's
-            # checkpoints must be reconstructible from the params recipe.
+        if train_step_fn is None or _recipe_transforms(self._topology_transforms):
+            # NNx owns the update (default step or objective), or the model
+            # carries a recipe (FEAT-016): the run's checkpoints must be
+            # reconstructible from the params and recorded recipe.
             self._assert_reconstructible_topology()
         if params is None:
             raise ValueError("train params must be non-None")
@@ -2204,7 +2412,13 @@ class NNModel(_HubMixinBase):
         # optimizer over exactly the resolved parameters, fails here with no
         # run reserved (nnx.optimizers.build_optimizer is the shared hook).
         optimizer = build_optimizer(self.net, params.optim)
-        run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
+        run = NNRun(
+            train=params,
+            model=self.params,
+            net=self.net_params,
+            salt=salt,
+            transforms=_recipe_transforms(self._topology_transforms),  # FEAT-016: part of the run id when present
+        )
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
                 run,
@@ -2333,7 +2547,11 @@ class NNModel(_HubMixinBase):
         # sidecars remain supported.
         if params.resume_from_run_id is not None:
             source = _load_resume_source(
-                params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=False
+                params.resume_from_run_id,
+                params.resume_from_checkpoint,
+                params.resume_mode,
+                trainer=False,
+                live_transforms=self._topology_transforms,
             )
             training_state = source.training_state
             if training_state is not None:
@@ -2611,6 +2829,7 @@ class NNModel(_HubMixinBase):
                         optimizer_factory=resume_optimizer_factory,
                         components=registry.collect(),
                         is_best=record.improved if record is not None else None,
+                        trained_recipe=run.transforms,
                     )
                 except BaseException:
                     # LAST is the epoch commit marker. If it cannot be
@@ -2655,7 +2874,7 @@ class NNModel(_HubMixinBase):
         # Costs one extra checkpoint write per training run. BEST is
         # deliberately untouched — it tracks the best *training-time* state.
         if records:
-            final_transforms = (*self._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
+            final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
             self._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=records.last,
@@ -2669,9 +2888,9 @@ class NNModel(_HubMixinBase):
                 optimizer_state=optimizer.state_dict(),
                 scheduler_state=scheduler.state_dict(),
                 scaler_state=scaler.state_dict() if scaler is not None else None,
-                rng_state=(pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader)),
+                rng_state=(pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)),
                 completed_epoch=records.last.epoch_idx,
-                resume_net_state=pre_transform_net_state if final_transforms else None,
+                resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 optimizer_type=_component_type(optimizer),
                 scheduler_type=_component_type(scheduler),
                 optimizer_topology=resume_optimizer_topology,
@@ -3159,12 +3378,23 @@ class NNModel(_HubMixinBase):
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
+        trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
     ) -> NNCheckpoint:
         """Publish LAST, the due phase tag and — when this epoch is the best
         so far — BEST. ``is_best`` is the monitor's decision (FEAT-003);
-        ``None`` keeps the legacy comparison."""
+        ``None`` keeps the legacy comparison. ``trained_recipe`` (the
+        recipe the run id records, FEAT-016) refuses, before anything is
+        written, a topology no checkpoint of the run could rebuild."""
+        if trained_recipe is not None:
+            _check_trained_recipe(self, trained_recipe)
         checkpoint = NNCheckpoint(
-            idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
+            idp=idp,
+            model_params=self.params,
+            net_params=self.net_params,
+            net_state=self.net.state_dict(),
+            # FEAT-016: a recipe recorded before training rebuilds every tag's
+            # topology (none for a model without one, as before).
+            transforms=_snapshot_transforms(self._topology_transforms),
         )
         # Every checkpoint tag is a valid resume point, so each carries the
         # same stateful training bundle as LAST/BEST.

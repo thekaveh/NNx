@@ -1172,13 +1172,16 @@ def export_bundle(
 
     Returns the published bundle's :class:`BundleInfo` (``verified=True``).
     A checkpoint written by ``train()`` gives a ``"resume"`` bundle; a
-    weights-only one an ``"inference"`` bundle. A runtime-only module, module
-    extra state that is not a tensor, and training state that is not tensors
-    and JSON primitives are refused before anything is written.
+    weights-only one an ``"inference"`` bundle. A runtime-only module, a
+    recorded topology transform NNx cannot replay from data (anything but an
+    ``nnx.transforms`` recipe operation of a known version or a torchao QAT
+    conversion — the error names its index and id), module extra state that
+    is not a tensor, and training state that is not tensors and JSON
+    primitives are refused before anything is written.
     """
     from filelock import FileLock
 
-    from .nn.nn_model import _resume_checkpoint_type
+    from .nn.nn_model import _resume_checkpoint_type, _unportable_transform
     from .nn.params.nn_checkpoint import NNCheckpoint
 
     label = str(_resume_checkpoint_type(checkpoint))
@@ -1190,6 +1193,12 @@ def export_bundle(
             f"a run bundle is portable, but {ckpt.model_params.net} is a runtime-only module (reconstructible=False) "
             "with no model factory to rebuild it; register one (nnx.models.register_model_factory) and train from a "
             "ModelSpec"
+        )
+    unportable = _unportable_transform(ckpt.transforms)
+    if unportable is not None:
+        raise BundleError(
+            f"a run bundle is portable, but {unportable}: a bundle carries only operations NNx replays from data "
+            "(nnx.transforms recipe operations, a torchao QAT conversion); keep this run in its pickle checkpoints"
         )
     non_tensors = [key for key, value in ckpt.net_state.items() if not isinstance(value, torch.Tensor)]
     if non_tensors:
