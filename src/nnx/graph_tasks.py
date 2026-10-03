@@ -244,7 +244,12 @@ class GraphCollection(torch.utils.data.Dataset):
 def check_graph_batch(batch: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """``(x, edge_index, batch_vector, ptr)`` of a graph-collection batch,
     checked: graph ids (unique), at least one node per graph, ``ptr`` and the
-    batch vector consistent, and no edge across graphs."""
+    batch vector consistent, and no edge across graphs. An edge-label (link)
+    batch is refused: pooling it would score candidate edges as graphs."""
+    if getattr(batch, "edge_label_index", None) is not None:
+        raise GraphTaskError(
+            "an edge-label (link) batch asks about candidate edges, not whole graphs; use nnx.link_tasks"
+        )
     if not is_graph_collection_batch(batch):
         raise GraphTaskError(
             "a graph classifier reads batches of whole graphs with graph ids (GraphCollection.loader()); "
@@ -376,9 +381,14 @@ class GraphClassifier(nn.Module):
 
 
 class _Encoder(nn.Module):
-    """PyG convolutions with an activation (and dropout) after every layer."""
+    """PyG convolutions with an activation (and dropout) after every layer —
+    or, with ``last_activation=False``, after every layer but the last, so
+    the node embeddings are unconstrained (a dot-product edge decoder needs
+    negative logits)."""
 
-    def __init__(self, kind: str, dims: Sequence[int], activation: str, dropout: float) -> None:
+    def __init__(
+        self, kind: str, dims: Sequence[int], activation: str, dropout: float, *, last_activation: bool = True
+    ) -> None:
         super().__init__()
         from torch_geometric.nn import GATConv, GCNConv, SAGEConv
 
@@ -388,11 +398,15 @@ class _Encoder(nn.Module):
         self.layers = nn.ModuleList(conv(a, b) for a, b in zip(dims, dims[1:], strict=False))
         self.activation = Activations(activation)()
         self.dropout = float(dropout)
+        self.last_activation = bool(last_activation)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        for layer in self.layers:
-            x = self.activation(layer(x, edge_index))
-            x = nn.functional.dropout(x, p=self.dropout, training=self.training)
+        last = len(self.layers) - 1
+        for position, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            if position < last or self.last_activation:
+                x = self.activation(x)
+                x = nn.functional.dropout(x, p=self.dropout, training=self.training)
         return x
 
 

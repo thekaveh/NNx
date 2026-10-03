@@ -83,6 +83,7 @@ from ..nn.nn_model import (
     _plan_component_restore,
     _restore_weights_only,
     _rollback_resume,
+    _set_loader_epoch,
     _step_monitored_plateau,
     _with_attempt,
 )
@@ -647,6 +648,7 @@ class Trainer:
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
+                _set_loader_epoch(params.train_loader, idx_epoch)
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
