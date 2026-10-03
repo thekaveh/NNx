@@ -107,6 +107,21 @@ def _generation_sidecar_paths(checkpoint_path: str) -> list[str]:
     return paths
 
 
+def _is_bundle_payload(path: str) -> bool:
+    """Whether the safetensors file at ``path`` is a run-bundle payload
+    (``nnx.bundles``), judged from its JSON header's metadata alone."""
+    try:
+        with open(path, "rb") as handle:
+            length = int.from_bytes(handle.read(8), "little")
+            if not 0 < length <= 100 * 1024 * 1024:
+                return False
+            header = json.loads(handle.read(length))
+    except (OSError, ValueError):
+        return False  # not ours to judge: the safetensors reader reports it
+    metadata = header.get("__metadata__") if isinstance(header, dict) else None
+    return isinstance(metadata, dict) and "nnx.bundle" in metadata
+
+
 def _snapshot_state_dict(state: Any) -> Any:
     """Copy tensor and extra state while preserving OrderedDict metadata."""
     return deepcopy(state)
@@ -560,6 +575,20 @@ class NNCheckpoint:
         """
         if not os.path.exists(path):
             return None
+        if os.path.isdir(path) and os.path.exists(os.path.join(path, "bundle.json")):
+            raise ValueError(
+                f"{path!r} is an NNx run bundle, not a checkpoint file; read it with nnx.bundles "
+                "(inspect_bundle / validate_bundle / reconstruct_bundle), which never unpickles"
+            )
+        parent = os.path.dirname(os.path.abspath(path))
+        grandparent = os.path.dirname(parent)
+        if os.path.isfile(os.path.join(parent, "bundle.json")) or (
+            os.path.basename(parent).startswith("g-") and os.path.isfile(os.path.join(grandparent, "bundle.json"))
+        ):
+            raise ValueError(
+                f"{path!r} is a file of an NNx run bundle, not a checkpoint; read the bundle directory with "
+                "nnx.bundles.reconstruct_bundle"
+            )
 
         with open(path, "rb") as f:
             head = f.read(9)
@@ -604,6 +633,11 @@ class NNCheckpoint:
     @staticmethod
     def _from_safetensors_file(path: str, map_location: Any = "cpu") -> NNCheckpoint:
         """Load a safetensors-format NNCheckpoint. Requires `thekaveh-nnx[hub]`."""
+        if _is_bundle_payload(path):  # from the header alone, before any tensor or optional import
+            raise ValueError(
+                f"{path!r} is a payload of an NNx run bundle, not a checkpoint; read the bundle directory "
+                "with nnx.bundles.reconstruct_bundle"
+            )
         try:
             from safetensors import safe_open
         except ImportError as e:  # pragma: no cover — gated by optional dep

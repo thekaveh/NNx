@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import cast
 
 import pytest
+import torch
 
 from nnx.finetune.param_groups import NNParamGroupSpec
 from nnx.nn.enum.activations import Activations
@@ -936,3 +937,145 @@ def test_provenance_round_trips_outside_the_run_state(tmp_path, monkeypatch):
     assert loaded.provenance is not None and loaded.provenance.manifest == manifest
     assert loaded.provenance.fingerprint == manifest.fingerprint()
     assert ExperimentManifest.from_state(manifest.state()) == manifest
+
+
+# --- FEAT-015: three artifact formats, one trust boundary each -------------------------------------
+
+
+class _ExtraStateEncoder(torch.nn.Module):
+    """A registered module whose extra state is not a tensor."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(4, 3)
+
+    def forward(self, x):
+        return self.linear(x)
+
+    def get_extra_state(self):
+        return {"vocabulary": ["a", "b"]}
+
+    def set_extra_state(self, state):
+        self.vocabulary = state["vocabulary"]
+
+
+def _feat015_bundle(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import NNModel
+    from nnx.bundles import export_bundle
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[5], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    batches = [(torch.randn(6, 4), torch.randint(0, 3, (6,)))]
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1, data_id="formats", train_loader=batches, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+        )
+    )
+    export_bundle(run.id, "bundle")
+    return model, run
+
+
+def test_feat015_legacy_readers_bundles_and_hub_distributions_stay_distinguishable(tmp_path, monkeypatch):
+    import json
+    import os
+    import pickle
+
+    import torch
+
+    from nnx import NNModel
+    from nnx.bundles import BundleError, inspect_bundle, validate_bundle
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    model, run = _feat015_bundle(tmp_path, monkeypatch)
+    with open(os.path.join("bundle", "bundle.json"), encoding="utf-8") as handle:
+        generation = json.load(handle)["generation"]
+    payload = os.path.join("bundle", f"g-{generation}", "model.safetensors")
+
+    # The legacy pickle reader never mistakes a bundle — or one of its payloads — for a checkpoint.
+    with pytest.raises(ValueError, match="is an NNx run bundle, not a checkpoint file"):
+        NNCheckpoint.from_file("bundle")
+    for inside in (
+        payload,
+        os.path.join("bundle", "bundle.json"),
+        os.path.join(os.path.dirname(payload), "state.json"),
+    ):
+        with pytest.raises(ValueError, match="of an NNx run bundle, not a checkpoint"):
+            NNCheckpoint.from_file(inside)
+    # Nor does the Hub loader (a bundle is no Hub distribution) ...
+    with pytest.raises(ValueError, match="not a Hugging Face Hub distribution"):
+        NNModel._from_pretrained(model_id="bundle")
+    # ... and the bundle readers never open a pickle checkpoint, a Hub directory or a remote id.
+    os.makedirs("hub")
+    with open(os.path.join("hub", "config.json"), "w", encoding="utf-8") as handle:
+        json.dump({"params": model.params.state()}, handle)
+    with open(os.path.join("hub", "model.safetensors"), "wb") as handle:
+        handle.write(open(payload, "rb").read())
+
+    def unpickle(*args, **kwargs):
+        raise AssertionError("a pickle was read")
+
+    monkeypatch.setattr(torch, "load", unpickle)
+    monkeypatch.setattr(pickle, "load", unpickle)
+    last = os.path.join("runs", run.id, "checkpoints", "last.pt")
+    with pytest.raises(BundleError, match="not a run bundle directory"):
+        inspect_bundle(last)
+    with pytest.raises(BundleError, match="Hugging Face Hub distribution"):
+        validate_bundle("hub")
+    with pytest.raises(BundleError, match="nothing is downloaded"):
+        inspect_bundle("thekaveh/some-model")
+    with pytest.raises(BundleError, match="has no bundle.json"):
+        inspect_bundle(os.path.join("runs", run.id))  # a run directory is not a bundle either
+
+
+def test_feat015_unknown_versions_malformed_bundles_and_extra_state_fail_without_fallback(tmp_path, monkeypatch):
+    import json
+    import os
+
+    from nnx import ModelSpec, NNModel, register_model_factory, unregister_model_factory
+    from nnx.bundles import BundleError, BundleIntegrityError, export_bundle, inspect_bundle, validate_bundle
+
+    _feat015_bundle(tmp_path, monkeypatch)
+    manifest_path = os.path.join("bundle", "bundle.json")
+    with open(manifest_path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    for version, message in ((2, "unsupported run bundle version 2"), (True, "unsupported run bundle version True")):
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump({**manifest, "version": version}, handle)
+        with pytest.raises(BundleIntegrityError, match=message):
+            inspect_bundle("bundle")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump({**manifest, "format": "someone.else"}, handle)
+    with pytest.raises(BundleIntegrityError, match="not an NNx run bundle manifest"):
+        validate_bundle("bundle")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        handle.write('{"format": NaN}')
+    with pytest.raises(BundleIntegrityError, match="strict JSON"):
+        validate_bundle("bundle")
+
+    register_model_factory("tests.extra_state", 1, lambda config: _ExtraStateEncoder())
+    try:
+        model = NNModel(
+            params=NNModelParams(net=ModelSpec("tests.extra_state", 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+        )
+        import torch
+
+        run = model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                data_id="extra",
+                train_loader=[(torch.randn(4, 4), torch.randint(0, 3, (4,)))],
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            )
+        )
+        with pytest.raises(BundleError, match=r"unsupported extra state \['_extra_state'\].*no pickle fallback"):
+            export_bundle(run.id, "extra-bundle")
+        assert not os.path.exists("extra-bundle")  # refused before anything was written
+    finally:
+        unregister_model_factory("tests.extra_state", 1)

@@ -1724,3 +1724,210 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+## 21. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+`predict()`, `predict_proba()` and `evaluate()` are eager: they return only
+after the whole loader has run, holding every batch's outputs (and, for
+`evaluate()`, every target and prediction) until then. FEAT-020 adds bounded
+counterparts. The eager calls are unchanged.
+
+```text
+NNModel.iter_predict(loader) ──► PredictionStream ──► PredictionBatch(logits, classes, sample_ids) per batch
+                   (spec / rich=True) ──────────────► PredictionResult per batch
+StreamingMetrics.update(...) ─┐
+StreamingMetrics.update(...) ─┴─ merge ──► finalize() ──► MetricSnapshot(count, values, unavailable)
+NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation record from counts and sums
+```
+
+- **A context-managed stream.** `iter_predict` takes a `DataLoader` or
+  another iterable of batches; in-memory arrays and tensors stay with
+  `predict()`. Use the stream in a `with` block:
+
+  ```python
+  with model.iter_predict(loader) as stream:
+      for batch in stream:
+          sink.write(batch.sample_ids, batch.classes)
+  ```
+
+  Batches arrive in loader order. Concatenated (`concatenate_predictions`),
+  they are exactly the eager result: `predict()`'s logits and classes and
+  `predict_proba()`'s sample ids, with the same graph seed-row slicing and the
+  same categorical, multilabel (the task's threshold) and continuous
+  decoding. With a `ProbabilitySpec`, or `rich=True` for a model with a task,
+  each batch is the `PredictionResult` `predict_proba()` would build for it.
+  An empty loader yields no batches, where the eager calls raise. Over a
+  shuffling `DataLoader`, the first batch whose sample ids are iteration
+  positions warns, as `predict_proba()` does; graph seed rows carry global
+  node indices and never warn.
+- **Mode restoration.** Each batch's forward pass runs in eval mode under
+  `no_grad`, and every submodule's training mode is restored right after it,
+  before the batch is yielded or its error raised. Between batches the
+  network is in its own mode, so a consumer may train or inspect it; after an
+  early close or a failed forward pass nothing is left in eval mode.
+- **Ownership and reuse.** Closing the stream (leaving the `with` block,
+  `close()`, an error inside the stream) finalizes its generator and drops
+  its references to the loader's iterator and the model. Like a closed
+  generator, a closed stream is exhausted, so `close()` inside a `for` loop
+  ends the loop; iterating a closed, consumed or partly consumed stream again
+  (after a `break`), or entering a closed one, raises `StreamClosedError` —
+  ask `iter_predict()` for a new one. The
+  loader is never closed: it stays the caller's and can be iterated again.
+- **Consumer-retained memory.** The stream holds at most the batch in
+  flight, so its memory does not grow with the dataset. What the consumer
+  keeps is the consumer's memory: keep the sample ids and decisions you need,
+  not the batches. The eager calls are a stream the library concatenates for
+  you, with O(N) memory.
+- **Mergeable metrics.** `StreamingMetrics(metrics, semantics, labels=...,
+  threshold=...)`, or `StreamingMetrics.for_task(metrics, task)`, accumulates
+  declared `MetricSpec`s:
+  - `update(target, probabilities=..., labels=..., values=..., valid=...)`
+    takes a batch's inputs, and `update_logits(target, logits)` derives them
+    from raw outputs as `evaluate()` does. Masked entries (`valid=False`, a
+    NaN target — a one-hot / soft row holding a NaN included — or a
+    categorical target equal to the task's `ignore_index`) are not scored.
+    This is the standalone accumulator's own rule: `evaluate()` records, and
+    `streaming_eval_step` with them, mask what the task (or, without one, the
+    loss's `ignore_index`) masks, as before.
+  - The built-ins keep sufficient statistics: sums and counts for
+    `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
+    `f1` (the same values as scikit-learn with `zero_division=0`). Memory is
+    bounded by the number of classes, never by N. A registered metric is
+    bounded when its accumulator implements `merge()` and does not declare
+    `stores_scores = True`.
+  - `merge(other)` returns a new accumulation over both inputs' samples,
+    whatever the order, copying its inputs so later updates to either never
+    reach it. Merging an empty accumulation changes nothing.
+  - `finalize()` returns a read-only `MetricSnapshot(count, values,
+    unavailable)`, repeatable and never changing the accumulation. An empty or
+    fully masked stream finalizes to `count=0` with every metric unavailable.
+- **Merge schemas.** Two accumulations merge only when they declare the same
+  metrics (names, ids, versions and configs), the same probability semantics
+  (`categorical`, `bernoulli` or `continuous`), the same task labels and
+  output count (`num_outputs`: classes, or outputs along axis 1), the same
+  decision threshold and the same `ignore_index`. Anything else raises
+  `MetricMergeError`, since the sums would describe different quantities. A
+  custom accumulator's `merge(other)` adds `other` in place and returns
+  `None`, keeping nothing of `other` that a later update could change.
+- **Stored scores.** A rank metric such as AUROC depends on the order of
+  every score and is never additive. A registered metric whose accumulator
+  has no `merge()`, or declares `stores_scores = True`, is refused in bounded
+  mode before any update. `materialize=True` stores its scores instead (O(N)
+  memory) and replays them at `finalize()`.
+- **Bounded validation and loss denominators.** `streaming_eval_step` is an
+  opt-in `eval_step_fn` that builds the validation record `evaluate()` builds,
+  from counts and sums:
+  - the same task kind, count and status, with masked targets not counted;
+  - the same loss — each batch's loss numerator summed and divided by the
+    summed loss denominators (valid targets, or class weights), never a mean
+    of batch means; a `sum`-reduction loss stays a total;
+  - the same classification or task metrics, and the declared metrics that
+    monitors and BEST selection read.
+
+  `EvalStepContext.metrics` carries the run's declared metrics to the step.
+  It refuses `extra_metrics` (callables on the full arrays) and a
+  stored-score metric when training starts, before any run is reserved, and
+  `ExperimentPlan.validate()` reports both under `train.extra_metrics` /
+  `train.metrics[i]`. These early checks apply to `streaming_eval_step`
+  itself or a `functools.partial` of it; a step that wraps it is a step of its
+  own, and the streaming step then refuses at its first call, before reading
+  a validation batch. The default validation step and `evaluate()` stay
+  eager, and `evaluate()` still raises on an empty loader. A model without a
+  task scores multi-output (`BCEWithLogitsLoss`) indicators row by row, as
+  `evaluate()` does: accuracy is the exact-row accuracy, and the averages run
+  over the labels.
+
+See [`examples/prediction_stream.py`](../examples/prediction_stream.py).
+
+## 22. Run bundles (`nnx.bundles`)
+
+A run's checkpoints are pickles (`torch.load(weights_only=False)`), safe to
+read only when you produced them, and a safetensors checkpoint holds one
+weights dict without the training state. A **run bundle** (FEAT-015) holds
+one run checkpoint — its weights, its training state and optional
+calibrators — as data only:
+
+```text
+<bundle>/bundle.json            manifest: format, version, generation id, every payload's SHA-256 and size
+<bundle>/g-<generation>/
+    state.json                  primitive state, schema-validated JSON
+    model.safetensors           the network's tensors
+    training.safetensors        the training state's tensors ("resume" bundles only)
+    calibrator-<n>.json         TemperatureCalibrator records (§18)
+
+export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bundle(dir) ──► reconstruct_bundle(dir, factories=...)
+                                                                                     └── ReconstructedBundle.resume(params)
+```
+
+- **Export** reads one of your runs' checkpoints (`checkpoint="last"`, any
+  `Checkpoints` tag, or a `ModelCheckpoint` stem such as `"snap_e3"`) and
+  publishes it as a new generation. A checkpoint written by `train()` gives a
+  `"resume"` bundle; a weights-only one (a `ModelCheckpoint` snapshot) an
+  `"inference"` bundle. Calibrators ship alongside: they must calibrate a
+  categorical model with their class count and the task's labels, and a
+  fingerprint `model_id` (`model_fingerprint`) must be the bundled weights'
+  (checked again by every validation).
+- **Format v1.** Tensors are stored in the safetensors format, which NNx
+  writes and reads itself (no optional dependency; any safetensors reader
+  opens the payloads). Everything else is strict JSON with typed encodings:
+  `$tuple`, integer-keyed `$intdict` (optimizer state), non-finite `$float`
+  (a plateau scheduler's `inf`) and `$tensor` references. Module extra state
+  that is not a tensor, a custom object in optimizer or component state and
+  a runtime-only module are refused at export, with no pickle fallback.
+- **Inspect and validate.** `inspect_bundle` summarizes a bundle
+  (`BundleInfo`: capability, source run and checkpoint, epoch, model,
+  components, calibrators) from the manifest and `state.json`.
+  `validate_bundle` checks every payload before any tensor is read: size and
+  SHA-256 (the size checked before a file is read, and no file opened
+  through a symlink or as a FIFO or device), one generation id throughout,
+  nothing missing, unlisted, symlinked or outside the bundle, strict JSON
+  without duplicate keys or runaway nesting, calibrator labels matching the
+  task's, and safetensors headers holding exactly the tensors `state.json`
+  references. Only then is a calibrator's fingerprint `model_id` checked,
+  against the weights hashed straight from the payload (no tensor is
+  built). An export runs the same checks on its staged generation before
+  publishing it.
+  Neither unpickles, calls a model factory or downloads — even beside a
+  legacy `last.pt`.
+- **Reconstruct.** `reconstruct_bundle(path, factories=..., components=...)`
+  validates, then rebuilds the model. A registered module is built from the
+  caller-supplied `factories` (`{(id, version): factory}`; the process
+  registry when omitted), with `batch_adapter=` for its inputs as with
+  `NNModel` (runtime-only, never stored). Passing the resumed run's
+  `components` (e.g. the same callbacks) checks their saved state too. Every missing factory or
+  component is named in one `BundleReconstructionError` before any model is
+  allocated — a model saved on CUDA or MPS on a host without it included
+  (pass `device=Devices.CPU`). The rebuilt model predicts bit-for-bit like
+  the source; to serve it, keep `.model` and drop the `ReconstructedBundle`,
+  which holds a `"resume"` bundle's training state for `resume()`. Bundles
+  hold `NNModel` runs: artifacts a subclass keeps outside the checkpoint (a
+  `GenerativeNNModel` tokenizer) are not bundled. Like
+  `from_pretrained` with a `config.json`, reconstruction builds the
+  architecture the bundle's parameters describe: read an untrusted bundle's
+  `inspect_bundle(...).model_params` before reconstructing it.
+- **Resume.** `ReconstructedBundle.resume(params, **train_kwargs)` runs
+  `model.train` as a stateful resume of the bundle's run: the optimizer,
+  scheduler, GradScaler, RNG and component state come from the bundle, held
+  in memory (it never becomes a pickle), and the resumed run records
+  `resume_checkpoint` (`"bundle-<generation>_e<epoch>"`) as its parent
+  checkpoint — with `provenance=...`, its attempt links the bundle's run,
+  epoch and generation without reading anything from disk. One resumed epoch equals the uninterrupted run. An
+  `"inference"` bundle raises `BundleCapabilityError` before anything
+  changes, and so does a `Trainer` run's bundle (named optimizers) or a
+  transformed topology (a converted QAT checkpoint): `resume` continues
+  `NNModel.train` runs from an untransformed model, while these models
+  rebuild for inference like any other.
+- **Publication.** A new generation directory is written first and
+  `bundle.json` is replaced atomically, so an export interrupted at any
+  point leaves the previous bundle usable. The replaced generation stays
+  until the next export, so a reader that started before an export can
+  finish; older generations and an interrupted export's leftovers are
+  cleared. An export never touches a directory that is neither empty nor a
+  run bundle, nor a `bundle.json` that is not a readable NNx manifest.
+- **Three formats, three readers.** Pickle checkpoints, safetensors
+  checkpoints / Hub distributions and run bundles each have their own
+  reader, and none opens another's files (see [Hub integration
+  §3](hub.md#3-three-artifact-formats-and-their-trust-boundaries) and
+  `SECURITY.md`).
+
+See [`examples/run_bundle.py`](../examples/run_bundle.py).

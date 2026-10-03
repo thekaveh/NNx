@@ -87,8 +87,11 @@ class _LegacyCallback(Callback):
         self._fn(ctx.idps)
 
 
-def _warn_at_user_frame(message: str) -> None:
-    """Emit a ``RuntimeWarning`` attributed to the first caller outside nnx.
+def _warn_at_user_frame(
+    message: str, category: type[Warning] = RuntimeWarning, *, once_per_location: bool = False
+) -> None:
+    """Emit a warning (``RuntimeWarning`` by default) attributed to the first
+    caller outside nnx.
 
     ``warnings.warn(stacklevel=...)`` would point at a fixed line inside the
     training loop, and Python's default filter shows a given message from a
@@ -96,17 +99,20 @@ def _warn_at_user_frame(message: str) -> None:
     the same notebook would be silent. A fresh registry per call keeps user
     filters (``ignore`` / ``error`` / ``once``) authoritative while callers
     bound the volume themselves (``EarlyStopping`` reports once per run).
+    ``once_per_location`` uses that caller's registry instead, as
+    ``warnings.warn`` does, so the default filter shows a warning once per
+    user call site.
     """
     frame = sys._getframe(1)
     while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).split(".")[0] == "nnx":
         frame = frame.f_back
     warnings.warn_explicit(
         message,
-        RuntimeWarning,
+        category,
         frame.f_code.co_filename,
         frame.f_lineno,
         module=frame.f_globals.get("__name__"),
-        registry=None,
+        registry=frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None,
         module_globals=frame.f_globals,
     )
 
