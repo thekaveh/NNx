@@ -1381,10 +1381,14 @@ def _objective_engine(
     (FEAT-028): autocast around the objective, the scaler for an fp16
     update."""
     from .._update_engine import UpdateEngine
+    from ..objectives import Objective
 
     if precision.uses_scaler and scaler is None:
         # As in default_train_step: an unscaled float16 backward underflows.
         raise ValueError("fp16 trains through a GradScaler, and this objective run has none")
+    after_update = getattr(objective, "after_update", None)
+    if isinstance(objective, Objective) and type(objective).after_update is Objective.after_update:
+        after_update = None  # the base class's no-op: no per-commit work to schedule
 
     return UpdateEngine(
         optimizers=optimizers,
@@ -1393,6 +1397,8 @@ def _objective_engine(
         nonfinite=getattr(objective, "nonfinite", "fail"),
         autocast=precision.autocast if precision.reduced else None,
         precision=precision,
+        # FEAT-040: the objective's own once-per-commit work (a JEPA EMA).
+        commit_hooks=(cast(Callable[[tuple[Any, ...]], None], after_update),) if callable(after_update) else (),
     )
 
 
@@ -2554,14 +2560,10 @@ class NNModel(_HubMixinBase):
         The run lease prevents another process using ``overwrite_existing``
         from deleting or interleaving artifacts until final persistence ends.
         """
-        if objective is not None and train_step_fn is not None:
-            # Checked before anything else: one owner per optimizer update.
-            raise ValueError(
-                "pass train_step_fn or objective, not both: a step function owns its own optimizer updates, "
-                "an objective hands them to NNx's shared update engine"
-            )
-        if objective is not None and not callable(objective):
-            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        from ..objectives import _check_objective_run, _check_update_owner
+
+        # Checked before anything else: one owner per optimizer update.
+        _check_update_owner(train_step_fn, objective)
         _check_provenance(provenance)
         _check_history(history, callbacks)
         if train_step_fn is None or _recipe_transforms(self._topology_transforms):
@@ -2614,6 +2616,10 @@ class NNModel(_HubMixinBase):
         # optimizer over exactly the resolved parameters, fails here with no
         # run reserved (nnx.optimizers.build_optimizer is the shared hook).
         optimizer = build_optimizer(self.net, params.optim)
+        if objective is not None:
+            # FEAT-040: an objective refuses what it cannot train (say, a JEPA
+            # predictor the optimizer does not own) before any run exists.
+            _check_objective_run(objective, self, optimizers={"default": optimizer}, callbacks=callbacks)
         # The fp16 scaler, through the override hook and checked against the
         # policy (FEAT-028) before any run is reserved.
         scaler = self._build_grad_scaler()

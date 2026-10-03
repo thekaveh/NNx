@@ -15,11 +15,62 @@ coupling beyond the TrainStepContext type.
 
 from __future__ import annotations
 
+from typing import Any, TypeVar, cast
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from .nn.nn_model import TrainStepContext
+
+# Marks an imperative paradigm step (it steps the optimizer itself) with its
+# paradigm's name, so passing it as ``objective=`` is refused before any run
+# is reserved (FEAT-040) instead of being stepped twice.
+IMPERATIVE_STEP = "__nnx_imperative_step__"
+
+_StepT = TypeVar("_StepT")
+
+
+def first_input(model: Any, batch: Any, *, who: str) -> torch.Tensor:
+    """A self-supervised paradigm's one input from a batch, on the model's
+    device (labels, if any, are ignored): split by the model's batch adapter
+    when it has one (FEAT-006) — which must yield exactly one input,
+    positional or keyword — else the net's own ``unpack_batch``, else the
+    first element of a tuple / list, else the batch itself (a net swapped in
+    for a built-in one)."""
+    adapter = getattr(model, "_batch_adapter", None)
+    if adapter is not None:
+        args, kwargs, _ = adapter.split(batch)
+        inputs = [*args, *kwargs.values()]
+        if len(inputs) != 1:
+            raise ValueError(
+                f"{who} needs batches of exactly one input; the model's batch adapter gave {len(args)} positional "
+                f"and {len(kwargs)} keyword input(s)"
+            )
+        x = inputs[0]
+    elif hasattr(model.net, "unpack_batch"):
+        inputs, _ = cast(Any, model.net).unpack_batch(batch)
+        if len(inputs) != 1:
+            raise ValueError(f"{who} needs batches of exactly one input; the net's unpack_batch gave {len(inputs)}")
+        (x,) = inputs
+    elif isinstance(batch, (list, tuple)):
+        x = batch[0]
+    else:
+        x = batch
+    return x.to(model.device)
+
+
+def full_precision(tensor: torch.Tensor) -> torch.Tensor:
+    """A mixed-precision (float16 / bfloat16) output as float32, so a loss
+    sum accumulates in full precision; other dtypes unchanged."""
+    return tensor.float() if tensor.dtype in (torch.float16, torch.bfloat16) else tensor
+
+
+def imperative_step(step: _StepT, *, paradigm: str) -> _StepT:
+    """Mark ``step`` as an imperative ``paradigm`` step (see
+    :data:`IMPERATIVE_STEP`) and return it."""
+    setattr(step, IMPERATIVE_STEP, paradigm)
+    return step
 
 
 def finalize_step(
