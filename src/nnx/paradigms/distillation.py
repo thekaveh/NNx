@@ -48,7 +48,17 @@ def _check_kd_weights(alpha: float, temperature: float) -> None:
 def _freeze_teacher(teacher: NNModel) -> None:
     """Freeze the teacher and pin it to eval mode. The student's training
     never touches the teacher; this just guards against accidental gradient
-    flow if the caller wires them into a shared module later."""
+    flow if the caller wires them into a shared module later. Stored teacher
+    probabilities (FEAT-022) are refused: live distillation softens a
+    running teacher's logits."""
+    from .offline_distillation import _is_teacher_records
+
+    if _is_teacher_records(teacher) or not isinstance(getattr(teacher, "net", None), torch.nn.Module):
+        raise TypeError(
+            f"live distillation needs a live NNModel teacher whose logits it softens at a temperature, got "
+            f"{type(teacher).__name__}; stored, probability-only teacher records train through "
+            "nnx.paradigms.offline_distillation (TeacherDataset.objective())"
+        )
     teacher.net.eval()
     for p in teacher.net.parameters():
         p.requires_grad = False

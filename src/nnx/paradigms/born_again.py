@@ -81,6 +81,13 @@ def born_again_train(
     """
     if generations < 1:
         raise ValueError(f"generations must be >= 1, got {generations}")
+    from .offline_distillation import _is_teacher_records
+
+    if _is_teacher_records(train_params.train_loader):
+        raise TypeError(
+            "born_again_train distills live generations from (inputs, labels) batches; stored teacher "
+            "probabilities train through TeacherDataset.objective() (nnx.paradigms.offline_distillation)"
+        )
     # Generations 1+ distill with kd_train_step_factory, a full-precision step
     # (FEAT-028): refuse before generation 0 spends its compute. Resolved
     # afresh, as each generation's train() resolves it.

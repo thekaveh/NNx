@@ -3553,6 +3553,12 @@ class NNModel(_HubMixinBase):
     def _split_batch(self, batch: Any) -> tuple[tuple[Any, ...], dict[str, Any], Any]:
         """``(args, kwargs, target)`` of a batch: a built-in net's own
         ``unpack_batch``, else the model's batch adapter (FEAT-006)."""
+        if getattr(batch, "_nnx_teacher_records", False) is True:
+            raise TypeError(
+                "this batch holds stored teacher probabilities (a TeacherBatch, FEAT-022), not (inputs, labels): "
+                "train it with TeacherDataset.objective() (nnx.paradigms.offline_distillation) and score it with "
+                "evaluate_offline; the supervised and live-teacher steps cannot use it"
+            )
         adapter = getattr(self, "_batch_adapter", None)
         if adapter is None:
             inputs, target = cast(Any, self.net).unpack_batch(batch)
