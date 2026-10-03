@@ -49,7 +49,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 ### 1.1. Core capabilities
 
-- **Generic training loop** — callbacks, early stopping, schedulers, AMP, gradient clipping, gradient accumulation, and seeded reproducibility.
+- **Generic training loop** — callbacks, early stopping, schedulers, an FP32 / FP16 / BF16 precision policy, gradient clipping, gradient accumulation, and seeded reproducibility.
 - **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags, ordered history → LAST → ancillary commits, and a `runs/best` pointer that advances only after the final durable save.
 - **Warm-resume training** — restore model, validated optimizer topology, scheduler, scaler, completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG state from a matching generation-addressed sidecar.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
@@ -65,7 +65,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Pruning** — magnitude unstructured (checkpoint-safe) and 2:4 semi-structured via torchao.
 - **Model surgery** — `widen` / `deepen` (function-preserving Net2Net), `drop_layer`, `low_rank_factorize` (SVD), `expand_embedding`.
 - **Diffusion (DDPM)** — noise-prediction training and reverse-diffusion sampling.
-- **Training paradigms** — knowledge distillation (Hinton + FitNets-style feature-KD), contrastive (SimCLR / NT-Xent), Mixup, CutMix, sparse top-k Mixture-of-Experts (`MoELinear` + Switch-style aux loss), I-JEPA self-supervised pretraining, DPO preference fine-tuning, Born-Again iterated self-distillation.
+- **Training paradigms** — knowledge distillation (Hinton + FitNets-style feature-KD), contrastive (SimCLR / NT-Xent), Mixup, CutMix, sparse top-k Mixture-of-Experts (`MoELinear` + Switch-style aux loss), I-JEPA self-supervised pretraining, DPO preference fine-tuning, Born-Again iterated self-distillation; diffusion, I-JEPA and KD also as objectives over the shared update engine.
 - **Language modeling** — `TransformerNN` (decoder-only: RMSNorm + RoPE + SwiGLU + KV-cache) + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with greedy / top-k / top-p / repetition-penalty sampling.
 - **Embeddings + FAISS** — contrastive text-embedder training + FAISS index export for downstream RAG.
 - **Experimental GGUF export** — write and inspect an NNx-tagged `.gguf`, or prepare a bundle for a runtime patched to support the NNx architecture. Stock llama.cpp, Ollama, and LM Studio do not implement `nnx_transformer`.

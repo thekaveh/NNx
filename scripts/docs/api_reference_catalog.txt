@@ -182,6 +182,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.FixedHeadProvider
 
+@api nnx.decisions.NLIProvider
+
 @api nnx.decisions.DecisionError
 
 @api nnx.decisions.UnsupportedCapability
@@ -191,6 +193,28 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.InvalidDecisionResponse
 
 @api nnx.decisions.ProviderFailure
+
+@api nnx.decisions.DecisionJob
+
+@api nnx.decisions.Follow
+
+@api nnx.decisions.Limits
+
+@api nnx.decisions.JobResult
+
+@api nnx.decisions.QuestionOutcome
+
+@api nnx.decisions.RowOutcome
+
+@api nnx.decisions.JobError
+
+@api nnx.decisions.InvalidJob
+
+@api nnx.decisions.JobFailed
+
+@api nnx.decisions.JobLimitExceeded
+
+@api nnx.decisions.JobTimeout
 
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
@@ -316,7 +340,75 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
-### 2.18. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+@api nnx.streaming.PredictionStream
+
+@api nnx.streaming.PredictionBatch
+
+@api nnx.streaming.concatenate_predictions
+
+@api nnx.streaming.StreamingMetrics
+
+@api nnx.streaming.MetricSnapshot
+
+@api nnx.streaming.streaming_eval_step
+
+@api nnx.streaming.StreamClosedError
+
+@api nnx.streaming.MetricMergeError
+
+### 2.19. Run bundles (`nnx.bundles`)
+
+@api nnx.bundles.export_bundle
+
+@api nnx.bundles.inspect_bundle
+
+@api nnx.bundles.validate_bundle
+
+@api nnx.bundles.reconstruct_bundle
+
+@api nnx.bundles.BundleInfo
+
+@api nnx.bundles.ReconstructedBundle
+
+@api nnx.bundles.BundleError
+
+@api nnx.bundles.BundleIntegrityError
+
+@api nnx.bundles.BundleCapabilityError
+
+@api nnx.bundles.BundleReconstructionError
+
+### 2.20. Replayable transformation recipes (`nnx.transforms`)
+
+@api nnx.transforms.TransformRecipe
+
+@api nnx.transforms.TransformOp
+
+@api nnx.transforms.lora
+
+@api nnx.transforms.low_rank
+
+@api nnx.transforms.check_optimizer
+
+@api nnx.transforms.RecipeError
+
+### 2.21. Execution precision (`nnx.precision`)
+
+@api nnx.precision.PrecisionPolicy
+
+@api nnx.precision.ResolvedPrecision
+
+@api nnx.precision.PrecisionUnsupportedError
+
+@api nnx.precision.ReferenceTolerance
+
+@api nnx.precision.resolve_precision
+
+@api nnx.precision.precision_support
+
+### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
 @api nnx.comparison.Metric
 
@@ -383,6 +475,18 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint
 
 @api nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
+
+### 3.1. Bounded history journal (`nnx.history`)
+
+@api nnx.history.HistoryJournal
+
+@api nnx.history.iter_history
+
+@api nnx.history.export_history_csv
+
+@api nnx.history.migrate_history
+
+@api nnx.history.HistoryCorruptionError
 
 ## 4. Networks
 
@@ -558,6 +662,10 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 
 @api nnx.diffusion.training.diffusion_train_step_factory
 
+@api nnx.diffusion.objective.diffusion_objective
+
+@api nnx.diffusion.objective.DiffusionObjective
+
 @api nnx.diffusion.sampling.sample
 
 ## 14. Training paradigms (`nnx.paradigms`)
@@ -597,6 +705,10 @@ Walkthrough at [I-JEPA](jepa.md). The `ViTNN` encoder is documented in §4.
 @api nnx.paradigms.jepa.jepa_train_step_factory
 
 @api nnx.paradigms.jepa.JEPATrainStep
+
+@api nnx.paradigms.jepa_objective.jepa_objective
+
+@api nnx.paradigms.jepa_objective.JEPAObjective
 
 @api nnx.paradigms.jepa.JEPAPredictor
 

@@ -21,7 +21,10 @@ for each microbatch. This engine owns everything after that:
    ``update``, in that order (the objective's forward already ran under
    autocast);
 4. a *committed-update* event fires once per successful optimizer update —
-   never for a microbatch, an all-masked window or a skipped step.
+   never for a microbatch, an all-masked window or a skipped step. Before
+   the events are delivered, the objective's own ``after_update`` hook runs
+   once per committed update (all named optimizers stepped) — a JEPA
+   objective advances its EMA target there (FEAT-040).
 
 Non-finite losses or gradients follow a declared policy: ``"fail"`` raises
 ``FloatingPointError`` before anything is stepped; ``"skip"`` drops the
@@ -100,6 +103,8 @@ class UpdateEngine:
         nonfinite: str = "fail",
         autocast: Optional[Callable[[], AbstractContextManager[Any]]] = None,
         listeners: Iterable[Callable[[UpdateEvent], None]] = (),
+        commit_hooks: Iterable[Callable[[tuple[UpdateEvent, ...]], None]] = (),
+        precision: Any = None,
     ) -> None:
         check_nonfinite_policy(nonfinite)
         if not optimizers:
@@ -109,7 +114,12 @@ class UpdateEngine:
         self.clip_norms = dict(clip_norms or {})
         self.nonfinite = nonfinite
         self._autocast = autocast
+        # The run's ResolvedPrecision (FEAT-028), handed to every objective.
+        self.precision = precision
         self.listeners: list[Callable[[UpdateEvent], None]] = list(listeners)
+        # Called once per committed update with its events (one per named
+        # optimizer), after every optimizer stepped and before the listeners.
+        self.commit_hooks: list[Callable[[tuple[UpdateEvent, ...]], None]] = list(commit_hooks)
         # Every optimizer's parameters, each once, in a stable order; which of
         # them require gradients is decided per microbatch (freezing).
         index: dict[int, int] = {}
@@ -124,6 +134,8 @@ class UpdateEngine:
                         self._params.append(param)
                     owned.append(index[id(param)])
             self._owner[name] = owned
+        if scaler is not None:
+            check_scaler_ownership(self.optimizers)
         self.update_counts: dict[str, int] = {name: 0 for name in self.optimizers}
         self.commits = 0
         self.skipped = 0
@@ -239,9 +251,22 @@ class UpdateEngine:
             if not values:
                 return ()  # every term fully masked: nothing to learn from
             self._assign_gradients()
+            scaled: list[torch.optim.Optimizer] = []
             if self.scaler is not None:
-                for optimizer in self.optimizers.values():
+                # The scaler sees only optimizers holding a gradient this window
+                # (a frozen or unused one has nothing to unscale, and GradScaler
+                # refuses to step an optimizer it never checked).
+                scaled = [opt for opt in self.optimizers.values() if _holds_gradient(opt)]
+                for optimizer in scaled:
                     self.scaler.unscale_(optimizer)
+                if not self._gradients_finite():
+                    # One window, one decision: the scaler would skip only the
+                    # optimizers that overflowed, so none steps (the update
+                    # still backs the scale off, from what unscale_ found).
+                    if scaled:
+                        self.scaler.update()
+                    self.skipped += 1
+                    return ()
             elif not self._gradients_finite():
                 if self.nonfinite == "fail":
                     raise FloatingPointError(
@@ -254,15 +279,12 @@ class UpdateEngine:
                 norm = self.clip_norms.get(name)
                 if norm is not None:
                     torch.nn.utils.clip_grad_norm_([self._params[i] for i in self._owner[name]], norm)
-            if self.scaler is not None:
-                scale_before = float(self.scaler.get_scale())
-                for optimizer in self.optimizers.values():
-                    self.scaler.step(optimizer)
-                self.scaler.update()
-                if float(self.scaler.get_scale()) < scale_before:
+            if self.scaler is not None and scaled:
+                # A backstop: a scaler that skips for its own reasons.
+                if not scaler_step(self.scaler, scaled):
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
-            else:
+            elif self.scaler is None:
                 for optimizer in self.optimizers.values():
                     optimizer.step()
             self.commits += 1
@@ -280,10 +302,16 @@ class UpdateEngine:
                         loss=total,
                     )
                 )
-            for event in events:
-                for listener in self.listeners:
+            committed = tuple(events)
+            for hook in self.commit_hooks:
+                hook(committed)
+            # Listener by listener, each over the whole commit: a later
+            # listener (a scheduler clock) acts only after an earlier one (the
+            # callbacks) has seen every optimizer's event (FEAT-014).
+            for listener in self.listeners:
+                for event in committed:
                     listener(event)
-            return tuple(events)
+            return committed
         finally:
             for param in self._params:
                 param.grad = None
@@ -307,7 +335,7 @@ class UpdateEngine:
             param.grad = combined
 
     def _gradients_finite(self) -> bool:
-        return all(param.grad is None or bool(torch.isfinite(param.grad).all()) for param in self._params)
+        return gradients_finite(self._params)
 
     # ---------- checkpointable component (FEAT-005) ----------
 
@@ -331,6 +359,62 @@ class UpdateEngine:
         self.skipped = int(state["skipped"])
         saved = state["update_counts"]
         self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
+
+
+def scaler_step(scaler: Any, optimizers: Iterable[torch.optim.Optimizer], *, judge: bool = True) -> bool:
+    """``scaler.step`` every optimizer, then ``update``; whether the update
+    was committed. A lowered scale means the scaler found inf/NaN gradients
+    and skipped the step (a fused optimizer included) — shared by the
+    engine and ``default_train_step``, so both agree on what a committed
+    update is (FEAT-004 / FEAT-014). ``judge=False`` (nothing needs the
+    answer) skips reading the scale and its host syncs, and returns
+    ``True``."""
+    scale_before = float(scaler.get_scale()) if judge else None
+    for optimizer in optimizers:
+        scaler.step(optimizer)
+    scaler.update()
+    return scale_before is None or float(scaler.get_scale()) >= scale_before
+
+
+def _holds_gradient(optimizer: torch.optim.Optimizer) -> bool:
+    return any(param.grad is not None for group in optimizer.param_groups for param in group["params"])
+
+
+def check_scaler_ownership(optimizers: Mapping[str, torch.optim.Optimizer]) -> None:
+    """Refuse optimizers sharing a parameter under a loss scaler: it
+    unscales per optimizer, so a shared parameter's gradient would be
+    unscaled twice (FEAT-028)."""
+    owners: dict[int, str] = {}
+    for name, optimizer in optimizers.items():
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                first = owners.setdefault(id(param), name)
+                if first != name:
+                    raise ValueError(
+                        f"optimizers {first!r} and {name!r} share a parameter, which an fp16 loss scaler would "
+                        "unscale twice; give each parameter to one optimizer (non-overlapping param_groups)"
+                    )
+
+
+def gradients_finite(params: Iterable[torch.Tensor]) -> bool:
+    """Whether every gradient is finite — reduced on each device, one host
+    sync per device (shared by the engine and the default step). A sparse
+    gradient is judged by its stored values."""
+    by_device: dict[torch.device, list[torch.Tensor]] = {}
+    for param in params:
+        grad = param.grad
+        if grad is None:
+            continue
+        values = grad._values() if grad.is_sparse else grad
+        if values.numel():  # an empty gradient holds nothing non-finite
+            by_device.setdefault(values.device, []).append(values)
+    for grads in by_device.values():
+        # Max-abs norms: inf / nan exactly when an element is, and never an
+        # overflow of finite values; a few multi-tensor kernels per device.
+        norms = torch._foreach_norm(grads, float("inf"))
+        if not bool(torch.isfinite(torch.stack(norms)).all()):
+            return False
+    return True
 
 
 def _is_count(value: Any) -> bool:
