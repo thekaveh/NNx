@@ -1692,3 +1692,118 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+## 21. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+`predict()`, `predict_proba()` and `evaluate()` are eager: they return only
+after the whole loader has run, holding every batch's outputs (and, for
+`evaluate()`, every target and prediction) until then. FEAT-020 adds bounded
+counterparts. The eager calls are unchanged.
+
+```text
+NNModel.iter_predict(loader) ──► PredictionStream ──► PredictionBatch(logits, classes, sample_ids) per batch
+                   (spec / rich=True) ──────────────► PredictionResult per batch
+StreamingMetrics.update(...) ─┐
+StreamingMetrics.update(...) ─┴─ merge ──► finalize() ──► MetricSnapshot(count, values, unavailable)
+NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation record from counts and sums
+```
+
+- **A context-managed stream.** `iter_predict` takes a `DataLoader` or
+  another iterable of batches; in-memory arrays and tensors stay with
+  `predict()`. Use the stream in a `with` block:
+
+  ```python
+  with model.iter_predict(loader) as stream:
+      for batch in stream:
+          sink.write(batch.sample_ids, batch.classes)
+  ```
+
+  Batches arrive in loader order. Concatenated (`concatenate_predictions`),
+  they are exactly the eager result: `predict()`'s logits and classes and
+  `predict_proba()`'s sample ids, with the same graph seed-row slicing and the
+  same categorical, multilabel (the task's threshold) and continuous
+  decoding. With a `ProbabilitySpec`, or `rich=True` for a model with a task,
+  each batch is the `PredictionResult` `predict_proba()` would build for it.
+  An empty loader yields no batches, where the eager calls raise. Over a
+  shuffling `DataLoader`, the first batch whose sample ids are iteration
+  positions warns, as `predict_proba()` does; graph seed rows carry global
+  node indices and never warn.
+- **Mode restoration.** Each batch's forward pass runs in eval mode under
+  `no_grad`, and every submodule's training mode is restored right after it,
+  before the batch is yielded or its error raised. Between batches the
+  network is in its own mode, so a consumer may train or inspect it; after an
+  early close or a failed forward pass nothing is left in eval mode.
+- **Ownership and reuse.** Closing the stream (leaving the `with` block,
+  `close()`, an error inside the stream) finalizes its generator and drops
+  its references to the loader's iterator and the model. Like a closed
+  generator, a closed stream is exhausted, so `close()` inside a `for` loop
+  ends the loop; iterating a closed, consumed or partly consumed stream again
+  (after a `break`), or entering a closed one, raises `StreamClosedError` —
+  ask `iter_predict()` for a new one. The
+  loader is never closed: it stays the caller's and can be iterated again.
+- **Consumer-retained memory.** The stream holds at most the batch in
+  flight, so its memory does not grow with the dataset. What the consumer
+  keeps is the consumer's memory: keep the sample ids and decisions you need,
+  not the batches. The eager calls are a stream the library concatenates for
+  you, with O(N) memory.
+- **Mergeable metrics.** `StreamingMetrics(metrics, semantics, labels=...,
+  threshold=...)`, or `StreamingMetrics.for_task(metrics, task)`, accumulates
+  declared `MetricSpec`s:
+  - `update(target, probabilities=..., labels=..., values=..., valid=...)`
+    takes a batch's inputs, and `update_logits(target, logits)` derives them
+    from raw outputs as `evaluate()` does. Masked entries (`valid=False`, a
+    NaN target — a one-hot / soft row holding a NaN included — or a
+    categorical target equal to the task's `ignore_index`) are not scored.
+    This is the standalone accumulator's own rule: `evaluate()` records, and
+    `streaming_eval_step` with them, mask what the task (or, without one, the
+    loss's `ignore_index`) masks, as before.
+  - The built-ins keep sufficient statistics: sums and counts for
+    `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
+    `f1` (the same values as scikit-learn with `zero_division=0`). Memory is
+    bounded by the number of classes, never by N. A registered metric is
+    bounded when its accumulator implements `merge()` and does not declare
+    `stores_scores = True`.
+  - `merge(other)` returns a new accumulation over both inputs' samples,
+    whatever the order, copying its inputs so later updates to either never
+    reach it. Merging an empty accumulation changes nothing.
+  - `finalize()` returns a read-only `MetricSnapshot(count, values,
+    unavailable)`, repeatable and never changing the accumulation. An empty or
+    fully masked stream finalizes to `count=0` with every metric unavailable.
+- **Merge schemas.** Two accumulations merge only when they declare the same
+  metrics (names, ids, versions and configs), the same probability semantics
+  (`categorical`, `bernoulli` or `continuous`), the same task labels and
+  output count (`num_outputs`: classes, or outputs along axis 1), the same
+  decision threshold and the same `ignore_index`. Anything else raises
+  `MetricMergeError`, since the sums would describe different quantities. A
+  custom accumulator's `merge(other)` adds `other` in place and returns
+  `None`, keeping nothing of `other` that a later update could change.
+- **Stored scores.** A rank metric such as AUROC depends on the order of
+  every score and is never additive. A registered metric whose accumulator
+  has no `merge()`, or declares `stores_scores = True`, is refused in bounded
+  mode before any update. `materialize=True` stores its scores instead (O(N)
+  memory) and replays them at `finalize()`.
+- **Bounded validation and loss denominators.** `streaming_eval_step` is an
+  opt-in `eval_step_fn` that builds the validation record `evaluate()` builds,
+  from counts and sums:
+  - the same task kind, count and status, with masked targets not counted;
+  - the same loss — each batch's loss numerator summed and divided by the
+    summed loss denominators (valid targets, or class weights), never a mean
+    of batch means; a `sum`-reduction loss stays a total;
+  - the same classification or task metrics, and the declared metrics that
+    monitors and BEST selection read.
+
+  `EvalStepContext.metrics` carries the run's declared metrics to the step.
+  It refuses `extra_metrics` (callables on the full arrays) and a
+  stored-score metric when training starts, before any run is reserved, and
+  `ExperimentPlan.validate()` reports both under `train.extra_metrics` /
+  `train.metrics[i]`. These early checks apply to `streaming_eval_step`
+  itself or a `functools.partial` of it; a step that wraps it is a step of its
+  own, and the streaming step then refuses at its first call, before reading
+  a validation batch. The default validation step and `evaluate()` stay
+  eager, and `evaluate()` still raises on an empty loader. A model without a
+  task scores multi-output (`BCEWithLogitsLoss`) indicators row by row, as
+  `evaluate()` does: accuracy is the exact-row accuracy, and the averages run
+  over the labels.
+
+See [`examples/prediction_stream.py`](../examples/prediction_stream.py).
+

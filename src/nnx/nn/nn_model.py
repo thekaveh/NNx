@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import math
@@ -17,6 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing_extensions import Self
 
+from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
 from ..components import ComponentRegistry, ResumeStatus
 from ..models import (
@@ -43,7 +45,7 @@ from ..monitors import (
 )
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
-from ..tasks import TaskAdapter, task_adapter
+from ..tasks import TaskAdapter, _bounded_extra_metrics_error, task_adapter
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -64,6 +66,7 @@ from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
     from ..prediction import PredictionResult, ProbabilitySpec
+    from ..streaming import PredictionStream
     from .callbacks import Callback
 
 
@@ -473,6 +476,9 @@ class EvalStepContext:
     val_loader: Iterable[Any]
     extra_metrics: Optional[Mapping[str, Callable]]
     epoch_idx: int
+    # The run's declared metrics (FEAT-003), for a step that reports them
+    # (e.g. nnx.streaming.streaming_eval_step); () when none are declared.
+    metrics: tuple[MetricSpec, ...] = ()
 
 
 EvalStepFn = Callable[[EvalStepContext], NNEvaluationDataPoint]
@@ -888,14 +894,22 @@ def _metric_context_of(
     return domain, _ignore_index(loss_fn), threshold, n_classes
 
 
-def _named_metric_set(model: Any, metrics: tuple[MetricSpec, ...], *, where: str) -> Optional[_MetricSet]:
+def _named_metric_set(
+    model: Any, metrics: tuple[MetricSpec, ...], *, where: str, bounded: bool = False
+) -> Optional[_MetricSet]:
     """Accumulators for declared metrics (``None`` when there are none),
-    after checking that the model can provide every metric's input."""
+    after checking that the model can provide every metric's input.
+    ``bounded=True`` builds mergeable, bounded accumulators (FEAT-020) and
+    rejects a metric that needs every stored score."""
     if not metrics:
         return None
     domain, ignore_index, threshold, n_classes = _metric_context(model)
     _check_metric_inputs(metrics, domain, where=where, n_classes=n_classes)
-    return _MetricSet(metrics, domain, ignore_index, threshold)
+    if not bounded:
+        return _MetricSet(metrics, domain, ignore_index, threshold)
+    from ..streaming import _bounded_accumulator
+
+    return _MetricSet(metrics, domain, ignore_index, threshold, accumulator=_bounded_accumulator)
 
 
 def _check_plateau_resume(saved: Optional[Mapping[str, Any]], scheduler: Any, monitor: Optional[MonitorSpec]) -> None:
@@ -1181,6 +1195,233 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         prediction=terms.prediction,
         loss=cast(float, loss_value),
         extra_metrics=ctx.extra_metrics,
+    )
+
+
+def _evaluate(
+    model: Any,
+    loader: Iterable[Any],
+    extra_metrics: Optional[Mapping[str, Callable]],
+    metrics: tuple[MetricSpec, ...],
+    *,
+    bounded: bool,
+    who: str,
+) -> NNEvaluationDataPoint:
+    """``NNModel.evaluate()``'s loop, shared with the streaming validation
+    step (FEAT-020). ``bounded=True`` keeps counts and sums instead of every
+    target and prediction, so memory does not grow with the loader; it
+    rejects ``extra_metrics`` and metrics that need every stored score before
+    any batch is read. Module-level: legacy stand-ins borrow ``evaluate()``."""
+    if bounded and extra_metrics:
+        raise _bounded_extra_metrics_error(who)
+    # Ensure loss_fn lives on the same device as the model — guards
+    # against callers reassigning model.device after construction.
+    model.loss_fn = model.loss_fn.to(model.device)
+    named = _named_metric_set(model, metrics, where=who, bounded=bounded)
+    # getattr: legacy stand-ins borrow evaluate() without the property.
+    if getattr(model, "task_adapter", None) is not None:
+        return _evaluate_task(model, loader, extra_metrics, named, bounded=bounded, who=who)
+    # Snapshot training-mode for non-destructive restore (matches the
+    # convention already used by `nnx.viz.activation_map` and
+    # `nnx.lr_finder`). Without this, a caller doing the common
+    # train → evaluate → train-more pattern silently leaves the net
+    # in `.eval()` mode after evaluate(); BatchNorm / Dropout layers
+    # would behave incorrectly on the next batch unless the caller
+    # remembered to call `model.net.train()` themselves.
+    training_modes = _capture_training_modes(model.net)
+    model.net.eval()
+
+    counts: Optional[LabelCounts] = None  # bounded: chosen by the first batch's label shape
+    kind = ""
+    all_Y: list[np.ndarray] = []
+    all_Y_hat: list[np.ndarray] = []
+    loss_numerator = 0.0
+    loss_normalization_weight = 0.0
+    loss_uses_sum_reduction = False
+    n_samples = 0
+    n_metric_samples = 0
+
+    try:
+        with torch.no_grad():
+            for batch in loader:
+                _, Y, Y_hat_logits, Y_hat = model._fwd_pass(batch)
+                if named is not None:
+                    named.update(Y, Y_hat_logits)
+                batch_n = int(Y.size(0))
+                # Aggregate predictions / labels across the entire loader so
+                # metrics are computed on the full eval set, not per-batch.
+                metric_Y, metric_Y_hat = _classification_metric_tensors(model.loss_fn, Y, Y_hat)
+                if metric_Y.numel():
+                    if bounded:
+                        labels = metric_Y.cpu().numpy()
+                        if counts is None:
+                            counts, kind = label_counts(labels), label_kind(labels)
+                        elif label_kind(labels) != kind:  # the eager path's concatenate refuses it too
+                            raise ValueError(
+                                f"{who}: label batches changed shape between class labels and indicator rows"
+                            )
+                        counts.update(labels, metric_Y_hat.cpu().numpy())
+                    else:
+                        all_Y.append(metric_Y.cpu().numpy())
+                        all_Y_hat.append(metric_Y_hat.cpu().numpy())
+                    n_metric_samples += int(metric_Y.numel())
+                _, batch_loss_numerator, batch_normalization_weight = _loss_terms(model.loss_fn, Y_hat_logits, Y)
+                loss_numerator += float(batch_loss_numerator.detach())
+                if batch_normalization_weight is None:
+                    loss_uses_sum_reduction = True
+                else:
+                    loss_normalization_weight += batch_normalization_weight
+                n_samples += batch_n
+    finally:
+        _restore_training_modes(training_modes)
+
+    if n_samples == 0:
+        raise ValueError(f"{who} loader produced zero samples")
+    if n_metric_samples == 0:
+        raise ValueError(f"{who} loader produced zero non-ignored samples")
+
+    if counts is not None:
+        accuracy, precision, recall, f1 = record_scores(counts)
+        edp = NNEvaluationDataPoint(accuracy=accuracy, f1=f1, recall=recall, precision=precision)
+    else:
+        edp = NNEvaluationDataPoint.of(
+            Y=np.concatenate(all_Y), Y_hat=np.concatenate(all_Y_hat), extra_metrics=extra_metrics
+        )
+    accuracy = edp.accuracy
+    assert accuracy is not None  # both paths compute the classification fields
+    if named is not None:
+        edp = replace(edp, metrics={**edp.metrics, **named.results()})
+    return edp.with_loss(
+        value=(
+            loss_numerator
+            if loss_uses_sum_reduction
+            else loss_numerator / loss_normalization_weight
+            if loss_normalization_weight
+            else float("nan")
+        )
+    ).with_error(value=float(1 - accuracy))
+
+
+_BY_KEYWORD = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
+def _bounded_task_accumulator(adapter: TaskAdapter, who: str) -> Any:
+    """``adapter.accumulator(bounded=True)``, refusing an adapter that cannot
+    build one (a ``TaskAdapter`` subclass written before FEAT-020) or returns
+    one that keeps arrays — before any batch is read."""
+    needs = f"{who} needs the model's task adapter ({type(adapter).__name__}) to build a bounded accumulator"
+    try:
+        parameters: Any = inspect.signature(adapter.accumulator).parameters
+    except (TypeError, ValueError):
+        parameters = None  # not introspectable: the call decides
+    keyword = parameters is not None and getattr(parameters.get("bounded"), "kind", None) in _BY_KEYWORD
+    if parameters is not None and not (keyword or any(p.kind is p.VAR_KEYWORD for p in parameters.values())):
+        raise ValueError(f"{needs} with accumulator(bounded=True); its accumulator() takes no bounded keyword")
+    try:
+        accumulator = adapter.accumulator(bounded=True)
+    except TypeError as exc:
+        if keyword:
+            raise  # it names bounded: an error of the adapter's own is its own
+        # Opaque or **kwargs (perhaps forwarded to a pre-FEAT-020 base): a missing
+        # keyword and the adapter's own error look alike, so say both.
+        raise ValueError(f"{needs}, but accumulator(bounded=True) raised TypeError: {exc}") from exc
+    if not getattr(accumulator, "bounded", False):
+        raise ValueError(
+            f"the model's task adapter ({type(adapter).__name__}) returned an accumulator that is not bounded from "
+            f"accumulator(bounded=True); {who} would keep every target"
+        )
+    return accumulator
+
+
+def _evaluate_task(
+    model: Any,
+    loader: Iterable[Any],
+    extra_metrics: Optional[Mapping[str, Callable]],
+    named: Optional[_MetricSet],
+    *,
+    bounded: bool,
+    who: str,
+) -> NNEvaluationDataPoint:
+    """``evaluate()`` for a model with a task (FEAT-002): the adapter
+    validates every batch, and loss and metrics are accumulated over
+    the valid targets of the whole loader. Every target masked yields
+    an ``"empty"`` record (no loss, no metrics) instead of raising."""
+    adapter = model.task_adapter
+    assert adapter is not None
+    training_modes = _capture_training_modes(model.net)
+    model.net.eval()
+    # `bounded=` only when asked: a TaskAdapter subclass written before FEAT-020 keeps working.
+    accumulator = (
+        _bounded_task_accumulator(adapter, who)  # extra_metrics were refused above
+        if bounded
+        else adapter.accumulator(keep_arrays=bool(extra_metrics))
+    )
+    loss_numerator = 0.0
+    loss_normalization_weight = 0.0
+    loss_uses_sum_reduction = False
+    n_batches = 0
+    try:
+        with torch.no_grad():
+            for batch in loader:
+                _, Y, logits = model._fwd_outputs(batch)
+                output, target, valid = adapter.prepare(logits, Y)
+                accumulator.update(output, target, valid)
+                if named is not None:
+                    named.update(target, output, valid)
+                _, numerator, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
+                loss_numerator += float(numerator.detach())
+                if weight is None:
+                    loss_uses_sum_reduction = True
+                else:
+                    loss_normalization_weight += weight
+                n_batches += 1
+    finally:
+        _restore_training_modes(training_modes)
+    if n_batches == 0:
+        raise ValueError(f"{who} loader produced zero samples")
+    if not accumulator.count:
+        loss: Optional[float] = None
+    elif loss_uses_sum_reduction:
+        loss = loss_numerator
+    else:
+        loss = loss_numerator / loss_normalization_weight if loss_normalization_weight else float("nan")
+    edp = accumulator.result(loss=loss, extra_metrics=extra_metrics)
+    if named is not None and edp.count:
+        edp = replace(edp, metrics={**edp.metrics, **named.results()})
+    return edp
+
+
+def _is_streaming_eval_step(eval_step_fn: Any) -> bool:
+    """Whether ``eval_step_fn`` is ``nnx.streaming.streaming_eval_step``
+    itself, directly or through ``functools.partial`` — the step whose
+    limits ``train()`` and ``ExperimentPlan.validate()`` check up front. Any
+    other wrapper is a step of its own; the streaming step then still
+    refuses what it cannot compute at its first call, before reading a
+    validation batch."""
+    if eval_step_fn is None:
+        return False
+    from ..streaming import streaming_eval_step
+
+    while isinstance(eval_step_fn, functools.partial):
+        eval_step_fn = eval_step_fn.func
+    return eval_step_fn is streaming_eval_step
+
+
+def _shuffles(X: Any) -> bool:
+    """Whether ``X`` is a shuffling DataLoader, whose positional sample ids
+    cannot be joined back to the dataset."""
+    return isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler)
+
+
+def _warn_positional_ids(caller: str) -> None:
+    from .callbacks import _warn_at_user_frame  # at the first caller outside nnx, whoever called predict
+
+    _warn_at_user_frame(
+        f"{caller} over a shuffling DataLoader: sample_ids are iteration positions, not "
+        "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
+        "loader (graph seed rows are exempt: their ids are global node indices)",
+        UserWarning,
+        once_per_location=True,  # like warnings.warn: a loop over one call site warns once
     )
 
 
@@ -1893,6 +2134,12 @@ class NNModel(_HubMixinBase):
             has_val_loader=params.val_loader is not None,
             owner="NNTrainParams",
         )
+        # NNx's own eval steps (nnx.streaming.streaming_eval_step) check what
+        # they can compute before any run is reserved or loader read.
+        if params.val_loader is not None and _is_streaming_eval_step(eval_step_fn):
+            from ..streaming import _streaming_preflight
+
+            _streaming_preflight(self, params)
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
@@ -2258,6 +2505,7 @@ class NNModel(_HubMixinBase):
                                 val_loader=params.val_loader,
                                 extra_metrics=params.extra_metrics,
                                 epoch_idx=idx_epoch,
+                                metrics=params.metrics,
                             )
                         )
                 elif validate:
@@ -2406,124 +2654,7 @@ class NNModel(_HubMixinBase):
         Raises ValueError if the loader yields zero batches — previously
         produced NaN metrics silently from np.mean over an empty list.
         """
-        # Ensure loss_fn lives on the same device as the model — guards
-        # against callers reassigning self.device after construction.
-        self.loss_fn = self.loss_fn.to(self.device)
-        # Module-level (not a method): legacy stand-ins borrow evaluate().
-        named = _named_metric_set(self, tuple(metrics), where="evaluate()")
-        # getattr: legacy stand-ins borrow these methods without the property.
-        if getattr(self, "task_adapter", None) is not None:
-            return self._evaluate_task(loader, extra_metrics, named)
-        # Snapshot training-mode for non-destructive restore (matches the
-        # convention already used by `nnx.viz.activation_map` and
-        # `nnx.lr_finder`). Without this, a caller doing the common
-        # train → evaluate → train-more pattern silently leaves the net
-        # in `.eval()` mode after evaluate(); BatchNorm / Dropout layers
-        # would behave incorrectly on the next batch unless the caller
-        # remembered to call `self.net.train()` themselves.
-        training_modes = _capture_training_modes(self.net)
-        self.net.eval()
-
-        all_Y: list[np.ndarray] = []
-        all_Y_hat: list[np.ndarray] = []
-        loss_numerator = 0.0
-        loss_normalization_weight = 0.0
-        loss_uses_sum_reduction = False
-        n_samples = 0
-        n_metric_samples = 0
-
-        try:
-            with torch.no_grad():
-                for batch in loader:
-                    _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
-                    if named is not None:
-                        named.update(Y, Y_hat_logits)
-                    batch_n = int(Y.size(0))
-                    # Aggregate predictions / labels across the entire loader so
-                    # metrics are computed on the full eval set, not per-batch.
-                    metric_Y, metric_Y_hat = _classification_metric_tensors(self.loss_fn, Y, Y_hat)
-                    if metric_Y.numel():
-                        all_Y.append(metric_Y.cpu().numpy())
-                        all_Y_hat.append(metric_Y_hat.cpu().numpy())
-                        n_metric_samples += int(metric_Y.numel())
-                    _, batch_loss_numerator, batch_normalization_weight = _loss_terms(self.loss_fn, Y_hat_logits, Y)
-                    loss_numerator += float(batch_loss_numerator.detach())
-                    if batch_normalization_weight is None:
-                        loss_uses_sum_reduction = True
-                    else:
-                        loss_normalization_weight += batch_normalization_weight
-                    n_samples += batch_n
-        finally:
-            _restore_training_modes(training_modes)
-
-        if n_samples == 0:
-            raise ValueError("evaluate() loader produced zero samples")
-        if n_metric_samples == 0:
-            raise ValueError("evaluate() loader produced zero non-ignored samples")
-
-        Y_concat = np.concatenate(all_Y)
-        Y_hat_concat = np.concatenate(all_Y_hat)
-
-        edp = NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat, extra_metrics=extra_metrics)
-        accuracy = edp.accuracy
-        assert accuracy is not None  # `of` always computes the classification fields
-        if named is not None:
-            edp = replace(edp, metrics={**edp.metrics, **named.results()})
-        return edp.with_loss(
-            value=(
-                loss_numerator
-                if loss_uses_sum_reduction
-                else loss_numerator / loss_normalization_weight
-                if loss_normalization_weight
-                else float("nan")
-            )
-        ).with_error(value=float(1 - accuracy))
-
-    def _evaluate_task(
-        self, loader: Iterable[Any], extra_metrics=None, named: Optional[_MetricSet] = None
-    ) -> NNEvaluationDataPoint:
-        """``evaluate()`` for a model with a task (FEAT-002): the adapter
-        validates every batch, and loss and metrics are accumulated over
-        the valid targets of the whole loader. Every target masked yields
-        an ``"empty"`` record (no loss, no metrics) instead of raising."""
-        adapter = self.task_adapter
-        assert adapter is not None
-        training_modes = _capture_training_modes(self.net)
-        self.net.eval()
-        accumulator = adapter.accumulator(keep_arrays=bool(extra_metrics))
-        loss_numerator = 0.0
-        loss_normalization_weight = 0.0
-        loss_uses_sum_reduction = False
-        n_batches = 0
-        try:
-            with torch.no_grad():
-                for batch in loader:
-                    _, Y, logits = self._fwd_outputs(batch)
-                    output, target, valid = adapter.prepare(logits, Y)
-                    accumulator.update(output, target, valid)
-                    if named is not None:
-                        named.update(target, output, valid)
-                    _, numerator, weight = adapter.loss_terms(self.loss_fn, output, target, valid)
-                    loss_numerator += float(numerator.detach())
-                    if weight is None:
-                        loss_uses_sum_reduction = True
-                    else:
-                        loss_normalization_weight += weight
-                    n_batches += 1
-        finally:
-            _restore_training_modes(training_modes)
-        if n_batches == 0:
-            raise ValueError("evaluate() loader produced zero samples")
-        if not accumulator.count:
-            loss: Optional[float] = None
-        elif loss_uses_sum_reduction:
-            loss = loss_numerator
-        else:
-            loss = loss_numerator / loss_normalization_weight if loss_normalization_weight else float("nan")
-        edp = accumulator.result(loss=loss, extra_metrics=extra_metrics)
-        if named is not None and edp.count:
-            edp = replace(edp, metrics={**edp.metrics, **named.results()})
-        return edp
+        return _evaluate(self, loader, extra_metrics, tuple(metrics), bounded=False, who="evaluate()")
 
     def predict(self, X) -> PredictResult:
         """Run the network in eval mode and return logits + argmax classes.
@@ -2550,16 +2681,79 @@ class NNModel(_HubMixinBase):
         in ``.eval()`` mode.
         """
         logits, _ = self._predict_logits(X, caller="predict()")
+        return PredictResult(logits=logits, classes=self._decode_classes(logits))
+
+    def _decode_classes(self, logits: np.ndarray) -> np.ndarray:
+        """``predict().classes`` for raw logits: the task's decoding, else
+        ``logit >= 0`` for ``BCEWithLogitsLoss`` and the argmax over the class
+        axis (class-last for a transformer's token logits). Row-wise, so a
+        batch decodes like the rows of the whole."""
         adapter = getattr(self, "task_adapter", None)
         if adapter is not None:
-            return PredictResult(logits=logits, classes=adapter.decode_array(logits))
+            return adapter.decode_array(logits)
         class_axis = -1 if self.params.net is Nets.TRANSFORMER and logits.ndim > 2 else 1
-        classes = (
+        return (
             (logits >= 0).astype(np.int64)
             if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
             else logits.argmax(axis=class_axis)
         )
-        return PredictResult(logits=logits, classes=classes)
+
+    def iter_predict(
+        self, X: Iterable[Any], spec: Optional[ProbabilitySpec] = None, *, rich: bool = False
+    ) -> PredictionStream:
+        """Stream predictions one loader batch at a time (FEAT-020).
+
+        Returns a :class:`~nnx.streaming.PredictionStream` — use it as a
+        context manager — over ``X``, a ``DataLoader`` or another iterable of
+        batches (in-memory arrays and tensors go to :meth:`predict`). Each
+        item is a :class:`~nnx.streaming.PredictionBatch` of ``logits``,
+        ``classes`` and ``sample_ids``, or, with a ``spec`` (or ``rich=True``
+        for a model with a task), a :class:`~nnx.prediction.PredictionResult`
+        as :meth:`predict_proba` builds it. The batches follow loader order,
+        and concatenated they are exactly the eager result for the same
+        ``DataLoader`` (the eager calls read other iterables as one in-memory
+        input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
+        sample ids, graph seed-row slicing included.
+
+        Each batch runs in eval mode under ``no_grad``, and every submodule's
+        training mode is restored before the batch is yielded or its error
+        raised. The stream holds only the batch in flight; closing it drops
+        its references to the loader's iterator and the model and ends the
+        iteration, and a closed or consumed stream cannot be iterated again.
+        An empty loader yields no batches (the eager calls raise instead).
+        Over a shuffling ``DataLoader``, the first batch whose sample ids are
+        iteration positions warns (graph seed rows carry global node indices).
+        """
+        from ..prediction import _check_spec_fits, prediction_from_logits
+        from ..streaming import PredictionBatch, PredictionStream, _as_probability_spec, _check_stream_source
+
+        _check_stream_source(X)
+        explicit = _as_probability_spec(spec)
+        adapter = getattr(self, "task_adapter", None)
+        if explicit is None and rich and adapter is None:
+            raise TypeError(
+                "iter_predict(rich=True) needs a ProbabilitySpec for a model without a task "
+                "(or declare NNModelParams(task=TaskSpec...))"
+            )
+
+        warn_as = "iter_predict()" if _shuffles(X) else None  # every batch carries sample_ids
+
+        def batches() -> Iterator[Any]:
+            if explicit is not None:
+                declared = explicit
+                for logits, ids in self._logit_batches(
+                    X, check_first=lambda first: _check_spec_fits(first, declared), positional_warning=warn_as
+                ):
+                    yield prediction_from_logits(logits, declared, sample_ids=ids)
+            elif rich:
+                assert adapter is not None
+                for logits, ids in self._logit_batches(X, check_first=adapter.check_logits, positional_warning=warn_as):
+                    yield adapter.prediction(logits, ids)
+            else:
+                for logits, ids in self._logit_batches(X, positional_warning=warn_as):
+                    yield PredictionBatch(logits=logits, classes=self._decode_classes(logits), sample_ids=ids)
+
+        return PredictionStream(batches())
 
     def predict_proba(self, X, spec: Optional[ProbabilitySpec] = None) -> PredictionResult:
         """Probability-aware prediction declared by an explicit ``spec``.
@@ -2594,14 +2788,6 @@ class NNModel(_HubMixinBase):
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
 
-        if isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
-            warnings.warn(
-                "predict_proba() over a shuffling DataLoader: sample_ids are iteration positions, not "
-                "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
-                "loader (graph loaders are exempt: their ids are global node indices)",
-                UserWarning,
-                stacklevel=2,
-            )
         if spec is None:
             adapter = getattr(self, "task_adapter", None)
             if adapter is None:
@@ -2609,11 +2795,16 @@ class NNModel(_HubMixinBase):
                     "predict_proba() needs a ProbabilitySpec for a model without a task "
                     "(or declare NNModelParams(task=TaskSpec...))"
                 )
-            logits, sample_ids = self._predict_logits(X, caller="predict_proba()", check_first=adapter.check_logits)
+            logits, sample_ids = self._predict_logits(
+                X, caller="predict_proba()", check_first=adapter.check_logits, warn_positional=True
+            )
             return adapter.prediction(logits, sample_ids)
         explicit = spec
         logits, sample_ids = self._predict_logits(
-            X, caller="predict_proba()", check_first=lambda first: _check_spec_fits(first, explicit)
+            X,
+            caller="predict_proba()",
+            check_first=lambda first: _check_spec_fits(first, explicit),
+            warn_positional=True,
         )
         return prediction_from_logits(logits, explicit, sample_ids=sample_ids)
 
@@ -2624,6 +2815,7 @@ class NNModel(_HubMixinBase):
         caller: str,
         check_first: Optional[Callable[[np.ndarray], object]] = None,
         batches: bool = False,
+        warn_positional: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Shared inference path of :meth:`predict` / :meth:`predict_proba`:
         raw logits (numpy) plus an ``int64`` sample id per row, computed in
@@ -2634,44 +2826,17 @@ class NNModel(_HubMixinBase):
         batches like a ``DataLoader``."""
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
-
         try:
             if batches or isinstance(X, DataLoader):
                 logits_chunks: list[np.ndarray] = []
                 id_chunks: list[np.ndarray] = []
-                offset = 0
-                with torch.no_grad():
-                    for batch in X:
-                        logits = self._inference_forward(batch)[0].cpu().numpy()  # predict discards labels
-                        ids: Optional[np.ndarray] = None
-                        # NeighborLoader subgraphs: only the leading seed
-                        # rows are this batch's nodes (see
-                        # GraphNNBase.seed_count) — without the slice,
-                        # predictions for sampled neighbors pollute the
-                        # output and the row count exceeds the loader's
-                        # node set. Their identity is the global node index.
-                        seed_count = getattr(self.net, "seed_count", None)
-                        if seed_count is not None:
-                            n_seed = seed_count(batch)
-                            if n_seed is not None:
-                                logits = logits[:n_seed]
-                                # NeighborLoader's `n_id` holds the global ids
-                                # of the subgraph's nodes, seeds first; its
-                                # `input_id` is only global when input_nodes
-                                # was a mask. NNGraphDataset's full-graph
-                                # batches carry the global ids in `input_id`.
-                                node_ids = getattr(batch, "n_id", None)
-                                if node_ids is None:
-                                    node_ids = getattr(batch, "input_id", None)
-                                if node_ids is not None:
-                                    ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
-                        if ids is None:
-                            ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
-                        offset += logits.shape[0]
-                        if check_first is not None and not logits_chunks:
-                            check_first(logits)
-                        logits_chunks.append(logits)
-                        id_chunks.append(ids)
+                # Eval mode once for the whole call; a stream restores it per batch.
+                warn_as = caller if warn_positional and _shuffles(X) else None
+                for logits, ids in self._logit_batches(
+                    X, check_first=check_first, restore_each_batch=False, positional_warning=warn_as
+                ):
+                    logits_chunks.append(logits)
+                    id_chunks.append(ids)
                 if not logits_chunks:
                     raise ValueError(f"{caller} loader produced zero batches")
                 return np.concatenate(logits_chunks), np.concatenate(id_chunks)
@@ -2697,6 +2862,66 @@ class NNModel(_HubMixinBase):
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
+
+    def _logit_batches(
+        self,
+        X: Iterable[Any],
+        *,
+        check_first: Optional[Callable[[np.ndarray], object]] = None,
+        restore_each_batch: bool = True,
+        positional_warning: Optional[str] = None,
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        """``(logits, sample_ids)`` for each batch of ``X``, in order — the
+        one batch path of :meth:`predict`, :meth:`predict_proba` and
+        :meth:`iter_predict`. Each forward pass runs under ``no_grad``; with
+        ``restore_each_batch`` it also runs in eval mode with every
+        submodule's training mode restored right after it, success or failure
+        (a stream), otherwise the caller holds eval mode for the whole loop.
+        ``check_first`` sees the first batch's logits, so a caller can reject
+        them before the rest of the loader runs."""
+        offset = 0
+        checked = check_first is None
+        for batch in X:
+            training_modes = _capture_training_modes(self.net) if restore_each_batch else None
+            if training_modes is not None:
+                self.net.eval()
+            try:
+                with torch.no_grad():
+                    logits = self._inference_forward(batch)[0].cpu().numpy()  # predict discards labels
+            finally:
+                if training_modes is not None:
+                    _restore_training_modes(training_modes)
+            ids: Optional[np.ndarray] = None
+            # NeighborLoader subgraphs: only the leading seed rows are this
+            # batch's nodes (see GraphNNBase.seed_count) — without the slice,
+            # predictions for sampled neighbors pollute the output and the row
+            # count exceeds the loader's node set. Their identity is the
+            # global node index.
+            seed_count = getattr(self.net, "seed_count", None)
+            if seed_count is not None:
+                n_seed = seed_count(batch)
+                if n_seed is not None:
+                    logits = logits[:n_seed]
+                    # NeighborLoader's `n_id` holds the global ids of the
+                    # subgraph's nodes, seeds first; its `input_id` is only
+                    # global when input_nodes was a mask. NNGraphDataset's
+                    # full-graph batches carry the global ids in `input_id`.
+                    node_ids = getattr(batch, "n_id", None)
+                    if node_ids is None:
+                        node_ids = getattr(batch, "input_id", None)
+                    if node_ids is not None:
+                        ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
+            if ids is None:
+                ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
+                if positional_warning is not None:  # a shuffling loader: these positions cannot be joined back
+                    _warn_positional_ids(positional_warning)
+                    positional_warning = None
+            offset += logits.shape[0]
+            if not checked:
+                assert check_first is not None
+                check_first(logits)
+                checked = True
+            yield logits, ids
 
     def _inference_forward(self, batch: Any) -> tuple[torch.Tensor, Any]:
         """``(output, target)`` for a batch that may hold inputs only: split

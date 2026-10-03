@@ -58,6 +58,7 @@ from typing import Any, ClassVar, Optional
 import numpy as np
 import torch
 
+from ._confusion import ConfusionCounts, average_scores, record_scores
 from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -291,10 +292,13 @@ class TaskMetricAccumulator:
     user ``extra_metrics``; it is off unless those are requested.
     """
 
-    def __init__(self, adapter: TaskAdapter, *, keep_arrays: bool = False) -> None:
+    def __init__(self, adapter: TaskAdapter, *, keep_arrays: bool = False, bounded: bool = False) -> None:
+        if bounded:
+            _check_bounded(keep_arrays)
         self.adapter = adapter
         self.count = 0
         self.keep_arrays = keep_arrays
+        self.bounded = bounded  # counts and sums only (FEAT-020)
         self._targets: list[np.ndarray] = []
         self._predictions: list[np.ndarray] = []
 
@@ -321,6 +325,12 @@ class TaskMetricAccumulator:
         if self.keep_arrays:
             self._targets.append(target)
             self._predictions.append(prediction)
+
+    def _refuse_bounded_extras(self, extra_metrics: Optional[Mapping[str, Callable]]) -> None:
+        """A bounded accumulator keeps no arrays for ``extra_metrics``
+        (FEAT-020): refused before any record is built, empty or not."""
+        if extra_metrics and self.bounded:
+            raise _bounded_extra_metrics_error("a bounded accumulator")
 
     def _extras(self, extra_metrics: Optional[Mapping[str, Callable]]) -> dict[str, float]:
         """User metrics, called as ``fn(y_true, y_pred)`` on the valid
@@ -436,9 +446,11 @@ class TaskAdapter:
         """Decoded predictions for raw ``predict()`` logits (numpy)."""
         raise NotImplementedError
 
-    def accumulator(self, *, keep_arrays: bool = False) -> TaskMetricAccumulator:
+    def accumulator(self, *, keep_arrays: bool = False, bounded: bool = False) -> TaskMetricAccumulator:
         """A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True``
-        when ``extra_metrics`` will be computed from it."""
+        when ``extra_metrics`` will be computed from it. ``bounded=True``
+        (FEAT-020) keeps only counts and sums, so memory does not grow with
+        the number of samples; it cannot keep arrays."""
         raise NotImplementedError
 
     def record(
@@ -549,8 +561,10 @@ class _CategoricalAdapter(TaskAdapter):
     def decode_array(self, logits):
         return logits.argmax(axis=1)
 
-    def accumulator(self, *, keep_arrays=False):
-        # Macro f1 / recall / precision need every (target, prediction) pair.
+    def accumulator(self, *, keep_arrays=False, bounded=False):
+        if bounded:
+            return _CategoricalCounts(self, keep_arrays=keep_arrays)
+        # Macro f1 / recall / precision from every (target, prediction) pair.
         return _CategoricalAccumulator(self, keep_arrays=True)
 
 
@@ -577,6 +591,45 @@ class _CategoricalAccumulator(TaskMetricAccumulator):
             count=self.count,
             status="ok",
         )
+
+
+class _CategoricalCounts(TaskMetricAccumulator):
+    """The categorical record from confusion counts (FEAT-020): the same
+    accuracy and macro f1 / recall / precision as :class:`_CategoricalAccumulator`,
+    with memory bounded by the number of classes."""
+
+    def __init__(self, adapter, *, keep_arrays=False):
+        super().__init__(adapter, keep_arrays=keep_arrays, bounded=True)
+        self._counts = ConfusionCounts()
+
+    def update(self, output, target, valid):
+        n_valid = int(valid.sum())
+        if not n_valid:
+            return
+        self._counts.update(target[valid].detach().cpu().numpy(), output[valid].argmax(dim=1).detach().cpu().numpy())
+        self.count += n_valid
+
+    def result(self, *, loss, extra_metrics=None):
+        self._refuse_bounded_extras(extra_metrics)
+        if not self.count:
+            return self._record(loss=None)
+        accuracy, precision, recall, f1 = record_scores(self._counts)
+        return self._record(
+            accuracy=accuracy, f1=f1, recall=recall, precision=precision, loss=loss, error=float(1 - accuracy)
+        )
+
+
+def _bounded_extra_metrics_error(who: str) -> ValueError:
+    """The one refusal of ``extra_metrics`` by a bounded evaluation (FEAT-020)."""
+    return ValueError(
+        f"{who} keeps no arrays, so it cannot compute extra_metrics (callables on every target and "
+        "prediction); drop them or use the default evaluate()"
+    )
+
+
+def _check_bounded(keep_arrays: bool) -> None:
+    if keep_arrays:
+        raise _bounded_extra_metrics_error("a bounded accumulator")
 
 
 class _MultilabelAdapter(TaskAdapter):
@@ -620,8 +673,8 @@ class _MultilabelAdapter(TaskAdapter):
     def decode_array(self, logits):
         return (np.asarray(logits) >= self._logit_threshold).astype(np.int64)
 
-    def accumulator(self, *, keep_arrays=False):
-        return _MultilabelAccumulator(self, keep_arrays=keep_arrays)
+    def accumulator(self, *, keep_arrays=False, bounded=False):
+        return _MultilabelAccumulator(self, keep_arrays=keep_arrays, bounded=bounded)
 
     def prediction(self, logits, sample_ids):
         result = super().prediction(logits, sample_ids)
@@ -631,8 +684,8 @@ class _MultilabelAdapter(TaskAdapter):
 
 
 class _MultilabelAccumulator(TaskMetricAccumulator):
-    def __init__(self, adapter, *, keep_arrays=False):
-        super().__init__(adapter, keep_arrays=keep_arrays)
+    def __init__(self, adapter, *, keep_arrays=False, bounded=False):
+        super().__init__(adapter, keep_arrays=keep_arrays, bounded=bounded)
         self._tp: Optional[np.ndarray] = None
         self._fp: Optional[np.ndarray] = None
         self._fn: Optional[np.ndarray] = None
@@ -671,22 +724,20 @@ class _MultilabelAccumulator(TaskMetricAccumulator):
         self._keep(truth[mask], prediction[mask])
 
     def result(self, *, loss, extra_metrics=None):
+        self._refuse_bounded_extras(extra_metrics)
         if not self.count:
             return self._record(loss=None)
         assert self._tp is not None and self._fp is not None and self._fn is not None and self._label_valid is not None
-        present = self._label_valid > 0
+        present = self._label_valid > 0  # averaged over the labels with a valid target
         tp, fp, fn = self._tp[present], self._fp[present], self._fn[present]
-        zeros = np.zeros(tp.shape, dtype=np.float64)
-        precision = np.divide(tp, tp + fp, out=zeros.copy(), where=(tp + fp) > 0)
-        recall = np.divide(tp, tp + fn, out=zeros.copy(), where=(tp + fn) > 0)
-        f1 = np.divide(2 * tp, 2 * tp + fp + fn, out=zeros.copy(), where=(2 * tp + fp + fn) > 0)
+        precision, recall, f1 = average_scores(tp, tp + fp, tp + fn, "macro")
         subset_accuracy = self._rows_correct / self._rows
         element_accuracy = self._element_correct / self.count
         return self._record(
             accuracy=float(subset_accuracy),
-            f1=float(f1.mean()),
-            recall=float(recall.mean()),
-            precision=float(precision.mean()),
+            f1=f1,
+            recall=recall,
+            precision=precision,
             loss=loss,
             error=float(1 - subset_accuracy),
             metrics={"subset_accuracy": float(subset_accuracy), "element_accuracy": float(element_accuracy)},
@@ -730,8 +781,8 @@ class _RegressionAdapter(TaskAdapter):
     def decode_array(self, logits):
         return np.array(logits, copy=True)
 
-    def accumulator(self, *, keep_arrays=False):
-        return _RegressionAccumulator(self, keep_arrays=keep_arrays)
+    def accumulator(self, *, keep_arrays=False, bounded=False):
+        return _RegressionAccumulator(self, keep_arrays=keep_arrays, bounded=bounded)
 
     def prediction(self, logits, sample_ids):
         values = np.asarray(logits)
@@ -740,8 +791,8 @@ class _RegressionAdapter(TaskAdapter):
 
 
 class _RegressionAccumulator(TaskMetricAccumulator):
-    def __init__(self, adapter, *, keep_arrays=False):
-        super().__init__(adapter, keep_arrays=keep_arrays)
+    def __init__(self, adapter, *, keep_arrays=False, bounded=False):
+        super().__init__(adapter, keep_arrays=keep_arrays, bounded=bounded)
         self._sse = 0.0
         self._sae = 0.0
 
@@ -757,6 +808,7 @@ class _RegressionAccumulator(TaskMetricAccumulator):
             self._keep(truth[valid].cpu().numpy(), prediction[valid].cpu().numpy())
 
     def result(self, *, loss, extra_metrics=None):
+        self._refuse_bounded_extras(extra_metrics)
         if not self.count:
             return self._record(loss=None)
         return self._record(
