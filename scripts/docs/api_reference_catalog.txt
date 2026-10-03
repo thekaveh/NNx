@@ -528,6 +528,24 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.graph_tasks.GraphTaskError
 
+### 2.26. Link and edge prediction (`nnx.link_tasks`)
+
+@api nnx.link_tasks.split_links
+
+@api nnx.link_tasks.LinkSplit
+
+@api nnx.link_tasks.LinkTask
+
+@api nnx.link_tasks.LinkPredictor
+
+@api nnx.link_tasks.link_predictor_spec
+
+@api nnx.link_tasks.link_metrics
+
+@api nnx.link_tasks.LinkPrediction
+
+@api nnx.link_tasks.LinkTaskError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

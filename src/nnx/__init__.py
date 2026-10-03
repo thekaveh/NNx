@@ -36,6 +36,7 @@ from . import (
     graph_tasks,
     history,
     interop,
+    link_tasks,
     lm_tasks,
     models,
     monitors,
@@ -402,6 +403,8 @@ __all__ = [
     "FitResult",
     # Graph-level classification with explicit pooling and graph ids (FEAT-026)
     "graph_tasks",
+    # Leakage-aware link and edge prediction (FEAT-027)
+    "link_tasks",
     # Streaming prediction and mergeable metrics (FEAT-020)
     "streaming",
     "PredictionStream",

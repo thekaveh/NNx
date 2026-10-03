@@ -232,7 +232,7 @@ The epoch transaction is history → LAST → phase/BEST → deferred callback c
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
-The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, the FP16 loss scaler and the run's resolved precision record (a stateful resume into another effective precision is refused before the model is touched; a weights-only warm start may switch — [Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16)), completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored.
+The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, the FP16 loss scaler and the run's resolved precision record (a stateful resume into another effective precision is refused before the model is touched; a weights-only warm start may switch — [Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16)), completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored. A training loader that defines `set_epoch(epoch)` (PyTorch's `DistributedSampler` convention) is told each epoch's index before it is iterated, by `NNModel.train` and `Trainer.train` alike, so per-epoch randomness drawn from that index — `nnx.link_tasks` training negatives (§26) — is identical in an uninterrupted and a resumed run.
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A recipe materialized before training (`nnx.transforms.TransformRecipe` — LoRA on explicit Linear targets, SVD low-rank replacement; FEAT-016, [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild)) is recorded on the model and carried by every checkpoint tag, `ModelCheckpoint` snapshots and Hub saves; it is part of the run id of a run that trains it (runs without one keep theirs). Replay rebuilds its topology on a fresh base without rerunning SVD, and a resume needs the resuming model to have materialized the same recipe. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
@@ -384,7 +384,7 @@ Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoar
 
 ## 6. Custom training paradigms
 
-`NNModel.train()` runs a supervised loop by default — for every batch, it does `loss_fn(net(X), Y)` → backward → step. If your task doesn't fit that shape (autoencoders, VAEs, link prediction with negative sampling, recommendation pairwise losses, diffusion noise prediction), pass a `train_step_fn`:
+`NNModel.train()` runs a supervised loop by default — for every batch, it does `loss_fn(net(X), Y)` → backward → step. If your task doesn't fit that shape (autoencoders, VAEs, recommendation pairwise losses, diffusion noise prediction), pass a `train_step_fn` (link prediction with leakage-checked edge splits and negatives is built in: `nnx.link_tasks`, §26):
 
 ```python
 from nnx import TrainStepContext, NNEvaluationDataPoint
@@ -1272,8 +1272,8 @@ dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="la
   manifest is used.
 - **Graph edges are excluded.** Plans split samples (rows, images, graph
   nodes), never edges. `NNGraphDataset` keeps its node masks, and
-  link-prediction edge splitting (message-passing vs supervision edges) is a
-  separate feature (FEAT-027). For node classification, plan over node ids
+  link-prediction edge splitting (message-passing vs supervision edges) is
+  `nnx.link_tasks` (§26). For node classification, plan over node ids
   and build masks from `resolve(...)`. For any other map-style dataset,
   `plan.resolve(ids)` returns `SplitIndices` for `torch.utils.data.Subset`.
 
@@ -2250,3 +2250,80 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
   written — `export_state_dict()` keeps the weights.
 
 See [`examples/graph_classification_offline.py`](../examples/graph_classification_offline.py).
+
+
+## 26. Link and edge prediction (`nnx.link_tasks`)
+
+Node masks cannot hold out edges: a held-out edge left in the graph the
+model passes messages over is a leaked answer. `nnx.link_tasks` splits
+**edges** on a static homogeneous graph and checks every batch against the
+split before any forward pass:
+
+```text
+split_links(edge_index, n, val=, test=, seed=)  ─►  LinkSplit (nnx.link-split/1)
+   train / val / test positives (canonical; undirected = (min, max)), fixed val / test negatives, seed, policy
+LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = training topology, edge_label_index, edge_label, candidate_id)
+   objective(): BCE (or CE) over candidates  ·  eval_step(): exact AUROC / AP / BCE over every candidate
+```
+
+- **The manifest.** Edges are canonicalised and de-duplicated before they
+  are split, so a duplicate or a reverse can never sit in two splits; an
+  explicit `LinkSplit` refuses non-canonical, repeated or cross-split
+  edges and barred self-loops. It records directedness, the self-loop
+  policy, the seed and the topology policy; `replay(edge_index)`
+  re-derives it with a local generator (never the global RNG) and refuses
+  a mismatch.
+- **Topology.** `message_edge_index()` — the training edges (and their
+  reverses when undirected) — is the only message graph, for every split:
+  evaluation topology is fixed to the training edges. An edge-label split
+  (`categories=`, one category per edge, in declared order) declares
+  whether labelled edges' **existence** is visible context
+  (`label_existence="visible"`); their categories never are.
+- **Negatives** come from the static complement: never a positive of any
+  split, a reverse, a duplicate or a barred self-loop. A request beyond the
+  complement's capacity fails before sampling; validation and test
+  negatives are fixed in the manifest; every training pass re-draws its
+  negatives and shuffles its rows from `(seed, epoch)` — `NNModel.train` and
+  `Trainer.train` announce each epoch to a loader that defines
+  `set_epoch(epoch)` — so a stateful resume draws exactly what the
+  uninterrupted run would have, and an extra iteration of the training
+  loader (a callback scoring it) changes nothing. A wrapper around the
+  training loader must forward `set_epoch` to it, or its passes follow the
+  wrapper's own iteration count and a resume re-draws them (the same
+  contract as a `DistributedSampler`); materialised batches replay as they
+  are. The negatives' seed is checkpointed, and a resumed loader with
+  another seed is refused before any update. An
+  edge-label task samples none: a non-edge is never a category
+  (`LinkTask(split)` takes the split's mode).
+- **Checks.** A message edge outside the training topology — a held-out
+  positive is named — or a candidate outside its split, with the wrong
+  target or id, a barred self-loop, or a training negative that is a fixed
+  validation / test negative fails before any update. Batches are bound to
+  their role: the objective trains on `train` batches only, and the
+  training evaluator reads the `val` split, every candidate exactly once
+  (score `test` with `predict()` and `link_metrics()` after training).
+  The default train / evaluate / predict paths refuse link batches (they
+  cannot check them), as do node-level nets and the graph-pooling adapter
+  (§21).
+- **Shapes and metrics.** Binary candidates give one logit each, `(K,)`;
+  edge-label candidates `(K, categories)`; `predict()` keeps ids, pairs,
+  logits, probabilities and targets aligned, in candidate order.
+  Evaluation materialises every candidate (up to `max_candidates`) for
+  exact AUROC and AP — never per-batch averages; a one-class set reports
+  them unavailable with the reason, so `MonitorSpec("auroc")` never elects
+  it BEST.
+- **Recipe and checkpoints.** `link_predictor_spec(...)` (GCN / GraphSAGE /
+  GAT encoder with no activation after its last layer, so a `"dot"`
+  decoder's logits can be negative; or an `"mlp"` decoder) is rebuilt on
+  reload. Both decoders are symmetric, so on a directed split `u → v` and
+  `v → u` score alike; bring an asymmetric module for direction-sensitive
+  tasks. A `resume_mode="weights_only"` warm start does not compare
+  manifests (components start fresh), so warm-start only from a run on the
+  same split. The
+  manifest — topology policy, candidate ids, fixed negatives — is component
+  state `"link.task"`: a resume with another split fails before the first
+  resumed update.
+
+Homogeneous static graphs only: temporal and heterogeneous graphs,
+distributed sampling and knowledge-graph ranking are out of scope. See
+[`examples/link_prediction_offline.py`](../examples/link_prediction_offline.py).
