@@ -216,6 +216,52 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.JobTimeout
 
+@api nnx.decisions.benchmark.Sample
+
+@api nnx.decisions.benchmark.Record
+
+@api nnx.decisions.benchmark.write_records
+
+@api nnx.decisions.benchmark.read_records
+
+@api nnx.decisions.benchmark.Budget
+
+@api nnx.decisions.benchmark.collect
+
+@api nnx.decisions.benchmark.Collection
+
+@api nnx.decisions.benchmark.evaluate
+
+@api nnx.decisions.benchmark.BenchmarkReport
+
+@api nnx.decisions.benchmark.SliceReport
+
+@api nnx.decisions.benchmark.Coverage
+
+@api nnx.decisions.benchmark.MetricValue
+
+@api nnx.decisions.benchmark.Resources
+
+@api nnx.decisions.benchmark.bootstrap_interval
+
+@api nnx.decisions.benchmark.Interval
+
+@api nnx.decisions.benchmark.compare_reports
+
+@api nnx.decisions.benchmark.permute_options
+
+@api nnx.decisions.benchmark.redescribe
+
+@api nnx.decisions.benchmark.add_distractors
+
+@api nnx.decisions.benchmark.add_none_of_the_above
+
+@api nnx.decisions.benchmark.add_context
+
+@api nnx.decisions.benchmark.rewrite_input
+
+@api nnx.decisions.benchmark.BenchmarkError
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest
