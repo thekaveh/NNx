@@ -494,6 +494,26 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.lm_tasks.LMTaskError
 
+### 2.24. Query-grouped ranking (`nnx.ranking`)
+
+@api nnx.ranking.RankingTask
+
+@api nnx.ranking.RankingObjective
+
+@api nnx.ranking.RankingEval
+
+@api nnx.ranking.pairwise_logistic_loss
+
+@api nnx.ranking.rank
+
+@api nnx.ranking.mrr_at_k
+
+@api nnx.ranking.recall_at_k
+
+@api nnx.ranking.ndcg_at_k
+
+@api nnx.ranking.RankingError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

@@ -46,6 +46,7 @@ from . import (
     preprocessing,
     provenance,
     prune,
+    ranking,
     streaming,
     tasks,
     transforms,
@@ -407,6 +408,8 @@ __all__ = [
     "streaming_eval_step",
     # Causal language-model task with token-weighted evaluation (FEAT-034)
     "lm_tasks",
+    # Query-grouped ranking and retrieval evaluation (FEAT-035)
+    "ranking",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

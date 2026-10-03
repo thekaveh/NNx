@@ -7153,6 +7153,226 @@ class nnx.lm_tasks.LMTaskError
 A task configuration or a batch the task rejects.
 
 
+### 2.24. Query-grouped ranking (`nnx.ranking`)
+
+#### `nnx.ranking.RankingTask`
+
+```python
+class nnx.ranking.RankingTask(k: 'tuple[int, ...]' = (10,), max_relevance: 'int' = 1, relevance_threshold: 'int' = 1, weighting: 'str' = 'query', candidate_sets: 'str' = 'sampled', max_buffered: 'int' = 1000000, group_size: 'Optional[int]' = None, version: 'int' = 1) -> 'None'
+```
+
+A query-grouped ranking task.
+
+**Details**
+
+```text
+Args:
+    k: the cutoffs the metrics are reported at (each ``>= 1``).
+    max_relevance: grades are integers in ``0..max_relevance``
+        (``1``: binary relevance).
+    relevance_threshold: a candidate is relevant (for MRR and Recall,
+        and for excluding queries) when its grade is at least this.
+    weighting: the objective's ``"query"`` or ``"pair"`` weighting.
+    candidate_sets: ``"sampled"`` (each query sees a sample of its
+        corpus) or ``"exhaustive"`` (its whole corpus); recorded with
+        the metrics.
+    max_buffered: the most candidate rows the evaluation buffers to
+        join each query's candidates.
+    group_size: when set, every evaluated query must have exactly this
+        many candidates — an incomplete (or over-full) query is
+        rejected rather than scored.
+    version: the task schema version.
+```
+
+##### `nnx.ranking.RankingTask.state`
+
+```python
+nnx.ranking.RankingTask.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingTask.from_state`
+
+```python
+nnx.ranking.RankingTask.from_state(state: 'Mapping[str, Any]') -> 'RankingTask'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingTask.metric_names`
+
+```python
+nnx.ranking.RankingTask.metric_names(self) -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingTask.metric_specs`
+
+```python
+nnx.ranking.RankingTask.metric_specs(self) -> 'list[Any]'
+```
+
+``MetricSpec``\ s declaring this task's metrics — registered ids ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a ``MonitorSpec`` can select on them. :meth:`eval_step` computes them; a declaration under another name finds no value.
+
+##### `nnx.ranking.RankingTask.split`
+
+```python
+nnx.ranking.RankingTask.split(self, batch: 'Any') -> 'tuple[Any, list[Id], list[Id], torch.Tensor, Optional[torch.Tensor]]'
+```
+
+``(features, query_ids, candidate_ids, relevance, mask)``, checked.
+
+##### `nnx.ranking.RankingTask.scores`
+
+```python
+nnx.ranking.RankingTask.scores(self, model: 'Any', features: 'Any', n: 'int') -> 'torch.Tensor'
+```
+
+The scorer's one score per row, checked.
+
+##### `nnx.ranking.RankingTask.objective`
+
+```python
+nnx.ranking.RankingTask.objective(self, *, nonfinite: 'str' = 'fail') -> 'RankingObjective'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingTask.eval_step`
+
+```python
+nnx.ranking.RankingTask.eval_step(self) -> 'RankingEval'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingTask.evaluate_rows`
+
+```python
+nnx.ranking.RankingTask.evaluate_rows(self, rows: 'Iterable[tuple[Id, Id, float, int]]') -> 'tuple[dict[str, float], int, int, int]'
+```
+
+Metrics over complete queries from ``(query, candidate, score, relevance)`` rows in any order: ``(means, scored queries, excluded queries, candidates of the scored queries)``. Duplicate candidates of a query raise.
+
+
+#### `nnx.ranking.RankingObjective`
+
+```python
+class nnx.ranking.RankingObjective(task: 'RankingTask', *, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+The pairwise logistic objective of a :class:`RankingTask` (see the module docstring); checkpointed as component ``"ranking.task"`` with the task configuration and the run's training units — pairs (``weighting="pair"``) or queries (``"query"``) scored, from 0 for each fresh run and restored on resume (a window the engine then skips is still counted).
+
+##### `nnx.ranking.RankingObjective.component_spec`
+
+```python
+nnx.ranking.RankingObjective.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingObjective.component_state`
+
+```python
+nnx.ranking.RankingObjective.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingObjective.check_component_state`
+
+```python
+nnx.ranking.RankingObjective.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.ranking.RankingObjective.load_component_state`
+
+```python
+nnx.ranking.RankingObjective.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+
+#### `nnx.ranking.RankingEval`
+
+```python
+class nnx.ranking.RankingEval(task: 'RankingTask') -> 'None'
+```
+
+The :class:`RankingTask`'s ``eval_step_fn``: buffers the validation stream (at most ``max_buffered`` rows), groups it by query and reports the per-query metrics (see the module docstring), with the pairwise loss over the same queries as the record's ``loss``.
+
+
+#### `nnx.ranking.pairwise_logistic_loss`
+
+```python
+nnx.ranking.pairwise_logistic_loss(scores: 'torch.Tensor', relevance: 'torch.Tensor', query_ids: 'Sequence[Id]', *, weighting: 'str' = 'query') -> 'tuple[torch.Tensor, int]'
+```
+
+``(numerator, denominator)`` of the pairwise logistic loss over the unequal-relevance pairs within each query (see the module docstring).
+
+**Details**
+
+```text
+Pairs are formed grade by grade (each grade's candidates against every
+lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
+query's full pair matrix is ever held — in training too: a block of at
+least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
+(``torch.utils.checkpoint``) rather than kept, while a smaller one costs
+less to keep than to recompute. ``relevance`` may live on any device; it
+is moved to the scores'.
+```
+
+
+#### `nnx.ranking.rank`
+
+```python
+nnx.ranking.rank(scores: 'Sequence[float]', candidate_ids: 'Sequence[Id]') -> 'list[int]'
+```
+
+Positions of the candidates in ranked order: by score, highest first, ties broken by candidate id (ascending) — a stable, documented order. A non-finite score has no place in that order and is refused.
+
+
+#### `nnx.ranking.mrr_at_k`
+
+```python
+nnx.ranking.mrr_at_k(relevance: 'Sequence[int]', scores: 'Sequence[float]', candidate_ids: 'Sequence[Id]', k: 'int', *, threshold: 'int' = 1) -> 'float'
+```
+
+Reciprocal rank of the first relevant candidate within the top ``k`` (0 when none is).
+
+
+#### `nnx.ranking.recall_at_k`
+
+```python
+nnx.ranking.recall_at_k(relevance: 'Sequence[int]', scores: 'Sequence[float]', candidate_ids: 'Sequence[Id]', k: 'int', *, threshold: 'int' = 1) -> 'float'
+```
+
+Relevant candidates in the top ``k`` over all relevant candidates (the query must have at least one).
+
+
+#### `nnx.ranking.ndcg_at_k`
+
+```python
+nnx.ranking.ndcg_at_k(relevance: 'Sequence[int]', scores: 'Sequence[float]', candidate_ids: 'Sequence[Id]', k: 'int') -> 'float'
+```
+
+``DCG@k / IDCG@k`` with gain ``2^rel - 1`` and discount ``log2(rank + 1)`` (the query must have a nonzero grade).
+
+
+#### `nnx.ranking.RankingError`
+
+```python
+class nnx.ranking.RankingError
+```
+
+A configuration, batch or query the ranking task rejects.
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`
