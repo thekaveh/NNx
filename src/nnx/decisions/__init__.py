@@ -23,7 +23,9 @@ that declares it can answer:
   :class:`Capabilities` (primitives, modalities, dynamic labels, batch
   limits, inference / training / export) checked before any model call or
   network I/O, and ``decide(question, inputs)``.
-  :class:`FixedHeadProvider` adapts a trained NNx classifier.
+  :class:`FixedHeadProvider` adapts a trained NNx classifier;
+  :class:`NLIProvider` (FEAT-011) is a local label-conditioned baseline that
+  scores candidates supplied at inference with a caller-supplied NLI model.
 - **Errors** — :class:`UnsupportedCapability`,
   :class:`InvalidDecisionRequest`, :class:`InvalidDecisionResponse` and
   :class:`ProviderFailure`, all :class:`DecisionError`\\ s.
@@ -33,6 +35,7 @@ hosted-SDK extra; inference only — nothing here trains, exports or executes
 actions.
 """
 
+from .nli import NLIProvider
 from .providers import Capabilities, DecisionProvider, FixedHeadProvider
 from .schema import (
     PROBABILITY_TOLERANCE,
@@ -67,6 +70,7 @@ __all__ = [
     "FixedHeadProvider",
     "InvalidDecisionRequest",
     "InvalidDecisionResponse",
+    "NLIProvider",
     "Option",
     "ProviderFailure",
     "Question",
