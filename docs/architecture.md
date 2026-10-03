@@ -48,4 +48,15 @@ temporary file: a failed write leaves that destination's previous bytes and
 removes its temporary, but the history files are not one multi-file
 transaction, and a hard kill can still leave a stale temporary behind.
 
+With an opt-in history journal (`history=HistoryJournal(...)`,
+[Concepts §4.5](concepts.md#45-bounded-history-the-history-journal)) the
+loop keeps a bounded window of records in memory, and the "run history" step
+appends the epoch's records as immutable chunks, indexes them and publishes
+the journal manifest — still before LAST, which stays the commit marker.
+Readers show records up to LAST's epoch only, so a crash between the
+manifest and LAST leaves an uncommitted tail that is ignored; a failed LAST
+republishes the previous manifest. Callbacks see the window as `ctx.idps`
+unless they declare `history_access = "full"`, and a continuation writes its
+own run and chunk files, never its source's.
+
 ![NNx training lifecycle](assets/training-lifecycle.png)

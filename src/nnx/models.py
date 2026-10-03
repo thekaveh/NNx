@@ -36,9 +36,11 @@ is runtime-only — it is never serialized and does not change run ids.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Optional, cast
 
 import torch
@@ -67,6 +69,24 @@ ModelFactory = Callable[[Mapping[str, Any]], nn.Module]
 """``factory(config) -> torch.nn.Module``."""
 
 _REGISTRY: dict[tuple[str, int], ModelFactory] = {}
+# A caller-supplied registry consulted before _REGISTRY for one reconstruction
+# (nnx.bundles.reconstruct_bundle(factories=...), which requires the rebuilt
+# spec itself to be supplied; a factory's own nested builds may still use
+# the process registry).
+_SUPPLIED: contextvars.ContextVar[Optional[Mapping[tuple[str, int], ModelFactory]]] = contextvars.ContextVar(
+    "nnx_supplied_model_factories", default=None
+)
+
+
+@contextlib.contextmanager
+def _supplied_factories(factories: Optional[Mapping[tuple[str, int], ModelFactory]]) -> Iterator[None]:
+    """Resolve model factories from ``factories`` first inside the block
+    (``None``: the process registry only)."""
+    token = _SUPPLIED.set(None if factories is None else dict(factories))
+    try:
+        yield
+    finally:
+        _SUPPLIED.reset(token)
 
 
 class MissingModelFactoryError(ValueError):
@@ -322,6 +342,10 @@ def resolve_model_factory(spec: ModelSpec) -> ModelFactory:
     naming what is registered."""
     if not isinstance(spec, ModelSpec):
         raise TypeError(f"expected a ModelSpec, got {type(spec).__name__}")
+    supplied = _SUPPLIED.get()
+    factory = None if supplied is None else supplied.get((spec.id, spec.version))
+    if factory is not None:
+        return factory
     factory = _REGISTRY.get((spec.id, spec.version))
     if factory is not None:
         return factory

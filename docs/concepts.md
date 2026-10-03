@@ -201,6 +201,7 @@ runs/<id>/
 ├── run.yaml          # NNRun.state() — config-only, hashes to <id>
 ├── metadata.yaml     # env snapshot (nnx/torch/python/git) — NOT in hash
 ├── idps.csv          # per-iteration metrics, flushed every epoch
+│                     #   (history/ instead with a HistoryJournal — §4.5)
 ├── checkpoints/
 │   ├── first.pt      # NNCheckpoint at epoch 0
 │   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs
@@ -225,7 +226,7 @@ Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by
 
 Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a destination-local tmp-then-rename helper. A `KeyboardInterrupt` leaves either the previous file or the new file at a destination, never a half-written file. The text writer creates its temp next to the resolved destination (also for a bare filename, so the rename never crosses filesystems) and owns it until the rename: a failure while opening, writing, flushing or closing it — or in the rename itself — releases the descriptor, unlinks that temp and re-raises the original exception (a cleanup error never masks it); an `fsync` error is tolerated, and after a successful rename the temp name is never touched. This is per-file cleanup for ordinary exceptions, not a multi-file transaction: `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another, and a SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried. Each checkpoint names an immutable generation-addressed training-state sidecar, with the sidecar committed first and checkpoint committed last; an interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
 
-The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history.
+The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history. A run with a history journal (§4.5) follows the same transaction: its chunks and manifest are the "history" step.
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
@@ -326,6 +327,37 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   verified on read (format and fingerprint); unreadable ones are ignored with a
   warning, so they never stop a run from loading or resuming.
 
+
+### 4.5. Bounded history: the history journal
+
+By default both loops keep every per-batch `NNIterationDataPoint` in memory and rewrite the whole `idps.csv` each epoch, so memory and bytes written grow with the run. `history=HistoryJournal(retention=..., chunk_size=...)` (FEAT-036, `nnx.history`; on `NNModel.train` and `Trainer.train`, never part of the run id) switches one run to a bounded **history journal**:
+
+```python
+from nnx.history import HistoryJournal, export_history_csv, iter_history
+
+run = model.train(params, history=HistoryJournal(retention=1000, chunk_size=250))
+len(run.idps)                                   # ≤ 1000: the window, not the whole run
+for record in iter_history(run.id): ...         # the committed history, chunk by chunk
+export_history_csv(run.id, "idps.csv")           # the legacy CSV layout, on request
+```
+
+```
+runs/<id>/history/
+├── chunk-00000000.jsonl   # immutable: up to chunk_size records, one JSON line each
+├── index.jsonl            # appended: one hash-chained line per chunk (counts, epochs, SHA-256)
+├── epochs.jsonl           # appended: one summary row per epoch (the notebook chart's series)
+└── journal.json           # small manifest (counts, byte lengths, index chain), replaced atomically
+```
+
+- **Memory and bytes.** Only the last `retention` records stay in memory (`ctx.idps`, `NNRun.idps`); `chunk_size ≤ retention` (default `min(250, retention)`, resolved as `HistoryJournal.chunk`), so records waiting for their chunk are always inside the window. Every record is written once, so bytes written grow linearly with the records; `idps.csv` is not written.
+- **Commit protocol.** Each epoch's records are written as chunks and indexed, its summary row appended, every file the epoch wrote flushed to disk once (chunks written mid-epoch are not fsynced one by one), and the manifest published *before* LAST — the journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker. A crash while a chunk is written, or before the manifest is replaced, leaves the previous manifest; a crash before LAST is replaced leaves an **uncommitted tail** on disk that no reader shows (records newer than LAST's epoch are filtered, as for `idps.csv`). If LAST fails, the previous manifest is republished. A committed chunk whose bytes no longer match its SHA-256, a missing chunk and an altered index raise `HistoryCorruptionError` (a `ValueError`).
+- **Lazy reads.** `NNRun.load` reads only the committed tail — the last `retention` records, from the chunks holding them — and returns a run whose `history` is the journal directory. The notebook chart (`_repr_html_`) reads the per-epoch rows, BEST and the `runs/best` election read checkpoints and the manifest and index, and a resume reads only the source's checkpoint: none of them reads records. `NNRun.all` lists CSV and journal runs side by side. `save()` never rewrites the journal — `idps` is only its window — and a journal run saved under another runs root is refused (the copy would have no history); use `export_history_csv` to take the history elsewhere.
+- **Callbacks.** The built-in callbacks read `ctx.idp` (the epoch's last record) and are unaffected; `LRMonitor.history` is bounded too, keeping the LRs of the last `retention` epochs (`LRMonitor(bounded=False)` keeps every epoch). A `Callback` that needs every record declares `history_access = "full"` and receives the materialised history — read-only, like the window — as `ctx.idps` at `on_epoch_end` and `on_train_end` (read back from the journal once per dispatch — each epoch, and once at the end — and released with it, so its cost grows with the run; if the read-back fails at the end, a warning is issued and the callback gets the window). Every other callback sees `ctx.idps` as a live, read-only sequence over the window: it grows with each record as the eager list does (trimmed to `retention`), supports `len`, indexing, iteration, `reversed` and slicing (a new list), but no in-place change (item assignment raises `TypeError`; `append` and the other list mutators do not exist) — the journal, LAST and `NNRun.idps` keep the records as recorded; a callback that reassigns `ctx.idps` is seen by the next. Without a journal, `ctx.idps` is the running list exactly as before. A plain function callback — `callbacks=[lambda idps: ...]`, which by contract receives the full list — or an unknown `history_access` is refused with a `ValueError` before any run is reserved.
+- **Continuations and lineage.** A resumed run owns its own run directory and chunk files and never writes to the source run, which stays byte-for-byte unchanged. `iter_history(run_id, lineage=True)` and `export_history_csv(..., lineage=True)` yield the committed records of the run the child resumed from, up to the epoch it resumed from — recorded in its resume status (`ResumeStatus.source_epoch`, in `metadata.yaml`) when it resumed; for runs recorded before that, the epoch of that checkpoint now — then the child's, recursively: each epoch once, never the parent's later epochs, also when the child resumed from an earlier checkpoint than the parent's last or has no committed record yet (the cut never passes the child's first record). When the branch epoch cannot be known (the checkpoint, or the parent's LAST, is unreadable), the parent's records before the child's first record are used, with a `RuntimeWarning`; when neither is known, the parent run is gone, or the child resumed through the `runs/best` pointer (which may name another run by now), the lineage starts at the child, with a `RuntimeWarning`. Lineage follows resumes: a run that started fresh — a born-again generation naming its teacher's run as `parent_run_id`, say — starts its own epochs, and its lineage is its own history.
+- **Export and migration.** `export_history_csv` writes the same columns, order and index `NNRun.save` writes for an eager run (it holds the records in memory while it builds the table; stream `iter_history` for larger histories). `migrate_history(run_id, spec=...)` moves an existing run's `idps.csv` into a journal explicitly — floats parsed round-trip; the journal read back and checked before it is published and the CSV removed; an unpublished leftover of an interrupted migration replaced, and one interrupted after publishing finished — keeping `run.yaml` and the run id. It refuses a run being trained (its lease is held), the `runs/best` pointer (migrate a run by its own id) and, unless `discard_uncommitted=True`, a CSV holding records past LAST's epoch, which readers hide but a migration would delete. Nothing is migrated or deleted by default.
+
+Out of scope: concurrent writers to one run, mid-epoch recovery (an epoch is the unit of commit) and remote tracking. Because an epoch's records must be on disk when its LAST lands, every epoch ends its own chunk: full-batch training writes one small chunk per epoch, and reading the tail opens up to `retention` of them. [`examples/history_journal.py`](https://github.com/thekaveh/NNx/blob/main/examples/history_journal.py) trains with a journal, resumes lazily, renders the summary and exports the CSV with and without the parent's prefix.
+
 ## 5. Callbacks
 
 `Callback` has four hooks (`on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`) each receiving a `_CallbackContext`:
@@ -338,7 +370,7 @@ ctx.optimizers    # dict[str, Optimizer]  (Trainer mode only)
 ctx.trainer       # Trainer  (Trainer mode only)
 ctx.epoch         # int
 ctx.idp           # current NNIterationDataPoint
-ctx.idps          # running list of all idps so far
+ctx.idps          # running list of all idps so far (with a HistoryJournal: the last `retention` — §4.5)
 ctx.should_stop   # writable — set True to break out of training
 ```
 
@@ -1293,7 +1325,7 @@ Built-in components are `EarlyStopping` (`early_stopping`, optional) and the ste
 
 ### 14.2. Resume modes and status
 
-`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
+`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint (and that checkpoint's epoch, `source_epoch`), and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 
@@ -1692,3 +1724,210 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+## 21. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+`predict()`, `predict_proba()` and `evaluate()` are eager: they return only
+after the whole loader has run, holding every batch's outputs (and, for
+`evaluate()`, every target and prediction) until then. FEAT-020 adds bounded
+counterparts. The eager calls are unchanged.
+
+```text
+NNModel.iter_predict(loader) ──► PredictionStream ──► PredictionBatch(logits, classes, sample_ids) per batch
+                   (spec / rich=True) ──────────────► PredictionResult per batch
+StreamingMetrics.update(...) ─┐
+StreamingMetrics.update(...) ─┴─ merge ──► finalize() ──► MetricSnapshot(count, values, unavailable)
+NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation record from counts and sums
+```
+
+- **A context-managed stream.** `iter_predict` takes a `DataLoader` or
+  another iterable of batches; in-memory arrays and tensors stay with
+  `predict()`. Use the stream in a `with` block:
+
+  ```python
+  with model.iter_predict(loader) as stream:
+      for batch in stream:
+          sink.write(batch.sample_ids, batch.classes)
+  ```
+
+  Batches arrive in loader order. Concatenated (`concatenate_predictions`),
+  they are exactly the eager result: `predict()`'s logits and classes and
+  `predict_proba()`'s sample ids, with the same graph seed-row slicing and the
+  same categorical, multilabel (the task's threshold) and continuous
+  decoding. With a `ProbabilitySpec`, or `rich=True` for a model with a task,
+  each batch is the `PredictionResult` `predict_proba()` would build for it.
+  An empty loader yields no batches, where the eager calls raise. Over a
+  shuffling `DataLoader`, the first batch whose sample ids are iteration
+  positions warns, as `predict_proba()` does; graph seed rows carry global
+  node indices and never warn.
+- **Mode restoration.** Each batch's forward pass runs in eval mode under
+  `no_grad`, and every submodule's training mode is restored right after it,
+  before the batch is yielded or its error raised. Between batches the
+  network is in its own mode, so a consumer may train or inspect it; after an
+  early close or a failed forward pass nothing is left in eval mode.
+- **Ownership and reuse.** Closing the stream (leaving the `with` block,
+  `close()`, an error inside the stream) finalizes its generator and drops
+  its references to the loader's iterator and the model. Like a closed
+  generator, a closed stream is exhausted, so `close()` inside a `for` loop
+  ends the loop; iterating a closed, consumed or partly consumed stream again
+  (after a `break`), or entering a closed one, raises `StreamClosedError` —
+  ask `iter_predict()` for a new one. The
+  loader is never closed: it stays the caller's and can be iterated again.
+- **Consumer-retained memory.** The stream holds at most the batch in
+  flight, so its memory does not grow with the dataset. What the consumer
+  keeps is the consumer's memory: keep the sample ids and decisions you need,
+  not the batches. The eager calls are a stream the library concatenates for
+  you, with O(N) memory.
+- **Mergeable metrics.** `StreamingMetrics(metrics, semantics, labels=...,
+  threshold=...)`, or `StreamingMetrics.for_task(metrics, task)`, accumulates
+  declared `MetricSpec`s:
+  - `update(target, probabilities=..., labels=..., values=..., valid=...)`
+    takes a batch's inputs, and `update_logits(target, logits)` derives them
+    from raw outputs as `evaluate()` does. Masked entries (`valid=False`, a
+    NaN target — a one-hot / soft row holding a NaN included — or a
+    categorical target equal to the task's `ignore_index`) are not scored.
+    This is the standalone accumulator's own rule: `evaluate()` records, and
+    `streaming_eval_step` with them, mask what the task (or, without one, the
+    loss's `ignore_index`) masks, as before.
+  - The built-ins keep sufficient statistics: sums and counts for
+    `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
+    `f1` (the same values as scikit-learn with `zero_division=0`). Memory is
+    bounded by the number of classes, never by N. A registered metric is
+    bounded when its accumulator implements `merge()` and does not declare
+    `stores_scores = True`.
+  - `merge(other)` returns a new accumulation over both inputs' samples,
+    whatever the order, copying its inputs so later updates to either never
+    reach it. Merging an empty accumulation changes nothing.
+  - `finalize()` returns a read-only `MetricSnapshot(count, values,
+    unavailable)`, repeatable and never changing the accumulation. An empty or
+    fully masked stream finalizes to `count=0` with every metric unavailable.
+- **Merge schemas.** Two accumulations merge only when they declare the same
+  metrics (names, ids, versions and configs), the same probability semantics
+  (`categorical`, `bernoulli` or `continuous`), the same task labels and
+  output count (`num_outputs`: classes, or outputs along axis 1), the same
+  decision threshold and the same `ignore_index`. Anything else raises
+  `MetricMergeError`, since the sums would describe different quantities. A
+  custom accumulator's `merge(other)` adds `other` in place and returns
+  `None`, keeping nothing of `other` that a later update could change.
+- **Stored scores.** A rank metric such as AUROC depends on the order of
+  every score and is never additive. A registered metric whose accumulator
+  has no `merge()`, or declares `stores_scores = True`, is refused in bounded
+  mode before any update. `materialize=True` stores its scores instead (O(N)
+  memory) and replays them at `finalize()`.
+- **Bounded validation and loss denominators.** `streaming_eval_step` is an
+  opt-in `eval_step_fn` that builds the validation record `evaluate()` builds,
+  from counts and sums:
+  - the same task kind, count and status, with masked targets not counted;
+  - the same loss — each batch's loss numerator summed and divided by the
+    summed loss denominators (valid targets, or class weights), never a mean
+    of batch means; a `sum`-reduction loss stays a total;
+  - the same classification or task metrics, and the declared metrics that
+    monitors and BEST selection read.
+
+  `EvalStepContext.metrics` carries the run's declared metrics to the step.
+  It refuses `extra_metrics` (callables on the full arrays) and a
+  stored-score metric when training starts, before any run is reserved, and
+  `ExperimentPlan.validate()` reports both under `train.extra_metrics` /
+  `train.metrics[i]`. These early checks apply to `streaming_eval_step`
+  itself or a `functools.partial` of it; a step that wraps it is a step of its
+  own, and the streaming step then refuses at its first call, before reading
+  a validation batch. The default validation step and `evaluate()` stay
+  eager, and `evaluate()` still raises on an empty loader. A model without a
+  task scores multi-output (`BCEWithLogitsLoss`) indicators row by row, as
+  `evaluate()` does: accuracy is the exact-row accuracy, and the averages run
+  over the labels.
+
+See [`examples/prediction_stream.py`](../examples/prediction_stream.py).
+
+## 22. Run bundles (`nnx.bundles`)
+
+A run's checkpoints are pickles (`torch.load(weights_only=False)`), safe to
+read only when you produced them, and a safetensors checkpoint holds one
+weights dict without the training state. A **run bundle** (FEAT-015) holds
+one run checkpoint — its weights, its training state and optional
+calibrators — as data only:
+
+```text
+<bundle>/bundle.json            manifest: format, version, generation id, every payload's SHA-256 and size
+<bundle>/g-<generation>/
+    state.json                  primitive state, schema-validated JSON
+    model.safetensors           the network's tensors
+    training.safetensors        the training state's tensors ("resume" bundles only)
+    calibrator-<n>.json         TemperatureCalibrator records (§18)
+
+export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bundle(dir) ──► reconstruct_bundle(dir, factories=...)
+                                                                                     └── ReconstructedBundle.resume(params)
+```
+
+- **Export** reads one of your runs' checkpoints (`checkpoint="last"`, any
+  `Checkpoints` tag, or a `ModelCheckpoint` stem such as `"snap_e3"`) and
+  publishes it as a new generation. A checkpoint written by `train()` gives a
+  `"resume"` bundle; a weights-only one (a `ModelCheckpoint` snapshot) an
+  `"inference"` bundle. Calibrators ship alongside: they must calibrate a
+  categorical model with their class count and the task's labels, and a
+  fingerprint `model_id` (`model_fingerprint`) must be the bundled weights'
+  (checked again by every validation).
+- **Format v1.** Tensors are stored in the safetensors format, which NNx
+  writes and reads itself (no optional dependency; any safetensors reader
+  opens the payloads). Everything else is strict JSON with typed encodings:
+  `$tuple`, integer-keyed `$intdict` (optimizer state), non-finite `$float`
+  (a plateau scheduler's `inf`) and `$tensor` references. Module extra state
+  that is not a tensor, a custom object in optimizer or component state and
+  a runtime-only module are refused at export, with no pickle fallback.
+- **Inspect and validate.** `inspect_bundle` summarizes a bundle
+  (`BundleInfo`: capability, source run and checkpoint, epoch, model,
+  components, calibrators) from the manifest and `state.json`.
+  `validate_bundle` checks every payload before any tensor is read: size and
+  SHA-256 (the size checked before a file is read, and no file opened
+  through a symlink or as a FIFO or device), one generation id throughout,
+  nothing missing, unlisted, symlinked or outside the bundle, strict JSON
+  without duplicate keys or runaway nesting, calibrator labels matching the
+  task's, and safetensors headers holding exactly the tensors `state.json`
+  references. Only then is a calibrator's fingerprint `model_id` checked,
+  against the weights hashed straight from the payload (no tensor is
+  built). An export runs the same checks on its staged generation before
+  publishing it.
+  Neither unpickles, calls a model factory or downloads — even beside a
+  legacy `last.pt`.
+- **Reconstruct.** `reconstruct_bundle(path, factories=..., components=...)`
+  validates, then rebuilds the model. A registered module is built from the
+  caller-supplied `factories` (`{(id, version): factory}`; the process
+  registry when omitted), with `batch_adapter=` for its inputs as with
+  `NNModel` (runtime-only, never stored). Passing the resumed run's
+  `components` (e.g. the same callbacks) checks their saved state too. Every missing factory or
+  component is named in one `BundleReconstructionError` before any model is
+  allocated — a model saved on CUDA or MPS on a host without it included
+  (pass `device=Devices.CPU`). The rebuilt model predicts bit-for-bit like
+  the source; to serve it, keep `.model` and drop the `ReconstructedBundle`,
+  which holds a `"resume"` bundle's training state for `resume()`. Bundles
+  hold `NNModel` runs: artifacts a subclass keeps outside the checkpoint (a
+  `GenerativeNNModel` tokenizer) are not bundled. Like
+  `from_pretrained` with a `config.json`, reconstruction builds the
+  architecture the bundle's parameters describe: read an untrusted bundle's
+  `inspect_bundle(...).model_params` before reconstructing it.
+- **Resume.** `ReconstructedBundle.resume(params, **train_kwargs)` runs
+  `model.train` as a stateful resume of the bundle's run: the optimizer,
+  scheduler, GradScaler, RNG and component state come from the bundle, held
+  in memory (it never becomes a pickle), and the resumed run records
+  `resume_checkpoint` (`"bundle-<generation>_e<epoch>"`) as its parent
+  checkpoint — with `provenance=...`, its attempt links the bundle's run,
+  epoch and generation without reading anything from disk. One resumed epoch equals the uninterrupted run. An
+  `"inference"` bundle raises `BundleCapabilityError` before anything
+  changes, and so does a `Trainer` run's bundle (named optimizers) or a
+  transformed topology (a converted QAT checkpoint): `resume` continues
+  `NNModel.train` runs from an untransformed model, while these models
+  rebuild for inference like any other.
+- **Publication.** A new generation directory is written first and
+  `bundle.json` is replaced atomically, so an export interrupted at any
+  point leaves the previous bundle usable. The replaced generation stays
+  until the next export, so a reader that started before an export can
+  finish; older generations and an interrupted export's leftovers are
+  cleared. An export never touches a directory that is neither empty nor a
+  run bundle, nor a `bundle.json` that is not a readable NNx manifest.
+- **Three formats, three readers.** Pickle checkpoints, safetensors
+  checkpoints / Hub distributions and run bundles each have their own
+  reader, and none opens another's files (see [Hub integration
+  §3](hub.md#3-three-artifact-formats-and-their-trust-boundaries) and
+  `SECURITY.md`).
+
+See [`examples/run_bundle.py`](../examples/run_bundle.py).

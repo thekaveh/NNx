@@ -88,8 +88,11 @@ class _LegacyCallback(Callback):
         self._fn(ctx.idps)
 
 
-def _warn_at_user_frame(message: str) -> None:
-    """Emit a ``RuntimeWarning`` attributed to the first caller outside nnx.
+def _warn_at_user_frame(
+    message: str, category: type[Warning] = RuntimeWarning, *, once_per_location: bool = False
+) -> None:
+    """Emit a warning (``RuntimeWarning`` by default) attributed to the first
+    caller outside nnx.
 
     ``warnings.warn(stacklevel=...)`` would point at a fixed line inside the
     training loop, and Python's default filter shows a given message from a
@@ -97,17 +100,20 @@ def _warn_at_user_frame(message: str) -> None:
     the same notebook would be silent. A fresh registry per call keeps user
     filters (``ignore`` / ``error`` / ``once``) authoritative while callers
     bound the volume themselves (``EarlyStopping`` reports once per run).
+    ``once_per_location`` uses that caller's registry instead, as
+    ``warnings.warn`` does, so the default filter shows a warning once per
+    user call site.
     """
     frame = sys._getframe(1)
     while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).split(".")[0] == "nnx":
         frame = frame.f_back
     warnings.warn_explicit(
         message,
-        RuntimeWarning,
+        category,
         frame.f_code.co_filename,
         frame.f_lineno,
         module=frame.f_globals.get("__name__"),
-        registry=None,
+        registry=frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None,
         module_globals=frame.f_globals,
     )
 
@@ -508,14 +514,24 @@ class ModelCheckpoint(Callback):
 
 
 class LRMonitor(Callback):
-    """Logs the current LR each epoch. History exposed at `.history`."""
+    """Logs the current LR each epoch. History exposed at `.history`.
 
-    def __init__(self):
+    In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+    bounded too: it keeps the LRs of the last ``retention`` epochs (the
+    journal's bound, applied per epoch). ``bounded=False`` keeps every
+    epoch's LR (one float each) in any run.
+    """
+
+    def __init__(self, bounded: bool = True):
         self.history: list[float] = []
+        self.bounded = bounded
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
+        retention = getattr(ctx, "history_retention", None)
+        if retention is not None and getattr(self, "bounded", True) and len(self.history) > retention:
+            del self.history[:-retention]
 
 
 def _edp_metric_iter(edp):
