@@ -15,11 +15,62 @@ coupling beyond the TrainStepContext type.
 
 from __future__ import annotations
 
+from typing import Any, TypeVar, cast
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from .nn.nn_model import TrainStepContext
+
+# Marks an imperative paradigm step (it steps the optimizer itself) with its
+# paradigm's name, so passing it as ``objective=`` is refused before any run
+# is reserved (FEAT-040) instead of being stepped twice.
+IMPERATIVE_STEP = "__nnx_imperative_step__"
+
+_StepT = TypeVar("_StepT")
+
+
+def first_input(model: Any, batch: Any, *, who: str) -> torch.Tensor:
+    """A self-supervised paradigm's one input from a batch, on the model's
+    device (labels, if any, are ignored): split by the model's batch adapter
+    when it has one (FEAT-006) — which must yield exactly one input,
+    positional or keyword — else the net's own ``unpack_batch``, else the
+    first element of a tuple / list, else the batch itself (a net swapped in
+    for a built-in one)."""
+    adapter = getattr(model, "_batch_adapter", None)
+    if adapter is not None:
+        args, kwargs, _ = adapter.split(batch)
+        inputs = [*args, *kwargs.values()]
+        if len(inputs) != 1:
+            raise ValueError(
+                f"{who} needs batches of exactly one input; the model's batch adapter gave {len(args)} positional "
+                f"and {len(kwargs)} keyword input(s)"
+            )
+        x = inputs[0]
+    elif hasattr(model.net, "unpack_batch"):
+        inputs, _ = cast(Any, model.net).unpack_batch(batch)
+        if len(inputs) != 1:
+            raise ValueError(f"{who} needs batches of exactly one input; the net's unpack_batch gave {len(inputs)}")
+        (x,) = inputs
+    elif isinstance(batch, (list, tuple)):
+        x = batch[0]
+    else:
+        x = batch
+    return x.to(model.device)
+
+
+def full_precision(tensor: torch.Tensor) -> torch.Tensor:
+    """A mixed-precision (float16 / bfloat16) output as float32, so a loss
+    sum accumulates in full precision; other dtypes unchanged."""
+    return tensor.float() if tensor.dtype in (torch.float16, torch.bfloat16) else tensor
+
+
+def imperative_step(step: _StepT, *, paradigm: str) -> _StepT:
+    """Mark ``step`` as an imperative ``paradigm`` step (see
+    :data:`IMPERATIVE_STEP`) and return it."""
+    setattr(step, IMPERATIVE_STEP, paradigm)
+    return step
 
 
 def finalize_step(
@@ -30,14 +81,17 @@ def finalize_step(
 ) -> float:
     """Standard post-loss tail for custom :class:`TrainStepFn` factories.
 
-    Honors ``ctx.grad_clip_norm`` (global L2 grad-clip) and runs the
-    optimizer step. Raises a clear ``FloatingPointError`` if the loss
+    Honors ``ctx.grad_clip_norm`` (global L2 grad-clip), runs the
+    optimizer step and reports it with ``ctx.report_update()``, so an
+    ``optimizer_update``-clock scheduler steps once per call (FEAT-014).
+    Raises a clear ``FloatingPointError`` if the loss
     is non-finite — silent divergence leaves checkpoints full of
     garbage weights, same failure mode :func:`default_train_step`
     guards against.
 
     **Not supported** in paradigm step factories (would silently drop
-    if we accepted them): AMP (``ctx.scaler``) and gradient accumulation
+    if we accepted them): AMP (``ctx.scaler``, or a reduced
+    ``ctx.precision`` — FEAT-028) and gradient accumulation
     (``ctx.accumulate_grad_batches != 1``). Both raise loudly rather
     than letting the caller think their NNOptimParams knobs are in
     effect. Honoring them would require per-paradigm care (scaling
@@ -72,12 +126,13 @@ def finalize_step(
             (the paradigm factories don't honor those knobs).
         FloatingPointError: when ``loss`` is non-finite.
     """
-    if ctx.scaler is not None:
+    precision = getattr(ctx, "precision", None)
+    if ctx.scaler is not None or (precision is not None and precision.reduced):
         raise ValueError(
             f"{paradigm} train_step_fn does not support mixed precision "
-            "(NNModelParams.mixed_precision=True). Disable AMP on this "
-            "NNModel or write a custom train_step_fn that handles the "
-            "scaler explicitly."
+            "(NNModelParams.mixed_precision=True or a reduced PrecisionPolicy). "
+            "Train this NNModel in fp32, or write a custom train_step_fn that "
+            "applies ctx.precision and the scaler explicitly."
         )
     if ctx.accumulate_grad_batches != 1:
         raise ValueError(
@@ -105,6 +160,10 @@ def finalize_step(
         torch.nn.utils.clip_grad_norm_(ctx.model.net.parameters(), ctx.grad_clip_norm)
 
     ctx.optimizer.step()
+    # Every call commits one update (accumulation is refused above).
+    report_update = getattr(ctx, "report_update", None)
+    if report_update is not None:
+        report_update()
 
     return loss_val
 

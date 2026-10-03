@@ -28,14 +28,26 @@ committed-update event per successful optimizer update, delivered to
 ``Callback.on_optimizer_update``.
 
 Imperative step functions and ``finalize_step`` are unchanged; a run uses
-either a step function or an objective, never both.
+either a step function or an objective, never both. An imperative paradigm
+step passed as ``objective=`` (it would step the optimizer itself, then the
+engine again) and an objective passed as ``train_step_fn=`` are refused
+before any run is reserved.
+
+**Paradigm objectives (FEAT-040).** ``nnx.diffusion.diffusion_objective``
+(DDPM noise prediction) and ``nnx.paradigms.jepa_objective`` (I-JEPA latent
+prediction) are the objective counterparts of the diffusion and JEPA step
+factories. An objective may also define ``check_run(model, *, optimizers,
+callbacks)`` — run before any run is reserved, to refuse a combination it
+cannot train — and ``after_update(events)``, run once per committed update
+after every optimizer stepped (the JEPA EMA target advances there).
 """
 
 from __future__ import annotations
 
+import contextlib
 import math
 import numbers
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -47,6 +59,7 @@ from ._update_engine import REDUCTIONS, UpdateEvent, check_nonfinite_policy
 if TYPE_CHECKING:
     from .nn.nn_model import NNModel
     from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from .precision import ResolvedPrecision
 
 __all__ = [
     "KDObjective",
@@ -133,13 +146,26 @@ class LossTerm:
 
 @dataclass(frozen=True)
 class ObjectiveContext:
-    """What an objective sees for one microbatch."""
+    """What an objective sees for one microbatch.
+
+    ``precision`` is the run's resolved precision (FEAT-028; ``None`` when
+    called outside a run). The objective runs under its autocast, so a
+    reduced run's forward outputs are float16 / bfloat16:
+    :meth:`full_precision` returns them as float32 for the loss's
+    bookkeeping and the records (bf16 has no NumPy dtype).
+    """
 
     model: NNModel
     batch: Any
     epoch_idx: int
     batch_idx: int
     extra_metrics: Optional[Mapping[str, Callable]] = None
+    precision: Optional[ResolvedPrecision] = None
+
+    def full_precision(self, tensor: torch.Tensor) -> torch.Tensor:
+        """``tensor`` in full precision: a reduced run's float16 / bfloat16
+        output as float32 (differentiable), anything else unchanged."""
+        return self.precision.output(tensor) if self.precision is not None else tensor
 
 
 @dataclass(frozen=True)
@@ -181,8 +207,62 @@ class Objective:
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:  # pragma: no cover - abstract
         raise NotImplementedError
 
+    def check_run(
+        self, model: NNModel, *, optimizers: Mapping[str, torch.optim.Optimizer], callbacks: Sequence[Any]
+    ) -> None:
+        """Refuse a run this objective cannot train — called by
+        ``NNModel.train`` and ``Trainer.train`` with the built optimizers
+        and the callbacks, before any run is reserved or parameter changes.
+        Raise to refuse; the default accepts every run."""
+
+    def after_update(self, events: tuple[UpdateEvent, ...]) -> None:
+        """Called once per committed update — after every named optimizer
+        stepped, never for a microbatch or a skipped window — with its
+        events (one per optimizer), before callbacks see them. The default
+        does nothing."""
+
 
 ObjectiveFn = Callable[[ObjectiveContext], ObjectiveResult]
+
+
+def _check_update_owner(train_step_fn: Any, objective: Any, *, step_name: str = "train_step_fn") -> None:
+    """One owner per optimizer update (FEAT-004 / FEAT-040), checked before
+    anything else: a step function or an objective, never both, and each
+    passed as what it is."""
+    from ._step_helpers import IMPERATIVE_STEP
+
+    if objective is not None and train_step_fn is not None:
+        raise ValueError(
+            f"pass {step_name} or objective, not both: a step function owns its own optimizer updates, "
+            "an objective hands them to NNx's shared update engine"
+        )
+    if objective is not None and not callable(objective):
+        raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+    paradigm = getattr(objective, IMPERATIVE_STEP, None)
+    if paradigm is not None:
+        raise ValueError(
+            f"objective= got the imperative {paradigm} step, which steps the optimizer itself — the engine would "
+            f"step it again. Pass it as the step function, or use the {paradigm} objective"
+        )
+    if isinstance(train_step_fn, Objective):
+        raise ValueError(
+            f"{step_name} got {type(train_step_fn).__name__}, an objective: pass it as objective=, where NNx's "
+            "shared update engine takes its backward, accumulation and optimizer step"
+        )
+
+
+def _check_objective_run(
+    objective: Any,
+    model: NNModel,
+    *,
+    optimizers: Mapping[str, torch.optim.Optimizer],
+    callbacks: Optional[Sequence[Any]],
+) -> None:
+    """The objective's own refusals (``check_run``), before any run is
+    reserved."""
+    check = getattr(objective, "check_run", None)
+    if callable(check):
+        check(model, optimizers=dict(optimizers), callbacks=list(callbacks or []))
 
 
 def _supervised_terms(model: Any, logits: torch.Tensor, target: torch.Tensor, name: str, weight: float) -> LossTerm:
@@ -209,7 +289,7 @@ class SupervisedObjective(Objective):
         adapter = getattr(model, "task_adapter", None)
         if adapter is not None:
             _, target, logits = model._fwd_outputs(ctx.batch)
-            output, target, valid = adapter.prepare(logits, target)
+            output, target, valid = adapter.prepare(ctx.full_precision(logits), target)
             _, numerator, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
             term = LossTerm("loss", numerator, None, "sum") if weight is None else LossTerm("loss", numerator, weight)
             accumulator = adapter.accumulator(keep_arrays=bool(ctx.extra_metrics))
@@ -218,6 +298,7 @@ class SupervisedObjective(Objective):
             record = accumulator.result(loss=term.value, extra_metrics=ctx.extra_metrics)
             return ObjectiveResult((term,), record)
         _, target, logits, prediction = model._fwd_pass(ctx.batch)
+        logits = ctx.full_precision(logits)
         term = _supervised_terms(model, logits, target, "loss", 1.0)
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
@@ -266,9 +347,11 @@ class KDObjective(Objective):
         model = ctx.model
         model.net.train()
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
-        student = model._net_forward((X,), {})
-        with torch.no_grad():
-            teacher_logits = self.teacher._net_forward((X.to(self.teacher.device),), {}).to(model.device)
+        student = ctx.full_precision(model._net_forward((X,), {}))
+        with torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
+            teacher_logits = ctx.full_precision(
+                teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)
+            )
         rows = int(student.shape[0])
         soft = LossTerm(
             "distillation",
@@ -288,6 +371,23 @@ class KDObjective(Objective):
             extra_metrics=ctx.extra_metrics,
         )
         return ObjectiveResult((soft, hard), record)
+
+
+@contextlib.contextmanager
+def _own_precision(ctx: ObjectiveContext, frozen: NNModel) -> Iterator[ResolvedPrecision]:
+    """Run a frozen model (a KD teacher) in its own inference precision
+    (FEAT-028) — its explicit policy, else full precision — never in the
+    student's: the run's autocast (the legacy flag's too, which never governs
+    inference) is suspended around it."""
+    from .nn.nn_model import _inference_precision
+
+    own = _inference_precision(frozen)
+    run = ctx.precision
+    with contextlib.ExitStack() as stack:
+        if run is not None and run.reduced:
+            stack.enter_context(torch.autocast(device_type=run.device_type, enabled=False))
+        stack.enter_context(own.autocast())
+        yield own
 
 
 def kd_objective(

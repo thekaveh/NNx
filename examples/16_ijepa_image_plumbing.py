@@ -23,9 +23,17 @@ training set (requires ``torchvision``) — the loss will still
 decrease, but don't expect linear-probe accuracy on the order
 of the I-JEPA paper.
 
+**Objective mode (FEAT-040).** ``jepa_objective(target, predictor,
+mask_fn)`` describes the same latent-prediction loss as an objective: NNx's
+shared update engine then owns backward, gradient accumulation (exact for
+uneven microbatches and target masks), clipping and the optimizer step, and
+the EMA target advances once per committed update. ``--objective`` trains
+the demo that way; ``objective_mode()`` below is a bounded check of it.
+
 Run:
     python examples/16_ijepa_image_plumbing.py
     python examples/16_ijepa_image_plumbing.py --cifar  # download + use CIFAR-10
+    python examples/16_ijepa_image_plumbing.py --objective  # the objective adapter
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Callback,
     Devices,
     JEPAPredictor,
     Losses,
@@ -50,6 +59,7 @@ from nnx import (
     Optims,
     ViTNN,
     build_target_encoder,
+    jepa_objective,
     jepa_train_step_factory,
     random_block_mask,
     set_seed,
@@ -120,6 +130,61 @@ def float64_vit_predictor_step() -> None:
     print(f"float64 JEPA step: loss={loss.item():.6f}, all gradients finite float64")
 
 
+def objective_mode() -> dict:
+    """Bounded demonstration of I-JEPA as an objective (FEAT-040).
+
+    A tiny ViT on synthetic 16x16 images, four microbatches of uneven size
+    accumulated two at a time: two committed updates per epoch, so the EMA
+    target advances exactly twice — once per committed update, from the
+    updated online weights — while the target stays frozen and outside the
+    optimizer.
+    """
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=12, output_dim=4, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.net = ViTNN(image_size=16, patch_size=4, in_channels=3, d_model=16, n_layers=1, n_heads=2)
+    target_encoder = build_target_encoder(model.net)
+    predictor = JEPAPredictor(embed_dim=16, n_patches=model.net.n_patches, predictor_dim=8, n_layers=1, n_heads=2)
+    model.net.add_module("_jepa_predictor", predictor)  # owned by the optimizer, saved once with the net
+
+    def mask_fn(n_patches, device):
+        return random_block_mask(n_patches=n_patches, grid_size=4, device=device)
+
+    objective = jepa_objective(target_encoder, predictor, mask_fn, ema_momentum=0.9)
+    events: list = []
+
+    class Updates(Callback):
+        def on_optimizer_update(self, ctx, event) -> None:
+            events.append(event)
+
+    images = torch.randn(7, 3, 16, 16)
+    loader = [(chunk, torch.zeros(len(chunk), dtype=torch.long)) for chunk in images.split([2, 2, 2, 1])]
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(
+                name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0, accumulate_grad_batches=2
+            ),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3),
+        ),
+        objective=objective,
+        callbacks=[Updates()],
+    )
+    assert len(events) == 2 and objective.ema_updates == 2, "one EMA step per committed update"
+    assert all(not p.requires_grad and p.grad is None for p in target_encoder.parameters())
+    assert all(record.train_edp.accuracy is None for record in run.idps), "no classification fields"
+    summary = {
+        "committed_updates": len(events),
+        "ema_updates": objective.ema_updates,
+        "latent_mse": [round(event.losses["latent_mse"], 6) for event in events],
+    }
+    print(f"objective mode: {summary}")
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -129,6 +194,11 @@ def main():
     )
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--objective",
+        action="store_true",
+        help="Train with the jepa_objective adapter (FEAT-040) instead of the imperative step.",
+    )
     args = parser.parse_args()
 
     set_seed(0)
@@ -185,12 +255,19 @@ def main():
         ctx, tgt = random_block_mask(n_patches=n_p, grid_size=grid_size, device=device)
         return ctx, tgt
 
-    step_fn = jepa_train_step_factory(
-        target_encoder=target_encoder,
-        predictor=predictor,
-        mask_fn=mask_fn,
-        ema_momentum=0.996,
-    )
+    # The imperative step owns its own update; the objective hands it to
+    # NNx's shared update engine (accumulation, clipping, EMA per commit).
+    step_fn = None
+    objective = None
+    if args.objective:
+        objective = jepa_objective(target_encoder, predictor, mask_fn, ema_momentum=0.996)
+    else:
+        step_fn = jepa_train_step_factory(
+            target_encoder=target_encoder,
+            predictor=predictor,
+            mask_fn=mask_fn,
+            ema_momentum=0.996,
+        )
 
     run = model.train(
         params=NNTrainParams(
@@ -211,6 +288,8 @@ def main():
             ),
         ),
         train_step_fn=step_fn,
+        objective=objective,
+        salt="objective" if args.objective else None,  # a distinct run from the imperative mode
     )
 
     losses = [idp.train_edp.loss for idp in run.idps]
