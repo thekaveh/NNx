@@ -107,6 +107,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("09_gan_with_trainer.py", "manual_scheduler_ownership"),
     ("11_tinystories_lm.py", "manual_attention_lm_example"),
     ("11_tinystories_lm.py", "lm_config_rejects_nonfinite"),
+    ("11_tinystories_lm.py", "causal_lm_task_workflow"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),
     ("16_ijepa_image_plumbing.py", "float64_vit_predictor_step"),
     ("20_low_rank_surgery_ffn.py", "surgery_freeze_roles"),
