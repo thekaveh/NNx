@@ -13,6 +13,8 @@ their inject-via-callback workaround, whose values never persisted.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -237,3 +239,54 @@ def test_plateau_never_receives_nonfinite_metric(tmp_path, monkeypatch):
     assert any("epoch 1" in m and "val_edp.error=inf" in m and "val_edp.loss=-inf" in m for m in rejected), messages
     assert len(absent) == 1 and "epoch 2" in absent[0] and "non-finite" not in absent[0], messages
     assert not any("epoch 3" in m for m in messages), messages
+
+
+def test_a_causal_lm_task_drives_validation_nll_as_a_named_monitor(tmp_path, monkeypatch):
+    """FEAT-034: the causal-LM task's eval step reports unsmoothed
+    validation NLL (and perplexity, token accuracy) with no classification
+    placeholders, and ``MonitorSpec("nll")`` selects on it."""
+    from nnx import MetricSpec, MonitorSpec, NNTransformerParams
+    from nnx.lm_tasks import CausalLMTask
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    torch.manual_seed(0)
+    vocab = 10
+    model = NNModel(
+        net_params=NNTransformerParams(
+            input_dim=vocab,
+            output_dim=vocab,
+            dropout_prob=0.0,
+            vocab_size=vocab,
+            n_layers=1,
+            n_heads=2,
+            d_model=16,
+            ffn_mult=2,
+            max_seq_len=8,
+        ),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    ids = torch.randint(0, vocab, (8, 6), generator=torch.Generator().manual_seed(1))
+    task = CausalLMTask(vocab_size=vocab, smoothing=0.1)
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=3,
+            train_loader=DataLoader(TensorDataset(ids), batch_size=4),
+            val_loader=DataLoader(TensorDataset(ids[:4]), batch_size=2),
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            metrics=[MetricSpec("nll")],
+            monitor=MonitorSpec("nll"),
+        ),
+        objective=task.objective(),
+        eval_step_fn=task.eval_step(),
+    )
+    records = [idp for idp in run.idps if idp.val_edp is not None]
+    values = [idp.val_edp.metrics["nll"] for idp in records]
+    assert all(idp.val_edp.loss == idp.val_edp.metrics["nll"] and idp.val_edp.f1 is None for idp in records)
+    improved = [idp.selection.improved for idp in records]
+    best = math.inf
+    expected = []
+    for value in values:
+        expected.append(value < best)
+        best = min(best, value)
+    assert improved == expected and records[0].selection.monitor.key == "val.nll"

@@ -35,6 +35,7 @@ from . import (
     embeddings,
     history,
     interop,
+    lm_tasks,
     models,
     monitors,
     objectives,
@@ -404,6 +405,8 @@ __all__ = [
     "StreamingMetrics",
     "MetricSnapshot",
     "streaming_eval_step",
+    # Causal language-model task with token-weighted evaluation (FEAT-034)
+    "lm_tasks",
     # Arbitrary modules and registered model factories (FEAT-006)
     "models",
     "ModelSpec",

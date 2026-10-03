@@ -72,9 +72,24 @@ model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU,
 model = GenerativeNNModel(net_params=net_params, params=model_params,
                           tokenizer=tokenizer)
 
-# 3. Train (custom train_step_fn for next-token loss — see
-#    examples/11_tinystories_lm.py for the full path).
-# ...
+# 3. Train with the causal-LM task: (inputs, targets) windows are already
+#    aligned, so nothing is shifted again; see examples/11_tinystories_lm.py.
+from torch.utils.data import TensorDataset
+
+from nnx.lm_tasks import CausalLMTask
+
+ids = [i for text in corpus for i in tk.encode(text).ids]
+windows = torch.tensor([ids[i : i + 5] for i in range(len(ids) - 4)])
+train_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4, shuffle=True)
+val_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4)
+
+task = CausalLMTask(vocab_size=tokenizer.vocab_size, alignment="pre_shifted")
+run = model.train(
+    params=NNTrainParams(n_epochs=2, train_loader=train_loader, val_loader=val_loader,
+                         optim=NNOptimParams.builder().adam(max_lr=3e-4).build()),
+    objective=task.objective(),         # token CE over valid tokens / window valid-token count
+    eval_step_fn=task.eval_step(),      # unsmoothed NLL, perplexity = exp(NLL), token accuracy
+)
 
 # 4. Generate.
 out = model.generate(
@@ -234,11 +249,56 @@ purely opt-in.
 
 ## 6. How it composes with the rest of NNx
 
-- **Custom `train_step_fn`** — `GenerativeNNModel` doesn't ship a
-  built-in LM training step. The convention (see `examples/11_tinystories_lm.py`)
-  is to write a tiny next-token loss step and pass it via
-  `NNModel.train(train_step_fn=...)`. Same pattern as diffusion / KD /
-  SimCLR / Mixup / CutMix.
+- **The causal-LM task (`nnx.lm_tasks.CausalLMTask`)** — the built-in
+  next-token path (FEAT-034). It declares the **alignment**
+  (`"shift_inputs"`: batches of token ids, shifted once; `"pre_shifted"`:
+  `(inputs, targets)` windows, never shifted again), the vocabulary size
+  (the logits' last axis), the **ignore** id (`-100`), an optional
+  **padding** id, an optional per-position **loss mask** (never an attention
+  mask), label **smoothing** for the objective and its **version**; bad
+  shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
+  before any forward pass.
+  - The ignore id, the padding id and the loss mask select **one set of
+    valid positions** for the objective's denominator, the NLL and the
+    token accuracy.
+  - `task.objective()` (a FEAT-004 objective) sums the cross-entropy over
+    valid positions with the valid count as its denominator, so gradient
+    accumulation normalizes by the window's **valid tokens**, not by the
+    batch count. An all-masked microbatch contributes nothing; an
+    all-masked window takes no optimizer or scaler step and its gradients
+    are cleared. Schedulers still advance once per epoch; a plateau
+    scheduler skips an epoch whose validation record is unavailable, and
+    such an epoch is never elected BEST in place of a training loss.
+  - `task.eval_step()` reports the epoch's **unsmoothed** NLL — total
+    valid-token NLL over the valid-token count, independent of batching and
+    padding — as the record's `loss` and `metrics["nll"]`, plus
+    `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
+    clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
+    reported unavailable. No classification field is fabricated, and
+    `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
+    validation NLL.
+  - The task configuration (and an optional declared tokenizer identity)
+    is checkpointed component state `"lm.causal_task"` with the valid
+    tokens the run's objective scored (from 0 for each fresh run; a window
+    the engine then skips is still counted); a resume with another
+    configuration is refused before the first resumed update.
+  - Batches: `"shift_inputs"` reads token ids, `(ids, loss_mask)` with a
+    **boolean** mask (an integer second part is refused: it could be
+    targets) or a mapping `{"input_ids", "labels"?, "loss_mask"?}` whose
+    HuggingFace-style `labels` (unshifted, `-100` where not scored) shift
+    with the ids; `"pre_shifted"` reads `(inputs, targets[, loss_mask])` or
+    `{"inputs", "targets", "loss_mask"?}`. A mapping's `attention_mask` is
+    never a loss mask, but a padded position it marks that would still be
+    scored is refused (declare `pad_id`, use `labels=-100` or a
+    `loss_mask`). `extra_metrics` do not apply to the task and are refused.
+    Half-precision logits are widened to float32 for the reported NLL.
+    A run with no monitor elects BEST from the validation NLL; an epoch
+    whose validation is unavailable never replaces an earlier BEST, though
+    an unavailable first epoch stands in until one has a value — declare
+    `MonitorSpec("nll")` to elect only epochs with a value.
+
+  A custom `train_step_fn` still works for anything else (diffusion / KD /
+  SimCLR / Mixup / CutMix follow that pattern).
 - **`NNRun` content-addressed persistence** — TRANSFORMER runs hash the
   same way as any other run. The `omit-when-default` invariant on
   `NNTransformerParams` is what keeps existing TRANSFORMER `run.id`
@@ -257,7 +317,9 @@ purely opt-in.
   serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
 - **Callbacks** — `EarlyStopping`, `ModelCheckpoint`,
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
-  `train_loss` for an LM is the standard signal; perplexity = `exp(loss)`.
+  `train_loss` for an LM is the standard signal. Perplexity is
+  `exp(NLL)` of the **unsmoothed** valid-token NLL — the task's
+  `metrics["perplexity"]` — not `exp` of a smoothed or batch-averaged loss.
 - **Attention dropout and reduced precision** — with `attn_dropout=0` (or in
   eval mode) attention runs through `torch.nn.functional.scaled_dot_product_attention`;
   a nonzero `attn_dropout` in train mode takes the manual, seed-deterministic

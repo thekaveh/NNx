@@ -482,6 +482,18 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.comparison.IncompatibleObservations
 
+### 2.23. Causal language-model task (`nnx.lm_tasks`)
+
+@api nnx.lm_tasks.CausalLMTask
+
+@api nnx.lm_tasks.CausalLMObjective
+
+@api nnx.lm_tasks.CausalLMEval
+
+@api nnx.lm_tasks.perplexity
+
+@api nnx.lm_tasks.LMTaskError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams

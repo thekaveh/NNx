@@ -432,7 +432,10 @@ fields are simply absent, while NaN and ±inf are rejected with one
 `RuntimeWarning` per epoch that names the rejected field/split and the
 value actually used. An epoch with no finite signal anywhere skips the
 plateau step (a distinct "no metric available" warning) and compares as an
-unavailable BEST baseline. The raw observations are retained unchanged in
+unavailable BEST baseline. A validation *task record* that is unavailable —
+every target masked (`status="empty"`), or no error and no loss — ends the
+walk instead: the epoch has no signal, the plateau step is skipped, and the
+training metrics are never compared in its place. The raw observations are retained unchanged in
 the live history and checkpoint payloads; CSV readback keeps mapping NaN
 cells to `None`. `EarlyStopping` is separate and never falls back from
 validation to training metrics. Its default (`monitor=None`) picks one
@@ -1420,6 +1423,28 @@ pulls `tokenizers` + `datasets`); the rest of NNx works without it. See
 [`docs/lm.md`](lm.md) for the end-to-end walkthrough and
 [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py)
 for a CPU-friendly TinyStories training run.
+
+**Training an LM: the causal-LM task (FEAT-034).** `nnx.lm_tasks.CausalLMTask`
+declares how a batch becomes next-token targets — the alignment
+(`"shift_inputs"` shifts token ids once; `"pre_shifted"` takes aligned
+`(inputs, targets)`), the vocabulary, the ignore id, an optional padding id,
+an optional loss mask, objective-only label smoothing and a version — and
+checks every batch before the forward pass:
+
+```text
+batch ──split()──► inputs, targets, loss_mask ──valid()──► one set of valid positions
+   task.objective(): LossTerm("token_ce", Σ CE over valid, denominator=#valid)   # FEAT-004 engine
+   task.eval_step(): loss = metrics["nll"] = Σ NLL / Σ #valid (whole loader), perplexity = exp(nll)
+```
+
+The valid positions are shared by the objective's denominator, the NLL and
+the token accuracy, so accumulation normalizes by valid tokens, an
+all-masked window steps nothing, and epoch NLL is independent of batching and
+padding. Reported NLL and perplexity are unsmoothed; an all-masked
+validation epoch is unavailable rather than zero; no classification field is
+fabricated. The task's configuration is checkpointed component state
+(`"lm.causal_task"`), so a resume with another configuration is refused
+before the first resumed update. See [`docs/lm.md` §6](lm.md).
 
 Downstream of the LM path, four follow-ons compose on top of it:
 
