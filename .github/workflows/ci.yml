@@ -55,8 +55,8 @@ jobs:
       - name: Sync package from the frozen lock
         # Every optional-dep extra is installed so the tests that gate on
         # `pytest.importorskip(...)` for {hub, viz, viz-interactive,
-        # quantize, tensorboard, wandb, onnx, onnx-dynamo, embeddings,
-        # lm, gguf-write} actually exercise the code path in CI instead
+        # quantize, tensorboard, wandb, onnx, onnx-dynamo, onnx-runtime,
+        # embeddings, lm, gguf-write} actually exercise the code path in CI instead
         # of silently skipping. Without this, a broken import in a new
         # sub-project would ship to PyPI undetected. Keep this list in
         # sync with pyproject.toml [project.optional-dependencies] and
@@ -106,6 +106,105 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           retention-days: 7
+
+  export-conformance:
+    # Executable ONNX export conformance (FEAT-038): both exporters' FP32
+    # feed-forward profiles run in ONNX Runtime on CPU and every raw logit
+    # is compared with the native model. This job cannot pass by skipping:
+    # the core-only step proves `import nnx` needs no runtime and that the
+    # check then FAILS with the missing-dependency exit code (10); the
+    # conformance tests run with NNX_REQUIRE_ONNX_RUNTIME=1, so a missing
+    # runtime fails them; and the script's exit code separates
+    # missing-dependency / export / check / hash / load / mismatch /
+    # input-contract failures (scripts/check_export_conformance.py).
+    # It never uses the dynamo dispatch-error skip fixture and downloads
+    # nothing beyond the locked packages.
+    name: export-conformance (ONNX Runtime, CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        # astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: false
+          version: "0.12.3"
+
+      - name: Core import works without the runtime extra
+        run: |
+          uv sync --frozen --python 3.12
+          uv run --frozen --no-sync python - <<'PY'
+          import importlib.util
+          import nnx
+          import nnx.export_conformance
+          for name in ("onnx", "onnxruntime", "onnxscript"):
+              assert importlib.util.find_spec(name) is None, f"{name} is installed in the core-only environment"
+          print("core import ok without onnx / onnxruntime / onnxscript; nnx", nnx.__version__)
+          PY
+
+      - name: Without the runtime the check fails (missing-dependency), never skips
+        run: |
+          set +e
+          uv run --frozen --no-sync python scripts/check_export_conformance.py --output missing.json
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 10
+
+      - name: Install only the onnx-runtime and onnx-dynamo extras
+        # Without `dev` (which also ships onnx / onnxruntime), so a broken
+        # `onnx-runtime` extra fails here.
+        run: uv sync --frozen --extra onnx-runtime --extra onnx-dynamo --python 3.12
+
+      - name: Run both conformance profiles
+        run: |
+          uv run --frozen --no-sync python scripts/check_export_conformance.py \
+            --output conformance/conformance.json --artifacts conformance/artifacts
+
+      - name: Add the test tooling
+        run: uv sync --frozen --extra onnx-runtime --extra onnx-dynamo --extra dev --python 3.12
+
+      - name: Run the conformance tests (a missing runtime fails, never skips)
+        env:
+          NNX_REQUIRE_ONNX_RUNTIME: "1"
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          uv run --frozen --no-sync pytest tests/test_export_conformance.py \
+            "tests/test_inference_helpers_preserve_training_mode.py::test_to_onnx_keeps_parameters_gradients_and_mixed_modes" \
+            tests/test_examples_smoke.py::test_onnx_sample_runtime_conformance \
+            tests/test_examples_smoke.py::test_onnx_sample_never_claims_parity_without_the_runtime \
+            -p no:cacheprovider -rs -q --junitxml=conformance/pytest.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          suite = ET.parse("conformance/pytest.xml").getroot().find("testsuite")
+          skipped = int(suite.get("skipped", 0))
+          print("tests:", suite.get("tests"), "skipped:", skipped)
+          assert skipped == 0, "a conformance test was skipped"
+          PY
+
+      - name: Keep the conformance evidence
+        if: always()
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: export-conformance
+          path: |
+            conformance/
+            missing.json
+          if-no-files-found: warn
+          retention-days: 30
 
   floor-deps:
     # The frozen lock above validates the *newest* resolution, not the

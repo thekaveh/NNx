@@ -1,4 +1,4 @@
-# 18. Contributing to NNx
+# 19. Contributing to NNx
 
 Thanks for being interested in contributing. NNx is a small library; the goal is to keep it small, tested, and useful for the existing notebook consumers while inviting new ones.
 

@@ -121,6 +121,16 @@ onnx = ["onnx>=1.15"]
 # `torch.export`-based ONNX exporter. The legacy TorchScript path
 # (the default) needs only `thekaveh-nnx[onnx]`.
 onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
+# `onnx-runtime` executes exported graphs in ONNX Runtime on CPU — the
+# export conformance profiles (`nnx.export_conformance`,
+# `scripts/check_export_conformance.py`, FEAT-038). 1.24+ ships no CPython
+# 3.10 wheels; 1.18 is the first to load the dynamo exporter's IR-10 models.
+# Add `onnx-dynamo` for the dynamo-exporter profile.
+onnx-runtime = [
+    "onnx>=1.15",
+    "onnxruntime>=1.18,<1.24; python_version < '3.11'",
+    "onnxruntime>=1.18; python_version >= '3.11'",
+]
 # `viz` covers the core model-internals viz primitives (summary +
 # weight_histogram + activation_map + Captum attribution). `viz-interactive`
 # adds the Netron browser viewer used by `nnx.viz.netron_export(..., launch=True)`.

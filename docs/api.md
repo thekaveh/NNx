@@ -14152,6 +14152,133 @@ Returns:
 ```
 
 
+### 16.2. ONNX export conformance (`nnx.export_conformance`)
+
+Executable profiles that separate structural validity from numerical parity: `FeedFwdNN` 4-8-2 FP32 under both exporters, run in ONNX Runtime on CPU, with every stage's outcome and the evidence recorded. Walkthrough, failure classes and exit codes at [Export conformance](export-conformance.md). Opt-in via `pip install "thekaveh-nnx[onnx-runtime,onnx-dynamo]"`; `python scripts/check_export_conformance.py --output conformance.json` runs both profiles.
+
+#### `nnx.export_conformance.Profile`
+
+```python
+class nnx.export_conformance.Profile(name: 'str', exporter: 'str', opset_version: 'int' = 17, export_batch: 'int' = 2, dynamic_batch: 'bool' = True, batches: 'tuple[int, ...]' = (1, 2, 3, 7), rtol: 'float' = 0.0001, atol: 'float' = 1e-05, runtime: 'str' = 'onnxruntime', provider: 'str' = 'CPUExecutionProvider', dtype: 'str' = 'float32', model: 'Mapping[str, Any]' = <factory>) -> 'None'
+```
+
+A conformance profile: one model, exporter configuration, runtime, provider, dtype, set of input cases and tolerances.
+
+##### `nnx.export_conformance.Profile.requires`
+
+```python
+property nnx.export_conformance.Profile.requires
+```
+
+No public description is currently available.
+
+##### `nnx.export_conformance.Profile.options`
+
+```python
+nnx.export_conformance.Profile.options(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.export_conformance.Profile.cases`
+
+```python
+nnx.export_conformance.Profile.cases(self) -> 'list[dict[str, Any]]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.export_conformance.run_profile`
+
+```python
+nnx.export_conformance.run_profile(profile: 'Union[str, Profile]', directory: 'Union[str, os.PathLike[str]]', *, source_revision: 'Optional[str]' = None) -> 'dict[str, Any]'
+```
+
+Run one profile, writing its artifacts into ``directory/<name>/`` (which must not exist or be empty), and return its record (see the module docstring). Never raises for a failing stage: every outcome is classified in the record.
+
+
+#### `nnx.export_conformance.run_profiles`
+
+```python
+nnx.export_conformance.run_profiles(directory: 'Union[str, os.PathLike[str]]', names: 'Optional[Sequence[str]]' = None, *, source_revision: 'Optional[str]' = None) -> 'dict[str, Any]'
+```
+
+Run ``names`` (every tested profile by default) under ``directory``; the report's ``status`` is ``passed`` only when every profile passed.
+
+
+#### `nnx.export_conformance.execute`
+
+```python
+nnx.export_conformance.execute(record: 'Mapping[str, Any]', directory: 'Union[str, os.PathLike[str]]') -> 'dict[str, Any]'
+```
+
+Re-run the load and parity stages of a saved record against its artifacts under ``directory``: the hashes are verified before anything is loaded (a mismatch is a ``hash-mismatch`` failure), and the native reference is rebuilt from the recorded config, whose weights must hash to the recorded digest. Returns the new record.
+
+
+#### `nnx.export_conformance.verify_artifacts`
+
+```python
+nnx.export_conformance.verify_artifacts(record: 'Mapping[str, Any]', directory: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Refuse artifacts that differ from the record: a file missing, a SHA-256 or size mismatch (external tensors included), or a file the record does not list. ``directory`` is the root the record's ``artifacts.directory`` lives under. An unreadable file or folder is a refusal too.
+
+
+#### `nnx.export_conformance.validate_record`
+
+```python
+nnx.export_conformance.validate_record(record: 'Any') -> 'None'
+```
+
+Refuse a record that does not follow ``nnx.export-conformance/1``: missing or unknown keys (in the record and in its ``runtime``, ``exporter`` and ``opset``), anything but strict JSON, unknown statuses or failure classes, a failure in the wrong stage (an input case's included), an input case outcome no run gives, a stage that ran after a failed one, inconsistent ``status`` / ``failure`` / ``level``, a passed stage its own evidence contradicts (parity without a compared valid case or with a failed case, an export that changed the model, a check without an opset or a listed model file), malformed hashes or paths, non-finite tolerances, or settings no profile produces (a model or batch larger than a profile allows included).
+
+
+#### `nnx.export_conformance.build_model`
+
+```python
+nnx.export_conformance.build_model(config: 'Mapping[str, Any]' = {'net': 'feed_fwd', 'input_dim': 4, 'hidden_dims': [8], 'output_dim': 2, 'activation': 'relu', 'dropout': 0.0, 'weights': {'generator': 'torch.Generator', 'seed': 0, 'distribution': 'normal', 'std': 0.5}}) -> 'Any'
+```
+
+The profile's ``NNModel`` (CPU, FP32) with deterministic weights; the caller's global RNG streams are left untouched.
+
+
+#### `nnx.export_conformance.exit_code`
+
+```python
+nnx.export_conformance.exit_code(report: 'Mapping[str, Any]') -> 'int'
+```
+
+0 when every profile passed, else the exit code of the first failing profile's failure class (:data:`EXIT_CODES`).
+
+
+#### `nnx.export_conformance.save_report`
+
+```python
+nnx.export_conformance.save_report(report: 'Mapping[str, Any]', path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write the report as strict, sorted JSON (atomically).
+
+
+#### `nnx.export_conformance.summary_lines`
+
+```python
+nnx.export_conformance.summary_lines(report: 'Mapping[str, Any]') -> 'list[str]'
+```
+
+One line per profile: its verdict, level, each stage's status and how many input cases passed.
+
+
+#### `nnx.export_conformance.ConformanceError`
+
+```python
+class nnx.export_conformance.ConformanceError
+```
+
+A malformed conformance record, or artifacts that do not match it.
+
+
 ## 17. HuggingFace Hub + safetensors
 
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:

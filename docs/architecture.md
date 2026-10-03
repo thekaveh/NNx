@@ -1,4 +1,4 @@
-# 15. Architecture
+# 16. Architecture
 
 ## 1. Package and lifecycle overview
 
