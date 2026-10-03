@@ -1016,6 +1016,25 @@ The factory **freezes the teacher's parameters and sets its net to eval mode** o
 
 `kd_objective(teacher, alpha=..., temperature=...)` is the same loss as an objective (§6.5): passed as `student.train(..., objective=...)`, it gains gradient accumulation (exact for uneven microbatches and short windows), mixed precision and clipping from the shared update engine — see `examples/10_knowledge_distillation.py::objective_mode`.
 
+**Live logits vs offline teacher distributions (FEAT-022).** Both paths above run a *live* teacher every step and soften its *logits* at a temperature, scaled by `T²`. Stored teacher output is often only probabilities — an export of a model you no longer run, a decision provider's answers — with no pre-temperature logits to soften. `nnx.paradigms.offline_distillation` trains on those directly:
+
+```python
+from nnx.paradigms.offline_distillation import TeacherDataset, evaluate_offline, read_teacher_records
+
+records = read_teacher_records("teacher.jsonl")                 # nnx.teacher-record/1, strict JSONL
+data = TeacherDataset(records, inputs, candidates=("cat", "dog", "fox"), schema_digest=question.digest())
+student.train(params=NNTrainParams(train_loader=data.loader(32), ...), objective=data.objective(alpha=0.7))
+print(evaluate_offline(student, held_out).text())               # agreement, imitation loss, labelled quality
+```
+
+- **Records** (`TeacherRecord`) carry the sample and question ids, the ordered candidate ids and their probabilities (finite, nonnegative, summing to 1 within `1e-6`), the teacher and its revision, the schema digest, the probability `semantics` (`"predictive"`, `"calibrated"` or `"empirical"` — never logits) and `provenance`: where the record came from (`source`) and the **declared** `training_rights` under which it may train a student. NNx records the declaration; it does not verify entitlement. A missing field fails validation.
+- **Alignment.** `TeacherDataset` joins records to inputs by sample id and aligns every distribution to the student's output order by candidate id, never position; a missing, unknown or duplicate candidate, another schema digest, a repeated sample or a sample with no input is refused when the dataset is built, before any optimizer exists.
+- **Objective.** `alpha · KL(teacher ‖ student) + (1 − alpha) · CE(student, label)`, both at temperature 1 — no logits are invented and no `T²` is applied (`q = [0.75, 0.25]` against zero student logits gives `0.130812` and the gradient `p − q = [−0.25, 0.25]`). The two terms share one mask and one denominator per microbatch (its rows), so accumulation is exact; a partly labelled dataset or batch is refused, `alpha < 1` needs every record labelled, and every batch carries its candidate order, which the objective and the evaluation check against their own. The objective detaches the teacher's probabilities and never steps. Its identity — version, schema digest, `alpha` and the candidate alignment — is checkpointed component state, so a stateful resume with any of them changed is refused before the first resumed update (pass `objective.identity()` to `ExperimentManifest.for_model(objective=...)` to record it in the run's provenance too).
+- **Reports** keep three things apart, each with its own denominator: **teacher agreement** and **imitation loss** over every record, and **labelled quality** (accuracy, NLL) over the labelled records only — imitating a teacher is not being right. In the training loop, `dataset.eval_step()`'s record `loss` is the imitation loss whatever `alpha`; monitor `label_accuracy` or `label_nll` by name to select or stop on quality.
+- **Offline.** Records, inputs and the student are local: dataset iteration, training and evaluation reach no network. The live factories, `kd_objective` and `born_again_train` keep their logit / temperature contract and refuse these records.
+
+See [`examples/offline_teacher_distillation.py`](../examples/offline_teacher_distillation.py) and [Typed decisions §8](decisions.md#8-offline-teacher-distributions).
+
 ### 10.2. SimCLR contrastive
 
 The training dataloader must yield `(view1, view2)` pairs — two augmented views of each source sample. `model.net` forwards each view separately so BatchNorm sees one view at a time:

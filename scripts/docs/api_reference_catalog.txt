@@ -790,6 +790,28 @@ Each factory returns a `TrainStepFn` for the `train_step_fn=` hook on `NNModel.t
 
 @api nnx.paradigms.born_again.born_again_train
 
+@api nnx.paradigms.offline_distillation.TeacherRecord
+
+@api nnx.paradigms.offline_distillation.TeacherDataset
+
+@api nnx.paradigms.offline_distillation.TeacherBatch
+
+@api nnx.paradigms.offline_distillation.OfflineDistillationObjective
+
+@api nnx.paradigms.offline_distillation.OfflineDistillationEval
+
+@api nnx.paradigms.offline_distillation.evaluate_offline
+
+@api nnx.paradigms.offline_distillation.DistillationReport
+
+@api nnx.paradigms.offline_distillation.Measure
+
+@api nnx.paradigms.offline_distillation.read_teacher_records
+
+@api nnx.paradigms.offline_distillation.write_teacher_records
+
+@api nnx.paradigms.offline_distillation.TeacherRecordError
+
 ### 14.2. Contrastive
 
 @api nnx.paradigms.contrastive.simclr_train_step_factory

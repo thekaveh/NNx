@@ -413,7 +413,57 @@ tunes a threshold or a prompt on test outcomes.
 [`examples/decision_benchmark_offline.py`](../examples/decision_benchmark_offline.py)
 collects once and replays with sockets disabled.
 
-## 8. Errors
+## 8. Offline teacher distributions
+
+A decision provider's answers are distributions over a question's options.
+Stored, they can teach a student offline — `nnx.paradigms.offline_distillation`
+(FEAT-022) trains on them without calling the provider again:
+
+```python
+from nnx.paradigms.offline_distillation import TeacherDataset, TeacherRecord, write_teacher_records
+
+records = [
+    TeacherRecord(
+        sample_id=sample.id, question_id="pet-kind",
+        candidates=tuple(option_id for option_id, _ in result.distribution),
+        probabilities=tuple(p for _, p in result.distribution),
+        teacher="fixed-head-v1", revision="r42", schema_digest=question.digest(),
+        semantics="predictive",
+        provenance={"source": "records.jsonl, 2026-09 collection", "training_rights": "declared: internal use"},
+        label=sample.label,
+    )
+    for sample, result in answered
+]
+write_teacher_records("teacher.jsonl", records)
+data = TeacherDataset(records, inputs, candidates=("cat", "dog"), schema_digest=question.digest())
+student.train(params=..., objective=data.objective(alpha=0.7))
+```
+
+- **What a record states.** The sample and question ids, the ordered
+  candidate ids (the question's option ids) and their probabilities, the
+  teacher and its revision, the schema digest (the question's `digest()`),
+  the probability semantics and the provenance. A record without one of
+  them fails validation.
+- **Provenance is declared, not verified.** `provenance` names the record's
+  `source` and the `training_rights` under which it may train a student, as
+  the exporter declares them. NNx checks that the declaration is there; it
+  cannot check that it is true — whether a provider's terms allow training
+  on its outputs is yours to establish.
+- **Probabilities, not logits.** Live distillation
+  (`kd_train_step_factory`, `kd_objective`) softens a running teacher's
+  logits at a temperature and scales the KL by `T²`; a stored distribution
+  has no logits to soften, so the offline objective is `KL(teacher ‖
+  student)` at temperature 1, plus an optional hard cross-entropy on the
+  label — nothing invented, no `T²`.
+- **Agreement is not quality.** The reports keep teacher agreement and
+  imitation loss (over every record) apart from labelled quality (over the
+  labelled records), each with its own denominator: a student that imitates
+  its teacher perfectly is wrong wherever the teacher is.
+
+See [Concepts §10.1](concepts.md#101-knowledge-distillation) and
+[`examples/offline_teacher_distillation.py`](../examples/offline_teacher_distillation.py).
+
+## 9. Errors
 
 All are `nnx.decisions.DecisionError`s, and their names are stable:
 
@@ -429,22 +479,23 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `JobLimitExceeded` | a job's `max_depth` or `max_requests` stopping it before the next call |
 | `JobTimeout` (also a `TimeoutError`) | a job's `timeout` elapsing |
 
-## 9. Consumers
+## 10. Consumers
 
 Planned decision features share this digest, the `kind` discriminators and
 `validate_response` rather than defining their own: the optional Jev SDK
-adapter ([#220](https://github.com/thekaveh/NNx/issues/220)), offline
-teacher-distribution datasets
-([#244](https://github.com/thekaveh/NNx/issues/244)) and an optional `Result`
-at fallible boundaries ([#263](https://github.com/thekaveh/NNx/issues/263)).
-`nnx.decisions` does not depend on any of them. Decision jobs (§6, from
+adapter ([#220](https://github.com/thekaveh/NNx/issues/220)) and an optional
+`Result` at fallible boundaries
+([#263](https://github.com/thekaveh/NNx/issues/263)). `nnx.decisions` does not
+depend on any of them. Decision jobs (§6, from
 [#245](https://github.com/thekaveh/NNx/issues/245)) were the first consumer to
 land, followed by the provider benchmark (§7, from
-[#243](https://github.com/thekaveh/NNx/issues/243)). The local
+[#243](https://github.com/thekaveh/NNx/issues/243)) and offline
+teacher-distribution datasets (§8, from
+[#244](https://github.com/thekaveh/NNx/issues/244)). The local
 label-conditioned baseline ([#234](https://github.com/thekaveh/NNx/issues/234))
 is `NLIProvider` (§5).
 
-## 10. What this does not do
+## 11. What this does not do
 
 - It does not claim every classifier is a universal decision-maker: the
   fixed-head adapter answers only what its head justifies.
@@ -454,4 +505,5 @@ is `NLIProvider` (§5).
 - It does not call hosted models; a hosted provider is a separate adapter
   that declares its own capabilities.
 - It does not download or train models: `NLIProvider` uses the NLI model the
-  caller supplies, as is, and its scores are not calibrated.
+  caller supplies, as is, and its scores are not calibrated. Training a
+  student on stored answers is `nnx.paradigms.offline_distillation` (§8).
