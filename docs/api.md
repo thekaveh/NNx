@@ -2990,6 +2990,74 @@ nnx.decisions.FixedHeadProvider.decide(self, question: 'Question', inputs: 'Any'
 Answer ``question`` for every row of ``inputs`` (a tensor, an array or a tuple of them).
 
 
+#### `nnx.decisions.NLIProvider`
+
+```python
+class nnx.decisions.NLIProvider(model: 'Any', tokenizer: 'Any', entailment_id: 'Union[int, str]', contradiction_id: 'Union[int, str]', hypothesis_template: 'str' = 'This example is {}.', boolean_template: 'str' = '{}', choice_scoring: 'str' = 'entailment_softmax', boolean_scoring: 'str' = 'entailment_vs_contradiction', max_length: 'int' = 512, truncation: 'str' = 'only_first', pair_batch_size: 'int' = 16, max_batch: 'Optional[int]' = None, revision: 'Optional[str]' = None, name: 'str' = 'nnx.nli') -> 'None'
+```
+
+A caller-supplied NLI model as a label-conditioned decision provider — see the module docstring for the scoring, the provider contract and the truncation policy.
+
+**Details**
+
+```text
+Args:
+    model: the NLI cross-encoder (a ``torch.nn.Module``; ``model(**encoded)``
+        returns logits ``(pairs, classes)`` or an object with ``.logits``).
+        Its device is its parameters' device.
+    tokenizer: the matching tokenizer, called HuggingFace-style.
+    entailment_id / contradiction_id: the model's class ids for
+        entailment and contradiction — ints, or label names resolved
+        through ``model.config.label2id``. Distinct, and within the
+        model's class count when its config declares one.
+    hypothesis_template: renders a Choice candidate's description
+        (exactly one ``{}``), e.g. ``"This example is {}."``.
+    boolean_template: renders a Boolean's prompt (exactly one ``{}``).
+    choice_scoring / boolean_scoring: the normalization methods (see the
+        module docstring); explicit so a record says how it scored.
+    max_length: the most tokens per pair.
+    truncation: ``"only_first"`` (cut the premise, report it) or
+        ``"error"`` (reject over-long pairs before any model call).
+    pair_batch_size: pairs per model call.
+    max_batch: the most inputs per request (``None``: unbounded).
+    revision: the model revision the caller loaded (recorded, never
+        fetched).
+    name: the provider name recorded on results.
+```
+
+##### `nnx.decisions.NLIProvider.capabilities`
+
+```python
+nnx.decisions.NLIProvider.capabilities(self) -> 'Capabilities'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.NLIProvider.record`
+
+```python
+nnx.decisions.NLIProvider.record(self) -> 'dict[str, Any]'
+```
+
+How this provider scores: what a replay record or a benchmark keeps beside each result. The scores are never calibrated.
+
+##### `nnx.decisions.NLIProvider.hypotheses`
+
+```python
+nnx.decisions.NLIProvider.hypotheses(self, question: 'Question') -> 'list[str]'
+```
+
+The hypothesis per candidate (a Choice, in its option order) or the one hypothesis of a Boolean.
+
+##### `nnx.decisions.NLIProvider.decide`
+
+```python
+nnx.decisions.NLIProvider.decide(self, question: 'Question', inputs: 'Any') -> 'list[DecisionResult]'
+```
+
+Answer ``question`` for every text in ``inputs``.
+
+
 #### `nnx.decisions.DecisionError`
 
 ```python
