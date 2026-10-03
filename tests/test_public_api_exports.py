@@ -63,6 +63,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "embeddings",
         "finetune",
         "generation",
+        "graph_tasks",
         "history",
         "interop",
         "lm_tasks",

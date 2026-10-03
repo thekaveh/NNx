@@ -237,6 +237,8 @@ Args:
         `pip install thekaveh-nnx[onnx-dynamo]`.
 
 Returns the path written. Network is put in eval mode for tracing.
+A network that declares ``onnx_export_unsupported`` (a graph
+classifier, FEAT-026) is refused before anything is written.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
@@ -493,7 +495,8 @@ its references to the loader's iterator and the model and ends the
 iteration, and a closed or consumed stream cannot be iterated again.
 An empty loader yields no batches (the eager calls raise instead).
 Over a shuffling ``DataLoader``, the first batch whose sample ids are
-iteration positions warns (graph seed rows carry global node indices).
+iteration positions warns (graph seed rows carry global node indices,
+graph-level rows their own graph ids).
 ```
 
 ##### `nnx.nn.nn_model.NNModel.predict_proba`
@@ -7371,6 +7374,183 @@ class nnx.ranking.RankingError
 ```
 
 A configuration, batch or query the ranking task rejects.
+
+
+### 2.25. Graph-level classification (`nnx.graph_tasks`)
+
+#### `nnx.graph_tasks.GraphCollection`
+
+```python
+class nnx.graph_tasks.GraphCollection(graphs: 'Sequence[Any]', ids: 'Sequence[int]', *, targets: 'Optional[Sequence[Optional[int]]]' = None, unlabeled: 'Sequence[int]' = (), num_classes: 'Optional[int]' = None) -> 'None'
+```
+
+Whole graphs with stable ids and graph-level targets.
+
+**Details**
+
+```text
+Args:
+    graphs: PyG ``Data`` objects with ``x`` (``(nodes, features)``,
+        floating) and ``edge_index`` (``(2, edges)``, node indices of the
+        same graph); each graph's target is its ``y`` (one integer
+        class) unless ``targets`` gives them.
+    ids: one stable non-negative integer id per graph (unique).
+    targets: optional class per graph, overriding ``y``.
+    unlabeled: ids of graphs deliberately without a target (their
+        target becomes :data:`IGNORE`); any other graph without one is
+        refused.
+    num_classes: when given, every target must be below it.
+```
+
+##### `nnx.graph_tasks.GraphCollection.labeled`
+
+```python
+property nnx.graph_tasks.GraphCollection.labeled
+```
+
+How many graphs carry a target.
+
+##### `nnx.graph_tasks.GraphCollection.subset`
+
+```python
+nnx.graph_tasks.GraphCollection.subset(self, ids: 'Sequence[int]') -> 'GraphCollection'
+```
+
+The graphs with these ids, in the order given.
+
+##### `nnx.graph_tasks.GraphCollection.loader`
+
+```python
+nnx.graph_tasks.GraphCollection.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'Any'
+```
+
+A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed`` makes the shuffle reproducible and is refused without it).
+
+
+#### `nnx.graph_tasks.GraphClassifier`
+
+```python
+class nnx.graph_tasks.GraphClassifier(encoder: 'nn.Module', pool: 'Any' = 'mean', head: 'Optional[nn.Module]' = None, *, input_dim: 'Optional[int]' = None) -> 'None'
+```
+
+``encoder`` (node rows from ``(x, edge_index)``) → :class:`GraphPool` → optional ``head``: one output row per graph.
+
+**Details**
+
+```text
+``unpack_batch`` validates a graph-collection batch (see
+:func:`check_graph_batch`) and returns its graph-level targets;
+``sample_ids`` returns its graph ids, which ``predict_proba`` reports as
+the rows' sample ids.
+```
+
+##### `nnx.graph_tasks.GraphClassifier.forward`
+
+```python
+nnx.graph_tasks.GraphClassifier.forward(self, x: 'torch.Tensor', edge_index: 'torch.Tensor', batch: 'torch.Tensor', ptr: 'torch.Tensor') -> 'torch.Tensor'
+```
+
+Define the computation performed at every call.
+
+**Details**
+
+```text
+Should be overridden by all subclasses.
+
+.. note::
+    Although the recipe for forward pass needs to be defined within
+    this function, one should call the :class:`Module` instance afterwards
+    instead of this since the former takes care of running the
+    registered hooks while the latter silently ignores them.
+```
+
+##### `nnx.graph_tasks.GraphClassifier.unpack_batch`
+
+```python
+nnx.graph_tasks.GraphClassifier.unpack_batch(self, batch: 'Any') -> 'tuple[tuple[torch.Tensor, ...], Optional[torch.Tensor]]'
+```
+
+No public description is currently available.
+
+##### `nnx.graph_tasks.GraphClassifier.sample_ids`
+
+```python
+nnx.graph_tasks.GraphClassifier.sample_ids(self, batch: 'Any') -> 'torch.Tensor'
+```
+
+The batch's graph ids, one per output row, in batch order.
+
+
+#### `nnx.graph_tasks.GraphPool`
+
+```python
+class nnx.graph_tasks.GraphPool(mode: 'str' = 'mean') -> 'None'
+```
+
+Pools node rows into one row per graph: ``"mean"`` or ``"sum"`` over each graph's own nodes (graph-local, invariant to node order).
+
+##### `nnx.graph_tasks.GraphPool.forward`
+
+```python
+nnx.graph_tasks.GraphPool.forward(self, x: 'torch.Tensor', batch: 'torch.Tensor', num_graphs: 'int') -> 'torch.Tensor'
+```
+
+Define the computation performed at every call.
+
+**Details**
+
+```text
+Should be overridden by all subclasses.
+
+.. note::
+    Although the recipe for forward pass needs to be defined within
+    this function, one should call the :class:`Module` instance afterwards
+    instead of this since the former takes care of running the
+    registered hooks while the latter silently ignores them.
+```
+
+##### `nnx.graph_tasks.GraphPool.extra_repr`
+
+```python
+nnx.graph_tasks.GraphPool.extra_repr(self) -> 'str'
+```
+
+Return the extra representation of the module.
+
+**Details**
+
+```text
+To print customized extra information, you should re-implement
+this method in your own modules. Both single-line and multi-line
+strings are acceptable.
+```
+
+
+#### `nnx.graph_tasks.graph_classifier_spec`
+
+```python
+nnx.graph_tasks.graph_classifier_spec(*, input_dim: 'int', num_classes: 'int', hidden_dims: 'Sequence[int]' = (32,), encoder: 'str' = 'graph_conv', pool: 'str' = 'mean', activation: 'str' = 'relu', dropout: 'float' = 0.0, seed: 'int' = 0) -> 'Any'
+```
+
+The registered recipe of a :class:`GraphClassifier`: ``encoder`` convolutions (``"graph_conv"`` GCN, ``"graph_sage"``, ``"graph_att"`` GAT) over ``hidden_dims``, ``pool`` and a linear head to ``num_classes``. Pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module from the run.
+
+
+#### `nnx.graph_tasks.check_graph_batch`
+
+```python
+nnx.graph_tasks.check_graph_batch(batch: 'Any') -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]'
+```
+
+``(x, edge_index, batch_vector, ptr)`` of a graph-collection batch, checked: graph ids (unique), at least one node per graph, ``ptr`` and the batch vector consistent, and no edge across graphs.
+
+
+#### `nnx.graph_tasks.GraphTaskError`
+
+```python
+class nnx.graph_tasks.GraphTaskError
+```
+
+A graph collection, batch or classifier setting NNx rejects.
 
 
 ## 3. Params

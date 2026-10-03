@@ -183,31 +183,55 @@ def _nan_to_none(value: Optional[float]) -> Optional[float]:
 # --- the per-epoch summary row (the notebook chart's series) ------------------------------------
 
 
+class _FieldStats:
+    """One per-batch field's running sums over an epoch: plain and weighted
+    by each record's ``count`` (FEAT-026). :meth:`total` picks between them
+    as ``nn_run._field_total`` does for an eager run."""
+
+    def __init__(self) -> None:
+        self.sum = 0.0
+        self.n = 0
+        self.weighted = 0.0
+        self.weight = 0
+        self.counted = True  # every record with the field carries a count
+
+    def add(self, value: Optional[float], count: Optional[int]) -> None:
+        if value is None:
+            return
+        self.sum += value
+        self.n += 1
+        if count is None:
+            self.counted = False
+        elif self.counted:
+            self.weighted += value * count
+            self.weight += count
+
+    def total(self) -> tuple[float, int]:
+        if self.n and self.counted and self.weight:
+            return self.weighted, self.weight
+        return self.sum, self.n
+
+
 class _EpochStats:
     """Running per-batch loss / error sums of the epoch being written — the
     same left-to-right ``+=`` ``NNRun._epoch_series`` applies
-    (``nn_run._running_sum``), so journal and eager charts agree to the bit."""
+    (``nn_run._field_total``), so journal and eager charts agree to the bit."""
 
     def __init__(self) -> None:
         self._reset(None)
 
     def _reset(self, epoch: Optional[int]) -> None:
         self.epoch = epoch
-        self.loss_sum = 0.0
-        self.loss_n = 0
-        self.err_sum = 0.0
-        self.err_n = 0
+        self.loss = _FieldStats()
+        self.error = _FieldStats()
 
     def add(self, record: NNIterationDataPoint) -> None:
         if self.epoch != record.epoch_idx:
             self._reset(record.epoch_idx)
         train = record.train_edp
-        if train is not None and train.loss is not None:
-            self.loss_sum += train.loss
-            self.loss_n += 1
-        if train is not None and train.error is not None:
-            self.err_sum += train.error
-            self.err_n += 1
+        if train is not None:
+            self.loss.add(train.loss, train.count)
+            self.error.add(train.error, train.count)
 
     def row(self, last: NNIterationDataPoint) -> dict[str, Any]:
         """The epoch's chart row — the rules ``NNRun._epoch_series`` applies
@@ -217,8 +241,8 @@ class _EpochStats:
 
         values = _epoch_values(
             last.train_summary,
-            (self.loss_sum, self.loss_n),
-            (self.err_sum, self.err_n),
+            self.loss.total(),
+            self.error.total(),
             last.val_edp,
             last.selection,
         )

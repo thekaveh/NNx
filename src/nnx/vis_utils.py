@@ -275,6 +275,11 @@ class VisUtils:
         remaining = n_samples
         test_loader = cast(Any, ds.test_loader)
         for test_batch in test_loader:
+            if getattr(test_batch, "graph_id", None) is not None:  # FEAT-026: never scored as nodes
+                raise ValueError(
+                    "two_dim_tsne_checkpoint_logits does not project graph-collection batches (graph_id); use "
+                    "predict_proba() for one row per graph"
+                )
             if getattr(model, "_batch_adapter", None) is None:
                 test_X, test_Y = model.net.unpack_batch(test_batch)  # built-in nets
                 batch_logits = np.asarray(model.predict(X=test_X).logits)

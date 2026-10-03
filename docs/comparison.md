@@ -100,6 +100,9 @@ NNx's `nnx.diffusion` is teaching/research-scoped. For production, use HF diffus
 | HGT / GraphTransformer / RGCN | Not shipped | Yes |
 | Training-loop integration | Yes (via `NNModel`) | User-owned loop around PyG modules/loaders |
 | `NeighborLoader` batching | Yes (via `NNGraphDataset`) | Yes |
+| Node classification (one graph) | Yes (`NNGraphDataset` + built-in nets) | Yes (user-owned loop) |
+| Graph classification (whole graphs) | Yes (`nnx.graph_tasks`: mean / sum pooling, per-labeled-graph loss and metrics, graph ids through prediction and reload) | Yes (global pooling ops; user-owned loop and bookkeeping) |
+| Edge / link prediction | Not shipped | Yes |
 
 NNx's GNN value is the training-loop + checkpoint integration on top of PyG's primitives.
 

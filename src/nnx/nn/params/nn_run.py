@@ -55,6 +55,28 @@ def _factory_text(optim: NNOptimFactoryParams) -> str:
     return f"{optim.factory} {config}" if config else str(optim.factory)
 
 
+def _field_total(records: list[Any], name: str) -> tuple[float, int]:
+    """``(sum, weight)`` of a per-batch field over an epoch's records, whose
+    ratio is the epoch mean: weighted by each record's ``count`` (labeled
+    targets, FEAT-002 / FEAT-026) when every record with the field carries
+    one and they add up to more than zero, else the plain sum over those
+    records and their number. Left-to-right running sums, as the history
+    journal's epoch rows accumulate them batch by batch (FEAT-036)."""
+    present = [record for record in records if getattr(record, name) is not None]
+    if present and all(getattr(record, "count", None) is not None for record in present):
+        weight = sum(record.count for record in present)
+        if weight:
+            return _running_sum([getattr(record, name) * record.count for record in present]), weight
+    return _running_sum([getattr(record, name) for record in present]), len(present)
+
+
+def _mean_field(records: list[Any], name: str) -> float:
+    """The epoch mean of a per-batch field (:func:`_field_total`); NaN when
+    no record has the field."""
+    total, weight = _field_total(records, name)
+    return total / weight if weight else float("nan")
+
+
 def _optim_summary(optim: object) -> str:
     """``str(NNRun)`` optimizer fields. A registered factory is named by its
     ``id@vN`` and config — no fabricated ``momentum`` / ``name``."""
@@ -764,16 +786,15 @@ class NNRun:
             idp_list = epoch_buckets[epoch_idx]
             series["epochs"].append(epoch_idx)
             summary = next((i.train_summary for i in reversed(idp_list) if i.train_summary is not None), None)
-            losses = [i.train_edp.loss for i in idp_list if i.train_edp is not None and i.train_edp.loss is not None]
-            errs = [i.train_edp.error for i in idp_list if i.train_edp is not None and i.train_edp.error is not None]
+            records = [i.train_edp for i in idp_list if i.train_edp is not None]
             # val_edp is set only on the last idp of each epoch (when a
             # val_loader was supplied). Use the last non-None val_edp found.
             val_idp = next((i for i in reversed(idp_list) if i.val_edp is not None), None)
             record = next((i.selection for i in reversed(idp_list) if i.selection is not None), None)
             values = _epoch_values(
                 summary,
-                (_running_sum(losses), len(losses)),
-                (_running_sum(errs), len(errs)),
+                _field_total(records, "loss"),
+                _field_total(records, "error"),
                 val_idp.val_edp if val_idp is not None else None,
                 record,
             )

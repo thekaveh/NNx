@@ -1190,7 +1190,8 @@ def test_epoch_rows_sum_exactly_as_the_eager_chart_on_every_python():
                 iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=NNEvaluationDataPoint(loss=value, error=value), lr=0.1
             )
         )
-    assert stats.loss_sum == _running_sum(values) and stats.err_sum == _running_sum(values)
+    assert stats.loss.total() == (_running_sum(values), len(values))
+    assert stats.error.total() == (_running_sum(values), len(values))
 
 
 def test_the_full_history_lent_to_a_callback_is_read_only_too():

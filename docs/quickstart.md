@@ -776,3 +776,8 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 ### 3.7. Ranking and retrieval evaluation
 
 `nnx.ranking.RankingTask(k=(10,), max_relevance=2, weighting="query", candidate_sets="sampled")` trains and evaluates a scorer per query: pass `objective=task.objective()` (pairwise logistic loss over unequal-relevance pairs within a query) and `eval_step_fn=task.eval_step()` (MRR@k, Recall@k and NDCG@k per complete query, ties broken by candidate id, queries without a relevant candidate excluded and counted), and select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("ndcg_at_10")`. Batches are `(features, query_ids, candidate_ids, relevance)`. See [Concepts → Query-grouped ranking](concepts.md#24-query-grouped-ranking-nnxranking) and [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py).
+
+
+### 3.8. Graph-level classification
+
+`nnx.graph_tasks` classifies whole graphs: build a `GraphCollection(graphs, ids, targets=...)` (flag graphs without a target with `unlabeled=[...]`), split it by graph id with `subset(ids)`, and train `NNModelParams(net=graph_classifier_spec(input_dim=..., num_classes=..., pool="mean"), loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(n, ignore_index=IGNORE))` on `collection.loader(batch_size)`. Loss and metrics are averaged over labeled graphs, `predict_proba` returns one row per graph with its graph id as the sample id, and a reload rebuilds the encoder, pool and head from the recipe. See [Concepts → Graph-level classification](concepts.md#25-graph-level-classification-nnxgraph_tasks) and [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).

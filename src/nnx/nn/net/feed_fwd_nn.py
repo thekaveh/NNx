@@ -44,6 +44,12 @@ class FeedFwdNN(nn.Module):
         from torch_geometric.data.data import Data as _PygData
 
         if isinstance(batch, _PygData):
+            if getattr(batch, "graph_id", None) is not None:
+                # A batch of whole graphs (FEAT-026): one target per graph, never per node.
+                raise ValueError(
+                    "a graph-collection batch (graph_id) holds whole graphs, one target per graph; a node-level "
+                    "FeedFwdNN cannot score it — classify graphs with nnx.graph_tasks.GraphClassifier"
+                )
             X, Y = batch.x, batch.y
             return (X,), Y
         raise TypeError(

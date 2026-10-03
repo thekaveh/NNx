@@ -79,6 +79,9 @@ def netron_export(
             device = next(net.parameters()).device
         except StopIteration:
             device = torch.device("cpu")
+    unsupported = getattr(net, "onnx_export_unsupported", None)
+    if unsupported:  # refused before anything is written, NNModel or bare module alike
+        raise NotImplementedError(f"netron_export(): {unsupported}")
 
     if isinstance(example_input, torch.Tensor):
         example_input = (example_input.to(device),)

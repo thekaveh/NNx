@@ -1153,6 +1153,9 @@ def _batch_sample_count(net: Any, batch: Any) -> int:
         n_seed = seed_count(batch)
         if n_seed is not None:
             return int(cast(int, n_seed))
+    sample_ids = getattr(net, "sample_ids", None)
+    if callable(sample_ids):  # rows with their own identity (graph ids, FEAT-026): one sample per row
+        return int(torch.as_tensor(sample_ids(batch)).numel())
     first = batch
     while (isinstance(first, (tuple, list)) and first) or (isinstance(first, Mapping) and first):
         # Mapping batches (keyword-input modules, FEAT-006): the first value.
@@ -2025,7 +2028,12 @@ class NNModel(_HubMixinBase):
                 `pip install thekaveh-nnx[onnx-dynamo]`.
 
         Returns the path written. Network is put in eval mode for tracing.
+        A network that declares ``onnx_export_unsupported`` (a graph
+        classifier, FEAT-026) is refused before anything is written.
         """
+        unsupported = getattr(self.net, "onnx_export_unsupported", None)
+        if unsupported:
+            raise NotImplementedError(f"to_onnx(): {unsupported}")
         if dynamo:
             # Lazy-import: keep `onnxscript` out of NNx's required deps so
             # plain `pip install thekaveh-nnx[onnx]` (legacy path) still works. If
@@ -3281,7 +3289,8 @@ class NNModel(_HubMixinBase):
         iteration, and a closed or consumed stream cannot be iterated again.
         An empty loader yields no batches (the eager calls raise instead).
         Over a shuffling ``DataLoader``, the first batch whose sample ids are
-        iteration positions warns (graph seed rows carry global node indices).
+        iteration positions warns (graph seed rows carry global node indices,
+        graph-level rows their own graph ids).
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
         from ..streaming import PredictionBatch, PredictionStream, _as_probability_spec, _check_stream_source
@@ -3301,15 +3310,20 @@ class NNModel(_HubMixinBase):
             if explicit is not None:
                 declared = explicit
                 for logits, ids in self._logit_batches(
-                    X, check_first=lambda first: _check_spec_fits(first, declared), positional_warning=warn_as
+                    X,
+                    check_first=lambda first: _check_spec_fits(first, declared),
+                    positional_warning=warn_as,
+                    caller="iter_predict()",
                 ):
                     yield prediction_from_logits(logits, declared, sample_ids=ids)
             elif rich:
                 assert adapter is not None
-                for logits, ids in self._logit_batches(X, check_first=adapter.check_logits, positional_warning=warn_as):
+                for logits, ids in self._logit_batches(
+                    X, check_first=adapter.check_logits, positional_warning=warn_as, caller="iter_predict()"
+                ):
                     yield adapter.prediction(logits, ids)
             else:
-                for logits, ids in self._logit_batches(X, positional_warning=warn_as):
+                for logits, ids in self._logit_batches(X, positional_warning=warn_as, caller="iter_predict()"):
                     yield PredictionBatch(logits=logits, classes=self._decode_classes(logits), sample_ids=ids)
 
         return PredictionStream(batches())
@@ -3393,7 +3407,7 @@ class NNModel(_HubMixinBase):
                 # Eval mode once for the whole call; a stream restores it per batch.
                 warn_as = caller if warn_positional and _shuffles(X) else None
                 for logits, ids in self._logit_batches(
-                    X, check_first=check_first, restore_each_batch=False, positional_warning=warn_as
+                    X, check_first=check_first, restore_each_batch=False, positional_warning=warn_as, caller=caller
                 ):
                     logits_chunks.append(logits)
                     id_chunks.append(ids)
@@ -3431,6 +3445,7 @@ class NNModel(_HubMixinBase):
         check_first: Optional[Callable[[np.ndarray], object]] = None,
         restore_each_batch: bool = True,
         positional_warning: Optional[str] = None,
+        caller: str = "predict()",
     ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         """``(logits, sample_ids)`` for each batch of ``X``, in order — the
         one batch path of :meth:`predict`, :meth:`predict_proba` and
@@ -3477,6 +3492,13 @@ class NNModel(_HubMixinBase):
                         node_ids = getattr(batch, "input_id", None)
                     if node_ids is not None:
                         ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
+            ids_of = getattr(self.net, "sample_ids", None)
+            if ids is None and callable(ids_of):
+                # Rows with their own identity (graph ids, FEAT-026): stable
+                # through shuffling and concatenation.
+                ids = np.asarray(torch.as_tensor(ids_of(batch)).cpu(), dtype=np.int64).reshape(-1)
+                if ids.shape[0] != logits.shape[0]:
+                    raise ValueError(f"{caller}: the network gave {ids.shape[0]} sample ids for {logits.shape[0]} rows")
             if ids is None:
                 ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
                 if positional_warning is not None:  # a shuffling loader: these positions cannot be joined back
