@@ -25,6 +25,7 @@ import torch
 from .._step_helpers import finalize_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+from ..precision import full_precision_only
 
 
 def _unpack_supervised(ctx: TrainStepContext) -> tuple[torch.Tensor, torch.Tensor]:
@@ -104,7 +105,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
             error=float(1.0 - acc),
         )
 
-    return step
+    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
 
 
 def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
@@ -183,4 +184,4 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
             error=float(1.0 - acc),
         )
 
-    return step
+    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
