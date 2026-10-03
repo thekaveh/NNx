@@ -62,6 +62,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "embeddings",
         "finetune",
         "generation",
+        "history",
         "interop",
         "optimizers",
         "paradigms",
@@ -141,6 +142,23 @@ def test_bundles_api_is_public_and_complete():
     assert set(bundles.__all__) == expected
     assert all(getattr(bundles, name, None) is not None for name in bundles.__all__)
     assert "bundles" in nnx.__all__
+
+
+def test_history_api_is_public_and_complete():
+    from nnx import history
+
+    expected = {
+        "JOURNAL_FORMAT",
+        "JOURNAL_VERSION",
+        "HistoryCorruptionError",
+        "HistoryJournal",
+        "export_history_csv",
+        "iter_history",
+        "migrate_history",
+    }
+    assert set(history.__all__) == expected
+    assert all(getattr(history, name, None) is not None for name in history.__all__)
+    assert "history" in nnx.__all__
 
 
 def test_calibration_api_is_public_and_complete():
