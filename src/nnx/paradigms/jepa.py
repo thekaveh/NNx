@@ -41,6 +41,7 @@ from .._step_helpers import finalize_step, imperative_step
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+from ..precision import full_precision_only
 
 
 def build_target_encoder(source: nn.Module) -> nn.Module:
@@ -440,7 +441,8 @@ def jepa_train_step_factory(
             error=loss_val,
         )
 
-    return JEPATrainStep(step, target_encoder, ema_momentum)
+    # finalize_step runs in full precision (FEAT-028).
+    return full_precision_only(JEPATrainStep(step, target_encoder, ema_momentum))
 
 
 class JEPATrainStep:

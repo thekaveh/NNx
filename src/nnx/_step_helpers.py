@@ -81,14 +81,17 @@ def finalize_step(
 ) -> float:
     """Standard post-loss tail for custom :class:`TrainStepFn` factories.
 
-    Honors ``ctx.grad_clip_norm`` (global L2 grad-clip) and runs the
-    optimizer step. Raises a clear ``FloatingPointError`` if the loss
+    Honors ``ctx.grad_clip_norm`` (global L2 grad-clip), runs the
+    optimizer step and reports it with ``ctx.report_update()``, so an
+    ``optimizer_update``-clock scheduler steps once per call (FEAT-014).
+    Raises a clear ``FloatingPointError`` if the loss
     is non-finite — silent divergence leaves checkpoints full of
     garbage weights, same failure mode :func:`default_train_step`
     guards against.
 
     **Not supported** in paradigm step factories (would silently drop
-    if we accepted them): AMP (``ctx.scaler``) and gradient accumulation
+    if we accepted them): AMP (``ctx.scaler``, or a reduced
+    ``ctx.precision`` — FEAT-028) and gradient accumulation
     (``ctx.accumulate_grad_batches != 1``). Both raise loudly rather
     than letting the caller think their NNOptimParams knobs are in
     effect. Honoring them would require per-paradigm care (scaling
@@ -123,12 +126,13 @@ def finalize_step(
             (the paradigm factories don't honor those knobs).
         FloatingPointError: when ``loss`` is non-finite.
     """
-    if ctx.scaler is not None:
+    precision = getattr(ctx, "precision", None)
+    if ctx.scaler is not None or (precision is not None and precision.reduced):
         raise ValueError(
             f"{paradigm} train_step_fn does not support mixed precision "
-            "(NNModelParams.mixed_precision=True). Disable AMP on this "
-            "NNModel or write a custom train_step_fn that handles the "
-            "scaler explicitly."
+            "(NNModelParams.mixed_precision=True or a reduced PrecisionPolicy). "
+            "Train this NNModel in fp32, or write a custom train_step_fn that "
+            "applies ctx.precision and the scaler explicitly."
         )
     if ctx.accumulate_grad_batches != 1:
         raise ValueError(
@@ -156,6 +160,10 @@ def finalize_step(
         torch.nn.utils.clip_grad_norm_(ctx.model.net.parameters(), ctx.grad_clip_norm)
 
     ctx.optimizer.step()
+    # Every call commits one update (accumulation is refused above).
+    report_update = getattr(ctx, "report_update", None)
+    if report_update is not None:
+        report_update()
 
     return loss_val
 

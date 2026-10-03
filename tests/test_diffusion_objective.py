@@ -385,6 +385,7 @@ def test_seeds_and_custom_timesteps_are_validated_before_use():
 def test_only_objectives_with_per_commit_work_get_a_commit_hook():
     from nnx import supervised_objective
     from nnx.nn.nn_model import _objective_engine
+    from nnx.precision import resolve_precision
 
     model = _model()
 
@@ -394,7 +395,7 @@ def test_only_objectives_with_per_commit_work_get_a_commit_hook():
             optimizers={"default": torch.optim.SGD(model.net.parameters(), lr=0.1)},
             clip_norms={},
             scaler=None,
-            device=torch.device("cpu"),
+            precision=resolve_precision(model.params, torch.device("cpu")),
         )
 
     assert engine(supervised_objective()).commit_hooks == []
