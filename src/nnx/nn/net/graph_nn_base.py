@@ -40,6 +40,19 @@ class GraphNNBase(nn.Module):
         return self.layers[-1](X, E)
 
     def unpack_batch(self, batch) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        if getattr(batch, "edge_label_index", None) is not None:
+            # A link batch (FEAT-027) asks about candidate edges: never node targets.
+            raise ValueError(
+                f"an edge-label (link) batch asks about candidate edges; a node-level {type(self).__name__} cannot "
+                "score it — use nnx.link_tasks.LinkTask with a LinkPredictor"
+            )
+        if getattr(batch, "graph_id", None) is not None:
+            # A batch of whole graphs (FEAT-026) holds one target per graph:
+            # scoring its nodes would read graph labels as node labels.
+            raise ValueError(
+                "a graph-collection batch (graph_id) holds whole graphs, one target per graph; a node-level "
+                f"{type(self).__name__} cannot score it — classify graphs with nnx.graph_tasks.GraphClassifier"
+            )
         return (batch.x, batch.edge_index), batch.y
 
     def seed_count(self, batch) -> Optional[int]:

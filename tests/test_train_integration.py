@@ -2230,3 +2230,108 @@ def test_registered_custom_encoder_saves_reloads_and_resumes_like_the_continuous
         assert NNRun.load(resumed_run.id).model.net == spec
     finally:
         unregister_model_factory("tests.custom_encoder", 1)
+
+
+# --- FEAT-028: the precision policy through checkpoints and resumes ---------
+
+
+def _precision_params(precision):
+    from dataclasses import replace as _replace
+
+    net_params, model_params = _make_params()
+    return net_params, _replace(model_params, precision=precision)
+
+
+def test_the_precision_policy_round_trips_checkpoints_and_a_strict_resume_refuses_another(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from nnx import PrecisionPolicy
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, bf16_params = _precision_params(PrecisionPolicy("bf16"))
+    parent = NNModel(net_params=net_params, params=bf16_params).train(params=_train_params(train_loader, None, 1))
+    checkpoint = NNCheckpoint.load(parent.id, Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.model_params.precision == PrecisionPolicy("bf16")
+    state = NNCheckpoint.load_training_state(parent.id, Checkpoints.LAST)
+    assert state is not None and state["precision"]["effective"] == "bf16" and state["scaler"] is None
+
+    resume = replace(_train_params(train_loader, None, 1), resume_from_run_id=parent.id)
+    fp32_model = NNModel(net_params=net_params, params=_make_params()[1])
+    before = {key: value.clone() for key, value in fp32_model.net.state_dict().items()}
+    with pytest.raises(
+        ValueError, match="resume precision mismatch: the checkpoint trained in bf16, this run resolves fp32"
+    ):
+        fp32_model.train(params=resume)
+    assert all(torch.equal(before[key], value) for key, value in fp32_model.net.state_dict().items())  # untouched
+
+    resumed = NNModel(net_params=net_params, params=bf16_params).train(params=resume)
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+    # A labelled warm start (weights only) may switch precision.
+    switched = NNModel(net_params=net_params, params=_make_params()[1]).train(
+        params=replace(resume, resume_mode="weights_only")
+    )
+    assert switched.resume_status is not None and switched.resume_status.mode == "weights_only"
+    assert switched.precision is not None and switched.precision.effective == "fp32"
+
+
+class _CpuScaler:
+    """A CPU stand-in for torch.amp.GradScaler with real state (the fp16 cell needs CUDA)."""
+
+    loaded: list = []
+
+    def __init__(self, device="cuda", **kwargs):
+        self._scale = 8.0
+
+    def scale(self, tensor):
+        return tensor * self._scale
+
+    def unscale_(self, optimizer):
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                if parameter.grad is not None:
+                    parameter.grad /= self._scale
+
+    def step(self, optimizer):
+        optimizer.step()
+
+    def update(self):
+        self._scale *= 2.0
+
+    def get_scale(self):
+        return self._scale
+
+    def state_dict(self):
+        return {"scale": self._scale}
+
+    def load_state_dict(self, state):
+        _CpuScaler.loaded.append(dict(state))
+        self._scale = state["scale"]
+
+
+def test_fp16_scaler_state_round_trips_a_resume(tmp_path, monkeypatch):
+    import contextlib
+    from dataclasses import replace
+
+    import nnx.precision as precision_module
+    from nnx import PrecisionPolicy
+
+    monkeypatch.chdir(tmp_path)
+    # CPU simulation of the CUDA fp16 cell: fp16 resolves here, with a stand-in scaler and autocast.
+    real = precision_module._unsupported
+    monkeypatch.setattr(
+        precision_module, "_unsupported", lambda mode, *device: None if mode == "fp16" else real(mode, *device)
+    )
+    monkeypatch.setattr(torch.amp, "GradScaler", _CpuScaler)
+    monkeypatch.setattr(torch, "autocast", lambda device_type, dtype: contextlib.nullcontext())
+    _CpuScaler.loaded.clear()
+    train_loader, _ = _make_tiny_loaders()
+    net_params, fp16_params = _precision_params(PrecisionPolicy("fp16"))
+    parent = NNModel(net_params=net_params, params=fp16_params).train(params=_train_params(train_loader, None, 1))
+    state = NNCheckpoint.load_training_state(parent.id, Checkpoints.LAST)
+    assert state is not None and state["precision"]["effective"] == "fp16" and state["precision"]["grad_scaler"]
+    saved_scale = state["scaler"]["scale"]
+    assert saved_scale == 8.0 * 2 ** len(train_loader)  # one update per batch
+    resume = replace(_train_params(train_loader, None, 1), resume_from_run_id=parent.id)
+    NNModel(net_params=net_params, params=fp16_params).train(params=resume)
+    assert _CpuScaler.loaded == [{"scale": saved_scale}]  # the scaler continues from the checkpoint

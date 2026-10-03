@@ -182,6 +182,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.FixedHeadProvider
 
+@api nnx.decisions.NLIProvider
+
 @api nnx.decisions.DecisionError
 
 @api nnx.decisions.UnsupportedCapability
@@ -191,6 +193,74 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.InvalidDecisionResponse
 
 @api nnx.decisions.ProviderFailure
+
+@api nnx.decisions.DecisionJob
+
+@api nnx.decisions.Follow
+
+@api nnx.decisions.Limits
+
+@api nnx.decisions.JobResult
+
+@api nnx.decisions.QuestionOutcome
+
+@api nnx.decisions.RowOutcome
+
+@api nnx.decisions.JobError
+
+@api nnx.decisions.InvalidJob
+
+@api nnx.decisions.JobFailed
+
+@api nnx.decisions.JobLimitExceeded
+
+@api nnx.decisions.JobTimeout
+
+@api nnx.decisions.benchmark.Sample
+
+@api nnx.decisions.benchmark.Record
+
+@api nnx.decisions.benchmark.write_records
+
+@api nnx.decisions.benchmark.read_records
+
+@api nnx.decisions.benchmark.Budget
+
+@api nnx.decisions.benchmark.collect
+
+@api nnx.decisions.benchmark.Collection
+
+@api nnx.decisions.benchmark.evaluate
+
+@api nnx.decisions.benchmark.BenchmarkReport
+
+@api nnx.decisions.benchmark.SliceReport
+
+@api nnx.decisions.benchmark.Coverage
+
+@api nnx.decisions.benchmark.MetricValue
+
+@api nnx.decisions.benchmark.Resources
+
+@api nnx.decisions.benchmark.bootstrap_interval
+
+@api nnx.decisions.benchmark.Interval
+
+@api nnx.decisions.benchmark.compare_reports
+
+@api nnx.decisions.benchmark.permute_options
+
+@api nnx.decisions.benchmark.redescribe
+
+@api nnx.decisions.benchmark.add_distractors
+
+@api nnx.decisions.benchmark.add_none_of_the_above
+
+@api nnx.decisions.benchmark.add_context
+
+@api nnx.decisions.benchmark.rewrite_input
+
+@api nnx.decisions.benchmark.BenchmarkError
 
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
@@ -316,6 +386,166 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
+### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+@api nnx.streaming.PredictionStream
+
+@api nnx.streaming.PredictionBatch
+
+@api nnx.streaming.concatenate_predictions
+
+@api nnx.streaming.StreamingMetrics
+
+@api nnx.streaming.MetricSnapshot
+
+@api nnx.streaming.streaming_eval_step
+
+@api nnx.streaming.StreamClosedError
+
+@api nnx.streaming.MetricMergeError
+
+### 2.19. Run bundles (`nnx.bundles`)
+
+@api nnx.bundles.export_bundle
+
+@api nnx.bundles.inspect_bundle
+
+@api nnx.bundles.validate_bundle
+
+@api nnx.bundles.reconstruct_bundle
+
+@api nnx.bundles.BundleInfo
+
+@api nnx.bundles.ReconstructedBundle
+
+@api nnx.bundles.BundleError
+
+@api nnx.bundles.BundleIntegrityError
+
+@api nnx.bundles.BundleCapabilityError
+
+@api nnx.bundles.BundleReconstructionError
+
+### 2.20. Replayable transformation recipes (`nnx.transforms`)
+
+@api nnx.transforms.TransformRecipe
+
+@api nnx.transforms.TransformOp
+
+@api nnx.transforms.lora
+
+@api nnx.transforms.low_rank
+
+@api nnx.transforms.check_optimizer
+
+@api nnx.transforms.RecipeError
+
+### 2.21. Execution precision (`nnx.precision`)
+
+@api nnx.precision.PrecisionPolicy
+
+@api nnx.precision.ResolvedPrecision
+
+@api nnx.precision.PrecisionUnsupportedError
+
+@api nnx.precision.ReferenceTolerance
+
+@api nnx.precision.resolve_precision
+
+@api nnx.precision.precision_support
+
+### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+
+@api nnx.comparison.Metric
+
+@api nnx.comparison.Observation
+
+@api nnx.comparison.summarize
+
+@api nnx.comparison.Summary
+
+@api nnx.comparison.GroupSummary
+
+@api nnx.comparison.compare
+
+@api nnx.comparison.PairedComparison
+
+@api nnx.comparison.Pair
+
+@api nnx.comparison.Bootstrap
+
+@api nnx.comparison.ComparisonReport
+
+@api nnx.comparison.observations_from_runs
+
+@api nnx.comparison.ComparisonError
+
+@api nnx.comparison.IncompatibleObservations
+
+### 2.23. Causal language-model task (`nnx.lm_tasks`)
+
+@api nnx.lm_tasks.CausalLMTask
+
+@api nnx.lm_tasks.CausalLMObjective
+
+@api nnx.lm_tasks.CausalLMEval
+
+@api nnx.lm_tasks.perplexity
+
+@api nnx.lm_tasks.LMTaskError
+
+### 2.24. Query-grouped ranking (`nnx.ranking`)
+
+@api nnx.ranking.RankingTask
+
+@api nnx.ranking.RankingObjective
+
+@api nnx.ranking.RankingEval
+
+@api nnx.ranking.pairwise_logistic_loss
+
+@api nnx.ranking.rank
+
+@api nnx.ranking.mrr_at_k
+
+@api nnx.ranking.recall_at_k
+
+@api nnx.ranking.ndcg_at_k
+
+@api nnx.ranking.RankingError
+
+### 2.25. Graph-level classification (`nnx.graph_tasks`)
+
+@api nnx.graph_tasks.GraphCollection
+
+@api nnx.graph_tasks.GraphClassifier
+
+@api nnx.graph_tasks.GraphPool
+
+@api nnx.graph_tasks.graph_classifier_spec
+
+@api nnx.graph_tasks.check_graph_batch
+
+@api nnx.graph_tasks.GraphTaskError
+
+### 2.26. Link and edge prediction (`nnx.link_tasks`)
+
+@api nnx.link_tasks.split_links
+
+@api nnx.link_tasks.LinkSplit
+
+@api nnx.link_tasks.LinkTask
+
+@api nnx.link_tasks.LinkPredictor
+
+@api nnx.link_tasks.link_predictor_spec
+
+@api nnx.link_tasks.link_metrics
+
+@api nnx.link_tasks.LinkPrediction
+
+@api nnx.link_tasks.LinkTaskError
+
 ## 3. Params
 
 @api nnx.nn.params.nn_params.NNParams
@@ -355,6 +585,18 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint
 
 @api nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
+
+### 3.1. Bounded history journal (`nnx.history`)
+
+@api nnx.history.HistoryJournal
+
+@api nnx.history.iter_history
+
+@api nnx.history.export_history_csv
+
+@api nnx.history.migrate_history
+
+@api nnx.history.HistoryCorruptionError
 
 ## 4. Networks
 
@@ -530,6 +772,10 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 
 @api nnx.diffusion.training.diffusion_train_step_factory
 
+@api nnx.diffusion.objective.diffusion_objective
+
+@api nnx.diffusion.objective.DiffusionObjective
+
 @api nnx.diffusion.sampling.sample
 
 ## 14. Training paradigms (`nnx.paradigms`)
@@ -569,6 +815,10 @@ Walkthrough at [I-JEPA](jepa.md). The `ViTNN` encoder is documented in §4.
 @api nnx.paradigms.jepa.jepa_train_step_factory
 
 @api nnx.paradigms.jepa.JEPATrainStep
+
+@api nnx.paradigms.jepa_objective.jepa_objective
+
+@api nnx.paradigms.jepa_objective.JEPAObjective
 
 @api nnx.paradigms.jepa.JEPAPredictor
 

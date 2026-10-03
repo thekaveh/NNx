@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextvars
+import functools
 import inspect
 import json
 import math
@@ -8,6 +10,7 @@ import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -17,8 +20,25 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing_extensions import Self
 
+from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
-from ..components import ComponentRegistry, ResumeStatus
+from .._scheduler_clock import (
+    HORIZON_KINDS,
+    NO_UPDATE_REPORTER,
+    SchedulerClock,
+    listens,
+    planned_updates,
+    uses_update_clock,
+)
+from .._update_engine import gradients_finite, scaler_step
+from ..components import ComponentRegistry, ComponentRestoreError, ResumeStatus
+from ..history import (
+    HistoryJournal,
+    _check_history,
+    _dispatch_epoch_end,
+    _lend_idps,
+    _training_history,
+)
 from ..models import (
     BatchAdapter,
     MissingModelFactoryError,
@@ -41,9 +61,15 @@ from ..monitors import (
     _MetricSet,
     _TrainEpochSummary,
 )
+from ..precision import EVALUATE as _PRECISION_EVALUATE
+from ..precision import FULL_PRECISION_ONLY as _FULL_PRECISION_ONLY
+from ..precision import PREDICT as _PRECISION_PREDICT
+from ..precision import TRAIN as _PRECISION_TRAIN
+from ..precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
-from ..tasks import TaskAdapter, task_adapter
+from ..tasks import TaskAdapter, _bounded_extra_metrics_error, task_adapter
+from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _snapshot_transforms, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
@@ -64,6 +90,7 @@ from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
     from ..prediction import PredictionResult, ProbabilitySpec
+    from ..streaming import PredictionStream
     from .callbacks import Callback
 
 
@@ -186,9 +213,6 @@ def _resume_checkpoint_type(value: Any) -> Any:
         ) from None
 
 
-_HORIZON_SCHEDULERS = frozenset({"one_cycle", "linear_warmup_decay"})
-
-
 def _check_resume_horizon(
     scheduler_params: Any, *, n_epochs: int, start_epoch: Optional[int] = None, owner: str = ""
 ) -> None:
@@ -196,7 +220,7 @@ def _check_resume_horizon(
     horizon covering the original and resumed epochs (checked before the
     checkpoint is read, and again against its completed epoch)."""
     kind = getattr(scheduler_params, "kind", None)
-    if kind is None or str(kind) not in _HORIZON_SCHEDULERS:
+    if kind is None or str(kind) not in HORIZON_KINDS:
         return
     total_steps = scheduler_params.total_steps
     if total_steps is None:
@@ -204,7 +228,9 @@ def _check_resume_horizon(
             f"resuming {kind}{owner} requires scheduler.total_steps to be set explicitly "
             "to one shared horizon covering the original and resumed epochs"
         )
-    if start_epoch is not None and start_epoch + n_epochs > total_steps:
+    # An optimizer_update clock counts updates, not epochs: its horizon is
+    # checked against the restored update count (SchedulerClock).
+    if start_epoch is not None and not uses_update_clock(scheduler_params) and start_epoch + n_epochs > total_steps:
         raise ValueError(
             f"resumed {kind}{owner} would reach epoch {start_epoch + n_epochs}, beyond "
             f"scheduler.total_steps={total_steps}; configure one shared horizon covering the original and "
@@ -222,17 +248,45 @@ class _ResumeSource:
     label: str
 
 
-def _load_resume_source(run_id: str, checkpoint: Any, mode: str, *, trainer: bool) -> _ResumeSource:
+# A checkpoint and its training state held in memory under (run id, label) for
+# one train() call — a run bundle's (nnx.bundles), which never becomes a pickle.
+_IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint, Optional[dict[str, Any]]]]] = (
+    contextvars.ContextVar("nnx_in_memory_resume", default=None)
+)
+
+
+def _load_resume_source(
+    run_id: str, checkpoint: Any, mode: str, *, trainer: bool, live_transforms: Sequence[Any] = ()
+) -> _ResumeSource:
     """Read the checkpoint a resume starts from — shared by ``NNModel.train``
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
     a bundle ``resume_mode`` cannot use."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
-    ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+    in_memory = _IN_MEMORY_RESUME.get()
+    if in_memory is not None and in_memory[:2] == (run_id, str(ckpt_type)):
+        ckpt, training_state = in_memory[2], in_memory[3]
+    else:
+        ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
     resume_net_state = training_state.get("model") if training_state is not None else None
-    if ckpt.transforms and resume_net_state is None:
+    # FEAT-016: the resuming model must carry exactly the recipe the source
+    # was trained with (ids, versions, targets and config) — its weights
+    # only fit that topology and that configuration.
+    saved_recipe, live_recipe = _recipe_transforms(ckpt.transforms), _recipe_transforms(live_transforms)
+    if saved_recipe != live_recipe:
+        raise ValueError(
+            f"resume_from_run_id={run_id!r}/{ckpt_type} was trained with the transformation recipe "
+            f"{[t.state() for t in saved_recipe]}, but this model carries {[t.state() for t in live_recipe]}: "
+            "materialize the same nnx.transforms.TransformRecipe on the model before resuming"
+        )
+    # A checkpoint whose transforms are exactly the ones the model already
+    # carries (its recipe, or a recipe and the conversion of a converted
+    # model trained again) holds weights of the live topology, which load
+    # directly; any other transformed checkpoint needs its pre-transform
+    # state.
+    if ckpt.transforms and resume_net_state is None and tuple(ckpt.transforms) != tuple(live_transforms):
         raise ValueError(
             "this transformed checkpoint has no pre-transform training state and cannot be warm-resumed; "
             "use NNModel.from_checkpoint() for inference or resume from an untransformed checkpoint"
@@ -314,9 +368,14 @@ def _resume_training_state(
 def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping[str, Any]) -> Any:
     """Validate saved component state against ``registry`` without mutating
     anything. Sidecars written before FEAT-005 carry no component state:
-    every component then starts fresh (with a warning when there are any)."""
+    every component then starts fresh (with a warning when there are any),
+    unless a component says it cannot (an optimizer_update scheduler clock,
+    FEAT-014): that is refused before anything is restored."""
     saved = training_state.get("components")
     if saved is None:
+        problems = registry._legacy_problems(training_state)
+        if problems:
+            raise ComponentRestoreError(problems)
         if len(registry):
             warnings.warn(
                 f"checkpoint predates component state (FEAT-005); {', '.join(registry.names)} start fresh",
@@ -334,6 +393,14 @@ def _collect_checkpoint_transforms(callbacks: list[Callback]) -> tuple[NNCheckpo
 
 
 def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform) -> None:
+    if _replayable(transform):
+        # FEAT-016: a recorded recipe operation — its topology is rebuilt
+        # (low-rank factors allocated, never re-factorized) before the
+        # saved tensors are loaded.
+        from ..transforms import _replay
+
+        _replay(model, transform)
+        return
     if transform.name == "torchao_qat" and transform.version == 1:
         from ..quantize.qat import _build_quantizer
 
@@ -351,6 +418,113 @@ def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform
         f"unsupported checkpoint transform {transform.name!r} version {transform.version}; "
         "upgrade NNx or load the checkpoint with the producer's compatible version"
     )
+
+
+def _unportable_transform(transforms: Sequence[NNCheckpointTransform]) -> Optional[str]:
+    """Why the first recorded transform NNx cannot replay from data alone
+    (``"topology transform <index> (<id> version <v>) ..."``), or ``None``.
+    Recipe operations (FEAT-016) of a known version and the torchao QAT
+    conversion replay; any other id is an operation only its producer can
+    rebuild — a callback's own train-end transform, say."""
+    from ..transforms import _VERSIONS, RecipeError, TransformOp
+
+    for index, transform in enumerate(transforms):
+        where = f"topology transform {index} ({transform.name!r} version {transform.version})"
+        if _replayable(transform):
+            if transform.version not in _VERSIONS[transform.name]:
+                return f"{where} has a version this NNx does not know"
+            try:
+                TransformOp.from_checkpoint_transform(transform)
+            except RecipeError as error:
+                return f"{where} has malformed options: {error}"
+        elif not (transform.name == "torchao_qat" and transform.version == 1):
+            return f"{where} is not an operation NNx can replay; only its producer can rebuild it"
+    return None
+
+
+def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransform]) -> None:
+    """Replay a checkpoint's recorded transforms in order — before any saved
+    tensor is loaded — naming the transform that cannot be replayed."""
+    for index, transform in enumerate(transforms):
+        try:
+            _apply_checkpoint_transform(model, transform)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"topology transform {index} ({transform.name!r} version {transform.version}) cannot be replayed: "
+                f"{error}"
+            ) from error
+
+
+def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
+    """The base layers ``X`` a state holds as LoRA wrappers (``X.base.weight``
+    or ``X.lora_A``) and as low-rank factors (``X.0.weight`` and
+    ``X.1.weight``) instead of ``X.weight`` — the topology an nnx.transforms
+    recipe (FEAT-016) records and unrecorded surgery leaves behind."""
+    keys = set(state_keys)
+    lora_layers: list[str] = []
+    low_rank_layers: list[str] = []
+    for key in base_keys:
+        if not key.endswith(".weight") or key in keys:
+            continue
+        layer = key[: -len(".weight")]
+        if f"{layer}.lora_A" in keys or f"{layer}.base.weight" in keys:
+            lora_layers.append(layer)
+        if f"{layer}.0.weight" in keys and f"{layer}.1.weight" in keys:
+            low_rank_layers.append(layer)
+    return lora_layers, low_rank_layers
+
+
+def _check_trained_recipe(
+    model: NNModel,
+    trained_recipe: Sequence[NNCheckpointTransform],
+    declared: Sequence[NNCheckpointTransform] = (),
+) -> None:
+    """Refuse, before a checkpoint is written, a model whose topology no
+    checkpoint of this run could rebuild (FEAT-016): recipe operations a
+    callback applied or declared during training (a recipe is materialized
+    before training — the one the run id records), or unrecorded surgery
+    on a recipe model. A train-end transform callbacks declared (QAT)
+    rebuilds its own topology, so drift is not checked against it."""
+    live = _recipe_transforms(model._topology_transforms)
+    late = [t for t in declared if _replayable(t)]
+    if live != tuple(trained_recipe) or late:
+        added = live[len(trained_recipe) :] if live[: len(trained_recipe)] == tuple(trained_recipe) else live
+        raise ValueError(
+            "a transformation recipe is materialized before training, but recipe operations "
+            f"{[t.state() for t in (*added, *late)]} were applied or declared during it, which no checkpoint could "
+            "resume — materialize the nnx.transforms.TransformRecipe before calling train() (refused before this "
+            "checkpoint was written; the run's earlier checkpoints are kept)"
+        )
+    if trained_recipe and all(_replayable(t) for t in declared):
+        drift = model._topology_drift()
+        if drift is not None:
+            raise ValueError(
+                f"{drift}; refused before the checkpoint is written (the run's earlier checkpoints are kept) — apply "
+                "topology changes through nnx.transforms.TransformRecipe before training"
+            )
+
+
+def _final_transforms(
+    model: NNModel, callbacks: list[Callback], trained_recipe: Sequence[NNCheckpointTransform]
+) -> tuple[tuple[NNCheckpointTransform, ...], bool]:
+    """The transforms the final LAST records — the model's own followed by
+    those its callbacks applied at train end — and whether that LAST keeps
+    the pre-transform state for resuming. A recipe recorded before training
+    (FEAT-016) is the live topology already, so it alone keeps none; the
+    model is checked first (:func:`_check_trained_recipe`)."""
+    declared = _collect_checkpoint_transforms(callbacks)
+    _check_trained_recipe(model, trained_recipe, declared)
+    final = (*model._topology_transforms, *declared)
+    return final, any(not _replayable(t) for t in final)
+
+
+def _refuse_unrecorded_recipe_state(net_state: Mapping[str, Any], base_state: Mapping[str, Any]) -> None:
+    if any(_replaced_layers(net_state, base_state)):
+        raise ValueError(
+            "the weights come from a transformed topology (LoRA wrappers or low-rank factors) but record no "
+            "transformation recipe: a raw state dict or an adapter-only export cannot rebuild the topology alone — "
+            "materialize the same nnx.transforms.TransformRecipe on a fresh model, then load the weights into it"
+        )
 
 
 def _looks_like_converted_qat_state(net_state: Mapping[str, Any]) -> bool:
@@ -373,9 +547,13 @@ class _CallbackFinalizer:
 
     def __exit__(self, exc_type, exc, tb):
         cleanup_errors: list[BaseException] = []
+        # FEAT-036: a journal run lends history_access="full" callbacks the
+        # whole history (read back once); everyone else sees ctx.idps as is.
+        history = getattr(self._ctx, "history_records", None)
+        view = history.lender(tolerant=True) if history is not None else (lambda callback: None)
         for cb in reversed(self._started):
             try:
-                cb.on_train_end(self._ctx)
+                _lend_idps(self._ctx, view(cb), lambda cb=cb: cb.on_train_end(self._ctx))
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
 
@@ -451,6 +629,17 @@ class TrainStepContext:
     # or a monitor keeps; `default_train_step` reports each batch's outputs
     # and denominators to it. Custom steps may ignore it.
     epoch_summary: Optional[_TrainEpochSummary] = None
+    # FEAT-028: the run's resolved precision — `precision.autocast()` is the
+    # forward context, and `scaler` is set for fp16 only. A custom step owns
+    # applying it; a context built by hand without it keeps the legacy rule
+    # (autocast and the scaler only for a scaler on CUDA).
+    precision: Optional[ResolvedPrecision] = None
+    # FEAT-014: call (without a name) once after each optimizer step the
+    # step function takes itself; an ``optimizer_update``-clock scheduler
+    # steps on every report. ``default_train_step`` (never for a step the
+    # AMP scaler skipped) and ``finalize_step`` report their own steps, so a
+    # step that delegates to them does not report again.
+    report_update: Callable[[], None] = NO_UPDATE_REPORTER
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
@@ -473,6 +662,9 @@ class EvalStepContext:
     val_loader: Iterable[Any]
     extra_metrics: Optional[Mapping[str, Callable]]
     epoch_idx: int
+    # The run's declared metrics (FEAT-003), for a step that reports them
+    # (e.g. nnx.streaming.streaming_eval_step); () when none are declared.
+    metrics: tuple[MetricSpec, ...] = ()
 
 
 EvalStepFn = Callable[[EvalStepContext], NNEvaluationDataPoint]
@@ -657,6 +849,65 @@ def _classification_edp_for_loss(
     )
 
 
+def _check_resume_precision(
+    training_state: Mapping[str, Any], precision: ResolvedPrecision, scaler: Optional[Any]
+) -> None:
+    """Refuse a stateful resume into a different effective precision
+    (FEAT-028), or with a scaler that appears or disappears, before anything
+    is restored. A sidecar written before precision was recorded trained in
+    fp16 exactly when it saved an enabled scaler (a disabled GradScaler saves
+    an empty state); a weights-only warm start may switch."""
+    record = training_state.get("precision")
+    if isinstance(record, Mapping) and record.get("effective") is not None:
+        saved = str(record["effective"])
+    else:
+        saved = "fp16" if training_state.get("scaler") else "fp32"
+    if saved != precision.effective:
+        raise ValueError(
+            f"resume precision mismatch: the checkpoint trained in {saved}, this run resolves {precision.effective}; "
+            "resume with the same precision, or start from its weights with resume_mode='weights_only' to switch"
+        )
+    if (training_state.get("scaler") is None) != (scaler is None):
+        raise ValueError(
+            "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
+        )
+
+
+def _precision_key(params: Any, device: Any) -> tuple[Any, bool, str, Optional[int]]:
+    """What a cached resolution depends on: the whole policy, the legacy
+    flag and the device (type and index: bf16 support is per CUDA device)."""
+    torch_device = torch.device(device)
+    return (
+        getattr(params, "precision", None),
+        bool(getattr(params, "mixed_precision", False)),
+        torch_device.type,
+        torch_device.index,
+    )
+
+
+def _inference_precision(model: Any) -> ResolvedPrecision:
+    """The precision evaluation and prediction run in (FEAT-028): an
+    explicit policy's; full precision for the legacy ``mixed_precision``
+    flag (a training-only setting) and for stand-ins borrowing these
+    methods."""
+    resolved = model.resolved_precision if isinstance(model, NNModel) else None
+    if resolved is not None and _PRECISION_EVALUATE in resolved.applies_to:
+        return resolved
+    return _FULL_PRECISION  # needs no record, so TF32 is not read on this hot path
+
+
+def _check_finite_gradients(module: torch.nn.Module) -> None:
+    """Raise before a scaler-free reduced-precision update applies a
+    non-finite gradient (FEAT-028) — one host sync for the whole model."""
+    if gradients_finite(module.parameters()):
+        return
+    name = next((n for n, p in module.named_parameters() if p.grad is not None and not gradients_finite([p])), "?")
+    raise FloatingPointError(
+        f"non-finite gradient for {name!r} in a reduced-precision update; nothing was stepped. Check the learning "
+        "rate and loss scale, or train in fp32"
+    )
+
+
 def _scale_gradients(module: torch.nn.Module, factor: float) -> None:
     for parameter in module.parameters():
         if parameter.grad is not None:
@@ -681,17 +932,22 @@ def _step_loss_terms(
     batch: Any,
     accumulation_state: Optional[GradientAccumulationState],
     accumulate_grad_batches: int,
+    precision: Optional[ResolvedPrecision] = None,
 ) -> _StepLossTerms:
     """Forward one batch and compute its loss terms.
 
     Legacy models decode by loss (`_fwd_pass`). A model with a task
     (FEAT-002) validates the batch through its adapter first — before any
     backward pass or optimizer update — and scores only the valid targets.
+    Under a reduced ``precision`` (FEAT-028) the forward's output is taken
+    in full precision before the task, the loss and the records see it
+    (bf16 has no NumPy dtype; a task casts its targets to the output's).
     """
     adapter = getattr(model, "task_adapter", None)
+    full = precision.output if precision is not None else _unchanged
     if adapter is None:
         _, Y, Y_hat_logits, Y_hat = model._fwd_pass(batch)
-        output, target, prediction, valid = Y_hat_logits, Y, Y_hat, None
+        output, target, prediction, valid = full(Y_hat_logits), Y, Y_hat, None
         if accumulation_state is None:
             train_loss = model.loss_fn(_loss_input(model.loss_fn, output), target)
             return _StepLossTerms(
@@ -701,11 +957,51 @@ def _step_loss_terms(
         return _StepLossTerms(output, target, prediction, valid, train_loss, backward_loss, weight)
 
     _, Y, logits = model._fwd_outputs(batch)
-    output, target, valid = adapter.prepare(logits, Y)
+    output, target, valid = adapter.prepare(full(logits), Y)
     train_loss, backward_loss, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
     if accumulation_state is None and weight != 0:
         backward_loss = train_loss / accumulate_grad_batches
     return _StepLossTerms(output, target, None, valid, train_loss, backward_loss, weight)
+
+
+# The legacy rule for a step context without a precision (FEAT-028): FP16
+# for a scaler on CUDA, full precision otherwise. TF32 is never read here.
+_LEGACY_FP16 = ResolvedPrecision(requested="fp16", effective="fp16", device_type="cuda", source="legacy", tf32={})
+_FULL_PRECISION = ResolvedPrecision(requested="fp32", effective="fp32", device_type="cpu", tf32={})
+
+
+def _check_scaler_hook(precision: ResolvedPrecision, scaler: Any, device_type: str) -> None:
+    """The policy, not ``_build_grad_scaler``, decides AMP (FEAT-028): an fp16
+    run needs the hook's scaler, and a CUDA run that is not fp16 refuses one
+    (a scaler there used to switch AMP on; it would now be ignored). Off CUDA
+    a scaler never switched anything on, so it is left to the steps (the
+    paradigm steps refuse it)."""
+    if precision.uses_scaler and scaler is None:
+        raise ValueError("fp16 trains through a GradScaler, and _build_grad_scaler returned none")
+    if precision.uses_scaler and not getattr(scaler, "is_enabled", lambda: True)():
+        # A disabled scaler scales nothing: the float16 backward would underflow.
+        raise ValueError("fp16 trains through an enabled GradScaler, and _build_grad_scaler returned a disabled one")
+    if scaler is not None and not precision.uses_scaler and device_type == "cuda":
+        raise ValueError(
+            f"_build_grad_scaler returned a GradScaler, but this run resolves to {precision.effective}: AMP is "
+            "decided by NNModelParams.precision (PrecisionPolicy('fp16')), which builds the scaler itself"
+        )
+
+
+def _check_step_precision(train_step_fn: Optional[Callable[..., Any]], precision: ResolvedPrecision) -> None:
+    """Refuse a step function marked full-precision-only (the built-in
+    imperative paradigm steps) under a reduced precision (FEAT-028) —
+    ``NNModel.train``'s rule, shared with plan validation."""
+    if precision.reduced and getattr(train_step_fn, _FULL_PRECISION_ONLY, False):
+        name = getattr(train_step_fn, "__qualname__", type(train_step_fn).__name__)
+        raise PrecisionUnsupportedError(
+            f"{name} runs in full precision only (an imperative paradigm step built on finalize_step does not "
+            f"apply the {precision.effective} policy); train it in fp32, or express the loss as an objective"
+        )
+
+
+def _unchanged(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor
 
 
 def _record_step_loss(
@@ -817,6 +1113,17 @@ def _to_device(value: Any, device: torch.device) -> Any:
     return to(device) if callable(to) else value
 
 
+def _set_loader_epoch(loader: Any, epoch: int) -> None:
+    """Tell a training loader which epoch it is about to serve, when it
+    defines ``set_epoch(epoch)`` (PyTorch's ``DistributedSampler``
+    convention): a loader that draws per-epoch randomness from the epoch
+    index — ``nnx.link_tasks`` training negatives — then draws the same
+    batches in an uninterrupted run and in one resumed at that epoch."""
+    set_epoch = getattr(loader, "set_epoch", None)
+    if callable(set_epoch):
+        set_epoch(epoch)
+
+
 def _enumerate_with_last(iterable: Iterable[Any]) -> Iterator[tuple[int, Any, bool]]:
     iterator = iter(iterable)
     try:
@@ -857,6 +1164,9 @@ def _batch_sample_count(net: Any, batch: Any) -> int:
         n_seed = seed_count(batch)
         if n_seed is not None:
             return int(cast(int, n_seed))
+    sample_ids = getattr(net, "sample_ids", None)
+    if callable(sample_ids):  # rows with their own identity (graph ids, FEAT-026): one sample per row
+        return int(torch.as_tensor(sample_ids(batch)).numel())
     first = batch
     while (isinstance(first, (tuple, list)) and first) or (isinstance(first, Mapping) and first):
         # Mapping batches (keyword-input modules, FEAT-006): the first value.
@@ -888,14 +1198,22 @@ def _metric_context_of(
     return domain, _ignore_index(loss_fn), threshold, n_classes
 
 
-def _named_metric_set(model: Any, metrics: tuple[MetricSpec, ...], *, where: str) -> Optional[_MetricSet]:
+def _named_metric_set(
+    model: Any, metrics: tuple[MetricSpec, ...], *, where: str, bounded: bool = False
+) -> Optional[_MetricSet]:
     """Accumulators for declared metrics (``None`` when there are none),
-    after checking that the model can provide every metric's input."""
+    after checking that the model can provide every metric's input.
+    ``bounded=True`` builds mergeable, bounded accumulators (FEAT-020) and
+    rejects a metric that needs every stored score."""
     if not metrics:
         return None
     domain, ignore_index, threshold, n_classes = _metric_context(model)
     _check_metric_inputs(metrics, domain, where=where, n_classes=n_classes)
-    return _MetricSet(metrics, domain, ignore_index, threshold)
+    if not bounded:
+        return _MetricSet(metrics, domain, ignore_index, threshold)
+    from ..streaming import _bounded_accumulator
+
+    return _MetricSet(metrics, domain, ignore_index, threshold, accumulator=_bounded_accumulator)
 
 
 def _check_plateau_resume(saved: Optional[Mapping[str, Any]], scheduler: Any, monitor: Optional[MonitorSpec]) -> None:
@@ -1019,7 +1337,12 @@ def _objective_microbatch(
     with engine.autocast():
         result = objective(
             ObjectiveContext(
-                model=model, batch=batch, epoch_idx=epoch_idx, batch_idx=batch_idx, extra_metrics=extra_metrics
+                model=model,
+                batch=batch,
+                epoch_idx=epoch_idx,
+                batch_idx=batch_idx,
+                extra_metrics=extra_metrics,
+                precision=engine.precision,
             )
         )
     if not isinstance(result, ObjectiveResult):
@@ -1066,20 +1389,30 @@ def _objective_engine(
     optimizers: Mapping[str, torch.optim.Optimizer],
     clip_norms: Mapping[str, Optional[float]],
     scaler: Optional[torch.amp.GradScaler],
-    device: torch.device,
+    precision: ResolvedPrecision,
 ) -> Any:
-    """The update engine for an objective run: mixed precision (autocast
-    around the objective, the scaler for the update) only where the
-    supervised path uses it — a CUDA device with a scaler."""
+    """The update engine for an objective run, in the run's precision
+    (FEAT-028): autocast around the objective, the scaler for an fp16
+    update."""
     from .._update_engine import UpdateEngine
+    from ..objectives import Objective
 
-    amp = scaler is not None and device.type == "cuda"
+    if precision.uses_scaler and scaler is None:
+        # As in default_train_step: an unscaled float16 backward underflows.
+        raise ValueError("fp16 trains through a GradScaler, and this objective run has none")
+    after_update = getattr(objective, "after_update", None)
+    if isinstance(objective, Objective) and type(objective).after_update is Objective.after_update:
+        after_update = None  # the base class's no-op: no per-commit work to schedule
+
     return UpdateEngine(
         optimizers=optimizers,
-        scaler=scaler if amp else None,
+        scaler=scaler if precision.uses_scaler else None,
         clip_norms=clip_norms,
         nonfinite=getattr(objective, "nonfinite", "fail"),
-        autocast=(lambda: torch.amp.autocast(device_type="cuda")) if amp else None,
+        autocast=precision.autocast if precision.reduced else None,
+        precision=precision,
+        # FEAT-040: the objective's own once-per-commit work (a JEPA EMA).
+        commit_hooks=(cast(Callable[[tuple[Any, ...]], None], after_update),) if callable(after_update) else (),
     )
 
 
@@ -1091,7 +1424,10 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
       - gradient accumulation (zero_grad at cycle start, step at cycle
         end). A trailing partial cycle is stepped at the epoch boundary;
         gradients use each loss's effective normalization weight.
-      - AMP (unscales before grad clip; scaler.step + update at cycle end)
+      - the run's precision (FEAT-028): autocast around the forward only,
+        the backward outside it; fp16 unscales before grad clip and steps
+        through the scaler, scaler-free bf16 checks its gradients are
+        finite before clipping
       - grad clipping by L2 norm
       - the NaN/Inf guard (raises FloatingPointError on divergent loss)
       - extra_metrics injection on the returned NNEvaluationDataPoint
@@ -1117,21 +1453,30 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         model.net.zero_grad()
         _reset_accumulation(accumulation_state)
 
-    # Mixed precision is opt-in via NNModelParams.mixed_precision; only
-    # takes effect on CUDA where autocast + GradScaler are meaningful.
-    scaler = ctx.scaler
-    amp_enabled = scaler is not None and model.device.type == "cuda"
+    # FEAT-028: the run's resolved precision decides autocast and the
+    # scaler. A context without one keeps the legacy rule: FP16 only for a
+    # scaler on CUDA.
+    precision = ctx.precision
+    if precision is None:
+        precision = _LEGACY_FP16 if ctx.scaler is not None and model.device.type == "cuda" else _FULL_PRECISION
+    if precision.uses_scaler and ctx.scaler is None:
+        # An unscaled float16 backward underflows small gradients to zero
+        # silently (the finite check sees nothing wrong): refuse it.
+        raise ValueError(
+            "fp16 trains through a GradScaler, and this step context has none: pass "
+            "scaler=model._build_grad_scaler() (NNModel.train always does)"
+        )
+    scaler = ctx.scaler if precision.uses_scaler else None
+    reduced = precision.reduced
+    autocast = precision.autocast()
 
     adapter = getattr(model, "task_adapter", None)
-    if amp_enabled:
-        assert scaler is not None
-        with torch.amp.autocast(device_type="cuda"):
-            terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
-        loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+    with autocast:  # the forward and loss only; the backward runs outside autocast
+        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches, precision)
+    loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+    if scaler is not None:
         scaler.scale(terms.backward_loss).backward()
     else:
-        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches)
-        loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
         terms.backward_loss.backward()
 
     if ctx.epoch_summary is not None:
@@ -1143,8 +1488,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         model.net.zero_grad()
         _reset_accumulation(accumulation_state)
     elif should_step:
-        if amp_enabled:
-            assert scaler is not None
+        if scaler is not None:
             scaler.unscale_(ctx.optimizer)
         if (
             accumulation_state is not None
@@ -1154,17 +1498,26 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             _scale_gradients(model.net, 1.0 / accumulation_state.normalization_weight)
         elif accumulation_state is None and cycle_size < accumulate_grad_batches:
             _scale_gradients(model.net, accumulate_grad_batches / cycle_size)
+        if reduced and scaler is None:
+            # No scaler skips a non-finite reduced-precision update (bf16),
+            # so the step checks its gradients itself: nothing non-finite is
+            # ever applied.
+            _check_finite_gradients(model.net)
         if ctx.grad_clip_norm is not None:
             # Under AMP the gradients were unscaled above, so the clip
             # threshold applies in the original gradient space.
             torch.nn.utils.clip_grad_norm_(model.net.parameters(), ctx.grad_clip_norm)
-        if amp_enabled:
-            assert scaler is not None
-            scaler.step(ctx.optimizer)
-            scaler.update()
+        if scaler is not None:
+            # Report only a step the scaler did not skip (a lowered scale,
+            # fused optimizers included); judged only when a clock listens,
+            # sparing the comparison's host syncs otherwise.
+            committed = scaler_step(scaler, (ctx.optimizer,), judge=listens(ctx.report_update))
         else:
             ctx.optimizer.step()
+            committed = True
         _reset_accumulation(accumulation_state)
+        if committed:
+            ctx.report_update()
 
     if adapter is not None:
         assert terms.valid is not None
@@ -1181,6 +1534,238 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         prediction=terms.prediction,
         loss=cast(float, loss_value),
         extra_metrics=ctx.extra_metrics,
+    )
+
+
+def _evaluate(
+    model: Any,
+    loader: Iterable[Any],
+    extra_metrics: Optional[Mapping[str, Callable]],
+    metrics: tuple[MetricSpec, ...],
+    *,
+    bounded: bool,
+    who: str,
+) -> NNEvaluationDataPoint:
+    """``NNModel.evaluate()``'s loop, shared with the streaming validation
+    step (FEAT-020). ``bounded=True`` keeps counts and sums instead of every
+    target and prediction, so memory does not grow with the loader; it
+    rejects ``extra_metrics`` and metrics that need every stored score before
+    any batch is read. Module-level: legacy stand-ins borrow ``evaluate()``."""
+    if bounded and extra_metrics:
+        raise _bounded_extra_metrics_error(who)
+    # Ensure loss_fn lives on the same device as the model — guards
+    # against callers reassigning model.device after construction.
+    model.loss_fn = model.loss_fn.to(model.device)
+    named = _named_metric_set(model, metrics, where=who, bounded=bounded)
+    # getattr: legacy stand-ins borrow evaluate() without the property.
+    if getattr(model, "task_adapter", None) is not None:
+        return _evaluate_task(model, loader, extra_metrics, named, bounded=bounded, who=who)
+    # Snapshot training-mode for non-destructive restore (matches the
+    # convention already used by `nnx.viz.activation_map` and
+    # `nnx.lr_finder`). Without this, a caller doing the common
+    # train → evaluate → train-more pattern silently leaves the net
+    # in `.eval()` mode after evaluate(); BatchNorm / Dropout layers
+    # would behave incorrectly on the next batch unless the caller
+    # remembered to call `model.net.train()` themselves.
+    precision = _inference_precision(model)  # before eval(): a failure leaves the modes alone
+    training_modes = _capture_training_modes(model.net)
+    model.net.eval()
+
+    counts: Optional[LabelCounts] = None  # bounded: chosen by the first batch's label shape
+    kind = ""
+    all_Y: list[np.ndarray] = []
+    all_Y_hat: list[np.ndarray] = []
+    loss_numerator = 0.0
+    loss_normalization_weight = 0.0
+    loss_uses_sum_reduction = False
+    n_samples = 0
+    n_metric_samples = 0
+
+    try:
+        with torch.no_grad():
+            for batch in loader:
+                with precision.autocast():
+                    _, Y, Y_hat_logits, Y_hat = model._fwd_pass(batch)
+                Y_hat_logits = precision.output(Y_hat_logits)  # scored in full precision
+                if named is not None:
+                    named.update(Y, Y_hat_logits)
+                batch_n = int(Y.size(0))
+                # Aggregate predictions / labels across the entire loader so
+                # metrics are computed on the full eval set, not per-batch.
+                metric_Y, metric_Y_hat = _classification_metric_tensors(model.loss_fn, Y, Y_hat)
+                if metric_Y.numel():
+                    if bounded:
+                        labels = metric_Y.cpu().numpy()
+                        if counts is None:
+                            counts, kind = label_counts(labels), label_kind(labels)
+                        elif label_kind(labels) != kind:  # the eager path's concatenate refuses it too
+                            raise ValueError(
+                                f"{who}: label batches changed shape between class labels and indicator rows"
+                            )
+                        counts.update(labels, metric_Y_hat.cpu().numpy())
+                    else:
+                        all_Y.append(metric_Y.cpu().numpy())
+                        all_Y_hat.append(metric_Y_hat.cpu().numpy())
+                    n_metric_samples += int(metric_Y.numel())
+                _, batch_loss_numerator, batch_normalization_weight = _loss_terms(model.loss_fn, Y_hat_logits, Y)
+                loss_numerator += float(batch_loss_numerator.detach())
+                if batch_normalization_weight is None:
+                    loss_uses_sum_reduction = True
+                else:
+                    loss_normalization_weight += batch_normalization_weight
+                n_samples += batch_n
+    finally:
+        _restore_training_modes(training_modes)
+
+    if n_samples == 0:
+        raise ValueError(f"{who} loader produced zero samples")
+    if n_metric_samples == 0:
+        raise ValueError(f"{who} loader produced zero non-ignored samples")
+
+    if counts is not None:
+        accuracy, precision, recall, f1 = record_scores(counts)
+        edp = NNEvaluationDataPoint(accuracy=accuracy, f1=f1, recall=recall, precision=precision)
+    else:
+        edp = NNEvaluationDataPoint.of(
+            Y=np.concatenate(all_Y), Y_hat=np.concatenate(all_Y_hat), extra_metrics=extra_metrics
+        )
+    accuracy = edp.accuracy
+    assert accuracy is not None  # both paths compute the classification fields
+    if named is not None:
+        edp = replace(edp, metrics={**edp.metrics, **named.results()})
+    return edp.with_loss(
+        value=(
+            loss_numerator
+            if loss_uses_sum_reduction
+            else loss_numerator / loss_normalization_weight
+            if loss_normalization_weight
+            else float("nan")
+        )
+    ).with_error(value=float(1 - accuracy))
+
+
+_BY_KEYWORD = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
+def _bounded_task_accumulator(adapter: TaskAdapter, who: str) -> Any:
+    """``adapter.accumulator(bounded=True)``, refusing an adapter that cannot
+    build one (a ``TaskAdapter`` subclass written before FEAT-020) or returns
+    one that keeps arrays — before any batch is read."""
+    needs = f"{who} needs the model's task adapter ({type(adapter).__name__}) to build a bounded accumulator"
+    try:
+        parameters: Any = inspect.signature(adapter.accumulator).parameters
+    except (TypeError, ValueError):
+        parameters = None  # not introspectable: the call decides
+    keyword = parameters is not None and getattr(parameters.get("bounded"), "kind", None) in _BY_KEYWORD
+    if parameters is not None and not (keyword or any(p.kind is p.VAR_KEYWORD for p in parameters.values())):
+        raise ValueError(f"{needs} with accumulator(bounded=True); its accumulator() takes no bounded keyword")
+    try:
+        accumulator = adapter.accumulator(bounded=True)
+    except TypeError as exc:
+        if keyword:
+            raise  # it names bounded: an error of the adapter's own is its own
+        # Opaque or **kwargs (perhaps forwarded to a pre-FEAT-020 base): a missing
+        # keyword and the adapter's own error look alike, so say both.
+        raise ValueError(f"{needs}, but accumulator(bounded=True) raised TypeError: {exc}") from exc
+    if not getattr(accumulator, "bounded", False):
+        raise ValueError(
+            f"the model's task adapter ({type(adapter).__name__}) returned an accumulator that is not bounded from "
+            f"accumulator(bounded=True); {who} would keep every target"
+        )
+    return accumulator
+
+
+def _evaluate_task(
+    model: Any,
+    loader: Iterable[Any],
+    extra_metrics: Optional[Mapping[str, Callable]],
+    named: Optional[_MetricSet],
+    *,
+    bounded: bool,
+    who: str,
+) -> NNEvaluationDataPoint:
+    """``evaluate()`` for a model with a task (FEAT-002): the adapter
+    validates every batch, and loss and metrics are accumulated over
+    the valid targets of the whole loader. Every target masked yields
+    an ``"empty"`` record (no loss, no metrics) instead of raising."""
+    adapter = model.task_adapter
+    assert adapter is not None
+    precision = _inference_precision(model)  # before eval(): a failure leaves the modes alone
+    training_modes = _capture_training_modes(model.net)
+    model.net.eval()
+    # `bounded=` only when asked: a TaskAdapter subclass written before FEAT-020 keeps working.
+    accumulator = (
+        _bounded_task_accumulator(adapter, who)  # extra_metrics were refused above
+        if bounded
+        else adapter.accumulator(keep_arrays=bool(extra_metrics))
+    )
+    loss_numerator = 0.0
+    loss_normalization_weight = 0.0
+    loss_uses_sum_reduction = False
+    n_batches = 0
+    try:
+        with torch.no_grad():
+            for batch in loader:
+                with precision.autocast():
+                    _, Y, logits = model._fwd_outputs(batch)
+                output, target, valid = adapter.prepare(precision.output(logits), Y)
+                accumulator.update(output, target, valid)
+                if named is not None:
+                    named.update(target, output, valid)
+                _, numerator, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
+                loss_numerator += float(numerator.detach())
+                if weight is None:
+                    loss_uses_sum_reduction = True
+                else:
+                    loss_normalization_weight += weight
+                n_batches += 1
+    finally:
+        _restore_training_modes(training_modes)
+    if n_batches == 0:
+        raise ValueError(f"{who} loader produced zero samples")
+    if not accumulator.count:
+        loss: Optional[float] = None
+    elif loss_uses_sum_reduction:
+        loss = loss_numerator
+    else:
+        loss = loss_numerator / loss_normalization_weight if loss_normalization_weight else float("nan")
+    edp = accumulator.result(loss=loss, extra_metrics=extra_metrics)
+    if named is not None and edp.count:
+        edp = replace(edp, metrics={**edp.metrics, **named.results()})
+    return edp
+
+
+def _is_streaming_eval_step(eval_step_fn: Any) -> bool:
+    """Whether ``eval_step_fn`` is ``nnx.streaming.streaming_eval_step``
+    itself, directly or through ``functools.partial`` — the step whose
+    limits ``train()`` and ``ExperimentPlan.validate()`` check up front. Any
+    other wrapper is a step of its own; the streaming step then still
+    refuses what it cannot compute at its first call, before reading a
+    validation batch."""
+    if eval_step_fn is None:
+        return False
+    from ..streaming import streaming_eval_step
+
+    while isinstance(eval_step_fn, functools.partial):
+        eval_step_fn = eval_step_fn.func
+    return eval_step_fn is streaming_eval_step
+
+
+def _shuffles(X: Any) -> bool:
+    """Whether ``X`` is a shuffling DataLoader, whose positional sample ids
+    cannot be joined back to the dataset."""
+    return isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler)
+
+
+def _warn_positional_ids(caller: str) -> None:
+    from .callbacks import _warn_at_user_frame  # at the first caller outside nnx, whoever called predict
+
+    _warn_at_user_frame(
+        f"{caller} over a shuffling DataLoader: sample_ids are iteration positions, not "
+        "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
+        "loader (graph seed rows are exempt: their ids are global node indices)",
+        UserWarning,
+        once_per_location=True,  # like warnings.warn: a loop over one call site warns once
     )
 
 
@@ -1287,6 +1872,9 @@ class NNModel(_HubMixinBase):
         self._topology_transforms: tuple[NNCheckpointTransform, ...] = ()
 
         self.device = self.params.device()
+        # FEAT-028: the precision policy is resolved against this device
+        # before anything is built, so an unsupported request fails here.
+        self._precision = (_precision_key(self.params, self.device), resolve_precision(self.params, self.device))
         self.loss_fn = self.params.loss().to(self.device)
         net = self.params.net
         if module is not None:
@@ -1294,10 +1882,15 @@ class NNModel(_HubMixinBase):
             self.net = module.to(self.device)
         elif isinstance(net, ModelSpec):
             self.net = build_module(net).to(self.device)
-            self._reference_state_keys = tuple(_tensor_keys(self.net.state_dict()))
         else:
             assert isinstance(net, Nets) and net_params is not None
             self.net = net(params=net_params).to(self.device)
+        if module is None:
+            # The tensors the descriptor rebuilds, recorded once from the
+            # module just built — never a second construction (FEAT-006) —
+            # for the reconstructibility checks (FEAT-016); a shape is None
+            # where a rebuild leaves the tensor uninitialized (a lazy layer).
+            self._reference_state = _state_shapes(self.net.state_dict())
         # Built-in nets keep their own unpack_batch (the legacy path); other
         # modules see batches through an adapter (FEAT-006).
         self._batch_adapter: Optional[BatchAdapter] = (
@@ -1315,6 +1908,19 @@ class NNModel(_HubMixinBase):
         # getattr: subclasses and stand-ins that bypass __init__ are legacy models.
         return getattr(self, "_task_adapter", None)
 
+    @property
+    def resolved_precision(self) -> ResolvedPrecision:
+        """The precision this model runs in on its current device
+        (FEAT-028): ``params.precision`` resolved against ``device`` — re-
+        resolved, never read from saved metadata, whenever the device or the
+        policy changes (a loaded model resolves on its destination device)."""
+        key = _precision_key(self.params, self.device)
+        cached = getattr(self, "_precision", None)
+        if cached is None or cached[0] != key:
+            cached = (key, resolve_precision(self.params, self.device))
+            self._precision = cached
+        return cached[1]
+
     def _check_task_preflight(self) -> None:
         """Reject a runtime ``loss_fn`` the declared task cannot score —
         before any loader is iterated (NNModel.train and Trainer.train)."""
@@ -1322,33 +1928,81 @@ class NNModel(_HubMixinBase):
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
 
+    def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
+        """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
+        when the model built its module (a shape is ``None`` for an
+        uninitialized lazy parameter); ``None`` for a runtime module, which
+        nothing rebuilds."""
+        recorded = getattr(self, "_reference_state", None)
+        if recorded is None:
+            # An object that never ran this __init__ (a stand-in, an older
+            # pickle) gets the reference develop used: a factory's recorded
+            # names, or a rebuild of a built-in net off the global random
+            # streams — computed once.
+            net, net_params = self.params.net, getattr(self, "net_params", None)
+            legacy_keys = getattr(self, "_reference_state_keys", None)
+            if isinstance(net, ModelSpec) and legacy_keys is not None:
+                recorded = dict.fromkeys(legacy_keys)
+                self._reference_names_only = True  # shapes, lazy layers included, are unknown
+            elif isinstance(net, Nets) and net_params is not None:
+                from ..seeding import _global_rng_kept
+
+                with _global_rng_kept():
+                    recorded = _state_shapes(net(params=net_params).state_dict())
+            else:
+                return None
+            self._reference_state = recorded
+        return MappingProxyType(recorded)
+
+    def _lazy_base_keys(self) -> frozenset[str]:
+        """The base tensors a rebuild leaves uninitialized (lazy layers):
+        those recorded without a shape — unknown for an older factory
+        model whose reference holds names only."""
+        base = self._base_state()
+        if base is None or getattr(self, "_reference_names_only", False):
+            return frozenset()
+        return frozenset(key for key, shape in base.items() if shape is None)
+
+    def _topology_drift(self) -> Optional[str]:
+        """How the live topology differs from the descriptor plus the
+        recorded recipe (FEAT-016) — names, shapes, each target's module and
+        configuration — as one message; ``None`` when it matches, or when
+        nothing could tell (a runtime module, a train-end transform that
+        rebuilds its own topology)."""
+        base_state = self._base_state()
+        if base_state is None:
+            return None
+        from ..transforms import _topology_problems
+
+        problems = _topology_problems(self.net, base_state, tuple(self._topology_transforms))
+        if not problems:
+            return None
+        return (
+            "the model's topology differs from its descriptor plus its recorded transformation recipe (unrecorded "
+            "surgery?): " + "; ".join(problems[:5])
+        )
+
     def _assert_reconstructible_topology(self) -> None:
-        if self._topology_transforms:
-            return
-        net = self.params.net
-        if isinstance(net, ModelSpec):
-            # The factory's own layout, recorded when it built the module —
-            # never a second construction (FEAT-006).
-            expected_keys = set(getattr(self, "_reference_state_keys", ()))
-        elif isinstance(net, Nets):
-            assert self.net_params is not None
-            rng_state = _capture_rng_state(None)
-            try:
-                expected_keys = _tensor_keys(net(params=self.net_params).state_dict())
-            finally:
-                _restore_rng_state(rng_state, None)
-        else:
+        transforms = tuple(self._topology_transforms)
+        if transforms and not all(_replayable(t) for t in transforms):
+            return  # train-end transforms (QAT) rebuild their own topology
+        base_state = self._base_state()
+        if base_state is None:
             return  # a runtime module is marked reconstructible=False instead
+        if transforms:
+            # FEAT-016: the live topology must be exactly the base plus its
+            # recorded recipe; surgery outside the recipe stays unrecorded.
+            drift = self._topology_drift()
+            if drift is not None:
+                raise ValueError(
+                    drift
+                    + "; apply topology changes through nnx.transforms.TransformRecipe so checkpoints can rebuild "
+                    "them"
+                )
+            return
+        expected_keys = set(base_state)
         actual_keys = _tensor_keys(self.net.state_dict())
-        low_rank_replacements = [
-            key
-            for key in expected_keys
-            if key.endswith(".weight")
-            and key not in actual_keys
-            and f"{key[:-7]}.0.weight" in actual_keys
-            and f"{key[:-7]}.1.weight" in actual_keys
-        ]
-        if low_rank_replacements:
+        if _replaced_layers(actual_keys, expected_keys)[1]:
             raise ValueError(
                 "low-rank surgery topology has no reconstruction recipe; train before surgery, "
                 "or use export_state_dict() for the modified module"
@@ -1385,7 +2039,12 @@ class NNModel(_HubMixinBase):
                 `pip install thekaveh-nnx[onnx-dynamo]`.
 
         Returns the path written. Network is put in eval mode for tracing.
+        A network that declares ``onnx_export_unsupported`` (a graph
+        classifier, FEAT-026) is refused before anything is written.
         """
+        unsupported = getattr(self.net, "onnx_export_unsupported", None)
+        if unsupported:
+            raise NotImplementedError(f"to_onnx(): {unsupported}")
         if dynamo:
             # Lazy-import: keep `onnxscript` out of NNx's required deps so
             # plain `pip install thekaveh-nnx[onnx]` (legacy path) still works. If
@@ -1500,6 +2159,7 @@ class NNModel(_HubMixinBase):
         *,
         module: Optional[torch.nn.Module] = None,
         batch_adapter: Optional[BatchAdapter] = None,
+        precision: Optional[PrecisionPolicy] = None,
         **model_kwargs: Any,
     ) -> Self:
         """Rebuild a model, replay topology transforms, and load its weights.
@@ -1516,9 +2176,26 @@ class NNModel(_HubMixinBase):
         before any weight is loaded. A runtime-only module
         (``reconstructible=False``) needs ``module=`` — a module of the same
         topology, into which the weights are loaded.
+
+        FEAT-028: the precision policy is re-resolved on the destination
+        device (the constructor resolves it) — never read from the
+        checkpoint's recorded precision — so a policy that device cannot
+        run fails here; ``precision=`` replaces the saved policy (and the
+        legacy ``mixed_precision`` flag) for this model.
         """
         model_params = checkpoint.model_params if device is None else replace(checkpoint.model_params, device=device)
+        if precision is not None:
+            model_params = replace(model_params, precision=precision, mixed_precision=False)
         net = model_params.net
+        transforms = tuple(getattr(checkpoint, "transforms", ()))
+        if isinstance(net, RuntimeModule) and _recipe_transforms(transforms):
+            # A recipe is refused on a runtime-only module (FEAT-016); refused
+            # before module= is wrapped (or moved), so the caller's module is
+            # left exactly as given.
+            raise ValueError(
+                f"this checkpoint of the runtime-only module {net} records a transformation recipe, which nothing can "
+                "replay on a caller-owned module"
+            )
         if batch_adapter is not None:
             # Only passed when set: subclasses keep their own constructors.
             model_kwargs["batch_adapter"] = batch_adapter
@@ -1536,10 +2213,10 @@ class NNModel(_HubMixinBase):
         else:
             model = cls(params=model_params, net_params=checkpoint.net_params, **model_kwargs)
 
-        transforms = getattr(checkpoint, "transforms", ())
-        for transform in transforms:
-            _apply_checkpoint_transform(model, transform)
-        model._topology_transforms = tuple(transforms)
+        _replay_transforms(model, transforms)
+        model._topology_transforms = _canonical_transforms(transforms)
+        if not transforms:
+            _refuse_unrecorded_recipe_state(checkpoint.net_state, model.net.state_dict())
         if not isinstance(net, Nets):
             check_state_schema(model.net, checkpoint.net_state, what=f"checkpoint of {net}")
 
@@ -1578,6 +2255,12 @@ class NNModel(_HubMixinBase):
         so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
         before any file or directory is written."""
         self._require_portable("save_pretrained")
+        if _recipe_transforms(self._topology_transforms):
+            # FEAT-016: an artifact whose recipe cannot rebuild its weights
+            # would fail only when someone loads it.
+            drift = self._topology_drift()
+            if drift is not None:
+                raise ValueError(f"save_pretrained refused before writing anything: {drift}")
         return super().save_pretrained(save_directory, *args, **kwargs)
 
     def _require_portable(self, operation: str) -> None:
@@ -1662,6 +2345,7 @@ class NNModel(_HubMixinBase):
         token=None,
         map_location: str = "cpu",
         strict: bool = True,
+        precision: Optional[PrecisionPolicy] = None,
         **model_kwargs,
     ) -> NNModel:
         """Rebuild an NNModel from a save_pretrained directory or Hub repo.
@@ -1681,6 +2365,10 @@ class NNModel(_HubMixinBase):
         a corrupted or hand-edited artifact. Unrecognized ``model_kwargs``
         raise instead of being silently dropped — NNModel reconstructs
         entirely from ``config.json``.
+
+        FEAT-028: the saved precision policy is re-resolved on the
+        ``map_location`` device, never taken from saved metadata;
+        ``precision=`` replaces it (and the legacy ``mixed_precision`` flag).
         """
         # The mixin inspects NNModel.__init__'s signature and auto-injects
         # matching config.json entries ("net_params"/"params") as kwargs.
@@ -1693,6 +2381,15 @@ class NNModel(_HubMixinBase):
         model_kwargs.pop("transforms", None)
         # FEAT-006: a runtime-only adapter for a registered module's batches.
         batch_adapter = model_kwargs.pop("batch_adapter", None)
+        if (
+            os.path.isdir(model_id)
+            and not os.path.exists(os.path.join(model_id, _HUB_CONFIG_FILENAME))
+            and os.path.exists(os.path.join(model_id, "bundle.json"))
+        ):
+            raise ValueError(
+                f"{model_id!r} is an NNx run bundle, not a Hugging Face Hub distribution; rebuild it with "
+                "nnx.bundles.reconstruct_bundle"
+            )
         if model_kwargs:
             raise TypeError(
                 f"from_pretrained got unexpected model kwargs {sorted(model_kwargs)!r} — "
@@ -1753,16 +2450,19 @@ class NNModel(_HubMixinBase):
         if torch_load_device.index is not None:
             raise ValueError(f"indexed Hub map_location is unsupported: {map_location!r}")
         params = replace(params, device=load_device)
+        if precision is not None:
+            params = replace(params, precision=precision, mixed_precision=False)
 
         transforms = tuple(NNCheckpointTransform.from_state(item) for item in config.get("transforms", []))
         reconstruction_kwargs = cls._hub_reconstruction_kwargs(config, os.path.dirname(config_path))
         if batch_adapter is not None:
             reconstruction_kwargs["batch_adapter"] = batch_adapter
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
-        for transform in transforms:
-            _apply_checkpoint_transform(model, transform)
-        model._topology_transforms = transforms
+        _replay_transforms(model, transforms)
+        model._topology_transforms = _canonical_transforms(transforms)
         state_dict = load_file(weights_path, device=str(torch_load_device))
+        if not transforms and strict:
+            _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
         if net_params is None and strict:
             check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
         model.net.load_state_dict(state_dict, strict=strict)
@@ -1796,7 +2496,11 @@ class NNModel(_HubMixinBase):
         :func:`nnx.finetune.load_pretrained` for the fine-tuning round-trip.
         Companion to the NNCheckpoint format, which carries the params +
         idp wrapper alongside the weights; ``export_state_dict`` strips
-        all of that and leaves just the weights.
+        all of that and leaves just the weights. It records no
+        transformation recipe (FEAT-016, ``nnx.transforms``): it cannot
+        rebuild a recipe's topology alone — materialize the recipe on a
+        fresh model before loading it, or keep a checkpoint or
+        ``save_pretrained`` artifact, which carry the recipe.
 
         Returns ``path`` so calls can be chained.
         """
@@ -1813,6 +2517,7 @@ class NNModel(_HubMixinBase):
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
         provenance: Optional[ExperimentManifest] = None,
+        history: Optional[HistoryJournal] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -1848,6 +2553,13 @@ class NNModel(_HubMixinBase):
                 fresh attempt (``attempt.json``: parent attempt and
                 checkpoint generation on resume; final status and last
                 committed checkpoint). Never part of the run id.
+            history: Optional :class:`~nnx.history.HistoryJournal`
+                (FEAT-036): keep only its ``retention`` most recent records
+                in memory (``ctx.idps``, the returned ``NNRun.idps``) and
+                append every record once to ``runs/<id>/history/`` instead
+                of rewriting ``idps.csv`` each epoch. ``None`` (the default)
+                keeps the eager in-memory list and CSV. Never part of the
+                run id.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -1867,22 +2579,23 @@ class NNModel(_HubMixinBase):
         The run lease prevents another process using ``overwrite_existing``
         from deleting or interleaving artifacts until final persistence ends.
         """
-        if objective is not None and train_step_fn is not None:
-            # Checked before anything else: one owner per optimizer update.
-            raise ValueError(
-                "pass train_step_fn or objective, not both: a step function owns its own optimizer updates, "
-                "an objective hands them to NNx's shared update engine"
-            )
-        if objective is not None and not callable(objective):
-            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        from ..objectives import _check_objective_run, _check_update_owner
+
+        # Checked before anything else: one owner per optimizer update.
+        _check_update_owner(train_step_fn, objective)
         _check_provenance(provenance)
-        if train_step_fn is None:
-            # NNx owns the update (default step or objective): the run's
-            # checkpoints must be reconstructible from the params recipe.
+        _check_history(history, callbacks)
+        if train_step_fn is None or _recipe_transforms(self._topology_transforms):
+            # NNx owns the update (default step or objective), or the model
+            # carries a recipe (FEAT-016): the run's checkpoints must be
+            # reconstructible from the params and recorded recipe.
             self._assert_reconstructible_topology()
         if params is None:
             raise ValueError("train params must be non-None")
         self._check_task_preflight()
+        # FEAT-028: the precision policy is resolved once, before any run is
+        # reserved; the loop, validation and prediction reuse it.
+        precision = self._precision_for_training(train_step_fn)
         _monitoring_preflight(
             self,
             metrics=params.metrics,
@@ -1893,6 +2606,12 @@ class NNModel(_HubMixinBase):
             has_val_loader=params.val_loader is not None,
             owner="NNTrainParams",
         )
+        # NNx's own eval steps (nnx.streaming.streaming_eval_step) check what
+        # they can compute before any run is reserved or loader read.
+        if params.val_loader is not None and _is_streaming_eval_step(eval_step_fn):
+            from ..streaming import _streaming_preflight
+
+            _streaming_preflight(self, params)
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
@@ -1916,7 +2635,21 @@ class NNModel(_HubMixinBase):
         # optimizer over exactly the resolved parameters, fails here with no
         # run reserved (nnx.optimizers.build_optimizer is the shared hook).
         optimizer = build_optimizer(self.net, params.optim)
-        run = NNRun(train=params, model=self.params, net=self.net_params, salt=salt)
+        if objective is not None:
+            # FEAT-040: an objective refuses what it cannot train (say, a JEPA
+            # predictor the optimizer does not own) before any run exists.
+            _check_objective_run(objective, self, optimizers={"default": optimizer}, callbacks=callbacks)
+        # The fp16 scaler, through the override hook and checked against the
+        # policy (FEAT-028) before any run is reserved.
+        scaler = self._build_grad_scaler()
+        _check_scaler_hook(precision, scaler, self.device.type)
+        run = NNRun(
+            train=params,
+            model=self.params,
+            net=self.net_params,
+            salt=salt,
+            transforms=_recipe_transforms(self._topology_transforms),  # FEAT-016: part of the run id when present
+        )
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
                 run,
@@ -1931,8 +2664,34 @@ class NNModel(_HubMixinBase):
                     eval_step_fn=eval_step_fn,
                     components=components,
                     objective=objective,
+                    history=history,
+                    precision=precision,
+                    scaler=scaler,
                 ),
             )
+
+    def _precision_for_training(self, train_step_fn: Optional[TrainStepFn]) -> ResolvedPrecision:
+        """Resolve the run's precision (FEAT-028) — afresh, so the record
+        carries TF32 as it is now — and refuse a step function that cannot
+        apply a reduced precision (the built-in imperative paradigm steps,
+        which run in full precision) before any work is done."""
+        # A custom step receives the precision (ctx.precision) but applies it
+        # itself: the record claims training only where NNx applies it.
+        trained = (_PRECISION_TRAIN,) if train_step_fn is None or train_step_fn is default_train_step else ()
+        precision = self._resolve_run_precision((*trained, _PRECISION_EVALUATE, _PRECISION_PREDICT))
+        _check_step_precision(train_step_fn, precision)
+        return precision
+
+    def _resolve_run_precision(self, covers: tuple[str, ...]) -> ResolvedPrecision:
+        """Resolve the policy afresh for a run (TF32 as it is now), scoped to
+        the surfaces the run applies it to — the legacy flag keeps its
+        training-only scope — and cache it for evaluation and prediction
+        (shared by ``NNModel.train`` and ``Trainer.train``)."""
+        precision = resolve_precision(self.params, self.device)
+        if precision.source != "legacy":
+            precision = precision.scoped(covers)
+        self._precision = (_precision_key(self.params, self.device), precision)
+        return precision
 
     def _train_impl(
         self,
@@ -1944,6 +2703,10 @@ class NNModel(_HubMixinBase):
         eval_step_fn: Optional[EvalStepFn] = None,
         components: Optional[list[Any]] = None,
         objective: Optional[Callable[[Any], Any]] = None,
+        history: Optional[HistoryJournal] = None,
+        *,
+        precision: ResolvedPrecision,
+        scaler: Optional[Any],
     ) -> NNRun:
         """Run the training loop and return the resulting NNRun.
 
@@ -2021,8 +2784,29 @@ class NNModel(_HubMixinBase):
         stateful_resume = params.resume_from_run_id is not None and params.resume_mode != "weights_only"
         if stateful_resume:
             _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
-        scheduler = _monitored_plateau(self._build_scheduler(optimizer, params), optimizer, monitor)
-        scaler = self._build_grad_scaler()
+        # FEAT-014: an optimizer_update clock steps on committed updates; its
+        # default horizon is the planned updates when NNx owns the windows
+        # (the default step or an objective) and the loader has a length.
+        update_clock = uses_update_clock(params.scheduler)
+        owns_windows = train_step_fn is None or train_step_fn is default_train_step
+        n_updates = (
+            planned_updates(params.train_loader, params.optim.accumulate_grad_batches, params.n_epochs)
+            if update_clock and owns_windows
+            else None
+        )
+        # The plan reaches _build_scheduler without a new argument, so a
+        # subclass override of _build_scheduler(optimizer, params) that
+        # calls super() still gets the default horizon.
+        self._planned_scheduler_updates = n_updates
+        try:
+            built = self._build_scheduler(optimizer, params)
+        finally:
+            del self._planned_scheduler_updates
+        scheduler = _monitored_plateau(built, optimizer, monitor)
+        clock: Optional[SchedulerClock] = None
+        if update_clock:
+            clock = SchedulerClock.for_schedule("default", scheduler, params.scheduler, planned=n_updates)
+            registry.register(clock)
         # FEAT-004: an objective's updates belong to the shared engine; its
         # committed-update counters are component state (nnx.update_engine),
         # so they continue across a stateful resume.
@@ -2033,7 +2817,7 @@ class NNModel(_HubMixinBase):
                 optimizers={"default": optimizer},
                 clip_norms={"default": params.optim.grad_clip_norm},
                 scaler=scaler,
-                device=self.device,
+                precision=precision,
             )
             registry.register(engine)
         start_epoch = 0
@@ -2043,7 +2827,11 @@ class NNModel(_HubMixinBase):
         # sidecars remain supported.
         if params.resume_from_run_id is not None:
             source = _load_resume_source(
-                params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=False
+                params.resume_from_run_id,
+                params.resume_from_checkpoint,
+                params.resume_mode,
+                trainer=False,
+                live_transforms=self._topology_transforms,
             )
             training_state = source.training_state
             if training_state is not None:
@@ -2071,10 +2859,7 @@ class NNModel(_HubMixinBase):
                 expected_topology = training_state.get("optimizer_topology")
                 if expected_topology is not None and expected_topology != resume_optimizer_topology:
                     raise ValueError("resume optimizer parameter topology does not match the checkpoint")
-                if (training_state.get("scaler") is None) != (scaler is None):
-                    raise ValueError(
-                        "resume GradScaler presence mismatch: checkpoint and configuration must both use AMP or neither"
-                    )
+                _check_resume_precision(training_state, precision, scaler)
                 _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
                 completed_epoch = training_state.get("completed_epoch")
                 if completed_epoch is not None:
@@ -2116,6 +2901,7 @@ class NNModel(_HubMixinBase):
                     mode="stateful",
                     source_run_id=params.resume_from_run_id,
                     source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
                     fresh_components=tuple(component_plan.fresh),
                 )
             else:
@@ -2133,10 +2919,13 @@ class NNModel(_HubMixinBase):
                     mode="weights_only",
                     source_run_id=params.resume_from_run_id,
                     source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
                     fresh_components=registry.names,
                 )
 
-        idps: list[NNIterationDataPoint] = []
+        # Every record in a list (idps.csv), or a bounded window plus the run's
+        # history journal (FEAT-036); either way saved before LAST each epoch.
+        records = _training_history(run, history)
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
@@ -2148,6 +2937,8 @@ class NNModel(_HubMixinBase):
         Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
         ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
+        ctx.history_retention = history.retention if history is not None else None
+        ctx.history_records = records
         # Default to the standard supervised step when the caller doesn't
         # override. Custom step gets dispatched from inside the batch loop
         # below so the rest of train() (scheduler, callbacks, checkpoint
@@ -2155,10 +2946,19 @@ class NNModel(_HubMixinBase):
         # Explicit None check (not `or`) so a hypothetical callable that
         # happens to be falsy by __bool__ doesn't silently fall back.
         step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
+        # FEAT-014: a step's committed updates drive an optimizer_update
+        # clock (an objective's engine reports to the clock directly).
+        report_update: Callable[[], None] = (
+            clock.report_update if clock is not None and engine is None else NO_UPDATE_REPORTER
+        )
         if engine is not None:
             assert objective is not None
             # Committed updates are announced to every callback.
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            if clock is not None:
+                # After the callbacks: they see the learning rate the update
+                # was taken with; the clock then steps the schedule.
+                engine.listeners.append(lambda event: clock.committed())
             step_fn = _ObjectiveStep(objective, engine)
             ctx.update_count = engine.commits
 
@@ -2188,16 +2988,20 @@ class NNModel(_HubMixinBase):
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
-            run = run.with_resume_status(resume_status)
+            run = run.with_resume_status(resume_status).with_precision(precision)
             ctx.run = run
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
+                _set_loader_epoch(train_loader, idx_epoch)
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
 
-                n_idps_before_epoch = len(idps)
+                records.begin_epoch()
                 accumulation_state = GradientAccumulationState()
+                if clock is not None:
+                    clock.trace.clear()
+                    updates_before_epoch = clock.count
                 epoch_summary = (
                     _TrainEpochSummary(train_metrics, metric_domain, metric_ignore_index, metric_threshold)
                     if summarize
@@ -2213,22 +3017,27 @@ class NNModel(_HubMixinBase):
                         extra_metrics=params.extra_metrics,
                         accumulate_grad_batches=params.optim.accumulate_grad_batches,
                         batch_idx=idx_batch,
+                        precision=precision,
                         epoch_idx=idx_epoch,
                         is_last_batch=is_last_batch,
                         accumulation_state=accumulation_state,
                         epoch_summary=epoch_summary,
+                        report_update=report_update,
                     )
+                    # The rate this batch trains with, for an update clock
+                    # (its scheduler may step inside the step function).
+                    lr_used = float(optimizer.param_groups[0]["lr"]) if clock is not None else None
                     train_edp = step_fn(step_ctx)
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
 
-                    idps.append(
+                    records.append(
                         NNIterationDataPoint(
                             iter_idx=idx_iter,
                             epoch_idx=idx_epoch,
                             batch_idx=idx_batch,
                             train_edp=train_edp,
-                            lr=optimizer.param_groups[0]["lr"],
+                            lr=lr_used if lr_used is not None else optimizer.param_groups[0]["lr"],
                             update_count=engine.commits if engine is not None else None,
                         )
                     )
@@ -2236,9 +3045,9 @@ class NNModel(_HubMixinBase):
                     idx_iter += 1
                     tqdm_bar.update(1)
 
-                if len(idps) == n_idps_before_epoch:
+                if records.epoch_is_empty():
                     # Zero batches this epoch: first epoch would crash on
-                    # idps[-1] below; later epochs would silently attach
+                    # records.last below; later epochs would silently attach
                     # this epoch's val_edp to the PREVIOUS epoch's last
                     # idp and reuse its stale train_edp.
                     raise ValueError(
@@ -2258,6 +3067,7 @@ class NNModel(_HubMixinBase):
                                 val_loader=params.val_loader,
                                 extra_metrics=params.extra_metrics,
                                 epoch_idx=idx_epoch,
+                                metrics=params.metrics,
                             )
                         )
                 elif validate:
@@ -2273,7 +3083,7 @@ class NNModel(_HubMixinBase):
                     )
                 else:
                     val_edp = None
-                idps[-1] = idps[-1].with_val_edp(val_edp)
+                records.replace_last(records.last.with_val_edp(val_edp))
                 record: Optional[MonitorRecord] = None
                 if epoch_summary is not None:
                     train_summary = epoch_summary.result()
@@ -2281,25 +3091,39 @@ class NNModel(_HubMixinBase):
                         assert monitor is not None
                         value = monitor.value(train=train_summary or train_edp, val=val_edp)
                         record = tracker.observe(value, epoch=idx_epoch)
-                    idps[-1] = idps[-1].with_epoch_summary(train_summary, record)
+                    records.replace_last(records.last.with_epoch_summary(train_summary, record))
 
-                if record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                if clock is not None:
+                    # FEAT-014: stepped on committed updates, not here.
+                    if clock.count == updates_before_epoch and not owns_windows and engine is None:
+                        warnings.warn(
+                            f"epoch {idx_epoch}: the step function reported no optimizer update, so the "
+                            "optimizer_update-clock scheduler did not step; call ctx.report_update() after each "
+                            "optimizer.step() the step function takes itself (default_train_step and finalize_step "
+                            "report theirs, and no report is due for an epoch whose updates were all skipped)",
+                            UserWarning,
+                            stacklevel=4,
+                        )
+                elif record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
                     _step_monitored_plateau(scheduler, record)
                 else:
                     self._step_scheduler(scheduler, val_edp, train_edp, epoch_idx=idx_epoch)
+                # The epoch's per-update learning rates (empty on the epoch clock).
+                ctx.update_lrs = list(clock.trace) if clock is not None else []
 
-                ctx.idp = idps[-1]
-                ctx.idps = idps
+                ctx.idp = records.last
                 ctx.deferred_checkpoint_writes.clear()
-                for cb in normalized_callbacks:
-                    cb.on_epoch_end(ctx)
+                # ctx.idps: the running list, or the journal's window (the whole
+                # history, read back, for a callback declaring history_access="full").
+                _dispatch_epoch_end(normalized_callbacks, ctx, records)
 
-                # Prepare run history first; the checkpoint is the epoch's
-                # commit marker and is never allowed to get ahead of idps.csv.
-                run.with_idps(idps).save(update_best=False)
+                # Prepare run history first (idps.csv, or the journal's chunks
+                # and manifest); the checkpoint is the epoch's commit marker and
+                # is never allowed to get ahead of the history.
+                records.save_epoch(run)
                 try:
                     checkpoint = self._save_checkpoints(
-                        idp=idps[-1],
+                        idp=records.last,
                         run_id=run.id,
                         idx_epoch=local_epoch,
                         n_epochs=params.n_epochs,
@@ -2308,18 +3132,20 @@ class NNModel(_HubMixinBase):
                         optimizer=optimizer,
                         scheduler=scheduler,
                         scaler=scaler,
+                        precision=precision.record(),
                         completed_epoch=idx_epoch,
                         train_loader=train_loader,
                         optimizer_factory=resume_optimizer_factory,
                         components=registry.collect(),
                         is_best=record.improved if record is not None else None,
+                        trained_recipe=run.transforms,
                     )
                 except BaseException:
                     # LAST is the epoch commit marker. If it cannot be
                     # published, restore history to the preceding epoch.
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
                     if committed is None or committed.idp.epoch_idx != idx_epoch:
-                        run.with_idps(idps[:n_idps_before_epoch]).save(update_best=False)
+                        records.rollback_epoch(run)
                     raise
                 for deferred_checkpoint in ctx.deferred_checkpoint_writes:
                     deferred_checkpoint()
@@ -2356,11 +3182,11 @@ class NNModel(_HubMixinBase):
         # in-memory checkpoint even though the disk copy is pre-mutation.
         # Costs one extra checkpoint write per training run. BEST is
         # deliberately untouched — it tracks the best *training-time* state.
-        if idps:
-            final_transforms = (*self._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
+        if records:
+            final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
             self._topology_transforms = final_transforms
             NNCheckpoint(
-                idp=idps[-1],
+                idp=records.last,
                 model_params=self.params,
                 net_params=self.net_params,
                 net_state=self.net.state_dict(),
@@ -2371,9 +3197,10 @@ class NNModel(_HubMixinBase):
                 optimizer_state=optimizer.state_dict(),
                 scheduler_state=scheduler.state_dict(),
                 scaler_state=scaler.state_dict() if scaler is not None else None,
-                rng_state=(pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader)),
-                completed_epoch=idps[-1].epoch_idx,
-                resume_net_state=pre_transform_net_state if final_transforms else None,
+                precision=precision.record(),
+                rng_state=(pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)),
+                completed_epoch=records.last.epoch_idx,
+                resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 optimizer_type=_component_type(optimizer),
                 scheduler_type=_component_type(scheduler),
                 optimizer_topology=resume_optimizer_topology,
@@ -2381,7 +3208,7 @@ class NNModel(_HubMixinBase):
                 components=registry.collect(),
             )
 
-        saved = run.with_idps(idps).save()
+        saved = records.finish(run)
         _print_run_saved(run.id)
         return saved
 
@@ -2406,124 +3233,7 @@ class NNModel(_HubMixinBase):
         Raises ValueError if the loader yields zero batches — previously
         produced NaN metrics silently from np.mean over an empty list.
         """
-        # Ensure loss_fn lives on the same device as the model — guards
-        # against callers reassigning self.device after construction.
-        self.loss_fn = self.loss_fn.to(self.device)
-        # Module-level (not a method): legacy stand-ins borrow evaluate().
-        named = _named_metric_set(self, tuple(metrics), where="evaluate()")
-        # getattr: legacy stand-ins borrow these methods without the property.
-        if getattr(self, "task_adapter", None) is not None:
-            return self._evaluate_task(loader, extra_metrics, named)
-        # Snapshot training-mode for non-destructive restore (matches the
-        # convention already used by `nnx.viz.activation_map` and
-        # `nnx.lr_finder`). Without this, a caller doing the common
-        # train → evaluate → train-more pattern silently leaves the net
-        # in `.eval()` mode after evaluate(); BatchNorm / Dropout layers
-        # would behave incorrectly on the next batch unless the caller
-        # remembered to call `self.net.train()` themselves.
-        training_modes = _capture_training_modes(self.net)
-        self.net.eval()
-
-        all_Y: list[np.ndarray] = []
-        all_Y_hat: list[np.ndarray] = []
-        loss_numerator = 0.0
-        loss_normalization_weight = 0.0
-        loss_uses_sum_reduction = False
-        n_samples = 0
-        n_metric_samples = 0
-
-        try:
-            with torch.no_grad():
-                for batch in loader:
-                    _, Y, Y_hat_logits, Y_hat = self._fwd_pass(batch)
-                    if named is not None:
-                        named.update(Y, Y_hat_logits)
-                    batch_n = int(Y.size(0))
-                    # Aggregate predictions / labels across the entire loader so
-                    # metrics are computed on the full eval set, not per-batch.
-                    metric_Y, metric_Y_hat = _classification_metric_tensors(self.loss_fn, Y, Y_hat)
-                    if metric_Y.numel():
-                        all_Y.append(metric_Y.cpu().numpy())
-                        all_Y_hat.append(metric_Y_hat.cpu().numpy())
-                        n_metric_samples += int(metric_Y.numel())
-                    _, batch_loss_numerator, batch_normalization_weight = _loss_terms(self.loss_fn, Y_hat_logits, Y)
-                    loss_numerator += float(batch_loss_numerator.detach())
-                    if batch_normalization_weight is None:
-                        loss_uses_sum_reduction = True
-                    else:
-                        loss_normalization_weight += batch_normalization_weight
-                    n_samples += batch_n
-        finally:
-            _restore_training_modes(training_modes)
-
-        if n_samples == 0:
-            raise ValueError("evaluate() loader produced zero samples")
-        if n_metric_samples == 0:
-            raise ValueError("evaluate() loader produced zero non-ignored samples")
-
-        Y_concat = np.concatenate(all_Y)
-        Y_hat_concat = np.concatenate(all_Y_hat)
-
-        edp = NNEvaluationDataPoint.of(Y=Y_concat, Y_hat=Y_hat_concat, extra_metrics=extra_metrics)
-        accuracy = edp.accuracy
-        assert accuracy is not None  # `of` always computes the classification fields
-        if named is not None:
-            edp = replace(edp, metrics={**edp.metrics, **named.results()})
-        return edp.with_loss(
-            value=(
-                loss_numerator
-                if loss_uses_sum_reduction
-                else loss_numerator / loss_normalization_weight
-                if loss_normalization_weight
-                else float("nan")
-            )
-        ).with_error(value=float(1 - accuracy))
-
-    def _evaluate_task(
-        self, loader: Iterable[Any], extra_metrics=None, named: Optional[_MetricSet] = None
-    ) -> NNEvaluationDataPoint:
-        """``evaluate()`` for a model with a task (FEAT-002): the adapter
-        validates every batch, and loss and metrics are accumulated over
-        the valid targets of the whole loader. Every target masked yields
-        an ``"empty"`` record (no loss, no metrics) instead of raising."""
-        adapter = self.task_adapter
-        assert adapter is not None
-        training_modes = _capture_training_modes(self.net)
-        self.net.eval()
-        accumulator = adapter.accumulator(keep_arrays=bool(extra_metrics))
-        loss_numerator = 0.0
-        loss_normalization_weight = 0.0
-        loss_uses_sum_reduction = False
-        n_batches = 0
-        try:
-            with torch.no_grad():
-                for batch in loader:
-                    _, Y, logits = self._fwd_outputs(batch)
-                    output, target, valid = adapter.prepare(logits, Y)
-                    accumulator.update(output, target, valid)
-                    if named is not None:
-                        named.update(target, output, valid)
-                    _, numerator, weight = adapter.loss_terms(self.loss_fn, output, target, valid)
-                    loss_numerator += float(numerator.detach())
-                    if weight is None:
-                        loss_uses_sum_reduction = True
-                    else:
-                        loss_normalization_weight += weight
-                    n_batches += 1
-        finally:
-            _restore_training_modes(training_modes)
-        if n_batches == 0:
-            raise ValueError("evaluate() loader produced zero samples")
-        if not accumulator.count:
-            loss: Optional[float] = None
-        elif loss_uses_sum_reduction:
-            loss = loss_numerator
-        else:
-            loss = loss_numerator / loss_normalization_weight if loss_normalization_weight else float("nan")
-        edp = accumulator.result(loss=loss, extra_metrics=extra_metrics)
-        if named is not None and edp.count:
-            edp = replace(edp, metrics={**edp.metrics, **named.results()})
-        return edp
+        return _evaluate(self, loader, extra_metrics, tuple(metrics), bounded=False, who="evaluate()")
 
     def predict(self, X) -> PredictResult:
         """Run the network in eval mode and return logits + argmax classes.
@@ -2550,16 +3260,85 @@ class NNModel(_HubMixinBase):
         in ``.eval()`` mode.
         """
         logits, _ = self._predict_logits(X, caller="predict()")
+        return PredictResult(logits=logits, classes=self._decode_classes(logits))
+
+    def _decode_classes(self, logits: np.ndarray) -> np.ndarray:
+        """``predict().classes`` for raw logits: the task's decoding, else
+        ``logit >= 0`` for ``BCEWithLogitsLoss`` and the argmax over the class
+        axis (class-last for a transformer's token logits). Row-wise, so a
+        batch decodes like the rows of the whole."""
         adapter = getattr(self, "task_adapter", None)
         if adapter is not None:
-            return PredictResult(logits=logits, classes=adapter.decode_array(logits))
+            return adapter.decode_array(logits)
         class_axis = -1 if self.params.net is Nets.TRANSFORMER and logits.ndim > 2 else 1
-        classes = (
+        return (
             (logits >= 0).astype(np.int64)
             if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
             else logits.argmax(axis=class_axis)
         )
-        return PredictResult(logits=logits, classes=classes)
+
+    def iter_predict(
+        self, X: Iterable[Any], spec: Optional[ProbabilitySpec] = None, *, rich: bool = False
+    ) -> PredictionStream:
+        """Stream predictions one loader batch at a time (FEAT-020).
+
+        Returns a :class:`~nnx.streaming.PredictionStream` — use it as a
+        context manager — over ``X``, a ``DataLoader`` or another iterable of
+        batches (in-memory arrays and tensors go to :meth:`predict`). Each
+        item is a :class:`~nnx.streaming.PredictionBatch` of ``logits``,
+        ``classes`` and ``sample_ids``, or, with a ``spec`` (or ``rich=True``
+        for a model with a task), a :class:`~nnx.prediction.PredictionResult`
+        as :meth:`predict_proba` builds it. The batches follow loader order,
+        and concatenated they are exactly the eager result for the same
+        ``DataLoader`` (the eager calls read other iterables as one in-memory
+        input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
+        sample ids, graph seed-row slicing included.
+
+        Each batch runs in eval mode under ``no_grad``, and every submodule's
+        training mode is restored before the batch is yielded or its error
+        raised. The stream holds only the batch in flight; closing it drops
+        its references to the loader's iterator and the model and ends the
+        iteration, and a closed or consumed stream cannot be iterated again.
+        An empty loader yields no batches (the eager calls raise instead).
+        Over a shuffling ``DataLoader``, the first batch whose sample ids are
+        iteration positions warns (graph seed rows carry global node indices,
+        graph-level rows their own graph ids).
+        """
+        from ..prediction import _check_spec_fits, prediction_from_logits
+        from ..streaming import PredictionBatch, PredictionStream, _as_probability_spec, _check_stream_source
+
+        _check_stream_source(X)
+        explicit = _as_probability_spec(spec)
+        adapter = getattr(self, "task_adapter", None)
+        if explicit is None and rich and adapter is None:
+            raise TypeError(
+                "iter_predict(rich=True) needs a ProbabilitySpec for a model without a task "
+                "(or declare NNModelParams(task=TaskSpec...))"
+            )
+
+        warn_as = "iter_predict()" if _shuffles(X) else None  # every batch carries sample_ids
+
+        def batches() -> Iterator[Any]:
+            if explicit is not None:
+                declared = explicit
+                for logits, ids in self._logit_batches(
+                    X,
+                    check_first=lambda first: _check_spec_fits(first, declared),
+                    positional_warning=warn_as,
+                    caller="iter_predict()",
+                ):
+                    yield prediction_from_logits(logits, declared, sample_ids=ids)
+            elif rich:
+                assert adapter is not None
+                for logits, ids in self._logit_batches(
+                    X, check_first=adapter.check_logits, positional_warning=warn_as, caller="iter_predict()"
+                ):
+                    yield adapter.prediction(logits, ids)
+            else:
+                for logits, ids in self._logit_batches(X, positional_warning=warn_as, caller="iter_predict()"):
+                    yield PredictionBatch(logits=logits, classes=self._decode_classes(logits), sample_ids=ids)
+
+        return PredictionStream(batches())
 
     def predict_proba(self, X, spec: Optional[ProbabilitySpec] = None) -> PredictionResult:
         """Probability-aware prediction declared by an explicit ``spec``.
@@ -2594,14 +3373,6 @@ class NNModel(_HubMixinBase):
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
 
-        if isinstance(X, DataLoader) and isinstance(X.sampler, torch.utils.data.RandomSampler):
-            warnings.warn(
-                "predict_proba() over a shuffling DataLoader: sample_ids are iteration positions, not "
-                "dataset indices, so they cannot be joined back to the dataset; use a non-shuffled "
-                "loader (graph loaders are exempt: their ids are global node indices)",
-                UserWarning,
-                stacklevel=2,
-            )
         if spec is None:
             adapter = getattr(self, "task_adapter", None)
             if adapter is None:
@@ -2609,11 +3380,16 @@ class NNModel(_HubMixinBase):
                     "predict_proba() needs a ProbabilitySpec for a model without a task "
                     "(or declare NNModelParams(task=TaskSpec...))"
                 )
-            logits, sample_ids = self._predict_logits(X, caller="predict_proba()", check_first=adapter.check_logits)
+            logits, sample_ids = self._predict_logits(
+                X, caller="predict_proba()", check_first=adapter.check_logits, warn_positional=True
+            )
             return adapter.prediction(logits, sample_ids)
         explicit = spec
         logits, sample_ids = self._predict_logits(
-            X, caller="predict_proba()", check_first=lambda first: _check_spec_fits(first, explicit)
+            X,
+            caller="predict_proba()",
+            check_first=lambda first: _check_spec_fits(first, explicit),
+            warn_positional=True,
         )
         return prediction_from_logits(logits, explicit, sample_ids=sample_ids)
 
@@ -2624,6 +3400,7 @@ class NNModel(_HubMixinBase):
         caller: str,
         check_first: Optional[Callable[[np.ndarray], object]] = None,
         batches: bool = False,
+        warn_positional: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Shared inference path of :meth:`predict` / :meth:`predict_proba`:
         raw logits (numpy) plus an ``int64`` sample id per row, computed in
@@ -2632,46 +3409,20 @@ class NNModel(_HubMixinBase):
         first loader batch's logits, so a caller can reject them before the
         rest of the loader is run. ``batches=True`` treats any iterable of
         batches like a ``DataLoader``."""
+        precision = _inference_precision(self)  # before eval(): a failure leaves the modes alone
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
-
         try:
             if batches or isinstance(X, DataLoader):
                 logits_chunks: list[np.ndarray] = []
                 id_chunks: list[np.ndarray] = []
-                offset = 0
-                with torch.no_grad():
-                    for batch in X:
-                        logits = self._inference_forward(batch)[0].cpu().numpy()  # predict discards labels
-                        ids: Optional[np.ndarray] = None
-                        # NeighborLoader subgraphs: only the leading seed
-                        # rows are this batch's nodes (see
-                        # GraphNNBase.seed_count) — without the slice,
-                        # predictions for sampled neighbors pollute the
-                        # output and the row count exceeds the loader's
-                        # node set. Their identity is the global node index.
-                        seed_count = getattr(self.net, "seed_count", None)
-                        if seed_count is not None:
-                            n_seed = seed_count(batch)
-                            if n_seed is not None:
-                                logits = logits[:n_seed]
-                                # NeighborLoader's `n_id` holds the global ids
-                                # of the subgraph's nodes, seeds first; its
-                                # `input_id` is only global when input_nodes
-                                # was a mask. NNGraphDataset's full-graph
-                                # batches carry the global ids in `input_id`.
-                                node_ids = getattr(batch, "n_id", None)
-                                if node_ids is None:
-                                    node_ids = getattr(batch, "input_id", None)
-                                if node_ids is not None:
-                                    ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
-                        if ids is None:
-                            ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
-                        offset += logits.shape[0]
-                        if check_first is not None and not logits_chunks:
-                            check_first(logits)
-                        logits_chunks.append(logits)
-                        id_chunks.append(ids)
+                # Eval mode once for the whole call; a stream restores it per batch.
+                warn_as = caller if warn_positional and _shuffles(X) else None
+                for logits, ids in self._logit_batches(
+                    X, check_first=check_first, restore_each_batch=False, positional_warning=warn_as, caller=caller
+                ):
+                    logits_chunks.append(logits)
+                    id_chunks.append(ids)
                 if not logits_chunks:
                     raise ValueError(f"{caller} loader produced zero batches")
                 return np.concatenate(logits_chunks), np.concatenate(id_chunks)
@@ -2692,11 +3443,85 @@ class NNModel(_HubMixinBase):
                     X = (X,)
                 args_t, kwargs_t = tuple(_to_tensor(x) for x in X), {}
 
-            with torch.no_grad():
-                Y_hat_logits = self._net_forward(args_t, kwargs_t).cpu().numpy()
+            with torch.no_grad(), precision.autocast():
+                output = self._net_forward(args_t, kwargs_t)
+            Y_hat_logits = precision.output(output).cpu().numpy()
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
+
+    def _logit_batches(
+        self,
+        X: Iterable[Any],
+        *,
+        check_first: Optional[Callable[[np.ndarray], object]] = None,
+        restore_each_batch: bool = True,
+        positional_warning: Optional[str] = None,
+        caller: str = "predict()",
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        """``(logits, sample_ids)`` for each batch of ``X``, in order — the
+        one batch path of :meth:`predict`, :meth:`predict_proba` and
+        :meth:`iter_predict`. Each forward pass runs under ``no_grad``; with
+        ``restore_each_batch`` it also runs in eval mode with every
+        submodule's training mode restored right after it, success or failure
+        (a stream), otherwise the caller holds eval mode for the whole loop.
+        ``check_first`` sees the first batch's logits, so a caller can reject
+        them before the rest of the loader runs. The forward runs in the
+        model's inference precision (FEAT-028), and the logits are returned in
+        full precision."""
+        precision = _inference_precision(self)  # before eval(): a failure leaves the modes alone
+        offset = 0
+        checked = check_first is None
+        for batch in X:
+            training_modes = _capture_training_modes(self.net) if restore_each_batch else None
+            if training_modes is not None:
+                self.net.eval()
+            try:
+                with torch.no_grad():
+                    with precision.autocast():
+                        output = self._inference_forward(batch)[0]  # predict discards labels
+                    logits = precision.output(output).cpu().numpy()
+            finally:
+                if training_modes is not None:
+                    _restore_training_modes(training_modes)
+            ids: Optional[np.ndarray] = None
+            # NeighborLoader subgraphs: only the leading seed rows are this
+            # batch's nodes (see GraphNNBase.seed_count) — without the slice,
+            # predictions for sampled neighbors pollute the output and the row
+            # count exceeds the loader's node set. Their identity is the
+            # global node index.
+            seed_count = getattr(self.net, "seed_count", None)
+            if seed_count is not None:
+                n_seed = seed_count(batch)
+                if n_seed is not None:
+                    logits = logits[:n_seed]
+                    # NeighborLoader's `n_id` holds the global ids of the
+                    # subgraph's nodes, seeds first; its `input_id` is only
+                    # global when input_nodes was a mask. NNGraphDataset's
+                    # full-graph batches carry the global ids in `input_id`.
+                    node_ids = getattr(batch, "n_id", None)
+                    if node_ids is None:
+                        node_ids = getattr(batch, "input_id", None)
+                    if node_ids is not None:
+                        ids = np.asarray(node_ids[:n_seed].cpu(), dtype=np.int64)
+            ids_of = getattr(self.net, "sample_ids", None)
+            if ids is None and callable(ids_of):
+                # Rows with their own identity (graph ids, FEAT-026): stable
+                # through shuffling and concatenation.
+                ids = np.asarray(torch.as_tensor(ids_of(batch)).cpu(), dtype=np.int64).reshape(-1)
+                if ids.shape[0] != logits.shape[0]:
+                    raise ValueError(f"{caller}: the network gave {ids.shape[0]} sample ids for {logits.shape[0]} rows")
+            if ids is None:
+                ids = np.arange(offset, offset + logits.shape[0], dtype=np.int64)
+                if positional_warning is not None:  # a shuffling loader: these positions cannot be joined back
+                    _warn_positional_ids(positional_warning)
+                    positional_warning = None
+            offset += logits.shape[0]
+            if not checked:
+                assert check_first is not None
+                check_first(logits)
+                checked = True
+            yield logits, ids
 
     def _inference_forward(self, batch: Any) -> tuple[torch.Tensor, Any]:
         """``(output, target)`` for a batch that may hold inputs only: split
@@ -2821,8 +3646,15 @@ class NNModel(_HubMixinBase):
                 accumulate_grad_batches=accumulate_grad_batches,
                 batch_idx=batch_idx,
                 epoch_idx=0,
+                # An explicit policy (FEAT-028) applies here as in train();
+                # the legacy flag keeps its scaler-on-CUDA rule.
+                precision=self.resolved_precision if self.resolved_precision.source == "policy" else None,
             )
         )
+
+    # The planned committed updates while train() builds an
+    # optimizer_update-clock scheduler (FEAT-014); None otherwise.
+    _planned_scheduler_updates: Optional[int] = None
 
     def _build_scheduler(
         self,
@@ -2848,22 +3680,31 @@ class NNModel(_HubMixinBase):
 
         # When a `kind` is supplied, the params dataclass carries kind-specific
         # config. The enum's __call__ knows how to construct.
-        return kind(optimizer=optimizer, params=sched_params, n_epochs=params.n_epochs)
+        # The run's planned committed updates (the default horizon of an
+        # optimizer_update clock, FEAT-014) come from train() through
+        # ``_planned_scheduler_updates``, keeping this signature unchanged.
+        return kind(
+            optimizer=optimizer,
+            params=sched_params,
+            n_epochs=params.n_epochs,
+            n_updates=self._planned_scheduler_updates,
+        )
 
     def _build_grad_scaler(self) -> Optional[torch.amp.GradScaler]:
         """The AMP loss scaler for this model, or ``None``.
 
-        Built only for ``mixed_precision=True`` on a CUDA device — CPU / MPS
-        runs never instantiate one. ``torch.amp.GradScaler(device)`` is the
-        PyTorch >= 2.3 factory; NNx's declared floor (``torch>=2.4``, the
-        oldest release the full test suite passes on) guarantees it exists,
-        so no legacy ``torch.cuda.amp`` fallback is needed (FIX-011). The
-        returned object is used through the standard ``scale`` /
-        ``unscale_`` / ``step`` / ``update`` / ``state_dict`` protocol.
+        Built only when the model's precision resolves to fp16 on its device
+        (FEAT-028): ``PrecisionPolicy("fp16")``, or the legacy
+        ``mixed_precision=True``, on CUDA — CPU / MPS runs and bf16 never
+        instantiate one. ``torch.amp.GradScaler(device)`` is the PyTorch >=
+        2.3 factory; NNx's declared floor (``torch>=2.4``, the oldest release
+        the full test suite passes on) guarantees it exists, so no legacy
+        ``torch.cuda.amp`` fallback is needed (FIX-011). The returned object
+        is used through the standard ``scale`` / ``unscale_`` / ``step`` /
+        ``update`` / ``state_dict`` protocol.
         """
-        if getattr(self.params, "mixed_precision", False) and self.device.type == "cuda":
-            return torch.amp.GradScaler("cuda")
-        return None
+        resolved = self.resolved_precision if isinstance(self, NNModel) else resolve_precision(self.params, self.device)
+        return resolved.build_scaler()
 
     def _save_checkpoints(
         self,
@@ -2880,16 +3721,28 @@ class NNModel(_HubMixinBase):
         train_loader: Optional[Iterable[Any]] = None,
         optimizer_factory: Optional[dict[str, Any]] = None,
         components: Optional[dict[str, Any]] = None,
+        precision: Optional[dict[str, Any]] = None,
         optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
+        trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
     ) -> NNCheckpoint:
         """Publish LAST, the due phase tag and — when this epoch is the best
         so far — BEST. ``is_best`` is the monitor's decision (FEAT-003);
-        ``None`` keeps the legacy comparison."""
+        ``None`` keeps the legacy comparison. ``trained_recipe`` (the
+        recipe the run id records, FEAT-016) refuses, before anything is
+        written, a topology no checkpoint of the run could rebuild."""
+        if trained_recipe is not None:
+            _check_trained_recipe(self, trained_recipe)
         checkpoint = NNCheckpoint(
-            idp=idp, model_params=self.params, net_params=self.net_params, net_state=self.net.state_dict()
+            idp=idp,
+            model_params=self.params,
+            net_params=self.net_params,
+            net_state=self.net.state_dict(),
+            # FEAT-016: a recipe recorded before training rebuilds every tag's
+            # topology (none for a model without one, as before).
+            transforms=_snapshot_transforms(self._topology_transforms),
         )
         # Every checkpoint tag is a valid resume point, so each carries the
         # same stateful training bundle as LAST/BEST.
@@ -2902,7 +3755,9 @@ class NNModel(_HubMixinBase):
         optimizer_topology = _optimizer_topology(optimizer, self.net) if optimizer is not None else None
         # FEAT-005: a Trainer's named optimizers / schedulers and every
         # component travel in the same generation sidecar.
-        stateful_extras: dict[str, Any] = {"components": components}
+        # FEAT-028: the run's resolved precision record rides along, so a
+        # stateful resume can refuse a different one.
+        stateful_extras: dict[str, Any] = {"components": components, "precision": precision}
         if optimizers is not None:
             stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
 
@@ -3057,9 +3912,16 @@ class _CallbackContext:
         self.epoch: int = 0
         self.idp: Optional[NNIterationDataPoint] = None
         self.idps: list[NNIterationDataPoint] = []
+        # FEAT-036: the history journal's retention when the run keeps a
+        # bounded window (built-in callbacks bound their own logs by it).
+        self.history_retention: Optional[int] = None
+        self.history_records: Any = None  # the loop's history (nnx.history), for on_train_end
         self.should_stop: bool = False
         self.optimizers: Any = None
         self.trainer: Any = None
         self.deferred_checkpoint_writes: list[Callable[[], None]] = []
         # FEAT-004: committed optimizer updates so far (objective runs only).
         self.update_count: Optional[int] = None
+        # FEAT-014: the epoch's ``(update index, LR after its scheduler step)``
+        # for the primary optimizer's optimizer_update clock (empty otherwise).
+        self.update_lrs: list[tuple[int, float]] = []
