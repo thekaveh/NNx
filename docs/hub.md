@@ -224,8 +224,9 @@ another's files:
   directory and a Hub distribution (`config.json`), and never fall back to
   unpickling or downloading.
 - **What does not fit is refused.** Module extra state that is not a tensor,
-  a custom object in optimizer or component state, a runtime-only module
-  and an unknown bundle version fail with a message, with no pickle
+  a custom object in optimizer or component state, a runtime-only module, a
+  recorded topology transform NNx cannot replay from data (named by index
+  and id) and an unknown bundle version fail with a message, with no pickle
   fallback.
 
 See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and

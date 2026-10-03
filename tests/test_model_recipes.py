@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest import mock
 
 import pytest
@@ -1186,3 +1187,34 @@ def test_a_recipe_materialized_mid_training_is_refused_before_any_checkpoint_rec
     assert [t.name for t in last.transforms] == ["lora", "low_rank"]  # never the late operation
     child = _train(_recipe().materialize(_model(seed=5)), n_epochs=1, resume_from_run_id=run_id)
     assert child.resume_status is not None and child.resume_status.mode == "stateful"
+
+
+def test_a_recipe_travels_in_a_run_bundle_and_a_callback_operation_does_not(tmp_path):
+    """FEAT-015 bundles: recipe operations are registered, versioned ids, so a
+    recipe run exports and rebuilds from data alone; an operation only its
+    producer can rebuild (a callback's own train-end transform) fails the
+    export naming its index and id, before anything is written."""
+    from nnx import Callback
+    from nnx.bundles import BundleError, export_bundle, reconstruct_bundle
+
+    model = _recipe().materialize(_model())
+    run = _train(model)
+    rebuilt = reconstruct_bundle(export_bundle(run.id, tmp_path / "recipe").path).model
+    assert [t.name for t in rebuilt._topology_transforms] == ["lora", "low_rank"]
+    _same_model(model, rebuilt)
+
+    callback = type("TrainEnd", (_TrainEndTransform, Callback), {})()
+    parent = _train(_recipe().materialize(_model()), n_epochs=1, callbacks=[callback])
+    destination = tmp_path / "callback"
+    with pytest.raises(BundleError, match=r"topology transform 2 \('test-transform' version 1\) is not an operation"):
+        export_bundle(parent.id, destination)
+    assert not destination.exists()
+    future = NNCheckpointTransform(name="lora", version=7, options={"targets": ["layers.0"], "r": 4})
+    last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert last is not None
+    with mock.patch.object(
+        NNCheckpoint, "load_with_training_state", return_value=(replace(last, transforms=(future,)), None)
+    ):
+        with pytest.raises(BundleError, match=r"topology transform 0 \('lora' version 7\) has a version"):
+            export_bundle(run.id, tmp_path / "future")
+    assert not (tmp_path / "future").exists()

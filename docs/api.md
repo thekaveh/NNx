@@ -5321,9 +5321,12 @@ Args:
 
 Returns the published bundle's :class:`BundleInfo` (``verified=True``).
 A checkpoint written by ``train()`` gives a ``"resume"`` bundle; a
-weights-only one an ``"inference"`` bundle. A runtime-only module, module
-extra state that is not a tensor, and training state that is not tensors
-and JSON primitives are refused before anything is written.
+weights-only one an ``"inference"`` bundle. A runtime-only module, a
+recorded topology transform NNx cannot replay from data (anything but an
+``nnx.transforms`` recipe operation of a known version or a torchao QAT
+conversion — the error names its index and id), module extra state that
+is not a tensor, and training state that is not tensors and JSON
+primitives are refused before anything is written.
 ```
 
 

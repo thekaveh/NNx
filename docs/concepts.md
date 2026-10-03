@@ -1872,8 +1872,11 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   opens the payloads). Everything else is strict JSON with typed encodings:
   `$tuple`, integer-keyed `$intdict` (optimizer state), non-finite `$float`
   (a plateau scheduler's `inf`) and `$tensor` references. Module extra state
-  that is not a tensor, a custom object in optimizer or component state and
-  a runtime-only module are refused at export, with no pickle fallback.
+  that is not a tensor, a custom object in optimizer or component state, a
+  runtime-only module and a recorded topology transform NNx cannot replay
+  from data (anything but an `nnx.transforms` recipe operation or a torchao
+  QAT conversion; the error names its index and id) are refused at export,
+  with no pickle fallback.
 - **Inspect and validate.** `inspect_bundle` summarizes a bundle
   (`BundleInfo`: capability, source run and checkpoint, epoch, model,
   components, calibrators) from the manifest and `state.json`.

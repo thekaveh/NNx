@@ -20,8 +20,10 @@ model in place (``materialization="in_place"``, the default) or builds a
 fresh, randomly initialized registered base from its descriptor
 (``"fresh"``), and records the operations on the model it returns.
 
-Recorded operations travel with every checkpoint (pickle and safetensors)
-and Hub save as :class:`~nnx.nn.params.nn_checkpoint.NNCheckpointTransform`
+Recorded operations travel with every checkpoint (pickle and safetensors),
+Hub save and run bundle (``nnx.bundles``, whose export refuses any other
+recorded transform — a callback's own operation, say — naming its index
+and id) as :class:`~nnx.nn.params.nn_checkpoint.NNCheckpointTransform`
 entries, and fold into the run id of a run that trains them and into
 ``ExperimentManifest.for_model``.
 ``NNModel.from_checkpoint`` / ``from_pretrained`` replay them on a freshly

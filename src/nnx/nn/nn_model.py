@@ -402,6 +402,28 @@ def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform
     )
 
 
+def _unportable_transform(transforms: Sequence[NNCheckpointTransform]) -> Optional[str]:
+    """Why the first recorded transform NNx cannot replay from data alone
+    (``"topology transform <index> (<id> version <v>) ..."``), or ``None``.
+    Recipe operations (FEAT-016) of a known version and the torchao QAT
+    conversion replay; any other id is an operation only its producer can
+    rebuild — a callback's own train-end transform, say."""
+    from ..transforms import _VERSIONS, RecipeError, TransformOp
+
+    for index, transform in enumerate(transforms):
+        where = f"topology transform {index} ({transform.name!r} version {transform.version})"
+        if _replayable(transform):
+            if transform.version not in _VERSIONS[transform.name]:
+                return f"{where} has a version this NNx does not know"
+            try:
+                TransformOp.from_checkpoint_transform(transform)
+            except RecipeError as error:
+                return f"{where} has malformed options: {error}"
+        elif not (transform.name == "torchao_qat" and transform.version == 1):
+            return f"{where} is not an operation NNx can replay; only its producer can rebuild it"
+    return None
+
+
 def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransform]) -> None:
     """Replay a checkpoint's recorded transforms in order — before any saved
     tensor is loaded — naming the transform that cannot be replayed."""
