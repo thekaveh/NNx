@@ -520,3 +520,42 @@ def test_registered_modules_round_trip_through_safetensors(tmp_path, monkeypatch
         torch.testing.assert_close(torch.as_tensor(rebuilt.predict(X).logits), torch.as_tensor(model.predict(X).logits))
     finally:
         unregister_model_factory("tests.safetensors_encoder", 1)
+
+
+def test_a_transformation_recipe_round_trips_through_safetensors(tmp_path):
+    """FEAT-016: a LoRA-then-low-rank recipe recorded in the safetensors
+    metadata rebuilds the same topology without rerunning SVD."""
+    from unittest import mock
+
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
+    from nnx.transforms import TransformRecipe, lora, low_rank
+
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=6, output_dim=3, hidden_dims=[16, 12], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    TransformRecipe([lora("layers.0", r=4, alpha=8.0), low_rank("layers.1", rank=4)]).materialize(model)
+    with torch.no_grad():
+        model.net.layers[0].lora_B.normal_(0, 0.1, generator=torch.Generator().manual_seed(1))
+    idp = NNIterationDataPoint(lr=0.1, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=NNEvaluationDataPoint(loss=1.0))
+    checkpoint = NNCheckpoint(
+        idp=idp,
+        model_params=model.params,
+        net_params=model.net_params,
+        net_state=model.net.state_dict(),
+        transforms=model._topology_transforms,
+    )
+    path = str(tmp_path / "recipe.safetensors")
+    checkpoint.to_file(path, format="safetensors")
+    with mock.patch("torch.linalg.svd", side_effect=AssertionError("SVD rerun during reload")):
+        rebuilt = NNModel.from_checkpoint(NNCheckpoint.from_file(path))
+    assert list(rebuilt.net.state_dict()) == list(model.net.state_dict())
+    assert [p.requires_grad for p in rebuilt.net.parameters()] == [p.requires_grad for p in model.net.parameters()]
+    model.net.eval(), rebuilt.net.eval()
+    x = torch.randn(5, 6)
+    with torch.no_grad():
+        torch.testing.assert_close(rebuilt.net(x), model.net(x), rtol=1e-5, atol=1e-6)

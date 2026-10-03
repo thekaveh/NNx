@@ -312,7 +312,11 @@ any torch consumer without nnx installed, and by
 :func:`nnx.finetune.load_pretrained` for the fine-tuning round-trip.
 Companion to the NNCheckpoint format, which carries the params +
 idp wrapper alongside the weights; ``export_state_dict`` strips
-all of that and leaves just the weights.
+all of that and leaves just the weights. It records no
+transformation recipe (FEAT-016, ``nnx.transforms``): it cannot
+rebuild a recipe's topology alone — materialize the recipe on a
+fresh model before loading it, or keep a checkpoint or
+``save_pretrained`` artifact, which carry the recipe.
 
 Returns ``path`` so calls can be chained.
 ```
@@ -3057,7 +3061,7 @@ nnx.provenance.ExperimentManifest.fingerprint(self) -> 'str'
 nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None, preprocessing: 'Any' = None) -> 'ExperimentManifest'
 ```
 
-A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
+A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), its recorded transformation recipe when it has one (FEAT-016), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
 
 
 #### `nnx.provenance.IdentityRef`
@@ -5317,9 +5321,12 @@ Args:
 
 Returns the published bundle's :class:`BundleInfo` (``verified=True``).
 A checkpoint written by ``train()`` gives a ``"resume"`` bundle; a
-weights-only one an ``"inference"`` bundle. A runtime-only module, module
-extra state that is not a tensor, and training state that is not tensors
-and JSON primitives are refused before anything is written.
+weights-only one an ``"inference"`` bundle. A runtime-only module, a
+recorded topology transform NNx cannot replay from data (anything but an
+``nnx.transforms`` recipe operation of a known version or a torchao QAT
+conversion — the error names its index and id), module extra state that
+is not a tensor, and training state that is not tensors and JSON
+primitives are refused before anything is written.
 ```
 
 
@@ -5479,6 +5486,121 @@ class nnx.bundles.BundleReconstructionError(problems: 'Iterable[str]') -> 'None'
 ```
 
 What a reconstruction needs and was not given (a model factory, a component), every problem listed in ``problems``; raised before any model is allocated.
+
+
+### 2.20. Replayable transformation recipes (`nnx.transforms`)
+
+#### `nnx.transforms.TransformRecipe`
+
+```python
+class nnx.transforms.TransformRecipe(operations: 'tuple[TransformOp, ...]', materialization: "Literal['fresh', 'in_place']" = 'in_place') -> 'None'
+```
+
+An ordered, immutable list of :class:`TransformOp`.
+
+**Details**
+
+```text
+``materialization`` says what :meth:`materialize` does: ``"in_place"``
+(the default) transforms the given model itself — its trained weights
+are what LoRA wraps and SVD factorizes; ``"fresh"`` builds a fresh,
+randomly initialized registered base from the given model's descriptor
+and transforms that, leaving the given model untouched. The operations
+are copied: changing the list they came from changes nothing here.
+```
+
+##### `nnx.transforms.TransformRecipe.checkpoint_transforms`
+
+```python
+nnx.transforms.TransformRecipe.checkpoint_transforms(self) -> 'tuple[NNCheckpointTransform, ...]'
+```
+
+The operations as checkpoint transforms, in order.
+
+##### `nnx.transforms.TransformRecipe.validate`
+
+```python
+nnx.transforms.TransformRecipe.validate(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'None'
+```
+
+Check the whole recipe as :meth:`materialize` would — against ``model`` in place, or against the fresh base ``model`` describes — mutating nothing, and raise one :class:`RecipeError` naming every problem. ``optimizers`` are checked for an in-place materialization (a fresh base's parameters belong to no existing optimizer).
+
+##### `nnx.transforms.TransformRecipe.materialize`
+
+```python
+nnx.transforms.TransformRecipe.materialize(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'NNModel'
+```
+
+Validate the whole recipe (as :meth:`validate`), then apply it — to ``model`` itself (``"in_place"``, returned) or to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned). The operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model — and the global random streams a fresh base or a LoRA initialization draws from — as they were.
+
+
+#### `nnx.transforms.TransformOp`
+
+```python
+class nnx.transforms.TransformOp(id: 'str', targets: 'tuple[str, ...]', config: 'Mapping[str, Any]' = <factory>, version: 'int' = 1) -> 'None'
+```
+
+One recorded operation: ``id`` (``"lora"`` or ``"low_rank"``), ``version``, the explicit ``targets`` (dotted paths under ``model.net``) and an immutable ``config``. Build one with :func:`lora` or :func:`low_rank`.
+
+##### `nnx.transforms.TransformOp.state`
+
+```python
+nnx.transforms.TransformOp.state(self) -> 'dict[str, Any]'
+```
+
+The JSON-ready form a checkpoint records (``options`` of its :class:`~nnx.nn.params.nn_checkpoint.NNCheckpointTransform`).
+
+##### `nnx.transforms.TransformOp.checkpoint_transform`
+
+```python
+nnx.transforms.TransformOp.checkpoint_transform(self) -> 'NNCheckpointTransform'
+```
+
+No public description is currently available.
+
+##### `nnx.transforms.TransformOp.from_checkpoint_transform`
+
+```python
+nnx.transforms.TransformOp.from_checkpoint_transform(transform: 'NNCheckpointTransform') -> 'TransformOp'
+```
+
+The operation a checkpoint recorded; malformed options raise a :class:`RecipeError`.
+
+
+#### `nnx.transforms.lora`
+
+```python
+nnx.transforms.lora(*targets: 'str', r: 'int' = 8, alpha: 'float' = 16.0, dropout: 'float' = 0.0) -> 'TransformOp'
+```
+
+Wrap each ``nn.Linear`` at ``targets`` in a :class:`~nnx.peft.LoRALinear` (``r``, ``alpha``, ``dropout`` as for ``apply_lora_to``). Targets are explicit module paths, not globs.
+
+
+#### `nnx.transforms.low_rank`
+
+```python
+nnx.transforms.low_rank(*targets: 'str', rank: 'int', method: 'str' = 'svd') -> 'TransformOp'
+```
+
+Replace each ``nn.Linear`` at ``targets`` by its rank-``rank`` factorization (``nnx.surgery.low_rank_factorize``).
+
+
+#### `nnx.transforms.check_optimizer`
+
+```python
+nnx.transforms.check_optimizer(model: 'NNModel', optimizer: 'torch.optim.Optimizer') -> 'None'
+```
+
+Refuse an optimizer built before the model's recipe: one holding parameters the recipe replaced (a low-rank operation's layers, or the model a fresh materialization started from), or holding a LoRA target's frozen base weights but none of the adapter built around them — whenever it was built, since the adapter would never train. An optimizer built afterwards over the trainable parameters — all, a subset, with parameters outside ``model.net``, or BitFit-style over unfrozen base tensors — passes.
+
+
+#### `nnx.transforms.RecipeError`
+
+```python
+class nnx.transforms.RecipeError(problems: 'Sequence[_Problem]') -> 'None'
+```
+
+A recipe that does not fit a model, or a malformed operation. ``problems`` lists ``(operation index, operation id, target, reason)``; the message names each.
 
 
 ## 3. Params
@@ -6533,10 +6655,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -9202,7 +9324,10 @@ state_dict, containing exactly the ``lora_A`` / ``lora_B`` tensors
 owned by the :class:`LoRALinear` wrappers in ``module`` — selected by
 registered ownership, not by key substring, so a module *named*
 ``lora_A_projection`` never leaks its frozen base weights. Loadable
-via :func:`load_lora_weights`.
+via :func:`load_lora_weights`. An adapter-only export records no
+transformation recipe (``nnx.transforms``): it cannot rebuild the
+wrapped topology alone — apply the same adapters (or materialize the
+recipe) first.
 
 Args:
     module: any module that has been processed by

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -58,10 +58,10 @@ from ..nn.nn_model import (
     _check_plateau_resume,
     _check_provenance,
     _check_resume_horizon,
-    _collect_checkpoint_transforms,
     _component_type,
     _dispatch_update,
     _enumerate_with_last,
+    _final_transforms,
     _load_resume_source,
     _loader_num_workers,
     _monitored_plateau,
@@ -76,7 +76,7 @@ from ..nn.nn_model import (
     _step_monitored_plateau,
     _with_attempt,
 )
-from ..nn.params.nn_checkpoint import NNCheckpoint, _snapshot_state_dict
+from ..nn.params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform, _snapshot_state_dict
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
@@ -84,6 +84,7 @@ from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
+from ..transforms import _recipe_transforms
 from ..utils import Utils
 from .params import NNTrainerParams
 
@@ -313,6 +314,10 @@ class Trainer:
             raise TypeError(f"objective must be callable, got {type(objective).__name__}")
         _check_provenance(provenance)
         _check_history(history, callbacks)
+        if _recipe_transforms(self.model._topology_transforms):
+            # FEAT-016: a recipe model's topology must be its base plus its
+            # recorded recipe, or its checkpoints could not be rebuilt.
+            self.model._assert_reconstructible_topology()
         if params is None:
             raise ValueError("trainer params must not be None")
         if params.train_loader is None:
@@ -395,6 +400,7 @@ class Trainer:
             # (the GAN composite idiom) still produce a saveable run.
             net=self.model.net_params,
             salt=salt,
+            transforms=_recipe_transforms(self.model._topology_transforms),  # FEAT-016
         )
         with run.writable_lease(overwrite=params.overwrite_existing):
             return _with_attempt(
@@ -664,6 +670,7 @@ class Trainer:
                         components=registry.collect(),
                         optimizer_factories=optimizer_factories,
                         is_best=record.improved if record is not None else None,
+                        trained_recipe=run.transforms,
                     )
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
@@ -695,7 +702,7 @@ class Trainer:
         # from the live model so it matches the state returned to the caller.
         # BEST remains the best state observed during training.
         if records:
-            final_transforms = (*self.model._topology_transforms, *_collect_checkpoint_transforms(normalized_callbacks))
+            final_transforms, keeps_pre_transform = _final_transforms(self.model, normalized_callbacks, run.transforms)
             self.model._topology_transforms = final_transforms
             NNCheckpoint(
                 idp=records.last,
@@ -710,9 +717,9 @@ class Trainer:
                 # named optimizer / scheduler and component, so a completed run
                 # resumes the continuous states.
                 **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
-                rng_state=pre_transform_rng_state if final_transforms else _capture_rng_state(train_loader),
+                rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
                 completed_epoch=records.last.epoch_idx,
-                resume_net_state=pre_transform_net_state if final_transforms else None,
+                resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 components=registry.collect(),
             )
 
@@ -735,6 +742,7 @@ class Trainer:
         components: Optional[dict[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
+        trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
     ) -> NNCheckpoint:
         """Delegates to NNModel._save_checkpoints — the same
         FIRST/Q1/Q2/Q3/LAST/BEST cadence — with the named optimizers and
@@ -755,6 +763,7 @@ class Trainer:
             schedulers=schedulers,
             optimizer_factories=optimizer_factories,
             is_best=is_best,
+            trained_recipe=trained_recipe,
         )
 
     def _resume(
@@ -785,7 +794,11 @@ class Trainer:
             for name, sched_params in scheduler_params.items():
                 _check_resume_horizon(sched_params, n_epochs=params.n_epochs, owner=f" for {name!r}")
         source = _load_resume_source(
-            params.resume_from_run_id, params.resume_from_checkpoint, params.resume_mode, trainer=True
+            params.resume_from_run_id,
+            params.resume_from_checkpoint,
+            params.resume_mode,
+            trainer=True,
+            live_transforms=self.model._topology_transforms,
         )
         net = self.model.net
         training_state = source.training_state
