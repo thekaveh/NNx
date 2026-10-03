@@ -37,10 +37,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+from ..precision import full_precision_only
 
 
 def build_target_encoder(source: nn.Module) -> nn.Module:
@@ -440,7 +441,8 @@ def jepa_train_step_factory(
             error=loss_val,
         )
 
-    return JEPATrainStep(step, target_encoder, ema_momentum)
+    # finalize_step runs in full precision (FEAT-028).
+    return full_precision_only(JEPATrainStep(step, target_encoder, ema_momentum))
 
 
 class JEPATrainStep:
@@ -461,6 +463,8 @@ class JEPATrainStep:
         self._step = step
         self.target_encoder = target_encoder
         self.ema_momentum = ema_momentum
+        # Marked so objective= refuses it: it steps the optimizer itself (FEAT-040).
+        imperative_step(self, paradigm="jepa")
 
     def __call__(self, ctx: TrainStepContext) -> NNEvaluationDataPoint:
         return self._step(ctx)

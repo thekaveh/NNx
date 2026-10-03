@@ -32,6 +32,13 @@ import torch
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
 
+def _unavailable(edp: NNEvaluationDataPoint) -> bool:
+    """A task record (FEAT-002) that holds no comparable value."""
+    if getattr(edp, "status", None) == "empty":
+        return True
+    return getattr(edp, "kind", None) is not None and edp.error is None and edp.loss is None
+
+
 def _resolve_metric_with_provenance(
     val_edp: Optional[NNEvaluationDataPoint],
     train_edp: Optional[NNEvaluationDataPoint],
@@ -46,11 +53,20 @@ def _resolve_metric_with_provenance(
     otherwise freeze BEST selection (``finite < nan`` is always False)
     and be fed to ``ReduceLROnPlateau`` even when the same data point
     carries a perfectly usable finite loss.
+
+    A validation task record that ran but is unavailable — ``status=
+    "empty"`` (every target masked), or a task record with neither an
+    error nor a loss — ends the walk with no value: the epoch has no
+    validation signal, and the training loss is never compared in its
+    place (it is rejected as ``"val_edp=unavailable"``).
     """
     rejected: list[str] = []
     for split, edp in (("val_edp", val_edp), ("train_edp", train_edp)):
         if edp is None:
             continue
+        if split == "val_edp" and _unavailable(edp):
+            rejected.append("val_edp=unavailable")
+            return None, None, tuple(rejected)
         for field in ("error", "loss"):
             value = getattr(edp, field)
             if value is None:
@@ -106,7 +122,14 @@ def _resolve_scheduler_metric(
                 stacklevel=3,
             )
         return value
-    if rejected:
+    if "val_edp=unavailable" in rejected:
+        warnings.warn(
+            f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: the validation record is unavailable "
+            "(every target was masked, or it holds no error or loss)",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    elif rejected:
         warnings.warn(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: every candidate metric is "
             f"non-finite ({', '.join(rejected)})",
