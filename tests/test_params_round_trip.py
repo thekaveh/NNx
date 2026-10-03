@@ -1079,3 +1079,16 @@ def test_feat015_unknown_versions_malformed_bundles_and_extra_state_fail_without
         assert not os.path.exists("extra-bundle")  # refused before anything was written
     finally:
         unregister_model_factory("tests.extra_state", 1)
+
+
+def test_scheduler_clock_is_omitted_at_the_epoch_default():
+    """FEAT-014: the clock joins state() only when it is "optimizer_update",
+    so an epoch-clock configuration — every one written before — keeps its
+    state() and run id, and a state without it loads as the epoch clock."""
+    plateau = dict(min_lr=0.0, factor=0.5, patience=1, cooldown=0, threshold=1e-3)
+    epoch = NNSchedulerParams(kind=Schedulers.ONE_CYCLE, total_steps=10, **plateau)
+    assert "clock" not in epoch.state()
+    assert NNSchedulerParams.from_state(epoch.state()).clock == "epoch"
+    updates = replace(epoch, clock="optimizer_update")
+    assert updates.state()["clock"] == "optimizer_update"
+    assert NNSchedulerParams.from_state(updates.state()) == updates
