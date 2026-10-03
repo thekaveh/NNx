@@ -48,6 +48,7 @@ class NNSchedulerParamsBuilder:
         "max_lr",
         "total_steps",
         "warmup_steps",
+        "clock",
     )
 
     def __init__(self) -> None:
@@ -70,7 +71,8 @@ class NNSchedulerParamsBuilder:
 
         `from_params(params).build()` equals `params`, with the same
         `state()` (key order and omitted defaults included). A variant
-        call afterwards replaces the whole configuration, as usual.
+        call afterwards replaces the whole configuration, as usual,
+        except the clock (FEAT-014), which it keeps.
 
         Raises:
             TypeError: if `params` is not exactly an `NNSchedulerParams`.
@@ -80,6 +82,25 @@ class NNSchedulerParamsBuilder:
         builder = cls()
         builder._fields = params_init_values("NNSchedulerParamsBuilder", params, NNSchedulerParams, cls._PARAMS_FIELDS)
         return builder
+
+    def _set_variant(self, fields: dict[str, Any]) -> None:
+        # A variant replaces the configuration; the clock (FEAT-014) is
+        # orthogonal to it and survives in either call order — a loaded
+        # clock too, so a variant never silently changes what a horizon
+        # counts.
+        clock = self._fields.get("clock")
+        self._fields = fields
+        if clock is not None:
+            self._fields["clock"] = clock
+
+    def clock(self, clock: str) -> NNSchedulerParamsBuilder:
+        """What one scheduler step counts (FEAT-014): ``"epoch"`` (the
+        default) or ``"optimizer_update"`` — once per committed update of
+        the scheduler's optimizer, with horizons counted in updates. Call
+        before or after the variant method; a variant call keeps the clock
+        (a loaded one too)."""
+        self._fields["clock"] = clock
+        return self
 
     def reduce_on_plateau(
         self,
@@ -97,13 +118,15 @@ class NNSchedulerParamsBuilder:
         state() invariant for callers who used the original pre-enum
         config.
         """
-        self._fields = {
-            "min_lr": min_lr,
-            "factor": factor,
-            "patience": patience,
-            "cooldown": cooldown,
-            "threshold": threshold,
-        }
+        self._set_variant(
+            {
+                "min_lr": min_lr,
+                "factor": factor,
+                "patience": patience,
+                "cooldown": cooldown,
+                "threshold": threshold,
+            }
+        )
         return self
 
     def step(
@@ -122,15 +145,17 @@ class NNSchedulerParamsBuilder:
         StepLR but are required by the underlying NNSchedulerParams
         dataclass and serialised for back-compat.
         """
-        self._fields = {
-            "kind": Schedulers.STEP,
-            "step_size": step_size,
-            "min_lr": min_lr,
-            "factor": factor,
-            "patience": patience,
-            "cooldown": cooldown,
-            "threshold": threshold,
-        }
+        self._set_variant(
+            {
+                "kind": Schedulers.STEP,
+                "step_size": step_size,
+                "min_lr": min_lr,
+                "factor": factor,
+                "patience": patience,
+                "cooldown": cooldown,
+                "threshold": threshold,
+            }
+        )
         return self
 
     def cosine_annealing(
@@ -146,15 +171,17 @@ class NNSchedulerParamsBuilder:
         """torch.optim.lr_scheduler.CosineAnnealingLR — anneal LR over
         `T_max` steps.
         """
-        self._fields = {
-            "kind": Schedulers.COSINE_ANNEALING,
-            "T_max": T_max,
-            "min_lr": min_lr,
-            "factor": factor,
-            "patience": patience,
-            "cooldown": cooldown,
-            "threshold": threshold,
-        }
+        self._set_variant(
+            {
+                "kind": Schedulers.COSINE_ANNEALING,
+                "T_max": T_max,
+                "min_lr": min_lr,
+                "factor": factor,
+                "patience": patience,
+                "cooldown": cooldown,
+                "threshold": threshold,
+            }
+        )
         return self
 
     def one_cycle(
@@ -171,16 +198,18 @@ class NNSchedulerParamsBuilder:
         """torch.optim.lr_scheduler.OneCycleLR — Smith one-cycle schedule
         with peak LR `max_lr` over `total_steps` steps.
         """
-        self._fields = {
-            "kind": Schedulers.ONE_CYCLE,
-            "max_lr": max_lr,
-            "total_steps": total_steps,
-            "min_lr": min_lr,
-            "factor": factor,
-            "patience": patience,
-            "cooldown": cooldown,
-            "threshold": threshold,
-        }
+        self._set_variant(
+            {
+                "kind": Schedulers.ONE_CYCLE,
+                "max_lr": max_lr,
+                "total_steps": total_steps,
+                "min_lr": min_lr,
+                "factor": factor,
+                "patience": patience,
+                "cooldown": cooldown,
+                "threshold": threshold,
+            }
+        )
         return self
 
     def linear_warmup_decay(
@@ -198,16 +227,18 @@ class NNSchedulerParamsBuilder:
         to 0 over the remaining `total_steps - warmup_steps`. Used by
         most transformer training recipes.
         """
-        self._fields = {
-            "kind": Schedulers.LINEAR_WARMUP_DECAY,
-            "warmup_steps": warmup_steps,
-            "total_steps": total_steps,
-            "min_lr": min_lr,
-            "factor": factor,
-            "patience": patience,
-            "cooldown": cooldown,
-            "threshold": threshold,
-        }
+        self._set_variant(
+            {
+                "kind": Schedulers.LINEAR_WARMUP_DECAY,
+                "warmup_steps": warmup_steps,
+                "total_steps": total_steps,
+                "min_lr": min_lr,
+                "factor": factor,
+                "patience": patience,
+                "cooldown": cooldown,
+                "threshold": threshold,
+            }
+        )
         return self
 
     def build(self) -> NNSchedulerParams:

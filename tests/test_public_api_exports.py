@@ -54,7 +54,9 @@ def test_core_public_exports_are_available_from_top_level():
 def test_specialized_public_facades_are_available_from_top_level():
     facades = [
         "abstention",
+        "bundles",
         "calibration",
+        "comparison",
         "data_splits",
         "decisions",
         "diffusion",
@@ -62,8 +64,10 @@ def test_specialized_public_facades_are_available_from_top_level():
         "finetune",
         "generation",
         "graph_tasks",
+        "history",
         "interop",
         "link_tasks",
+        "lm_tasks",
         "optimizers",
         "paradigms",
         "plans",
@@ -72,9 +76,12 @@ def test_specialized_public_facades_are_available_from_top_level():
         "provenance",
         "peft",
         "prune",
+        "ranking",
         "quantize",
+        "streaming",
         "surgery",
         "trainer",
+        "transforms",
         "viz",
     ]
 
@@ -119,6 +126,54 @@ def test_preprocessing_api_is_public_and_complete():
     expected = {"Standardizer", "SplitView", "describe_transform", "PreprocessingError", "FORMAT"}
     assert expected <= set(preprocessing.__all__)
     assert all(getattr(preprocessing, name, None) is not None for name in preprocessing.__all__)
+
+
+def test_bundles_api_is_public_and_complete():
+    from nnx import bundles
+
+    expected = {
+        "BUNDLE_FORMAT",
+        "BUNDLE_VERSION",
+        "BundleCapabilityError",
+        "BundleError",
+        "BundleInfo",
+        "BundleIntegrityError",
+        "BundleReconstructionError",
+        "ReconstructedBundle",
+        "export_bundle",
+        "inspect_bundle",
+        "reconstruct_bundle",
+        "validate_bundle",
+    }
+    assert set(bundles.__all__) == expected
+    assert all(getattr(bundles, name, None) is not None for name in bundles.__all__)
+    assert "bundles" in nnx.__all__
+
+
+def test_history_api_is_public_and_complete():
+    from nnx import history
+
+    expected = {
+        "JOURNAL_FORMAT",
+        "JOURNAL_VERSION",
+        "HistoryCorruptionError",
+        "HistoryJournal",
+        "export_history_csv",
+        "iter_history",
+        "migrate_history",
+    }
+    assert set(history.__all__) == expected
+    assert all(getattr(history, name, None) is not None for name in history.__all__)
+    assert "history" in nnx.__all__
+
+
+def test_transforms_api_is_public_and_complete():
+    from nnx import transforms
+
+    expected = {"RecipeError", "TransformOp", "TransformRecipe", "check_optimizer", "lora", "low_rank"}
+    assert set(transforms.__all__) == expected
+    assert all(getattr(transforms, name, None) is not None for name in transforms.__all__)
+    assert "transforms" in nnx.__all__
 
 
 def test_calibration_api_is_public_and_complete():
@@ -193,3 +248,24 @@ def test_plans_api_is_public_and_complete():
     assert all(getattr(plans, name, None) is not None for name in plans.__all__)
     assert nnx.ExperimentPlan is plans.ExperimentPlan and nnx.FitResult is plans.FitResult
     assert {"plans", "ExperimentPlan", "FitResult"} <= set(nnx.__all__)
+
+
+def test_streaming_api_is_public_and_complete():
+    import nnx
+    from nnx import streaming
+
+    expected = {
+        "MetricMergeError",
+        "MetricSnapshot",
+        "PredictionBatch",
+        "PredictionStream",
+        "StreamClosedError",
+        "StreamingMetrics",
+        "concatenate_predictions",
+        "streaming_eval_step",
+    }
+    assert set(streaming.__all__) == expected
+    assert all(getattr(streaming, name, None) is not None for name in streaming.__all__)
+    for name in ("PredictionStream", "PredictionBatch", "StreamingMetrics", "MetricSnapshot", "streaming_eval_step"):
+        assert getattr(nnx, name) is getattr(streaming, name) and name in nnx.__all__
+    assert "streaming" in nnx.__all__ and callable(nnx.NNModel.iter_predict)

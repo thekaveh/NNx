@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, fields
 from typing import TYPE_CHECKING, Any, Optional, Union
 
+from ...precision import PrecisionPolicy
 from ..enum.devices import Devices
 from ..enum.losses import Losses
 from ..enum.nets import Nets
@@ -22,14 +23,21 @@ class NNModelParams:
     device: Devices = Devices.CPU
     loss: Losses = Losses.CROSS_ENTROPY
 
-    # Opt-in fp16 autocast + GradScaler in train(). Only effective on CUDA;
-    # silently bypassed on CPU/MPS where torch.cuda.amp is a no-op or unavailable.
+    # Legacy opt-in fp16 autocast + GradScaler in train(). Only effective on
+    # CUDA; silently bypassed on CPU/MPS. `precision` (FEAT-028) supersedes
+    # it; the flag keeps its meaning and run id.
     mixed_precision: bool = False
 
     # Opt-in task declaration (FEAT-002): categorical / multilabel /
     # regression adapters own validation, masking, loss units, decoding and
     # metrics. None keeps the legacy classification path and serialization.
     task: Optional[TaskSpec] = None
+
+    # Explicit execution precision (FEAT-028): FP32, FP16 (CUDA) or BF16,
+    # resolved against the device before a run is reserved. None keeps the
+    # legacy behaviour (mixed_precision) and serialization. Last, so older
+    # positional pickles still restore every earlier field (__setstate__).
+    precision: Optional[PrecisionPolicy] = None
 
     def __post_init__(self) -> None:
         if self.net is not None and not isinstance(self.net, Nets):
@@ -45,10 +53,32 @@ class NNModelParams:
 
             if not isinstance(self.task, TaskSpec):
                 raise TypeError(f"NNModelParams.task must be a TaskSpec or None, got {type(self.task).__name__}")
+        if self.precision is not None:
+            if not isinstance(self.precision, PrecisionPolicy):
+                raise TypeError(
+                    f"NNModelParams.precision must be a PrecisionPolicy or None, got {type(self.precision).__name__}"
+                )
+            if self.mixed_precision and self.precision.mode != "fp16":
+                raise ValueError(
+                    f"NNModelParams(mixed_precision=True) means fp16, which contradicts "
+                    f"precision={self.precision.mode!r}; set precision alone"
+                )
+            if self.mixed_precision:
+                # The policy says fp16 already: the legacy flag adds nothing, so
+                # it is normalized away and the policy's run id is kept.
+                object.__setattr__(self, "mixed_precision", False)
+            if self.precision.mode == "fp32":
+                # An explicit fp32 policy is the default (nothing to fall back
+                # from): normalized away, so it keeps the default's run id.
+                object.__setattr__(self, "precision", None)
 
     def __str__(self) -> str:
         task = f", task={self.task}" if self.task is not None else ""
-        return f"[net={self.net}, device={self.device}, loss={self.loss}, mixed_precision={self.mixed_precision}{task}]"
+        precision = f", precision={self.precision.mode}" if self.precision is not None else ""
+        return (
+            f"[net={self.net}, device={self.device}, loss={self.loss}, mixed_precision={self.mixed_precision}"
+            f"{task}{precision}]"
+        )
 
     def is_valid(self) -> bool:
         return self.net is not None and self.device is not None and self.loss is not None
@@ -79,6 +109,9 @@ class NNModelParams:
         # their state() and run.id are unchanged; a versioned mapping when set.
         if self.task is not None:
             d["task"] = self.task.state()
+        # `precision` (FEAT-028) too: absent when unset.
+        if self.precision is not None:
+            d["precision"] = self.precision.state()
         return d
 
     @staticmethod
@@ -102,4 +135,27 @@ class NNModelParams:
             device=Devices(state["device"]),
             mixed_precision=state.get("mixed_precision", False),
             task=task,
+            precision=PrecisionPolicy.from_state(state["precision"]) if state.get("precision") is not None else None,
         )
+
+
+def _getstate(self: NNModelParams) -> list[Any]:
+    return [getattr(self, spec.name) for spec in fields(self)]
+
+
+def _setstate(self: NNModelParams, state: Any) -> None:
+    # A pickle stores the fields positionally; one written before a trailing
+    # field existed (task, precision) restores the fields it has and leaves
+    # the rest at their defaults.
+    for spec, value in zip(fields(self), state, strict=False):
+        object.__setattr__(self, spec.name, value)
+    for spec in fields(self)[len(state) :]:
+        if spec.default is MISSING:
+            raise TypeError(f"cannot restore NNModelParams: the pickle lacks {spec.name!r}")
+        object.__setattr__(self, spec.name, spec.default)
+
+
+# Attached after the class exists: on Python 3.10, dataclass(slots=True)
+# replaces pickling hooks defined in the class body with its own.
+NNModelParams.__getstate__ = _getstate  # type: ignore[method-assign]
+NNModelParams.__setstate__ = _setstate  # type: ignore[method-assign]

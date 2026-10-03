@@ -1466,3 +1466,44 @@ def test_trainer_resume_rejects_a_changed_optimizer_factory(tmp_path, monkeypatc
         assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
     finally:
         unregister_optimizer_factory("tests.trainer_resume_sgd", 1)
+
+
+def test_lr_monitor_keeps_one_history_entry_per_epoch_on_the_update_clock(tmp_path, monkeypatch):
+    """FEAT-014: LRMonitor.history stays one primary-optimizer snapshot per
+    epoch; per-update learning rates go to the separate update_history."""
+    from nnx.nn.callbacks import LRMonitor
+    from nnx.nn.enum.schedulers import Schedulers
+    from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
+
+    monkeypatch.chdir(tmp_path)
+
+    def step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        result = _supervised_step(ctx)
+        ctx.report_update("main")
+        return result
+
+    monitor = LRMonitor()
+    Trainer(model=_supervised_model()).train(
+        params=NNTrainerParams(
+            n_epochs=3,
+            train_loader=_supervised_loader(),  # 4 batches per epoch
+            optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0)},
+            schedulers={
+                "main": NNSchedulerParams(
+                    kind=Schedulers.STEP,
+                    step_size=2,
+                    clock="optimizer_update",
+                    min_lr=0.0,
+                    factor=0.5,
+                    patience=1,
+                    cooldown=1,
+                    threshold=1e-3,
+                )
+            },
+        ),
+        trainer_step_fn=step,
+        callbacks=[monitor],
+    )
+    assert len(monitor.history) == 3
+    assert [k for k, _ in monitor.update_history] == list(range(1, 13))
+    assert monitor.history[-1] == pytest.approx(monitor.update_history[-1][1])

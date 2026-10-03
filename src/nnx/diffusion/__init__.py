@@ -12,6 +12,11 @@ five are also re-exported at top-level ``nnx``):
   - :func:`diffusion_train_step_factory` — turns a schedule into a
     :class:`nnx.TrainStepFn` for use with :meth:`NNModel.train`.
   - :func:`sample` — reverse-diffusion sampler.
+  - :func:`diffusion_objective` / :class:`DiffusionObjective` — DDPM noise
+    prediction as an objective (FEAT-040): the shared update engine owns
+    the update (accumulation, mixed precision, clipping), and the
+    timesteps and noise come from the objective's own checkpointed
+    generator.
   - :func:`sinusoidal_time_embed` — sinusoidal positional embedding for
     timestep conditioning; subpackage-only (``nnx.diffusion.sinusoidal_time_embed``)
     so callers building custom diffusion nets can reuse the same embedding
@@ -24,14 +29,17 @@ introduced earlier — no Trainer or NNModel changes needed.
 from __future__ import annotations
 
 from .nets import DiffusionMLP, sinusoidal_time_embed
+from .objective import DiffusionObjective, diffusion_objective
 from .sampling import sample
 from .schedules import NoiseSchedule, NoiseSchedulers
 from .training import diffusion_train_step_factory
 
 __all__ = [
     "DiffusionMLP",
+    "DiffusionObjective",
     "NoiseSchedule",
     "NoiseSchedulers",
+    "diffusion_objective",
     "diffusion_train_step_factory",
     "sample",
     "sinusoidal_time_embed",

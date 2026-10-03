@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 
 import numpy as np
 import pytest
@@ -291,6 +292,29 @@ def test_rendering_weights_batch_records_by_their_labeled_graph_count():
     assert math.isnan(_mean_field([NNEvaluationDataPoint()], "error"))
 
 
+def test_a_history_journal_weights_its_epoch_rows_like_the_eager_chart():
+    from nnx.history import _EpochStats
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
+    from nnx.nn.params.nn_run import _field_total
+
+    counted = [
+        NNEvaluationDataPoint(loss=0.1, error=0.5, kind="categorical", count=3, status="ok"),
+        NNEvaluationDataPoint(loss=0.7, error=0.0, kind="categorical", count=2, status="ok"),
+        NNEvaluationDataPoint(loss=0.3, error=1.0, kind="categorical", count=1, status="ok"),
+    ]
+    for records in (counted, [*counted, NNEvaluationDataPoint(loss=0.2, error=0.25)]):  # weighted, then plain
+        stats = _EpochStats()
+        for index, record in enumerate(records):
+            stats.add(NNIterationDataPoint(lr=0.1, iter_idx=index, epoch_idx=0, batch_idx=index, train_edp=record))
+        assert stats.loss.total() == _field_total(records, "loss")  # bit for bit
+        assert stats.error.total() == _field_total(records, "error")
+    assert (
+        _field_total(counted, "loss")[1] == 6
+        and _field_total([*counted, NNEvaluationDataPoint(loss=0.2)], "loss")[1] == 4
+    )
+
+
 def test_unsupported_exports_fail_before_writing(tmp_path):
     from nnx.viz.netron import netron_export
 
@@ -318,7 +342,11 @@ def test_graph_ids_survive_device_moves_shuffling_and_concatenation():
     model = _recipe_model()
     ordered = model.predict_proba(collection.loader(batch_size=4))
     assert ordered.sample_ids.tolist() == list(collection.ids)  # three batches, concatenated
-    shuffled = model.predict_proba(collection.loader(batch_size=4, shuffle=True, seed=3))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # graph ids are not iteration positions: no shuffling warning
+        shuffled = model.predict_proba(collection.loader(batch_size=4, shuffle=True, seed=3))
+        streamed = list(model.iter_predict(collection.loader(batch_size=4, shuffle=True, seed=3)))
+    assert np.concatenate([batch.sample_ids for batch in streamed]).tolist() == shuffled.sample_ids.tolist()
     assert sorted(shuffled.sample_ids.tolist()) == list(collection.ids)
     assert shuffled.sample_ids.tolist() != list(collection.ids)
     by_id = dict(zip(ordered.sample_ids.tolist(), ordered.probabilities, strict=True))

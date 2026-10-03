@@ -207,6 +207,7 @@ Persists the backbone's `state_dict()` to disk for HuggingFace Hub / sentence-tr
 - Not a LangChain / LlamaIndex / Haystack wrapper. Those are downstream retrieval frameworks; pick the one your stack uses.
 - Not a chunker. Document chunking is a preprocessing concern — solve it in the retrieval framework (every major one ships their own).
 - Not a reranker. Cross-encoder rerankers are a separate training problem with their own loss (pointwise / pairwise). The contrastive trainer here is biencoder-only.
+- Not a zero-shot classifier. Scoring a text against candidate labels supplied at inference is `nnx.decisions.NLIProvider` ([Typed decisions §5](decisions.md#5-the-nli-baseline-adapter)), which uses a caller-supplied NLI cross-encoder; it does not extend `embed_texts` or `export_to_faiss`, whose signatures are unchanged, and how well its scores transfer to a task stays empirical.
 - Not a vector-database client. The FAISS index is a file on disk; if you need Pinecone / Weaviate / Milvus / pgvector, embed via `embed_texts` and `INSERT` the vectors yourself.
 - Not a chunker, query expander, prompt orchestrator, or evaluation harness. NNx's responsibility ends at the FAISS index file.
 
