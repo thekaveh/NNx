@@ -28,6 +28,7 @@ from . import (
     abstention,
     bundles,
     calibration,
+    comparison,
     components,
     data_splits,
     decisions,
@@ -390,6 +391,8 @@ __all__ = [
     "history",
     # Replayable model transformation recipes (FEAT-016)
     "transforms",
+    # Multi-seed experiment summaries and paired comparisons (FEAT-032)
+    "comparison",
     # Immutable fluent experiment plans (FEAT-012)
     "plans",
     "ExperimentPlan",
