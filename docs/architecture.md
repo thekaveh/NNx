@@ -11,8 +11,9 @@ inference branch, `nnx.decisions`, sits beside the training path: typed
 questions go to a `DecisionProvider` (for a trained classifier,
 `FixedHeadProvider` over `NNModel.predict_proba`) and come back as validated
 results ([Typed decisions](decisions.md)). The training
-loop owns callback dispatch, once-per-epoch scheduler updates, phase checkpoint
-cadence, and incremental `NNRun` persistence.
+loop owns callback dispatch, scheduler updates (once per epoch by default; once
+per committed optimizer update for a `clock="optimizer_update"` scheduler),
+phase checkpoint cadence, and incremental `NNRun` persistence.
 
 See [Concepts §1](concepts.md#1-architecture) for the full written breakdown.
 
@@ -22,8 +23,14 @@ See [Concepts §1](concepts.md#1-architecture) for the full written breakdown.
 
 For each successfully started training run, NNx calls `on_train_begin`, then
 dispatches epoch and batch work. A completed epoch aggregates validation through
-the built-in path or `eval_step_fn`, updates the scheduler once, and dispatches
-`on_epoch_end`. A run that declares metrics or a named monitor also records the
+the built-in path or `eval_step_fn`, updates each epoch-clock scheduler once,
+and dispatches `on_epoch_end`. An `optimizer_update`-clock scheduler is stepped
+instead right after each committed update of its optimizer — reported by the
+update engine, by `default_train_step`, by `finalize_step` (the built-in
+paradigm steps), or by a step function calling
+`ctx.report_update(...)` — never per microbatch, masked window or skipped step;
+an objective's `on_optimizer_update` callbacks see every optimizer's event of a
+commit before any clock steps. A run that declares metrics or a named monitor also records the
 whole-epoch training summary and the monitor's decision before the scheduler
 update; that one decision drives the plateau scheduler, BEST and any
 `EarlyStopping` given the same monitor

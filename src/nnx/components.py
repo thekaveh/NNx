@@ -269,6 +269,18 @@ class ComponentRegistry:
             for name, (spec, component) in self._components.items()
         }
 
+    def _legacy_problems(self, training_state: Mapping[str, Any]) -> list[str]:
+        """Why components cannot start fresh from a checkpoint written
+        before FEAT-005: each may implement the optional
+        ``_check_legacy_training_state(training_state) -> list[str]`` hook
+        (NNx's scheduler clocks do); the rest start fresh."""
+        problems: list[str] = []
+        for _, component in self._components.values():
+            check = getattr(component, "_check_legacy_training_state", None)
+            if callable(check):
+                problems.extend(str(problem) for problem in cast(Iterable[Any], check(training_state)))
+        return problems
+
     def fresh_plan(self) -> _Plan:
         """A plan that restores nothing: every component keeps its fresh
         state (weights-only resumes, checkpoints written before FEAT-005)."""

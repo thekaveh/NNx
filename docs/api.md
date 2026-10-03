@@ -544,7 +544,7 @@ is preferred for new code.
 #### `nnx.nn.nn_model.TrainStepContext`
 
 ```python
-class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None) -> 'None'
+class nnx.nn.nn_model.TrainStepContext(model: 'NNModel', batch: 'Any', optimizer: 'torch.optim.Optimizer', scaler: 'Optional[torch.amp.GradScaler]', grad_clip_norm: 'Optional[float]', extra_metrics: 'Optional[Mapping[str, Callable]]', accumulate_grad_batches: 'int', batch_idx: 'int', epoch_idx: 'int', is_last_batch: 'bool' = False, accumulation_state: 'Optional[GradientAccumulationState]' = None, epoch_summary: 'Optional[_TrainEpochSummary]' = None, report_update: 'Callable[[], None]' = <no update listener>) -> 'None'
 ```
 
 Frozen bundle of state passed into a training-step function.
@@ -808,7 +808,7 @@ Raises:
 #### `nnx.trainer.trainer.TrainerStepContext`
 
 ```python
-class nnx.trainer.trainer.TrainerStepContext(model: 'NNModel', batch: 'Any', optimizers: 'Mapping[str, torch.optim.Optimizer]', schedulers: 'Mapping[str, Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', batch_idx: 'int', epoch_idx: 'int') -> 'None'
+class nnx.trainer.trainer.TrainerStepContext(model: 'NNModel', batch: 'Any', optimizers: 'Mapping[str, torch.optim.Optimizer]', schedulers: 'Mapping[str, Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', batch_idx: 'int', epoch_idx: 'int', report_update: 'Callable[[str], None]' = <no update listener>) -> 'None'
 ```
 
 Per-batch state passed into a trainer_step_fn.
@@ -5719,7 +5719,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_train_params.NNTrainParams`
 
 ```python
-class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, metrics: 'tuple[MetricSpec, ...]' = (), monitor: 'Optional[MonitorSpec]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto') -> 'None'
+class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None, clock='epoch'), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, metrics: 'tuple[MetricSpec, ...]' = (), monitor: 'Optional[MonitorSpec]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto') -> 'None'
 ```
 
 Training configuration.
@@ -6072,10 +6072,10 @@ No public description is currently available.
 #### `nnx.nn.params.nn_scheduler_params.NNSchedulerParams`
 
 ```python
-class nnx.nn.params.nn_scheduler_params.NNSchedulerParams(*, min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float', kind: 'Optional[Schedulers]' = None, step_size: 'Optional[int]' = None, T_max: 'Optional[int]' = None, max_lr: 'Optional[float]' = None, total_steps: 'Optional[int]' = None, warmup_steps: 'Optional[int]' = None) -> 'None'
+class nnx.nn.params.nn_scheduler_params.NNSchedulerParams(*, min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float', kind: 'Optional[Schedulers]' = None, step_size: 'Optional[int]' = None, T_max: 'Optional[int]' = None, max_lr: 'Optional[float]' = None, total_steps: 'Optional[int]' = None, warmup_steps: 'Optional[int]' = None, clock: 'SchedulerClockUnit' = 'epoch') -> 'None'
 ```
 
-NNSchedulerParams(*, min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float', kind: 'Optional[Schedulers]' = None, step_size: 'Optional[int]' = None, T_max: 'Optional[int]' = None, max_lr: 'Optional[float]' = None, total_steps: 'Optional[int]' = None, warmup_steps: 'Optional[int]' = None)
+NNSchedulerParams(*, min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float', kind: 'Optional[Schedulers]' = None, step_size: 'Optional[int]' = None, T_max: 'Optional[int]' = None, max_lr: 'Optional[float]' = None, total_steps: 'Optional[int]' = None, warmup_steps: 'Optional[int]' = None, clock: 'SchedulerClockUnit' = 'epoch')
 
 ##### `nnx.nn.params.nn_scheduler_params.NNSchedulerParams.state`
 
@@ -6151,13 +6151,22 @@ Return a builder pre-loaded with every field of `params`.
 ```text
 `from_params(params).build()` equals `params`, with the same
 `state()` (key order and omitted defaults included). A variant
-call afterwards replaces the whole configuration, as usual.
+call afterwards replaces the whole configuration, as usual,
+except the clock (FEAT-014), which it keeps.
 
 Raises:
     TypeError: if `params` is not exactly an `NNSchedulerParams`.
     ValueError: if `params` carries a field this builder cannot
         reproduce.
 ```
+
+##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.clock`
+
+```python
+nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.clock(self, clock: 'str') -> 'NNSchedulerParamsBuilder'
+```
+
+What one scheduler step counts (FEAT-014): ``"epoch"`` (the default) or ``"optimizer_update"`` — once per committed update of the scheduler's optimizer, with horizons counted in updates. Call before or after the variant method; a variant call keeps the clock (a loaded one too).
 
 ##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.reduce_on_plateau`
 
@@ -8806,10 +8815,19 @@ Logs the current LR each epoch. History exposed at `.history`.
 **Details**
 
 ```text
+`.history` keeps one entry per epoch (the primary optimizer's LR at the
+epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
+scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
+after that update's scheduler step)`` for the primary optimizer, a
+separate trace of the steps NNx takes — empty on the epoch clock and
+under ``Trainer``'s ``auto_step_schedulers=False``, where the step
+function steps the schedule itself.
+
 In a run with a history journal (FEAT-036, ``nnx.history``) the log is
 bounded too: it keeps the LRs of the last ``retention`` epochs (the
-journal's bound, applied per epoch). ``bounded=False`` keeps every
-epoch's LR (one float each) in any run.
+journal's bound, applied per epoch), and `.update_history` the updates
+of those epochs. ``bounded=False`` keeps every epoch's LR (one float
+each), and every update's, in any run.
 ```
 
 ##### `nnx.nn.callbacks.LRMonitor.on_epoch_end`

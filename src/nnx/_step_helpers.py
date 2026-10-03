@@ -30,8 +30,10 @@ def finalize_step(
 ) -> float:
     """Standard post-loss tail for custom :class:`TrainStepFn` factories.
 
-    Honors ``ctx.grad_clip_norm`` (global L2 grad-clip) and runs the
-    optimizer step. Raises a clear ``FloatingPointError`` if the loss
+    Honors ``ctx.grad_clip_norm`` (global L2 grad-clip), runs the
+    optimizer step and reports it with ``ctx.report_update()``, so an
+    ``optimizer_update``-clock scheduler steps once per call (FEAT-014).
+    Raises a clear ``FloatingPointError`` if the loss
     is non-finite — silent divergence leaves checkpoints full of
     garbage weights, same failure mode :func:`default_train_step`
     guards against.
@@ -105,6 +107,10 @@ def finalize_step(
         torch.nn.utils.clip_grad_norm_(ctx.model.net.parameters(), ctx.grad_clip_norm)
 
     ctx.optimizer.step()
+    # Every call commits one update (accumulation is refused above).
+    report_update = getattr(ctx, "report_update", None)
+    if report_update is not None:
+        report_update()
 
     return loss_val
 

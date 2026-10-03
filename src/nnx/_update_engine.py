@@ -255,11 +255,7 @@ class UpdateEngine:
                 if norm is not None:
                     torch.nn.utils.clip_grad_norm_([self._params[i] for i in self._owner[name]], norm)
             if self.scaler is not None:
-                scale_before = float(self.scaler.get_scale())
-                for optimizer in self.optimizers.values():
-                    self.scaler.step(optimizer)
-                self.scaler.update()
-                if float(self.scaler.get_scale()) < scale_before:
+                if not scaler_step(self.scaler, self.optimizers.values()):
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
             else:
@@ -280,8 +276,11 @@ class UpdateEngine:
                         loss=total,
                     )
                 )
-            for event in events:
-                for listener in self.listeners:
+            # Listener by listener, each over the whole commit: a later
+            # listener (a scheduler clock) acts only after an earlier one (the
+            # callbacks) has seen every optimizer's event (FEAT-014).
+            for listener in self.listeners:
+                for event in events:
                     listener(event)
             return tuple(events)
         finally:
@@ -331,6 +330,21 @@ class UpdateEngine:
         self.skipped = int(state["skipped"])
         saved = state["update_counts"]
         self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
+
+
+def scaler_step(scaler: Any, optimizers: Iterable[torch.optim.Optimizer], *, judge: bool = True) -> bool:
+    """``scaler.step`` every optimizer, then ``update``; whether the update
+    was committed. A lowered scale means the scaler found inf/NaN gradients
+    and skipped the step (a fused optimizer included) — shared by the
+    engine and ``default_train_step``, so both agree on what a committed
+    update is (FEAT-004 / FEAT-014). ``judge=False`` (nothing needs the
+    answer) skips reading the scale and its host syncs, and returns
+    ``True``."""
+    scale_before = float(scaler.get_scale()) if judge else None
+    for optimizer in optimizers:
+        scaler.step(optimizer)
+    scaler.update()
+    return scale_before is None or float(scaler.get_scale()) >= scale_before
 
 
 def _is_count(value: Any) -> bool:

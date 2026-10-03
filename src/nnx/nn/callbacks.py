@@ -516,22 +516,39 @@ class ModelCheckpoint(Callback):
 class LRMonitor(Callback):
     """Logs the current LR each epoch. History exposed at `.history`.
 
+    `.history` keeps one entry per epoch (the primary optimizer's LR at the
+    epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
+    scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
+    after that update's scheduler step)`` for the primary optimizer, a
+    separate trace of the steps NNx takes — empty on the epoch clock and
+    under ``Trainer``'s ``auto_step_schedulers=False``, where the step
+    function steps the schedule itself.
+
     In a run with a history journal (FEAT-036, ``nnx.history``) the log is
     bounded too: it keeps the LRs of the last ``retention`` epochs (the
-    journal's bound, applied per epoch). ``bounded=False`` keeps every
-    epoch's LR (one float each) in any run.
+    journal's bound, applied per epoch), and `.update_history` the updates
+    of those epochs. ``bounded=False`` keeps every epoch's LR (one float
+    each), and every update's, in any run.
     """
 
     def __init__(self, bounded: bool = True):
         self.history: list[float] = []
+        self.update_history: list[tuple[int, float]] = []
         self.bounded = bounded
+        self._epoch_updates: list[int] = []  # `.update_history` entries per retained epoch
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
         lr = ctx.optimizer.param_groups[0]["lr"]
         self.history.append(lr)
+        updates = tuple(getattr(ctx, "update_lrs", ()))
+        self.update_history.extend(updates)
+        epoch_updates = self.__dict__.setdefault("_epoch_updates", [])
+        epoch_updates.append(len(updates))
         retention = getattr(ctx, "history_retention", None)
         if retention is not None and getattr(self, "bounded", True) and len(self.history) > retention:
             del self.history[:-retention]
+            del self.update_history[: sum(epoch_updates[:-retention])]
+            del epoch_updates[:-retention]
 
 
 def _edp_metric_iter(edp):
