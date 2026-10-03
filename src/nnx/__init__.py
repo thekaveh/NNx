@@ -33,6 +33,7 @@ from . import (
     data_splits,
     decisions,
     embeddings,
+    graph_tasks,
     history,
     interop,
     lm_tasks,
@@ -399,6 +400,8 @@ __all__ = [
     "plans",
     "ExperimentPlan",
     "FitResult",
+    # Graph-level classification with explicit pooling and graph ids (FEAT-026)
+    "graph_tasks",
     # Streaming prediction and mergeable metrics (FEAT-020)
     "streaming",
     "PredictionStream",
