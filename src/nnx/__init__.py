@@ -39,6 +39,7 @@ from . import (
     objectives,
     optimizers,
     plans,
+    precision,
     prediction,
     preprocessing,
     provenance,
@@ -221,6 +222,7 @@ from .peft import (
     save_prompt_weights,
 )
 from .plans import ExperimentPlan, FitResult
+from .precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, precision_support
 from .prediction import PredictionResult, PredictionValidationError, ProbabilitySpec, prediction_from_logits
 from .quantize import QATLifecycleCallback, qat_train_step_factory, quantize_int8
 from .seeding import dataloader_worker_init_fn, env_snapshot, set_seed
@@ -274,6 +276,12 @@ __all__ = [
     "ComponentRestoreError",
     "StatefulComponent",
     "ResumeStatus",
+    # Execution precision (opt-in via NNModelParams(precision=...); FEAT-028)
+    "precision",
+    "PrecisionPolicy",
+    "ResolvedPrecision",
+    "PrecisionUnsupportedError",
+    "precision_support",
     # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
     "tasks",
     "TaskSpec",

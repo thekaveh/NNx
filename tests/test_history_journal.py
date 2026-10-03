@@ -1075,13 +1075,13 @@ def test_a_run_loaded_through_the_best_pointer_keeps_its_own_journal():
 
 def test_a_malformed_recorded_source_epoch_is_dropped_like_other_bad_status(tmp_path):
     from nnx import ResumeStatus
-    from nnx.nn.params.nn_run import _load_resume_status
+    from nnx.nn.params.nn_run import _load_resume_status, _read_metadata
 
     with pytest.raises(ValueError, match="source_epoch"):
         ResumeStatus(mode="stateful", source_run_id="x", source_epoch="3")  # type: ignore[arg-type]
     metadata = tmp_path / "metadata.yaml"
     metadata.write_text("resume:\n  mode: stateful\n  source_run_id: x\n  source_epoch: '3'\n")
-    assert _load_resume_status(str(metadata)) is None
+    assert _load_resume_status(_read_metadata(str(metadata))) is None
 
 
 def test_a_malformed_epoch_row_falls_back_to_the_window():

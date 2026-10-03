@@ -22,6 +22,7 @@ from filelock import FileLock
 from ..._metrics import _resolve_metric
 from ...components import ResumeStatus
 from ...history import HISTORY_DIR, HistoryCorruptionError, _journal_epoch_series, _JournalReader, has_journal
+from ...precision import ResolvedPrecision
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
@@ -521,10 +522,9 @@ def _load_provenance_tolerantly(run_id: str, root: Optional[str]) -> Optional[Pr
         return None
 
 
-def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
-    """The :class:`~nnx.ResumeStatus` recorded in ``metadata.yaml``
-    (FEAT-005); ``None`` for runs written before it or when unreadable —
-    it is provenance, never needed to reload the run itself."""
+def _read_metadata(metadata_path: str) -> Optional[dict[str, Any]]:
+    """``metadata.yaml`` parsed once for the readers below; ``None`` when
+    absent or unreadable — provenance, never needed to reload the run."""
     if not os.path.isfile(metadata_path):
         return None
     try:
@@ -532,11 +532,29 @@ def _load_resume_status(metadata_path: str) -> Optional[ResumeStatus]:
             metadata = yaml.safe_load(f)
     except (OSError, yaml.YAMLError):
         return None
-    resume = metadata.get("resume") if isinstance(metadata, dict) else None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _load_resume_status(metadata: Optional[Mapping[str, Any]]) -> Optional[ResumeStatus]:
+    """The :class:`~nnx.ResumeStatus` recorded in ``metadata.yaml``
+    (FEAT-005); ``None`` for runs written before it or when unreadable."""
+    resume = metadata.get("resume") if metadata is not None else None
     if not isinstance(resume, dict):
         return None
     try:
         return ResumeStatus.from_state(resume)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _load_precision(metadata: Optional[Mapping[str, Any]]) -> Optional[ResolvedPrecision]:
+    """The resolved precision recorded in ``metadata.yaml`` (FEAT-028);
+    ``None`` for runs written before it or when unreadable."""
+    record = metadata.get("precision") if metadata is not None else None
+    if not isinstance(record, dict):
+        return None
+    try:
+        return ResolvedPrecision.from_record(record)
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -583,6 +601,10 @@ class NNRun:
     # ``runs/<id>/history/`` instead of ``idps.csv``. Runtime only — never
     # part of state() or the run id; ``None`` for an ordinary (CSV) run.
     history: Optional[str] = field(repr=False, compare=False, default=None)
+    # The precision the run trained in (FEAT-028): requested, effective,
+    # the fallback reason and TF32, separately. Runtime/provenance only —
+    # never part of state() or the run id; written to metadata.yaml.
+    precision: Optional[ResolvedPrecision] = field(repr=False, compare=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -812,6 +834,9 @@ class NNRun:
     def with_resume_status(self, value: Optional[ResumeStatus]) -> NNRun:
         return replace(self, resume_status=value)
 
+    def with_precision(self, value: Optional[ResolvedPrecision]) -> NNRun:
+        return replace(self, precision=value)
+
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
@@ -941,6 +966,8 @@ class NNRun:
         metadata = env_snapshot()
         if self.resume_status is not None:
             metadata["resume"] = self.resume_status.state()
+        if self.precision is not None:
+            metadata["precision"] = self.precision.record()
         _atomic_write_text(metadata_path, yaml.safe_dump(metadata, sort_keys=True))
 
         if self.history is None:
@@ -1052,6 +1079,7 @@ class NNRun:
                 trainer = None
 
             model = NNModelParams.from_state(rep["model"])
+            metadata = _read_metadata(os.path.join(run_path, "metadata.yaml"))
             return NNRun(
                 # resolve_from_state: a TRANSFORMER run's net params must
                 # come back as NNTransformerParams, not be downgraded to
@@ -1063,7 +1091,8 @@ class NNRun:
                 salt=rep.get("salt"),
                 transforms=tuple(NNCheckpointTransform.from_state(item) for item in rep.get("transforms") or ()),
                 idps=idps,
-                resume_status=_load_resume_status(os.path.join(run_path, "metadata.yaml")),
+                resume_status=_load_resume_status(metadata),
+                precision=_load_precision(metadata),
                 provenance=_load_provenance_tolerantly(id, root),
                 # realpath: a run loaded through runs/best keeps its own journal.
                 history=os.path.realpath(journal.directory) if journal is not None else None,
