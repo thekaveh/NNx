@@ -72,6 +72,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "peft",
         "prune",
         "quantize",
+        "streaming",
         "surgery",
         "trainer",
         "viz",
@@ -214,3 +215,24 @@ def test_plans_api_is_public_and_complete():
     assert all(getattr(plans, name, None) is not None for name in plans.__all__)
     assert nnx.ExperimentPlan is plans.ExperimentPlan and nnx.FitResult is plans.FitResult
     assert {"plans", "ExperimentPlan", "FitResult"} <= set(nnx.__all__)
+
+
+def test_streaming_api_is_public_and_complete():
+    import nnx
+    from nnx import streaming
+
+    expected = {
+        "MetricMergeError",
+        "MetricSnapshot",
+        "PredictionBatch",
+        "PredictionStream",
+        "StreamClosedError",
+        "StreamingMetrics",
+        "concatenate_predictions",
+        "streaming_eval_step",
+    }
+    assert set(streaming.__all__) == expected
+    assert all(getattr(streaming, name, None) is not None for name in streaming.__all__)
+    for name in ("PredictionStream", "PredictionBatch", "StreamingMetrics", "MetricSnapshot", "streaming_eval_step"):
+        assert getattr(nnx, name) is getattr(streaming, name) and name in nnx.__all__
+    assert "streaming" in nnx.__all__ and callable(nnx.NNModel.iter_predict)

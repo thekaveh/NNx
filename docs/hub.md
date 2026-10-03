@@ -219,7 +219,7 @@ another's files:
   and an unknown bundle version fail with a message, with no pickle
   fallback.
 
-See [Concepts §21](concepts.md#21-run-bundles-nnxbundles) and
+See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
 [`examples/run_bundle.py`](../examples/run_bundle.py).
 
 ## 4. What this does NOT do

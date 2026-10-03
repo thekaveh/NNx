@@ -316,7 +316,25 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.plans.PlanError
 
-### 2.18. Run bundles (`nnx.bundles`)
+### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+@api nnx.streaming.PredictionStream
+
+@api nnx.streaming.PredictionBatch
+
+@api nnx.streaming.concatenate_predictions
+
+@api nnx.streaming.StreamingMetrics
+
+@api nnx.streaming.MetricSnapshot
+
+@api nnx.streaming.streaming_eval_step
+
+@api nnx.streaming.StreamClosedError
+
+@api nnx.streaming.MetricMergeError
+
+### 2.19. Run bundles (`nnx.bundles`)
 
 @api nnx.bundles.export_bundle
 
