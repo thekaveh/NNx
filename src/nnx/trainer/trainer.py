@@ -92,6 +92,7 @@ from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
+from ..objectives import _check_objective_run, _check_update_owner
 from ..precision import (
     EVALUATE,
     PREDICT,
@@ -360,13 +361,7 @@ class Trainer:
                 any optim's NNOptimParams.is_valid() returns False.
         """
         # One owner per optimizer update, decided before anything else.
-        if trainer_step_fn is not None and objective is not None:
-            raise ValueError(
-                "pass trainer_step_fn or objective, not both: a step function owns its optimizer updates, an "
-                "objective hands them to NNx's shared update engine"
-            )
-        if objective is not None and not callable(objective):
-            raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+        _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
         _check_provenance(provenance)
         _check_history(history, callbacks)
         if _recipe_transforms(self.model._topology_transforms):
@@ -447,6 +442,9 @@ class Trainer:
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()
         }
+        if objective is not None:
+            # FEAT-040: the objective's own refusals, before any run exists.
+            _check_objective_run(objective, self.model, optimizers=optimizers, callbacks=callbacks)
         if precision.uses_scaler:  # only an objective runs a reduced policy here
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
         # The fp16 loss scaler, through the model's hook as NNModel.train builds

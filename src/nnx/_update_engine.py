@@ -21,7 +21,10 @@ for each microbatch. This engine owns everything after that:
    ``update``, in that order (the objective's forward already ran under
    autocast);
 4. a *committed-update* event fires once per successful optimizer update —
-   never for a microbatch, an all-masked window or a skipped step.
+   never for a microbatch, an all-masked window or a skipped step. Before
+   the events are delivered, the objective's own ``after_update`` hook runs
+   once per committed update (all named optimizers stepped) — a JEPA
+   objective advances its EMA target there (FEAT-040).
 
 Non-finite losses or gradients follow a declared policy: ``"fail"`` raises
 ``FloatingPointError`` before anything is stepped; ``"skip"`` drops the
@@ -100,6 +103,7 @@ class UpdateEngine:
         nonfinite: str = "fail",
         autocast: Optional[Callable[[], AbstractContextManager[Any]]] = None,
         listeners: Iterable[Callable[[UpdateEvent], None]] = (),
+        commit_hooks: Iterable[Callable[[tuple[UpdateEvent, ...]], None]] = (),
         precision: Any = None,
     ) -> None:
         check_nonfinite_policy(nonfinite)
@@ -113,6 +117,9 @@ class UpdateEngine:
         # The run's ResolvedPrecision (FEAT-028), handed to every objective.
         self.precision = precision
         self.listeners: list[Callable[[UpdateEvent], None]] = list(listeners)
+        # Called once per committed update with its events (one per named
+        # optimizer), after every optimizer stepped and before the listeners.
+        self.commit_hooks: list[Callable[[tuple[UpdateEvent, ...]], None]] = list(commit_hooks)
         # Every optimizer's parameters, each once, in a stable order; which of
         # them require gradients is decided per microbatch (freezing).
         index: dict[int, int] = {}
@@ -295,13 +302,16 @@ class UpdateEngine:
                         loss=total,
                     )
                 )
+            committed = tuple(events)
+            for hook in self.commit_hooks:
+                hook(committed)
             # Listener by listener, each over the whole commit: a later
             # listener (a scheduler clock) acts only after an earlier one (the
             # callbacks) has seen every optimizer's event (FEAT-014).
             for listener in self.listeners:
-                for event in events:
+                for event in committed:
                     listener(event)
-            return tuple(events)
+            return committed
         finally:
             for param in self._params:
                 param.grad = None

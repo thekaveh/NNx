@@ -82,6 +82,8 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("03_custom_metrics.py", "named_monitor_workflow"),
     ("04_onnx_export.py", "registered_module_variant"),
     ("10_knowledge_distillation.py", "objective_mode"),
+    ("08_diffusion_2d_mixture.py", "objective_mode"),
+    ("16_ijepa_image_plumbing.py", "objective_mode"),
     ("02_resume_training.py", "callback_continuation"),
     ("02_resume_training.py", "provenance_mode"),
     ("02_resume_training.py", "checkpoint_probe_first_fit"),

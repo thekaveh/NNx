@@ -28,7 +28,18 @@ committed-update event per successful optimizer update, delivered to
 ``Callback.on_optimizer_update``.
 
 Imperative step functions and ``finalize_step`` are unchanged; a run uses
-either a step function or an objective, never both.
+either a step function or an objective, never both. An imperative paradigm
+step passed as ``objective=`` (it would step the optimizer itself, then the
+engine again) and an objective passed as ``train_step_fn=`` are refused
+before any run is reserved.
+
+**Paradigm objectives (FEAT-040).** ``nnx.diffusion.diffusion_objective``
+(DDPM noise prediction) and ``nnx.paradigms.jepa_objective`` (I-JEPA latent
+prediction) are the objective counterparts of the diffusion and JEPA step
+factories. An objective may also define ``check_run(model, *, optimizers,
+callbacks)`` — run before any run is reserved, to refuse a combination it
+cannot train — and ``after_update(events)``, run once per committed update
+after every optimizer stepped (the JEPA EMA target advances there).
 """
 
 from __future__ import annotations
@@ -196,8 +207,62 @@ class Objective:
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:  # pragma: no cover - abstract
         raise NotImplementedError
 
+    def check_run(
+        self, model: NNModel, *, optimizers: Mapping[str, torch.optim.Optimizer], callbacks: Sequence[Any]
+    ) -> None:
+        """Refuse a run this objective cannot train — called by
+        ``NNModel.train`` and ``Trainer.train`` with the built optimizers
+        and the callbacks, before any run is reserved or parameter changes.
+        Raise to refuse; the default accepts every run."""
+
+    def after_update(self, events: tuple[UpdateEvent, ...]) -> None:
+        """Called once per committed update — after every named optimizer
+        stepped, never for a microbatch or a skipped window — with its
+        events (one per optimizer), before callbacks see them. The default
+        does nothing."""
+
 
 ObjectiveFn = Callable[[ObjectiveContext], ObjectiveResult]
+
+
+def _check_update_owner(train_step_fn: Any, objective: Any, *, step_name: str = "train_step_fn") -> None:
+    """One owner per optimizer update (FEAT-004 / FEAT-040), checked before
+    anything else: a step function or an objective, never both, and each
+    passed as what it is."""
+    from ._step_helpers import IMPERATIVE_STEP
+
+    if objective is not None and train_step_fn is not None:
+        raise ValueError(
+            f"pass {step_name} or objective, not both: a step function owns its own optimizer updates, "
+            "an objective hands them to NNx's shared update engine"
+        )
+    if objective is not None and not callable(objective):
+        raise TypeError(f"objective must be callable, got {type(objective).__name__}")
+    paradigm = getattr(objective, IMPERATIVE_STEP, None)
+    if paradigm is not None:
+        raise ValueError(
+            f"objective= got the imperative {paradigm} step, which steps the optimizer itself — the engine would "
+            f"step it again. Pass it as the step function, or use the {paradigm} objective"
+        )
+    if isinstance(train_step_fn, Objective):
+        raise ValueError(
+            f"{step_name} got {type(train_step_fn).__name__}, an objective: pass it as objective=, where NNx's "
+            "shared update engine takes its backward, accumulation and optimizer step"
+        )
+
+
+def _check_objective_run(
+    objective: Any,
+    model: NNModel,
+    *,
+    optimizers: Mapping[str, torch.optim.Optimizer],
+    callbacks: Optional[Sequence[Any]],
+) -> None:
+    """The objective's own refusals (``check_run``), before any run is
+    reserved."""
+    check = getattr(objective, "check_run", None)
+    if callable(check):
+        check(model, optimizers=dict(optimizers), callbacks=list(callbacks or []))
 
 
 def _supervised_terms(model: Any, logits: torch.Tensor, target: torch.Tensor, name: str, weight: float) -> LossTerm:

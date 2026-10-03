@@ -412,7 +412,7 @@ model.train(params=train_params, train_step_fn=my_step)
 
 The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`, and the run's resolved `precision` — `ctx.precision.autocast()` is the forward context; `scaler` is set for FP16 only); honoring them is on you. An `optimizer_update`-clock scheduler (§3) steps only on the updates your function reports with `ctx.report_update()` (no name) after each `optimizer.step()` it takes itself; `default_train_step` and `finalize_step` report their own steps, so do not report a step you delegate to them. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward, honors `ctx.grad_clip_norm` and reports each optimizer step with `ctx.report_update()` (so an `optimizer_update`-clock scheduler steps once per batch, §3). Reduced precision and gradient accumulation are not handled inside these imperative paradigm steps — they run in full precision: a run whose precision resolves to FP16 or BF16 refuses them before any run is reserved (they are marked full-precision-only), and `finalize_step` itself raises a clear `ValueError` for a scaler, a reduced `ctx.precision` or accumulation (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective` ships for distillation). The legacy `mixed_precision=True` resolves to full precision on CPU/MPS, where these steps therefore run as before.
+The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward, honors `ctx.grad_clip_norm` and reports each optimizer step with `ctx.report_update()` (so an `optimizer_update`-clock scheduler steps once per batch, §3). Reduced precision and gradient accumulation are not handled inside these imperative paradigm steps — they run in full precision: a run whose precision resolves to FP16 or BF16 refuses them before any run is reserved (they are marked full-precision-only), and `finalize_step` itself raises a clear `ValueError` for a scaler, a reduced `ctx.precision` or accumulation (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective`, `diffusion_objective` and `jepa_objective` ship for distillation, diffusion and I-JEPA). The legacy `mixed_precision=True` resolves to full precision on CPU/MPS, where these steps therefore run as before.
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
@@ -707,9 +707,39 @@ KL summed over rows, normalized by their count, weight `alpha`) and a
 rows are split. Any callable `(ObjectiveContext) -> ObjectiveResult` is an
 objective; subclass `Objective` to declare `nonfinite`.
 
+**Paradigm objectives (FEAT-040).** `diffusion_objective(schedule)` (DDPM
+noise prediction, §9) and `jepa_objective(target_encoder, predictor,
+mask_fn, ema_momentum=...)` ([I-JEPA §5](jepa.md#5-objective-mode)) are the
+objective counterparts of `diffusion_train_step_factory` and
+`jepa_train_step_factory`, which stay available and unchanged. Each reads
+one input per batch — split by the model's batch adapter when it has one
+(FEAT-006), which must then yield exactly one input — and returns
+one normalized term — `"noise_mse"` / `"latent_mse"`: the squared-error
+**sum** over every valid element, over the element count — with detached
+metrics (`metrics={term: value}`, no classification fields), and never
+zeroes, back-propagates, scales or steps; so uneven microbatches give the
+full-batch update and unequal target masks combine as
+`(sum_1 + sum_2) / (count_1 + count_2)`. Records, `on_optimizer_update`
+events, train monitors (`MonitorSpec(metric="loss", split="train")`) and
+BEST all see that denominator-weighted loss. An objective may also define
+`check_run(model, *, optimizers, callbacks)` — called by `NNModel.train` and
+`Trainer.train` with the built optimizers before any run is reserved, to
+refuse a combination it cannot train — and `after_update(events)`, called
+once per committed update after every named optimizer stepped and before
+callbacks see the events (the JEPA EMA target advances there, never per
+microbatch or after a skipped window). Both adapters are checkpointable
+components (`"diffusion.objective"`: the spec and the objective's own
+generator; `"jepa.objective"`: the spec, the predictor's reference inside
+`model.net`, the EMA target and its update counter), so a stateful resume
+continues where an uninterrupted run would be. Pass an objective itself,
+not a wrapper: a `lambda` or `functools.partial` around it hides its
+`check_run`, `after_update` and component state from the run.
+
 A run has exactly one update owner: passing both `train_step_fn` (or
 `trainer_step_fn`) and `objective` fails before any callback runs, any
-loader is read or any parameter changes. In `Trainer` the engine steps every
+loader is read or any parameter changes — as does the imperative diffusion
+or JEPA step passed as `objective=` (it steps the optimizer itself, so the
+engine would step it twice) or an `Objective` passed as the step function. In `Trainer` the engine steps every
 named optimizer once per committed update — each clipped with its own
 `grad_clip_norm`, all sharing one `accumulate_grad_batches` — and emits one
 event per named optimizer. An explicit `NNModelParams.precision` (FEAT-028)
@@ -911,6 +941,19 @@ model.train(params=NNTrainParams(..., train_loader=loader), train_step_fn=step_f
 # Sample by running the reverse-diffusion loop.
 samples = sample(model, schedule, shape=(256, 2))
 ```
+
+The same loss is available as an objective (FEAT-040, §6.5):
+`model.train(params=..., objective=diffusion_objective(schedule, seed=0))`
+hands backward, gradient accumulation, mixed precision and clipping to the
+shared update engine. Its timesteps and noise come from the objective's own
+CPU generator — seeded from `seed`, or from one draw of the global RNG at
+first use — whose state is checkpointed component state
+(`"diffusion.objective"`), so a stateful resume continues the stream and a
+resume with another schedule is refused before anything is restored. A
+`sample(..., generator=...)` preview with its own generator (say, in a
+callback) never perturbs that stream, and `sample` restores the net's
+train/eval modes. `noise_fn(x_0, generator) -> (t, eps)` supplies the
+timesteps and noise yourself.
 
 ### 9.1. Noise schedules
 
