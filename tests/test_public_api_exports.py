@@ -64,6 +64,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "interop",
         "optimizers",
         "paradigms",
+        "plans",
         "prediction",
         "preprocessing",
         "provenance",
@@ -170,3 +171,23 @@ def test_abstention_api_is_public_and_complete():
     }
     assert expected <= set(abstention.__all__)
     assert all(getattr(abstention, name, None) is not None for name in abstention.__all__)
+
+
+def test_plans_api_is_public_and_complete():
+    import nnx
+    from nnx import plans
+
+    expected = {
+        "ATTEMPT_SALT_PREFIX",
+        "Diagnostic",
+        "ExperimentPlan",
+        "FitResult",
+        "PlanError",
+        "PlanValidation",
+        "ProbeResult",
+        "SplitMetrics",
+    }
+    assert set(plans.__all__) == expected
+    assert all(getattr(plans, name, None) is not None for name in plans.__all__)
+    assert nnx.ExperimentPlan is plans.ExperimentPlan and nnx.FitResult is plans.FitResult
+    assert {"plans", "ExperimentPlan", "FitResult"} <= set(nnx.__all__)

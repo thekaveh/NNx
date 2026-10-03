@@ -4,7 +4,6 @@ import inspect
 import json
 import math
 import os
-import random
 import re
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
@@ -43,6 +42,7 @@ from ..monitors import (
     _TrainEpochSummary,
 )
 from ..provenance import ExperimentManifest
+from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, task_adapter
 from ..utils import Utils, _capture_training_modes, _restore_training_modes
 from .enum.checkpoints import Checkpoints, phase_tag
@@ -325,102 +325,6 @@ def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping
             )
         return registry.fresh_plan()
     return registry.plan(saved)
-
-
-def _capture_rng_state(train_loader: Optional[Iterable[Any]] = None) -> dict[str, Any]:
-    numpy_state = cast(tuple[str, np.ndarray, int, int, float], np.random.get_state())
-    state = {
-        "python": random.getstate(),
-        "numpy": {
-            "bit_generator": numpy_state[0],
-            "state": numpy_state[1].tolist(),
-            "position": numpy_state[2],
-            "has_gauss": numpy_state[3],
-            "cached_gaussian": numpy_state[4],
-        },
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-        "mps": torch.mps.get_rng_state() if torch.backends.mps.is_available() else None,
-    }
-    if train_loader is not None:
-        generators = (
-            ("train_loader_generator", getattr(train_loader, "generator", None)),
-            ("train_sampler_generator", getattr(getattr(train_loader, "sampler", None), "generator", None)),
-            ("train_batch_sampler_generator", getattr(getattr(train_loader, "batch_sampler", None), "generator", None)),
-            (
-                "train_batch_sampler_sampler_generator",
-                getattr(getattr(getattr(train_loader, "batch_sampler", None), "sampler", None), "generator", None),
-            ),
-        )
-        generator_states: list[dict[str, Any]] = []
-        seen: set[int] = set()
-        for key, generator in generators:
-            if isinstance(generator, torch.Generator):
-                state[key] = generator.get_state()
-                if id(generator) not in seen:
-                    generator_states.append({"initial_seed": generator.initial_seed(), "state": generator.get_state()})
-                    seen.add(id(generator))
-        state["train_generators"] = generator_states
-    return state
-
-
-def _restore_rng_state(state: dict[str, Any], train_loader: Optional[Iterable[Any]] = None) -> None:
-    random.setstate(state["python"])
-    numpy_state = state["numpy"]
-    np.random.set_state(
-        (
-            numpy_state["bit_generator"],
-            np.asarray(numpy_state["state"], dtype=np.uint32),
-            numpy_state["position"],
-            numpy_state["has_gauss"],
-            numpy_state["cached_gaussian"],
-        )
-    )
-    torch.set_rng_state(state["torch"])
-    if state.get("cuda") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])
-    if state.get("mps") is not None and torch.backends.mps.is_available():
-        torch.mps.set_rng_state(state["mps"])
-    if train_loader is not None:
-        generators = (
-            ("train_loader_generator", getattr(train_loader, "generator", None)),
-            ("train_sampler_generator", getattr(getattr(train_loader, "sampler", None), "generator", None)),
-            ("train_batch_sampler_generator", getattr(getattr(train_loader, "batch_sampler", None), "generator", None)),
-            (
-                "train_batch_sampler_sampler_generator",
-                getattr(getattr(getattr(train_loader, "batch_sampler", None), "sampler", None), "generator", None),
-            ),
-        )
-        unique_generators: list[torch.Generator] = []
-        seen: set[int] = set()
-        for _, generator in generators:
-            if isinstance(generator, torch.Generator) and id(generator) not in seen:
-                unique_generators.append(generator)
-                seen.add(id(generator))
-        saved_generators = state.get("train_generators")
-        if saved_generators is not None:
-            if len(saved_generators) != len(unique_generators):
-                raise ValueError("resume loader exposes a different number of torch.Generator instances")
-            if saved_generators and isinstance(saved_generators[0], dict):
-                if len(saved_generators) == 1:
-                    unique_generators[0].set_state(saved_generators[0]["state"])
-                    return
-                saved_by_seed = {entry["initial_seed"]: entry["state"] for entry in saved_generators}
-                current_seeds = [generator.initial_seed() for generator in unique_generators]
-                if len(saved_by_seed) != len(saved_generators) or len(set(current_seeds)) != len(current_seeds):
-                    raise ValueError("resume loader has ambiguous torch.Generator seeds")
-                if set(saved_by_seed) != set(current_seeds):
-                    raise ValueError("resume loader exposes different torch.Generator identities")
-                for generator in unique_generators:
-                    generator.set_state(saved_by_seed[generator.initial_seed()])
-            else:
-                # Version 2 sidecars recorded generators positionally.
-                for generator, generator_state in zip(unique_generators, saved_generators, strict=True):
-                    generator.set_state(generator_state)
-        else:
-            for key, generator in generators:
-                if isinstance(generator, torch.Generator) and state.get(key) is not None:
-                    generator.set_state(state[key])
 
 
 def _collect_checkpoint_transforms(callbacks: list[Callback]) -> tuple[NNCheckpointTransform, ...]:
@@ -966,14 +870,22 @@ def _metric_context(model: Any) -> tuple[Optional[str], Optional[int], float, Op
     """How this model's outputs become metric inputs (FEAT-003): the output
     domain, the ignored class index, the multilabel decision threshold (in
     logit space, as the task decodes) and the class count."""
-    adapter = getattr(model, "task_adapter", None)
+    return _metric_context_of(model.loss_fn, getattr(model, "task_adapter", None), getattr(model, "net_params", None))
+
+
+def _metric_context_of(
+    loss_fn: Any, adapter: Optional[TaskAdapter], net_params: Any
+) -> tuple[Optional[str], Optional[int], float, Optional[int]]:
+    """:func:`_metric_context` from the model's parts — the loss, the task
+    adapter and the network parameters — so a plan can check metric inputs
+    with no model built."""
     spec = adapter.spec if adapter is not None else None
-    domain = _metric_domain(model.loss_fn, spec)
+    domain = _metric_domain(loss_fn, spec)
     threshold = float(getattr(adapter, "_logit_threshold", 0.0))
     n_classes = getattr(spec, "num_outputs", None) if spec is not None else None
     if n_classes is None:
-        n_classes = getattr(getattr(model, "net_params", None), "output_dim", None)
-    return domain, _ignore_index(model.loss_fn), threshold, n_classes
+        n_classes = getattr(net_params, "output_dim", None)
+    return domain, _ignore_index(loss_fn), threshold, n_classes
 
 
 def _named_metric_set(model: Any, metrics: tuple[MetricSpec, ...], *, where: str) -> Optional[_MetricSet]:
@@ -1033,14 +945,23 @@ def _monitoring_preflight(
             if isinstance(bound, MonitorSpec):
                 monitors.append(bound)
     for spec in monitors:
-        if spec.split == "val" and not has_val_loader:
-            raise ValueError(f"monitor {spec.key!r} tracks the validation split, but no val_loader is configured")
-        if spec.split == "train" and spec.metric not in ("loss", "error") and not default_train_step:
-            raise ValueError(
-                f"monitor {spec.key!r} needs {spec.metric!r} over the full training epoch, which only the default "
-                f"training step records; monitor 'val.{spec.metric}' or 'train.loss' instead"
-            )
+        problem = _monitor_problem(spec, has_val_loader=has_val_loader, default_train_step=default_train_step)
+        if problem is not None:
+            raise ValueError(problem)
     return resolved
+
+
+def _monitor_problem(spec: MonitorSpec, *, has_val_loader: bool, default_train_step: bool) -> Optional[str]:
+    """Why a resolved monitor can never have a value in this run, or
+    ``None`` — shared by ``train()`` and ``ExperimentPlan.validate()``."""
+    if spec.split == "val" and not has_val_loader:
+        return f"monitor {spec.key!r} tracks the validation split, but no val_loader is configured"
+    if spec.split == "train" and spec.metric not in ("loss", "error") and not default_train_step:
+        return (
+            f"monitor {spec.key!r} needs {spec.metric!r} over the full training epoch, which only the default "
+            f"training step records; monitor 'val.{spec.metric}' or 'train.loss' instead"
+        )
+    return None
 
 
 def _monitored_plateau(scheduler: Any, optimizer: torch.optim.Optimizer, monitor: Optional[MonitorSpec]) -> Any:
@@ -2721,24 +2642,7 @@ class NNModel(_HubMixinBase):
                 offset = 0
                 with torch.no_grad():
                     for batch in X:
-                        kw_in: dict[str, Any] = {}
-                        adapter = getattr(self, "_batch_adapter", None)
-                        if adapter is not None and not isinstance(adapter, _UnpackBatch):
-                            # FEAT-006: a positional / keyword adapter splits
-                            # every batch; labels are ignored.
-                            X_in, kw_in, _ = adapter.split(batch)
-                        elif isinstance(batch, torch.Tensor):
-                            X_in = (batch,)
-                        elif isinstance(batch, (tuple, list)) and len(batch) == 1:
-                            X_in = (batch[0],)
-                        else:
-                            # Supervised tuples and graph batches retain their
-                            # model-specific unpacking (a built-in net's or the
-                            # module's own unpack_batch); predict discards labels.
-                            X_in, kw_in, _ = self._split_batch(batch)
-                        X_in = tuple(_to_device(x, self.device) for x in X_in)
-                        kw_in = {name: _to_device(value, self.device) for name, value in kw_in.items()}
-                        logits = self._net_forward(X_in, kw_in).cpu().numpy()
+                        logits = self._inference_forward(batch)[0].cpu().numpy()  # predict discards labels
                         ids: Optional[np.ndarray] = None
                         # NeighborLoader subgraphs: only the leading seed
                         # rows are this batch's nodes (see
@@ -2793,6 +2697,33 @@ class NNModel(_HubMixinBase):
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
+
+    def _inference_forward(self, batch: Any) -> tuple[torch.Tensor, Any]:
+        """``(output, target)`` for a batch that may hold inputs only: split
+        as :meth:`_split_inference_batch` does, moved to the model's device
+        and run through the network — ``predict()``'s per-batch forward, and
+        ``ExperimentPlan.probe``'s. The caller sets the mode and grad
+        context."""
+        args, kwargs, target = self._split_inference_batch(batch)
+        inputs = tuple(_to_device(value, self.device) for value in args)
+        keywords = {name: _to_device(value, self.device) for name, value in kwargs.items()}
+        return self._net_forward(inputs, keywords), target
+
+    def _split_inference_batch(self, batch: Any) -> tuple[tuple[Any, ...], dict[str, Any], Any]:
+        """``(args, kwargs, target)`` of a batch that may hold inputs only —
+        how ``predict()`` reads a loader batch and ``ExperimentPlan.probe``
+        an example batch. A positional / keyword adapter (FEAT-006) splits
+        it; a bare tensor or a 1-tuple is inputs only (target ``None``);
+        supervised tuples and graph batches keep their model-specific
+        unpacking (:meth:`_split_batch`)."""
+        adapter = getattr(self, "_batch_adapter", None)
+        if adapter is not None and not isinstance(adapter, _UnpackBatch):
+            return adapter.split(batch)
+        if isinstance(batch, torch.Tensor):
+            return (batch,), {}, None
+        if isinstance(batch, (tuple, list)) and len(batch) == 1:
+            return (batch[0],), {}, None
+        return self._split_batch(batch)
 
     def _split_batch(self, batch: Any) -> tuple[tuple[Any, ...], dict[str, Any], Any]:
         """``(args, kwargs, target)`` of a batch: a built-in net's own

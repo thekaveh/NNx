@@ -347,7 +347,7 @@ def build_module(spec: ModelSpec) -> nn.Module:
 
     import numpy as np
 
-    from .nn.nn_model import _capture_rng_state, _restore_rng_state
+    from .seeding import _capture_rng_state, _restore_rng_state
 
     rng_state = _capture_rng_state(None)
     try:

@@ -4548,6 +4548,406 @@ class nnx.abstention.AbstentionSchemaError
 A declared schema — labels, model id, probability field, calibrator or sample ids — that contradicts the policy's, the prediction's own, or itself (calibrated probabilities without their calibrator, say).
 
 
+### 2.17. Experiment plans (`nnx.plans`)
+
+#### `nnx.plans.ExperimentPlan`
+
+```python
+class nnx.plans.ExperimentPlan(net: 'Optional[NNParams]' = None, model: 'Optional[NNModelParams]' = None, train: 'Optional[NNTrainParams]' = None, train_data: 'Any' = None, val_data: 'Any' = INHERIT, data_identity: 'Any' = INHERIT, seed: 'Any' = None, callbacks: 'tuple[Any, ...]' = (), callback_factories: 'tuple[Any, ...]' = (), train_step_fn: 'Any' = None, eval_step_fn: 'Any' = None, objective: 'Any' = None, components: 'tuple[Any, ...]' = (), provenance: 'Any' = None, resume: 'Optional[_Resume]' = None, batch_adapter: 'Any' = None) -> 'None'
+```
+
+An immutable experiment configuration that compiles to ``NNModel(net, model).train(train, ...)``; see the module docstring for the boundaries and the ownership rules.
+
+**Details**
+
+```text
+Build it with the ``with_*`` methods, each of which returns a new plan:
+
+- ``with_net(NNParams)``, ``with_model(NNModelParams)``,
+  ``with_train(NNTrainParams)``;
+- ``with_epochs``, ``with_optim``, ``with_scheduler``, ``with_metrics``
+  and ``with_extra_metrics``, which edit the training parameters;
+- ``with_data(train, val, identity=...)`` (what is not given is kept,
+  and validation data and identity otherwise come from the training
+  parameters) and ``with_seed(seed)``;
+- ``with_callbacks`` (borrowed instances) and
+  ``with_callback_factories`` (called once per fit);
+- ``with_step_fns``, ``with_objective``, ``with_components`` and
+  ``with_provenance``, which are borrowed, and ``with_batch_adapter``
+  for a registered module's inputs;
+- ``resuming(run_id, checkpoint="last", mode=None)`` (``mode`` defaults
+  to the training parameters' ``resume_mode``).
+
+Plan-level arguments (data, seed, callbacks, factories, steps, resume)
+are recorded as given and checked by :meth:`validate`, so every problem
+is reported at once. The ``NNParams`` / ``NNModelParams`` /
+``NNTrainParams`` objects validate themselves when constructed, so the
+methods that edit the training parameters (``with_epochs``,
+``with_metrics``, ...) raise :class:`PlanError` naming the field at
+once.
+```
+
+##### `nnx.plans.ExperimentPlan.with_net`
+
+```python
+nnx.plans.ExperimentPlan.with_net(self, net: 'Optional[NNParams]') -> 'ExperimentPlan'
+```
+
+The network parameters (``None`` for a ``ModelSpec`` model).
+
+##### `nnx.plans.ExperimentPlan.with_model`
+
+```python
+nnx.plans.ExperimentPlan.with_model(self, model: 'NNModelParams') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.with_train`
+
+```python
+nnx.plans.ExperimentPlan.with_train(self, train: 'NNTrainParams') -> 'ExperimentPlan'
+```
+
+The training parameters. Loaders inside them are borrowed, and :meth:`with_data` overrides them. ``extra_metrics`` is copied into a read-only mapping.
+
+##### `nnx.plans.ExperimentPlan.with_epochs`
+
+```python
+nnx.plans.ExperimentPlan.with_epochs(self, n_epochs: 'int') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.with_optim`
+
+```python
+nnx.plans.ExperimentPlan.with_optim(self, optim: 'Any') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.with_scheduler`
+
+```python
+nnx.plans.ExperimentPlan.with_scheduler(self, scheduler: 'Any') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.with_metrics`
+
+```python
+nnx.plans.ExperimentPlan.with_metrics(self, metrics: 'Iterable[Any]' = KEEP, *, monitor: 'Any' = KEEP) -> 'ExperimentPlan'
+```
+
+Declared metrics (``MetricSpec``) and the monitor (``MonitorSpec``), as on ``NNTrainParams``; the one not given is kept (pass ``monitor=None`` to drop a monitor).
+
+##### `nnx.plans.ExperimentPlan.with_extra_metrics`
+
+```python
+nnx.plans.ExperimentPlan.with_extra_metrics(self, extra_metrics: 'Optional[Mapping[str, Callable[..., float]]]') -> 'ExperimentPlan'
+```
+
+Borrowed ``name -> callable(y_true, y_pred)`` metrics, copied into a read-only mapping.
+
+##### `nnx.plans.ExperimentPlan.with_data`
+
+```python
+nnx.plans.ExperimentPlan.with_data(self, train: 'Any' = KEEP, val: 'Any' = KEEP, *, identity: 'Any' = KEEP) -> 'ExperimentPlan'
+```
+
+The training data and, optionally, validation data and identity.
+
+**Details**
+
+```text
+Each source is a re-iterable of batches (a ``DataLoader`` or a list,
+which is borrowed) or a zero-argument factory that returns one. A
+factory is called once per fit, never by :meth:`validate`.
+``identity`` is the caller-supplied data identity; it becomes
+``NNTrainParams.data_id``, which is part of the run id.
+
+As with the other ``with_*`` methods, what is not given is kept (so
+``with_data(val=...)`` changes only the validation source): the
+current training and validation sources and identity — the plan's
+own, else the training parameters' ``val_loader`` / ``data_id``,
+resolved when the plan compiles, whatever the order of the calls.
+``train=None`` keeps the training parameters' loader. Pass
+``val=None`` to run train-only (a plan without validation data
+invents none) and ``identity=`` for new data — or ``identity=None``
+to record none. Without ``with_data`` the loaders and ``data_id``
+inside the training parameters are used (the loaders may be
+factories too).
+```
+
+##### `nnx.plans.ExperimentPlan.with_seed`
+
+```python
+nnx.plans.ExperimentPlan.with_seed(self, seed: 'Optional[int]') -> 'ExperimentPlan'
+```
+
+Seed every RNG before the factories run and the model is built, and again (as ``NNTrainParams.seed``) when training starts. The plan's seed overrides the training parameters' own ``seed``, so branches can differ by seed; ``None`` falls back to it.
+
+##### `nnx.plans.ExperimentPlan.with_callbacks`
+
+```python
+nnx.plans.ExperimentPlan.with_callbacks(self, *callbacks: 'Any') -> 'ExperimentPlan'
+```
+
+Borrowed callback instances (or legacy ``fn(idps)`` callables), shared by every fit; they replace any earlier ones. A callable whose one parameter is required is a legacy callback, called with the history each epoch. One that can be called with no arguments reads as a factory and is reported: pass callback-making functions to :meth:`with_callback_factories`.
+
+##### `nnx.plans.ExperimentPlan.with_callback_factories`
+
+```python
+nnx.plans.ExperimentPlan.with_callback_factories(self, *factories: 'Callable[[], Any]') -> 'ExperimentPlan'
+```
+
+Zero-argument callables, each called once per fit to make a fresh callback. Their callbacks run after the borrowed ones, in order.
+
+##### `nnx.plans.ExperimentPlan.with_step_fns`
+
+```python
+nnx.plans.ExperimentPlan.with_step_fns(self, train_step_fn: 'Any' = KEEP, eval_step_fn: 'Any' = KEEP) -> 'ExperimentPlan'
+```
+
+Borrowed step functions; the one not given is kept (pass ``None`` to drop one).
+
+##### `nnx.plans.ExperimentPlan.with_objective`
+
+```python
+nnx.plans.ExperimentPlan.with_objective(self, objective: 'Any') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.with_components`
+
+```python
+nnx.plans.ExperimentPlan.with_components(self, *components: 'Any') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.with_batch_adapter`
+
+```python
+nnx.plans.ExperimentPlan.with_batch_adapter(self, adapter: 'Any') -> 'ExperimentPlan'
+```
+
+How a registered ``ModelSpec`` module reads a batch (``nnx.models.PositionalInputs`` / ``KeywordInputs``), passed to ``NNModel(..., batch_adapter=...)`` on every build.
+
+##### `nnx.plans.ExperimentPlan.with_provenance`
+
+```python
+nnx.plans.ExperimentPlan.with_provenance(self, manifest: 'Any') -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.resuming`
+
+```python
+nnx.plans.ExperimentPlan.resuming(self, run_id: 'str', *, checkpoint: 'str' = 'last', mode: 'Optional[str]' = None) -> 'ExperimentPlan'
+```
+
+Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``.
+
+##### `nnx.plans.ExperimentPlan.without_resume`
+
+```python
+nnx.plans.ExperimentPlan.without_resume(self) -> 'ExperimentPlan'
+```
+
+No public description is currently available.
+
+##### `nnx.plans.ExperimentPlan.validate`
+
+```python
+nnx.plans.ExperimentPlan.validate(self) -> 'PlanValidation'
+```
+
+Every configuration problem as a field-path :class:`Diagnostic`.
+
+**Details**
+
+```text
+Pure: it consumes no loader (iterables are never iterated), calls
+no data or callback factory, builds no model, reads no weights and
+writes no directory. Declared metrics and the monitor are resolved
+against their registries, as ``NNModel.train`` does before
+reserving a run. It constructs the built-in loss module, as
+``NNModel`` does first, and resolves each borrowed callback's monitor
+on a shallow copy.
+```
+
+##### `nnx.plans.ExperimentPlan.probe`
+
+```python
+nnx.plans.ExperimentPlan.probe(self, example_batch: 'Any') -> 'ProbeResult'
+```
+
+Build a temporary model and run one forward pass on ``example_batch`` under ``torch.no_grad()`` in eval mode, plus the loss when the batch has a target (``None`` for an all-masked task batch, which the default step records no loss for either).
+
+**Details**
+
+```text
+Effectful but restored: the plan's seed is applied first, and
+afterwards the ambient Python / NumPy / torch RNG streams, the
+cuDNN ``deterministic`` / ``benchmark`` flags, the
+deterministic-algorithms setting and the seeding environment
+variables are put back, whether or not the forward pass succeeds.
+The model is discarded. No callback, factory or loader is touched,
+and nothing is written. A CPU model's probe seeds no CUDA stream, so
+nothing waits for CUDA's first use. A CUDA model's probe starts CUDA
+first when it is not yet in use (running any seed queued for its
+first use), so its streams are restored like the others. A
+registered factory's module is built as ``NNModel`` builds it
+(:func:`nnx.models.build_module`), which saves and restores every
+RNG stream around the factory call — on a GPU host that reads, and
+so initializes, CUDA even for a CPU model; its streams are then put
+back as the build left them.
+
+A probe needs only the model, the network and the seed: when those
+are invalid it raises :class:`PlanError` first (the data, callbacks
+and training parameters are :meth:`validate`'s and :meth:`fit`'s
+concern); a failing forward pass raises its own error — including a
+batch the training step cannot take either, such as a single example
+for a ``BatchNorm`` net in train mode.
+```
+
+##### `nnx.plans.ExperimentPlan.fit`
+
+```python
+nnx.plans.ExperimentPlan.fit(self, *, attempt: 'Optional[str]' = None) -> 'FitResult'
+```
+
+Train one attempt and return its :class:`FitResult`.
+
+**Details**
+
+```text
+The steps are the ones an equally seeded imperative script takes:
+validate (an invalid plan raises :class:`PlanError` before
+anything runs); seed; call each data factory and callback factory
+exactly once (what they return is checked next, and a
+:class:`PlanError` then leaves the seed applied, as the script's
+``set_seed`` would); build ``NNModel(net, model)``; and call
+``model.train(train, callbacks, ...)``. The ``train`` given to
+``model.train`` carries the plan's seed, data, data identity and
+resume. The run's ``salt`` is ``"plan-attempt:<attempt>"``, where
+``attempt`` defaults to a fresh random id, so every fit gets its own
+run id and directory. ``overwrite_existing`` is never set; reusing
+an ``attempt`` id for the same configuration raises
+``FileExistsError`` from ``NNModel.train``.
+```
+
+
+#### `nnx.plans.FitResult`
+
+```python
+class nnx.plans.FitResult(model: 'NNModel', run: 'NNRun', metrics: 'Mapping[str, SplitMetrics]', attempt_id: 'str') -> 'None'
+```
+
+One fit: the trained ``model``, its persisted ``run`` (the ``NNModel.train`` return value), the final epoch's ``metrics`` per split (``"train"`` and ``"val"``, see :class:`SplitMetrics`) and the ``attempt_id`` folded into the run's salt.
+
+
+#### `nnx.plans.SplitMetrics`
+
+```python
+class nnx.plans.SplitMetrics(split: 'str', available: 'bool', epoch: 'Optional[int]' = None, source: 'Optional[str]' = None, values: 'Mapping[str, float]' = <factory>, reason: 'Optional[str]' = None) -> 'None'
+```
+
+One split's metrics from a fit's final epoch, read from the run's own history — never from a second pass over a loader.
+
+**Details**
+
+```text
+``available`` says whether the split was measured: a plan without
+validation data reports ``val`` as unavailable, with the ``reason``,
+rather than inventing it. ``source`` is ``"epoch"`` for a whole-epoch
+record (validation, or a training summary when the run declares metrics
+or a monitor) and ``"last_batch"`` when only the final training batch's
+record exists. ``values`` maps metric names to floats: the recorded
+``loss`` / ``error`` / classification fields, the declared ``metrics``
+and the ``extra_metrics`` as ``extra/<name>``, skipping any that were
+not recorded (a non-finite value is kept). A declared metric named like
+a classification field (``f1``, ``accuracy``, ...) holds that name — the
+value a monitor on it compares, and the one the logging callbacks write
+last; the record's own field stays on ``run.idps``. A whole-epoch training
+summary carries the declared metrics but not the extra metrics, which
+the loop computes per batch (``run.idps`` has them).
+```
+
+
+#### `nnx.plans.ProbeResult`
+
+```python
+class nnx.plans.ProbeResult(output_shape: 'tuple[int, ...]', output_dtype: 'str', target_shape: 'Optional[tuple[int, ...]]', loss: 'Optional[float]', n_parameters: 'int', n_trainable: 'int') -> 'None'
+```
+
+A probe's forward pass on one example batch: the network's raw output shape and dtype (in eval mode, as ``predict`` sees it, before any reshaping the loss applies), the batch's target shape as given, the loss the default training step would compute on the batch (in train mode, under its mixed-precision autocast, without a gradient — so the batch is scored as a training batch: a BatchNorm net needs more than one row) when the batch has a target — ``None`` for a plan with its own ``train_step_fn`` or objective, whose loss a probe cannot know — and the temporary model's parameter counts.
+
+
+#### `nnx.plans.PlanValidation`
+
+```python
+class nnx.plans.PlanValidation(diagnostics: 'tuple[Diagnostic, ...]' = ()) -> 'None'
+```
+
+The result of :meth:`ExperimentPlan.validate`: every :class:`Diagnostic` at once, in field order.
+
+##### `nnx.plans.PlanValidation.ok`
+
+```python
+property nnx.plans.PlanValidation.ok
+```
+
+No public description is currently available.
+
+##### `nnx.plans.PlanValidation.paths`
+
+```python
+property nnx.plans.PlanValidation.paths
+```
+
+No public description is currently available.
+
+##### `nnx.plans.PlanValidation.raise_for_errors`
+
+```python
+nnx.plans.PlanValidation.raise_for_errors(self) -> 'None'
+```
+
+Raise :class:`PlanError` listing every diagnostic, if any.
+
+
+#### `nnx.plans.Diagnostic`
+
+```python
+class nnx.plans.Diagnostic(path: 'str', message: 'str') -> 'None'
+```
+
+One configuration problem at a field ``path`` (``"data.train"``, ``"train.monitor"``, ``"callbacks[1]"``, ...).
+
+
+#### `nnx.plans.PlanError`
+
+```python
+class nnx.plans.PlanError(diagnostics: 'tuple[Diagnostic, ...]') -> 'None'
+```
+
+A plan that cannot be fitted or probed. ``diagnostics`` lists every problem :meth:`ExperimentPlan.validate` found.
+
+**Details**
+
+```text
+It is a ``ValueError`` and a ``TypeError``, the two errors the params
+classes raise, so code catching either around a configuration still
+catches it.
+```
+
+
 ## 3. Params
 
 #### `nnx.nn.params.nn_params.NNParams`

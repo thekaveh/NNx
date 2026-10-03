@@ -16,9 +16,12 @@ Determinism caveats:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import random
-from typing import Optional
+import warnings
+from collections.abc import Callable, Iterable, Iterator
+from typing import Any, Optional, cast
 
 import numpy as np
 import torch
@@ -41,6 +44,12 @@ def set_seed(seed: int, strict: bool = False) -> None:
             that lack a deterministic CUDA implementation; opt in only when
             full bit-for-bit reproducibility matters.
     """
+    _set_seed(seed, strict)
+
+
+def _set_seed(seed: int, strict: bool = False, *, scoped: bool = False) -> None:
+    """:func:`set_seed`; ``scoped=True`` seeds only the streams
+    :func:`_seed_scope` restores (see :func:`_seed_streams`)."""
     # PYTHONHASHSEED governs hash randomization in spawned subprocesses.
     # The current interpreter's hash state was fixed at startup and is
     # NOT affected by this assignment — but DataLoader workers using the
@@ -49,15 +58,11 @@ def set_seed(seed: int, strict: bool = False) -> None:
     # it, those children re-randomize their dict/set hash order, so any
     # code path that iterates a dict/set populated in the worker can
     # differ between runs even when every other RNG is seeded. Setting
-    # it here is the cheap defensive move; the explicit caveat is in the
-    # function docstring.
+    # it here is the cheap defensive move; the explicit caveat is in
+    # set_seed's docstring.
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    _seed_streams(seed, scoped=scoped)
 
     # cuDNN: turn off benchmarking (which picks the fastest kernel based on
     # input shapes and can introduce non-determinism) and turn on the
@@ -71,6 +76,224 @@ def set_seed(seed: int, strict: bool = False) -> None:
         # https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         torch.use_deterministic_algorithms(True)
+
+
+# RNG stream snapshots: the training loop saves and restores them with every
+# stateful checkpoint (loader / sampler generators included), and `_seed_scope`
+# restores them after a probe.
+
+
+def _loader_generators(train_loader: Any) -> tuple[tuple[str, Any], ...]:
+    """Where a loader keeps its ``torch.Generator`` objects, by state key —
+    one list for capture and restore, so the two cannot disagree."""
+    batch_sampler = getattr(train_loader, "batch_sampler", None)
+    return (
+        ("train_loader_generator", getattr(train_loader, "generator", None)),
+        ("train_sampler_generator", getattr(getattr(train_loader, "sampler", None), "generator", None)),
+        ("train_batch_sampler_generator", getattr(batch_sampler, "generator", None)),
+        ("train_batch_sampler_sampler_generator", getattr(getattr(batch_sampler, "sampler", None), "generator", None)),
+    )
+
+
+def _capture_rng_state(train_loader: Optional[Iterable[Any]] = None, *, cuda: bool = True) -> dict[str, Any]:
+    """The Python / NumPy / torch (CPU, CUDA, MPS) RNG streams and the
+    loader's generators. ``cuda=False`` leaves an uninitialized CUDA context
+    alone (reading its streams would create it)."""
+    numpy_state = cast(tuple[str, np.ndarray, int, int, float], np.random.get_state())
+    state = {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "state": numpy_state[1].tolist(),
+            "position": numpy_state[2],
+            "has_gauss": numpy_state[3],
+            "cached_gaussian": numpy_state[4],
+        },
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if cuda and torch.cuda.is_available() else None,
+        "mps": torch.mps.get_rng_state() if torch.backends.mps.is_available() else None,
+    }
+    if train_loader is not None:
+        generators = _loader_generators(train_loader)
+        generator_states: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for key, generator in generators:
+            if isinstance(generator, torch.Generator):
+                state[key] = generator.get_state()
+                if id(generator) not in seen:
+                    generator_states.append({"initial_seed": generator.initial_seed(), "state": generator.get_state()})
+                    seen.add(id(generator))
+        state["train_generators"] = generator_states
+    return state
+
+
+def _restore_rng_state(state: dict[str, Any], train_loader: Optional[Iterable[Any]] = None) -> None:
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    np.random.set_state(
+        (
+            numpy_state["bit_generator"],
+            np.asarray(numpy_state["state"], dtype=np.uint32),
+            numpy_state["position"],
+            numpy_state["has_gauss"],
+            numpy_state["cached_gaussian"],
+        )
+    )
+    torch.set_rng_state(state["torch"])
+    if state.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+    if state.get("mps") is not None and torch.backends.mps.is_available():
+        torch.mps.set_rng_state(state["mps"])
+    if train_loader is not None:
+        generators = _loader_generators(train_loader)
+        unique_generators: list[torch.Generator] = []
+        seen: set[int] = set()
+        for _, generator in generators:
+            if isinstance(generator, torch.Generator) and id(generator) not in seen:
+                unique_generators.append(generator)
+                seen.add(id(generator))
+        saved_generators = state.get("train_generators")
+        if saved_generators is not None:
+            if len(saved_generators) != len(unique_generators):
+                raise ValueError("resume loader exposes a different number of torch.Generator instances")
+            if saved_generators and isinstance(saved_generators[0], dict):
+                if len(saved_generators) == 1:
+                    unique_generators[0].set_state(saved_generators[0]["state"])
+                    return
+                saved_by_seed = {entry["initial_seed"]: entry["state"] for entry in saved_generators}
+                current_seeds = [generator.initial_seed() for generator in unique_generators]
+                if len(saved_by_seed) != len(saved_generators) or len(set(current_seeds)) != len(current_seeds):
+                    raise ValueError("resume loader has ambiguous torch.Generator seeds")
+                if set(saved_by_seed) != set(current_seeds):
+                    raise ValueError("resume loader exposes different torch.Generator identities")
+                for generator in unique_generators:
+                    generator.set_state(saved_by_seed[generator.initial_seed()])
+            else:
+                # Version 2 sidecars recorded generators positionally.
+                for generator, generator_state in zip(unique_generators, saved_generators, strict=True):
+                    generator.set_state(generator_state)
+        else:
+            for key, generator in generators:
+                if isinstance(generator, torch.Generator) and state.get(key) is not None:
+                    generator.set_state(state[key])
+
+
+# The process-wide settings `set_seed` changes besides the RNG streams; keep
+# them in step with `set_seed` (`_seed_scope` restores both).
+_SEED_ENV = ("PYTHONHASHSEED", "CUBLAS_WORKSPACE_CONFIG")
+
+
+def _capture_seed_settings() -> dict:
+    cudnn = torch.backends.cudnn
+    return {
+        "cudnn": (cudnn.deterministic, cudnn.benchmark),
+        "deterministic": (
+            torch.are_deterministic_algorithms_enabled(),
+            torch.is_deterministic_algorithms_warn_only_enabled(),
+        ),
+        "env": {name: os.environ.get(name) for name in _SEED_ENV},
+    }
+
+
+def _restore_seed_settings(state: dict) -> None:
+    """Restore each setting, even if another fails (the first failure is
+    raised afterwards)."""
+
+    def cudnn_flags() -> None:
+        torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = state["cudnn"]
+
+    def algorithms() -> None:
+        enabled, warn_only = state["deterministic"]
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+
+    def environment() -> None:
+        for name, value in state["env"].items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    _run_each((cudnn_flags, algorithms, environment))
+
+
+def _run_each(steps: Iterable[Callable[[], None]]) -> None:
+    """Run every step, then raise the first failure, if any."""
+    failure: Optional[Exception] = None
+    for step in steps:
+        try:
+            step()
+        except Exception as exc:
+            failure = failure or exc
+    if failure is not None:
+        raise failure
+
+
+def _cuda_in_use() -> bool:
+    """Whether a CUDA context exists, so its streams can be read without
+    creating one."""
+    return torch.cuda.is_available() and torch.cuda.is_initialized()
+
+
+@contextlib.contextmanager
+def _seed_scope() -> Iterator[Callable[[], None]]:
+    """Undo every effect of ``set_seed`` inside the block on exit — the
+    Python / NumPy / torch RNG streams and the cuDNN, deterministic-algorithm
+    and environment settings — whether or not the block raises (used by
+    ``ExperimentPlan.probe``). The RNG streams (restored together, as the
+    training loop restores them) and each setting are restored even if
+    another restore fails, and a failing restore never hides the block's
+    own error (it is added to that error as a note, or warned about on
+    Python 3.10).
+
+    An idle CUDA context is not created just to read its streams (a CPU
+    probe on a GPU host). When the block itself starts CUDA, it calls the
+    yielded function once the context exists; the CUDA streams as they are
+    then are restored on exit too."""
+    streams = _capture_rng_state(None, cuda=_cuda_in_use())
+    settings = _capture_seed_settings()
+
+    def cuda_started() -> None:
+        if streams["cuda"] is None and _cuda_in_use():
+            streams["cuda"] = torch.cuda.get_rng_state_all()
+
+    def restore() -> None:
+        _run_each((lambda: _restore_rng_state(streams, None), lambda: _restore_seed_settings(settings)))
+
+    try:
+        yield cuda_started
+    except BaseException as error:
+        try:
+            restore()
+        except Exception as restore_error:  # the block's error is the one to report; the failure is noted on it
+            note = f"restoring the RNG streams and seed settings also failed: {restore_error!r}"
+            add_note = getattr(error, "add_note", None)  # Python >= 3.11
+            if callable(add_note):
+                add_note(note)
+            else:
+                with contextlib.suppress(Exception):  # a warning turned into an error must not hide the block's
+                    warnings.warn(note, RuntimeWarning, stacklevel=3)
+        raise
+    restore()
+
+
+def _seed_streams(seed: int, *, scoped: bool) -> None:
+    """Seed Python, NumPy and torch. ``torch.manual_seed`` seeds every
+    device's generator, and queues CUDA's seed for its first use when CUDA
+    is idle. ``scoped=True`` seeds only what :func:`_seed_scope` restores —
+    the CPU generator, CUDA when it is in use and MPS — for a probe, which
+    must leave nothing behind (``nnx.plans``)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    if not scoped:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        return
+    torch.default_generator.manual_seed(seed)
+    if _cuda_in_use():
+        torch.cuda.manual_seed_all(seed)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
 
 
 def dataloader_worker_init_fn(worker_id: int) -> None:
