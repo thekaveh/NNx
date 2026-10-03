@@ -14,7 +14,7 @@ The diagram has eight layers, top-to-bottom:
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** (orange bus) — the training-loop extension hooks.
 4. **Specialization subpackages** (amber) — `nnx.diffusion`, `nnx.paradigms`, `nnx.quantize`, and `nnx.embeddings` provide hook-compatible factories, with shared finalization in `nnx._step_helpers`. Model transforms (`nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.surgery`), exchange formats (`nnx.interop`), inference utilities (`nnx.generation`), and diagnostics (`nnx.viz`) compose around the loop without claiming a hook relationship.
-5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
+5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch; once per epoch, or once per committed optimizer update on the `optimizer_update` clock — see §3), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
 8. **Persistence** (violet) — `NNRun` writes `run.yaml + idps.csv + metadata.yaml` and `NNCheckpoint` writes `*.pt + *.opt.pt` into `runs/<id>/`.
@@ -25,7 +25,7 @@ Every config in NNx is a frozen, kw-only, slotted dataclass with a `state()` / `
 
 ```python
 NNParams         # network shape: dims, dropout, activation, n_heads
-NNModelParams    # device + loss + net kind + mixed precision
+NNModelParams    # device + loss + net kind + precision policy (FP32 / FP16 / BF16)
 NNOptimParams    # SGD / Adam + LR / momentum / grad clipping / accumulation / param_groups
 NNSchedulerParams # ReduceLROnPlateau / Step / Cosine / OneCycle / LinearWarmup
 NNTrainParams    # epochs + loaders + optim + scheduler + seed + ...
@@ -38,7 +38,7 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 ### 2.2. The omit-when-default invariant
 
-New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
+New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
 
 ### 2.3. Finite numeric domains
 
@@ -65,6 +65,8 @@ scheduler = NNSchedulerParams.builder().one_cycle(
     min_lr=1e-7, factor=0.5, patience=10, cooldown=2, threshold=1e-3,
 ).build()
 ```
+
+**Scheduler clocks (FEAT-014).** `NNSchedulerParams.clock` says what one scheduler step counts. `"epoch"` (the default, omitted from `state()` so every existing run id is unchanged) steps once per completed epoch, as always. `"optimizer_update"` (builder: `.clock("optimizer_update")`, before or after the variant; a variant call keeps the clock, a loaded one too) steps once per **committed** update of the scheduler's optimizer — never per microbatch, an all-masked window or a skipped AMP step — so `step_size`, `T_max`, `total_steps` and `warmup_steps` count updates: two epochs of five microbatches with `accumulate_grad_batches=2` commit 2 + 2 + 1 updates per epoch, six steps in all. Updates come from an explicit source: the update engine for an objective, `default_train_step` after each optimizer step it takes, `finalize_step` (so every built-in paradigm step), or a custom step calling `ctx.report_update()` (`NNModel.train`, no name) / `ctx.report_update(name)` (`Trainer`) — NNx never infers updates around an opaque step, and warns when an epoch reports none. Whoever calls `optimizer.step()` reports it, and every report counts: `default_train_step` (which does not report a step the AMP scaler skipped, fused optimizers included) and `finalize_step` report their own steps, so a step function that delegates to them does not report again. When NNx owns the windows (the default step, passed explicitly or not, or an objective) and the loader has a length, the default horizon is the planned updates, `n_epochs × ceil(batches / accumulate_grad_batches)`; otherwise the budget (`total_steps`, `T_max` or `step_size`) must be explicit, and a one-cycle / warmup-decay schedule stops the run with an error at the first committed update past its `total_steps` (that update is never scheduled, and no checkpoint is written after it) — a default budget too, so a loader that yields more batches than its `len()` reports (an `IterableDataset` read by several workers can) needs an explicit `total_steps`. A cosine schedule warns once when it passes its `T_max`, since its rate then climbs back up, unless that is the period the run chose — an explicit `T_max`, or a subclass's own (torch lets a schedule run past it on purpose); a stateful resume keeps the checkpoint's `T_max`, so set it in the run that starts the schedule. The warm-up multiplier keeps its `(step + 1) / warmup_steps` form, so with a base LR of 0.12, `warmup_steps=3` and `total_steps=8` the first four updates train at 0.04, 0.08, 0.12, 0.12. A plateau scheduler reads a monitored metric at the epoch boundary and refuses the update clock, as does a scheduler without a `last_epoch` position (such as torch's `ChainedScheduler` from a `_build_scheduler` override). Each update-clock scheduler is checkpointed as a required component (`nnx.scheduler_clock`, or `nnx.scheduler_clock.<name>` per Trainer optimizer) holding its clock, owner and budget, beside the scheduler's own state and position: a stateful resume restores them before anything steps — reproducing the uninterrupted run's LR sequence — and refuses a mismatched clock or budget, or a budget the resumed updates would pass — and a checkpoint from before component state (FEAT-005), whose scheduler position counts epochs. Runnable walkthrough: [`examples/scheduler_clocks.py`](https://github.com/thekaveh/NNx/blob/main/examples/scheduler_clocks.py).
 
 `NNOptimParams.builder()` extends the pattern with **five optimizer-variant methods** —
 `adam`, `adam_amsgrad`, `adamw`, `sgd`, `sgd_nesterov` — plus three optional chained
@@ -186,7 +188,7 @@ assert wrapped.net is my_encoder                      # never cloned or re-initi
 
 **Registered factories.** A `ModelSpec` references a factory registered for this process under `(id, version)`, exactly like optimizer factories (§3.1); its `config` must be JSON-like, and bumping `version` is how a changed architecture is told apart. Construction resolves the factory first — an unknown id or version raises `MissingModelFactoryError` naming the registered versions before anything runs — then calls it with Python's `random`, NumPy and torch all seeded from `seed` and the ambient RNG states captured and restored, so the same spec always initializes the same weights and never shifts the caller's random streams. The low-rank-surgery reconstruction guard compares against the layout recorded when the factory built the module, so `train()` never builds it twice. `NNModel.from_checkpoint`, `NNModel.from_pretrained` and the checkpoint t-SNE rebuild the module through the registry and compare its parameter names and shapes with the saved weights **before** loading any of them: a factory that now builds another topology fails with `ValueError`. That guard applies to registered modules as it does to built-in nets.
 
-**Runtime modules.** `NNModel(module=m, params=NNModelParams(...))` wraps the instance itself — `model.net is m`, no tensor or RNG state changes — and fills `params.net` with a `RuntimeModule` descriptor — the class's qualified name (`module="pkg.Class"`) and a `topology` fingerprint of the parameter names, shapes and dtypes and the module's `repr` — so identical architectures — layer hyperparameters such as dropout rates included — share a run id and different ones do not. As with built-in nets, the id reflects the architecture, not the weights: give differently-initialized instances of one architecture distinct `data_id` / `salt` values. Lazy layers (`nn.LazyLinear`) may be wrapped and trained uninitialized; materialize them (one forward) before a warm resume, whose parameter-topology check needs shapes. It trains, evaluates, predicts, checkpoints and resumes like any model, but no factory can rebuild it: checkpoints mark it `reconstructible=False` (`NNCheckpoint.reconstructible`), reloading needs the module again (`NNModel.from_checkpoint(ckpt, module=fresh_instance)`, whose topology must match), and portable saves — a safetensors checkpoint or `save_pretrained` — fail with `MissingModelFactoryError` before any file or directory is written.
+**Runtime modules.** `NNModel(module=m, params=NNModelParams(...))` wraps the instance itself — `model.net is m`, no tensor or RNG state changes — and fills `params.net` with a `RuntimeModule` descriptor — the class's qualified name (`module="pkg.Class"`) and a `topology` fingerprint of the parameter names, shapes and dtypes and the module's `repr` — so identical architectures — layer hyperparameters such as dropout rates included — share a run id and different ones do not. As with built-in nets, the id reflects the architecture, not the weights: give differently-initialized instances of one architecture distinct `data_id` / `salt` values. Lazy layers (`nn.LazyLinear`) may be wrapped and trained uninitialized; materialize them (one forward) before a warm resume, whose parameter-topology check needs shapes. It trains, evaluates, predicts, checkpoints and resumes like any model, but no factory can rebuild it: checkpoints mark it `reconstructible=False` (`NNCheckpoint.reconstructible`), reloading needs the module again (`NNModel.from_checkpoint(ckpt, module=fresh_instance)`, whose topology must match), and portable saves — a safetensors checkpoint or `save_pretrained` — fail with `MissingModelFactoryError` before any file or directory is written. A transformation recipe (`nnx.transforms`) is refused on it for the same reason.
 
 **Batch adapters.** Built-in nets keep their own `unpack_batch`. Any other module sees batches through a runtime-only `batch_adapter` (never serialized, never part of the run id): `PositionalInputs(n_inputs=1)` calls `module(x1, ..., xn)` on `(x1, ..., xn, y)` batches, `KeywordInputs(inputs, target="labels")` calls `module(**{name: batch[name]})` on mapping batches, and a module that defines `unpack_batch` keeps using it (the default). `predict()` accepts a mapping of keyword inputs as well as tensors, tuples and loaders. The supervised paradigm steps that transform the input (Mixup / CutMix, KD and feature KD, MoE, and `kd_objective`) split batches through the same adapter and need exactly one positional input; other layouts raise `ValueError` and need a custom step. Subclass `BatchAdapter` for other layouts — `split(batch) -> (args, kwargs, target)`, and `output(raw)` to extract the tensor from a non-tensor return value (the default requires a tensor). `nnx.viz.summary(model, batch=...)` and `VisUtils.two_dim_tsne_checkpoint_logits(..., batch_adapter=..., module=...)` take the same adapters; a keyword-input model given a synthetic `input_size`, or a runtime checkpoint without `module=`, fails before the module or any data is touched, and a borrowed module keeps its identity, state keys and every submodule's training mode.
 
@@ -194,13 +196,14 @@ assert wrapped.net is my_encoder                      # never cloned or re-initi
 
 ## 4. What lands on disk
 
-Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer][, salt]}` partial dict):
+Every `model.train(params)` creates a run directory under `runs/<id>/` (where `id` is the md5 of the pre-id `{model, net, train[, trainer][, salt][, transforms]}` partial dict; `transforms` is a recorded `nnx.transforms` recipe):
 
 ```
 runs/<id>/
 ├── run.yaml          # NNRun.state() — config-only, hashes to <id>
 ├── metadata.yaml     # env snapshot (nnx/torch/python/git) — NOT in hash
 ├── idps.csv          # per-iteration metrics, flushed every epoch
+│                     #   (history/ instead with a HistoryJournal — §4.5)
 ├── checkpoints/
 │   ├── first.pt      # NNCheckpoint at epoch 0
 │   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs
@@ -225,13 +228,13 @@ Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by
 
 Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every `*.pt`) goes through a destination-local tmp-then-rename helper. A `KeyboardInterrupt` leaves either the previous file or the new file at a destination, never a half-written file. The text writer creates its temp next to the resolved destination (also for a bare filename, so the rename never crosses filesystems) and owns it until the rename: a failure while opening, writing, flushing or closing it — or in the rename itself — releases the descriptor, unlinks that temp and re-raises the original exception (a cleanup error never masks it); an `fsync` error is tolerated, and after a successful rename the temp name is never touched. This is per-file cleanup for ordinary exceptions, not a multi-file transaction: `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another, and a SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried. Each checkpoint names an immutable generation-addressed training-state sidecar, with the sidecar committed first and checkpoint committed last; an interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
 
-The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history.
+The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable. `NNRun.load()` treats LAST as the commit marker, truncates any history newer than it after a process kill, and rejects an empty or corrupt LAST instead of erasing otherwise valid history. A run with a history journal (§4.5) follows the same transaction: its chunks and manifest are the "history" step.
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
-The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, mixed-precision scaler, completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored.
+The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, the FP16 loss scaler and the run's resolved precision record (a stateful resume into another effective precision is refused before the model is touched; a weights-only warm start may switch — [Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16)), completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored.
 
-`NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
+`NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A recipe materialized before training (`nnx.transforms.TransformRecipe` — LoRA on explicit Linear targets, SVD low-rank replacement; FEAT-016, [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild)) is recorded on the model and carried by every checkpoint tag, `ModelCheckpoint` snapshots and Hub saves; it is part of the run id of a run that trains it (runs without one keep theirs). Replay rebuilds its topology on a fresh base without rerunning SVD, and a resume needs the resuming model to have materialized the same recipe. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
 Checkpoint readers default to CPU placement and accept an explicit device for
 cross-device restores:
@@ -326,6 +329,37 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   verified on read (format and fingerprint); unreadable ones are ignored with a
   warning, so they never stop a run from loading or resuming.
 
+
+### 4.5. Bounded history: the history journal
+
+By default both loops keep every per-batch `NNIterationDataPoint` in memory and rewrite the whole `idps.csv` each epoch, so memory and bytes written grow with the run. `history=HistoryJournal(retention=..., chunk_size=...)` (FEAT-036, `nnx.history`; on `NNModel.train` and `Trainer.train`, never part of the run id) switches one run to a bounded **history journal**:
+
+```python
+from nnx.history import HistoryJournal, export_history_csv, iter_history
+
+run = model.train(params, history=HistoryJournal(retention=1000, chunk_size=250))
+len(run.idps)                                   # ≤ 1000: the window, not the whole run
+for record in iter_history(run.id): ...         # the committed history, chunk by chunk
+export_history_csv(run.id, "idps.csv")           # the legacy CSV layout, on request
+```
+
+```
+runs/<id>/history/
+├── chunk-00000000.jsonl   # immutable: up to chunk_size records, one JSON line each
+├── index.jsonl            # appended: one hash-chained line per chunk (counts, epochs, SHA-256)
+├── epochs.jsonl           # appended: one summary row per epoch (the notebook chart's series)
+└── journal.json           # small manifest (counts, byte lengths, index chain), replaced atomically
+```
+
+- **Memory and bytes.** Only the last `retention` records stay in memory (`ctx.idps`, `NNRun.idps`); `chunk_size ≤ retention` (default `min(250, retention)`, resolved as `HistoryJournal.chunk`), so records waiting for their chunk are always inside the window. Every record is written once, so bytes written grow linearly with the records; `idps.csv` is not written.
+- **Commit protocol.** Each epoch's records are written as chunks and indexed, its summary row appended, every file the epoch wrote flushed to disk once (chunks written mid-epoch are not fsynced one by one), and the manifest published *before* LAST — the journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker. A crash while a chunk is written, or before the manifest is replaced, leaves the previous manifest; a crash before LAST is replaced leaves an **uncommitted tail** on disk that no reader shows (records newer than LAST's epoch are filtered, as for `idps.csv`). If LAST fails, the previous manifest is republished. A committed chunk whose bytes no longer match its SHA-256, a missing chunk and an altered index raise `HistoryCorruptionError` (a `ValueError`).
+- **Lazy reads.** `NNRun.load` reads only the committed tail — the last `retention` records, from the chunks holding them — and returns a run whose `history` is the journal directory. The notebook chart (`_repr_html_`) reads the per-epoch rows, BEST and the `runs/best` election read checkpoints and the manifest and index, and a resume reads only the source's checkpoint: none of them reads records. `NNRun.all` lists CSV and journal runs side by side. `save()` never rewrites the journal — `idps` is only its window — and a journal run saved under another runs root is refused (the copy would have no history); use `export_history_csv` to take the history elsewhere.
+- **Callbacks.** The built-in callbacks read `ctx.idp` (the epoch's last record) and are unaffected; `LRMonitor.history` is bounded too, keeping the LRs of the last `retention` epochs (`LRMonitor(bounded=False)` keeps every epoch). A `Callback` that needs every record declares `history_access = "full"` and receives the materialised history — read-only, like the window — as `ctx.idps` at `on_epoch_end` and `on_train_end` (read back from the journal once per dispatch — each epoch, and once at the end — and released with it, so its cost grows with the run; if the read-back fails at the end, a warning is issued and the callback gets the window). Every other callback sees `ctx.idps` as a live, read-only sequence over the window: it grows with each record as the eager list does (trimmed to `retention`), supports `len`, indexing, iteration, `reversed` and slicing (a new list), but no in-place change (item assignment raises `TypeError`; `append` and the other list mutators do not exist) — the journal, LAST and `NNRun.idps` keep the records as recorded; a callback that reassigns `ctx.idps` is seen by the next. Without a journal, `ctx.idps` is the running list exactly as before. A plain function callback — `callbacks=[lambda idps: ...]`, which by contract receives the full list — or an unknown `history_access` is refused with a `ValueError` before any run is reserved.
+- **Continuations and lineage.** A resumed run owns its own run directory and chunk files and never writes to the source run, which stays byte-for-byte unchanged. `iter_history(run_id, lineage=True)` and `export_history_csv(..., lineage=True)` yield the committed records of the run the child resumed from, up to the epoch it resumed from — recorded in its resume status (`ResumeStatus.source_epoch`, in `metadata.yaml`) when it resumed; for runs recorded before that, the epoch of that checkpoint now — then the child's, recursively: each epoch once, never the parent's later epochs, also when the child resumed from an earlier checkpoint than the parent's last or has no committed record yet (the cut never passes the child's first record). When the branch epoch cannot be known (the checkpoint, or the parent's LAST, is unreadable), the parent's records before the child's first record are used, with a `RuntimeWarning`; when neither is known, the parent run is gone, or the child resumed through the `runs/best` pointer (which may name another run by now), the lineage starts at the child, with a `RuntimeWarning`. Lineage follows resumes: a run that started fresh — a born-again generation naming its teacher's run as `parent_run_id`, say — starts its own epochs, and its lineage is its own history.
+- **Export and migration.** `export_history_csv` writes the same columns, order and index `NNRun.save` writes for an eager run (it holds the records in memory while it builds the table; stream `iter_history` for larger histories). `migrate_history(run_id, spec=...)` moves an existing run's `idps.csv` into a journal explicitly — floats parsed round-trip; the journal read back and checked before it is published and the CSV removed; an unpublished leftover of an interrupted migration replaced, and one interrupted after publishing finished — keeping `run.yaml` and the run id. It refuses a run being trained (its lease is held), the `runs/best` pointer (migrate a run by its own id) and, unless `discard_uncommitted=True`, a CSV holding records past LAST's epoch, which readers hide but a migration would delete. Nothing is migrated or deleted by default.
+
+Out of scope: concurrent writers to one run, mid-epoch recovery (an epoch is the unit of commit) and remote tracking. Because an epoch's records must be on disk when its LAST lands, every epoch ends its own chunk: full-batch training writes one small chunk per epoch, and reading the tail opens up to `retention` of them. [`examples/history_journal.py`](https://github.com/thekaveh/NNx/blob/main/examples/history_journal.py) trains with a journal, resumes lazily, renders the summary and exports the CSV with and without the parent's prefix.
+
 ## 5. Callbacks
 
 `Callback` has four hooks (`on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`) each receiving a `_CallbackContext`:
@@ -338,11 +372,11 @@ ctx.optimizers    # dict[str, Optimizer]  (Trainer mode only)
 ctx.trainer       # Trainer  (Trainer mode only)
 ctx.epoch         # int
 ctx.idp           # current NNIterationDataPoint
-ctx.idps          # running list of all idps so far
+ctx.idps          # running list of all idps so far (with a HistoryJournal: the last `retention` — §4.5)
 ctx.should_stop   # writable — set True to break out of training
 ```
 
-Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need; objective runs (§6.5) also call `on_optimizer_update(ctx, event)` once per committed optimizer update. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
+Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need; objective runs (§6.5) also call `on_optimizer_update(ctx, event)` once per committed optimizer update, every optimizer's event of a commit before any `optimizer_update`-clock scheduler steps. `EarlyStopping` monitors one of four keys — `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6) — and `mode` only sets the improvement direction for that key (`"min"`, lower is better, is the natural reading of a loss or error); accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`. `LRMonitor.history` keeps one primary-optimizer learning rate per epoch whatever the scheduler's clock; on the `optimizer_update` clock (§3) it also records `LRMonitor.update_history`, a separate `(update index, LR after that update's scheduler step)` trace of the steps NNx takes (none under `Trainer`'s `auto_step_schedulers=False`, where the step function steps the schedule).
 
 `EarlyStopping(monitor=MonitorSpec(...))` tracks a named monitor instead — a declared metric or loss / error on either split, with the rule BEST and plateau scheduling share (§6.4).
 
@@ -376,9 +410,9 @@ model.train(params=train_params, train_step_fn=my_step)
 
 ### 6.1. Hook contract
 
-The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`); honoring them is on you. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
+The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`, and the run's resolved `precision` — `ctx.precision.autocast()` is the forward context; `scaler` is set for FP16 only); honoring them is on you. An `optimizer_update`-clock scheduler (§3) steps only on the updates your function reports with `ctx.report_update()` (no name) after each `optimizer.step()` it takes itself; `default_train_step` and `finalize_step` report their own steps, so do not report a step you delegate to them. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward and honors `ctx.grad_clip_norm`. AMP and gradient accumulation are not handled inside these imperative paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective` ships for distillation). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
+The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward, honors `ctx.grad_clip_norm` and reports each optimizer step with `ctx.report_update()` (so an `optimizer_update`-clock scheduler steps once per batch, §3). Reduced precision and gradient accumulation are not handled inside these imperative paradigm steps — they run in full precision: a run whose precision resolves to FP16 or BF16 refuses them before any run is reserved (they are marked full-precision-only), and `finalize_step` itself raises a clear `ValueError` for a scaler, a reduced `ctx.precision` or accumulation (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective`, `diffusion_objective` and `jepa_objective` ship for distillation, diffusion and I-JEPA). The legacy `mixed_precision=True` resolves to full precision on CPU/MPS, where these steps therefore run as before.
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
@@ -616,7 +650,7 @@ rule are unchanged.
 A `train_step_fn` is fully responsible for its update — forward, backward,
 accumulation, mixed precision, clipping and `optimizer.step` — so every
 paradigm re-implements those mechanics, and the factories built on
-`finalize_step` refuse AMP and gradient accumulation outright. An
+`finalize_step` refuse reduced precision and gradient accumulation outright. An
 **objective** (`nnx.objectives`) only describes the loss and hands the update
 to one shared engine, used by `NNModel.train` and `Trainer.train` alike:
 
@@ -673,14 +707,59 @@ KL summed over rows, normalized by their count, weight `alpha`) and a
 rows are split. Any callable `(ObjectiveContext) -> ObjectiveResult` is an
 objective; subclass `Objective` to declare `nonfinite`.
 
+**Paradigm objectives (FEAT-040).** `diffusion_objective(schedule)` (DDPM
+noise prediction, §9) and `jepa_objective(target_encoder, predictor,
+mask_fn, ema_momentum=...)` ([I-JEPA §5](jepa.md#5-objective-mode)) are the
+objective counterparts of `diffusion_train_step_factory` and
+`jepa_train_step_factory`, which stay available and unchanged. Each reads
+one input per batch — split by the model's batch adapter when it has one
+(FEAT-006), which must then yield exactly one input — and returns
+one normalized term — `"noise_mse"` / `"latent_mse"`: the squared-error
+**sum** over every valid element, over the element count — with detached
+metrics (`metrics={term: value}`, no classification fields), and never
+zeroes, back-propagates, scales or steps; so uneven microbatches give the
+full-batch update and unequal target masks combine as
+`(sum_1 + sum_2) / (count_1 + count_2)`. Records, `on_optimizer_update`
+events, train monitors (`MonitorSpec(metric="loss", split="train")`) and
+BEST all see that denominator-weighted loss. An objective may also define
+`check_run(model, *, optimizers, callbacks)` — called by `NNModel.train` and
+`Trainer.train` with the built optimizers before any run is reserved, to
+refuse a combination it cannot train — and `after_update(events)`, called
+once per committed update after every named optimizer stepped and before
+callbacks see the events (the JEPA EMA target advances there, never per
+microbatch or after a skipped window). Both adapters are checkpointable
+components (`"diffusion.objective"`: the spec and the objective's own
+generator; `"jepa.objective"`: the spec, the predictor's reference inside
+`model.net`, the EMA target and its update counter), so a stateful resume
+continues where an uninterrupted run would be. Pass an objective itself,
+not a wrapper: a `lambda` or `functools.partial` around it hides its
+`check_run`, `after_update` and component state from the run.
+
 A run has exactly one update owner: passing both `train_step_fn` (or
 `trainer_step_fn`) and `objective` fails before any callback runs, any
-loader is read or any parameter changes. In `Trainer` the engine steps every
+loader is read or any parameter changes — as does the imperative diffusion
+or JEPA step passed as `objective=` (it steps the optimizer itself, so the
+engine would step it twice) or an `Objective` passed as the step function. In `Trainer` the engine steps every
 named optimizer once per committed update — each clipped with its own
 `grad_clip_norm`, all sharing one `accumulate_grad_batches` — and emits one
-event per named optimizer. `Trainer` has no mixed-precision setting (its step
-functions own AMP), so it runs objectives in full precision and warns when
-the model asks for `mixed_precision` on CUDA; `NNModel.train` applies it. As
+event per named optimizer. An explicit `NNModelParams.precision` (FEAT-028)
+applies to `Trainer` objectives too — autocast around the objective, an FP16
+scaler checkpointed with the run, and an all-or-nothing window: when any
+optimizer's unscaled gradients overflow, none of them steps; under FP16 the
+named optimizers must not share a parameter (the scaler unscales per
+optimizer), which is refused before any run is reserved — while `Trainer` step functions own every
+update in full precision and refuse a reduced policy before any run is
+reserved. The legacy `mixed_precision` flag is not applied by `Trainer`: it
+runs objectives in full precision and warns when the flag asks for it on
+CUDA; `NNModel.train` applies it. An objective runs under the run's
+autocast, so a reduced run's forward outputs are float16 / bfloat16:
+`ObjectiveContext.precision` is the resolved precision and
+`ctx.full_precision(output)` returns an output as float32 (differentiable)
+before task preparation, the loss's bookkeeping or a record converts it to
+NumPy — the built-in objectives (and the default step) do. `kd_objective`'s
+frozen teacher runs in its own inference precision (its explicit policy, or
+full precision), never in the student's — not even under the legacy
+`mixed_precision` flag, which never governs inference. As
 with the default step, `NNModel.train` rejects an objective run on a
 low-rank-surgery topology it cannot reconstruct. Imperative step functions and
 `finalize_step` are unchanged.
@@ -810,7 +889,7 @@ The Trainer enforces **strict** `param_groups` semantics — each optimizer owns
 
 ### 8.2. No default step
 
-There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly: the `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer), while the Trainer owns the epoch loop and steps each registered scheduler once per epoch — unless `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Trainer-level `extra_metrics` are `callable(y_true, y_pred)`; the built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively pass `objective=` (§6.5) instead of a step function: the shared update engine then steps every named optimizer once per committed update.
+There is **no** `default_trainer_step` — multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly: the `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer), while the Trainer owns the epoch loop and steps each registered scheduler once per epoch — or, on the `optimizer_update` clock (§3), after each update the step reports with `ctx.report_update(name)`, each optimizer keeping its own count — unless `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too: then neither the epoch boundary nor a reported update steps a scheduler — a schedule's position is exactly the steps the function takes — before and after a resume; a later resume with automatic stepping on reattaches an update clock at that position, so keep the function's steps in the clock's unit (one per committed update). Trainer-level `extra_metrics` are `callable(y_true, y_pred)`; the built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively pass `objective=` (§6.5) instead of a step function: the shared update engine then steps every named optimizer once per committed update.
 
 ### 8.3. NNRun integration
 
@@ -834,7 +913,7 @@ params = (NNTrainerParams.builder()
 Trainer(model).train(params=params, trainer_step_fn=gan_step)
 ```
 
-The resumed run's epochs continue from the saved epoch. Each named optimizer is validated exactly as `NNModel.train` validates its one — the optimizer and scheduler names, each optimizer's type, registered-factory identity (§3.1) and parameter topology, each scheduler's type, and a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs — and a mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update. `resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage and `resume_mode` is runtime-only, so a configuration without them keeps its `state()` and run id, and the controls survive `builder()`, `NNTrainerParamsBuilder.from_params`, `state()` / `from_state()` and the `with_*_loader` copies. A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`, and a Trainer checkpoint only through `Trainer.train`, unless `resume_mode="weights_only"` warm-starts from the weights alone.
+The resumed run's epochs continue from the saved epoch. Each named optimizer is validated exactly as `NNModel.train` validates its one — the optimizer and scheduler names, each optimizer's type, registered-factory identity (§3.1) and parameter topology, each scheduler's type, and a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs (updates, on the `optimizer_update` clock) — and a mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update. `resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage and `resume_mode` is runtime-only, so a configuration without them keeps its `state()` and run id, and the controls survive `builder()`, `NNTrainerParamsBuilder.from_params`, `state()` / `from_state()` and the `with_*_loader` copies. A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`, and a Trainer checkpoint only through `Trainer.train`, unless `resume_mode="weights_only"` warm-starts from the weights alone.
 
 ## 9. Diffusion (DDPM)
 
@@ -862,6 +941,19 @@ model.train(params=NNTrainParams(..., train_loader=loader), train_step_fn=step_f
 # Sample by running the reverse-diffusion loop.
 samples = sample(model, schedule, shape=(256, 2))
 ```
+
+The same loss is available as an objective (FEAT-040, §6.5):
+`model.train(params=..., objective=diffusion_objective(schedule, seed=0))`
+hands backward, gradient accumulation, mixed precision and clipping to the
+shared update engine. Its timesteps and noise come from the objective's own
+CPU generator — seeded from `seed`, or from one draw of the global RNG at
+first use — whose state is checkpointed component state
+(`"diffusion.objective"`), so a stateful resume continues the stream and a
+resume with another schedule is refused before anything is restored. A
+`sample(..., generator=...)` preview with its own generator (say, in a
+callback) never perturbs that stream, and `sample` restores the net's
+train/eval modes. `noise_fn(x_0, generator) -> (t, eps)` supplies the
+timesteps and noise yourself.
 
 ### 9.1. Noise schedules
 
@@ -1293,7 +1385,7 @@ Built-in components are `EarlyStopping` (`early_stopping`, optional) and the ste
 
 ### 14.2. Resume modes and status
 
-`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
+`resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint (and that checkpoint's epoch, `source_epoch`), and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 
@@ -1383,7 +1475,7 @@ Job.collect({"a": Job.ask(q1, id="a"), "b": Job.ask(q2, id="b").then(follow)}).m
    └── JobResult(value=f({...}), outcomes={id: answered | failed | skipped | cancelled}, calls)
 ```
 
-Independent questions over one state share calls (`ceil(count / cap)`, `cap` from the provider's `max_questions` and `Limits.max_questions`). A `then` continuation runs once, after its prerequisite succeeded, with the answer mapped explicitly into follow-up state. Duplicate ids, unsupported questions and an unenforceable token cap are refused before any call. The job is fail-fast: `JobFailed` carries the completed outcomes plus the failed and skipped ids, and has no partial value. Cancellation (`arun(cancel=event)`) stops scheduling and reports requests already sent as `sent`, never as rolled back. `map`'s identity and composition laws hold only for a deterministic provider that answers each question the same whatever it is batched with. The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §5](decisions.md) and [`examples/decision_jobs.py`](../examples/decision_jobs.py).
+Independent questions over one state share calls (`ceil(count / cap)`, `cap` from the provider's `max_questions` and `Limits.max_questions`). A `then` continuation runs once, after its prerequisite succeeded, with the answer mapped explicitly into follow-up state. Duplicate ids, unsupported questions and an unenforceable token cap are refused before any call. The job is fail-fast: `JobFailed` carries the completed outcomes plus the failed and skipped ids, and has no partial value. Cancellation (`arun(cancel=event)`) stops scheduling and reports requests already sent as `sent`, never as rolled back. `map`'s identity and composition laws hold only for a deterministic provider that answers each question the same whatever it is batched with. The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §6](decisions.md) and [`examples/decision_jobs.py`](../examples/decision_jobs.py).
 
 ## 18. Fitted calibration (`nnx.calibration`)
 
@@ -1704,3 +1796,213 @@ provenance manifest.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
 See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+
+## 21. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+`predict()`, `predict_proba()` and `evaluate()` are eager: they return only
+after the whole loader has run, holding every batch's outputs (and, for
+`evaluate()`, every target and prediction) until then. FEAT-020 adds bounded
+counterparts. The eager calls are unchanged.
+
+```text
+NNModel.iter_predict(loader) ──► PredictionStream ──► PredictionBatch(logits, classes, sample_ids) per batch
+                   (spec / rich=True) ──────────────► PredictionResult per batch
+StreamingMetrics.update(...) ─┐
+StreamingMetrics.update(...) ─┴─ merge ──► finalize() ──► MetricSnapshot(count, values, unavailable)
+NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation record from counts and sums
+```
+
+- **A context-managed stream.** `iter_predict` takes a `DataLoader` or
+  another iterable of batches; in-memory arrays and tensors stay with
+  `predict()`. Use the stream in a `with` block:
+
+  ```python
+  with model.iter_predict(loader) as stream:
+      for batch in stream:
+          sink.write(batch.sample_ids, batch.classes)
+  ```
+
+  Batches arrive in loader order. Concatenated (`concatenate_predictions`),
+  they are exactly the eager result: `predict()`'s logits and classes and
+  `predict_proba()`'s sample ids, with the same graph seed-row slicing and the
+  same categorical, multilabel (the task's threshold) and continuous
+  decoding. With a `ProbabilitySpec`, or `rich=True` for a model with a task,
+  each batch is the `PredictionResult` `predict_proba()` would build for it.
+  An empty loader yields no batches, where the eager calls raise. Over a
+  shuffling `DataLoader`, the first batch whose sample ids are iteration
+  positions warns, as `predict_proba()` does; graph seed rows carry global
+  node indices and never warn.
+- **Mode restoration.** Each batch's forward pass runs in eval mode under
+  `no_grad`, and every submodule's training mode is restored right after it,
+  before the batch is yielded or its error raised. Between batches the
+  network is in its own mode, so a consumer may train or inspect it; after an
+  early close or a failed forward pass nothing is left in eval mode.
+- **Ownership and reuse.** Closing the stream (leaving the `with` block,
+  `close()`, an error inside the stream) finalizes its generator and drops
+  its references to the loader's iterator and the model. Like a closed
+  generator, a closed stream is exhausted, so `close()` inside a `for` loop
+  ends the loop; iterating a closed, consumed or partly consumed stream again
+  (after a `break`), or entering a closed one, raises `StreamClosedError` —
+  ask `iter_predict()` for a new one. The
+  loader is never closed: it stays the caller's and can be iterated again.
+- **Consumer-retained memory.** The stream holds at most the batch in
+  flight, so its memory does not grow with the dataset. What the consumer
+  keeps is the consumer's memory: keep the sample ids and decisions you need,
+  not the batches. The eager calls are a stream the library concatenates for
+  you, with O(N) memory.
+- **Mergeable metrics.** `StreamingMetrics(metrics, semantics, labels=...,
+  threshold=...)`, or `StreamingMetrics.for_task(metrics, task)`, accumulates
+  declared `MetricSpec`s:
+  - `update(target, probabilities=..., labels=..., values=..., valid=...)`
+    takes a batch's inputs, and `update_logits(target, logits)` derives them
+    from raw outputs as `evaluate()` does. Masked entries (`valid=False`, a
+    NaN target — a one-hot / soft row holding a NaN included — or a
+    categorical target equal to the task's `ignore_index`) are not scored.
+    This is the standalone accumulator's own rule: `evaluate()` records, and
+    `streaming_eval_step` with them, mask what the task (or, without one, the
+    loss's `ignore_index`) masks, as before.
+  - The built-ins keep sufficient statistics: sums and counts for
+    `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
+    `f1` (the same values as scikit-learn with `zero_division=0`). Memory is
+    bounded by the number of classes, never by N. A registered metric is
+    bounded when its accumulator implements `merge()` and does not declare
+    `stores_scores = True`.
+  - `merge(other)` returns a new accumulation over both inputs' samples,
+    whatever the order, copying its inputs so later updates to either never
+    reach it. Merging an empty accumulation changes nothing.
+  - `finalize()` returns a read-only `MetricSnapshot(count, values,
+    unavailable)`, repeatable and never changing the accumulation. An empty or
+    fully masked stream finalizes to `count=0` with every metric unavailable.
+- **Merge schemas.** Two accumulations merge only when they declare the same
+  metrics (names, ids, versions and configs), the same probability semantics
+  (`categorical`, `bernoulli` or `continuous`), the same task labels and
+  output count (`num_outputs`: classes, or outputs along axis 1), the same
+  decision threshold and the same `ignore_index`. Anything else raises
+  `MetricMergeError`, since the sums would describe different quantities. A
+  custom accumulator's `merge(other)` adds `other` in place and returns
+  `None`, keeping nothing of `other` that a later update could change.
+- **Stored scores.** A rank metric such as AUROC depends on the order of
+  every score and is never additive. A registered metric whose accumulator
+  has no `merge()`, or declares `stores_scores = True`, is refused in bounded
+  mode before any update. `materialize=True` stores its scores instead (O(N)
+  memory) and replays them at `finalize()`.
+- **Bounded validation and loss denominators.** `streaming_eval_step` is an
+  opt-in `eval_step_fn` that builds the validation record `evaluate()` builds,
+  from counts and sums:
+  - the same task kind, count and status, with masked targets not counted;
+  - the same loss — each batch's loss numerator summed and divided by the
+    summed loss denominators (valid targets, or class weights), never a mean
+    of batch means; a `sum`-reduction loss stays a total;
+  - the same classification or task metrics, and the declared metrics that
+    monitors and BEST selection read.
+
+  `EvalStepContext.metrics` carries the run's declared metrics to the step.
+  It refuses `extra_metrics` (callables on the full arrays) and a
+  stored-score metric when training starts, before any run is reserved, and
+  `ExperimentPlan.validate()` reports both under `train.extra_metrics` /
+  `train.metrics[i]`. These early checks apply to `streaming_eval_step`
+  itself or a `functools.partial` of it; a step that wraps it is a step of its
+  own, and the streaming step then refuses at its first call, before reading
+  a validation batch. The default validation step and `evaluate()` stay
+  eager, and `evaluate()` still raises on an empty loader. A model without a
+  task scores multi-output (`BCEWithLogitsLoss`) indicators row by row, as
+  `evaluate()` does: accuracy is the exact-row accuracy, and the averages run
+  over the labels.
+
+See [`examples/prediction_stream.py`](../examples/prediction_stream.py).
+
+## 22. Run bundles (`nnx.bundles`)
+
+A run's checkpoints are pickles (`torch.load(weights_only=False)`), safe to
+read only when you produced them, and a safetensors checkpoint holds one
+weights dict without the training state. A **run bundle** (FEAT-015) holds
+one run checkpoint — its weights, its training state and optional
+calibrators — as data only:
+
+```text
+<bundle>/bundle.json            manifest: format, version, generation id, every payload's SHA-256 and size
+<bundle>/g-<generation>/
+    state.json                  primitive state, schema-validated JSON
+    model.safetensors           the network's tensors
+    training.safetensors        the training state's tensors ("resume" bundles only)
+    calibrator-<n>.json         TemperatureCalibrator records (§18)
+
+export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bundle(dir) ──► reconstruct_bundle(dir, factories=...)
+                                                                                     └── ReconstructedBundle.resume(params)
+```
+
+- **Export** reads one of your runs' checkpoints (`checkpoint="last"`, any
+  `Checkpoints` tag, or a `ModelCheckpoint` stem such as `"snap_e3"`) and
+  publishes it as a new generation. A checkpoint written by `train()` gives a
+  `"resume"` bundle; a weights-only one (a `ModelCheckpoint` snapshot) an
+  `"inference"` bundle. Calibrators ship alongside: they must calibrate a
+  categorical model with their class count and the task's labels, and a
+  fingerprint `model_id` (`model_fingerprint`) must be the bundled weights'
+  (checked again by every validation).
+- **Format v1.** Tensors are stored in the safetensors format, which NNx
+  writes and reads itself (no optional dependency; any safetensors reader
+  opens the payloads). Everything else is strict JSON with typed encodings:
+  `$tuple`, integer-keyed `$intdict` (optimizer state), non-finite `$float`
+  (a plateau scheduler's `inf`) and `$tensor` references. Module extra state
+  that is not a tensor, a custom object in optimizer or component state, a
+  runtime-only module and a recorded topology transform NNx cannot replay
+  from data (anything but an `nnx.transforms` recipe operation or a torchao
+  QAT conversion; the error names its index and id) are refused at export,
+  with no pickle fallback.
+- **Inspect and validate.** `inspect_bundle` summarizes a bundle
+  (`BundleInfo`: capability, source run and checkpoint, epoch, model,
+  components, calibrators) from the manifest and `state.json`.
+  `validate_bundle` checks every payload before any tensor is read: size and
+  SHA-256 (the size checked before a file is read, and no file opened
+  through a symlink or as a FIFO or device), one generation id throughout,
+  nothing missing, unlisted, symlinked or outside the bundle, strict JSON
+  without duplicate keys or runaway nesting, calibrator labels matching the
+  task's, and safetensors headers holding exactly the tensors `state.json`
+  references. Only then is a calibrator's fingerprint `model_id` checked,
+  against the weights hashed straight from the payload (no tensor is
+  built). An export runs the same checks on its staged generation before
+  publishing it.
+  Neither unpickles, calls a model factory or downloads — even beside a
+  legacy `last.pt`.
+- **Reconstruct.** `reconstruct_bundle(path, factories=..., components=...)`
+  validates, then rebuilds the model. A registered module is built from the
+  caller-supplied `factories` (`{(id, version): factory}`; the process
+  registry when omitted), with `batch_adapter=` for its inputs as with
+  `NNModel` (runtime-only, never stored). Passing the resumed run's
+  `components` (e.g. the same callbacks) checks their saved state too. Every missing factory or
+  component is named in one `BundleReconstructionError` before any model is
+  allocated — a model saved on CUDA or MPS on a host without it included
+  (pass `device=Devices.CPU`). The rebuilt model predicts bit-for-bit like
+  the source; to serve it, keep `.model` and drop the `ReconstructedBundle`,
+  which holds a `"resume"` bundle's training state for `resume()`. Bundles
+  hold `NNModel` runs: artifacts a subclass keeps outside the checkpoint (a
+  `GenerativeNNModel` tokenizer) are not bundled. Like
+  `from_pretrained` with a `config.json`, reconstruction builds the
+  architecture the bundle's parameters describe: read an untrusted bundle's
+  `inspect_bundle(...).model_params` before reconstructing it.
+- **Resume.** `ReconstructedBundle.resume(params, **train_kwargs)` runs
+  `model.train` as a stateful resume of the bundle's run: the optimizer,
+  scheduler, GradScaler, RNG and component state come from the bundle, held
+  in memory (it never becomes a pickle), and the resumed run records
+  `resume_checkpoint` (`"bundle-<generation>_e<epoch>"`) as its parent
+  checkpoint — with `provenance=...`, its attempt links the bundle's run,
+  epoch and generation without reading anything from disk. One resumed epoch equals the uninterrupted run. An
+  `"inference"` bundle raises `BundleCapabilityError` before anything
+  changes, and so does a `Trainer` run's bundle (named optimizers) or a
+  transformed topology (a converted QAT checkpoint): `resume` continues
+  `NNModel.train` runs from an untransformed model, while these models
+  rebuild for inference like any other.
+- **Publication.** A new generation directory is written first and
+  `bundle.json` is replaced atomically, so an export interrupted at any
+  point leaves the previous bundle usable. The replaced generation stays
+  until the next export, so a reader that started before an export can
+  finish; older generations and an interrupted export's leftovers are
+  cleared. An export never touches a directory that is neither empty nor a
+  run bundle, nor a `bundle.json` that is not a readable NNx manifest.
+- **Three formats, three readers.** Pickle checkpoints, safetensors
+  checkpoints / Hub distributions and run bundles each have their own
+  reader, and none opens another's files (see [Hub integration
+  §3](hub.md#3-three-artifact-formats-and-their-trust-boundaries) and
+  `SECURITY.md`).
+
+See [`examples/run_bundle.py`](../examples/run_bundle.py).

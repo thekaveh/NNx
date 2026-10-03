@@ -49,7 +49,6 @@ and every fit, never copied or cloned, and never reset by the plan.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import functools
 import inspect
@@ -72,6 +71,7 @@ from .nn.params.nn_optim_params import NNOptimParams
 from .nn.params.nn_params import NNParams
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams, _validate_resume_mode
+from .precision import PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 
 if TYPE_CHECKING:
     from .nn.nn_model import NNModel
@@ -467,7 +467,9 @@ class ExperimentPlan:
         against their registries, as ``NNModel.train`` does before
         reserving a run. It constructs the built-in loss module, as
         ``NNModel`` does first, and resolves each borrowed callback's monitor
-        on a shallow copy.
+        on a shallow copy; with ``nnx.streaming.streaming_eval_step`` it also
+        builds each declared metric's accumulator to check that it is
+        bounded.
         """
         found: list[Diagnostic] = []
 
@@ -475,15 +477,33 @@ class ExperimentPlan:
             found.append(Diagnostic(path, message))
 
         self._check_model(report)
+        precision = self._check_precision(report)
         train = self._check_train(report)
         has_val = self._check_data(report, train)
         self._check_seed(report, train)
         self._check_callbacks(report)
-        self._check_steps(report)
+        self._check_steps(report, precision)
         self._check_resume(report, train)
         if train is not None:
             self._check_monitoring(report, train, has_val)
+            self._check_eval_step(report, train, has_val)
         return PlanValidation(tuple(found))
+
+    def _streaming_validation(self, has_val: bool) -> bool:
+        """Whether the fit validates with ``nnx.streaming.streaming_eval_step``
+        (checked only with validation data, as ``NNModel.train`` checks it)."""
+        from .nn.nn_model import _is_streaming_eval_step
+
+        return has_val and _is_streaming_eval_step(self.eval_step_fn)
+
+    def _check_eval_step(self, report: Callable[[str, str], None], train: NNTrainParams, has_val: bool) -> None:
+        """What the streaming validation step reports it cannot compute, as
+        ``NNModel.train`` checks before reserving a run."""
+        if self._streaming_validation(has_val):
+            from .streaming import _streaming_problems
+
+            for path, message in _streaming_problems(train):
+                report(path, message)
 
     def _check_model(self, report: Callable[[str, str], None]) -> None:
         from .models import MissingModelFactoryError
@@ -660,8 +680,21 @@ class ExperimentPlan:
                     f"{spread('components', component)}",
                 )
 
-    def _check_steps(self, report: Callable[[str, str], None]) -> None:
-        from .nn.nn_model import _check_provenance
+    def _check_precision(self, report: Callable[[str, str], None]) -> Optional[ResolvedPrecision]:
+        """Resolve the model's policy on its device, as ``NNModel`` does
+        before building anything (FEAT-028): the resolution, or ``None``
+        (reported as ``model.precision``) when the device cannot run it, or
+        when the model is unusable (reported by the model checks)."""
+        if not isinstance(self.model, NNModelParams) or not self._model_usable:
+            return None
+        try:
+            return resolve_precision(self.model, self.model.device())
+        except PrecisionUnsupportedError as exc:
+            report("model.precision", str(exc))
+            return None
+
+    def _check_steps(self, report: Callable[[str, str], None], precision: Optional[ResolvedPrecision]) -> None:
+        from .nn.nn_model import _check_provenance, _check_step_precision
 
         for path, value in (
             ("train_step_fn", self.train_step_fn),
@@ -672,6 +705,19 @@ class ExperimentPlan:
                 report(path, f"must be callable, got {value!r}")
         if self.objective is not None and self.train_step_fn is not None:
             report("objective", "pass train_step_fn or objective, not both: one owner per optimizer update")
+        elif callable(self.objective) or callable(self.train_step_fn):
+            from .objectives import _check_update_owner
+
+            path = "objective" if self.objective is not None else "train_step_fn"
+            try:  # train()'s own rule: each update owner passed as what it is (FEAT-040)
+                _check_update_owner(self.train_step_fn, self.objective)
+            except ValueError as exc:
+                report(path, str(exc))
+        if precision is not None:
+            try:
+                _check_step_precision(self.train_step_fn, precision)  # train()'s own rule (FEAT-028)
+            except PrecisionUnsupportedError as exc:
+                report("train_step_fn", str(exc))
         try:
             _check_provenance(self.provenance)  # train()'s own rule
         except TypeError as exc:
@@ -722,8 +768,18 @@ class ExperimentPlan:
                 report(f"train.metrics[{index}]", str(exc))
                 broken = True
         default_step = self._default_step
-        if train.metrics and not broken and (default_step or self.eval_step_fn is None):
-            problem = self._metric_input_problem(train, default_train=default_step)
+        # NNx derives the declared metrics' inputs itself on its default steps and
+        # in its own eval step, which train() checks only when there is validation data.
+        nnx_eval = self.eval_step_fn is None or self._streaming_validation(has_val)
+        if train.metrics and not broken and (default_step or nnx_eval):
+            where = (
+                "the default training step"
+                if default_step
+                else "streaming_eval_step()"
+                if self._streaming_validation(has_val)
+                else "evaluate()"
+            )
+            problem = self._metric_input_problem(train, where=where)
             if problem is not None:
                 report(*problem)
         if isinstance(train.monitor, MonitorSpec):
@@ -777,7 +833,7 @@ class ExperimentPlan:
                 if problem is not None:
                     report(path, problem)
 
-    def _metric_input_problem(self, train: NNTrainParams, *, default_train: bool) -> Optional[tuple[str, str]]:
+    def _metric_input_problem(self, train: NNTrainParams, *, where: str) -> Optional[tuple[str, str]]:
         """``train()``'s check that the model can provide every declared
         metric's input, run on the model's parameters alone: the loss, the
         task adapter and the output width — no model is built."""
@@ -794,7 +850,6 @@ class ExperimentPlan:
             return None  # the model's own diagnostic (model.loss / model.task) says why
         try:
             domain, _, _, n_classes = _metric_context_of(loss_fn, adapter, self.net)
-            where = "the default training step" if default_train else "evaluate()"
             _check_metric_inputs(train.metrics, domain, where=where, n_classes=n_classes)
         except (KeyError, TypeError, ValueError) as exc:
             return "train.metrics", str(exc)
@@ -891,7 +946,7 @@ class ExperimentPlan:
         for a ``BatchNorm`` net in train mode.
         """
         self._probe_validation().raise_for_errors()
-        from .nn.nn_model import _step_loss_terms
+        from .nn.nn_model import _inference_precision, _step_loss_terms
         from .seeding import _seed_scope
 
         assert isinstance(self.model, NNModelParams)
@@ -905,17 +960,19 @@ class ExperimentPlan:
             cuda_started()  # CUDA the build started: its streams, as the build left them, are restored too
             model._check_task_preflight()  # as train() does, before any batch is read
             with torch.no_grad():
-                model.net.eval()  # the output as predict() sees it
-                output, target = model._inference_forward(example_batch)
+                model.net.eval()  # the output as predict() sees it, in its precision (FEAT-028)
+                inference = _inference_precision(model)
+                with inference.autocast():
+                    output, target = model._inference_forward(example_batch)
+                output = inference.output(output) if isinstance(output, torch.Tensor) else output
                 # With a target and the default step, the loss that step computes on this batch: in
                 # train mode (dropout, batch statistics), with its reshaping, masking and task rules. A
                 # custom step or objective defines its own loss, which a probe cannot know.
                 loss = None
                 if target is not None and self._default_step:
                     model.net.train()
-                    amp = model._build_grad_scaler() is not None and model.device.type == "cuda"  # as train()
-                    with torch.amp.autocast(device_type="cuda") if amp else contextlib.nullcontext():
-                        terms = _step_loss_terms(model, example_batch, None, 1)
+                    with model.resolved_precision.autocast():  # as train()
+                        terms = _step_loss_terms(model, example_batch, None, 1, model.resolved_precision)
                     # An all-masked task batch has no loss of its own, as the default step records it.
                     loss = (
                         None if terms.valid is not None and terms.normalization_weight == 0 else float(terms.train_loss)
@@ -940,6 +997,7 @@ class ExperimentPlan:
             found.append(Diagnostic(path, message))
 
         self._check_model(report)
+        self._check_precision(report)
         self._check_seed(report, self.train if isinstance(self.train, NNTrainParams) else None)
         return PlanValidation(tuple(found))
 

@@ -84,28 +84,35 @@ def low_rank_factorize(
     S_k = S[:rank]  # (k,)
     Vh_k = Vh[:rank, :]  # (k, in)
 
+    factors = _allocate_factors(linear, rank)
+    down, up = cast(nn.Linear, factors[0]), cast(nn.Linear, factors[1])
     # First Linear: in → k. Its weight (k, in) is (S_k * Vh_k); no bias
     # since the original bias is added after the second matmul.
-    down_weight = (S_k.unsqueeze(1) * Vh_k).to(orig_dtype)
+    down.weight.data.copy_((S_k.unsqueeze(1) * Vh_k).to(orig_dtype))
+    # Second Linear: k → out. Weight is U_k. Bias is the original.
+    up.weight.data.copy_(U_k.to(orig_dtype))
+    if linear.bias is not None:
+        assert up.bias is not None
+        up.bias.data.copy_(linear.bias.data)
+    return factors
+
+
+def _allocate_factors(linear: nn.Linear, rank: int) -> nn.Sequential:
+    """The rank-``rank`` factor layout of ``linear`` with uninitialized
+    values: ``Sequential(Linear(in, k, bias=False), Linear(k, out))``. Shared
+    by :func:`low_rank_factorize` and recipe replay (FEAT-016), which
+    loads saved factors into it instead of rerunning SVD."""
+    W = linear.weight
     # device= threads the original layer's placement — without it a
     # CUDA-resident model gets CPU layers spliced in and the next
     # forward crashes with a device mismatch (widen already does this).
     # skip_init: every param is fully overwritten, so meta-device
     # construction keeps the surgery off the global RNG stream.
-    down = cast(nn.Linear, skip_init(nn.Linear, in_features, rank, bias=False, dtype=orig_dtype, device=W.device))
-    down.weight.data.copy_(down_weight)
-
-    # Second Linear: k → out. Weight is U_k. Bias is the original.
-    up_weight = U_k.to(orig_dtype)
+    down = cast(nn.Linear, skip_init(nn.Linear, linear.in_features, rank, bias=False, dtype=W.dtype, device=W.device))
     up = cast(
         nn.Linear,
-        skip_init(nn.Linear, rank, out_features, bias=linear.bias is not None, dtype=orig_dtype, device=W.device),
+        skip_init(nn.Linear, rank, linear.out_features, bias=linear.bias is not None, dtype=W.dtype, device=W.device),
     )
-    up.weight.data.copy_(up_weight)
-    if linear.bias is not None:
-        assert up.bias is not None
-        up.bias.data.copy_(linear.bias.data)
-
     # Both factors represent the one source weight and inherit its
     # trainability; only `up.bias` carries (and inherits the role of)
     # the source bias; every new module takes the source's mode. Without

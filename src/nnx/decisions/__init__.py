@@ -23,7 +23,9 @@ that declares it can answer:
   :class:`Capabilities` (primitives, modalities, dynamic labels, batch
   limits, inference / training / export) checked before any model call or
   network I/O, and ``decide(question, inputs)``.
-  :class:`FixedHeadProvider` adapts a trained NNx classifier.
+  :class:`FixedHeadProvider` adapts a trained NNx classifier;
+  :class:`NLIProvider` (FEAT-011) is a local label-conditioned baseline that
+  scores candidates supplied at inference with a caller-supplied NLI model.
 - **Jobs** (FEAT-024) — :class:`DecisionJob`: an immutable, deferred
   description of decision work (``ask`` / ``collect`` / ``map`` / ``then``)
   whose ``run`` / ``arun`` batch independent questions into the fewest
@@ -51,6 +53,7 @@ from .jobs import (
     QuestionOutcome,
     RowOutcome,
 )
+from .nli import NLIProvider
 from .providers import Capabilities, DecisionProvider, FixedHeadProvider
 from .schema import (
     PROBABILITY_TOLERANCE,
@@ -94,6 +97,7 @@ __all__ = [
     "JobResult",
     "JobTimeout",
     "Limits",
+    "NLIProvider",
     "Option",
     "ProviderFailure",
     "Question",
