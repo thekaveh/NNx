@@ -23,7 +23,14 @@ that declares it can answer:
   :class:`Capabilities` (primitives, modalities, dynamic labels, batch
   limits, inference / training / export) checked before any model call or
   network I/O, and ``decide(question, inputs)``.
-  :class:`FixedHeadProvider` adapts a trained NNx classifier.
+  :class:`FixedHeadProvider` adapts a trained NNx classifier;
+  :class:`NLIProvider` (FEAT-011) is a local label-conditioned baseline that
+  scores candidates supplied at inference with a caller-supplied NLI model.
+- **Jobs** (FEAT-024) — :class:`DecisionJob`: an immutable, deferred
+  description of decision work (``ask`` / ``collect`` / ``map`` / ``then``)
+  whose ``run`` / ``arun`` batch independent questions into the fewest
+  provider calls and chain dependent ones, fail-fast under explicit
+  :class:`Limits`.
 - **Errors** — :class:`UnsupportedCapability`,
   :class:`InvalidDecisionRequest`, :class:`InvalidDecisionResponse` and
   :class:`ProviderFailure`, all :class:`DecisionError`\\ s.
@@ -33,6 +40,20 @@ hosted-SDK extra; inference only — nothing here trains, exports or executes
 actions.
 """
 
+from .jobs import (
+    DecisionJob,
+    Follow,
+    InvalidJob,
+    JobError,
+    JobFailed,
+    JobLimitExceeded,
+    JobResult,
+    JobTimeout,
+    Limits,
+    QuestionOutcome,
+    RowOutcome,
+)
+from .nli import NLIProvider
 from .providers import Capabilities, DecisionProvider, FixedHeadProvider
 from .schema import (
     PROBABILITY_TOLERANCE,
@@ -62,14 +83,26 @@ __all__ = [
     "Choice",
     "ChoiceResult",
     "DecisionError",
+    "DecisionJob",
     "DecisionProvider",
     "DecisionResult",
     "FixedHeadProvider",
+    "Follow",
     "InvalidDecisionRequest",
     "InvalidDecisionResponse",
+    "InvalidJob",
+    "JobError",
+    "JobFailed",
+    "JobLimitExceeded",
+    "JobResult",
+    "JobTimeout",
+    "Limits",
+    "NLIProvider",
     "Option",
     "ProviderFailure",
     "Question",
+    "QuestionOutcome",
+    "RowOutcome",
     "Score",
     "ScoreResult",
     "UnsupportedCapability",
