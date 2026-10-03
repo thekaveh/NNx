@@ -264,7 +264,10 @@ def main():
         onnx_path = os.path.join(tmp, "quantized.onnx")
         model_q.to_onnx(onnx_path, example_input=torch.randn(1, 32))
         size = os.path.getsize(onnx_path)
-        print(f"wrote {onnx_path} ({size} bytes) — the quantized model exports cleanly")
+        # Structural only: the file was written, but no runtime executed it, so no
+        # parity is claimed. Executed conformance covers only the FP32
+        # feed-forward profiles in nnx.export_conformance (docs/export-conformance.md).
+        print(f"wrote {onnx_path} ({size} bytes) — structural only: exported, not executed (no parity claimed)")
 
 
 if __name__ == "__main__":

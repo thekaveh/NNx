@@ -95,7 +95,7 @@ def test_primary_openers_share_centered_brand_contract_and_executive_summary():
     for text in (readme, home):
         assert '<h1 align="center">NNx</h1>' in text
         assert "# 1. NNx" not in text[: text.index("\n## ")]
-        assert "# 16. NNx" not in text[: text.index("\n## ")]
+        assert "# 17. NNx" not in text[: text.index("\n## ")]
         assert f"<strong>{TAGLINE}</strong>" in text
         assert SUPPORT_LINE in text
         for badge in (*STATUS_BADGES, *CORE_STACK_BADGES, *OPTIONAL_STACK_BADGES):
@@ -244,7 +244,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
     assert "repo_name" not in config
     labels = str(config["nav"])
     assert "1. Home" in labels
-    assert "22. License" in labels
+    assert "23. License" in labels
     assert {key: config[key] for key in ("site_name", "site_description", "site_url", "docs_dir", "site_dir")} == {
         "site_name": "NNx",
         "site_description": "Lightweight PyTorch training, evaluation, and visualization toolkit",
@@ -292,19 +292,20 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
             "Reference": [
                 {"12. API reference": "API-reference.md"},
                 {"13. External dependency contracts": "External-dependency-contracts.md"},
-                {"14. Framework comparison": "Framework-comparison.md"},
-                {"15. Architecture": "Architecture.md"},
+                {"14. Export conformance": "Export-conformance.md"},
+                {"15. Framework comparison": "Framework-comparison.md"},
+                {"16. Architecture": "Architecture.md"},
             ]
         },
         {
             "Project": [
-                {"16. Repository overview": "Repository-Overview.md"},
-                {"17. Examples": "Examples.md"},
-                {"18. Contributing": "Contributing.md"},
-                {"19. Security policy": "Security-Policy.md"},
-                {"20. Test import boundaries": "Test-Import-Boundaries.md"},
-                {"21. Changelog": "Changelog.md"},
-                {"22. License": "License.md"},
+                {"17. Repository overview": "Repository-Overview.md"},
+                {"18. Examples": "Examples.md"},
+                {"19. Contributing": "Contributing.md"},
+                {"20. Security policy": "Security-Policy.md"},
+                {"21. Test import boundaries": "Test-Import-Boundaries.md"},
+                {"22. Changelog": "Changelog.md"},
+                {"23. License": "License.md"},
             ]
         },
     ]
@@ -312,7 +313,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
 
 def test_manifest_rejects_nonsequential_numbering(tmp_path: Path, monkeypatch):
     manifest = yaml.safe_load(build_docs.MANIFEST.read_text(encoding="utf-8"))
-    manifest["sections"][1]["number"] = "23"  # unique, but out of sequence
+    manifest["sections"][1]["number"] = "99"  # unique, but out of sequence
     invalid = tmp_path / "manifest.yaml"
     invalid.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     monkeypatch.setattr(build_docs, "MANIFEST", invalid)
@@ -501,8 +502,8 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
     assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
     assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")
-    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 22. License\n")
-    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 22. License\n")
+    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 23. License\n")
+    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 23. License\n")
     assert "(Concepts)" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "(Concepts.md)" not in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "security/advisories/new" in (wiki / "Security-Policy.md").read_text(encoding="utf-8")

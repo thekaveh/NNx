@@ -1,16 +1,26 @@
-"""Export a trained NNModel to ONNX.
+"""Export a trained NNModel to ONNX, and say exactly what was shown.
 
-Requires ``onnx`` to validate the result:
-    pip install thekaveh-nnx[onnx]
+Requires ``onnx`` to validate the result; ``onnxruntime`` additionally
+executes it:
+    pip install thekaveh-nnx[onnx]            # checker-only
+    pip install thekaveh-nnx[onnx-runtime]    # executed on CPU
 
 Run:
     python examples/04_onnx_export.py
 
+``conformance(model, path, X)`` labels every result (FEAT-038):
+``checker-only`` when only ``onnx.checker`` ran — the file is well formed,
+and **nothing is claimed about what a runtime computes** — or ``executed``
+when ONNX Runtime ran the graph on CPU and its outputs were compared with
+the model's at ``rtol=1e-4, atol=1e-5``. Parity is never claimed without
+the runtime. The tested, recorded profiles (source revision, artifact
+hashes, versions, input cases) live in ``nnx.export_conformance`` and
+``scripts/check_export_conformance.py``.
+
 ``registered_module_variant()`` (also run by ``main``) exports a model built
 from a registered factory (FEAT-006, ``nnx.models``) — any tensor-output
-``nn.Module`` exports the same way — and, when ``onnxruntime`` is
-installed, checks the graph's outputs against the CPU model. It is executed
-by ``tests/test_examples_smoke.py`` as a bounded helper.
+``nn.Module`` exports the same way. It and ``conformance`` are executed by
+``tests/test_examples_smoke.py`` as bounded helpers.
 """
 
 from __future__ import annotations
@@ -52,11 +62,66 @@ class Scorer(torch.nn.Module):
         return self.body(x)
 
 
-def registered_module_variant() -> None:
-    """Export a registered-factory model and, with ``onnxruntime``, compare
-    its outputs to the CPU model (rtol=1e-4, atol=1e-5). Raises
-    ``ImportError`` without ``onnx``."""
+def conformance(model: NNModel, onnx_path: str, X: torch.Tensor, *, rtol: float = 1e-4, atol: float = 1e-5) -> dict:
+    """What an exported file was shown to do — never more.
+
+    Always runs ``onnx.checker`` (raises ``ImportError`` without ``onnx``).
+    Without ``onnxruntime`` the result is ``{"level": "checker-only",
+    "parity": None}``: structure only, no parity claim. With it, ONNX
+    Runtime executes the graph on CPU and ``{"level": "executed", "parity":
+    True / False, "max_abs_error": ...}`` compares every raw output with
+    the model's at ``rtol`` / ``atol``."""
     import onnx
+
+    onnx.checker.check_model(onnx_path)
+    result = {
+        "level": "checker-only",
+        "parity": None,
+        "max_abs_error": None,
+        "provider": None,
+        "rtol": rtol,
+        "atol": atol,
+    }
+    try:
+        import onnxruntime
+    except ImportError:
+        return result
+    session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    produced = session.run(None, {session.get_inputs()[0].name: X.numpy()})
+    reference = np.asarray(model.predict(X).logits)
+    result.update(level="executed", provider=session.get_providers()[0], parity=False)
+    outputs = np.asarray(produced[0]) if len(produced) == 1 else None  # one output, or a failed comparison
+    if outputs is not None and outputs.shape == reference.shape:  # a shape mismatch is a failed comparison, not a crash
+        result.update(
+            parity=bool(np.allclose(outputs, reference, rtol=rtol, atol=atol)),
+            max_abs_error=float(np.abs(outputs - reference).max()),
+        )
+    return result
+
+
+def describe(result: dict) -> str:
+    """One line that claims exactly the result's level."""
+    if result["level"] == "checker-only":
+        return (
+            "  checker-only: onnx.checker says the file is well formed; no runtime executed it, "
+            "so no parity is claimed (install thekaveh-nnx[onnx-runtime] to execute it)"
+        )
+    verdict = "match" if result["parity"] else "DO NOT match"
+    error = (
+        "outputs differ in number or shape"
+        if result["max_abs_error"] is None
+        else f"max abs error {result['max_abs_error']:.2e}"
+    )
+    return (
+        f"  executed: ONNX Runtime ({result['provider']}) outputs {verdict} the model "
+        f"({error}, rtol={result['rtol']:g}, atol={result['atol']:g})"
+    )
+
+
+def registered_module_variant() -> dict:
+    """Export a registered-factory model and label the result with
+    :func:`conformance`. Raises ``ImportError`` without ``onnx``."""
+    import onnx  # noqa: F401  (the checker is required; the runtime is optional)
 
     register_model_factory("examples.scorer", 1, lambda config: Scorer(**config))
     try:
@@ -64,18 +129,13 @@ def registered_module_variant() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             onnx_path = os.path.join(tmp, "scorer.onnx")
             model.to_onnx(onnx_path, example_input=torch.randn(2, 8))
-            onnx.checker.check_model(onnx_path)
             print(f"\nExported registered module examples.scorer@v1: {onnx_path}")
-            try:
-                import onnxruntime
-            except ImportError:
-                print("  (install `onnxruntime` to compare the graph with the CPU model)")
-                return
             X = torch.randn(5, 8, generator=torch.Generator().manual_seed(0))
-            session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-            (outputs,) = session.run(None, {session.get_inputs()[0].name: X.numpy()})
-            np.testing.assert_allclose(outputs, model.predict(X).logits, rtol=1e-4, atol=1e-5)
-            print("  onnxruntime outputs match the CPU model.")
+            result = conformance(model, onnx_path, X)
+            print(describe(result))
+            if result["level"] == "executed" and not result["parity"]:
+                raise AssertionError("the exported graph does not match the model")
+            return result
     finally:
         unregister_model_factory("examples.scorer", 1)
 
@@ -122,14 +182,11 @@ def main():
         print(f"\nExported ONNX model: {onnx_path}")
         print(f"  size on disk: {os.path.getsize(onnx_path):,} bytes")
 
-        # Validate via the `onnx` library.
+        # Label what was shown: checker-only, or executed in ONNX Runtime.
         try:
-            import onnx
-
-            onnx.checker.check_model(onnx_path)
-            print("  onnx.checker: model is well-formed.")
+            print(describe(conformance(model, onnx_path, torch.randn(7, 8))))  # batch 7: the batch dim is dynamic
         except ImportError:
-            print("  (install `onnx` to run onnx.checker.check_model)")
+            print("  (install `onnx` to run onnx.checker.check_model; nothing was validated)")
 
     try:
         registered_module_variant()

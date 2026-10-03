@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import runpy
 import subprocess
@@ -186,3 +187,65 @@ def test_the_precision_example_runs_bf16_where_the_host_supports_it(tmp_path, mo
     summary = namespace["precision_workflow"]("bf16")
     assert summary is not None and (summary["requested"], summary["effective"]) == ("bf16", "bf16")
     assert namespace["precision_workflow"]("bf16", Devices.MPS) is None  # unsupported there: gated off
+
+
+def test_onnx_sample_runtime_conformance(tmp_path, monkeypatch):
+    """``examples/04_onnx_export.py`` labels what it showed (FEAT-038):
+    ``executed`` (ONNX Runtime ran the graph on CPU and matched) only with
+    the runtime installed; ``checker-only`` — with no parity claim —
+    without it."""
+    pytest.importorskip("onnx")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    namespace = runpy.run_path(str(ROOT / "examples" / "04_onnx_export.py"), run_name="__nnx_example_smoke__")
+    if importlib.util.find_spec("onnxruntime") is not None:
+        executed = namespace["registered_module_variant"]()
+        assert executed["level"] == "executed" and executed["parity"] is True
+        assert executed["provider"] == "CPUExecutionProvider" and executed["max_abs_error"] < 1e-5
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)  # not installed
+    checker_only = namespace["registered_module_variant"]()
+    assert checker_only == {
+        "level": "checker-only",
+        "parity": None,
+        "max_abs_error": None,
+        "provider": None,
+        "rtol": 1e-4,
+        "atol": 1e-5,
+    }
+
+
+def test_onnx_sample_never_claims_parity_without_the_runtime(tmp_path, monkeypatch, capsys):
+    """The output contract: without ONNX Runtime every result line says
+    checker-only and none claims a match; with it, every line says executed."""
+    pytest.importorskip("onnx")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
+    namespace = runpy.run_path(str(ROOT / "examples" / "04_onnx_export.py"), run_name="__nnx_example_smoke__")
+    namespace["main"]()
+    lines = [line for line in capsys.readouterr().out.splitlines() if "checker-only" in line or "executed" in line]
+    assert len(lines) == 2 and all("checker-only" in line and "no parity is claimed" in line for line in lines)
+    assert not any("match" in line for line in lines)
+    describe = namespace["describe"]
+    executed = {
+        "level": "executed",
+        "parity": True,
+        "max_abs_error": 0.0,
+        "provider": "CPU",
+        "rtol": 1e-4,
+        "atol": 1e-5,
+    }
+    assert "executed" in describe(executed) and "rtol=0.0001" in describe(executed)
+    assert "DO NOT match" in describe({**executed, "parity": False, "max_abs_error": None})
+
+
+def test_structural_only_examples_never_claim_runtime_parity():
+    """Quantized exports, Netron files and GGUF / Ollama artifacts stay
+    structural or container-only (FEAT-038): their samples never claim a
+    runtime match."""
+    quantized = (ROOT / "examples" / "12_quantize_int8.py").read_text(encoding="utf-8")
+    assert "structural only" in quantized and "no parity claimed" in quantized
+    from nnx.export_conformance import PROFILES
+
+    assert sorted(PROFILES) == ["feedfwd-fp32-dynamo", "feedfwd-fp32-torchscript"]
+    assert all(profile.dtype == "float32" and profile.model["net"] == "feed_fwd" for profile in PROFILES.values())

@@ -4932,6 +4932,11 @@ onnx-dynamo = [
     { name = "onnx" },
     { name = "onnxscript" },
 ]
+onnx-runtime = [
+    { name = "onnx" },
+    { name = "onnxruntime", version = "1.23.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "onnxruntime", version = "1.30.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 quantize = [
     { name = "torchao" },
 ]
@@ -4978,8 +4983,11 @@ requires-dist = [
     { name = "onnx", marker = "extra == 'dev'", specifier = ">=1.15" },
     { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.15" },
     { name = "onnx", marker = "extra == 'onnx-dynamo'", specifier = ">=1.15" },
+    { name = "onnx", marker = "extra == 'onnx-runtime'", specifier = ">=1.15" },
     { name = "onnxruntime", marker = "python_full_version >= '3.11' and extra == 'dev'", specifier = ">=1.17" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11' and extra == 'onnx-runtime'", specifier = ">=1.18" },
     { name = "onnxruntime", marker = "python_full_version < '3.11' and extra == 'dev'", specifier = ">=1.17,<1.24" },
+    { name = "onnxruntime", marker = "python_full_version < '3.11' and extra == 'onnx-runtime'", specifier = ">=1.18,<1.24" },
     { name = "onnxscript", marker = "extra == 'onnx-dynamo'", specifier = ">=0.1" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = "==2.10.1" },
@@ -5006,7 +5014,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.16" },
 ]
-provides-extras = ["dev", "tensorboard", "notebook", "wandb", "onnx", "onnx-dynamo", "viz", "viz-interactive", "quantize", "hub", "embeddings", "lm", "gguf-write", "docs"]
+provides-extras = ["dev", "tensorboard", "notebook", "wandb", "onnx", "onnx-dynamo", "onnx-runtime", "viz", "viz-interactive", "quantize", "hub", "embeddings", "lm", "gguf-write", "docs"]
 
 [package.metadata.requires-dev]
 docs-publish = [
