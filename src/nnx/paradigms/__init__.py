@@ -28,6 +28,14 @@ Public surface — re-exported from the top-level ``nnx`` package:
   - :func:`dpo_train_step_factory` — Direct Preference Optimization
     (Rafailov et al., 2023): chosen-vs-rejected log-ratio objective
     against a frozen reference policy.
+
+Offline teacher distributions (FEAT-022) — exported from ``nnx.paradigms``
+(``nnx.paradigms.offline_distillation``), not the top-level package:
+:class:`TeacherRecord` / :class:`TeacherDataset` distill a student from
+stored, permissioned teacher probabilities, trained by
+:class:`OfflineDistillationObjective` (``KL(teacher ‖ student)`` plus an
+optional hard CE, at temperature 1) and scored by
+:func:`evaluate_offline`.
 """
 
 from __future__ import annotations
@@ -47,6 +55,14 @@ from .jepa import (
 )
 from .jepa_objective import JEPAObjective, jepa_objective
 from .moe import moe_train_step_factory
+from .offline_distillation import (
+    OfflineDistillationObjective,
+    TeacherDataset,
+    TeacherRecord,
+    evaluate_offline,
+    read_teacher_records,
+    write_teacher_records,
+)
 
 __all__ = [
     "kd_train_step_factory",
@@ -66,4 +82,10 @@ __all__ = [
     "jepa_objective",
     "JEPATrainStep",
     "dpo_train_step_factory",
+    "TeacherRecord",
+    "TeacherDataset",
+    "OfflineDistillationObjective",
+    "evaluate_offline",
+    "read_teacher_records",
+    "write_teacher_records",
 ]

@@ -24,6 +24,13 @@ clipping — the imperative factory refuses the first two.
 ``objective_mode()`` below runs it with a short accumulation window and
 checks the one committed update against a full-batch reference.
 
+**No live teacher?** Both paths above soften a running teacher's
+**logits** every step. When all you have is stored teacher
+**probabilities** (an export, a decision provider's answers), train on them
+offline with ``nnx.paradigms.offline_distillation`` — see
+``examples/offline_teacher_distillation.py``. The live factories refuse
+those records.
+
 Run:
     python examples/10_knowledge_distillation.py
 """

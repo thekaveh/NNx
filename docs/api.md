@@ -13191,6 +13191,287 @@ Raises:
 ```
 
 
+#### `nnx.paradigms.offline_distillation.TeacherRecord`
+
+```python
+class nnx.paradigms.offline_distillation.TeacherRecord(sample_id: 'str', question_id: 'str', candidates: 'tuple[str, ...]', probabilities: 'tuple[float, ...]', teacher: 'str', revision: 'str', schema_digest: 'str', semantics: 'str', provenance: 'Mapping[str, str]', label: 'Optional[str]' = None) -> 'None'
+```
+
+One stored teacher distribution over a question's candidates (see the module docstring). Every field but ``label`` is required.
+
+##### `nnx.paradigms.offline_distillation.TeacherRecord.distribution`
+
+```python
+nnx.paradigms.offline_distillation.TeacherRecord.distribution(self) -> 'dict[str, float]'
+```
+
+``{candidate id: probability}``.
+
+##### `nnx.paradigms.offline_distillation.TeacherRecord.state`
+
+```python
+nnx.paradigms.offline_distillation.TeacherRecord.state(self) -> 'dict[str, Any]'
+```
+
+The record as strict JSON (``nnx.teacher-record/1``).
+
+##### `nnx.paradigms.offline_distillation.TeacherRecord.from_state`
+
+```python
+nnx.paradigms.offline_distillation.TeacherRecord.from_state(state: 'Mapping[str, Any]') -> 'TeacherRecord'
+```
+
+No public description is currently available.
+
+
+#### `nnx.paradigms.offline_distillation.TeacherDataset`
+
+```python
+class nnx.paradigms.offline_distillation.TeacherDataset(records: 'Iterable[TeacherRecord]', inputs: 'Mapping[str, Any]', *, candidates: 'Sequence[str]', schema_digest: 'str') -> 'None'
+```
+
+:class:`TeacherRecord`\ s joined to the student's ``inputs`` (a mapping from sample id to its input tensor) and aligned to the student's output order ``candidates`` (see the module docstring).
+
+**Details**
+
+```text
+Args:
+    records: the teacher records — one per sample, all with this
+        ``schema_digest`` and exactly these candidates (in any order).
+    inputs: ``{sample id: input tensor}``; every record's sample needs
+        one (extra inputs are ignored).
+    candidates: the student's output order: output ``i`` scores
+        ``candidates[i]``.
+    schema_digest: the question schema the records answer (e.g. a
+        ``nnx.decisions`` question's ``digest()``).
+```
+
+##### `nnx.paradigms.offline_distillation.TeacherDataset.sample_ids`
+
+```python
+property nnx.paradigms.offline_distillation.TeacherDataset.sample_ids
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.offline_distillation.TeacherDataset.labelled`
+
+```python
+property nnx.paradigms.offline_distillation.TeacherDataset.labelled
+```
+
+``"all"``, ``"none"`` or ``"partial"``: which records carry a label.
+
+##### `nnx.paradigms.offline_distillation.TeacherDataset.collate`
+
+```python
+nnx.paradigms.offline_distillation.TeacherDataset.collate(self, items: 'Sequence[tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]]') -> 'TeacherBatch'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.offline_distillation.TeacherDataset.loader`
+
+```python
+nnx.paradigms.offline_distillation.TeacherDataset.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'DataLoader'
+```
+
+A ``DataLoader`` of :class:`TeacherBatch`\ es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores).
+
+##### `nnx.paradigms.offline_distillation.TeacherDataset.objective`
+
+```python
+nnx.paradigms.offline_distillation.TeacherDataset.objective(self, *, alpha: 'float' = 0.5, nonfinite: 'str' = 'fail') -> 'OfflineDistillationObjective'
+```
+
+This dataset's :class:`OfflineDistillationObjective` — refused here, before any optimizer exists, for a partly labelled dataset (any ``alpha``: its batches would mix labelled and unlabelled rows) and, with ``alpha < 1`` (a hard term), for one without labels.
+
+##### `nnx.paradigms.offline_distillation.TeacherDataset.eval_step`
+
+```python
+nnx.paradigms.offline_distillation.TeacherDataset.eval_step(self) -> 'OfflineDistillationEval'
+```
+
+An ``eval_step_fn`` for ``NNModel.train`` over a validation loader of this dataset's kind (see :class:`OfflineDistillationEval`).
+
+
+#### `nnx.paradigms.offline_distillation.TeacherBatch`
+
+```python
+class nnx.paradigms.offline_distillation.TeacherBatch(inputs: 'torch.Tensor', teacher: 'torch.Tensor', target: 'torch.Tensor', labelled: 'torch.Tensor', sample_ids: 'tuple[str, ...]', schema_digest: 'str', candidates: 'tuple[str, ...]') -> 'None'
+```
+
+A microbatch of a :class:`TeacherDataset`: the student's ``inputs``, the ``teacher`` probabilities ``(rows, candidates)`` in the dataset's candidate order, the hard ``target`` indices (``-1`` where unlabelled), the ``labelled`` row mask, the ``sample_ids``, and the dataset's ``schema_digest`` and ``candidates`` (the order of the probability columns), which an objective or evaluation checks against its own.
+
+
+#### `nnx.paradigms.offline_distillation.OfflineDistillationObjective`
+
+```python
+class nnx.paradigms.offline_distillation.OfflineDistillationObjective(*, schema_digest: 'str', candidates: 'Sequence[str]', alpha: 'float' = 0.5, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+``alpha · KL(teacher ‖ student) + (1 − alpha) · CE(student, label)`` over stored teacher distributions (see the module docstring). Build it with :meth:`TeacherDataset.objective`.
+
+**Details**
+
+```text
+Terms (both normalized by the microbatch's rows — one shared mask and
+denominator): ``"teacher_kl"`` (weight ``alpha``, omitted when
+``alpha == 0``) and ``"hard_ce"`` (weight ``1 − alpha``, omitted when
+``alpha == 1``).
+```
+
+##### `nnx.paradigms.offline_distillation.OfflineDistillationObjective.identity`
+
+```python
+nnx.paradigms.offline_distillation.OfflineDistillationObjective.identity(self) -> 'dict[str, Any]'
+```
+
+The objective's identity: id, version, schema digest, ``alpha`` and the candidate alignment — checkpointed as component state and fit for ``ExperimentManifest.for_model(objective=...)``.
+
+##### `nnx.paradigms.offline_distillation.OfflineDistillationObjective.component_spec`
+
+```python
+nnx.paradigms.offline_distillation.OfflineDistillationObjective.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.offline_distillation.OfflineDistillationObjective.component_state`
+
+```python
+nnx.paradigms.offline_distillation.OfflineDistillationObjective.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.offline_distillation.OfflineDistillationObjective.check_component_state`
+
+```python
+nnx.paradigms.offline_distillation.OfflineDistillationObjective.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.offline_distillation.OfflineDistillationObjective.load_component_state`
+
+```python
+nnx.paradigms.offline_distillation.OfflineDistillationObjective.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+Nothing to restore: the checked identity is the whole state.
+
+
+#### `nnx.paradigms.offline_distillation.OfflineDistillationEval`
+
+```python
+class nnx.paradigms.offline_distillation.OfflineDistillationEval(*, schema_digest: 'str', candidates: 'Sequence[str]') -> 'None'
+```
+
+An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a validation loader of :class:`TeacherBatch`\ es: its ``metrics`` are ``teacher_kl``, ``teacher_agreement`` and — with labelled records — ``label_accuracy`` and ``label_nll``.
+
+**Details**
+
+```text
+The record's ``loss`` is the **imitation loss** (``teacher_kl``) whatever
+the objective's ``alpha``: it measures agreement with the teacher, not
+quality. A scheduler, early stopping or BEST selection that should
+follow labelled quality must monitor ``label_accuracy`` or ``label_nll``
+by name (``MonitorSpec``). Use :func:`evaluate_offline` for every
+denominator.
+```
+
+
+#### `nnx.paradigms.offline_distillation.evaluate_offline`
+
+```python
+nnx.paradigms.offline_distillation.evaluate_offline(model: 'NNModel', data: 'Union[TeacherDataset, Iterable[TeacherBatch]]', *, batch_size: 'int' = 256) -> 'DistillationReport'
+```
+
+Score ``model`` against a :class:`TeacherDataset` (or a loader of its batches): teacher agreement, imitation loss and labelled quality, each with its own denominator (see :class:`DistillationReport`). Runs in eval mode under ``no_grad`` and restores the model's modes.
+
+
+#### `nnx.paradigms.offline_distillation.DistillationReport`
+
+```python
+class nnx.paradigms.offline_distillation.DistillationReport(agreement: 'Measure', imitation_loss: 'Measure', label_accuracy: 'Measure', label_nll: 'Measure', candidates: 'tuple[str, ...]' = (), schema_digest: 'str' = '') -> 'None'
+```
+
+A student scored against stored teacher distributions.
+
+**Details**
+
+```text
+- ``agreement``: records whose student top candidate is the teacher's
+  (ties go to the first candidate in the dataset's order), over every
+  record;
+- ``imitation_loss``: mean ``KL(teacher ‖ student)`` in nats, over every
+  record;
+- ``label_accuracy`` / ``label_nll``: quality on the labelled records
+  only — unavailable without any.
+```
+
+##### `nnx.paradigms.offline_distillation.DistillationReport.state`
+
+```python
+nnx.paradigms.offline_distillation.DistillationReport.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.paradigms.offline_distillation.DistillationReport.text`
+
+```python
+nnx.paradigms.offline_distillation.DistillationReport.text(self) -> 'str'
+```
+
+No public description is currently available.
+
+
+#### `nnx.paradigms.offline_distillation.Measure`
+
+```python
+class nnx.paradigms.offline_distillation.Measure(value: 'Optional[float]', denominator: 'int', reason: 'Optional[str]' = None) -> 'None'
+```
+
+One reported quantity with its denominator, or ``value=None`` and the ``reason`` it is unavailable.
+
+##### `nnx.paradigms.offline_distillation.Measure.state`
+
+```python
+nnx.paradigms.offline_distillation.Measure.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.paradigms.offline_distillation.read_teacher_records`
+
+```python
+nnx.paradigms.offline_distillation.read_teacher_records(path: 'Union[str, os.PathLike[str]]') -> 'list[TeacherRecord]'
+```
+
+The records of a JSONL file written by :func:`write_teacher_records`; a malformed line raises naming ``path:line``.
+
+
+#### `nnx.paradigms.offline_distillation.write_teacher_records`
+
+```python
+nnx.paradigms.offline_distillation.write_teacher_records(path: 'Union[str, os.PathLike[str]]', records: 'Iterable[TeacherRecord]') -> 'None'
+```
+
+One record per line (strict JSON, sorted keys), written atomically.
+
+
+#### `nnx.paradigms.offline_distillation.TeacherRecordError`
+
+```python
+class nnx.paradigms.offline_distillation.TeacherRecordError
+```
+
+A teacher record, dataset or batch that cannot train or be scored.
+
+
 ### 14.2. Contrastive
 
 #### `nnx.paradigms.contrastive.simclr_train_step_factory`
