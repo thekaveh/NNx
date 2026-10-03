@@ -334,6 +334,7 @@ class NNCheckpoint:
         scheduler_types: Optional[dict[str, str]] = None,
         optimizer_topologies: Optional[dict[str, list[list[dict[str, Any]]]]] = None,
         optimizer_factories: Optional[dict[str, Optional[dict[str, Any]]]] = None,
+        precision: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -394,6 +395,9 @@ class NNCheckpoint:
                 "optimizer_factories": optimizer_factories,
                 "schedulers": schedulers_state,
                 "scheduler_types": scheduler_types,
+                # FEAT-028: the run's resolved precision record (None when
+                # absent; older sidecars lack the key).
+                "precision": precision,
             }
             fd, checkpoint_tmp = tempfile.mkstemp(
                 prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)

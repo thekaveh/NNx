@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from .._step_helpers import finalize_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+from ..precision import full_precision_only
 
 
 def nt_xent_loss(
@@ -146,4 +147,4 @@ def simclr_train_step_factory(*, temperature: float = 0.5) -> TrainStepFn:
             error=loss_val,
         )
 
-    return step
+    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)

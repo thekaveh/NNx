@@ -65,7 +65,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 
 ### 1.2. Capabilities at a glance
 
-- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), AMP, gradient clipping, gradient accumulation, seeded reproducibility, custom metrics, declared metrics with one named monitor shared by BEST selection, plateau scheduling and early stopping (`MetricSpec` / `MonitorSpec`), and objectives (`LossTerm`s with explicit denominators) over one shared update engine that gives accumulation and clipping to `NNModel` and `Trainer` alike, plus AMP under `NNModel` (`supervised_objective`, `kd_objective`).
+- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), an explicit FP32 / FP16 / BF16 precision policy (`PrecisionPolicy`), gradient clipping, gradient accumulation, seeded reproducibility, custom metrics, declared metrics with one named monitor shared by BEST selection, plateau scheduling and early stopping (`MetricSpec` / `MonitorSpec`), and objectives (`LossTerm`s with explicit denominators) over one shared update engine that gives accumulation and clipping to `NNModel` and `Trainer` alike, plus the precision policy (`supervised_objective`, `kd_objective`).
 - **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`). LAST is the epoch commit marker: failed LAST writes roll history back, while failures in later ancillary tags retain the committed history/LAST pair. `NNRun.load()` truncates history newer than LAST after an interrupted process. `NNCheckpoint` saves FIRST / Q1 / Q2 / Q3 / LAST / BEST with generation-addressed training-state sidecars for warm resume. Opt-in `history=HistoryJournal(retention, chunk_size)` (`nnx.history`) keeps a bounded window in memory and appends every record once to `runs/<id>/history/` instead of rewriting `idps.csv`, with lazy tail reads, CSV export and lineage-aware iteration.
 - **Task adapters** — declare `NNModelParams(task=TaskSpec.regression(n))` (or `.multilabel(n, threshold=...)` / `.categorical(n, ignore_index=...)`) and the default training step, `evaluate()` and `predict()` validate batches before any update, mask NaN / ignored targets out of loss and metrics alike, average the loss over valid targets (exact under uneven batches and gradient accumulation) and report `mse` / `mae` (or subset / element accuracy) without fabricated classification fields. See `examples/regression_task.py`.
 - **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / link-prediction / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms without modifying NNx internals.
@@ -272,11 +272,19 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 # Devices.get() picks MPS (Apple) > CUDA > CPU.
 ```
 
-### 4.7. Mixed precision (CUDA)
+### 4.7. Precision (FP32 / FP16 / BF16)
 
 ```python
-NNModelParams(..., mixed_precision=True)   # silently no-op on CPU/MPS
+from nnx import PrecisionPolicy
+NNModelParams(..., precision=PrecisionPolicy("bf16"))                   # CPU, or CUDA with bf16 support
+NNModelParams(..., precision=PrecisionPolicy("fp16", fallback="fp32"))  # CUDA fp16, else recorded fp32
 ```
+
+An unsupported request fails before any run is reserved unless it names a
+fallback; `run.precision` records the requested and effective precision, the
+fallback reason and TF32. The legacy `mixed_precision=True` (CUDA FP16,
+silently FP32 elsewhere) keeps its meaning and run id. See
+[Quickstart §2.2](docs/quickstart.md#22-precision-fp32-fp16-and-bf16).
 
 ### 4.8. Scheduler choices
 

@@ -52,6 +52,7 @@ from .._scheduler_clock import (
     planned_updates,
     uses_update_clock,
 )
+from .._update_engine import check_scaler_ownership
 from ..components import ComponentRegistry, ResumeStatus
 from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
@@ -65,6 +66,8 @@ from ..nn.nn_model import (
     _check_plateau_resume,
     _check_provenance,
     _check_resume_horizon,
+    _check_resume_precision,
+    _check_scaler_hook,
     _component_type,
     _dispatch_update,
     _enumerate_with_last,
@@ -89,6 +92,13 @@ from ..nn.params.nn_iteration_data_point import NNIterationDataPoint
 from ..nn.params.nn_run import NNRun, _best_err, _print_run_saved
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
 from ..nn.params.nn_train_params import NNTrainParams
+from ..precision import (
+    EVALUATE,
+    PREDICT,
+    TRAINER_OBJECTIVE,
+    PrecisionUnsupportedError,
+    ResolvedPrecision,
+)
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state
 from ..transforms import _recipe_transforms
@@ -151,16 +161,49 @@ def _objective_window(params: NNTrainerParams) -> int:
     return windows.pop() if windows else 1
 
 
+def _trainer_precision(model: Any, objective: Optional[Callable[[Any], Any]]) -> ResolvedPrecision:
+    """The precision a Trainer run uses (FEAT-028), resolved before any run
+    is reserved. An explicit ``NNModelParams.precision`` applies to an
+    objective, which the shared engine runs; step functions own every
+    update in full precision, so they refuse a reduced policy. The legacy
+    ``mixed_precision`` flag keeps its meaning here: never applied."""
+    trained = (TRAINER_OBJECTIVE,) if objective is not None else ()
+    resolved = model._resolve_run_precision((*trained, EVALUATE, PREDICT))
+    if resolved.source != "legacy":
+        if resolved.reduced and objective is None:
+            raise PrecisionUnsupportedError(
+                f"Trainer step functions run in full precision (they own every optimizer update), so they cannot "
+                f"apply the {resolved.effective} policy; pass objective= to train in it, or set precision fp32"
+            )
+        return resolved
+    if objective is not None:
+        _warn_full_precision_objective(model)
+    # This run's record only: the model keeps its own (legacy) resolution,
+    # which NNModel.train applies on CUDA.
+    return replace(
+        resolved,
+        effective="fp32",
+        fallback_reason=(
+            "Trainer.train never applies mixed_precision=True, on any device (NNModel.train applies it on CUDA); "
+            "set NNModelParams.precision"
+        ),
+        covers=(),
+    )
+
+
 def _warn_full_precision_objective(model: Any) -> None:
-    """``Trainer`` has no mixed-precision setting — its step functions own
-    AMP — so the shared engine runs a Trainer objective in full precision.
-    Say so when the model asks for mixed precision where it would apply."""
+    """``Trainer`` does not apply the legacy ``mixed_precision`` flag — its
+    step functions own AMP — so the shared engine runs a Trainer objective
+    in full precision unless ``NNModelParams.precision`` (FEAT-028) says
+    otherwise. Say so when the flag asks for mixed precision where it would
+    apply."""
     if getattr(model.params, "mixed_precision", False) and model.device.type == "cuda":
         warnings.warn(
-            "Trainer.train(objective=...) runs in full precision: Trainer has no mixed-precision setting, so "
-            "the model's mixed_precision=True is not applied (NNModel.train(objective=...) applies it)",
+            "Trainer.train(objective=...) runs in full precision: Trainer never applies the legacy "
+            "mixed_precision=True (NNModel.train(objective=...) does); set "
+            "NNModelParams.precision=PrecisionPolicy('fp16') to train the objective in fp16",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=4,  # Trainer.train -> _trainer_precision -> here
         )
 
 
@@ -351,6 +394,10 @@ class Trainer:
                 "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
             )
 
+        # FEAT-028: the precision is resolved (and a step function refused a
+        # reduced policy) before anything is seeded, built or reserved.
+        precision = _trainer_precision(self.model, objective)
+
         if params.seed is not None:
             from ..seeding import set_seed
 
@@ -400,8 +447,12 @@ class Trainer:
             name: build_optimizer(self.model.net, opt_params, strict_param_groups=True)
             for name, opt_params in params.optims.items()
         }
-        if objective is not None:
-            _warn_full_precision_objective(self.model)
+        if precision.uses_scaler:  # only an objective runs a reduced policy here
+            check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
+        # The fp16 loss scaler, through the model's hook as NNModel.train builds
+        # it, checked against the policy before any run is reserved.
+        scaler = self.model._build_grad_scaler() if precision.uses_scaler else None
+        _check_scaler_hook(precision, scaler, self.model.device.type)
 
         run = NNRun(
             train=_representative_train_params(params),
@@ -429,6 +480,8 @@ class Trainer:
                     objective=objective,
                     objective_window=objective_window,
                     history=history,
+                    precision=precision,
+                    scaler=scaler,
                 ),
             )
 
@@ -444,6 +497,8 @@ class Trainer:
         objective: Optional[Callable[[Any], Any]] = None,
         objective_window: int = 1,
         history: Optional[HistoryJournal] = None,
+        precision: ResolvedPrecision,
+        scaler: Optional[Any],
     ) -> NNRun:
         """Execute a validated multi-optimizer training session."""
         assert params.train_loader is not None
@@ -510,12 +565,12 @@ class Trainer:
                 objective,
                 optimizers=optimizers,
                 clip_norms={name: getattr(params.optims[name], "grad_clip_norm", None) for name in optimizers},
-                scaler=None,  # Trainer has no mixed-precision setting (see _warn_full_precision_objective)
-                device=self.model.device,
+                scaler=scaler,
+                precision=precision,
             )
             registry.register(engine)
         start_epoch, component_plan, resume_status, rollback = self._resume(
-            params, optimizers, schedulers, registry, train_loader
+            params, optimizers, schedulers, registry, train_loader, precision=precision, scaler=scaler
         )
 
         primary = _primary_name(optimizers.keys())
@@ -587,7 +642,7 @@ class Trainer:
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
-            run = run.with_resume_status(resume_status)
+            run = run.with_resume_status(resume_status).with_precision(precision)
             ctx.run = run
             pre_transform_net_state: Optional[dict[str, Any]] = None
             pre_transform_rng_state: Optional[dict[str, Any]] = None
@@ -751,6 +806,8 @@ class Trainer:
                         optimizer_factories=optimizer_factories,
                         is_best=record.improved if record is not None else None,
                         trained_recipe=run.transforms,
+                        scaler=scaler,
+                        precision=precision.record(),
                     )
                 except BaseException:
                     committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
@@ -801,6 +858,8 @@ class Trainer:
                 completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 components=registry.collect(),
+                scaler_state=scaler.state_dict() if scaler is not None else None,
+                precision=precision.record(),
             )
 
         saved = records.finish(run)
@@ -823,6 +882,8 @@ class Trainer:
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
         trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
+        scaler: Optional[Any] = None,
+        precision: Optional[dict[str, Any]] = None,
     ) -> NNCheckpoint:
         """Delegates to NNModel._save_checkpoints — the same
         FIRST/Q1/Q2/Q3/LAST/BEST cadence — with the named optimizers and
@@ -844,6 +905,8 @@ class Trainer:
             optimizer_factories=optimizer_factories,
             is_best=is_best,
             trained_recipe=trained_recipe,
+            scaler=scaler,
+            precision=precision,
         )
 
     def _resume(
@@ -853,6 +916,9 @@ class Trainer:
         schedulers: Mapping[str, Any],
         registry: ComponentRegistry,
         train_loader: Any,
+        *,
+        precision: Optional[ResolvedPrecision] = None,
+        scaler: Optional[Any] = None,
     ) -> tuple[int, Any, ResumeStatus, Optional[Callable[[], None]]]:
         """Warm-resume a multi-optimizer run (FEAT-005).
 
@@ -941,6 +1007,10 @@ class Trainer:
             _check_resume_horizon(
                 sched_params, n_epochs=params.n_epochs, start_epoch=start_epoch, owner=f" for {name!r}"
             )
+        if precision is not None:
+            # FEAT-028: the same effective precision, and a scaler exactly
+            # when the checkpoint saved one — checked before anything moves.
+            _check_resume_precision(training_state, precision, scaler)
         component_plan = _plan_component_restore(registry, training_state)
         warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
 
@@ -952,6 +1022,8 @@ class Trainer:
                 optimizer.load_state_dict(saved_optimizers[name])
             for name, scheduler in schedulers.items():
                 scheduler.load_state_dict(saved_schedulers[name])
+            if scaler is not None:
+                scaler.load_state_dict(training_state["scaler"])
             if training_state.get("rng") is not None:
                 _restore_rng_state(training_state["rng"], train_loader)
         except BaseException:

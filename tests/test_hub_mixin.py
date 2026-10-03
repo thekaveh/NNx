@@ -444,3 +444,34 @@ def test_save_pretrained_refuses_a_recipe_model_its_recipe_cannot_rebuild(tmp_pa
     with pytest.raises(ValueError, match="save_pretrained refused before writing anything"):
         model.save_pretrained(str(target))
     assert not target.exists()
+
+
+def test_hub_loading_re_resolves_the_precision_policy_on_the_destination_device(tmp_path):
+    """FEAT-028: the saved policy is re-resolved on ``map_location`` — never
+    taken from saved metadata — and ``precision=`` replaces it."""
+    import json as _json
+
+    import numpy as np
+
+    from nnx import PrecisionPolicy, PrecisionUnsupportedError
+
+    bf16 = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16")
+        ),
+    )
+    bf16.save_pretrained(str(tmp_path))
+    restored = NNModel.from_pretrained(str(tmp_path), map_location="cpu")
+    assert restored.resolved_precision.effective == "bf16"
+    assert restored.predict(torch.randn(2, 4)).logits.dtype == np.float32  # bf16 converts to a safe CPU dtype
+    # A config saved for CUDA fp16 cannot run on the CPU destination ...
+    config_path = tmp_path / "config.json"
+    config = _json.loads(config_path.read_text())
+    config["params"]["precision"] = {"mode": "fp16"}
+    config_path.write_text(_json.dumps(config))
+    with pytest.raises(PrecisionUnsupportedError, match="CUDA only"):
+        NNModel.from_pretrained(str(tmp_path), map_location="cpu")
+    # ... unless the caller replaces the policy.
+    replaced = NNModel.from_pretrained(str(tmp_path), map_location="cpu", precision=PrecisionPolicy("fp32"))
+    assert replaced.resolved_precision.effective == "fp32"

@@ -1092,3 +1092,16 @@ def test_scheduler_clock_is_omitted_at_the_epoch_default():
     updates = replace(epoch, clock="optimizer_update")
     assert updates.state()["clock"] == "optimizer_update"
     assert NNSchedulerParams.from_state(updates.state()) == updates
+
+
+def test_nn_model_params_state_omits_precision_when_unset():
+    """FEAT-028: precision follows the omit-when-default rule (run ids unchanged)."""
+    from nnx import PrecisionPolicy
+
+    params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    assert "precision" not in params.state()
+    with_policy = NNModelParams(
+        net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16")
+    )
+    assert with_policy.state()["precision"] == {"mode": "bf16"}
+    assert NNModelParams.from_state(with_policy.state()) == with_policy

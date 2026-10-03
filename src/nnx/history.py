@@ -910,10 +910,10 @@ def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optio
     and no history is read."""
     import yaml
 
-    from .nn.params.nn_run import _load_resume_status
+    from .nn.params.nn_run import _load_resume_status, _read_metadata
 
     run_path = _run_path(run_id, root)
-    status = _load_resume_status(os.path.join(run_path, "metadata.yaml"))
+    status = _load_resume_status(_read_metadata(os.path.join(run_path, "metadata.yaml")))
     if status is not None:
         if status.mode == "fresh" or status.source_run_id is None:
             return None, None, None

@@ -25,7 +25,7 @@ Every config in NNx is a frozen, kw-only, slotted dataclass with a `state()` / `
 
 ```python
 NNParams         # network shape: dims, dropout, activation, n_heads
-NNModelParams    # device + loss + net kind + mixed precision
+NNModelParams    # device + loss + net kind + precision policy (FP32 / FP16 / BF16)
 NNOptimParams    # SGD / Adam + LR / momentum / grad clipping / accumulation / param_groups
 NNSchedulerParams # ReduceLROnPlateau / Step / Cosine / OneCycle / LinearWarmup
 NNTrainParams    # epochs + loaders + optim + scheduler + seed + ...
@@ -38,7 +38,7 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 ### 2.2. The omit-when-default invariant
 
-New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
+New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern; regression tests pin it for `mixed_precision` / `precision` / `kind` / `trainer` in `tests/test_params_round_trip.py`, for `param_groups` in `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`, for `seed` / `save_phase_checkpoints` in `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`, and for `schedulers` in `tests/test_trainer_params.py`.
 
 ### 2.3. Finite numeric domains
 
@@ -232,7 +232,7 @@ The epoch transaction is history → LAST → phase/BEST → deferred callback c
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
-The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, mixed-precision scaler, completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored.
+The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, the FP16 loss scaler and the run's resolved precision record (a stateful resume into another effective precision is refused before the model is touched; a weights-only warm start may switch — [Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16)), completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored.
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A recipe materialized before training (`nnx.transforms.TransformRecipe` — LoRA on explicit Linear targets, SVD low-rank replacement; FEAT-016, [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild)) is recorded on the model and carried by every checkpoint tag, `ModelCheckpoint` snapshots and Hub saves; it is part of the run id of a run that trains it (runs without one keep theirs). Replay rebuilds its topology on a fresh base without rerunning SVD, and a resume needs the resuming model to have materialized the same recipe. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
@@ -410,9 +410,9 @@ model.train(params=train_params, train_step_fn=my_step)
 
 ### 6.1. Hook contract
 
-The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`); honoring them is on you. An `optimizer_update`-clock scheduler (§3) steps only on the updates your function reports with `ctx.report_update()` (no name) after each `optimizer.step()` it takes itself; `default_train_step` and `finalize_step` report their own steps, so do not report a step you delegate to them. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
+The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, callbacks, checkpoint cadence, val loop, incremental save) stays exactly the same. Your function is responsible for `zero_grad` / forward / loss / backward / `optimizer.step` / NaN guard / gradient accumulation / AMP — `ctx` carries the relevant knobs (`grad_clip_norm`, `accumulate_grad_batches`, `scaler`, and the run's resolved `precision` — `ctx.precision.autocast()` is the forward context; `scaler` is set for FP16 only); honoring them is on you. An `optimizer_update`-clock scheduler (§3) steps only on the updates your function reports with `ctx.report_update()` (no name) after each `optimizer.step()` it takes itself; `default_train_step` and `finalize_step` report their own steps, so do not report a step you delegate to them. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward, honors `ctx.grad_clip_norm` and reports each optimizer step with `ctx.report_update()` (so an `optimizer_update`-clock scheduler steps once per batch, §3). AMP and gradient accumulation are not handled inside these imperative paradigm steps — `finalize_step` raises a clear `ValueError` if either is requested (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective` ships for distillation). The AMP rejection only fires when `ctx.scaler` is non-None, which on CPU it never is (the supervised path silently bypasses AMP on CPU/MPS regardless of `NNModelParams.mixed_precision`); the explicit error is the user-facing safety net for the CUDA path, where silent drop would actually matter.
+The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory`, and `nnx.embeddings.text_contrastive_train_step_factory` all share an internal helper, `nnx._step_helpers.finalize_step`, that runs the NaN guard before backward, honors `ctx.grad_clip_norm` and reports each optimizer step with `ctx.report_update()` (so an `optimizer_update`-clock scheduler steps once per batch, §3). Reduced precision and gradient accumulation are not handled inside these imperative paradigm steps — they run in full precision: a run whose precision resolves to FP16 or BF16 refuses them before any run is reserved (they are marked full-precision-only), and `finalize_step` itself raises a clear `ValueError` for a scaler, a reduced `ctx.precision` or accumulation (rather than silently dropping them); express the loss as an objective (§6.5) to get both from the shared update engine (`kd_objective` ships for distillation). The legacy `mixed_precision=True` resolves to full precision on CPU/MPS, where these steps therefore run as before.
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
@@ -650,7 +650,7 @@ rule are unchanged.
 A `train_step_fn` is fully responsible for its update — forward, backward,
 accumulation, mixed precision, clipping and `optimizer.step` — so every
 paradigm re-implements those mechanics, and the factories built on
-`finalize_step` refuse AMP and gradient accumulation outright. An
+`finalize_step` refuse reduced precision and gradient accumulation outright. An
 **objective** (`nnx.objectives`) only describes the loss and hands the update
 to one shared engine, used by `NNModel.train` and `Trainer.train` alike:
 
@@ -712,9 +712,24 @@ A run has exactly one update owner: passing both `train_step_fn` (or
 loader is read or any parameter changes. In `Trainer` the engine steps every
 named optimizer once per committed update — each clipped with its own
 `grad_clip_norm`, all sharing one `accumulate_grad_batches` — and emits one
-event per named optimizer. `Trainer` has no mixed-precision setting (its step
-functions own AMP), so it runs objectives in full precision and warns when
-the model asks for `mixed_precision` on CUDA; `NNModel.train` applies it. As
+event per named optimizer. An explicit `NNModelParams.precision` (FEAT-028)
+applies to `Trainer` objectives too — autocast around the objective, an FP16
+scaler checkpointed with the run, and an all-or-nothing window: when any
+optimizer's unscaled gradients overflow, none of them steps; under FP16 the
+named optimizers must not share a parameter (the scaler unscales per
+optimizer), which is refused before any run is reserved — while `Trainer` step functions own every
+update in full precision and refuse a reduced policy before any run is
+reserved. The legacy `mixed_precision` flag is not applied by `Trainer`: it
+runs objectives in full precision and warns when the flag asks for it on
+CUDA; `NNModel.train` applies it. An objective runs under the run's
+autocast, so a reduced run's forward outputs are float16 / bfloat16:
+`ObjectiveContext.precision` is the resolved precision and
+`ctx.full_precision(output)` returns an output as float32 (differentiable)
+before task preparation, the loss's bookkeeping or a record converts it to
+NumPy — the built-in objectives (and the default step) do. `kd_objective`'s
+frozen teacher runs in its own inference precision (its explicit policy, or
+full precision), never in the student's — not even under the legacy
+`mixed_precision` flag, which never governs inference. As
 with the default step, `NNModel.train` rejects an objective run on a
 low-rank-surgery topology it cannot reconstruct. Imperative step functions and
 `finalize_step` are unchanged.

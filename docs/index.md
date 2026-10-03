@@ -49,7 +49,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 ### 1.1. Core capabilities
 
-- **Generic training loop** — callbacks, early stopping, schedulers, AMP, gradient clipping, gradient accumulation, and seeded reproducibility.
+- **Generic training loop** — callbacks, early stopping, schedulers, an FP32 / FP16 / BF16 precision policy, gradient clipping, gradient accumulation, and seeded reproducibility.
 - **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags, ordered history → LAST → ancillary commits, and a `runs/best` pointer that advances only after the final durable save.
 - **Warm-resume training** — restore model, validated optimizer topology, scheduler, scaler, completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG state from a matching generation-addressed sidecar.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
