@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import functools
 import inspect
 import json
@@ -225,13 +226,24 @@ class _ResumeSource:
     label: str
 
 
+# A checkpoint and its training state held in memory under (run id, label) for
+# one train() call — a run bundle's (nnx.bundles), which never becomes a pickle.
+_IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint, Optional[dict[str, Any]]]]] = (
+    contextvars.ContextVar("nnx_in_memory_resume", default=None)
+)
+
+
 def _load_resume_source(run_id: str, checkpoint: Any, mode: str, *, trainer: bool) -> _ResumeSource:
     """Read the checkpoint a resume starts from — shared by ``NNModel.train``
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
     a bundle ``resume_mode`` cannot use."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
-    ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+    in_memory = _IN_MEMORY_RESUME.get()
+    if in_memory is not None and in_memory[:2] == (run_id, str(ckpt_type)):
+        ckpt, training_state = in_memory[2], in_memory[3]
+    else:
+        ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
     resume_net_state = training_state.get("model") if training_state is not None else None
@@ -1934,6 +1946,15 @@ class NNModel(_HubMixinBase):
         model_kwargs.pop("transforms", None)
         # FEAT-006: a runtime-only adapter for a registered module's batches.
         batch_adapter = model_kwargs.pop("batch_adapter", None)
+        if (
+            os.path.isdir(model_id)
+            and not os.path.exists(os.path.join(model_id, _HUB_CONFIG_FILENAME))
+            and os.path.exists(os.path.join(model_id, "bundle.json"))
+        ):
+            raise ValueError(
+                f"{model_id!r} is an NNx run bundle, not a Hugging Face Hub distribution; rebuild it with "
+                "nnx.bundles.reconstruct_bundle"
+            )
         if model_kwargs:
             raise TypeError(
                 f"from_pretrained got unexpected model kwargs {sorted(model_kwargs)!r} — "
