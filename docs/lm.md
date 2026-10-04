@@ -131,7 +131,7 @@ rebuild a builder from it instead of retyping the chain:
 `NNTransformerParamsBuilder.from_params(net_params).context(max_seq_len=256, rope_base=net_params.rope_base).build()`.
 `from_params` carries every field, including inherited `NNParams`
 fields no setter exposes, and `.copy()` branches a builder in progress
-(see [Concepts §2.3.1](concepts.md#231-variant-gated-construction-via-builder)).
+(see [Concepts §2.4](concepts.md#24-variant-gated-construction-via-builder)).
 Setters keep their last-call-wins rules on a rebuilt builder:
 `.context()` sets `max_seq_len` *and* `rope_base` (an omitted
 `rope_base` resets it to 10000.0) and `.dropout()` sets both rates, so

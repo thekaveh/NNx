@@ -46,7 +46,7 @@ Every public real-valued hyperparameter is validated in `__post_init__` (or the 
 
 Integer *counts* get the same treatment through a sibling validator. `NNParams.input_dim` / `output_dim` / every `hidden_dims` entry / `n_heads` (when set), `NNTransformerParams.vocab_size` / `n_layers` / `d_model` / `max_seq_len` / `ffn_mult`, `NNConvParams.conv_channels` entries / `in_channels` / `kernel_size` / `stride` / `pool_size`, `NNMoEParams.num_experts` (≥ 2) / `top_k` (1 … `num_experts`), `NNOptimParams.accumulate_grad_batches` (≥ 1), `NNTrainParams.n_epochs` / `NNTrainerParams.n_epochs` (≥ 1), `NNSchedulerParams.step_size` / `T_max` / `total_steps` / `warmup_steps` (> 0 when set; `None` stays the variant sentinel) and direct `RoPE(dim, max_seq_len)` must be *non-boolean integers*: any `numbers.Integral` is accepted — NumPy integers included — and normalized to a plain `int` before immutable lists, `_dims`, modulo / `isqrt` / `range` arithmetic or `state()` see it, so `np.int64(2)` serializes and hashes exactly like `2`. Booleans (`True == 1` is not a count), every float — `2.0` is not rounded — numeric strings and NaN/±infinity raise a `ValueError` naming the field. Zero keeps its distinct meaning per field: `NNConvParams.padding`, `NNSchedulerParams.patience` / `cooldown` and `EarlyStopping(patience)` accept 0 (no padding; react on the first non-improving epoch), while epochs, accumulation and dimensions require ≥ 1. A transformer additionally needs `d_model % n_heads == 0` *and* an even head width, because RoPE rotates channel pairs — enforced at construction and in `.builder().layers(...)` before the divisibility arithmetic, so the builder and the direct constructor reject the same inputs. Dataset `batch_sizes` tuples follow the same count rule with `None` as the only automatic full-split sentinel — zero never means "full split" or "no split" — validated before any dataset factory or tokenizer runs (see [Quickstart → Batch sizes](quickstart.md#25-tabular-regression-targets)).
 
-### 2.3.1. Variant-gated construction via `.builder()`
+### 2.4. Variant-gated construction via `.builder()`
 
 Params dataclasses with **tagged-union shape** (a `kind` field whose value gates which other fields are meaningful) expose a `.builder()` classmethod as an alternative to the direct kwarg constructor. The Builder methods are named after the variants; each writes exactly the fields its variant uses, so the user can't construct an invalid combination by accident.
 
@@ -1435,7 +1435,7 @@ alongside `NNModel` rather than replacing it:
   is available via `temperature=0` (the default `temperature=1.0`
   samples the full softmax); the scalar kwargs build the standard
   processor chain, and `logits_chain=LogitsChain.builder()...` is the
-  power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.3).
+  power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.4).
 
 The LM path stays optional behind the `lm` extra (`pip install "thekaveh-nnx[lm]"` —
 pulls `tokenizers` + `datasets`); the rest of NNx works without it. See

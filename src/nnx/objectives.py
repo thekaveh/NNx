@@ -5,8 +5,9 @@ accumulation, mixed precision, clipping and ``optimizer.step`` — so each
 paradigm re-implements (or, through ``finalize_step``, refuses) the update
 mechanics. An **objective** only describes the loss; NNx's shared update
 engine does the rest, for ``NNModel.train`` and ``Trainer.train`` alike
-(``Trainer`` has no mixed-precision setting, so it runs objectives in full
-precision)::
+(both apply an explicit ``NNModelParams.precision``, FEAT-028; ``Trainer``
+never applies the legacy ``mixed_precision`` flag, so without a policy it
+runs objectives in full precision)::
 
     from nnx.objectives import kd_objective
 
