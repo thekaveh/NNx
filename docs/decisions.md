@@ -99,13 +99,13 @@ call it **before any model call or network I/O**.
 ## 4. The fixed-head adapter
 
 `FixedHeadProvider(model, labels=None, option_map=None, ordinal=False,
-max_batch=None)` adapts a trained `NNModel`. The head decides what it can
-answer:
+max_batch=None, question=None)` adapts a trained `NNModel`. The head decides
+what it can answer:
 
 | Head | Answers |
 |---|---|
 | categorical (softmax over `C` classes) | `Choice`; also `Score` with `ordinal=True`, whose levels must follow the head's class order |
-| one Bernoulli logit (`BCEWithLogitsLoss`, or a one-output multilabel task) | `Boolean` |
+| one Bernoulli logit (`BCEWithLogitsLoss`, or a one-output multilabel task) | the one `Boolean` it was trained for (`question=`) |
 | regression, or multi-output multilabel | nothing — rejected at construction |
 
 - **Label space.** `labels` names the head's columns in order; it defaults to
@@ -116,6 +116,13 @@ answer:
   option ids must be exactly those labels (in any order), or `option_map`
   must map them one-to-one onto the labels. An unseen or missing label
   raises `UnsupportedCapability` before the `model_calls` counter advances.
+- **A Boolean head's question.** A one-logit head is one probability bound to
+  no prompt, so `question=Boolean(...)` names the question it was trained for:
+  it is required for such a head and refused for a categorical one (which
+  answers by its labels). Any other Boolean — another digest, however close
+  its wording — raises `UnsupportedCapability` before the `model_calls`
+  counter advances, so a decision job refuses it and a benchmark records it
+  `unsupported`, never answered with the head's probability.
 - **Columns.** Logits come from `model.predict_proba` (the FEAT-001
   prediction contract); probabilities are recomputed from them in float64
   (so a half-precision head still meets the `1e-6` tolerance), reordered
@@ -128,8 +135,8 @@ answer:
   with the original error as `__cause__`.
 - **Checking without calling.** `check(question, inputs)` runs every check
   `decide` makes before the model call (question, modality, batch size and
-  label space) and calls nothing; a decision job (§6) uses it to refuse a
-  request up front.
+  label space, or a Boolean's digest) and calls nothing; a decision job (§6)
+  uses it to refuse a request up front.
 
 ## 5. The NLI baseline adapter
 
@@ -364,9 +371,10 @@ print(report.text())
   are the report's `extra` count. The CSV carries every count, so they add
   up to each slice's samples.
 - **Capabilities.** A provider that declares it cannot serve a request —
-  `FixedHeadProvider` outside its label space (or its `option_map`), for
-  instance, through its own `check(question, inputs)` (or, without one, its
-  declared `capabilities()`) — gives `unsupported` records with its own
+  `FixedHeadProvider` outside its label space (or its `option_map`) or
+  asked a Boolean other than its own, for instance, through its own
+  `check(question, inputs)` (or, without one, its declared
+  `capabilities()`) — gives `unsupported` records with its own
   reason, before any call and without spending budget; a check that itself
   raises gives `failed` records, also without a call. Batches never exceed
   the provider's declared `max_batch`. They are counted in the slice's coverage, never in a

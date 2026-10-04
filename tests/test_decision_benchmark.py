@@ -298,6 +298,20 @@ def test_unsupported_and_heldout():
     assert report.slices["family:farm"].coverage.unsupported == 1
 
 
+def test_a_bernoulli_head_records_another_boolean_as_unsupported():
+    model = NNModel(
+        net_params=NNParams(input_dim=2, output_dim=1, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY),
+    )
+    cat, dog = Boolean("Is it a cat?"), Boolean("Is it a dog?")
+    head = FixedHeadProvider(model, question=cat)
+    photos = torch.tensor([[1.5, 0.0], [0.5, 2.0]])
+    samples = [Sample("c0", cat, photos[0], True), Sample("d0", dog, photos[1], False)]
+    collection = collect(head, samples, provider_id="head", budget=Budget(max_calls=5))
+    assert [r.status for r in collection.records] == ["answered", "unsupported"] and head.model_calls == 1
+    assert "only the Boolean it was trained for" in (collection.records[1].reason or "")
+
+
 # --- AC5: replay and the live collector -------------------------------------------------------------------------
 
 
