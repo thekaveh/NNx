@@ -596,7 +596,9 @@ class MonitorTracker:
     The run's tracker is also an optional checkpointable component
     (``nnx.monitor``, FEAT-005): a stateful warm resume continues from the
     source run's best, so BEST keeps agreeing with a restored
-    ``EarlyStopping`` and plateau scheduler after the split.
+    ``EarlyStopping`` and plateau scheduler after the split — the resumed
+    run writes BEST only on an epoch that beats it, and none when no
+    resumed epoch does.
     """
 
     def __init__(self, spec: MonitorSpec, *, warn_missing: bool = False) -> None:
