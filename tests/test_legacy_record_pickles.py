@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import os
 import pickle
 from unittest import mock
@@ -33,16 +34,19 @@ from nnx import (
     Devices,
     Losses,
     Nets,
+    NNConvParams,
     NNModel,
     NNModelParams,
+    NNMoEParams,
     NNOptimParams,
     NNParams,
     NNRun,
     NNTrainParams,
+    NNTransformerParams,
     Optims,
 )
 from nnx.nn.enum.checkpoints import Checkpoints
-from nnx.nn.params.nn_checkpoint import NNCheckpoint
+from nnx.nn.params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
 from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
 
@@ -50,6 +54,17 @@ from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
 # error, extra / lr, iter_idx, epoch_idx, batch_idx, train_edp, val_edp.
 EDP_FIELDS_0_2_3 = 7
 IDP_FIELDS_0_2_3 = 6
+_PARAMS_0_2_3 = (
+    "dropout_prob",
+    "n_heads",
+    "activation",
+    "activations",
+    "dropout_probs",
+    "input_dim",
+    "output_dim",
+    "hidden_dims",
+    "_dims",
+)
 
 
 @contextlib.contextmanager
@@ -116,6 +131,46 @@ def test_a_record_lacking_a_required_field_is_refused():
     restored = NNIterationDataPoint.__new__(NNIterationDataPoint)
     with pytest.raises(TypeError, match="cannot restore NNIterationDataPoint: the pickle lacks 'train_edp'"):
         restored.__setstate__([1e-3, 3, 1, 1])
+
+
+# The fields each class pickled inside a checkpoint had in NNx 0.2.3, in
+# order. Pickles restore by position, so a field may only be appended.
+_FIELDS_0_2_3 = {
+    NNEvaluationDataPoint: ("f1", "recall", "accuracy", "precision", "loss", "error", "extra"),
+    NNIterationDataPoint: ("lr", "iter_idx", "epoch_idx", "batch_idx", "train_edp", "val_edp"),
+    NNModelParams: ("net", "device", "loss", "mixed_precision"),
+    NNCheckpoint: (
+        "net_params",
+        "net_state",
+        "model_params",
+        "idp",
+        "transforms",
+        "training_state_id",
+        "training_state_present",
+    ),
+    NNCheckpointTransform: ("name", "version", "options"),
+    NNParams: _PARAMS_0_2_3,
+    NNConvParams: (*_PARAMS_0_2_3, "conv_channels", "in_channels", "kernel_size", "stride", "padding", "pool_size"),
+    NNMoEParams: (*_PARAMS_0_2_3, "num_experts", "top_k"),
+    NNTransformerParams: (
+        *_PARAMS_0_2_3,
+        "vocab_size",
+        "n_layers",
+        "d_model",
+        "max_seq_len",
+        "ffn_mult",
+        "rope_base",
+        "tie_embeddings",
+        "attn_dropout",
+        "resid_dropout",
+    ),
+}
+
+
+@pytest.mark.parametrize("cls", list(_FIELDS_0_2_3), ids=lambda cls: cls.__name__)
+def test_checkpoint_classes_only_ever_append_fields(cls):
+    names = tuple(spec.name for spec in dataclasses.fields(cls))
+    assert names[: len(_FIELDS_0_2_3[cls])] == _FIELDS_0_2_3[cls]
 
 
 def _train_tiny_run(tmp_path, monkeypatch) -> str:
