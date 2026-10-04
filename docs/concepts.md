@@ -46,7 +46,7 @@ Every public real-valued hyperparameter is validated in `__post_init__` (or the 
 
 Integer *counts* get the same treatment through a sibling validator. `NNParams.input_dim` / `output_dim` / every `hidden_dims` entry / `n_heads` (when set), `NNTransformerParams.vocab_size` / `n_layers` / `d_model` / `max_seq_len` / `ffn_mult`, `NNConvParams.conv_channels` entries / `in_channels` / `kernel_size` / `stride` / `pool_size`, `NNMoEParams.num_experts` (≥ 2) / `top_k` (1 … `num_experts`), `NNOptimParams.accumulate_grad_batches` (≥ 1), `NNTrainParams.n_epochs` / `NNTrainerParams.n_epochs` (≥ 1), `NNSchedulerParams.step_size` / `T_max` / `total_steps` / `warmup_steps` (> 0 when set; `None` stays the variant sentinel) and direct `RoPE(dim, max_seq_len)` must be *non-boolean integers*: any `numbers.Integral` is accepted — NumPy integers included — and normalized to a plain `int` before immutable lists, `_dims`, modulo / `isqrt` / `range` arithmetic or `state()` see it, so `np.int64(2)` serializes and hashes exactly like `2`. Booleans (`True == 1` is not a count), every float — `2.0` is not rounded — numeric strings and NaN/±infinity raise a `ValueError` naming the field. Zero keeps its distinct meaning per field: `NNConvParams.padding`, `NNSchedulerParams.patience` / `cooldown` and `EarlyStopping(patience)` accept 0 (no padding; react on the first non-improving epoch), while epochs, accumulation and dimensions require ≥ 1. A transformer additionally needs `d_model % n_heads == 0` *and* an even head width, because RoPE rotates channel pairs — enforced at construction and in `.builder().layers(...)` before the divisibility arithmetic, so the builder and the direct constructor reject the same inputs. Dataset `batch_sizes` tuples follow the same count rule with `None` as the only automatic full-split sentinel — zero never means "full split" or "no split" — validated before any dataset factory or tokenizer runs (see [Quickstart → Batch sizes](quickstart.md#25-tabular-regression-targets)).
 
-### 2.3.1. Variant-gated construction via `.builder()`
+### 2.4. Variant-gated construction via `.builder()`
 
 Params dataclasses with **tagged-union shape** (a `kind` field whose value gates which other fields are meaningful) expose a `.builder()` classmethod as an alternative to the direct kwarg constructor. The Builder methods are named after the variants; each writes exactly the fields its variant uses, so the user can't construct an invalid combination by accident.
 
@@ -232,7 +232,7 @@ The epoch transaction is history → LAST → phase/BEST → deferred callback c
 
 Checking for saved state is observational. `NNCheckpoint.load_training_state`, `load_optimizer_state` and `load_with_training_state` return `None` / `(None, None)` for a run whose directory does not exist without creating `runs/<id>/` (the run ID is still validated first), so probing a prospective run ID before the first fit never reserves it and never trips the overwrite guard. Inside an *existing* run the original checkpoint lock and generation validation apply unchanged: a checkpoint whose referenced training-state generation is missing or malformed is corruption and raises an actionable error — it is not a signal to start fresh. A probe can race a concurrent first creation and legitimately observe absence; retry if that matters.
 
-The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state, the FP16 loss scaler and the run's resolved precision record (a stateful resume into another effective precision is refused before the model is touched; a weights-only warm start may switch — [Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16)), completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored. A training loader that defines `set_epoch(epoch)` (PyTorch's `DistributedSampler` convention) is told each epoch's index before it is iterated, by `NNModel.train` and `Trainer.train` alike, so per-epoch randomness drawn from that index — `nnx.link_tasks` training negatives (§26) — is identical in an uninterrupted and a resumed run.
+The versioned sidecar restores optimizer type and parameter topology/state, scheduler identity/state (a plateau state saved under another improvement rule than the run builds is refused before the model is touched — §6.4), the FP16 loss scaler and the run's resolved precision record (a stateful resume into another effective precision is refused before the model is touched; a weights-only warm start may switch — [Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16)), completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state, and loader/sampler generators matched by stable seed identity. The fixed `.opt.pt` compatibility copy and legacy optimizer-only sidecars remain readable. Exact continuation requires `num_workers=0`; worker-local RNG state is outside the recoverable boundary. Resume accepts every batch source ordinary training accepts — a `DataLoader`, a plain re-iterable list of `(X, Y)` batches, or the one-element full-batch list `NNGraphDataset(sampler="full")` produces; worker capability is read safely (absent metadata means no worker RNG), and the worker warning only fires for a real loader with `num_workers > 0`. A consumed one-shot iterator cannot be replayed: only the supplied re-iterable source is restored. A training loader that defines `set_epoch(epoch)` (PyTorch's `DistributedSampler` convention) is told each epoch's index before it is iterated, by `NNModel.train` and `Trainer.train` alike, so per-epoch randomness drawn from that index — `nnx.link_tasks` training negatives (§26) — is identical in an uninterrupted and a resumed run.
 
 `NNCheckpoint` also carries an ordered tuple of versioned topology-transform recipes. It is empty for ordinary and legacy checkpoints. A recipe materialized before training (`nnx.transforms.TransformRecipe` — LoRA on explicit Linear targets, SVD low-rank replacement; FEAT-016, [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild)) is recorded on the model and carried by every checkpoint tag, `ModelCheckpoint` snapshots and Hub saves; it is part of the run id of a run that trains it (runs without one keep theirs). Replay rebuilds its topology on a fresh base without rerunning SVD, and a resume needs the resuming model to have materialized the same recipe. A lifecycle callback that replaces modules after training can declare the recipe needed to reproduce that topology; `NNModel.from_checkpoint()` replays recognized transforms before loading weights. Both pickle and safetensors preserve this metadata. Unknown transforms fail with a compatibility error instead of partially loading the wrong network.
 
@@ -640,8 +640,24 @@ epochs marked.
 
 A named-monitor run ranks BEST by its own monitor, which is not comparable
 with other runs' error / loss, so it is never elected into `runs/best`
-(§4.1). A resumed session is a new run with its own BEST; `EarlyStopping`'s
-patience resumes through its component state (§14.1). `Trainer`
+(§4.1). A resumed session is a new run with its own id and checkpoints, but
+a stateful resume continues the monitor: its best value is component state
+(`nnx.monitor`, §14.1), as `EarlyStopping`'s patience is, so the resumed
+run writes BEST only on an epoch that beats the best the source checkpoint
+carried — exactly the epochs on which the uninterrupted run would. When no
+resumed epoch does, the resumed run ends without a BEST checkpoint (the
+best epoch stays the source run's BEST, and `resume_from_checkpoint="best"`
+on the resumed run fails as for any run without one); `runs/best` is never
+affected. A `weights_only` resume starts the monitor afresh, so its first
+epoch with a finite value writes BEST. A stateful resume also refuses,
+before anything is restored, a `ReduceLROnPlateau` state saved under
+another improvement rule than the one the run builds — a different
+direction, threshold mode or threshold, with or without a monitor: loading
+it would replace the run's rule, so a run that monitored accuracy and
+resumes without a monitor would keep `mode='max'` and cut the LR whenever
+the validation loss improves. The error names the differing fields; resume
+with the original monitor and `NNSchedulerParams.threshold`, or with
+`resume_mode="weights_only"` for a fresh scheduler. `Trainer`
 (`NNTrainerParams.builder().metrics(...).monitor(...)`) supports declared
 validation metrics and training loss / error monitors — its steps are
 custom, so training-split declared metrics are unavailable. Without
@@ -916,7 +932,7 @@ params = (NNTrainerParams.builder()
 Trainer(model).train(params=params, trainer_step_fn=gan_step)
 ```
 
-The resumed run's epochs continue from the saved epoch. Each named optimizer is validated exactly as `NNModel.train` validates its one — the optimizer and scheduler names, each optimizer's type, registered-factory identity (§3.1) and parameter topology, each scheduler's type, and a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs (updates, on the `optimizer_update` clock) — and a mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update. `resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage and `resume_mode` is runtime-only, so a configuration without them keeps its `state()` and run id, and the controls survive `builder()`, `NNTrainerParamsBuilder.from_params`, `state()` / `from_state()` and the `with_*_loader` copies. A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`, and a Trainer checkpoint only through `Trainer.train`, unless `resume_mode="weights_only"` warm-starts from the weights alone.
+The resumed run's epochs continue from the saved epoch. Each named optimizer is validated exactly as `NNModel.train` validates its one — the optimizer and scheduler names, each optimizer's type, registered-factory identity (§3.1) and parameter topology, each scheduler's type, a plateau scheduler's improvement rule (direction, threshold mode and threshold — §6.4), and a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs (updates, on the `optimizer_update` clock) — and a mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update. `resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage and `resume_mode` is runtime-only, so a configuration without them keeps its `state()` and run id, and the controls survive `builder()`, `NNTrainerParamsBuilder.from_params`, `state()` / `from_state()` and the `with_*_loader` copies. A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`, and a Trainer checkpoint only through `Trainer.train`, unless `resume_mode="weights_only"` warm-starts from the weights alone.
 
 ## 9. Diffusion (DDPM)
 
@@ -1027,7 +1043,7 @@ student.train(params=NNTrainParams(train_loader=data.loader(32), ...), objective
 print(evaluate_offline(student, held_out).text())               # agreement, imitation loss, labelled quality
 ```
 
-- **Records** (`TeacherRecord`) carry the sample and question ids, the ordered candidate ids and their probabilities (finite, nonnegative, summing to 1 within `1e-6`), the teacher and its revision, the schema digest, the probability `semantics` (`"predictive"`, `"calibrated"` or `"empirical"` — never logits) and `provenance`: where the record came from (`source`) and the **declared** `training_rights` under which it may train a student. NNx records the declaration; it does not verify entitlement. A missing field fails validation.
+- **Records** (`TeacherRecord`) carry the sample and question ids, the ordered candidate ids and their probabilities (finite, nonnegative, summing to 1 within `1e-6`), the teacher and its revision, the schema digest, the probability `semantics` (`"predictive"`, `"calibrated"` or `"empirical"` — never logits) and `provenance`: where the record came from (`source`) and the **declared** `training_rights` under which it may train a student. NNx records the declaration; it does not verify entitlement. A missing field fails validation; `read_teacher_records` raises `TeacherRecordError` naming the `path:line` of a malformed line (a number too large for a float included).
 - **Alignment.** `TeacherDataset` joins records to inputs by sample id and aligns every distribution to the student's output order by candidate id, never position; a missing, unknown or duplicate candidate, another schema digest, a repeated sample or a sample with no input is refused when the dataset is built, before any optimizer exists.
 - **Objective.** `alpha · KL(teacher ‖ student) + (1 − alpha) · CE(student, label)`, both at temperature 1 — no logits are invented and no `T²` is applied (`q = [0.75, 0.25]` against zero student logits gives `0.130812` and the gradient `p − q = [−0.25, 0.25]`). The two terms share one mask and one denominator per microbatch (its rows), so accumulation is exact; a partly labelled dataset or batch is refused, `alpha < 1` needs every record labelled, and every batch carries its candidate order, which the objective and the evaluation check against their own. The objective detaches the teacher's probabilities and never steps. Its identity — version, schema digest, `alpha` and the candidate alignment — is checkpointed component state, so a stateful resume with any of them changed is refused before the first resumed update (pass `objective.identity()` to `ExperimentManifest.for_model(objective=...)` to record it in the run's provenance too).
 - **Reports** keep three things apart, each with its own denominator: **teacher agreement** and **imitation loss** over every record, and **labelled quality** (accuracy, NLL) over the labelled records only — imitating a teacher is not being right. In the training loop, `dataset.eval_step()`'s record `loss` is the imitation loss whatever `alpha`; monitor `label_accuracy` or `label_nll` by name to select or stop on quality.
@@ -1069,7 +1085,7 @@ When a pretrained model is too large to fine-tune in full, PEFT keeps the origin
 - **PrefixTuner** (`PrefixTuner` / `save_prefix_weights` / `load_prefix_weights`) — prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`. The wrapped model is mutated in place: every parameter is frozen and each targeted block's attention forward is monkey-patched to inject the prefix (a forward hook fires on outputs, too late to reach the intermediate K/V). Wrapping an already-tuned net raises — `copy.deepcopy` the tuner to fork it.
 - **PromptTuner** (`PromptTuner` / `save_prompt_weights` / `load_prompt_weights`) — prepends learned soft-prompt embeddings ahead of the input tokens of a frozen `TransformerNN`. Cheapest of the LM-targeted PEFT methods; useful when even the rank-decomposed LoRA budget is too large.
 
-**Placement.** Every adapter allocates its new parameters from the tensor it composes with — `lora_A`/`lora_B` (and DoRA's `magnitude`) from the wrapped `Linear`'s weight, IA3's `scaling` likewise, the soft prompt from the wrapped model's token embedding, and each prefix layer's K/V from that block's attention projection — so they inherit that tensor's dtype **and** device. Convert or move the base first, then wrap: a half or double model, a model already resident on an accelerator, or a meta-device skeleton composes immediately, with no corrective `.to()` after wrapping and without the base ever being moved, recast or replaced. Adapter-only `load_*_weights` into an already-converted destination keeps the destination's placement (`load_state_dict` converts on copy). Whether a particular kernel exists for a dtype on a device (for example half matmuls on CPU) remains a separate, per-backend validation gate.
+**Placement.** Every adapter allocates its new parameters from the tensor it composes with — `lora_A`/`lora_B` (and DoRA's `magnitude`) from the wrapped `Linear`'s weight, IA3's `scaling` likewise, the soft prompt from the wrapped model's token embedding, and each prefix layer's K/V from that block's attention projection (the `Linear` inside its `LoRALinear` / `DoRALinear` / `IA3Linear` wrapper when the projection was adapted first; the adapter stays in the attention path and is frozen with the rest of the model) — so they inherit that tensor's dtype **and** device. Convert or move the base first, then wrap: a half or double model, a model already resident on an accelerator, or a meta-device skeleton composes immediately, with no corrective `.to()` after wrapping and without the base ever being moved, recast or replaced. Adapter-only `load_*_weights` into an already-converted destination keeps the destination's placement (`load_state_dict` converts on copy). Whether a particular kernel exists for a dtype on a device (for example half matmuls on CPU) remains a separate, per-backend validation gate.
 
 **Train/eval mode.** Wrappers inherit the mode of what they wrap at insertion time, per layer: `LoRALinear` / `DoRALinear` copy the wrapped `Linear`'s `training` flag onto the wrapper *and* its `lora_dropout`, `IA3Linear` onto the wrapper, and `PromptTuner` / `PrefixTuner` the wrapped `TransformerNN`'s flag onto the tuner (and its prefix lists). Injecting a nonzero-dropout LoRA or DoRA adapter into a model that is already in `eval()` therefore keeps inference deterministic, and a parent with mixed child modes keeps each replaced child's own mode — neither direct construction nor `apply_*_to` ever calls `.train()` / `.eval()` on the surrounding model. Modes are runtime state, not configuration: nothing about them is serialized in `state_dict()` or an adapter file, loading full or adapter-only state leaves the caller's modes alone, and a later `model.train()` still activates LoRA input dropout and DoRA's update dropout. The inference helpers (`predict`, `evaluate`, `generate`) snapshot and restore every submodule's flag, wrappers included. Switching into train mode for fine-tuning is the training step's job: the built-in supervised step and every `nnx.paradigms` factory call `net.train()`, but a custom `train_step_fn` / `trainer_step_fn` owns the mode itself — if it never calls `train()`, adapters injected into an `eval()` model (like any other `Dropout` / `BatchNorm` in the net) keep their eval behaviour while training.
 
@@ -1435,7 +1451,7 @@ alongside `NNModel` rather than replacing it:
   is available via `temperature=0` (the default `temperature=1.0`
   samples the full softmax); the scalar kwargs build the standard
   processor chain, and `logits_chain=LogitsChain.builder()...` is the
-  power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.3).
+  power-user path for custom `nnx.generation.LogitsProcessor`s (see §2.4).
 
 The LM path stays optional behind the `lm` extra (`pip install "thekaveh-nnx[lm]"` —
 pulls `tokenizers` + `datasets`); the rest of NNx works without it. See
@@ -1507,7 +1523,7 @@ question (Choice / Boolean / Score, digest) ──► DecisionProvider.capabilit
                                                            └──► ChoiceResult / BooleanResult / ScoreResult (+ raw)
 ```
 
-An option's `id` is bookkeeping and its `description` the model-facing text, and a question's `digest()` changes when options are reordered or reworded. `validate_response` is the single validator every provider shares: it reorders keyed output into the question's order and rejects missing, duplicate, unknown or unlabeled ids and malformed distributions instead of renormalizing them. `ScoreResult.expected_index` (`sum(i * p_i)`) is ordinal, and a vendor's own score stays in `vendor_score`. `FixedHeadProvider` turns a trained classifier into a provider for exactly what its head justifies: `Choice` (or `Score` when ordinal) from a categorical head over its exact label space or a bijection onto it, and `Boolean` from a one-logit head. It restores the model's modes and raises typed errors (`UnsupportedCapability`, `InvalidDecisionRequest`, `InvalidDecisionResponse`, `ProviderFailure`). Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs it end to end.
+An option's `id` is bookkeeping and its `description` the model-facing text, and a question's `digest()` changes when options are reordered or reworded. `validate_response` is the single validator every provider shares: it reorders keyed output into the question's order and rejects missing, duplicate, unknown or unlabeled ids and malformed distributions instead of renormalizing them. `ScoreResult.expected_index` (`sum(i * p_i)`) is ordinal, and a vendor's own score stays in `vendor_score`. `FixedHeadProvider` turns a trained classifier into a provider for exactly what its head justifies: `Choice` (or `Score` when ordinal) from a categorical head over its exact label space or a bijection onto it, and `Boolean` from a one-logit head — only the one it was trained for (`question=`). It restores the model's modes and raises typed errors (`UnsupportedCapability`, `InvalidDecisionRequest`, `InvalidDecisionResponse`, `ProviderFailure`). Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs it end to end.
 
 **Decision jobs** (FEAT-024) describe several questions before asking any. `DecisionJob.ask`, `collect`, `map` and `then` build an immutable tree that calls no provider, runs no callback and draws no RNG; `run(provider, state=..., limits=...)` and `await arun(...)` are the only effect boundaries, and they borrow the provider without closing it:
 
@@ -2110,7 +2126,10 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   files once each. Train the runs with `provenance=` (FEAT-019): the attempt record
   gives the status, the attempt id and the committed epoch. Without it, a
   run whose history is committed by its LAST checkpoint has an unknown
-  value, and a legacy run (no commit marker) keeps its value but, of
+  value. The recorded epoch is used as is — LAST itself is never opened,
+  so nothing is unpickled from a run directory — and a history journal is
+  read only up to it (not at all while it is unknown), so its uncommitted
+  tail is never read. A legacy run (no commit marker) keeps its value but, of
   unknown status, is never counted in `n`. The value is the epoch record of the last committed
   epoch (`selection="last"`) or of the epoch the run's monitor last elected
   (`"best"`, whose rule names the declared monitor; unknown without one or
@@ -2320,17 +2339,24 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   validation / test negative fails before any update. Batches are bound to
   their role: the objective trains on `train` batches only, and the
   training evaluator reads the `val` split, every candidate exactly once
-  (score `test` with `predict()` and `link_metrics()` after training).
+  (score `test` after training with `prediction = task.predict(...)` and
+  `link_metrics(prediction.logits, prediction.targets, from_logits=True)`).
   The default train / evaluate / predict paths refuse link batches (they
   cannot check them), as do node-level nets and the graph-pooling adapter
   (§21).
 - **Shapes and metrics.** Binary candidates give one logit each, `(K,)`;
   edge-label candidates `(K, categories)`; `predict()` keeps ids, pairs,
-  logits, probabilities and targets aligned, in candidate order.
+  logits, probabilities and targets aligned, in candidate order (float64).
   Evaluation materialises every candidate (up to `max_candidates`) for
   exact AUROC and AP — never per-batch averages; a one-class set reports
   them unavailable with the reason, so `MonitorSpec("auroc")` never elects
-  it BEST.
+  it BEST. The metrics are computed from the float64 logits, never from
+  probabilities, which round to exactly 0 or 1 for a confident model
+  (beyond `|logit|` ≈ 16.6 in float32, 36.7 in float64), tying candidates
+  the logits tell apart and clipping their loss: the BCE comes from the
+  logits (the NLL from their log-softmax), and AUROC / AP rank the logits
+  themselves. `link_metrics(probabilities, targets)` still scores bare
+  probabilities; `from_logits=True` scores logits as the evaluator does.
 - **Recipe and checkpoints.** `link_predictor_spec(...)` (GCN / GraphSAGE /
   GAT encoder with no activation after its last layer, so a `"dot"`
   decoder's logits can be negative; or an `"mlp"` decoder) is rebuilt on

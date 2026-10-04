@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import socket
 
@@ -493,3 +494,17 @@ def test_only_the_marker_itself_counts_as_teacher_records():
 
     assert not _is_teacher_records(mock.MagicMock())  # a mock answers every attribute, truthily
     assert _is_teacher_records(_dataset(1)) and _is_teacher_records([_record("s0", (0.5, 0.5))])
+
+
+def test_a_number_too_large_for_a_float_is_a_record_error(tmp_path):
+    for probabilities in ((10**400, 0.0), (0.5, -(10**400))):
+        with pytest.raises(TeacherRecordError, match="too large for a float"):
+            _record("s0", probabilities)
+    path = tmp_path / "teacher.jsonl"
+    write_teacher_records(path, [_record("s0", (0.75, 0.25))])
+    line = json.dumps(_record("s1", (0.5, 0.5)).state()).replace("[0.5, 0.5]", "[1" + "0" * 400 + ", 0]")
+    path.write_text(path.read_text() + line + "\n")
+    with pytest.raises(TeacherRecordError, match=r"teacher\.jsonl:2: .*too large for a float"):
+        read_teacher_records(path)
+    with pytest.raises(TeacherRecordError, match="alpha"):
+        _dataset().objective(alpha=10**400)

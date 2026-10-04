@@ -22,8 +22,10 @@ from nnx import (
     NNModel,
     NNModelParams,
     NNParams,
+    NNTransformerParams,
     quantize_int8,
 )
+from nnx.peft import PrefixTuner, apply_ia3_to, apply_lora_to
 
 # Skip the whole module when torchao is unavailable. quantize_int8 itself
 # raises a clear ImportError; running the rest of the suite without
@@ -377,3 +379,52 @@ def test_quantize_int8_preserves_custom_subclass():
         for m in quantized.net.modules()
         if isinstance(m, torch.nn.Linear)
     )
+
+
+# -------------------------------------------------------------------------
+# Release review: adapters on an int8-quantized base
+# -------------------------------------------------------------------------
+
+
+def _quantized_transformer() -> NNModel:
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNTransformerParams(
+            input_dim=50,
+            output_dim=50,
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            n_heads=2,
+            vocab_size=50,
+            n_layers=2,
+            d_model=16,
+            max_seq_len=16,
+        ),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    return quantize_int8(model)
+
+
+@pytest.mark.parametrize("adapter", ["lora", "ia3", "prefix"])
+def test_adapters_compose_with_an_int8_quantized_base(adapter):
+    """QLoRA-style composition, as in 0.2.3: the adapter's tensors take the
+    quantized weight's dtype and device without asking torchao's int8
+    weight tensor to allocate them (it implements no ``new_empty`` /
+    ``new_zeros`` / ``new_ones``)."""
+    net = _quantized_transformer().net
+    tokens = torch.randint(0, 50, (2, 6))
+    if adapter == "prefix":
+        tuner = PrefixTuner(net, n_prefix=2)
+        out = tuner(tokens)
+        trained = {name: p for name, p in tuner.named_parameters() if name.startswith("prefix_")}
+    else:
+        wrapped = apply_lora_to(net, "*w_qkv", r=4) if adapter == "lora" else apply_ia3_to(net, "*w_qkv")
+        assert wrapped == 2
+        out = net(tokens)
+        trained = {name: p for name, p in net.named_parameters() if "lora_" in name or name.endswith(".scaling")}
+    out.float().sum().backward()
+
+    assert trained
+    for name, p in trained.items():
+        assert p.dtype == torch.float32 and p.device.type == "cpu", name
+        assert p.grad is not None and torch.isfinite(p.grad).all(), name

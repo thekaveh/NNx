@@ -55,6 +55,8 @@ from ..nn.net.transformer_layers import (
 from ..nn.net.transformer_nn import TransformerNN
 from ._mode import inherit_training_mode
 from ._source import _resolve_source_to_state_dict
+from .ia3 import IA3Linear
+from .lora import LoRALinear
 
 
 class PrefixTuner(nn.Module):
@@ -77,6 +79,14 @@ class PrefixTuner(nn.Module):
     Note on shape: the prefix uses ``n_heads`` and ``head_dim`` taken
     from the model's ``params`` — there's no per-block override, since
     every block in a TransformerNN shares the same attention shape.
+
+    Each layer's prefix takes the dtype and device of that block's
+    ``attn.w_qkv`` weight. A projection already adapted by
+    :class:`~nnx.peft.LoRALinear` / :class:`~nnx.peft.DoRALinear` /
+    :class:`~nnx.peft.IA3Linear` (``apply_*_to`` before wrapping) is
+    resolved to the :class:`nn.Linear` it wraps; the adapter stays in the
+    attention path, so its delta or scaling still shapes K/V, and its
+    parameters are frozen with the rest of the model.
 
     Raises:
         TypeError: if ``model`` is not a :class:`TransformerNN`.
@@ -140,16 +150,23 @@ class PrefixTuner(nn.Module):
         # projection weight, so it inherits the block's dtype and device
         # (FIX-003) — not a single model-wide parameter: the prefix is
         # concatenated with that block's own K/V inside the patched
-        # attention forward.
-        def _projection_weight(i: int) -> torch.Tensor:
-            return cast(Any, model.blocks[i]).attn.w_qkv.weight
+        # attention forward. A projection already adapted by LoRA / DoRA /
+        # IA3 is a wrapper with no `.weight` of its own, so read the Linear
+        # it wraps (`.base`, through nested wrappers). Only the weight's
+        # placement is used — the adapter's delta or scaling is irrelevant
+        # here and stays in effect, since the patched forward calls the
+        # wrapper itself. Allocated by torch, not by the weight
+        # (`new_empty`), so a quantized weight subclass (torchao int8)
+        # needs no allocator.
+        def _prefix(i: int) -> nn.Parameter:
+            proj = cast(Any, model.blocks[i]).attn.w_qkv
+            while isinstance(proj, (LoRALinear, IA3Linear)):
+                proj = proj.base
+            weight = proj.weight
+            return nn.Parameter(torch.empty(n_prefix, n_heads, head_dim, dtype=weight.dtype, device=weight.device))
 
-        self.prefix_keys = nn.ParameterList(
-            [nn.Parameter(_projection_weight(i).new_empty(n_prefix, n_heads, head_dim)) for i in range(n_layers)]
-        )
-        self.prefix_values = nn.ParameterList(
-            [nn.Parameter(_projection_weight(i).new_empty(n_prefix, n_heads, head_dim)) for i in range(n_layers)]
-        )
+        self.prefix_keys = nn.ParameterList([_prefix(i) for i in range(n_layers)])
+        self.prefix_values = nn.ParameterList([_prefix(i) for i in range(n_layers)])
         # Init with small Gaussian noise — matches the original
         # prefix-tuning paper's "random init" baseline.
         for p in self.prefix_keys:

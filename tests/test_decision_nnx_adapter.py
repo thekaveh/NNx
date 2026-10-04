@@ -9,6 +9,8 @@ advances; every submodule's training mode is restored.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 import torch
@@ -135,7 +137,7 @@ def test_heads_serve_only_the_primitives_they_justify():
     assert score.expected_index == pytest.approx(sum(i * p for i, (_, p) in enumerate(score.distribution)))
     assert ordinal.model_calls == 1
 
-    binary = FixedHeadProvider(_classifier(1, Losses.BINARY_CROSS_ENTROPY))
+    binary = FixedHeadProvider(_classifier(1, Losses.BINARY_CROSS_ENTROPY), question=Boolean("Is it a cat?"))
     assert binary.capabilities().primitives == {"boolean"}
     results = binary.decide(Boolean("Is it a cat?"), X)
     assert all(isinstance(result, BooleanResult) for result in results)
@@ -185,9 +187,27 @@ def test_multi_output_bernoulli_heads_are_rejected_with_or_without_a_task():
     with pytest.raises(UnsupportedCapability, match="multi-output Bernoulli"):
         FixedHeadProvider(_classifier(3, Losses.BINARY_CROSS_ENTROPY))  # no task: the net's width decides
     wide = NNModel(module=nn.Linear(2, 3), params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
-    provider = FixedHeadProvider(wide)  # width unknown until the head runs
+    provider = FixedHeadProvider(wide, question=Boolean("Is it a cat?"))  # width unknown until the head runs
     with pytest.raises(UnsupportedCapability, match="one-output head"):
         provider.decide(Boolean("Is it a cat?"), X)
+
+
+def test_a_bernoulli_head_answers_only_the_boolean_it_was_trained_for():
+    cat = Boolean("Is it a cat?")
+    binary = FixedHeadProvider(_classifier(1, Losses.BINARY_CROSS_ENTROPY), question=cat)
+    assert len(binary.decide(Boolean("Is it a cat?"), X)) == 3  # the same question: the same digest
+    for other in (Boolean("Is it a dog?"), Boolean("Is it a fox?")):
+        with pytest.raises(UnsupportedCapability, match="only the Boolean it was trained for, 'Is it a cat\\?'"):
+            binary.check(other, X)
+        with pytest.raises(UnsupportedCapability, match=re.escape(f"not {other.prompt!r}")):
+            binary.decide(other, X)
+    assert binary.model_calls == 1  # another Boolean never reaches the model
+    with pytest.raises(InvalidDecisionRequest, match="needs the Boolean it answers"):
+        FixedHeadProvider(_classifier(1, Losses.BINARY_CROSS_ENTROPY))
+    with pytest.raises(InvalidDecisionRequest, match="must be a Boolean"):
+        FixedHeadProvider(_classifier(1, Losses.BINARY_CROSS_ENTROPY), question=_animals("cat", "dog", "fox"))  # type: ignore[arg-type]
+    with pytest.raises(InvalidDecisionRequest, match="a categorical head answers by its labels"):
+        FixedHeadProvider(_classifier(), labels=LABELS, question=cat)
 
 
 def test_explicit_labels_must_agree_with_the_task_and_fit_the_head():

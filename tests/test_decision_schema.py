@@ -9,8 +9,10 @@ renormalizes; the digest changes when options are reordered or reworded.
 
 from __future__ import annotations
 
+import json
 import math
 import pickle
+from fractions import Fraction
 
 import pytest
 
@@ -230,3 +232,17 @@ def test_capabilities_enforce_a_declared_label_space():
     dynamic.check(renamed, modality="text", batch_size=1)
     with pytest.raises(ValueError, match="max_batch"):
         Capabilities(primitives={"choice"}, modalities={"text"}, max_batch=2.5)  # type: ignore[arg-type]
+
+
+def test_a_number_too_large_for_a_float_is_an_invalid_response():
+    rain = Boolean("Is it raining?")
+    untrusted = json.loads('{"true": 1' + "0" * 400 + ', "false": 0}')  # a provider's JSON response
+    for response in (10**400, -(10**400), Fraction(10**400, 3), untrusted):
+        with pytest.raises(InvalidDecisionResponse, match="too large for a float"):
+            validate_response(rain, response)
+    with pytest.raises(InvalidDecisionResponse, match="too large for a float"):
+        validate_response(COLORS, {"red": 10**400, "green": 0.0, "blue": 0.0})
+    with pytest.raises(InvalidDecisionResponse, match="too large for a float"):
+        BooleanResult(rain.digest(), 10**400)
+    with pytest.raises(InvalidDecisionResponse, match="vendor_score .*too large for a float"):
+        validate_response(SEVERITY, {"high": 0.1, "low": 0.6, "mid": 0.3}, vendor_score=10**400)

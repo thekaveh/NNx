@@ -298,6 +298,20 @@ def test_unsupported_and_heldout():
     assert report.slices["family:farm"].coverage.unsupported == 1
 
 
+def test_a_bernoulli_head_records_another_boolean_as_unsupported():
+    model = NNModel(
+        net_params=NNParams(input_dim=2, output_dim=1, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY),
+    )
+    cat, dog = Boolean("Is it a cat?"), Boolean("Is it a dog?")
+    head = FixedHeadProvider(model, question=cat)
+    photos = torch.tensor([[1.5, 0.0], [0.5, 2.0]])
+    samples = [Sample("c0", cat, photos[0], True), Sample("d0", dog, photos[1], False)]
+    collection = collect(head, samples, provider_id="head", budget=Budget(max_calls=5))
+    assert [r.status for r in collection.records] == ["answered", "unsupported"] and head.model_calls == 1
+    assert "only the Boolean it was trained for" in (collection.records[1].reason or "")
+
+
 # --- AC5: replay and the live collector -------------------------------------------------------------------------
 
 
@@ -842,6 +856,25 @@ def test_round_three_report_edges(tmp_path):
     for execution in ([], 0, ""):
         with pytest.raises(BenchmarkError, match="execution"):
             Record.from_state({**records[0].state(), "execution": execution})
+
+
+def test_a_saved_number_too_large_for_a_float_is_a_benchmark_error(tmp_path):
+    samples, records = fixture()
+    lines = tmp_path / "records.jsonl"
+    write_records(lines, records)
+    huge = json.dumps({**records[0].state(), "sample_id": "s9", "distribution": None, "p_true": 10**400})
+    with open(lines, "a", encoding="utf-8") as handle:
+        handle.write(huge + "\n")
+    with pytest.raises(BenchmarkError, match=r"records\.jsonl:5: .*p_true"):
+        read_records(lines)
+    report = evaluate(samples, records, split="x")
+    path = tmp_path / "report.json"
+    report.save(path)
+    state = json.loads(path.read_text())
+    state["slices"]["in_family"]["metrics"]["accuracy"]["value"] = 10**400
+    path.write_text(json.dumps(state))
+    with pytest.raises(BenchmarkError, match="'accuracy' value .*too large for a float"):
+        compare_reports(BenchmarkReport.load_state(path), report)
 
 
 def test_round_four_edges(tmp_path):

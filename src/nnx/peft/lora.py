@@ -111,16 +111,17 @@ class LoRALinear(nn.Module):
 
         # A: (r, in). Init with Kaiming-uniform (sqrt(5) gain), matching
         # the original LoRA implementation. B: (out, r), zero-init so
-        # the residual contributes 0 at step 0. Both are allocated from
-        # the base weight (`new_empty` / `new_zeros`) so they inherit its
+        # the residual contributes 0 at step 0. Both take the base weight's
         # dtype AND device (FIX-003): wrapping a base that was already
         # converted to half/double or moved to an accelerator — or lives
         # on the meta device — composes immediately, with no corrective
         # `.to()` and without ever moving or recasting the base itself.
-        weight = base.weight
-        self.lora_A = nn.Parameter(weight.new_empty(r, in_features))
+        # Allocated by torch, not by the weight (`new_empty`), so a
+        # quantized weight subclass (torchao int8) needs no allocator.
+        placement = {"dtype": base.weight.dtype, "device": base.weight.device}
+        self.lora_A = nn.Parameter(torch.empty(r, in_features, **placement))
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        self.lora_B = nn.Parameter(weight.new_zeros(out_features, r))
+        self.lora_B = nn.Parameter(torch.zeros(out_features, r, **placement))
 
         self.lora_dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
 

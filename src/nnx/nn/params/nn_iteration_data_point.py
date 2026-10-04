@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from ...monitors import MonitorRecord
+from ._pickling import pickle_with_trailing_defaults
 from .nn_evaluation_data_point import NNEvaluationDataPoint
 
 
@@ -141,6 +142,11 @@ class NNIterationDataPoint:
             selection=selection,
             update_count=_optional_int(_field("update_count")),
         )
+
+
+# Pickled inside every checkpoint: a 0.2.3 pickle (no train_summary,
+# selection or update_count) restores them as None.
+pickle_with_trailing_defaults(NNIterationDataPoint)
 
 
 # Scalar NNEvaluationDataPoint.state() keys, flattened to `<prefix>.<name>`

@@ -502,6 +502,38 @@ def test_a_resumed_run_keeps_every_decision_of_the_uninterrupted_one(tmp_path, m
     assert best is not None and best.idp.epoch_idx == 3  # epoch 2 (0.6) did not beat the source's 0.5
 
 
+def test_a_resumed_run_no_epoch_of_which_beats_the_source_writes_no_best(tmp_path, monkeypatch):
+    """The resumed monitor continues from the source's best, so a resumed
+    run writes BEST only where the uninterrupted run would; a weights-only
+    resume starts the monitor afresh."""
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    values = [0.8, 0.5, 0.6, 0.7]
+    X, Y = _data()
+    params = NNTrainParams(
+        n_epochs=2,
+        train_loader=_batches(X, Y, [5]),
+        val_loader=_batches(X, Y, [5]),
+        scheduler=_plateau(),
+        metrics=(MetricSpec("nll"),),
+        monitor=MonitorSpec(metric="nll"),
+    )
+    first = _model().train(params=replace(params, data_id="split"), eval_step_fn=_scripted_eval(values))
+    resumed = _model().train(params=replace(params, resume_from_run_id=first.id), eval_step_fn=_scripted_eval(values))
+    assert [idp.selection.improved for idp in resumed.idps or () if idp.selection is not None] == [False, False]
+    assert NNCheckpoint.load(run=resumed.id, type=Checkpoints.BEST) is None
+    source_best = NNCheckpoint.load(run=first.id, type=Checkpoints.BEST)
+    assert source_best is not None and source_best.idp.epoch_idx == 1
+    warm = _model().train(
+        params=replace(params, data_id="warm", resume_from_run_id=first.id, resume_mode="weights_only"),
+        eval_step_fn=_scripted_eval(values),
+    )
+    warm_best = NNCheckpoint.load(run=warm.id, type=Checkpoints.BEST)
+    assert warm_best is not None and warm_best.idp.epoch_idx == 2
+
+
 def test_a_plateau_saved_under_another_rule_fails_before_restoring(tmp_path, monkeypatch):
     from dataclasses import replace
 
@@ -527,6 +559,100 @@ def test_a_plateau_saved_under_another_rule_fails_before_restoring(tmp_path, mon
         assert torch.equal(value, before[key]), key
     # weights-only warm starts are unaffected
     warm = model.train(params=replace(monitored, resume_from_run_id=legacy.id, resume_mode="weights_only"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "weights_only"
+
+
+@pytest.mark.parametrize(
+    ("saved", "resumed", "differing"),
+    [
+        # Restoring an accuracy plateau (mode='max') into a run stepping on
+        # validation loss would cut the LR exactly when the loss improves.
+        (
+            dict(monitor=MonitorSpec(metric="accuracy"), metrics=(MetricSpec("accuracy"),)),
+            dict(),
+            "mode, threshold_mode, threshold",
+        ),
+        (
+            dict(),
+            dict(scheduler=NNSchedulerParams(patience=0, cooldown=0, factor=0.5, threshold=0.1, min_lr=0.0)),
+            "threshold",
+        ),
+    ],
+    ids=["monitored-to-plain", "plain-threshold-changed"],
+)
+def test_a_plateau_saved_under_another_rule_fails_to_resume_without_a_monitor(
+    tmp_path, monkeypatch, saved, resumed, differing
+):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    loader = _batches(X, Y, [5])
+    base = NNTrainParams(n_epochs=1, train_loader=loader, val_loader=loader, scheduler=_plateau())
+    source = _model().train(params=replace(base, **saved))
+    model = _model(seed=3)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    plain = replace(base, **resumed)
+    with pytest.raises(ValueError, match=f"declares no monitor.*\\(differing: {differing}\\).*weights_only"):
+        model.train(params=replace(plain, resume_from_run_id=source.id))
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    warm = model.train(params=replace(plain, resume_from_run_id=source.id, resume_mode="weights_only"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "weights_only"
+
+
+def _trainer_params(loader, monitor=None, **resume):
+    builder = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(loader)
+        .val_loader(loader)
+        .optimizer("main", NNOptimParams.builder().sgd(max_lr=0.05).build())
+        .scheduler("main", _plateau())
+    )
+    if monitor is not None:
+        builder.metrics(MetricSpec("accuracy")).monitor(monitor)
+    if resume:
+        builder.resume_from(**resume)
+    return builder.build()
+
+
+@pytest.mark.parametrize(
+    ("saved", "resumed", "match"),
+    [
+        (
+            MonitorSpec(metric="accuracy"),
+            None,
+            "saved with mode='max'.*declares no monitor.*\\(differing: mode, threshold_mode, threshold\\)",
+        ),
+        (
+            None,
+            MonitorSpec(metric="loss"),
+            "saved with mode='min'.*monitor 'val.loss'.*\\(differing: threshold_mode, threshold\\)",
+        ),
+    ],
+    ids=["monitored-to-plain", "plain-to-monitored"],
+)
+def test_trainer_refuses_a_plateau_saved_under_another_rule_before_restoring(
+    tmp_path, monkeypatch, saved, resumed, match
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    loader = _batches(X, Y, [5])
+    source = Trainer(_model()).train(params=_trainer_params(loader, saved), trainer_step_fn=_trainer_step)
+    model = _model(seed=3)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(ValueError, match=f"{match}.*weights_only"):
+        Trainer(model).train(
+            params=_trainer_params(loader, resumed, run_id=source.id, mode="stateful"), trainer_step_fn=_trainer_step
+        )
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    warm = Trainer(model).train(
+        params=_trainer_params(loader, resumed, run_id=source.id, mode="weights_only"), trainer_step_fn=_trainer_step
+    )
     assert warm.resume_status is not None and warm.resume_status.mode == "weights_only"
 
 

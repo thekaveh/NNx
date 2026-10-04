@@ -32,7 +32,9 @@ every batch against that split before any forward pass.
   a message edge outside the training topology (a hidden positive) or a
   candidate outside its split fails before any update. Evaluation
   materialises every candidate (up to ``max_candidates``) for exact
-  AUROC / AP; a one-class set reports them unavailable with the reason.
+  AUROC / AP, scored from the float64 logits (a probability rounds to 0 or
+  1 for a confident model); a one-class set reports them unavailable with
+  the reason.
   The manifest is checkpointed component state ``"link.task"``: a resume
   with another split fails before the first resumed update.
 - :func:`link_predictor_spec` — a registered recipe
@@ -531,11 +533,22 @@ class MetricValue:
     reason: Optional[str] = None
 
 
-def link_metrics(probabilities: Any, targets: Any) -> dict[str, MetricValue]:
+def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False) -> dict[str, MetricValue]:
     """Exact metrics over a whole candidate set. Binary (``probabilities``
     of shape ``(K,)``): ``bce``, ``auroc``, ``ap`` (unavailable, with the
     reason, for a one-class set) and ``accuracy`` at 0.5. Categorical
-    (``(K, C)``): ``nll`` and ``accuracy``."""
+    (``(K, C)``): ``nll`` and ``accuracy``.
+
+    ``from_logits=True`` reads raw logits instead (as
+    :meth:`LinkTask.predict` gives them) and never forms probabilities: in
+    float64, the BCE comes from the logits, the NLL from their log-softmax,
+    and AUROC / AP rank the logits themselves. A probability rounds to
+    exactly 0 or 1 for a confident model (beyond ``|logit|`` ≈ 16.6 in
+    float32, 36.7 in float64), tying candidates the logits tell apart and
+    clipping their loss; logits stay exact at any confidence. The task's
+    evaluation scores the logits."""
+    if not isinstance(from_logits, bool):
+        raise LinkTaskError(f"from_logits must be a bool, got {from_logits!r}")
     p = np.asarray(probabilities, dtype=np.float64)
     y = np.asarray(targets)
     if p.shape[0] != y.shape[0]:
@@ -543,14 +556,29 @@ def link_metrics(probabilities: Any, targets: Any) -> dict[str, MetricValue]:
     if y.shape[0] == 0:
         return {"bce" if p.ndim == 1 else "nll": MetricValue(None, "no candidates")}
     if p.ndim == 2:
-        chosen = np.clip(p[np.arange(y.shape[0]), y.astype(np.int64)], 1e-300, 1.0)
+        rows = np.arange(y.shape[0]), y.astype(np.int64)
+        if from_logits:
+            shifted = p - p.max(axis=1, keepdims=True)  # the max-shifted log-softmax
+            nll = -(shifted[rows] - np.log(np.exp(shifted).sum(axis=1)))
+        else:
+            nll = -np.log(np.clip(p[rows], 1e-300, 1.0))
         return {
-            "nll": MetricValue(float(-np.log(chosen).mean())),
+            "nll": MetricValue(float(nll.mean())),
             "accuracy": MetricValue(float((p.argmax(axis=1) == y).mean())),
         }
-    clipped = np.clip(p, 1e-300, 1.0 - 1e-16)
-    bce = float(-(y * np.log(clipped) + (1 - y) * np.log1p(-clipped)).mean())
-    out = {"bce": MetricValue(bce), "accuracy": MetricValue(float(((p >= 0.5) == (y == 1)).mean()))}
+    if from_logits:
+        # -log sigmoid(z) for a positive, -log(1 - sigmoid(z)) = softplus(z) for a negative: exact for any logit.
+        bce = float(np.logaddexp(0.0, np.where(y == 1, -p, p)).mean())
+        decided = p >= 0.0  # sigmoid(z) >= 0.5
+        # AUROC / AP read only the order: the logits' dense ranks keep it, ties included, with an infinite
+        # logit ranked first or last (NaN stays NaN and is refused, as a NaN probability is).
+        ranks = np.unique(p, return_inverse=True)[1].reshape(p.shape).astype(np.float64)
+        scores = np.where(np.isnan(p), np.nan, ranks)
+    else:
+        clipped = np.clip(p, 1e-300, 1.0 - 1e-16)
+        bce = float(-(y * np.log(clipped) + (1 - y) * np.log1p(-clipped)).mean())
+        decided, scores = p >= 0.5, p
+    out = {"bce": MetricValue(bce), "accuracy": MetricValue(float((decided == (y == 1)).mean()))}
     classes = set(np.unique(y).tolist())
     if classes != {0, 1}:
         reason = f"only class {sorted(classes)} present: AUROC and AP need both positives and negatives"
@@ -558,8 +586,8 @@ def link_metrics(probabilities: Any, targets: Any) -> dict[str, MetricValue]:
     else:
         from sklearn.metrics import average_precision_score, roc_auc_score
 
-        out["auroc"] = MetricValue(float(roc_auc_score(y, p)))
-        out["ap"] = MetricValue(float(average_precision_score(y, p)))
+        out["auroc"] = MetricValue(float(roc_auc_score(y, scores)))
+        out["ap"] = MetricValue(float(average_precision_score(y, scores)))
     return out
 
 
@@ -709,8 +737,10 @@ def link_predictor_spec(
 @dataclass(frozen=True)
 class LinkPrediction:
     """Candidates and their predictions, aligned row for row: ``ids``,
-    ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (``(K,)`` binary,
-    ``(K, C)`` categorical) and ``targets`` — all of one ``split``."""
+    ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (float64; ``(K,)``
+    binary, ``(K, C)`` categorical) and ``targets`` — all of one ``split``.
+    Score it with ``link_metrics(logits, targets, from_logits=True)``: a
+    confident model's probabilities round to 0 or 1."""
 
     ids: np.ndarray
     pairs: np.ndarray
@@ -1015,7 +1045,7 @@ class LinkTask:
                     names.add(batch.link_split)
                     if len(names) > 1:
                         raise LinkTaskError(f"a prediction covers one split, got {sorted(names)}")
-                    logits.append(self._logits(model, batch).detach().float().cpu())
+                    logits.append(self._logits(model, batch).detach().cpu().double())
                     ids.append(batch.candidate_id.cpu())
                     pairs.append(batch.edge_label_index.t().cpu())
                     targets.append(batch.edge_label.cpu())
@@ -1153,8 +1183,10 @@ class LinkObjective(Objective):
 class LinkEval:
     """The task's ``eval_step_fn``: every validation candidate materialised
     (at most ``max_candidates``), then exact metrics over the whole set —
-    never per-batch averages. The record (``kind="link"``) counts the
-    candidates; its ``loss`` is the BCE (or NLL)."""
+    never per-batch averages — from the float64 logits, never rounded
+    probabilities (:func:`link_metrics` with ``from_logits=True``). The
+    record (``kind="link"``) counts the candidates; its ``loss`` is the BCE
+    (or NLL)."""
 
     def __init__(self, task: LinkTask) -> None:
         if not isinstance(task, LinkTask):
@@ -1178,7 +1210,7 @@ class LinkEval:
                 f"evaluation materialises every {prediction.split!r} candidate exactly once: got {len(seen)} rows "
                 f"({len(set(seen))} distinct) for {len(expected)} candidates"
             )
-        metrics = link_metrics(prediction.probabilities, prediction.targets)
+        metrics = link_metrics(prediction.logits, prediction.targets, from_logits=True)
         k = int(prediction.ids.shape[0])
         values = {name: m.value for name, m in metrics.items() if m.value is not None}
         if self.task.mode == "binary":

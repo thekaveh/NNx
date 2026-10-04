@@ -695,3 +695,103 @@ def test_a_failed_resume_leaves_nothing_armed_and_malformed_state_is_refused():
     for bad in ({"negatives_seed": "0"}, {"epoch": -1}, {"epoch": True}):
         problems = task.objective().check_component_state({**state, **bad}, version=1)
         assert problems and "malformed" in problems[0]
+
+
+# --- release review: confident logits ------------------------------------------------------------------------
+
+
+class _Fixed(torch.nn.Module):
+    """A link model whose float32 logits are given per candidate pair."""
+
+    def __init__(self, logits):
+        super().__init__()
+        self.logits = logits
+
+    def forward(self, x, edge_index, edge_label_index):
+        return torch.tensor([self.logits[(u, v)] for u, v in edge_label_index.t().tolist()], dtype=torch.float32)
+
+
+def _evaluate(task, logits, x, batch_size):
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(net=_Fixed(logits), device=torch.device("cpu"))
+    ctx = SimpleNamespace(model=model, val_loader=task.loader("val", x, batch_size=batch_size), extra_metrics=None)
+    return task.eval_step()(ctx), task.predict(model, task.loader("val", x, batch_size=batch_size))
+
+
+def test_saturated_logits_keep_exact_binary_metrics():
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    positives = {(1, 2): 40.0, (2, 3): 20.0, (3, 4): -120.0}
+    negatives = {(4, 5): 30.0, (5, 6): -20.0, (6, 7): 17.0, (0, 7): -40.0}
+    split = LinkSplit(num_nodes=8, train=((0, 1),), val=tuple(positives), val_negatives=tuple(negatives))
+    task, x = LinkTask(split), torch.zeros(8, 2)
+    z = np.array([*positives.values(), *negatives.values()])
+    y = np.array([1.0] * len(positives) + [0.0] * len(negatives))
+    # Exact: 40 and 20 outrank four and three negatives (7 of 12 pairs); the positives rank 1st, 3rd and 7th.
+    exact = {
+        "bce": torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor(z), torch.tensor(y)).item(),
+        "auroc": 7 / 12,
+        "ap": (1 + 2 / 3 + 3 / 7) / 3,
+    }
+    assert roc_auc_score(y, z) == pytest.approx(exact["auroc"], abs=1e-12)
+    assert average_precision_score(y, z) == pytest.approx(exact["ap"], abs=1e-12)
+    # float32 probabilities tie 40, 30, 20 and 17 at 1.0 and round -120 to 0: every value moves.
+    saturated = link_metrics(torch.sigmoid(torch.tensor(z, dtype=torch.float32)).numpy(), y)
+    assert all(saturated[name].value != pytest.approx(value, rel=1e-3) for name, value in exact.items())
+
+    record, prediction = _evaluate(task, {**positives, **negatives}, x, batch_size=10_000)
+    assert prediction.logits.tolist() == z.tolist()
+    for name, value in exact.items():
+        assert record.metrics[name] == pytest.approx(value, rel=1e-12, abs=1e-12)
+    assert record.loss == record.metrics["bce"] and record.metrics["accuracy"] == pytest.approx(4 / 7)
+    scored = link_metrics(prediction.logits, prediction.targets, from_logits=True)
+    assert {name: m.value for name, m in scored.items()} == {
+        k: v for k, v in record.metrics.items() if k not in ("positives", "negatives")
+    }
+    for size in (1, 3):  # the materialised arithmetic does not depend on the batches
+        assert _evaluate(task, {**positives, **negatives}, x, batch_size=size)[0].metrics == record.metrics
+    # Infinite logits rank first or last and cost what they should: 0 when right, inf when wrong.
+    infinite = link_metrics([math.inf, 1.0, -math.inf, -1.0], [1, 1, 0, 0], from_logits=True)
+    assert infinite["auroc"].value == 1.0 and infinite["ap"].value == 1.0
+    assert infinite["bce"].value == pytest.approx(math.log1p(math.exp(-1.0)) / 2, rel=1e-12)
+    assert link_metrics([-math.inf, 1.0], [1, 0], from_logits=True)["bce"].value == math.inf
+
+
+def test_moderate_logits_score_as_their_probabilities():
+    rng = np.random.default_rng(0)
+    z = rng.normal(scale=3.0, size=200)
+    y = (rng.random(200) < 0.4).astype(np.float64)
+    from_logits, from_probabilities = link_metrics(z, y, from_logits=True), link_metrics(1 / (1 + np.exp(-z)), y)
+    assert from_logits.keys() == from_probabilities.keys()
+    for name, metric in from_logits.items():
+        assert metric.value == pytest.approx(from_probabilities[name].value, rel=1e-12, abs=1e-12)
+    rows, labels = rng.normal(scale=3.0, size=(200, 4)), rng.integers(0, 4, size=200)
+    softmax = np.exp(rows - rows.max(axis=1, keepdims=True))
+    softmax /= softmax.sum(axis=1, keepdims=True)
+    categorical, reference = link_metrics(rows, labels, from_logits=True), link_metrics(softmax, labels)
+    assert categorical["nll"].value == pytest.approx(reference["nll"].value, rel=1e-12)
+    assert categorical["accuracy"].value == reference["accuracy"].value
+    one_class = link_metrics([30.0, 40.0], [1, 1], from_logits=True)["auroc"]
+    assert one_class.value is None and "only class [1]" in str(one_class.reason)
+    with pytest.raises(LinkTaskError, match="from_logits must be a bool"):
+        link_metrics(z, y, from_logits="False")  # type: ignore[arg-type]
+
+
+def test_saturated_logits_keep_an_exact_categorical_nll():
+    rows = {(1, 2): [0.0, 120.0, 0.0], (2, 3): [0.0, -120.0, 0.0], (3, 4): [50.0, 0.0, -50.0]}
+    labels = {(0, 1): 0, (1, 2): 1, (2, 3): 1, (3, 4): 2}
+    split = LinkSplit(
+        num_nodes=6, train=((0, 1),), val=tuple(rows), categories=("a", "b", "c"), edge_labels=tuple(labels.items())
+    )
+    task, x = LinkTask(split), torch.zeros(6, 2)
+    z, y = torch.tensor(list(rows.values()), dtype=torch.float64), torch.tensor([labels[e] for e in rows])
+    exact = torch.nn.functional.cross_entropy(z, y).item()
+    assert exact == pytest.approx((0 + (120 + math.log(2)) + 100) / 3, rel=1e-12)
+    saturated = link_metrics(torch.softmax(z.float(), dim=-1).numpy(), y.numpy())["nll"].value  # exp(-120) underflows
+    assert saturated is not None and saturated > 2 * exact
+    for size in (1, 2, 10_000):
+        record, prediction = _evaluate(task, rows, x, batch_size=size)
+        assert record.loss == record.metrics["nll"] == pytest.approx(exact, rel=1e-12)
+        assert record.metrics["accuracy"] == pytest.approx(1 / 3)
+    assert link_metrics(prediction.logits, prediction.targets, from_logits=True)["nll"].value == record.loss

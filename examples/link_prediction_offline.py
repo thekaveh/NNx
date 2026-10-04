@@ -80,7 +80,7 @@ def link_prediction_workflow(epochs: int = 6) -> dict:
     reloaded = NNModel.from_checkpoint(checkpoint)  # the recipe rebuilds encoder and decoder
 
     prediction = task.predict(reloaded, task.loader("test", x, batch_size=32))
-    metrics = link_metrics(prediction.probabilities, prediction.targets)
+    metrics = link_metrics(prediction.logits, prediction.targets, from_logits=True)  # exact at any confidence
     ids = split.candidate_ids("test")
     assert prediction.ids.tolist() == [ids[tuple(pair)] for pair in prediction.pairs.tolist()]
 

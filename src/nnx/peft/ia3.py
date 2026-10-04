@@ -76,7 +76,10 @@ class IA3Linear(nn.Module):
         # from the base weight so it inherits its dtype and device
         # (FIX-003): a float32 vector would silently promote a half
         # pipeline's output to float32 and break the next half Linear.
-        self.scaling = nn.Parameter(base.weight.new_ones(base.out_features))
+        # Allocated by torch, not by the weight, so a quantized weight
+        # subclass (torchao int8) needs no allocator.
+        weight = base.weight
+        self.scaling = nn.Parameter(torch.ones(base.out_features, dtype=weight.dtype, device=weight.device))
         # Report the wrapped layer's mode rather than a fresh module's
         # default train mode (FIX-013), so per-module mode maps stay
         # faithful after injection into an eval or mixed-mode model.
