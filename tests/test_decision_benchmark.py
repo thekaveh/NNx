@@ -858,6 +858,25 @@ def test_round_three_report_edges(tmp_path):
             Record.from_state({**records[0].state(), "execution": execution})
 
 
+def test_a_saved_number_too_large_for_a_float_is_a_benchmark_error(tmp_path):
+    samples, records = fixture()
+    lines = tmp_path / "records.jsonl"
+    write_records(lines, records)
+    huge = json.dumps({**records[0].state(), "sample_id": "s9", "distribution": None, "p_true": 10**400})
+    with open(lines, "a", encoding="utf-8") as handle:
+        handle.write(huge + "\n")
+    with pytest.raises(BenchmarkError, match=r"records\.jsonl:5: .*p_true"):
+        read_records(lines)
+    report = evaluate(samples, records, split="x")
+    path = tmp_path / "report.json"
+    report.save(path)
+    state = json.loads(path.read_text())
+    state["slices"]["in_family"]["metrics"]["accuracy"]["value"] = 10**400
+    path.write_text(json.dumps(state))
+    with pytest.raises(BenchmarkError, match="'accuracy' value .*too large for a float"):
+        compare_reports(BenchmarkReport.load_state(path), report)
+
+
 def test_round_four_edges(tmp_path):
     class ImageOnly(KeywordProvider):  # no check(): its declared capabilities decide what NNx can tell
         def capabilities(self):

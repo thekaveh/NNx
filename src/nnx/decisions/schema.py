@@ -245,7 +245,10 @@ def question_from_state(state: Mapping[str, Any]) -> Union[Choice, Boolean, Scor
 def _probability(value: Any, *, what: str) -> float:
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise InvalidDecisionResponse(f"{what} must be a number in [0, 1], got {value!r}")
-    probability = float(value)
+    try:
+        probability = float(value)
+    except OverflowError as error:  # an integer too large for a float (10**400)
+        raise InvalidDecisionResponse(f"{what} must be a number in [0, 1], got one too large for a float") from error
     if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
         raise InvalidDecisionResponse(f"{what} must be a finite number in [0, 1], got {value!r}")
     return probability
@@ -374,8 +377,9 @@ def validate_response(
     For a :class:`Choice` or :class:`Score`, ``response`` maps option ids to
     probabilities (a mapping, or ``(id, p)`` pairs in any order). The result
     is reordered into the question's order; a missing, duplicate, unknown or
-    unlabeled (empty / non-string) id, a probability outside ``[0, 1]`` and
-    a distribution not summing to 1 within :data:`PROBABILITY_TOLERANCE`
+    unlabeled (empty / non-string) id, a probability outside ``[0, 1]``
+    (one too large for a float included, a ``vendor_score`` too) and a
+    distribution not summing to 1 within :data:`PROBABILITY_TOLERANCE`
     raise :class:`InvalidDecisionResponse` — a malformed distribution is
     never renormalized. For a :class:`Boolean`, ``response`` is ``p_true``
     or ``{"true": p, "false": 1 - p}``. ``raw`` (the provider's own output)
@@ -418,14 +422,16 @@ def validate_response(
     ordered = tuple((option_id, seen[option_id]) for option_id in expected)
     if isinstance(question, Choice):
         return ChoiceResult(digest, ordered, provider=provider, raw=raw)
-    if vendor_score is not None and (
-        isinstance(vendor_score, bool) or not isinstance(vendor_score, numbers.Real) or not math.isfinite(vendor_score)
-    ):
-        raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
-    return ScoreResult(
-        digest,
-        ordered,
-        provider=provider,
-        vendor_score=None if vendor_score is None else float(vendor_score),
-        raw=raw,
-    )
+    score = None
+    if vendor_score is not None:
+        if isinstance(vendor_score, bool) or not isinstance(vendor_score, numbers.Real):
+            raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
+        try:
+            score = float(vendor_score)
+        except OverflowError as error:  # an integer too large for a float
+            raise InvalidDecisionResponse(
+                "vendor_score must be a finite number, got one too large for a float"
+            ) from error
+        if not math.isfinite(score):
+            raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
+    return ScoreResult(digest, ordered, provider=provider, vendor_score=score, raw=raw)

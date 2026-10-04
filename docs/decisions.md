@@ -64,8 +64,9 @@ carries one `p_true` (`p_false` is derived). A provider's own output stays in
 uses. For a Choice or Score, `response` is the provider's keyed output — a
 mapping or `(id, p)` pairs in any order. It is reordered into the question's
 order, and a **missing**, **duplicate**, **unknown** or **unlabeled** (empty or
-non-string) id, a probability outside `[0, 1]`, or a distribution that does not
-sum to 1 raises `InvalidDecisionResponse`. A malformed distribution is **never
+non-string) id, a probability outside `[0, 1]` (one too large for a float
+included), or a distribution that does not sum to 1 raises
+`InvalidDecisionResponse`. A malformed distribution is **never
 renormalized**: dividing by the sum would hide a provider bug. For a Boolean,
 `response` is `p_true` or `{"true": p, "false": 1 - p}`.
 
@@ -451,7 +452,9 @@ student.train(params=..., objective=data.objective(alpha=0.7))
   candidate ids (the question's option ids) and their probabilities, the
   teacher and its revision, the schema digest (the question's `digest()`),
   the probability semantics and the provenance. A record without one of
-  them fails validation.
+  them fails validation, and `read_teacher_records` names the `path:line`
+  of a malformed line — a number too large for a float included — in its
+  `TeacherRecordError`.
 - **Provenance is declared, not verified.** `provenance` names the record's
   `source` and the `training_rights` under which it may train a student, as
   the exporter declares them. NNx checks that the declaration is there; it

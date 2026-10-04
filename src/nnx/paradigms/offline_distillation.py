@@ -169,7 +169,15 @@ class TeacherRecord:
                 f"{len(candidates)} candidates"
             )
         for p in probabilities:
-            if isinstance(p, bool) or not isinstance(p, numbers.Real) or not math.isfinite(p):
+            if isinstance(p, bool) or not isinstance(p, numbers.Real):
+                raise TeacherRecordError(f"record {self.sample_id!r}: probabilities must be finite numbers, got {p!r}")
+            try:
+                finite = math.isfinite(p)
+            except OverflowError as error:  # an integer too large for a float (10**400)
+                raise TeacherRecordError(
+                    f"record {self.sample_id!r}: probabilities must be finite numbers, got one too large for a float"
+                ) from error
+            if not finite:
                 raise TeacherRecordError(f"record {self.sample_id!r}: probabilities must be finite numbers, got {p!r}")
             if p < 0:
                 raise TeacherRecordError(f"record {self.sample_id!r}: probabilities must be nonnegative, got {p!r}")
@@ -254,7 +262,8 @@ def write_teacher_records(path: Union[str, os.PathLike[str]], records: Iterable[
 
 def read_teacher_records(path: Union[str, os.PathLike[str]]) -> list[TeacherRecord]:
     """The records of a JSONL file written by :func:`write_teacher_records`;
-    a malformed line raises naming ``path:line``."""
+    a malformed line — a number too large for a float included — raises
+    :class:`TeacherRecordError` naming ``path:line``."""
     from .._artifacts import parse_json, read_text
 
     records = []
@@ -433,7 +442,10 @@ class TeacherDataset(torch.utils.data.Dataset):
 def _check_alpha(alpha: Any) -> float:
     if isinstance(alpha, bool) or not isinstance(alpha, numbers.Real):
         raise TypeError(f"alpha must be a number in [0, 1], got {alpha!r}")
-    value = float(alpha)
+    try:
+        value = float(alpha)
+    except OverflowError as error:  # an integer too large for a float
+        raise TeacherRecordError("alpha must be finite and in [0, 1], got one too large for a float") from error
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         raise TeacherRecordError(f"alpha must be finite and in [0, 1], got {alpha!r}")
     return value

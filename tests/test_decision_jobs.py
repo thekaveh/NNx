@@ -884,6 +884,15 @@ def test_a_token_count_that_is_not_a_number_is_a_typed_failure():
         assert type(caught.value.__cause__).__name__ == "InvalidDecisionResponse"
 
 
+def test_a_token_count_too_large_for_a_float_exceeds_any_cap():
+    class Huge(TextProvider):
+        def count_tokens(self, questions, texts):
+            return 10**400
+
+    with pytest.raises(InvalidJob, match="alone exceeds max_tokens=5 \\(inf tokens\\)"):
+        Job.collect(_questions(2)).run(Huge(), state=TEXTS, limits=Limits(max_tokens=5))
+
+
 def test_a_slow_hook_overruns_the_timeout_by_at_most_one_call():
     class SlowCount(TextProvider):
         counts = 0

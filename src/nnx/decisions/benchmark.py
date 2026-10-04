@@ -1457,7 +1457,12 @@ def compare_reports(
                 y = right["slices"][name]["metrics"][metric]["value"]
             except (KeyError, TypeError) as error:
                 raise BenchmarkError(f"slice {name!r} has no {metric!r} value in one of the reports") from error
-            finite = all(isinstance(v, (int, float)) and math.isfinite(v) for v in (x, y))
+            try:
+                finite = all(isinstance(v, (int, float)) and math.isfinite(v) for v in (x, y))
+            except OverflowError as error:  # an integer too large for a float in a saved report
+                raise BenchmarkError(
+                    f"slice {name!r}'s {metric!r} value in one of the reports is too large for a float"
+                ) from error
             row[metric] = float(y) - float(x) if finite else None
         deltas[name] = row
     return deltas
