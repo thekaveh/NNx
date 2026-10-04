@@ -7,9 +7,15 @@ import torch
 
 from nnx import (
     Activations,
+    DoRALinear,
+    IA3Linear,
+    LoRALinear,
     NNTransformerParams,
     PrefixTuner,
     TransformerNN,
+    apply_dora_to,
+    apply_ia3_to,
+    apply_lora_to,
     load_prefix_weights,
     save_prefix_weights,
     set_seed,
@@ -298,6 +304,55 @@ def test_prefix_uses_each_block_placement():
     assert tuner.prefix_keys[0].dtype == torch.float32 == model.blocks[0].attn.w_qkv.weight.dtype
     assert tuner.prefix_keys[1].dtype == torch.float64 == model.blocks[1].attn.w_qkv.weight.dtype
     assert tuner.prefix_values[1].dtype == torch.float64
+
+
+def _adapt_attention_projections(model: TransformerNN, adapter: str) -> type[torch.nn.Module]:
+    """Wrap every block's ``attn.w_qkv`` with ``adapter`` (``lora+ia3``
+    nests an IA3 wrapper inside the LoRA wrapper's ``base`` slot); return
+    the outermost wrapper type."""
+    if adapter == "dora":
+        assert apply_dora_to(model, "blocks.*.attn.w_qkv", r=2) == len(model.blocks)
+        return DoRALinear
+    if adapter == "ia3":
+        assert apply_ia3_to(model, "blocks.*.attn.w_qkv") == len(model.blocks)
+        return IA3Linear
+    assert apply_lora_to(model, "blocks.*.attn.w_qkv", r=2) == len(model.blocks)
+    if adapter == "lora+ia3":
+        assert apply_ia3_to(model, "blocks.*.attn.w_qkv.base") == len(model.blocks)
+    return LoRALinear
+
+
+@pytest.mark.parametrize("adapter", ["lora", "dora", "ia3", "lora+ia3"])
+def test_prefix_tuner_composes_with_adapted_attention_projection(adapter):
+    """Prefix tuning on top of LoRA / DoRA / IA3 (worked in v0.2.3): an
+    adapted ``attn.w_qkv`` is a wrapper with no ``.weight`` of its own, so
+    allocating each prefix from ``w_qkv.weight`` (FIX-003) raised
+    AttributeError. Placement now comes from the Linear the wrapper(s)
+    hold, the wrappers stay in place and are frozen with the base, a
+    forward + backward reaches only the prefix tensors, and the patched
+    attention still runs through the adapter."""
+    set_seed(0)
+    model = _tiny_transformer().to(torch.float64)
+    wrapper_type = _adapt_attention_projections(model, adapter)
+    tuner = PrefixTuner(model, n_prefix=3)
+    for i, (k, v) in enumerate(zip(tuner.prefix_keys, tuner.prefix_values, strict=True)):
+        assert isinstance(model.blocks[i].attn.w_qkv, wrapper_type), i
+        assert k.dtype == v.dtype == torch.float64, i
+    assert all(not p.requires_grad for p in model.parameters())
+
+    ids = torch.randint(0, 100, (2, 6))
+    out = tuner(ids)
+    assert out.dtype == torch.float64 and out.shape == (2, 6, 100) and torch.isfinite(out).all()
+    out.sum().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in tuner.trainable_parameters())
+    assert all(p.grad is None for p in model.parameters())
+
+    # The adapter's delta / scaling still shapes the prefixed attention.
+    with torch.no_grad():
+        for name, p in model.blocks[0].attn.w_qkv.named_parameters():
+            if name.rsplit(".", 1)[-1] in ("lora_B", "scaling"):
+                p.add_(0.5)
+        assert not torch.equal(tuner(ids), out)
 
 
 def test_prefix_state_dict_excludes_nested_name_collisions(tmp_path):
