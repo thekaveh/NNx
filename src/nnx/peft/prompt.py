@@ -90,8 +90,13 @@ class PromptTuner(nn.Module):
         # (n_prompt_tokens, d_model). Normal(0, 0.02) init. Allocated from
         # the token-embedding weight it is concatenated with, so it
         # inherits that tensor's dtype and device (FIX-003) — a model
-        # converted or moved before wrapping forwards immediately.
-        self.soft_prompt = nn.Parameter(model.tok_embed.weight.new_empty(n_prompt_tokens, d_model))
+        # converted or moved before wrapping forwards immediately. Allocated
+        # by torch, not by the weight, so a quantized weight subclass needs
+        # no allocator.
+        embedding = model.tok_embed.weight
+        self.soft_prompt = nn.Parameter(
+            torch.empty(n_prompt_tokens, d_model, dtype=embedding.dtype, device=embedding.device)
+        )
         nn.init.normal_(self.soft_prompt, std=0.02)
         # Report the wrapped model's train/eval mode (FIX-013); the model's
         # own (possibly mixed) submodule modes are left untouched.

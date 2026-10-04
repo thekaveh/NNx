@@ -155,19 +155,18 @@ class PrefixTuner(nn.Module):
         # it wraps (`.base`, through nested wrappers). Only the weight's
         # placement is used — the adapter's delta or scaling is irrelevant
         # here and stays in effect, since the patched forward calls the
-        # wrapper itself.
-        def _projection_weight(i: int) -> torch.Tensor:
+        # wrapper itself. Allocated by torch, not by the weight
+        # (`new_empty`), so a quantized weight subclass (torchao int8)
+        # needs no allocator.
+        def _prefix(i: int) -> nn.Parameter:
             proj = cast(Any, model.blocks[i]).attn.w_qkv
             while isinstance(proj, (LoRALinear, IA3Linear)):
                 proj = proj.base
-            return proj.weight
+            weight = proj.weight
+            return nn.Parameter(torch.empty(n_prefix, n_heads, head_dim, dtype=weight.dtype, device=weight.device))
 
-        self.prefix_keys = nn.ParameterList(
-            [nn.Parameter(_projection_weight(i).new_empty(n_prefix, n_heads, head_dim)) for i in range(n_layers)]
-        )
-        self.prefix_values = nn.ParameterList(
-            [nn.Parameter(_projection_weight(i).new_empty(n_prefix, n_heads, head_dim)) for i in range(n_layers)]
-        )
+        self.prefix_keys = nn.ParameterList([_prefix(i) for i in range(n_layers)])
+        self.prefix_values = nn.ParameterList([_prefix(i) for i in range(n_layers)])
         # Init with small Gaussian noise — matches the original
         # prefix-tuning paper's "random init" baseline.
         for p in self.prefix_keys:
