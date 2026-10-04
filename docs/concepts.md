@@ -2320,17 +2320,24 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   validation / test negative fails before any update. Batches are bound to
   their role: the objective trains on `train` batches only, and the
   training evaluator reads the `val` split, every candidate exactly once
-  (score `test` with `predict()` and `link_metrics()` after training).
+  (score `test` after training with `prediction = task.predict(...)` and
+  `link_metrics(prediction.logits, prediction.targets, from_logits=True)`).
   The default train / evaluate / predict paths refuse link batches (they
   cannot check them), as do node-level nets and the graph-pooling adapter
   (§21).
 - **Shapes and metrics.** Binary candidates give one logit each, `(K,)`;
   edge-label candidates `(K, categories)`; `predict()` keeps ids, pairs,
-  logits, probabilities and targets aligned, in candidate order.
+  logits, probabilities and targets aligned, in candidate order (float64).
   Evaluation materialises every candidate (up to `max_candidates`) for
   exact AUROC and AP — never per-batch averages; a one-class set reports
   them unavailable with the reason, so `MonitorSpec("auroc")` never elects
-  it BEST.
+  it BEST. The metrics are computed from the float64 logits, never from
+  probabilities, which round to exactly 0 or 1 for a confident model
+  (beyond `|logit|` ≈ 16.6 in float32, 36.7 in float64), tying candidates
+  the logits tell apart and clipping their loss: the BCE comes from the
+  logits (the NLL from their log-softmax), and AUROC / AP rank the logits
+  themselves. `link_metrics(probabilities, targets)` still scores bare
+  probabilities; `from_logits=True` scores logits as the evaluator does.
 - **Recipe and checkpoints.** `link_predictor_spec(...)` (GCN / GraphSAGE /
   GAT encoder with no activation after its last layer, so a `"dot"`
   decoder's logits can be negative; or an `"mlp"` decoder) is rebuilt on
