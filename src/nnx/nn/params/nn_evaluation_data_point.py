@@ -8,6 +8,8 @@ from typing import Any, Optional, cast
 import numpy as np
 from sklearn import metrics
 
+from ._pickling import pickle_with_trailing_defaults
+
 
 class _FrozenMetrics(Mapping[str, float]):
     __slots__ = ("_items", "_values")
@@ -257,3 +259,8 @@ class NNEvaluationDataPoint:
             status=state.get("status"),
             metrics=dict(state.get("metrics") or {}),
         )
+
+
+# Pickled inside every checkpoint: a 0.2.3 pickle (no kind, count, status
+# or metrics) restores them as None / an empty mapping.
+pickle_with_trailing_defaults(NNEvaluationDataPoint)

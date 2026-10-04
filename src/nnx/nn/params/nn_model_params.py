@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import MISSING, dataclass, fields
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ...precision import PrecisionPolicy
 from ..enum.devices import Devices
 from ..enum.losses import Losses
 from ..enum.nets import Nets
+from ._pickling import pickle_with_trailing_defaults
 
 if TYPE_CHECKING:
     from ...models import ModelSpec, RuntimeModule
@@ -139,23 +140,6 @@ class NNModelParams:
         )
 
 
-def _getstate(self: NNModelParams) -> list[Any]:
-    return [getattr(self, spec.name) for spec in fields(self)]
-
-
-def _setstate(self: NNModelParams, state: Any) -> None:
-    # A pickle stores the fields positionally; one written before a trailing
-    # field existed (task, precision) restores the fields it has and leaves
-    # the rest at their defaults.
-    for spec, value in zip(fields(self), state, strict=False):
-        object.__setattr__(self, spec.name, value)
-    for spec in fields(self)[len(state) :]:
-        if spec.default is MISSING:
-            raise TypeError(f"cannot restore NNModelParams: the pickle lacks {spec.name!r}")
-        object.__setattr__(self, spec.name, spec.default)
-
-
-# Attached after the class exists: on Python 3.10, dataclass(slots=True)
-# replaces pickling hooks defined in the class body with its own.
-NNModelParams.__getstate__ = _getstate  # type: ignore[method-assign]
-NNModelParams.__setstate__ = _setstate  # type: ignore[method-assign]
+# A pickle written before a trailing field existed (task, precision)
+# restores the fields it has and leaves the rest at their defaults.
+pickle_with_trailing_defaults(NNModelParams)
