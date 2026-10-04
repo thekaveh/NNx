@@ -35,7 +35,8 @@ nothing here builds or loads a model, reads a checkpoint, elects a
   (``run.yaml``, ``idps.csv`` — or a FEAT-036 history journal's committed
   records — and the FEAT-019 provenance files, each read once; for a run with a parent, ``metadata.yaml`` and every ancestor's
   ``run.yaml`` and provenance files) without loading a model or a
-  checkpoint.
+  checkpoint: the committed epoch is the LAST epoch the attempt record
+  names, and a journal is read only up to it.
 """
 
 from __future__ import annotations
@@ -1248,19 +1249,36 @@ def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any]
     return run_state, run_path
 
 
-def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, bool, str]:
+def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, Optional[int], bool, str]:
+    """A run's ``run.yaml``, records, provenance, committed epoch (``None``:
+    not filtered), whether that epoch is known, and its directory. Under the
+    history protocol LAST commits the history, and the attempt record names
+    LAST's epoch: no checkpoint is read."""
     import pandas as pd
 
-    from .history import has_journal, iter_history
+    from .history import _own_records, has_journal
     from .nn.params.nn_iteration_data_point import NNIterationDataPoint
     from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE
-    from .provenance import load_provenance
 
     run_state, run_path = _read_run_state(run_id, root)
+    provenance = _provenance(run_id, root)
+    attempt = None if provenance is None else provenance.attempt
+    last = None if attempt is None else attempt.last_committed
+    if last is not None and not isinstance(last, Mapping):
+        raise ComparisonError(f"run {run_id}: attempt.json's last_committed is not a mapping: {last!r}")
+    committed: Optional[int] = None
+    known = True
+    if os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
+        epoch = None if last is None else last.get("epoch")
+        if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
+            raise ComparisonError(f"run {run_id}: attempt.json's committed epoch is not an epoch: {epoch!r}")
+        committed, known = epoch, epoch is not None
     if has_journal(run_path):  # a FEAT-036 history journal writes no idps.csv
         try:
             last_records: dict[Any, Any] = {}
-            for record in iter_history(run_id, root):  # its committed records, checked chunk by chunk
+            # Its records up to the committed epoch, checked chunk by chunk —
+            # none while that epoch is unknown (the uncommitted tail stays unread).
+            for record in _own_records(run_id, root, committed, {}) if known else ():
                 last_records[record.epoch_idx] = record
         except Exception as error:
             raise ComparisonError(
@@ -1277,15 +1295,7 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
             idps = [NNIterationDataPoint.from_state(row) for row in last_rows.values()]
         except Exception as error:  # an empty or damaged history is not an empty one
             raise ComparisonError(f"run {run_id}: malformed idps.csv: {type(error).__name__}: {error}") from error
-    committed_by_last = os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE))
-    try:
-        provenance = load_provenance(run_id, root)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-        raise ComparisonError(
-            f"run {run_id}: its provenance files (provenance.json / attempt.json) are unreadable: "
-            f"{type(error).__name__}: {error}"
-        ) from error
-    return run_state, idps, provenance, committed_by_last, run_path
+    return run_state, idps, provenance, committed, known, run_path
 
 
 def observations_from_runs(
@@ -1338,7 +1348,10 @@ def observations_from_runs(
     one) and the data and split identities from its manifest. A run's
     history is committed by its LAST checkpoint, so without an attempt
     record naming that checkpoint's epoch the committed epoch — and so the
-    value — is unknown. A legacy run (no commit marker) keeps its value,
+    value — is unknown. The recorded epoch is used as is (LAST itself is
+    never opened, so nothing is unpickled), and a history journal is read
+    only up to it — not at all while it is unknown, so an uncommitted tail
+    is never read. A legacy run (no commit marker) keeps its value,
     but its status is unknown, so it is never counted in a group's ``n``.
     A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
     empty cell.
@@ -1363,25 +1376,13 @@ def observations_from_runs(
     observations = []
     identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
     for run_id in run_ids:
-        run_state, idps, provenance, committed_by_last, run_path = _read_run(run_id, root)
+        run_state, idps, provenance, committed, known, run_path = _read_run(run_id, root)
         source = "history journal" if has_journal(run_path) else "idps.csv"
         attempt = None if provenance is None else provenance.attempt
         status = "unknown" if attempt is None else attempt.status
         if status not in STATUSES:
             status = "unknown"
-        committed: Optional[int] = None
-        known = True
         last = None if attempt is None else attempt.last_committed
-        if last is not None and not isinstance(last, Mapping):
-            raise ComparisonError(f"run {run_id}: attempt.json's last_committed is not a mapping: {last!r}")
-        if committed_by_last:
-            epoch = None if last is None else last.get("epoch")
-            if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
-                raise ComparisonError(f"run {run_id}: attempt.json's committed epoch is not an epoch: {epoch!r}")
-            if epoch is not None:
-                committed = epoch
-            else:
-                known = False
         epochs: dict[int, Any] = {}
         for idp in idps:
             if committed is None or idp.epoch_idx <= committed:

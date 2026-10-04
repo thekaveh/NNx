@@ -1217,20 +1217,35 @@ def _named_metric_set(
 
 
 def _check_plateau_resume(saved: Optional[Mapping[str, Any]], scheduler: Any, monitor: Optional[MonitorSpec]) -> None:
-    """A monitor-aligned plateau scheduler (FEAT-003) resumes only from a
-    plateau state saved under the same improvement rule — loading one
-    saved under another direction or threshold would silently replace the
-    monitor's rule. Checked before anything is restored."""
-    if monitor is None or saved is None or not isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+    """A plateau scheduler resumes only from a plateau state saved under the
+    improvement rule this run builds — direction, threshold mode and
+    threshold — whether or not the run declares a monitor (FEAT-003).
+    Loading the state replaces the built rule with the saved one, so a
+    state saved while monitoring accuracy (``mode='max'``) would cut the LR
+    of a run stepping on validation loss exactly when it improves. Checked
+    before anything is restored."""
+    if saved is None or not isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
         return
-    saved_rule = (saved.get("mode"), saved.get("threshold_mode"), saved.get("threshold"))
-    if saved_rule != (monitor.mode, "abs", monitor.min_delta):
-        raise ValueError(
-            f"resume plateau scheduler was saved with mode={saved_rule[0]!r}, threshold_mode={saved_rule[1]!r}, "
-            f"threshold={saved_rule[2]!r}, but this run's monitor {monitor.key!r} decides with mode="
-            f"{monitor.mode!r}, threshold_mode='abs', threshold={monitor.min_delta!r}; resume with the same "
-            "monitor, or pass resume_mode='weights_only'"
-        )
+    fields = ("mode", "threshold_mode", "threshold")
+    saved_rule = {name: saved.get(name) for name in fields}
+    built_rule = {name: getattr(scheduler, name) for name in fields}
+    differing = [name for name in fields if saved_rule[name] != built_rule[name]]
+    if not differing:
+        return
+
+    def rule(values: Mapping[str, Any]) -> str:
+        return ", ".join(f"{name}={values[name]!r}" for name in fields)
+
+    decider = (
+        f"this run's monitor {monitor.key!r} decides"
+        if monitor is not None
+        else "this run declares no monitor, so its scheduler decides"
+    )
+    raise ValueError(
+        f"resume plateau scheduler was saved with {rule(saved_rule)}, but {decider} with {rule(built_rule)} "
+        f"(differing: {', '.join(differing)}); resume with the monitor and scheduler threshold the checkpoint "
+        "was trained with, or pass resume_mode='weights_only'"
+    )
 
 
 def _monitoring_preflight(

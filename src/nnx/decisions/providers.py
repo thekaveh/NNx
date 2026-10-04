@@ -147,7 +147,10 @@ class FixedHeadProvider:
     and :class:`Score` when constructed with ``ordinal=True``, whose levels
     must then follow the head's class order — and a single-logit Bernoulli
     head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
-    :class:`Boolean`. Probabilities come from the model's ``predict_proba``
+    one :class:`Boolean`: ``question``, the one it was trained for. Its
+    single probability is bound to no prompt, so any other Boolean (another
+    digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
+    advances. Probabilities come from the model's ``predict_proba``
     (FEAT-001), which evaluates in eval mode and restores every submodule's
     training mode; they are computed in float64 from the returned logits,
     so half-precision models meet the ``1e-6`` tolerance.
@@ -170,6 +173,9 @@ class FixedHeadProvider:
         ordinal: whether the class order is meaningful (enables Score).
         max_batch: the most inputs per call.
         name: the provider name recorded on results.
+        question: the :class:`Boolean` a Bernoulli head was trained to
+            answer — required for one, refused for a categorical head
+            (which answers by its labels).
     """
 
     model: NNModel
@@ -178,6 +184,7 @@ class FixedHeadProvider:
     ordinal: bool = False
     max_batch: Optional[int] = None
     name: str = "nnx.fixed_head"
+    question: Optional[Boolean] = None
     model_calls: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
@@ -201,10 +208,22 @@ class FixedHeadProvider:
                 raise UnsupportedCapability(
                     "a multi-output Bernoulli head justifies no single decision; use a one-output head for Boolean"
                 )
+            if self.question is None:
+                raise InvalidDecisionRequest(
+                    "a Bernoulli head needs the Boolean it answers: pass question=Boolean(...), the question it was "
+                    "trained for (its one probability is bound to no prompt)"
+                )
+            if not isinstance(self.question, Boolean):
+                raise InvalidDecisionRequest(f"question must be a Boolean, got {type(self.question).__name__}")
             self._head = "bernoulli"
             self.labels = tuple(labels) if labels is not None else None
             return
         self._head = "categorical"
+        if self.question is not None:
+            raise InvalidDecisionRequest(
+                "question= binds a Bernoulli head to its Boolean; a categorical head answers by its labels "
+                "(or option_map)"
+            )
         if labels is None:
             raise InvalidDecisionRequest(
                 "a categorical head needs its label space: pass labels=(...) (one per output class) or declare "
@@ -254,14 +273,20 @@ class FixedHeadProvider:
     def check(self, question: Question, inputs: Any) -> None:
         """Every check :meth:`decide` makes before calling the model — the
         question, the inputs' modality and batch size, and the label space
-        (through ``option_map``) — so a caller (a decision job) can validate
-        a request without calling the model."""
+        (through ``option_map``) or a Boolean's identity (its digest) — so a
+        caller (a decision job) can validate a request without calling the
+        model."""
         if not isinstance(question, (Choice, Boolean, Score)):
             raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
         modality, batch_size = _batch(inputs)
         head_labels = self._head_labels(question)
         caps = self.capabilities()
         caps.check(question, modality=modality, batch_size=batch_size, label_ids=head_labels)
+        bound = self.question
+        if isinstance(question, Boolean) and bound is not None and question.digest() != bound.digest():
+            raise UnsupportedCapability(
+                f"this head answers only the Boolean it was trained for, {bound.prompt!r}; not {question.prompt!r}"
+            )
         if isinstance(question, Score) and head_labels != list(caps.labels or ()):
             raise UnsupportedCapability(
                 f"a Score's levels must follow the head's class order {list(caps.labels or ())}; got {head_labels}"

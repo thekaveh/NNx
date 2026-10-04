@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import pickle
 import random
 import statistics
 
@@ -393,6 +394,83 @@ def test_a_journaled_run_is_read_from_its_history_journal(tmp_path, monkeypatch)
     )
     assert b.value == pytest.approx(a.value) and b_train.value == pytest.approx(a_train.value)
     assert _tree_digest("runs") == before
+
+
+def _forbid_unpickling(monkeypatch) -> None:
+    """Every way to unpickle a checkpoint fails the test."""
+
+    def no_load(*args, **kwargs):
+        raise AssertionError("reading observations must not unpickle a checkpoint")
+
+    monkeypatch.setattr(torch, "load", no_load)
+    monkeypatch.setattr(pickle, "load", no_load)
+    monkeypatch.setattr(pickle, "loads", no_load)
+    monkeypatch.setattr(NNModel, "from_checkpoint", no_load)
+    for loader in ("load", "from_file", "load_training_state", "load_with_training_state", "load_optimizer_state"):
+        monkeypatch.setattr(NNCheckpoint, loader, no_load)
+
+
+def test_a_journaled_run_is_read_without_unpickling_a_checkpoint(tmp_path, monkeypatch):
+    from nnx.history import HistoryJournal, iter_history
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    run = _fit(0.1, 5, history=HistoryJournal(retention=2, chunk_size=2))
+    last = list(iter_history(run.id))[-1]  # the last committed record, as readers show it
+    readings = ((LOSS, "validation", "last"), (LOSS, "train", "last"), (ACC, "validation", "best"))
+    expected = [observations_from_runs([run.id], metric=m, split=s, selection=r) for m, s, r in readings]
+    _forbid_unpickling(monkeypatch)
+    assert [observations_from_runs([run.id], metric=m, split=s, selection=r) for m, s, r in readings] == expected
+    (item,) = expected[0]
+    assert item.value == last.val_edp.loss
+    assert item.evaluation.startswith(f"epoch {last.epoch_idx} validation record (history journal)")
+
+
+@pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "history journal"])
+def test_an_epoch_written_before_its_last_checkpoint_landed_is_never_read_as_committed(journal, tmp_path, monkeypatch):
+    import nnx.history as history_module
+    from nnx.history import HistoryJournal, iter_history
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    save = NNCheckpoint.save
+
+    def killed(self, *args, **kwargs):
+        if self.idp.epoch_idx == 1:
+            raise RuntimeError("killed before LAST")
+        return save(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        # Epoch 1's history is written, its LAST never lands and nothing is rolled back.
+        patch.setattr(NNCheckpoint, "save", killed)
+        patch.setattr(history_module._EagerHistory, "rollback_epoch", lambda self, run: None)
+        patch.setattr(history_module._JournalWriter, "rollback", lambda self: None)
+        with pytest.raises(RuntimeError, match="killed before LAST"):
+            _fit(0.1, 5, history=HistoryJournal(retention=2, chunk_size=2) if journal else None)
+    (run_id,) = [name for name in os.listdir("runs") if name != "best" and not name.startswith(".")]
+    run_path = os.path.join("runs", run_id)
+    if journal:
+        assert json.load(open(os.path.join(run_path, "history", "journal.json")))["epochs"] == 2  # epoch 1 published
+    else:
+        assert set(pd.read_csv(os.path.join(run_path, "idps.csv"))["epoch_idx"]) == {0, 1}
+    committed = list(iter_history(run_id))[-1]  # up to LAST's epoch
+    assert committed.epoch_idx == 0
+    _forbid_unpickling(monkeypatch)
+    (item,) = observations_from_runs([run_id], metric=LOSS)
+    assert item.status == "failed" and item.value == pytest.approx(committed.val_edp.loss)
+    assert item.evaluation.startswith("epoch 0 validation record")
+    # A run killed before recording its end names no committed epoch: its value is unknown.
+    attempt = os.path.join(run_path, "attempt.json")
+    record = json.loads(open(attempt).read())
+    with open(attempt, "w") as handle:
+        json.dump({**record, "status": "running", "finished_at": None, "last_committed": None}, handle)
+    (running,) = observations_from_runs([run_id], metric=LOSS)
+    assert running.status == "running" and running.value is None
+    assert running.evaluation == "unknown: the committed epoch is not recorded"
+    # A legacy run (no commit marker) keeps its whole history, unfiltered, as before.
+    os.remove(os.path.join(run_path, ".history-committed-by-last"))
+    (legacy,) = observations_from_runs([run_id], metric=LOSS)
+    assert legacy.evaluation.startswith("epoch 1 validation record")
 
 
 def test_selection_best_reads_the_monitor_election_or_stays_unknown(tmp_path, monkeypatch):

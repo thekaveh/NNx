@@ -21,7 +21,8 @@ runs the whole path locally, with no hosted provider:
   4. **Other primitives.** An ordinal ``Score`` from a head whose class
      order is the level order (``ordinal=True``; ``expected_index`` is a
      position between levels, not an interval score) and a ``Boolean`` from
-     a one-logit head.
+     a one-logit head bound to the question it was trained for (any other
+     Boolean is rejected before the model is called).
 
 Fully offline, CPU only.
 
@@ -119,12 +120,21 @@ def decision_fixed_head_workflow() -> None:
     print("severity:", dict(score.distribution), f"expected level index {score.expected_index:.3f} (ordinal)")
     assert score.expected_index > 1.5  # photo 0 leans to "high"
 
-    # 4b. A Boolean from a one-logit head.
+    # 4b. A Boolean from a one-logit head, bound to the question it was trained for.
     outdoors = _head([[0.0, 3.0]], Losses.BINARY_CROSS_ENTROPY, TaskSpec.multilabel(1))
-    answers = FixedHeadProvider(outdoors).decide(Boolean("Was the photo taken outdoors?"), photos)
+    taken_outdoors = Boolean("Was the photo taken outdoors?")
+    binary = FixedHeadProvider(outdoors, question=taken_outdoors)
+    answers = binary.decide(taken_outdoors, photos)
     expected = 1.0 / (1.0 + np.exp(-3.0 * photos[:, 1].numpy()))
     np.testing.assert_allclose([a.p_true for a in answers], expected, rtol=1e-6)
     print("outdoors:", [round(a.p_true, 3) for a in answers])
+    # Its one probability answers no other Boolean.
+    try:
+        binary.decide(Boolean("Is there a cat in the photo?"), photos)
+        raise AssertionError("another Boolean must be rejected")
+    except UnsupportedCapability as error:
+        print("rejected before any model call:", error)
+    assert binary.model_calls == 1
 
 
 def main() -> None:

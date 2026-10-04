@@ -2104,7 +2104,9 @@ Applies one :class:`MonitorSpec` epoch by epoch: returns each epoch's :class:`Mo
 The run's tracker is also an optional checkpointable component
 (``nnx.monitor``, FEAT-005): a stateful warm resume continues from the
 source run's best, so BEST keeps agreeing with a restored
-``EarlyStopping`` and plateau scheduler after the split.
+``EarlyStopping`` and plateau scheduler after the split — the resumed
+run writes BEST only on an epoch that beats it, and none when no
+resumed epoch does.
 ```
 
 ##### `nnx.monitors.MonitorTracker.observe`
@@ -2858,8 +2860,9 @@ Validate a provider's keyed output against ``question`` and return the normalize
 For a :class:`Choice` or :class:`Score`, ``response`` maps option ids to
 probabilities (a mapping, or ``(id, p)`` pairs in any order). The result
 is reordered into the question's order; a missing, duplicate, unknown or
-unlabeled (empty / non-string) id, a probability outside ``[0, 1]`` and
-a distribution not summing to 1 within :data:`PROBABILITY_TOLERANCE`
+unlabeled (empty / non-string) id, a probability outside ``[0, 1]``
+(one too large for a float included, a ``vendor_score`` too) and a
+distribution not summing to 1 within :data:`PROBABILITY_TOLERANCE`
 raise :class:`InvalidDecisionResponse` — a malformed distribution is
 never renormalized. For a :class:`Boolean`, ``response`` is ``p_true``
 or ``{"true": p, "false": 1 - p}``. ``raw`` (the provider's own output)
@@ -2938,7 +2941,7 @@ No public description is currently available.
 #### `nnx.decisions.FixedHeadProvider`
 
 ```python
-class nnx.decisions.FixedHeadProvider(model: 'NNModel', labels: 'Optional[Sequence[str]]' = None, option_map: 'Optional[Mapping[str, str]]' = None, ordinal: 'bool' = False, max_batch: 'Optional[int]' = None, name: 'str' = 'nnx.fixed_head') -> 'None'
+class nnx.decisions.FixedHeadProvider(model: 'NNModel', labels: 'Optional[Sequence[str]]' = None, option_map: 'Optional[Mapping[str, str]]' = None, ordinal: 'bool' = False, max_batch: 'Optional[int]' = None, name: 'str' = 'nnx.fixed_head', question: 'Optional[Boolean]' = None) -> 'None'
 ```
 
 A trained NNx classifier as a decision provider.
@@ -2951,7 +2954,10 @@ categorical head (softmax over its classes) answers :class:`Choice` —
 and :class:`Score` when constructed with ``ordinal=True``, whose levels
 must then follow the head's class order — and a single-logit Bernoulli
 head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
-:class:`Boolean`. Probabilities come from the model's ``predict_proba``
+one :class:`Boolean`: ``question``, the one it was trained for. Its
+single probability is bound to no prompt, so any other Boolean (another
+digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
+advances. Probabilities come from the model's ``predict_proba``
 (FEAT-001), which evaluates in eval mode and restores every submodule's
 training mode; they are computed in float64 from the returned logits,
 so half-precision models meet the ``1e-6`` tolerance.
@@ -2974,6 +2980,9 @@ Args:
     ordinal: whether the class order is meaningful (enables Score).
     max_batch: the most inputs per call.
     name: the provider name recorded on results.
+    question: the :class:`Boolean` a Bernoulli head was trained to
+        answer — required for one, refused for a categorical head
+        (which answers by its labels).
 ```
 
 ##### `nnx.decisions.FixedHeadProvider.capabilities`
@@ -2990,7 +2999,7 @@ No public description is currently available.
 nnx.decisions.FixedHeadProvider.check(self, question: 'Question', inputs: 'Any') -> 'None'
 ```
 
-Every check :meth:`decide` makes before calling the model — the question, the inputs' modality and batch size, and the label space (through ``option_map``) — so a caller (a decision job) can validate a request without calling the model.
+Every check :meth:`decide` makes before calling the model — the question, the inputs' modality and batch size, and the label space (through ``option_map``) or a Boolean's identity (its digest) — so a caller (a decision job) can validate a request without calling the model.
 
 ##### `nnx.decisions.FixedHeadProvider.decide`
 
@@ -6954,7 +6963,10 @@ attempt id come from the run's attempt record (``"unknown"`` without
 one) and the data and split identities from its manifest. A run's
 history is committed by its LAST checkpoint, so without an attempt
 record naming that checkpoint's epoch the committed epoch — and so the
-value — is unknown. A legacy run (no commit marker) keeps its value,
+value — is unknown. The recorded epoch is used as is (LAST itself is
+never opened, so nothing is unpickled), and a history journal is read
+only up to it — not at all while it is unknown, so an uncommitted tail
+is never read. A legacy run (no commit marker) keeps its value,
 but its status is unknown, so it is never counted in a group's ``n``.
 A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
 empty cell.
@@ -7807,10 +7819,23 @@ The registered recipe of a :class:`LinkPredictor` (pass it as ``NNModelParams(ne
 #### `nnx.link_tasks.link_metrics`
 
 ```python
-nnx.link_tasks.link_metrics(probabilities: 'Any', targets: 'Any') -> 'dict[str, MetricValue]'
+nnx.link_tasks.link_metrics(probabilities: 'Any', targets: 'Any', *, from_logits: 'bool' = False) -> 'dict[str, MetricValue]'
 ```
 
 Exact metrics over a whole candidate set. Binary (``probabilities`` of shape ``(K,)``): ``bce``, ``auroc``, ``ap`` (unavailable, with the reason, for a one-class set) and ``accuracy`` at 0.5. Categorical (``(K, C)``): ``nll`` and ``accuracy``.
+
+**Details**
+
+```text
+``from_logits=True`` reads raw logits instead (as
+:meth:`LinkTask.predict` gives them) and never forms probabilities: in
+float64, the BCE comes from the logits, the NLL from their log-softmax,
+and AUROC / AP rank the logits themselves. A probability rounds to
+exactly 0 or 1 for a confident model (beyond ``|logit|`` ≈ 16.6 in
+float32, 36.7 in float64), tying candidates the logits tell apart and
+clipping their loss; logits stay exact at any confidence. The task's
+evaluation scores the logits.
+```
 
 
 #### `nnx.link_tasks.LinkPrediction`
@@ -7819,7 +7844,7 @@ Exact metrics over a whole candidate set. Binary (``probabilities`` of shape ``(
 class nnx.link_tasks.LinkPrediction(ids: 'np.ndarray', pairs: 'np.ndarray', logits: 'np.ndarray', probabilities: 'np.ndarray', targets: 'np.ndarray', split: 'str') -> 'None'
 ```
 
-Candidates and their predictions, aligned row for row: ``ids``, ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (``(K,)`` binary, ``(K, C)`` categorical) and ``targets`` — all of one ``split``.
+Candidates and their predictions, aligned row for row: ``ids``, ``pairs`` ``(K, 2)``, ``logits`` / ``probabilities`` (float64; ``(K,)`` binary, ``(K, C)`` categorical) and ``targets`` — all of one ``split``. Score it with ``link_metrics(logits, targets, from_logits=True)``: a confident model's probabilities round to 0 or 1.
 
 
 #### `nnx.link_tasks.LinkTaskError`
@@ -11952,6 +11977,14 @@ Note on shape: the prefix uses ``n_heads`` and ``head_dim`` taken
 from the model's ``params`` — there's no per-block override, since
 every block in a TransformerNN shares the same attention shape.
 
+Each layer's prefix takes the dtype and device of that block's
+``attn.w_qkv`` weight. A projection already adapted by
+:class:`~nnx.peft.LoRALinear` / :class:`~nnx.peft.DoRALinear` /
+:class:`~nnx.peft.IA3Linear` (``apply_*_to`` before wrapping) is
+resolved to the :class:`nn.Linear` it wraps; the adapter stays in the
+attention path, so its delta or scaling still shapes K/V, and its
+parameters are frozen with the rest of the model.
+
 Raises:
     TypeError: if ``model`` is not a :class:`TransformerNN`.
     ValueError: if ``n_prefix`` or ``n_layers`` is out of range, or
@@ -13451,7 +13484,7 @@ No public description is currently available.
 nnx.paradigms.offline_distillation.read_teacher_records(path: 'Union[str, os.PathLike[str]]') -> 'list[TeacherRecord]'
 ```
 
-The records of a JSONL file written by :func:`write_teacher_records`; a malformed line raises naming ``path:line``.
+The records of a JSONL file written by :func:`write_teacher_records`; a malformed line — a number too large for a float included — raises :class:`TeacherRecordError` naming ``path:line``.
 
 
 #### `nnx.paradigms.offline_distillation.write_teacher_records`
