@@ -17,7 +17,7 @@ before making a version-sensitive platform decision.
 | Algorithmic-methods benchmarking (SAM / BlurPool / SqueezeExcite) | **MosaicML Composer** |
 | Opinionated high-level API + tabular / vision / collab stacks | **fastai** |
 | GNN training/checkpoint integration | **NNx** when a PyG-backed model should share the same NNx training and checkpoint contracts |
-| Single-package breadth (graph + LM + diffusion + PEFT + surgery in one install) | **NNx** |
+| Single-package breadth (graph + LM + diffusion + PEFT + surgery in one package, each domain an opt-in extra) | **NNx** |
 | Content-addressed run reproducibility (`run.id` = md5 of config) | **NNx** |
 | Model surgery (Net2Net widen/deepen, low-rank, drop, embedding expansion) | **NNx** when these operations should compose directly with the NNx training loop |
 | Tight notebook research loop on a single GPU | **NNx** or **fastai** |

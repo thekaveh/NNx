@@ -804,10 +804,14 @@ class NNRun:
 
     def _render_metric_chart_html(self) -> str:
         """Plotly per-epoch metric chart embedded as HTML."""
-        # Lazy-import plotly so test collection stays fast and
-        # non-Jupyter callers who never trigger _repr_html_ don't pay
-        # the import cost.
-        import plotly.graph_objects as go
+        # Plotly is the plots extra (FEAT-031): without it the HTML repr
+        # keeps its text table and drops the chart. Imported on use, so
+        # callers who never trigger _repr_html_ don't pay the import cost.
+        from ..._optional import available, require
+
+        if not available("plotly"):
+            return ""
+        go = require("plotly.graph_objects", "NNRun._repr_html_")
 
         series = self._epoch_series()
         epochs = series["epochs"]

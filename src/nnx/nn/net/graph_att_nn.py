@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from torch import nn
-from torch_geometric.nn import GATConv
 
+from ..._optional import require
 from .graph_nn_base import GraphNNBase
+
+# The graph extra (FEAT-031): importing this module needs torch_geometric.
+GATConv = require("torch_geometric.nn", "GraphAttNN").GATConv
 
 
 class GraphAttNN(GraphNNBase):
+    """Node-level graph net of PyG ``GATConv`` layers (the ``graph`` extra:
+    ``pip install "thekaveh-nnx[graph]"``)."""
+
     def _build_layers(self) -> nn.ModuleList:
         if self.params.n_heads is None or self.params.n_heads <= 0:
             raise ValueError(f"GraphAttNN requires NNParams.n_heads > 0, got {self.params.n_heads!r}")

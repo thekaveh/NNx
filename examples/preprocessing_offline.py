@@ -22,6 +22,8 @@ same frozen statistics:
 
 Fully offline, CPU only.
 
+Requires the ``vision`` extra (torchvision): ``pip install "thekaveh-nnx[vision]"``.
+
 Run:
     python examples/preprocessing_offline.py
 

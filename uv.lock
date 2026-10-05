@@ -1342,11 +1342,11 @@ wheels = [
 
 [[package]]
 name = "fsspec"
-version = "2026.4.0"
+version = "2026.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d5/8d/1c51c094345df128ca4a990d633fe1a0ff28726c9e6b3c41ba65087bba1d/fsspec-2026.4.0.tar.gz", hash = "sha256:301d8ac70ae90ef3ad05dcf94d6c3754a097f9b5fe4667d2787aa359ec7df7e4", size = 312760, upload-time = "2026-04-29T20:42:38.635Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/a1/ae4e3e5003468d6391d2c77b6fa1cd73bd5d13511d81c642d7b28ac90ed4/fsspec-2026.6.0.tar.gz", hash = "sha256:f5bac145310fe30e16e1471bd6840b2d990d609e872251d7e674241822abf01a", size = 313646, upload-time = "2026-06-16T01:57:28.105Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/0c/043d5e551459da400957a1395e0febbf771446ff34291afcbe3d8be2a279/fsspec-2026.4.0-py3-none-any.whl", hash = "sha256:11ef7bb35dab8a394fde6e608221d5cf3e8499401c249bebaeaad760a1a8dec2", size = 203402, upload-time = "2026-04-29T20:42:36.842Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/22/4222d7ddf3da30f363edaa98e329c2bce6c65497c9cb2810931c8b2c0fbc/fsspec-2026.6.0-py3-none-any.whl", hash = "sha256:02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1", size = 203949, upload-time = "2026-06-16T01:57:26.358Z" },
 ]
 
 [package.optional-dependencies]
@@ -4924,14 +4924,11 @@ dependencies = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "plotly" },
     { name = "prettytable" },
     { name = "pyyaml" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
-    { name = "torch-geometric" },
-    { name = "torchvision" },
     { name = "tqdm" },
 ]
 
@@ -4954,12 +4951,20 @@ docs = [
     { name = "mkdocs-material" },
     { name = "pygments" },
 ]
+domains = [
+    { name = "plotly" },
+    { name = "torch-geometric" },
+    { name = "torchvision" },
+]
 embeddings = [
     { name = "faiss-cpu" },
     { name = "sentence-transformers" },
 ]
 gguf-write = [
     { name = "gguf" },
+]
+graph = [
+    { name = "torch-geometric" },
 ]
 hub = [
     { name = "huggingface-hub" },
@@ -4988,14 +4993,21 @@ onnx-runtime = [
     { name = "onnxruntime", version = "1.23.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "onnxruntime", version = "1.30.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+plots = [
+    { name = "plotly" },
+]
 quantize = [
     { name = "torchao" },
 ]
 tensorboard = [
     { name = "tensorboard" },
 ]
+vision = [
+    { name = "torchvision" },
+]
 viz = [
     { name = "captum" },
+    { name = "plotly" },
     { name = "torchinfo" },
 ]
 viz-interactive = [
@@ -5042,7 +5054,8 @@ requires-dist = [
     { name = "onnxscript", marker = "extra == 'onnx-dynamo'", specifier = ">=0.1" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = "==2.10.1" },
-    { name = "plotly", specifier = ">=5.18" },
+    { name = "plotly", marker = "extra == 'plots'", specifier = ">=5.18" },
+    { name = "plotly", marker = "extra == 'viz'", specifier = ">=5.18" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7,<5" },
     { name = "prettytable", specifier = ">=3.9" },
     { name = "pygments", marker = "extra == 'docs'", specifier = "<2.21" },
@@ -5056,17 +5069,18 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=2.7" },
     { name = "tensorboard", marker = "extra == 'dev'", specifier = ">=2.15" },
     { name = "tensorboard", marker = "extra == 'tensorboard'", specifier = ">=2.15" },
+    { name = "thekaveh-nnx", extras = ["vision", "graph", "plots"], marker = "extra == 'domains'" },
     { name = "tokenizers", marker = "extra == 'lm'", specifier = ">=0.20" },
     { name = "torch", specifier = ">=2.4" },
-    { name = "torch-geometric", specifier = ">=2.4" },
+    { name = "torch-geometric", marker = "extra == 'graph'", specifier = ">=2.4" },
     { name = "torchao", marker = "extra == 'quantize'", specifier = ">=0.17" },
     { name = "torchinfo", marker = "extra == 'viz'", specifier = ">=1.8.0" },
-    { name = "torchvision", specifier = ">=0.19" },
+    { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.19" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "typesafe-sdk", marker = "extra == 'jev'", specifier = ">=0.7,<0.8" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.16" },
 ]
-provides-extras = ["dev", "tensorboard", "notebook", "wandb", "onnx", "onnx-dynamo", "onnx-runtime", "viz", "viz-interactive", "quantize", "hub", "embeddings", "lm", "gguf-write", "jev", "docs"]
+provides-extras = ["vision", "graph", "plots", "domains", "dev", "tensorboard", "notebook", "wandb", "onnx", "onnx-dynamo", "onnx-runtime", "viz", "viz-interactive", "quantize", "hub", "embeddings", "lm", "gguf-write", "jev", "docs"]
 
 [package.metadata.requires-dev]
 docs-publish = [

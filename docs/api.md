@@ -164,6 +164,9 @@ Returns:
     max_lr, and a Plotly figure of loss vs log(LR).
 
 Raises:
+    ImportError: Plotly (the ``plots`` extra, ``pip install
+        "thekaveh-nnx[plots]"``) is not installed — raised before any
+        data, model or RNG state is touched.
     ValueError: on invalid arguments (``num_iter < 2``,
         ``start_lr <= 0``, ``end_lr <= start_lr``).
 ```
@@ -10251,15 +10254,7 @@ marker (the seed indices), so it gates the slice.
 class nnx.nn.net.graph_conv_nn.GraphConvNN(params: 'NNParams')
 ```
 
-Abstract base for GNN architectures.
-
-**Details**
-
-```text
-Subclasses must implement `_build_layers()` returning an `nn.ModuleList`
-of PyG message-passing layers. The forward loop applies all-but-last
-layers with the configured activation + dropout, then a bare final layer.
-```
+Node-level graph net of PyG ``GCNConv`` layers (the ``graph`` extra: ``pip install "thekaveh-nnx[graph]"``).
 
 
 #### `nnx.nn.net.graph_sage_nn.GraphSageNN`
@@ -10268,15 +10263,7 @@ layers with the configured activation + dropout, then a bare final layer.
 class nnx.nn.net.graph_sage_nn.GraphSageNN(params: 'NNParams')
 ```
 
-Abstract base for GNN architectures.
-
-**Details**
-
-```text
-Subclasses must implement `_build_layers()` returning an `nn.ModuleList`
-of PyG message-passing layers. The forward loop applies all-but-last
-layers with the configured activation + dropout, then a bare final layer.
-```
+Node-level graph net of PyG ``SAGEConv`` layers (the ``graph`` extra: ``pip install "thekaveh-nnx[graph]"``).
 
 
 #### `nnx.nn.net.graph_att_nn.GraphAttNN`
@@ -10285,15 +10272,7 @@ layers with the configured activation + dropout, then a bare final layer.
 class nnx.nn.net.graph_att_nn.GraphAttNN(params: 'NNParams')
 ```
 
-Abstract base for GNN architectures.
-
-**Details**
-
-```text
-Subclasses must implement `_build_layers()` returning an `nn.ModuleList`
-of PyG message-passing layers. The forward loop applies all-but-last
-layers with the configured activation + dropout, then a bare final layer.
-```
+Node-level graph net of PyG ``GATConv`` layers (the ``graph`` extra: ``pip install "thekaveh-nnx[graph]"``).
 
 
 #### `nnx.nn.net.transformer_nn.TransformerNN`
@@ -10666,7 +10645,7 @@ No public description is currently available.
 class nnx.nn.dataset.nn_dataset.NNDataset(*, ds_class: 'type[VisionDataset]', root_dir: 'str' = './data', download: 'bool' = True, transform: 'Optional[Callable]' = None, batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), val_proportion: 'float' = 0.1, seed: 'Optional[int]' = None, train_transform: 'Optional[Callable]' = None, eval_transform: 'Optional[Callable]' = None) -> 'None'
 ```
 
-Vision dataset wrapper. `val_proportion` carves a validation slice out of the source `train=True` split (NOT out of the test split, which stays untouched for final evaluation).
+Vision dataset wrapper (the ``vision`` extra: ``pip install "thekaveh-nnx[vision]"``). `val_proportion` carves a validation slice out of the source `train=True` split (NOT out of the test split, which stays untouched for final evaluation).
 
 **Details**
 
@@ -10708,7 +10687,7 @@ to rebuild the dataset.
 class nnx.nn.dataset.nn_graph_dataset.NNGraphDataset(*, ds_class: 'type[Dataset]', n_neighbors: 'Optional[list[int]]' = None, root_dir: 'str' = './data', transform: 'Optional[Callable]' = None, n_workers: 'int' = 4, batch_sizes: 'tuple[Optional[int], Optional[int], Optional[int]]' = (None, None, None), seed: 'Optional[int]' = None, sampler: "Literal['neighbor', 'full']" = 'neighbor') -> 'None'
 ```
 
-Single-graph node-classification wrapper over a PyG dataset class.
+Single-graph node-classification wrapper over a PyG dataset class (the ``graph`` extra: ``pip install "thekaveh-nnx[graph]"``).
 
 **Details**
 

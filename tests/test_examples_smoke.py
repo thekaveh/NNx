@@ -63,7 +63,6 @@ def test_example_imports_without_running_main(example):
         "custom_module.py",
         "decision_benchmark_offline.py",
         "decision_fixed_head.py",
-        "decision_jev.py",
         "decision_jobs.py",
         "decision_nli.py",
         "experiment_plan.py",

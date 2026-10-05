@@ -26,12 +26,15 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Union
 
-import plotly.graph_objects as go
 import torch
-from plotly.subplots import make_subplots
 from torch import nn
 
+from .._optional import require
 from ..utils import _capture_training_modes, _restore_training_modes
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
+
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -81,6 +84,8 @@ def activation_map(
         RuntimeError: If the forward hook on `layer_name` never fires
             (the layer is not reached by this input's forward path).
     """
+    # The figure needs the plots extra: refuse before running the model (FEAT-031).
+    require("plotly.graph_objects", "nnx.viz.activation_map")
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel
 
@@ -170,6 +175,8 @@ def _activation_to_figure(
     don't impose a colorbar per subplot since 16 colorbars in one figure
     is more visual noise than signal.
     """
+    go = require("plotly.graph_objects", "nnx.viz.activation_map")
+    make_subplots = require("plotly.subplots", "nnx.viz.activation_map").make_subplots
     if act.ndim == 4:
         # (N, C, H, W) — show the first sample, up to max_channels.
         sample = act[0]
