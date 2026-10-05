@@ -59,6 +59,47 @@ else:
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+def test_jev_provider_fails_clearly_without_the_typesafe_sdk():
+    """FEAT-010: without the ``jev`` extra, ``import nnx`` and the decision
+    API work and never import the SDK; building a provider that would need
+    it names the extra. An injected client needs no SDK."""
+    code = r"""
+import importlib.abc
+import sys
+
+class BlockSDK(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in ("typesafe_sdk", "httpx2") or fullname.startswith(("typesafe_sdk.", "httpx2.")):
+            raise ModuleNotFoundError("blocked typesafe_sdk for test")
+        return None
+
+sys.meta_path.insert(0, BlockSDK())
+import nnx
+from nnx.decisions import Boolean, JevProvider
+assert "JevProvider" in nnx.decisions.__all__
+assert "typesafe_sdk" not in sys.modules
+try:
+    JevProvider()
+except ImportError as exc:
+    assert "thekaveh-nnx[jev]" in str(exc), exc
+else:
+    raise AssertionError("missing typesafe-sdk did not raise ImportError")
+
+
+class Fake:
+    def system_one(self, state, questions, **kwargs):
+        raise RuntimeError("offline")
+
+try:
+    JevProvider(Fake()).decide(Boolean("Spam?"), ["x"])
+except RuntimeError as exc:
+    assert str(exc) == "offline"
+else:
+    raise AssertionError("the injected client was not called")
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_subpackages_attribute_accessible_after_plain_import():
     """README §1.2 advertises dotted-submodule access (e.g.
     ``nnx.interop.write_gguf(...)``) after a plain ``import nnx``.
