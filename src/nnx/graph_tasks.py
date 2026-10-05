@@ -49,6 +49,8 @@ from typing import Any, Optional
 import torch
 from torch import nn
 
+from ._optional import require
+
 __all__ = [
     "FACTORY_ID",
     "IGNORE",
@@ -123,7 +125,7 @@ class GraphCollection(torch.utils.data.Dataset):
         unlabeled: Sequence[int] = (),
         num_classes: Optional[int] = None,
     ) -> None:
-        from torch_geometric.data import Data
+        Data = require("torch_geometric.data", "nnx.graph_tasks").Data
 
         graphs = list(graphs)
         ids = [_count(i, "a graph id", minimum=0) for i in ids]
@@ -229,7 +231,7 @@ class GraphCollection(torch.utils.data.Dataset):
         """A PyG loader over whole graphs (in collection order unless
         ``shuffle``; a ``seed`` makes the shuffle reproducible and is refused
         without it)."""
-        from torch_geometric.loader import DataLoader
+        DataLoader = require("torch_geometric.loader", "nnx.graph_tasks").DataLoader
 
         batch_size = _count(batch_size, "batch_size", minimum=1)
         if seed is not None and not shuffle:
@@ -390,7 +392,8 @@ class _Encoder(nn.Module):
         self, kind: str, dims: Sequence[int], activation: str, dropout: float, *, last_activation: bool = True
     ) -> None:
         super().__init__()
-        from torch_geometric.nn import GATConv, GCNConv, SAGEConv
+        pyg_nn = require("torch_geometric.nn", "nnx.graph_tasks")
+        GATConv, GCNConv, SAGEConv = pyg_nn.GATConv, pyg_nn.GCNConv, pyg_nn.SAGEConv
 
         from .nn.enum.activations import Activations
 

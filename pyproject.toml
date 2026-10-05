@@ -71,17 +71,14 @@ dependencies = [
     # verified 2026-09-22 on CPU): 2.3 lacks `torch.is_autocast_enabled(
     # device_type)`, rejects float SDPA masks whose dtype differs from a
     # half/bf16/double query, and its `torch.load(weights_only=True)`
-    # allowlist cannot read the training-state sidecar. torchvision pairs
-    # one minor per torch minor (2.4 <-> 0.19). See
+    # allowlist cannot read the training-state sidecar. See
     # docs/external-contracts.md "PyTorch support matrix" and the CI
-    # `floor-deps` lane, which installs exactly this pair.
+    # `floor-deps` lane, which installs exactly this pair. The vision,
+    # graph and plotting stacks are extras (FEAT-031), below.
     "torch>=2.4",
-    "torchvision>=0.19",
-    "torch_geometric>=2.4",
     "numpy>=1.24",
     "pandas>=2.0",
     "scikit-learn>=1.3",
-    "plotly>=5.18",
     "prettytable>=3.9",
     "pyyaml>=6.0",
     "tqdm>=4.66",
@@ -94,6 +91,14 @@ dependencies = [
 #     `fig.write_image` / `fig.to_image`; only `fig.show()` which needs
 #     no kaleido. Users who want static export can `pip install kaleido`.
 [project.optional-dependencies]
+# Domain extras (FEAT-031): `import nnx` loads none of these, and a feature
+# that needs one raises an ImportError naming its extra. `vision` keeps
+# FIX-011's pairing of one torchvision minor per torch minor (torch 2.4 <->
+# torchvision 0.19). `domains` installs all three — the pre-0.4 core.
+vision = ["torchvision>=0.19"]   # NNDataset (torchvision datasets)
+graph = ["torch_geometric>=2.4"] # graph nets, NNGraphDataset, nnx.graph_tasks, nnx.link_tasks
+plots = ["plotly>=5.18"]         # VisUtils, nnx.lr_finder, the NNRun chart
+domains = ["thekaveh-nnx[vision,graph,plots]"]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
@@ -138,7 +143,7 @@ onnx-runtime = [
 # only `thekaveh-nnx[onnx]`; `netron` ships a Flask viewer that runs as a separate
 # process, kept opt-in so notebook users who just want the `.onnx` artifact
 # don't install it.
-viz = ["torchinfo>=1.8.0", "captum>=0.7.0"]
+viz = ["torchinfo>=1.8.0", "captum>=0.7.0", "plotly>=5.18"]  # the figures are Plotly
 viz-interactive = ["netron>=7.0"]
 quantize = ["torchao>=0.17"]
 # `hub` enables interop with the HuggingFace ecosystem:

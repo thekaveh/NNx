@@ -1808,14 +1808,15 @@ def test_resume_warns_only_for_worker_loaders(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _declared_floor(package: str) -> tuple[int, int]:
+def _declared_floor(package: str, block_name: str = "dependencies") -> tuple[int, int]:
     """(major, minor) of ``package>=X.Y`` in pyproject's core ``dependencies``
-    (regex over the raw text: ``tomllib`` is 3.11+ and NNx supports 3.10)."""
+    or, with ``block_name``, one extra's list (regex over the raw text:
+    ``tomllib`` is 3.11+ and NNx supports 3.10)."""
     import re
     from pathlib import Path
 
     text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
-    block = re.search(r"^dependencies = \[(.*?)^\]", text, re.M | re.S)
+    block = re.search(rf"^{block_name} = \[(.*?)\]", text, re.M | re.S)
     assert block is not None
     requirements = re.findall(r'"([^"]+)"', block.group(1))
     (req,) = [dep for dep in requirements if re.match(rf"{package}(\W|$)", dep)]
@@ -1854,7 +1855,8 @@ def test_torchvision_floor_matches_torch_floor():
     """Each torch minor pairs with exactly one torchvision minor (2.4 ↔
     0.19); the two floors must move together and match the verified pair."""
     assert _torch_floor_from_pyproject() == EXPECTED_TORCH_FLOOR
-    assert _declared_floor("torchvision") == EXPECTED_TORCHVISION_FLOOR
+    # torchvision is the `vision` extra (FEAT-031); its floor keeps the pairing.
+    assert _declared_floor("torchvision", "vision") == EXPECTED_TORCHVISION_FLOOR
 
 
 def test_grad_scaler_prefers_modern_factory():

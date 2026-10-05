@@ -3,20 +3,27 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import reduce
-from typing import Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import torch
 from torch.utils.data import DataLoader, random_split
-from torchvision.datasets import VisionDataset
 
+from ..._optional import require
 from ..._validation import require_batch_sizes
 from ...preprocessing import SplitView, describe_transform
 from .nn_dataset_base import NNDatasetBase
 
+# The vision extra (FEAT-031): importing this module needs torchvision.
+if TYPE_CHECKING:
+    from torchvision.datasets import VisionDataset
+else:
+    VisionDataset = require("torchvision.datasets", "NNDataset").VisionDataset
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNDataset(NNDatasetBase):
-    """Vision dataset wrapper. `val_proportion` carves a validation slice
+    """Vision dataset wrapper (the ``vision`` extra: ``pip install
+    "thekaveh-nnx[vision]"``). `val_proportion` carves a validation slice
     out of the source `train=True` split (NOT out of the test split, which
     stays untouched for final evaluation).
 
