@@ -71,7 +71,6 @@ def test_example_imports_without_running_main(example):
         "history_journal.py",
         "offline_teacher_distillation.py",
         "26_custom_eval_step.py",
-        "ordered_logits_pipeline.py",
         "prediction_stream.py",
         "preprocessing_offline.py",
         "ranking_offline.py",
