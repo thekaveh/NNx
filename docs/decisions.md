@@ -577,20 +577,69 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `JobLimitExceeded` | a job's `max_depth` or `max_requests` stopping it before the next call |
 | `JobTimeout` (also a `TimeoutError`) | a job's `timeout` elapsing |
 
+### 10.1. Errors as values: `nnx.result`
+
+Every API above raises. When a caller would rather branch on a value —
+validating a batch of user-supplied requests, say — the opt-in
+`nnx.result` module (FEAT-025) offers `Ok` / `Err` and boundary wrappers;
+nothing else changes. The same flow both ways:
+
+```python
+# Exceptions
+try:
+    question = question_from_state({"kind": "choice", "prompt": prompt, "options": options})
+    results = provider.decide(question, texts)
+except InvalidDecisionRequest as error:
+    report("invalid_decision_request", error)
+except UnsupportedCapability as error:
+    report("unsupported", error)
+except ProviderFailure as error:
+    report("provider_failure", error)
+
+# Result
+from nnx.result import decide_result, validate_decision_request_result
+
+outcome = validate_decision_request_result("choice", prompt, options).bind(
+    lambda question: decide_result(provider, question, texts)
+)
+# Ok(results) — or Err(BoundaryError(code="invalid_decision_request" | "provider_failure" | "unsupported", ...))
+```
+
+- `validate_decision_request_result(kind, prompt, options)` builds the
+  question from plain data inside its boundary: exactly
+  `InvalidDecisionRequest` (duplicate or empty ids, too few options, an
+  empty prompt, an unknown kind) becomes `Err(code="invalid_decision_request")`,
+  and the provider is never called.
+- `decide_result(provider, question, inputs, policy=None, model_id=None)`
+  turns exactly `ProviderFailure` into `"provider_failure"` (its
+  `request_id` kept in the context) and `UnsupportedCapability` into
+  `"unsupported"`. With an abstention policy, abstaining is a **success**:
+  the `Ok` holds each row's `SelectiveDecision`, probabilities and reason
+  included.
+- Each `Err` holds a `BoundaryError(code, where, context, cause)`; any other
+  exception propagates. Combinators (`map`, `bind`, `map_error`,
+  `recover`) never catch a callback's exception, a callback that returns a
+  non-`Result` raises `TypeError`, `unwrap()` on an `Err` raises
+  `UnwrapError` with the typed error, and a `Result` has no truth value
+  (`Ok(0)` is a success): branch with `isinstance(outcome, Ok)` or `match`,
+  which also narrow the type for a checker. See [Concepts §27](concepts.md#27-errors-as-values-nnxresult)
+  and [`examples/result_boundaries.py`](../examples/result_boundaries.py).
+
 ## 11. Consumers
 
-Planned decision features share this digest, the `kind` discriminators and
-`validate_response` rather than defining their own: an optional `Result` at
-fallible boundaries ([#263](https://github.com/thekaveh/NNx/issues/263)). `nnx.decisions` does not
-depend on any of them. Decision jobs (§7, from
+Decision features share this digest, the `kind` discriminators and
+`validate_response` rather than defining their own; `nnx.decisions` depends
+on none of them. Decision jobs (§7, from
 [#245](https://github.com/thekaveh/NNx/issues/245)) were the first consumer to
 land, followed by the provider benchmark (§8, from
 [#243](https://github.com/thekaveh/NNx/issues/243)) and offline
 teacher-distribution datasets (§9, from
 [#244](https://github.com/thekaveh/NNx/issues/244)). The local
 label-conditioned baseline ([#234](https://github.com/thekaveh/NNx/issues/234))
-is `NLIProvider` (§5), and the Jev SDK adapter
-([#220](https://github.com/thekaveh/NNx/issues/220)) is `JevProvider` (§6).
+is `NLIProvider` (§5), the Jev SDK adapter
+([#220](https://github.com/thekaveh/NNx/issues/220)) is `JevProvider` (§6),
+and the optional `Result` at fallible boundaries
+([#263](https://github.com/thekaveh/NNx/issues/263)) is `nnx.result` (§10.1).
 
 ## 12. What this does not do
 

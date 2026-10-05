@@ -2372,3 +2372,37 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 Homogeneous static graphs only: temporal and heterogeneous graphs,
 distributed sampling and knowledge-graph ranking are out of scope. See
 [`examples/link_prediction_offline.py`](../examples/link_prediction_offline.py).
+
+## 27. Errors as values (`nnx.result`)
+
+NNx reports failures by raising, and every API keeps doing so. `nnx.result`
+(FEAT-025) is an **opt-in** alternative for code that would rather branch
+on a value: `Ok(value)` and `Err(error)` are frozen; `map` changes only an
+`Ok`, `map_error` only an `Err`, `bind` / `recover` flatten one `Result`
+returned by their callback; `unwrap()` returns the value or raises
+`UnwrapError` carrying the typed error. Nothing is caught on your behalf —
+a callback's `RuntimeError`, `KeyboardInterrupt` or cancellation
+propagates, and a callback that returns a non-`Result` raises `TypeError` —
+and a `Result` has no truth value (`Ok(0)`, `Ok(None)` and `Ok(False)` are
+successes). The types are generic (`Result[T, E] = Ok[T] | Err[E]`):
+branch with `isinstance(result, Ok)` or `match`, and a type checker narrows
+each branch on Python 3.10 with no extra package (`.is_ok` / `.is_err`
+answer the question without narrowing).
+
+```text
+plain data ──► validate_decision_request_result ──bind──► decide_result ──► Ok(results | SelectiveDecisions)
+                     │ InvalidDecisionRequest                │ ProviderFailure / UnsupportedCapability
+                     └──► Err(BoundaryError(code, where, context, cause)) ◄──┘   (anything else propagates)
+path ──► inspect_bundle_result ──► Ok(BundleInfo) | Err(artifact_missing | bundle_invalid)
+```
+
+Each wrapper converts exactly the exceptions it declares into an
+`Err(BoundaryError(code, where, context, cause))`:
+`validate_decision_request_result` builds the typed question from plain data
+(an invalid request never reaches a provider), `decide_result` separates a
+provider failure from a successful abstention, and `inspect_bundle_result`
+delegates to the safe `nnx.bundles.inspect_bundle` — manifest and JSON
+records only, never a checkpoint unpickle, a factory or a registry. The
+exception-style APIs (`question_from_state`, `provider.decide`,
+`inspect_bundle`) are unchanged. See [Typed decisions §10.1](decisions.md#101-errors-as-values-nnxresult)
+and [`examples/result_boundaries.py`](https://github.com/thekaveh/NNx/blob/main/examples/result_boundaries.py).

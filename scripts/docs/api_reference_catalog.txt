@@ -274,6 +274,22 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.benchmark.BenchmarkError
 
+Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27):
+
+@api nnx.result.Ok
+
+@api nnx.result.Err
+
+@api nnx.result.UnwrapError
+
+@api nnx.result.BoundaryError
+
+@api nnx.result.validate_decision_request_result
+
+@api nnx.result.decide_result
+
+@api nnx.result.inspect_bundle_result
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest

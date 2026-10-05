@@ -3902,6 +3902,225 @@ class nnx.decisions.benchmark.BenchmarkError
 A malformed sample, record, budget or report, or reports that cannot be compared.
 
 
+Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27):
+
+#### `nnx.result.Ok`
+
+```python
+class nnx.result.Ok(value: 'T') -> 'None'
+```
+
+A success holding ``value`` (any value: ``0``, ``None`` and ``False`` included).
+
+##### `nnx.result.Ok.is_ok`
+
+```python
+property nnx.result.Ok.is_ok
+```
+
+No public description is currently available.
+
+##### `nnx.result.Ok.is_err`
+
+```python
+property nnx.result.Ok.is_err
+```
+
+No public description is currently available.
+
+##### `nnx.result.Ok.map`
+
+```python
+nnx.result.Ok.map(self, fn: 'Callable[[T], U]') -> 'Ok[U]'
+```
+
+``Ok(fn(value))``.
+
+##### `nnx.result.Ok.bind`
+
+```python
+nnx.result.Ok.bind(self, fn: 'Callable[[T], Result[U, E]]') -> 'Result[U, E]'
+```
+
+``fn(value)``, which must be an ``Ok`` or an ``Err``.
+
+##### `nnx.result.Ok.map_error`
+
+```python
+nnx.result.Ok.map_error(self, fn: 'Callable[[Any], Any]') -> 'Ok[T]'
+```
+
+Unchanged: there is no error to map.
+
+##### `nnx.result.Ok.recover`
+
+```python
+nnx.result.Ok.recover(self, fn: 'Callable[[Any], Any]') -> 'Ok[T]'
+```
+
+Unchanged: there is nothing to recover from.
+
+##### `nnx.result.Ok.unwrap`
+
+```python
+nnx.result.Ok.unwrap(self) -> 'T'
+```
+
+No public description is currently available.
+
+
+#### `nnx.result.Err`
+
+```python
+class nnx.result.Err(error: 'E') -> 'None'
+```
+
+A failure holding a typed ``error``.
+
+##### `nnx.result.Err.is_ok`
+
+```python
+property nnx.result.Err.is_ok
+```
+
+No public description is currently available.
+
+##### `nnx.result.Err.is_err`
+
+```python
+property nnx.result.Err.is_err
+```
+
+No public description is currently available.
+
+##### `nnx.result.Err.map`
+
+```python
+nnx.result.Err.map(self, fn: 'Callable[[Any], Any]') -> 'Err[E]'
+```
+
+Unchanged: there is no value to map.
+
+##### `nnx.result.Err.bind`
+
+```python
+nnx.result.Err.bind(self, fn: 'Callable[[Any], Any]') -> 'Err[E]'
+```
+
+Unchanged: there is no value to bind.
+
+##### `nnx.result.Err.map_error`
+
+```python
+nnx.result.Err.map_error(self, fn: 'Callable[[E], F]') -> 'Err[F]'
+```
+
+``Err(fn(error))``.
+
+##### `nnx.result.Err.recover`
+
+```python
+nnx.result.Err.recover(self, fn: 'Callable[[E], Result[T, F]]') -> 'Result[T, F]'
+```
+
+``fn(error)``, which must be an ``Ok`` or an ``Err``.
+
+##### `nnx.result.Err.unwrap`
+
+```python
+nnx.result.Err.unwrap(self) -> 'NoReturn'
+```
+
+Raise :class:`UnwrapError` carrying the error (and chaining it when it is an exception).
+
+
+#### `nnx.result.UnwrapError`
+
+```python
+class nnx.result.UnwrapError(error: 'Any') -> 'None'
+```
+
+:meth:`Err.unwrap` was called; ``error`` is the typed error (and the ``__cause__`` when it is an exception).
+
+
+#### `nnx.result.BoundaryError`
+
+```python
+class nnx.result.BoundaryError(code: 'str', where: 'str', context: 'Mapping[str, Any]' = <factory>, cause: 'Optional[BaseException]' = None) -> 'None'
+```
+
+A typed failure at a boundary: a stable ``code``, ``where`` it happened (a field name or a path), a read-only ``context`` mapping and the original exception as ``cause``.
+
+**Details**
+
+```text
+Equality compares ``code``, ``where`` and ``context`` (not ``cause``:
+exceptions compare by identity); the hash uses ``code`` and ``where``.
+It pickles and deep-copies (``context`` as a plain mapping).
+```
+
+
+#### `nnx.result.validate_decision_request_result`
+
+```python
+nnx.result.validate_decision_request_result(kind: 'str', prompt: 'str', options: 'Optional[Sequence[Any]]' = None) -> 'Result[Any, BoundaryError]'
+```
+
+Build a typed decision question from plain data.
+
+**Details**
+
+```text
+``kind`` is ``"choice"``, ``"boolean"`` or ``"score"``; ``options`` are
+``(id, description)`` pairs (a Choice's options, a Score's levels, none
+for a Boolean). The question objects are built inside the boundary, so a
+malformed request — duplicate or empty ids, too few options, an empty
+prompt, an unknown kind — is ``Err(BoundaryError(code=
+"invalid_decision_request"))`` and nothing is ever sent to a provider.
+Only :class:`~nnx.decisions.InvalidDecisionRequest` is converted.
+```
+
+
+#### `nnx.result.decide_result`
+
+```python
+nnx.result.decide_result(provider: 'Any', question: 'Any', inputs: 'Any', *, policy: 'Any' = None, model_id: 'Optional[str]' = None) -> 'Result[tuple[Any, ...], BoundaryError]'
+```
+
+Ask ``provider`` ``question`` for ``inputs``.
+
+**Details**
+
+```text
+``Ok`` holds the results, one per input — or, with an abstention
+``policy`` (and the ``model_id`` it was tuned for), each row's
+``SelectiveDecision``: an abstention is a success whose probabilities
+and reason are kept. Only a provider failure is an error:
+``ProviderFailure`` becomes ``"provider_failure"`` and
+``UnsupportedCapability`` ``"unsupported"``; anything else propagates.
+```
+
+
+#### `nnx.result.inspect_bundle_result`
+
+```python
+nnx.result.inspect_bundle_result(path: 'Union[str, os.PathLike[str]]') -> 'Result[Any, BoundaryError]'
+```
+
+Summarize the run bundle at ``path`` with :func:`nnx.bundles.inspect_bundle` — manifest and JSON records only: it never unpickles a checkpoint, loads a tensor, calls a factory or a registry.
+
+**Details**
+
+```text
+``Ok`` holds the ``BundleInfo``. A path that does not exist is
+``Err(BoundaryError(code="artifact_missing"))``; any other
+``BundleError`` (not a bundle, a malformed or tampered manifest) is
+``"bundle_invalid"``, its cause kept. Other exceptions propagate —
+a ``PermissionError`` on the path itself, or a ``TypeError`` for a
+``path`` that is not a str or ``os.PathLike``.
+```
+
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 #### `nnx.provenance.ExperimentManifest`
