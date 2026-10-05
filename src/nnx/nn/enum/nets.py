@@ -8,9 +8,6 @@ from torch import nn
 from ..net.conv_nn import ConvNN
 from ..net.feed_fwd_moe_nn import FeedFwdMoENN
 from ..net.feed_fwd_nn import FeedFwdNN
-from ..net.graph_att_nn import GraphAttNN
-from ..net.graph_conv_nn import GraphConvNN
-from ..net.graph_sage_nn import GraphSageNN
 from ..net.transformer_nn import TransformerNN
 from ..params.nn_params import NNParams
 
@@ -66,11 +63,19 @@ class Nets(Enum):
                 return FeedFwdNN(params=params)
             case Nets.FEED_FWD_MOE:
                 return FeedFwdMoENN(params=cast(NNMoEParams, params))
+            # The graph nets need the graph extra (FEAT-031): imported on use,
+            # so a feed-forward lookup never loads torch_geometric.
             case Nets.GRAPH_ATT:
+                from ..net.graph_att_nn import GraphAttNN
+
                 return GraphAttNN(params=params)
             case Nets.GRAPH_CONV:
+                from ..net.graph_conv_nn import GraphConvNN
+
                 return GraphConvNN(params=params)
             case Nets.GRAPH_SAGE:
+                from ..net.graph_sage_nn import GraphSageNN
+
                 return GraphSageNN(params=params)
             case Nets.TRANSFORMER:
                 return TransformerNN(params=cast(NNTransformerParams, params))

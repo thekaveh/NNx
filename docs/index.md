@@ -21,15 +21,16 @@
 </p>
 
 <p align="center" class="nnx-core-stack">
-  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white">
-  <img alt="PyTorch Geometric" src="https://img.shields.io/badge/PyTorch_Geometric-2.4%2B-3C2179">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C?logo=pytorch&logoColor=white">
   <img alt="NumPy" src="https://img.shields.io/badge/NumPy-1.24%2B-013243?logo=numpy&logoColor=white">
   <img alt="pandas" src="https://img.shields.io/badge/pandas-2.0%2B-150458?logo=pandas&logoColor=white">
   <img alt="scikit-learn" src="https://img.shields.io/badge/scikit--learn-1.3%2B-F7931E?logo=scikitlearn&logoColor=white">
-  <img alt="Plotly" src="https://img.shields.io/badge/Plotly-5.18%2B-3F4F75?logo=plotly&logoColor=white">
 </p>
 
 <p align="center" class="nnx-optional-stack">
+  <img alt="torchvision" src="https://img.shields.io/badge/torchvision-optional%20%5Bvision%5D-EE4C2C">
+  <img alt="PyTorch Geometric" src="https://img.shields.io/badge/PyTorch_Geometric-optional%20%5Bgraph%5D-3C2179">
+  <img alt="Plotly" src="https://img.shields.io/badge/Plotly-optional%20%5Bplots%5D-3F4F75?logo=plotly&logoColor=white">
   <img alt="TensorBoard" src="https://img.shields.io/badge/TensorBoard-optional-FF6F00?logo=tensorflow&logoColor=white">
   <img alt="Weights & Biases" src="https://img.shields.io/badge/Weights_%26_Biases-optional-FFBE00?logo=weightsandbiases&logoColor=black">
   <img alt="ONNX" src="https://img.shields.io/badge/ONNX-optional-005CED?logo=onnx&logoColor=white">

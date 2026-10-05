@@ -13,9 +13,13 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Union
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from torch import nn
+
+from .._optional import require
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
+
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -47,6 +51,8 @@ def weight_histogram(
     Raises:
         ValueError: If `model` has no named parameters (nothing to plot).
     """
+    go = require("plotly.graph_objects", "nnx.viz.weight_histogram")
+    make_subplots = require("plotly.subplots", "nnx.viz.weight_histogram").make_subplots
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel
 

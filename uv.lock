@@ -4924,14 +4924,11 @@ dependencies = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "plotly" },
     { name = "prettytable" },
     { name = "pyyaml" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
-    { name = "torch-geometric" },
-    { name = "torchvision" },
     { name = "tqdm" },
 ]
 
@@ -4954,12 +4951,20 @@ docs = [
     { name = "mkdocs-material" },
     { name = "pygments" },
 ]
+domains = [
+    { name = "plotly" },
+    { name = "torch-geometric" },
+    { name = "torchvision" },
+]
 embeddings = [
     { name = "faiss-cpu" },
     { name = "sentence-transformers" },
 ]
 gguf-write = [
     { name = "gguf" },
+]
+graph = [
+    { name = "torch-geometric" },
 ]
 hub = [
     { name = "huggingface-hub" },
@@ -4988,14 +4993,21 @@ onnx-runtime = [
     { name = "onnxruntime", version = "1.23.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "onnxruntime", version = "1.30.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+plots = [
+    { name = "plotly" },
+]
 quantize = [
     { name = "torchao" },
 ]
 tensorboard = [
     { name = "tensorboard" },
 ]
+vision = [
+    { name = "torchvision" },
+]
 viz = [
     { name = "captum" },
+    { name = "plotly" },
     { name = "torchinfo" },
 ]
 viz-interactive = [
@@ -5042,7 +5054,8 @@ requires-dist = [
     { name = "onnxscript", marker = "extra == 'onnx-dynamo'", specifier = ">=0.1" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = "==2.10.1" },
-    { name = "plotly", specifier = ">=5.18" },
+    { name = "plotly", marker = "extra == 'plots'", specifier = ">=5.18" },
+    { name = "plotly", marker = "extra == 'viz'", specifier = ">=5.18" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7,<5" },
     { name = "prettytable", specifier = ">=3.9" },
     { name = "pygments", marker = "extra == 'docs'", specifier = "<2.21" },
@@ -5056,17 +5069,18 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=2.7" },
     { name = "tensorboard", marker = "extra == 'dev'", specifier = ">=2.15" },
     { name = "tensorboard", marker = "extra == 'tensorboard'", specifier = ">=2.15" },
+    { name = "thekaveh-nnx", extras = ["vision", "graph", "plots"], marker = "extra == 'domains'" },
     { name = "tokenizers", marker = "extra == 'lm'", specifier = ">=0.20" },
     { name = "torch", specifier = ">=2.4" },
-    { name = "torch-geometric", specifier = ">=2.4" },
+    { name = "torch-geometric", marker = "extra == 'graph'", specifier = ">=2.4" },
     { name = "torchao", marker = "extra == 'quantize'", specifier = ">=0.17" },
     { name = "torchinfo", marker = "extra == 'viz'", specifier = ">=1.8.0" },
-    { name = "torchvision", specifier = ">=0.19" },
+    { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.19" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "typesafe-sdk", marker = "extra == 'jev'", specifier = ">=0.7,<0.8" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.16" },
 ]
-provides-extras = ["dev", "tensorboard", "notebook", "wandb", "onnx", "onnx-dynamo", "onnx-runtime", "viz", "viz-interactive", "quantize", "hub", "embeddings", "lm", "gguf-write", "jev", "docs"]
+provides-extras = ["vision", "graph", "plots", "domains", "dev", "tensorboard", "notebook", "wandb", "onnx", "onnx-dynamo", "onnx-runtime", "viz", "viz-interactive", "quantize", "hub", "embeddings", "lm", "gguf-write", "jev", "docs"]
 
 [package.metadata.requires-dev]
 docs-publish = [

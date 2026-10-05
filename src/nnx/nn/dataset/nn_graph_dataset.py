@@ -2,16 +2,25 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 import torch
-from torch_geometric.data import Data as PyGData
-from torch_geometric.data import Dataset
-from torch_geometric.loader import NeighborLoader
 
+from ..._optional import require
 from ..._validation import require_batch_sizes
 from ...seeding import dataloader_worker_init_fn
 from .nn_dataset_base import NNDatasetBase
+
+# The graph extra (FEAT-031): importing this module needs torch_geometric.
+if TYPE_CHECKING:
+    from torch_geometric.data import Data as PyGData
+    from torch_geometric.data import Dataset
+    from torch_geometric.loader import NeighborLoader
+else:
+    _pyg_data = require("torch_geometric.data", "NNGraphDataset")
+    PyGData = _pyg_data.Data
+    Dataset = _pyg_data.Dataset
+    NeighborLoader = require("torch_geometric.loader", "NNGraphDataset").NeighborLoader
 
 
 def _full_batch_loader(data: PyGData, split_mask: torch.Tensor) -> list[PyGData]:
@@ -55,7 +64,8 @@ def _full_batch_loader(data: PyGData, split_mask: torch.Tensor) -> list[PyGData]
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNGraphDataset(NNDatasetBase):
-    """Single-graph node-classification wrapper over a PyG dataset class.
+    """Single-graph node-classification wrapper over a PyG dataset class
+    (the ``graph`` extra: ``pip install "thekaveh-nnx[graph]"``).
 
     ``sampler="neighbor"`` (default) builds one ``NeighborLoader`` per split
     from the graph's ``train_mask`` / ``val_mask`` / ``test_mask``;

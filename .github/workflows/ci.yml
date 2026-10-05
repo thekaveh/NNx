@@ -206,12 +206,119 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  installed-profiles:
+    # FEAT-031: torchvision, torch_geometric and plotly are extras. Each
+    # profile installs the built wheel (core, one extra, or the `domains`
+    # aggregate) into a clean environment outside the checkout, over the
+    # minimum and the current torch pair, and runs
+    # scripts/smoke_core_install.py: `import nnx` loads no domain package,
+    # py.typed ships, the installed closure holds exactly the profile's
+    # domain packages, a tiny model trains / predicts / reloads, installed
+    # extras work and absent ones name their extra. The report records the
+    # closure and three cold-import timings (no threshold asserted).
+    name: installed-profile (${{ matrix.profile }}, ${{ matrix.pair }} torch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [core, vision, graph, plots, domains]
+        pair: [floor, current]
+        include:
+          - pair: floor
+            python: "3.10"
+            torch: "2.4.1"
+            torchvision: "0.19.1"
+          - pair: current
+            python: "3.12"
+            torch: ""
+            torchvision: ""
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      DIST_DIR: dist
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        # astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: false
+          version: "0.12.3"
+
+      - name: Build the wheel and sdist
+        run: uv build --python "$PYTHON_VERSION" --out-dir dist
+
+      - name: Install the profile into a clean environment outside the checkout
+        # CPU torch wheels; the floor pins the declared minimum pair
+        # (torchvision only where the profile installs the vision extra).
+        env:
+          PROFILE: ${{ matrix.profile }}
+          TORCH_PIN: ${{ matrix.torch }}
+          TORCHVISION_PIN: ${{ matrix.torchvision }}
+        run: |
+          set -euo pipefail
+          wheel="$(ls "$DIST_DIR"/*.whl)"
+          venv="$RUNNER_TEMP/profile-venv"
+          uv venv --python "$PYTHON_VERSION" "$venv"
+          pins=()
+          if [ -n "$TORCH_PIN" ]; then
+            pins+=("torch==$TORCH_PIN")
+            case "$PROFILE" in vision|domains) pins+=("torchvision==$TORCHVISION_PIN") ;; esac
+          fi
+          if [ "$PROFILE" = core ]; then spec="thekaveh-nnx @ file://$wheel"; else spec="thekaveh-nnx[$PROFILE] @ file://$wheel"; fi
+          uv pip install --python "$venv/bin/python" \
+            --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            --index-strategy unsafe-best-match "${pins[@]}" "$spec"
+          cp scripts/smoke_core_install.py "$RUNNER_TEMP/"
+
+      - name: Run the installed-artifact smoke (PYTHONPATH unset)
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH "$RUNNER_TEMP/profile-venv/bin/python" smoke_core_install.py \
+            --profile "${{ matrix.profile }}" --output "profile-${{ matrix.profile }}-${{ matrix.pair }}.json"
+
+      - name: Run examples 01 and 25 on the core wheel and the core sdist
+        if: matrix.profile == 'core'
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          set -euo pipefail
+          sdist_venv="$RUNNER_TEMP/sdist-venv"
+          uv venv --python "$PYTHON_VERSION" "$sdist_venv"
+          pins=()
+          if [ -n "${{ matrix.torch }}" ]; then pins+=("torch==${{ matrix.torch }}"); fi
+          uv pip install --python "$sdist_venv/bin/python" \
+            --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            --index-strategy unsafe-best-match "${pins[@]}" "$(ls dist/*.tar.gz)"
+          for venv in "$RUNNER_TEMP/profile-venv" "$sdist_venv"; do
+            for example in 01_synthetic_classification.py 25_conv_classifier.py; do
+              workdir="$(mktemp -d)"  # each run writes runs/<id>: a fresh directory per run
+              (cd "$workdir" && env -u PYTHONPATH "$venv/bin/python" "$GITHUB_WORKSPACE/examples/$example")
+            done
+          done
+
+      - name: Upload the profile report
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: installed-profile-${{ matrix.profile }}-${{ matrix.pair }}
+          path: ${{ runner.temp }}/profile-*.json
+          retention-days: 30
+
   floor-deps:
     # The frozen lock above validates the *newest* resolution, not the
     # declared dependency floor. This lane installs exactly the minimum
     # torch / torchvision pair from pyproject.toml (CPU wheels, core
-    # dependencies only — optional extras such as torchao have their own,
-    # newer, torch requirements and are deliberately absent) and runs the
+    # dependencies plus the `domains` extra — the graph, vision and plotting
+    # stacks that were core before FEAT-031 — while extras such as torchao,
+    # with their own newer torch requirements, stay absent) and runs the
     # core suite on it (FIX-011). Keep TORCH_FLOOR / TORCHVISION_FLOOR in
     # sync with pyproject.toml and docs/external-contracts.md §2.1;
     # tests/test_train_integration.py asserts the pyproject side.
@@ -242,12 +349,12 @@ jobs:
           python -m pip install "torch==${TORCH_FLOOR}" "torchvision==${TORCHVISION_FLOOR}" \
             --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install NNx core (no extras) against the pinned floor
+      - name: Install NNx core + domains against the pinned floor
         # The constraints file stops the package install from upgrading
         # torch / torchvision to the newest release on PyPI.
         run: |
           printf 'torch==%s\ntorchvision==%s\n' "$TORCH_FLOOR" "$TORCHVISION_FLOOR" > floor-constraints.txt
-          python -m pip install -c floor-constraints.txt -e . "pytest>=7.4"
+          python -m pip install -c floor-constraints.txt -e ".[domains]" "pytest>=7.4"
           python - <<'PY'
           import torch, torchvision, nnx
           print("torch", torch.__version__, "torchvision", torchvision.__version__, "nnx", nnx.__file__)

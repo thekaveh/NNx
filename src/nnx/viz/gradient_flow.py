@@ -9,8 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Union
 
-import plotly.graph_objects as go
 from torch import nn
+
+from .._optional import require
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
+
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -42,6 +47,7 @@ def gradient_flow(model: Union[nn.Module, NNModel]) -> go.Figure:
             often because ``loss.backward()`` wasn't called before
             this function.
     """
+    go = require("plotly.graph_objects", "nnx.viz.gradient_flow")
     from ..nn.nn_model import NNModel
 
     if isinstance(model, NNModel):
