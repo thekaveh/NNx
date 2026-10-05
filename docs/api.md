@@ -3078,6 +3078,112 @@ nnx.decisions.NLIProvider.decide(self, question: 'Question', inputs: 'Any') -> '
 Answer ``question`` for every text in ``inputs``.
 
 
+#### `nnx.decisions.JevProvider`
+
+```python
+class nnx.decisions.JevProvider(client: 'Any' = None, *, async_client: 'Any' = None, model: 'Optional[str]' = None, api_key: 'Optional[str]' = None, base_url: 'Optional[str]' = None, timeout: 'Optional[float]' = None, retry: 'Any' = None, max_batch: 'Optional[int]' = None, name: 'str' = 'jev') -> 'None'
+```
+
+A :class:`~nnx.decisions.DecisionProvider` for Jev models through the TypeSafe SDK. See the module docstring for translation, confidence, metadata, retry and lifecycle semantics.
+
+**Details**
+
+```text
+Args:
+    client: a ``typesafe_sdk.TypeSafeClient`` (or anything with its
+        ``system_one``) the caller owns; never closed by the provider.
+    async_client: an ``AsyncTypeSafeClient`` the caller owns, for
+        :meth:`adecide` / :meth:`adecide_many`. Injecting either means
+        the provider builds no client at all.
+    model: the model to request (pin a version such as
+        ``"jev-1.13.0"``; ``None`` uses the client's default).
+    api_key / base_url / timeout / retry: settings for the clients the
+        provider builds itself (``api_key`` defaults to the
+        ``TYPESAFE_API_KEY`` environment variable). Refused with an
+        injected client, whose settings are the caller's.
+    max_batch: the most inputs per call (``None``: unbounded) — each
+        input is one request.
+    name: the provider name recorded on results.
+
+Raises:
+    ImportError: no client is injected and the ``jev`` extra is missing.
+    JevError: a client the provider builds cannot be configured (for
+        example no API key), at the first call.
+```
+
+##### `nnx.decisions.JevProvider.capabilities`
+
+```python
+nnx.decisions.JevProvider.capabilities(self) -> 'Capabilities'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.JevProvider.record`
+
+```python
+nnx.decisions.JevProvider.record(self) -> 'dict[str, Any]'
+```
+
+The provider's identity for benchmarks and replay: no client, header or credential.
+
+##### `nnx.decisions.JevProvider.check`
+
+```python
+nnx.decisions.JevProvider.check(self, question: 'Question', inputs: 'Any') -> 'None'
+```
+
+Every check made before a request: the question, the inputs and the provider's capabilities — no network I/O.
+
+##### `nnx.decisions.JevProvider.close`
+
+```python
+nnx.decisions.JevProvider.close(self) -> 'None'
+```
+
+Close the sync client the provider built (never an injected one). A built async client needs :meth:`aclose` (``async with``).
+
+##### `nnx.decisions.JevProvider.aclose`
+
+```python
+nnx.decisions.JevProvider.aclose(self) -> 'None'
+```
+
+Close every client the provider built, async one included.
+
+##### `nnx.decisions.JevProvider.decide`
+
+```python
+nnx.decisions.JevProvider.decide(self, question: 'Question', inputs: 'Any') -> 'list[DecisionResult]'
+```
+
+Answer ``question`` for every text in ``inputs``.
+
+##### `nnx.decisions.JevProvider.decide_many`
+
+```python
+nnx.decisions.JevProvider.decide_many(self, questions: 'Sequence[Question]', inputs: 'Any') -> 'list[list[DecisionResult]]'
+```
+
+Answer every question for every text: one ``system_one`` call per text holding all the questions. One result list per question, one result per text.
+
+##### `nnx.decisions.JevProvider.adecide`
+
+```python
+nnx.decisions.JevProvider.adecide(self, question: 'Question', inputs: 'Any') -> 'list[DecisionResult]'
+```
+
+:meth:`decide` through the async client.
+
+##### `nnx.decisions.JevProvider.adecide_many`
+
+```python
+nnx.decisions.JevProvider.adecide_many(self, questions: 'Sequence[Question]', inputs: 'Any') -> 'list[list[DecisionResult]]'
+```
+
+:meth:`decide_many` through the async client (absent — ``None`` — when only a sync client was injected).
+
+
 #### `nnx.decisions.DecisionError`
 
 ```python
@@ -3121,6 +3227,51 @@ class nnx.decisions.ProviderFailure
 ```
 
 The provider's backend failed while answering a supported, valid request (the original error is the ``__cause__``).
+
+
+#### `nnx.decisions.JevError`
+
+```python
+class nnx.decisions.JevError(message: 'str', *, request_id: 'Optional[str]' = None) -> 'None'
+```
+
+A Jev request failed (the SDK error is the ``__cause__``). ``request_id`` is the service's request id when it sent one.
+
+
+#### `nnx.decisions.JevTimeout`
+
+```python
+class nnx.decisions.JevTimeout(message: 'str', *, request_id: 'Optional[str]' = None) -> 'None'
+```
+
+The request exceeded its timeout (after the SDK's retries).
+
+
+#### `nnx.decisions.JevAuthenticationError`
+
+```python
+class nnx.decisions.JevAuthenticationError(message: 'str', *, request_id: 'Optional[str]' = None) -> 'None'
+```
+
+The API key was rejected or lacks access (HTTP 401 / 403).
+
+
+#### `nnx.decisions.JevRateLimited`
+
+```python
+class nnx.decisions.JevRateLimited(message: 'str', *, request_id: 'Optional[str]' = None, retry_after_ms: 'Optional[float]' = None)
+```
+
+The service refused the request for its rate limit (HTTP 429, after the SDK's retries). ``retry_after_ms`` is the wait it asked for, if any.
+
+
+#### `nnx.decisions.JevMalformedResponse`
+
+```python
+class nnx.decisions.JevMalformedResponse(message: 'str', *, request_id: 'Optional[str]' = None) -> 'None'
+```
+
+The service answered with data that does not fit the request: a body the SDK cannot parse, a missing answer, or a distribution that does not fit the question.
 
 
 #### `nnx.decisions.DecisionJob`
