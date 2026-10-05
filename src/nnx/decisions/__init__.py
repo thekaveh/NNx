@@ -25,7 +25,10 @@ that declares it can answer:
   network I/O, and ``decide(question, inputs)``.
   :class:`FixedHeadProvider` adapts a trained NNx classifier;
   :class:`NLIProvider` (FEAT-011) is a local label-conditioned baseline that
-  scores candidates supplied at inference with a caller-supplied NLI model.
+  scores candidates supplied at inference with a caller-supplied NLI model;
+  :class:`JevProvider` (FEAT-010, the ``jev`` extra) answers on Jev models
+  through the TypeSafe SDK, mapping its failures to typed
+  :class:`JevError`\\ s.
 - **Jobs** (FEAT-024) — :class:`DecisionJob`: an immutable, deferred
   description of decision work (``ask`` / ``collect`` / ``map`` / ``then``)
   whose ``run`` / ``arun`` batch independent questions into the fewest
@@ -40,6 +43,14 @@ hosted-SDK extra; inference only — nothing here trains, exports or executes
 actions.
 """
 
+from .jev import (
+    JevAuthenticationError,
+    JevError,
+    JevMalformedResponse,
+    JevProvider,
+    JevRateLimited,
+    JevTimeout,
+)
 from .jobs import (
     DecisionJob,
     Follow,
@@ -91,6 +102,12 @@ __all__ = [
     "InvalidDecisionRequest",
     "InvalidDecisionResponse",
     "InvalidJob",
+    "JevAuthenticationError",
+    "JevError",
+    "JevMalformedResponse",
+    "JevProvider",
+    "JevRateLimited",
+    "JevTimeout",
     "JobError",
     "JobFailed",
     "JobLimitExceeded",

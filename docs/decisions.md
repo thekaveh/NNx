@@ -4,11 +4,11 @@
 typed question and get labelled probabilities back, instead of reading
 positional logits. A question is one of three primitives; a **provider**
 declares what it can answer and returns validated results; the fixed-head
-adapter turns a trained NNx classifier into such a provider, and the NLI
+adapter turns a trained NNx classifier into such a provider, the NLI
 adapter scores candidates supplied at inference with a caller-supplied NLI
-model. Nothing here
-trains, exports or executes actions, and importing it starts no provider or
-model backend and needs no hosted-SDK extra.
+model, and the Jev adapter asks hosted Jev models through the TypeSafe SDK.
+Nothing here trains, exports or executes actions, and importing it starts no
+provider or model backend and needs no hosted-SDK extra.
 
 ```python
 from nnx.decisions import Choice, FixedHeadProvider, Option
@@ -136,7 +136,7 @@ what it can answer:
   with the original error as `__cause__`.
 - **Checking without calling.** `check(question, inputs)` runs every check
   `decide` makes before the model call (question, modality, batch size and
-  label space, or a Boolean's digest) and calls nothing; a decision job (§6)
+  label space, or a Boolean's digest) and calls nothing; a decision job (§7)
   uses it to refuse a request up front.
 
 ## 5. The NLI baseline adapter
@@ -214,7 +214,93 @@ It does not extend `nnx.embeddings.embed_texts` or the FAISS export, whose
 signatures are unchanged: those embed texts with a bi-encoder you trained;
 this scores pairs with a cross-encoder you supply.
 
-## 6. Decision jobs: batching and chaining
+## 6. The Jev adapter
+
+`JevProvider` (FEAT-010, the `jev` extra: `pip install "thekaveh-nnx[jev]"`)
+answers Choice, Boolean and Score questions about text on **Jev models**
+through the TypeSafe Python SDK's `system_one` call — NNx adds no transport
+stack of its own. The adapter is tested against `typesafe-sdk>=0.7,<0.8`
+(`nnx.decisions.jev.SDK_RANGE`); importing `nnx` or `nnx.decisions` never
+imports the SDK, and building a provider without an injected client raises an
+`ImportError` naming `thekaveh-nnx[jev]` when it is missing.
+
+```python
+from nnx.decisions import Boolean, Choice, JevProvider, Score
+
+with JevProvider(model="jev-1.13.0") as provider:          # TYPESAFE_API_KEY from the environment
+    topic, urgent, severity = provider.decide_many(
+        [Choice("Topic?", (("t-bill", "billing"), ("t-ship", "shipping"))),
+         Boolean("Does this need an answer today?"),
+         Score("How severe?", (("s0", "minor"), ("s1", "serious"), ("s2", "critical")))],
+        texts,                                              # one system_one request per text
+    )
+topic[0].distribution          # (("t-bill", 0.7), ("t-ship", 0.3)), in the question's order
+topic[0].raw                    # {"provider": "jev", "model": "jev-1.13.0", "request_id": ..., "usage": {...},
+                                #  "provider_confidence": 0.7}
+```
+
+- **Translation.** A Choice becomes a Jev `choice` keyed by its options'
+  **descriptions** — the model-facing text; option ids are never sent — a
+  Score a `score` whose criteria are its levels' descriptions, lowest first,
+  and a Boolean a `noul`; the prompt is the `instructions`. Every question of
+  one `decide_many` shares the request for each text (`max_questions` is
+  unbounded), so a decision job batches them into it (§7). Answers are
+  realigned to each question's own option order and checked by
+  `validate_response` (§2); a Choice whose options repeat a description is
+  refused before any request. A Score's expected score stays in
+  `vendor_score`.
+- **Confidence.** A Choice's or Score's `confidence` is Jev's own certainty
+  in its selection, recorded as `raw["provider_confidence"]`. It is **not** a
+  probability that the answer is correct — use the distribution, and measure
+  correctness on labelled records (§8). A Boolean has none.
+- **Metadata.** `raw` is plain JSON: `provider`, the `model` the service
+  **resolved** (even when an alias was requested), `requested_model` when one
+  was set, `request_id` and the reported `usage` token counts. A field the
+  service did not report is absent; clients, headers and credentials are
+  never recorded, and `record()` (the benchmark identity) holds none either.
+- **Retries.** The SDK's `RetryPolicy` owns retries — pass `retry=` when the
+  provider builds its client, or configure the client you inject. The adapter
+  sends each request once and adds no retry loop, nor does a decision job or
+  the benchmark.
+- **Failures.** What still fails is typed, keeps the SDK error as
+  `__cause__` and — when the service answered — its `request_id` (a timeout
+  or a lost connection has none): `JevTimeout` (also a
+  `TimeoutError`), `JevAuthenticationError` (401 / 403), `JevRateLimited`
+  (429, with `retry_after_ms`), `JevMalformedResponse` (also an
+  `InvalidDecisionResponse`: an unparseable body, a missing answer or a
+  distribution that does not fit), and `JevError` for the rest — all
+  `ProviderFailure`s. Crossing a decision job or the benchmark keeps the type
+  and request id (`JobFailed.__cause__`, a record's `reason`).
+- **Cost.** Every text is its own request, so one provider call over `n`
+  texts sends `n` requests: a benchmark's `Budget.max_calls` and a job's
+  `Limits.max_requests` count provider calls, not requests — set `max_batch`
+  to bound the requests per call. A failure on one text stops the call;
+  answers already received for earlier texts are not returned.
+- **Lifecycle.** A `client` / `async_client` you inject stays yours: the
+  provider never closes it and never builds a second client beside it —
+  with only a sync client injected the provider is sync-only (`adecide` /
+  `adecide_many` are `None`, so `DecisionJob.arun` runs it in its worker
+  thread, one call at a time); with only an async one, the sync methods are
+  refused. With none injected,
+  the provider builds its own (lazily, at the first call, from `api_key` /
+  `base_url` / `timeout` / `retry` or the SDK's environment variables; a
+  missing key fails as a `JevError`): `close()` (`with`) closes a built sync
+  client and `aclose()` (`async with`) both — after an error or a
+  cancellation too. A built async client belongs to one event loop: a call
+  or `aclose()` from another loop drops it with a `ResourceWarning`, so close
+  it with `async with` inside each `asyncio.run`.
+- **Async.** `adecide` / `adecide_many` use the async client (built, or
+  injected); `DecisionJob.arun` awaits them directly.
+
+Ordinary tests need no credentials or network: `tests/test_decision_jev.py`
+drives a recording fake of `system_one` that returns real SDK responses, and
+[`examples/decision_jev.py`](../examples/decision_jev.py) runs real SDK clients
+over an offline mock transport, sync and async. The opt-in live smoke,
+`scripts/smoke_jev_live.py`, sends one request to the pinned `jev-1.13.0` (never
+an alias) and prints the resolved model, SDK version, request id, token usage
+and wall time; it spends real quota, so CI never runs it.
+
+## 7. Decision jobs: batching and chaining
 
 A `DecisionJob` is an **immutable, deferred description** of decision work.
 Building one calls no provider, runs no callback and draws no RNG; `run` and
@@ -331,7 +417,7 @@ job only asks questions of an already-trained or hosted provider.
 [`examples/decision_jobs.py`](../examples/decision_jobs.py) runs batching, a
 continuation, fail-fast and the async path end to end.
 
-## 7. Benchmarking providers
+## 8. Benchmarking providers
 
 `nnx.decisions.benchmark` (FEAT-021) scores decision providers on
 **identical samples**, offline first: a live collection runs once, and every
@@ -422,7 +508,7 @@ tunes a threshold or a prompt on test outcomes.
 [`examples/decision_benchmark_offline.py`](../examples/decision_benchmark_offline.py)
 collects once and replays with sockets disabled.
 
-## 8. Offline teacher distributions
+## 9. Offline teacher distributions
 
 A decision provider's answers are distributions over a question's options.
 Stored, they can teach a student offline — `nnx.paradigms.offline_distillation`
@@ -474,7 +560,7 @@ student.train(params=..., objective=data.objective(alpha=0.7))
 See [Concepts §10.1](concepts.md#101-knowledge-distillation) and
 [`examples/offline_teacher_distillation.py`](../examples/offline_teacher_distillation.py).
 
-## 9. Errors
+## 10. Errors
 
 All are `nnx.decisions.DecisionError`s, and their names are stable:
 
@@ -484,37 +570,40 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `InvalidDecisionResponse` (also a `ValueError`) | responses that do not fit their question (see §2) |
 | `UnsupportedCapability` | undeclared primitives, modalities, batch sizes or label spaces — before any model call |
 | `ProviderFailure` (also a `RuntimeError`) | the backend failing on a valid, supported request |
-| `JobError` | the base of the decision-job errors (§6); `outcomes` holds every outcome so far, `completed` the answered ones |
+| `JevError` and its `JevTimeout`, `JevAuthenticationError`, `JevRateLimited`, `JevMalformedResponse` | a Jev request failing (§6): `__cause__` is the SDK error, `request_id` the service's |
+| `JobError` | the base of the decision-job errors (§7); `outcomes` holds every outcome so far, `completed` the answered ones |
 | `InvalidJob` (also a `ValueError`) | a job that cannot run as described — before any call |
 | `JobFailed` | a provider call failing inside a job (fail-fast): `failed`, `skipped`, `__cause__` |
 | `JobLimitExceeded` | a job's `max_depth` or `max_requests` stopping it before the next call |
 | `JobTimeout` (also a `TimeoutError`) | a job's `timeout` elapsing |
 
-## 10. Consumers
+## 11. Consumers
 
 Planned decision features share this digest, the `kind` discriminators and
-`validate_response` rather than defining their own: the optional Jev SDK
-adapter ([#220](https://github.com/thekaveh/NNx/issues/220)) and an optional
-`Result` at fallible boundaries
-([#263](https://github.com/thekaveh/NNx/issues/263)). `nnx.decisions` does not
-depend on any of them. Decision jobs (§6, from
+`validate_response` rather than defining their own: an optional `Result` at
+fallible boundaries ([#263](https://github.com/thekaveh/NNx/issues/263)). `nnx.decisions` does not
+depend on any of them. Decision jobs (§7, from
 [#245](https://github.com/thekaveh/NNx/issues/245)) were the first consumer to
-land, followed by the provider benchmark (§7, from
+land, followed by the provider benchmark (§8, from
 [#243](https://github.com/thekaveh/NNx/issues/243)) and offline
-teacher-distribution datasets (§8, from
+teacher-distribution datasets (§9, from
 [#244](https://github.com/thekaveh/NNx/issues/244)). The local
 label-conditioned baseline ([#234](https://github.com/thekaveh/NNx/issues/234))
-is `NLIProvider` (§5).
+is `NLIProvider` (§5), and the Jev SDK adapter
+([#220](https://github.com/thekaveh/NNx/issues/220)) is `JevProvider` (§6).
 
-## 11. What this does not do
+## 12. What this does not do
 
 - It does not claim every classifier is a universal decision-maker: the
   fixed-head adapter answers only what its head justifies.
 - It does not execute actions based on a decision.
 - It does not assume that separately asked questions describe independent
   events; each question is answered on its own.
-- It does not call hosted models; a hosted provider is a separate adapter
-  that declares its own capabilities.
+- It does not call hosted models except through an adapter you build:
+  `JevProvider` (§6) is the only one, needs the `jev` extra and your
+  credentials, and never falls back to it silently. It does not fine-tune Jev
+  models or ship credentials, and vendor numbers are not benchmarks — measure
+  them (§8).
 - It does not download or train models: `NLIProvider` uses the NLI model the
   caller supplies, as is, and its scores are not calibrated. Training a
-  student on stored answers is `nnx.paradigms.offline_distillation` (§8).
+  student on stored answers is `nnx.paradigms.offline_distillation` (§9).

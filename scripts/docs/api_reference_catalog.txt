@@ -184,6 +184,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.NLIProvider
 
+@api nnx.decisions.JevProvider
+
 @api nnx.decisions.DecisionError
 
 @api nnx.decisions.UnsupportedCapability
@@ -193,6 +195,16 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.InvalidDecisionResponse
 
 @api nnx.decisions.ProviderFailure
+
+@api nnx.decisions.JevError
+
+@api nnx.decisions.JevTimeout
+
+@api nnx.decisions.JevAuthenticationError
+
+@api nnx.decisions.JevRateLimited
+
+@api nnx.decisions.JevMalformedResponse
 
 @api nnx.decisions.DecisionJob
 
