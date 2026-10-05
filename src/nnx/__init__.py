@@ -8,6 +8,11 @@ without forbidding the deep paths existing notebook code relies on.
 
 from __future__ import annotations
 
+from importlib import import_module as _import_module
+from typing import TYPE_CHECKING, Any
+
+from . import _optional
+
 try:
     # Underscore-aliased so neither symbol leaks into `nnx.*` — these are
     # implementation details of `__version__` lookup, not public nnx API.
@@ -128,9 +133,7 @@ from .nn.callbacks import (
     TensorBoardCallback,
     WandbCallback,
 )
-from .nn.dataset.nn_dataset import NNDataset
 from .nn.dataset.nn_dataset_base import NNDatasetBase
-from .nn.dataset.nn_graph_dataset import NNGraphDataset
 from .nn.dataset.nn_preference_dataset import NNPreferenceDataset
 from .nn.dataset.nn_tabular_dataset import NNTabularDataset
 from .nn.enum.activations import Activations
@@ -145,10 +148,7 @@ from .nn.moe import MoELinear
 from .nn.net.conv_nn import ConvNN
 from .nn.net.feed_fwd_moe_nn import FeedFwdMoENN
 from .nn.net.feed_fwd_nn import FeedFwdNN
-from .nn.net.graph_att_nn import GraphAttNN
-from .nn.net.graph_conv_nn import GraphConvNN
 from .nn.net.graph_nn_base import GraphNNBase
-from .nn.net.graph_sage_nn import GraphSageNN
 from .nn.net.transformer_nn import TransformerNN
 from .nn.net.vit_nn import ViTBlock, ViTNN
 from .nn.nn_model import (
@@ -255,6 +255,41 @@ from .trainer import NNTrainerParams, Trainer, TrainerStepContext, TrainerStepFn
 from .trainer.params_builder import NNTrainerParamsBuilder
 from .utils import Utils
 from .vis_utils import VisUtils
+
+# Domain names that need an extra (FEAT-031): resolved on first access, so a
+# bare `import nnx` loads neither torch_geometric nor torchvision. Using one
+# without its extra raises an ImportError naming it.
+_LAZY_DOMAIN_NAMES = {
+    "NNDataset": (".nn.dataset.nn_dataset", "torchvision"),
+    "NNGraphDataset": (".nn.dataset.nn_graph_dataset", "torch_geometric"),
+    "GraphAttNN": (".nn.net.graph_att_nn", "torch_geometric"),
+    "GraphConvNN": (".nn.net.graph_conv_nn", "torch_geometric"),
+    "GraphSageNN": (".nn.net.graph_sage_nn", "torch_geometric"),
+}
+
+if TYPE_CHECKING:
+    from .nn.dataset.nn_dataset import NNDataset
+    from .nn.dataset.nn_graph_dataset import NNGraphDataset
+    from .nn.net.graph_att_nn import GraphAttNN
+    from .nn.net.graph_conv_nn import GraphConvNN
+    from .nn.net.graph_sage_nn import GraphSageNN
+
+
+def __getattr__(name: str) -> Any:
+    entry = _LAZY_DOMAIN_NAMES.get(name)
+    if entry is None:
+        raise AttributeError(f"module 'nnx' has no attribute {name!r}")
+    value = getattr(_import_module(entry[0], __name__), name)
+    globals()[name] = value  # resolved once
+    return value
+
+
+def __dir__() -> list[str]:
+    # Only names usable here: pydoc / inspect.getmembers call getattr on
+    # every listed name and tolerate only AttributeError.
+    usable = {name for name, (_, package) in _LAZY_DOMAIN_NAMES.items() if _optional.available(package)}
+    return sorted(set(globals()) | usable)
+
 
 __all__ = [
     # Orchestration
@@ -536,3 +571,12 @@ __all__ = [
     # Metadata
     "__version__",
 ]
+
+# `from nnx import *` exports a domain name only when its extra is installed.
+if not _optional.available("torchvision"):
+    __all__.remove("NNDataset")
+if not _optional.available("torch_geometric"):
+    __all__.remove("NNGraphDataset")
+    __all__.remove("GraphAttNN")
+    __all__.remove("GraphConvNN")
+    __all__.remove("GraphSageNN")

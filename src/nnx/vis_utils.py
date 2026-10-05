@@ -23,21 +23,24 @@ instead of `nnx.vis_utils.VisUtils.confusion_matrix(...)`.
 from __future__ import annotations
 
 import colorsys
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from sklearn.manifold import TSNE
 
-from .nn.dataset.nn_dataset import NNDataset
+from ._optional import require
 from .nn.nn_model import NNModel
 from .nn.params.nn_checkpoint import NNCheckpoint
 
+if TYPE_CHECKING:
+    from .nn.dataset.nn_dataset import NNDataset
+
 
 class VisUtils:
-    """Plotly-based visualizations for NNx run outputs.
+    """Plotly-based visualizations for NNx run outputs (the ``plots`` extra:
+    ``pip install "thekaveh-nnx[plots]"``; ``classification_report`` needs
+    no extra).
 
     The static-method facade for run-output visualization. Companion to
     `nnx.viz` (model internals — weight / activation / gradient inspection)
@@ -106,6 +109,8 @@ class VisUtils:
         `fig.show(renderer=renderer)` so notebook callers see the chart
         inline; pass `renderer=None` (the default) for headless usage.
         """
+        go = require("plotly.graph_objects", "nnx.vis_utils.VisUtils")
+        make_subplots = require("plotly.subplots", "nnx.vis_utils.VisUtils").make_subplots
         if not yss:
             raise ValueError("multi_line_plot requires at least one series in `yss`")
 
@@ -179,6 +184,7 @@ class VisUtils:
         column views, plus a `ts` group axis carrying labels + colors per
         category. Honors `renderer` the same way as `multi_line_plot`.
         """
+        go = require("plotly.graph_objects", "nnx.vis_utils.VisUtils")
         fig = go.Figure()
 
         for t_idx, _ in enumerate(vm["ts"]["uni_vals"]):
@@ -255,6 +261,8 @@ class VisUtils:
         kept) — and fails with ``MissingModelFactoryError`` before any data
         is read otherwise.
         """
+        # The figure needs the plots extra: refuse before inference and t-SNE (FEAT-031).
+        require("plotly.graph_objects", "VisUtils.two_dim_tsne_checkpoint_logits")
         if n_samples < 2:
             raise ValueError("two_dim_tsne_checkpoint_logits requires n_samples >= 2")
 
@@ -346,6 +354,7 @@ class VisUtils:
         """Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays
         of integer class labels. If `class_names` is provided, axis labels use
         the named classes; otherwise integer indices."""
+        go = require("plotly.graph_objects", "nnx.vis_utils.VisUtils")
         from sklearn.metrics import confusion_matrix as _sk_cm
 
         Y_true = np.asarray(Y_true)

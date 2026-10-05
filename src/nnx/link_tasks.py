@@ -60,6 +60,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from ._optional import require
 from .components import ComponentSpec
 from .objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
 
@@ -855,6 +856,8 @@ class LinkTask:
         negatives and order are re-drawn every pass from ``(seed, pass)``
         (``seed``, an integer >= 0, defaults to the split's); a seed on a
         ``val`` / ``test`` loader, whose candidates are fixed, is refused."""
+        # Batches are PyG Data: refuse before any graph work without the graph extra (FEAT-031).
+        require("torch_geometric.data", "nnx.link_tasks.LinkTask.loader")
         LinkSplit._split(name)
         if not isinstance(x, torch.Tensor) or x.ndim != 2 or x.shape[0] != self.split.num_nodes:
             raise LinkTaskError(f"x must be ({self.split.num_nodes}, features) node features")
@@ -907,7 +910,7 @@ class LinkTask:
         return [r[0] for r in shuffled], [r[1] for r in shuffled], [r[2] for r in shuffled]
 
     def _batch(self, x, messages, candidates, targets, ids, name, passes=None, seed=None) -> Any:
-        from torch_geometric.data import Data
+        Data = require("torch_geometric.data", "nnx.link_tasks").Data
 
         index = torch.tensor(candidates, dtype=torch.long).t().reshape(2, -1)
         dtype = torch.float32 if self.mode == "binary" else torch.long

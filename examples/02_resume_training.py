@@ -50,6 +50,9 @@ untouched. ``provenance_mode`` below checks all three; ``run.id``, the
 fingerprint, the attempt id and the ``metadata.yaml`` environment snapshot
 stay four separate identities.
 
+The in-memory graph helper needs the ``graph`` extra (PyTorch Geometric):
+``pip install "thekaveh-nnx[graph]"``; everything else runs on the core install.
+
 Run:
     python examples/02_resume_training.py
 """

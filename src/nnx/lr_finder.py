@@ -20,16 +20,19 @@ import math
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import numpy as np
-import plotly.graph_objects as go
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from ._optional import require
 from .nn.params.nn_checkpoint import _snapshot_state_dict
 from .utils import _capture_training_modes, _restore_training_modes
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -107,9 +110,15 @@ def lr_finder(
         max_lr, and a Plotly figure of loss vs log(LR).
 
     Raises:
+        ImportError: Plotly (the ``plots`` extra, ``pip install
+            "thekaveh-nnx[plots]"``) is not installed — raised before any
+            data, model or RNG state is touched.
         ValueError: on invalid arguments (``num_iter < 2``,
             ``start_lr <= 0``, ``end_lr <= start_lr``).
     """
+    # The plot is the finder's output: without the plots extra, fail before
+    # any data, model or RNG state is touched (FEAT-031).
+    require("plotly.graph_objects", "nnx.lr_finder")
     if num_iter < 2:
         raise ValueError(f"lr_finder num_iter must be >= 2, got {num_iter}")
     if start_lr <= 0:
@@ -327,6 +336,7 @@ def _build_figure(lrs: list[float], losses: list[float], suggested_lr: float) ->
     points (every iteration diverged immediately) — adding a vline
     against an empty trace produces a degenerate figure.
     """
+    go = require("plotly.graph_objects", "nnx.lr_finder")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=lrs, y=losses, mode="lines+markers", name="loss"))
     fig.update_layout(

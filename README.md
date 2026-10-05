@@ -21,15 +21,16 @@
 </p>
 
 <p align="center" class="nnx-core-stack">
-  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white">
-  <img alt="PyTorch Geometric" src="https://img.shields.io/badge/PyTorch_Geometric-2.4%2B-3C2179">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C?logo=pytorch&logoColor=white">
   <img alt="NumPy" src="https://img.shields.io/badge/NumPy-1.24%2B-013243?logo=numpy&logoColor=white">
   <img alt="pandas" src="https://img.shields.io/badge/pandas-2.0%2B-150458?logo=pandas&logoColor=white">
   <img alt="scikit-learn" src="https://img.shields.io/badge/scikit--learn-1.3%2B-F7931E?logo=scikitlearn&logoColor=white">
-  <img alt="Plotly" src="https://img.shields.io/badge/Plotly-5.18%2B-3F4F75?logo=plotly&logoColor=white">
 </p>
 
 <p align="center" class="nnx-optional-stack">
+  <img alt="torchvision" src="https://img.shields.io/badge/torchvision-optional%20%5Bvision%5D-EE4C2C">
+  <img alt="PyTorch Geometric" src="https://img.shields.io/badge/PyTorch_Geometric-optional%20%5Bgraph%5D-3C2179">
+  <img alt="Plotly" src="https://img.shields.io/badge/Plotly-optional%20%5Bplots%5D-3F4F75?logo=plotly&logoColor=white">
   <img alt="TensorBoard" src="https://img.shields.io/badge/TensorBoard-optional-FF6F00?logo=tensorflow&logoColor=white">
   <img alt="Weights & Biases" src="https://img.shields.io/badge/Weights_%26_Biases-optional-FFBE00?logo=weightsandbiases&logoColor=black">
   <img alt="ONNX" src="https://img.shields.io/badge/ONNX-optional-005CED?logo=onnx&logoColor=white">
@@ -101,7 +102,7 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 - **Your own modules** — `NNModel` also trains any `torch.nn.Module`: register a factory (`register_model_factory`, `ModelSpec(id, version, config, seed)`) for a portable model that rebuilds from checkpoints, safetensors and the Hub, or wrap an instance as is (`NNModel(module=m, ...)`, runtime-only); `PositionalInputs` / `KeywordInputs` batch adapters feed positional or keyword `forward`s. See `examples/custom_module.py`.
 - **Callbacks** — `Callback` base class with `on_{train,epoch}_{begin,end}` hooks. Stock: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom-epoch tags), `TensorBoardCallback` (opt-in via `thekaveh-nnx[tensorboard]`), `WandbCallback` (opt-in via `thekaveh-nnx[wandb]`). Legacy `Callable[[List[IDP]], None]` is still accepted.
 - **Visualization** — `VisUtils` (and module-level aliases) returns Plotly `Figure` objects: `confusion_matrix`, `classification_report` (returns a DataFrame), `multi_line_plot`, `scatter_plot`, `two_dim_tsne_checkpoint_logits`.
-- **Model-internals viz** — `nnx.viz.summary` (Keras-style parameter table via `torchinfo`), `nnx.viz.weight_histogram` (per-layer Plotly histogram grid), `nnx.viz.activation_map` (forward-hook activation heatmaps), `nnx.viz.attribute` (Captum-backed input attribution: `integrated_gradients` / `gradient_shap` / `deep_lift` / `saliency` / `input_x_gradient` / `occlusion`, returns the attribution tensor plus a Plotly heatmap), `nnx.viz.gradient_flow` (per-layer L2 gradient-norm bar chart for vanishing/exploding diagnostics, call after `loss.backward()`), and `nnx.viz.netron_export` (write the underlying network to a `.onnx` artifact for Netron). Companion to the existing `nnx.vis_utils` run-output viz; opt-in via `pip install thekaveh-nnx[viz]` (pulls `torchinfo` + `captum`; the Netron browser viewer is `thekaveh-nnx[viz-interactive]`).
+- **Model-internals viz** — `nnx.viz.summary` (Keras-style parameter table via `torchinfo`), `nnx.viz.weight_histogram` (per-layer Plotly histogram grid), `nnx.viz.activation_map` (forward-hook activation heatmaps), `nnx.viz.attribute` (Captum-backed input attribution: `integrated_gradients` / `gradient_shap` / `deep_lift` / `saliency` / `input_x_gradient` / `occlusion`, returns the attribution tensor plus a Plotly heatmap), `nnx.viz.gradient_flow` (per-layer L2 gradient-norm bar chart for vanishing/exploding diagnostics, call after `loss.backward()`), and `nnx.viz.netron_export` (write the underlying network to a `.onnx` artifact for Netron). Companion to the existing `nnx.vis_utils` run-output viz; opt-in via `pip install thekaveh-nnx[viz]` (pulls `torchinfo` + `captum` + Plotly; the Netron browser viewer is `thekaveh-nnx[viz-interactive]`).
 - **Reproducibility + training diagnostics** — `nnx.set_seed(seed, strict=False)` pins every RNG + cuDNN; `nnx.dataloader_worker_init_fn` handles per-worker seeds; `NNTrainParams.seed` runs `set_seed` at `train()` entry. `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` runs a fastai-style exponential LR sweep and returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure; the sweep restores model state, every module's train/eval mode, loader generators, and Python/NumPy/PyTorch RNG state on exit.
 - **Type-checked downstream** — NNx ships a PEP 561 `py.typed` marker so consumers' `pyright` / `mypy` honor the public-surface annotations on `NNModel`, the params dataclasses, callbacks, and enums (rather than seeing every symbol as `Any`).
 - **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via the legacy `torch.onnx.export` (no `onnxscript` dep needed). Pass `dynamo=True` (opt-in via `thekaveh-nnx[onnx-dynamo]`) to dispatch through PyTorch's newer `torch.export`-based exporter (default in torch>=2.9; supports >2 GB models via external data; generally faster). Structural validity and numerical parity are separate claims: `nnx.export_conformance` executes both exporters' FP32 feed-forward profiles in ONNX Runtime on CPU and records every stage and artifact hash (`scripts/check_export_conformance.py`, extra `onnx-runtime`); other targets stay structural. See [Export conformance](docs/export-conformance.md).
@@ -111,14 +112,21 @@ See [docs/concepts.md §1](docs/concepts.md#1-architecture) for the full 8-layer
 ### 2.1. Runtime
 
 ```bash
-pip install thekaveh-nnx                        # latest release from PyPI
+pip install thekaveh-nnx                        # core: training, prediction, persistence (latest release from PyPI)
+pip install "thekaveh-nnx[domains]"             # + the vision, graph and plotting stacks (everything core held before 0.4)
 ```
 
-Python 3.10+ with PyTorch 2.4+ / torchvision 0.19+ — the oldest pair the full test suite passes on; see the [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) for every tested torch / torchvision / Python combination and which carry real CUDA evidence. Tested on 3.10 through 3.14. Examples in [examples/](examples/) are runnable on CPU. Optional extras keep their own version constraints (`torchao` for `[quantize]` is validated only against the frozen lock, not the floor).
+The core install is torch, NumPy, pandas, scikit-learn and a few small utilities: `import nnx` loads no vision, graph or plotting stack. Those are extras — `vision` (torchvision: `NNDataset`), `graph` (PyTorch Geometric: the graph nets, `NNGraphDataset`, `nnx.graph_tasks`, `nnx.link_tasks`) and `plots` (Plotly: `VisUtils`, `nnx.lr_finder`, the `NNRun` chart) — and using one without its extra raises an `ImportError` naming it (`pip install "thekaveh-nnx[graph]"`). `domains` installs all three.
+
+Python 3.10+ with PyTorch 2.4+ (torchvision 0.19+ with the `vision` extra) — the oldest pair the full test suite passes on; see the [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) for every tested torch / torchvision / Python combination and which carry real CUDA evidence. Tested on 3.10 through 3.14. Examples in [examples/](examples/) are runnable on CPU. Optional extras keep their own version constraints (`torchao` for `[quantize]` is validated only against the frozen lock, not the floor).
 
 ### 2.2. Optional extras
 
 ```bash
+pip install "thekaveh-nnx[vision]"              # NNDataset (torchvision datasets)
+pip install "thekaveh-nnx[graph]"               # graph nets, NNGraphDataset, nnx.graph_tasks, nnx.link_tasks
+pip install "thekaveh-nnx[plots]"               # VisUtils, nnx.lr_finder, the NNRun chart (Plotly)
+pip install "thekaveh-nnx[domains]"             # vision + graph + plots
 pip install "thekaveh-nnx[tensorboard]"         # TensorBoardCallback
 pip install "thekaveh-nnx[wandb]"               # WandbCallback
 pip install "thekaveh-nnx[onnx]"                # NNModel.to_onnx validation tooling

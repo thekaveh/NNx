@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -38,12 +40,11 @@ class FeedFwdNN(nn.Module):
             return (X,), Y
         # PyG batches go through the GNN subclasses (GraphConvNN /
         # GraphSageNN / GraphAttNN), but we keep the branch here for
-        # back-compat with the original contract. Lazy import so module
-        # load doesn't pay the torch_geometric import cost for users
-        # who only ever pass standard (X, Y) tuples.
-        from torch_geometric.data.data import Data as _PygData
-
-        if isinstance(batch, _PygData):
+        # back-compat with the original contract. A PyG batch exists only
+        # once torch_geometric is imported, so look it up rather than
+        # import it: the graph stack is an extra (FEAT-031).
+        pyg_data = sys.modules.get("torch_geometric.data.data")
+        if pyg_data is not None and isinstance(batch, pyg_data.Data):
             if getattr(batch, "edge_label_index", None) is not None:
                 raise ValueError(
                     "an edge-label (link) batch asks about candidate edges; a node-level FeedFwdNN cannot score it "

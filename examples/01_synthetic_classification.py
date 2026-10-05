@@ -36,6 +36,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -56,7 +57,6 @@ from nnx import (
     Optims,
     PrecisionPolicy,
     ProbabilitySpec,
-    VisUtils,
     precision_support,
     prediction_from_logits,
     set_seed,
@@ -255,9 +255,11 @@ def main():
     assert np.array_equal(batched.decoded, rich.decoded)
     # Decoded classes + spec.labels give exactly the legacy confusion matrix.
     names = list(spec.labels or ())
-    legacy_cm = VisUtils.confusion_matrix(y_val, result.classes, class_names=names)
-    rich_cm = VisUtils.confusion_matrix(y_val, rich.class_indices, class_names=names)
-    assert np.array_equal(np.asarray(legacy_cm.data[0].z), np.asarray(rich_cm.data[0].z))
+    # (scikit-learn, a core dependency: `VisUtils.confusion_matrix` draws the
+    # same matrix as a Plotly figure with the `plots` extra.)
+    legacy_cm = confusion_matrix(y_val, result.classes, labels=range(len(names)))
+    rich_cm = confusion_matrix(y_val, rich.class_indices, labels=range(len(names)))
+    assert np.array_equal(legacy_cm, rich_cm)
     # Independent Bernoulli outputs are per-output indicators, never classes.
     bernoulli = prediction_from_logits(rich.logits, ProbabilitySpec(kind="bernoulli", labels=spec.labels))
     try:

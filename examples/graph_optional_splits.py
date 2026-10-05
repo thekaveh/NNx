@@ -20,7 +20,7 @@ Demonstrates:
 
 Fully offline: no Planetoid / Cora download and no neighbor sampling
 (``sampler="full"`` needs neither pyg-lib nor torch-sparse). Requires
-``torch_geometric`` (an NNx core dependency).
+the ``graph`` extra (PyTorch Geometric): ``pip install "thekaveh-nnx[graph]"``.
 
 Run:
     python examples/graph_optional_splits.py
