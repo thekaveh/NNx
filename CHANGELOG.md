@@ -6,6 +6,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/thekaveh/NNx/compare/v0.2.3...v0.3.0) (2026-10-04)
+
 ### Upgrading from 0.2.3
 
 Default training is unchanged: the same configuration gives the same run id, losses and weights, and runs, checkpoints and Hub folders written by 0.2.3 load and resume (unless their configuration is one this release refuses, below). Check these before upgrading:
