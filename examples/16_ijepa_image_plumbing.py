@@ -85,7 +85,9 @@ def _make_cifar_loader(batch_size: int = 32) -> DataLoader:
     try:
         from torchvision import datasets, transforms
     except ImportError as e:
-        raise ImportError("--cifar requires torchvision. Install via `pip install torchvision`.") from e
+        raise ImportError(
+            '--cifar requires torchvision: pip install "thekaveh-nnx[vision]" (or pip install torchvision)'
+        ) from e
 
     tx = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,) * 3, (0.5,) * 3)])
     ds = datasets.CIFAR10(root="data/cifar10", train=True, download=True, transform=tx)

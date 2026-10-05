@@ -20,6 +20,8 @@ ordinary ``train`` / ``evaluate`` / ``predict_proba`` / reload paths:
 
 Fully offline, CPU only.
 
+Requires the ``graph`` extra (PyTorch Geometric): ``pip install "thekaveh-nnx[graph]"``.
+
 Run:
     python examples/graph_classification_offline.py
 

@@ -272,7 +272,8 @@ caller's DataFrame and the global RNG are untouched. See
 `NNPreferenceDataset`, `NNGraphDataset`) takes `batch_sizes=(train, val, test)`.
 `None` — the default for every slot — means *one batch holding the complete
 split*, so the default train loader performs **one optimizer step per epoch**;
-pass an explicit train size for stochastic mini-batches:
+pass an explicit train size for stochastic mini-batches (`NNDataset` wraps
+torchvision datasets: it needs the `vision` extra, `pip install "thekaveh-nnx[vision]"`):
 
 ```python
 from torchvision import datasets, transforms
@@ -367,7 +368,7 @@ model.train(params=..., callbacks=[TensorBoardCallback(log_dir="tb_logs")])
 
 ### 2.9. LR finder pre-flight
 
-Before a long training run, sweep learning rates exponentially and let the Smith-2017 steepest-descent heuristic pick a defensible `max_lr` for the real run. The sweep is non-destructive: model state, mixed per-module modes, loader generators, and Python/NumPy/PyTorch RNG streams are restored on exit.
+Before a long training run, sweep learning rates exponentially and let the Smith-2017 steepest-descent heuristic pick a defensible `max_lr` for the real run. Its output is a Plotly figure, so it needs the `plots` extra (`pip install "thekaveh-nnx[plots]"`) and refuses before touching anything without it. The sweep is non-destructive: model state, mixed per-module modes, loader generators, and Python/NumPy/PyTorch RNG streams are restored on exit.
 
 ```python
 import torch.nn.functional as F
@@ -780,9 +781,9 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 
 ### 3.8. Graph-level classification
 
-`nnx.graph_tasks` classifies whole graphs: build a `GraphCollection(graphs, ids, targets=...)` (flag graphs without a target with `unlabeled=[...]`), split it by graph id with `subset(ids)`, and train `NNModelParams(net=graph_classifier_spec(input_dim=..., num_classes=..., pool="mean"), loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(n, ignore_index=IGNORE))` on `collection.loader(batch_size)`. Loss and metrics are averaged over labeled graphs, `predict_proba` returns one row per graph with its graph id as the sample id, and a reload rebuilds the encoder, pool and head from the recipe. See [Concepts → Graph-level classification](concepts.md#25-graph-level-classification-nnxgraph_tasks) and [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).
+`nnx.graph_tasks` (the `graph` extra, `pip install "thekaveh-nnx[graph]"`) classifies whole graphs: build a `GraphCollection(graphs, ids, targets=...)` (flag graphs without a target with `unlabeled=[...]`), split it by graph id with `subset(ids)`, and train `NNModelParams(net=graph_classifier_spec(input_dim=..., num_classes=..., pool="mean"), loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(n, ignore_index=IGNORE))` on `collection.loader(batch_size)`. Loss and metrics are averaged over labeled graphs, `predict_proba` returns one row per graph with its graph id as the sample id, and a reload rebuilds the encoder, pool and head from the recipe. See [Concepts → Graph-level classification](concepts.md#25-graph-level-classification-nnxgraph_tasks) and [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).
 
 
 ### 3.9. Link and edge prediction
 
-`nnx.link_tasks` splits edges, not nodes: `split = split_links(edge_index, num_nodes, val=0.1, test=0.1, seed=0)` gives a replayable manifest (canonical edges, fixed held-out negatives from the complement), and `task = LinkTask(split)` builds candidate batches over the training topology only — `task.loader("train" | "val" | "test", x, batch_size)`. Train `NNModelParams(net=link_predictor_spec(input_dim=...))` with `objective=task.objective()` and `eval_step_fn=task.eval_step()`, select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("auroc")`, and score candidates with `prediction = task.predict(model, loader)` and `link_metrics(prediction.logits, prediction.targets, from_logits=True)` — computed from the float64 logits, as the evaluator's are, so a confident model's AUROC / AP / BCE stay exact. A held-out positive in a message graph fails before any update, and the default `train` / `predict` paths refuse link batches (use the task's objective, evaluator and `predict`). See [Concepts → Link and edge prediction](concepts.md#26-link-and-edge-prediction-nnxlink_tasks) and [`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).
+`nnx.link_tasks` (the `graph` extra) splits edges, not nodes: `split = split_links(edge_index, num_nodes, val=0.1, test=0.1, seed=0)` gives a replayable manifest (canonical edges, fixed held-out negatives from the complement), and `task = LinkTask(split)` builds candidate batches over the training topology only — `task.loader("train" | "val" | "test", x, batch_size)`. Train `NNModelParams(net=link_predictor_spec(input_dim=...))` with `objective=task.objective()` and `eval_step_fn=task.eval_step()`, select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("auroc")`, and score candidates with `prediction = task.predict(model, loader)` and `link_metrics(prediction.logits, prediction.targets, from_logits=True)` — computed from the float64 logits, as the evaluator's are, so a confident model's AUROC / AP / BCE stay exact. A held-out positive in a message graph fails before any update, and the default `train` / `predict` paths refuse link batches (use the task's objective, evaluator and `predict`). See [Concepts → Link and edge prediction](concepts.md#26-link-and-edge-prediction-nnxlink_tasks) and [`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).

@@ -20,6 +20,8 @@ not nodes, and lets NNx check every batch against that split:
 
 Fully offline, CPU only.
 
+Requires the ``graph`` extra (PyTorch Geometric): ``pip install "thekaveh-nnx[graph]"``.
+
 Run:
     python examples/link_prediction_offline.py
 

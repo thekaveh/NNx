@@ -16,6 +16,13 @@ Diagram fallback generation also needs the native Cairo library: install it
 with `brew install cairo` on macOS or `sudo apt-get install libcairo2` on
 Debian/Ubuntu. CairoSVG itself is pinned in the `docs-publish` dependency group.
 
+`--all-extras` installs every optional stack, including the `vision`,
+`graph` and `plots` domains that `import nnx` never loads (FEAT-031). A
+change to the core / extra split is checked against an installed wheel per
+profile with `scripts/smoke_core_install.py` (CI's `installed-profiles` job;
+run it from a clean environment outside the checkout with `PYTHONPATH`
+unset).
+
 Verify a clean baseline:
 
 ```bash

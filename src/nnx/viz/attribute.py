@@ -16,11 +16,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Union
 
-import plotly.graph_objects as go
 import torch
 from torch import nn
 
+from .._optional import require
 from ..utils import _capture_training_modes, _restore_training_modes
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
+
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -94,6 +98,7 @@ def _attribution_to_figure(attr: torch.Tensor, x: torch.Tensor) -> go.Figure:
     For 3-D / 4-D (image-shaped) tensors we collapse channels via mean
     before plotting so the result is always a 2-D heatmap.
     """
+    go = require("plotly.graph_objects", "nnx.viz.attribute")
     a = attr.detach().cpu()
     # Image-shaped inputs: (B, C, H, W) or (C, H, W) → mean over channels.
     if a.dim() == 4:
@@ -151,6 +156,8 @@ def attribute(
             `pip install thekaveh-nnx[viz]` or `pip install captum>=0.7.0`.
         ValueError: If `method` is not one of the supported keys.
     """
+    # The figure needs the plots extra: refuse before running Captum (FEAT-031).
+    require("plotly.graph_objects", "nnx.viz.attribute")
     if method not in SUPPORTED_METHODS:
         raise ValueError(f"unknown method '{method}'; choose from {list(SUPPORTED_METHODS)}")
 

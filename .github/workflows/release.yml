@@ -209,9 +209,98 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  artifact-profiles:
+    # FEAT-031: the verified artifacts, installed per dependency profile
+    # (core, each extra, the `domains` aggregate) over the minimum and the
+    # current torch pair, must pass scripts/smoke_core_install.py before
+    # anything is published.
+    name: Artifact profile (${{ matrix.profile }}, ${{ matrix.pair }} torch)
+    needs: build-distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [core, vision, graph, plots, domains]
+        pair: [floor, current]
+        include:
+          - pair: floor
+            python: "3.10"
+            torch: "2.4.1"
+            torchvision: "0.19.1"
+          - pair: current
+            python: "3.12"
+            torch: ""
+            torchvision: ""
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      DIST_DIR: dist
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.release_ref || github.sha }}
+          persist-credentials: false
+
+      - name: Install uv
+        # astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: false
+          version: "0.12.3"
+
+      - name: Download verified distributions
+        # actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Install the profile into a clean environment outside the checkout
+        # CPU torch wheels; the floor pins the declared minimum pair
+        # (torchvision only where the profile installs the vision extra).
+        env:
+          PROFILE: ${{ matrix.profile }}
+          TORCH_PIN: ${{ matrix.torch }}
+          TORCHVISION_PIN: ${{ matrix.torchvision }}
+        run: |
+          set -euo pipefail
+          wheel="$(ls "$DIST_DIR"/*.whl)"
+          venv="$RUNNER_TEMP/profile-venv"
+          uv venv --python "$PYTHON_VERSION" "$venv"
+          pins=()
+          if [ -n "$TORCH_PIN" ]; then
+            pins+=("torch==$TORCH_PIN")
+            case "$PROFILE" in vision|domains) pins+=("torchvision==$TORCHVISION_PIN") ;; esac
+          fi
+          if [ "$PROFILE" = core ]; then spec="thekaveh-nnx @ file://$wheel"; else spec="thekaveh-nnx[$PROFILE] @ file://$wheel"; fi
+          uv pip install --python "$venv/bin/python" \
+            --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            --index-strategy unsafe-best-match "${pins[@]}" "$spec"
+          cp scripts/smoke_core_install.py "$RUNNER_TEMP/"
+
+      - name: Run the installed-artifact smoke (PYTHONPATH unset)
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH "$RUNNER_TEMP/profile-venv/bin/python" smoke_core_install.py \
+            --profile "${{ matrix.profile }}" --output "profile-${{ matrix.profile }}-${{ matrix.pair }}.json"
+
+      - name: Upload the profile report
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: artifact-profile-${{ matrix.profile }}-${{ matrix.pair }}
+          path: ${{ runner.temp }}/profile-*.json
+          retention-days: 30
+
   publish-pypi:
     name: Publish verified distributions to PyPI
-    needs: build-distributions
+    needs: [build-distributions, artifact-profiles]
     if: inputs.tag_name != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -303,7 +392,10 @@ jobs:
       - name: Import + version check
         run: |
           .verify-venv/bin/python - <<'PY'
+          import importlib.metadata
           import os
+          import sys
+
           import nnx
           from nnx import ConvNN
           from nnx import FeedFwdMoENN
@@ -316,6 +408,12 @@ jobs:
               f"version mismatch: nnx.__version__={actual!r} "
               f"but tag was {expected!r}"
           )
+          # FEAT-031: the published core install loads no domain stack and
+          # ships its py.typed marker.
+          loaded = [m for m in ("torchvision", "torch_geometric", "plotly") if m in sys.modules]
+          assert not loaded, f"`import nnx` loaded domain packages: {loaded}"
+          files = importlib.metadata.files("thekaveh-nnx") or []
+          assert any(str(path) == "nnx/py.typed" for path in files)
           required_apis = (NNMoEParams, NNConvParams, FeedFwdMoENN, ConvNN)
           print(
               f"✓ thekaveh-nnx {actual} live on PyPI with Studio APIs: "
