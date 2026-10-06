@@ -23,7 +23,7 @@ evidence_profile:
   os: linux
   python: "3.12"
   device: cpu
-  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk]
+  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk, httpx2, tokenizers]
 groups:
   training-controls: Training controls
   checkpoint-resume: Checkpoint and resume
@@ -226,7 +226,7 @@ scenarios:
     group: inference-export
     features: [KV-cache generation, full forward]
     entry_point: GenerativeNNModel.generate
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [tokenizers]}
     expected: Cached and uncached generation produce the same output.
     tests:
       - tests/test_generative_nn_model.py::test_kv_cache_produces_same_output_as_full_forward
@@ -288,7 +288,7 @@ scenarios:
     group: decisions-results
     features: [Jev provider, decision jobs]
     entry_point: nnx.decisions.jev + DecisionJob
-    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk]}
+    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk, httpx2]}
     expected: A provider failure crossing a decision job surfaces as the job's typed cause with its request id; the job's questions share one request and nothing is retried; a sync-only client runs one call at a time.
     tests:
       - tests/test_decision_jev.py::test_a_failure_crossing_a_decision_job_keeps_its_reason_and_request_id
@@ -299,7 +299,7 @@ scenarios:
     group: decisions-results
     features: [Jev provider, decision benchmark]
     entry_point: nnx.decisions.jev + decision benchmark collector
-    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk]}
+    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk, httpx2]}
     expected: A provider failure crossing a benchmark collection keeps its typed reason and request id.
     tests:
       - tests/test_decision_jev.py::test_a_failure_crossing_a_benchmark_keeps_its_reason_and_request_id

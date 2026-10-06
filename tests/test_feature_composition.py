@@ -1,8 +1,9 @@
 """FEAT-039: the feature-composition registry, its checker and its page.
 
 The home of the matrix's checks: the registry's schema, stale references,
-how each test phase counts as evidence, stale reports, rendering and the
-publication path."""
+how each test phase counts as evidence, stale reports and rendering. The
+publication path (both docs surfaces built from one report) is in
+tests/test_docs_projection.py, beside the other docs-tooling tests."""
 
 from __future__ import annotations
 
@@ -62,6 +63,33 @@ def test_every_composed_feature_appears_in_a_scenario(registry):
     cited = {test.split("::")[0] for scenario in registry["scenarios"] for test in scenario["tests"]}
     missing = [feature for feature, module in FEATURE_TEST_MODULES.items() if module not in cited]
     assert missing == []
+
+
+def _module_level_skips(module: str) -> set[str]:
+    """The packages a test module importorskips at import time: without
+    one, none of its tests is collected."""
+    import ast
+
+    needed = set()
+    for node in ast.parse((ROOT / module).read_text(encoding="utf-8")).body:
+        call = getattr(node, "value", None)
+        if (
+            isinstance(call, ast.Call)
+            and getattr(call.func, "attr", "") == "importorskip"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+        ):
+            needed.add(call.args[0].value.split(".")[0])
+    return needed
+
+
+def test_each_scenario_declares_what_its_test_modules_need_to_be_collected(registry):
+    """A scenario whose module skips at import without a package must declare
+    it, so an environment lacking it does not judge the row (the floor lane)."""
+    for scenario in registry["scenarios"]:
+        needed = set().union(*(_module_level_skips(t.split("::")[0]) for t in scenario["tests"]))
+        declared = set(scenario["profile"]["dependencies"])
+        assert needed <= declared, (scenario["id"], sorted(needed - declared))
 
 
 def test_the_registry_is_valid_with_unique_ids(registry):
@@ -330,59 +358,3 @@ def test_a_limitation_must_cite_its_documenting_file(registry):
     assert any("limitation must start" in p for p in fc.validate_registry(broken))
     broken["scenarios"][0]["limitation"] = "docs/jepa.md#resume: the documented boundary"
     assert fc.validate_registry(broken) == []
-
-
-def _tracked_copy(tmp_path, dirname="repo"):
-    import shutil
-    import subprocess
-
-    listing = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
-    tracked = [name for name in listing.split("\0") if name]
-    copy_root = tmp_path / dirname
-    for name in tracked:
-        source = ROOT / name
-        if source.is_file():
-            (copy_root / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, copy_root / name)
-    subprocess.run(["git", "init", "-q"], cwd=copy_root, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=copy_root, check=True)
-    return copy_root
-
-
-def _build_both(copy_root):
-    import os
-    import subprocess
-    import sys
-
-    env = {**os.environ, "PYTHONPATH": f"{copy_root / 'src'}{os.pathsep}{copy_root}"}
-    subprocess.run(
-        [sys.executable, "-m", "scripts.docs.build_docs"], cwd=copy_root, env=env, check=True, capture_output=True
-    )
-    site = (copy_root / "generated" / "site" / "Feature-composition.md").read_text(encoding="utf-8")
-    wiki = (copy_root / "generated" / "wiki" / "Feature-composition.md").read_text(encoding="utf-8")
-    return site, wiki
-
-
-def test_site_and_wiki_render_one_report_with_an_identical_evidence_digest(registry, tmp_path):
-    """The published path: render the page from a report in a clean copy of
-    the tracked files, build both surfaces, and find the same evidence line
-    on each. A second fresh copy (the wiki job's checkout) judges the report
-    current. With a stale report or none every cell is unverified: the unit
-    tests above render that case, so it is not built a second time here."""
-    copy_root = _tracked_copy(tmp_path)
-    nodes = {t: dict(PASSED) for s in registry["scenarios"] for t in s["tests"]}
-    expected = registry["evidence_profile"]
-    profile = {
-        **expected,
-        "devices": [expected["device"]],
-        "torch": "2.13.0",
-        "dependencies": list(fc.KNOWN_DEPENDENCIES),
-    }
-    report = fc.evidence(registry, nodes, profile=profile, root=copy_root)
-    page = copy_root / "docs" / "feature-composition.md"
-    page.write_text(fc.render(registry, report, root=copy_root), encoding="utf-8")
-    site, wiki = _build_both(copy_root)
-    line = f"`{report['digest'][:16]}`"
-    assert line in site and line in wiki
-    assert site.count("**verified**") == wiki.count("**verified**") > 0
-    assert fc.staleness(registry, report, root=_tracked_copy(tmp_path, "fresh")) is None

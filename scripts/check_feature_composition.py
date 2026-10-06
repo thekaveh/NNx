@@ -68,6 +68,8 @@ KNOWN_DEPENDENCIES = (
     "tensorboard",
     "safetensors",
     "typesafe_sdk",
+    "httpx2",
+    "tokenizers",
 )
 RUN_TIMEOUT_SECONDS = 1800
 
