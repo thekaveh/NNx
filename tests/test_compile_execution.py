@@ -492,7 +492,14 @@ def test_a_backward_compile_failure_is_recorded_failed_and_never_retried(policy,
 @pytest.mark.parametrize("policy", ["error", "eager"])
 def test_the_recompile_limit_is_a_failure_not_a_silent_eager_fallback(policy, monkeypatch):
     if not hasattr(torch._dynamo.config, "fail_on_recompile_limit_hit"):
-        pytest.fail("this torch cannot report the recompile limit")  # torch >= 2.6 is installed in development
+        # Older torch (the 2.4 floor) cannot report the limit: the documented
+        # limitation is that NNx then adds no strictness of its own.
+        import contextlib
+
+        from nnx.compilation import _strict_recompiles
+
+        assert isinstance(_strict_recompiles(3), contextlib.nullcontext)
+        return
     limit = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
     monkeypatch.setattr(torch._dynamo.config, limit, 2)
     generator = torch.Generator().manual_seed(0)
