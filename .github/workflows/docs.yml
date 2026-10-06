@@ -18,6 +18,10 @@ on:
       - "requirements-tools.txt"
       - "uv.lock"
       - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "scripts/check_feature_composition.py"
+      - "scripts/composition_plugin.py"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [main, develop]
@@ -35,19 +39,26 @@ on:
       - "requirements-tools.txt"
       - "uv.lock"
       - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "scripts/check_feature_composition.py"
+      - "scripts/composition_plugin.py"
       - ".github/workflows/docs.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  group: pages
+  # Per ref: a pull request's docs run never displaces main's pending deploy.
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
     name: Build documentation
     runs-on: ubuntu-latest
+    # The composition scenarios (torchrun DDP included) run here too.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         # actions/checkout@v7.0.1
@@ -70,6 +81,22 @@ jobs:
           version: "0.12.3"
       - name: Sync docs + feature extras from the frozen lock
         run: uv sync --frozen --all-extras --python "3.12"
+      - name: Render the feature-composition matrix from a fresh report
+        # FEAT-039: the scenarios run here, and the page the site and the
+        # wiki publish is rendered from this one report (same evidence
+        # digest on both); a stale or missing report renders unverified.
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          uv run --frozen python scripts/check_feature_composition.py --check --run --report feature-composition-report.json
+          uv run --frozen python scripts/check_feature_composition.py --render --report feature-composition-report.json
+      - name: Keep the evidence report for the wiki job
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: feature-composition-report
+          path: feature-composition-report.json
+          retention-days: 30
       - name: Build site (strict)
         run: |
           uv run --frozen python -m scripts.docs.extract_architecture_svg --check
@@ -113,6 +140,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # Push the generated wiki through GITHUB_TOKEN.
     steps:
@@ -137,6 +165,15 @@ jobs:
 
       - name: Sync documentation tooling from the frozen lock
         run: uv sync --frozen --only-group docs-publish --no-install-project --no-build --python "3.12"
+
+      - name: Fetch the build job's evidence report
+        # actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: feature-composition-report
+
+      - name: Render the feature-composition matrix from that report
+        run: uv run --frozen --no-sync python scripts/check_feature_composition.py --render --report feature-composition-report.json
 
       - name: Build wiki
         run: uv run --frozen --no-sync python -m scripts.docs.build_wiki

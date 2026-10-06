@@ -31,3 +31,4 @@ sections:
       - {number: "22", title: Changelog, source: CHANGELOG.md}
       - {number: "23", title: License, source: LICENSE}
       - {number: "24", title: Decision-model pilot, source: docs/decision-model-pilot.md}
+      - {number: "25", title: Feature composition, source: docs/feature-composition.md}

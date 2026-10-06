@@ -107,6 +107,52 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+  feature-composition:
+    # The feature-composition matrix (FEAT-039): every scenario's listed
+    # tests run once with a phase-recording plugin; the job fails when a
+    # verified row fails or loses coverage, or an unsupported row's negative
+    # test does not pass (a skip, an xfail or a setup / teardown failure
+    # never counts). The evidence report is kept as an artifact.
+    name: feature-composition
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        # actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        # astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: false
+          version: "0.12.3"
+
+      - name: Sync package from the frozen lock
+        run: uv sync --frozen --all-extras --python "3.12"
+
+      - name: Check, run and gate the composition scenarios
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: uv run --frozen python scripts/check_feature_composition.py --check --run --report feature-composition-report.json
+
+      - name: Upload the evidence report
+        if: always()
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: feature-composition-report
+          path: feature-composition-report.json
+          retention-days: 30
+
   export-conformance:
     # Executable ONNX export conformance (FEAT-038): both exporters' FP32
     # feed-forward profiles run in ONNX Runtime on CPU and every raw logit

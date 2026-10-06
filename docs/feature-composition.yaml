@@ -1,0 +1,276 @@
+# Feature-composition registry (FEAT-039).
+#
+# Each scenario states which features are combined, through which entry
+# point, on which device / dtype / dependency profile, what the expected
+# boundary is, and the pytest node ids whose execution is the evidence.
+# `status` is the expectation:
+#   verified    - the listed tests assert the combined behaviour and must pass
+#                 (setup, call and teardown) on the profile; a skip, an xfail
+#                 or an import never counts.
+#   unsupported - the combination is refused: the tests are the executed
+#                 negative tests (or `limitation` cites the exact documented
+#                 limitation when no test can exercise it).
+#   unverified  - claimed by neither: no executed evidence on the profiles CI
+#                 runs (e.g. CUDA AMP on a CPU runner).
+# Evidence (which tests passed, at which source digest, on which profile) is
+# stored apart: a run's JSON report (the CI `feature-composition-report`
+# artifact), rendered into docs/feature-composition.md by
+# scripts/check_feature_composition.py.
+version: 1
+# The profile whose evidence the published page shows (the CI docs job); a
+# run missing one of these dependencies fails rather than losing coverage.
+evidence_profile:
+  os: linux
+  python: "3.12"
+  device: cpu
+  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors]
+groups:
+  training-controls: Training controls
+  checkpoint-resume: Checkpoint and resume
+  model-transformations: Model transformations
+  inference-export: Inference and export
+scenarios:
+  - id: TC-01
+    group: training-controls
+    features: [gradient accumulation, trailing partial window]
+    entry_point: NNModel.train
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Steps only at window ends; a trailing partial window steps once at the epoch boundary.
+    tests:
+      - tests/test_pass2_f_series.py::test_f2_accumulate_grad_batches_steps_trailing_partial_cycle
+    rationale: Exact step counts under accumulation, asserted on the optimizer.
+    status: verified
+  - id: TC-02
+    group: training-controls
+    features: [update cap, gradient accumulation, budgeted search]
+    entry_point: nnx.search.search
+    profile: {device: cpu, dtype: fp32, dependencies: [optuna]}
+    expected: An update cap of 2 with accumulate_grad_batches=3 allows no third committed step; a partial window is no update.
+    tests:
+      - tests/test_search.py::test_an_update_cap_binds_and_a_partial_window_is_no_update
+    rationale: Counts real optimizer steps under the cap.
+    status: verified
+  - id: TC-03
+    group: training-controls
+    features: [early stopping, stateful resume]
+    entry_point: NNModel.train + EarlyStopping
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A resumed run's restored patience stops training at the epoch the uninterrupted run stopped at.
+    tests:
+      - tests/test_component_resume.py::test_restored_patience_stops_at_the_uninterrupted_epoch
+    rationale: Trains both paths and asserts the stopping epoch.
+    status: verified
+  - id: TC-04
+    group: training-controls
+    features: [DDP, gradient accumulation, uneven ignore_index, validation]
+    entry_point: NNModel.train(distributed=DDP())
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
+    expected: Two ranks equal one process on the union batch (updates and globally weighted records).
+    tests:
+      - tests/test_ddp_adapter.py::test_two_ranks_match_the_global_batch_reference
+    rationale: Parity against a single-process reference at rtol 1e-6.
+    status: verified
+  - id: TC-05
+    group: training-controls
+    features: [finalize_step paradigm steps, gradient accumulation]
+    entry_point: nnx._step_helpers.finalize_step
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Refused with a ValueError (accumulation is not handled by the imperative paradigm steps).
+    tests:
+      - tests/test_step_helpers.py::test_finalize_step_raises_on_gradient_accumulation
+    rationale: Executed negative test.
+    status: unsupported
+  - id: TC-06
+    group: training-controls
+    features: [FP16 automatic mixed precision, CUDA]
+    entry_point: NNModelParams(precision=PrecisionPolicy("fp16"))
+    profile: {device: cuda, dtype: fp16, dependencies: [cuda]}
+    expected: Trains through a GradScaler on CUDA.
+    tests: []
+    rationale: The CPU runners cannot execute CUDA AMP and no test trains it on a real GPU; no claim without one.
+    status: unverified
+  - id: CR-01
+    group: checkpoint-resume
+    features: [warm resume, list loader]
+    entry_point: NNTrainParams(resume_from_run_id=...)
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A warm resume equals the uninterrupted run.
+    tests:
+      - tests/test_train_integration.py::test_warm_resume_list_loader_matches_uninterrupted
+    rationale: Compares the weights of both paths.
+    status: verified
+  - id: CR-02
+    group: checkpoint-resume
+    features: [torch.compile, resume]
+    entry_point: NNModel.train(compile=CompileSpec())
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A resume builds a fresh compiled wrapper around the reloaded module.
+    tests:
+      - tests/test_compile_execution.py::test_resume_rebuilds_the_wrapper
+    rationale: Asserts a new session over the resumed net and the compile record.
+    status: verified
+  - id: CR-03
+    group: checkpoint-resume
+    features: [DDP, resume, rank RNG]
+    entry_point: NNModel.train(distributed=DDP())
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
+    expected: Two epochs equal one plus a same-world resume, each rank's RNG included.
+    tests:
+      - tests/test_ddp_resume.py::test_two_epochs_equal_one_plus_a_resume
+    rationale: Weights, records and RNG compared per rank.
+    status: verified
+  - id: CR-04
+    group: checkpoint-resume
+    features: [stop at an update boundary, LAST checkpoint]
+    entry_point: ctx.stop_at_update
+    profile: {device: cpu, dtype: fp32, dependencies: [optuna]}
+    expected: A mid-epoch stop leaves LAST, its tensors and the history at the previous committed epoch.
+    tests:
+      - tests/test_search.py::test_a_mid_epoch_stop_leaves_the_last_commit_unrelabelled
+    rationale: Compares LAST's tensors with the epoch-0 snapshot.
+    status: verified
+  - id: CR-05
+    group: checkpoint-resume
+    features: [on_train_end mutation, LAST refresh]
+    entry_point: Callback.on_train_end
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: LAST holds the post-on_train_end weights; BEST keeps the training-time state.
+    tests:
+      - tests/test_train_end_checkpoint.py::test_last_checkpoint_contains_on_train_end_mutation
+      - tests/test_train_end_checkpoint.py::test_best_checkpoint_stays_pre_mutation
+    rationale: Reads both checkpoints back.
+    status: verified
+  - id: CR-06
+    group: checkpoint-resume
+    features: [DDP, changed world size or partition]
+    entry_point: NNModel.train(distributed=DDP(), resume)
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
+    expected: Refused before anything is restored.
+    tests:
+      - tests/test_ddp_resume.py::test_a_changed_world_or_partition_fails_before_anything_is_restored
+    rationale: Executed negative test; weights asserted unchanged.
+    status: unsupported
+  - id: MT-01
+    group: model-transformations
+    features: [torch.compile, QAT (topology-changing callback)]
+    entry_point: NNModel.train(compile=..., callbacks=[QATLifecycleCallback()])
+    profile: {device: cpu, dtype: fp32, dependencies: [torchao]}
+    expected: Refused before the first batch, no run reserved.
+    tests:
+      - tests/test_compile_execution.py::test_a_topology_changing_callback_is_refused_before_the_first_batch
+    rationale: Executed negative test.
+    status: unsupported
+  - id: MT-02
+    group: model-transformations
+    features: [torch.compile, checkpoint keys, eager reload]
+    entry_point: NNModel.train(compile=CompileSpec())
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Checkpoints hold the eager module's keys (no _orig_mod.) and reload eagerly with identical logits.
+    tests:
+      - tests/test_compile_execution.py::test_checkpoints_hold_eager_keys_and_reload_eagerly
+    rationale: Asserts keys and logits.
+    status: verified
+  - id: MT-03
+    group: model-transformations
+    features: [model surgery (deepen), FeedFwdNN]
+    entry_point: nnx.surgery.deepen
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Deepening preserves the network's function.
+    tests:
+      - tests/test_surgery_deepen.py::test_deepen_preserves_function_on_feed_fwd_nn
+    rationale: Outputs compared before and after.
+    status: verified
+  - id: MT-04
+    group: model-transformations
+    features: [DDP, batch normalization]
+    entry_point: NNModel.train(distributed=DDP())
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
+    expected: Refused on every rank before any run (running statistics would differ per rank).
+    tests:
+      - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
+    rationale: Executed negative test (among the preflight refusals).
+    status: unsupported
+  - id: IE-01
+    group: inference-export
+    features: [KV-cache generation, full forward]
+    entry_point: GenerativeNNModel.generate
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Cached and uncached generation produce the same output.
+    tests:
+      - tests/test_generative_nn_model.py::test_kv_cache_produces_same_output_as_full_forward
+    rationale: Token-level comparison.
+    status: verified
+  - id: IE-02
+    group: inference-export
+    features: [ordered logits pipeline, KV cache]
+    entry_point: GenerativeNNModel.generate(logits_pipeline=...)
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A pipeline equals the explicit processor list, cached and uncached.
+    tests:
+      - tests/test_ordered_logits_pipeline.py::test_generate_with_a_pipeline_equals_the_explicit_processor_list
+    rationale: Seeded outputs compared under both cache modes.
+    status: verified
+  - id: IE-03
+    group: inference-export
+    features: [ONNX export, module modes, gradients]
+    entry_point: NNModel.to_onnx
+    profile: {device: cpu, dtype: fp32, dependencies: [onnx, onnxscript]}
+    expected: Export leaves parameters, gradients and mixed train/eval modes unchanged.
+    tests:
+      - tests/test_inference_helpers_preserve_training_mode.py::test_to_onnx_keeps_parameters_gradients_and_mixed_modes
+    rationale: Asserts module modes and parameter identity after export.
+    status: verified
+  - id: IE-04
+    group: inference-export
+    features: [predict, training mode]
+    entry_point: NNModel.predict
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: predict restores the caller's training mode, also after an exception.
+    tests:
+      - tests/test_inference_helpers_preserve_training_mode.py::test_predict_restores_training_mode_after_call
+      - tests/test_inference_helpers_preserve_training_mode.py::test_predict_restores_training_mode_after_exception
+    rationale: Module modes asserted after the call.
+    status: verified
+  - id: IE-05
+    group: inference-export
+    features: [ONNX Runtime execution, both exporters]
+    entry_point: nnx.export_conformance
+    profile: {device: cpu, dtype: fp32, dependencies: [onnxruntime]}
+    expected: Executed logits match the native model.
+    tests:
+      - tests/test_export_conformance.py::test_both_exporters_match_native_logits_in_onnx_runtime
+    rationale: Owned by the dedicated export-conformance job (FEAT-038); this matrix does not certify ONNX Runtime parity on the CPU lane.
+    status: unverified
+  - id: EX-01
+    group: training-controls
+    features: [synthetic classification example, end to end]
+    entry_point: examples/01_synthetic_classification.py
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The example runs to completion as a subprocess.
+    tests:
+      - tests/test_examples_smoke.py::test_representative_examples_run_end_to_end[01_synthetic_classification.py]
+      - tests/test_examples_smoke.py::test_bounded_example_helpers_execute[01_synthetic_classification.py-native_nll_workflow]
+    rationale: Executed end to end plus a helper that asserts its own results (an import-only smoke is a reference, never evidence).
+    status: verified
+  - id: EX-05
+    group: training-controls
+    features: [custom train step, autoencoder example]
+    entry_point: examples/05_custom_train_step_autoencoder.py
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The custom-step example runs to completion as a subprocess.
+    tests:
+      - tests/test_examples_smoke.py::test_representative_examples_run_end_to_end[05_custom_train_step_autoencoder.py]
+      - tests/test_train_step_hook.py::test_autoencoder_style_step_trains_end_to_end
+    rationale: The example runs end to end, and the same custom-step pattern is asserted to train (loss falls).
+    status: verified
+  - id: EX-26
+    group: training-controls
+    features: [custom eval step, non-finite metric]
+    entry_point: examples/26_custom_eval_step.py
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The custom-eval example runs, and its non-finite-metric helper asserts its refusal.
+    tests:
+      - tests/test_examples_smoke.py::test_representative_examples_run_end_to_end[26_custom_eval_step.py]
+      - tests/test_examples_smoke.py::test_bounded_example_helpers_execute[26_custom_eval_step.py-nonfinite_metric_workflow]
+    rationale: Executed end to end plus a helper asserting behaviour.
+    status: verified
