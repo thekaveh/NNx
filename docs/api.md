@@ -343,7 +343,7 @@ Returns ``path`` so calls can be chained.
 ##### `nnx.nn.nn_model.NNModel.train`
 
 ```python
-nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None, history: 'Optional[HistoryJournal]' = None) -> 'NNRun'
+nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None, history: 'Optional[HistoryJournal]' = None, compile: 'Optional[CompileSpec]' = None) -> 'NNRun'
 ```
 
 Train the model and return its persisted run history.
@@ -390,6 +390,17 @@ Args:
         of rewriting ``idps.csv`` each epoch. ``None`` (the default)
         keeps the eager in-memory list and CSV. Never part of the
         run id.
+    compile: Optional :class:`~nnx.compilation.CompileSpec`
+        (FEAT-029): run the built-in step's FP32 forward (and the
+        fit's validation) through ``torch.compile``. The wrapper is
+        built per call beside ``model.net``, never assigned to it, so
+        checkpoints, export and optimizers see the eager module.
+        Refused, before any run is reserved, with a custom
+        ``train_step_fn`` or ``objective``, a graph or custom net, a
+        reduced precision or a topology-changing callback (QAT).
+        ``NNRun.compile`` records the request and what took effect.
+        ``None`` (the default) trains eagerly. Never part of the run
+        id.
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
@@ -4132,6 +4143,231 @@ str).
 ```
 
 
+Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
+
+#### `nnx.compilation.CompileSpec`
+
+```python
+class nnx.compilation.CompileSpec(*, backend: 'str' = 'inductor', mode: 'Optional[str]' = None, fullgraph: 'bool' = False, dynamic: 'Optional[bool]' = None, on_failure: 'str' = 'error') -> 'None'
+```
+
+What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of :data:`COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``).
+
+##### `nnx.compilation.CompileSpec.options`
+
+```python
+nnx.compilation.CompileSpec.options(self) -> 'dict[str, Any]'
+```
+
+The keyword options passed to ``torch.compile``.
+
+##### `nnx.compilation.CompileSpec.state`
+
+```python
+nnx.compilation.CompileSpec.state(self) -> 'dict[str, Any]'
+```
+
+Fields that differ from their defaults (``{}`` for the defaults).
+
+##### `nnx.compilation.CompileSpec.from_state`
+
+```python
+nnx.compilation.CompileSpec.from_state(state: 'Mapping[str, Any]') -> 'CompileSpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.compilation.CompileRecord`
+
+```python
+class nnx.compilation.CompileRecord(*, backend: 'str', options: 'Mapping[str, Any]', on_failure: 'str', torch_version: 'str', effective: 'str' = 'pending', graph_breaks: 'Optional[int]' = None, restart: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+What a run asked to compile and what took effect.
+
+**Details**
+
+```text
+``backend`` / ``options`` / ``on_failure`` are the request and
+``torch_version`` the framework that served it. ``effective`` is
+``pending`` (no compiled forward has run yet), ``compiled``, ``eager``
+(restarted eager under ``on_failure="eager"``) or ``failed``.
+``graph_breaks`` counts the breaks of the first compiled forward
+(``capture`` is ``"full"`` or ``"partial"``); ``restart`` holds where
+and why an eager restart (or a failure) happened.
+```
+
+##### `nnx.compilation.CompileRecord.requested`
+
+```python
+property nnx.compilation.CompileRecord.requested
+```
+
+Always ``True``: a record exists only when compilation was requested.
+
+##### `nnx.compilation.CompileRecord.capture`
+
+```python
+property nnx.compilation.CompileRecord.capture
+```
+
+``"full"`` / ``"partial"`` once a compiled forward ran, else ``None``.
+
+##### `nnx.compilation.CompileRecord.record`
+
+```python
+nnx.compilation.CompileRecord.record(self) -> 'dict[str, Any]'
+```
+
+The plain mapping stored in metadata, checkpoints and attempts.
+
+##### `nnx.compilation.CompileRecord.from_record`
+
+```python
+nnx.compilation.CompileRecord.from_record(record: 'Mapping[str, Any]') -> 'CompileRecord'
+```
+
+No public description is currently available.
+
+
+#### `nnx.compilation.CompileFailed`
+
+```python
+class nnx.compilation.CompileFailed(message: 'str', record: 'CompileRecord') -> 'None'
+```
+
+A compiled forward failed to compile under ``on_failure="error"``; ``__cause__`` is torch's error and ``record`` the run's :class:`CompileRecord` (effective state ``failed``).
+
+
+Bounded forward benchmarks and profiling (`nnx.benchmarking`):
+
+#### `nnx.benchmarking.benchmark_forward`
+
+```python
+nnx.benchmarking.benchmark_forward(net: 'torch.nn.Module', inputs: 'Inputs', *, compile: 'Optional[CompileSpec]' = None, warmup: 'int' = 3, repeats: 'int' = 10, device: 'Optional[Union[str, torch.device]]' = None, label: 'Optional[str]' = None) -> 'BenchmarkReport'
+```
+
+Time ``net``'s forward on ``inputs`` (eager, or compiled with ``compile``): the first call, then ``repeats`` calls after ``warmup`` untimed ones, on a deep copy in eval mode under ``torch.no_grad``. ``device`` defaults to the module's.
+
+
+#### `nnx.benchmarking.compare_compile`
+
+```python
+nnx.benchmarking.compare_compile(net: 'torch.nn.Module', inputs: 'Inputs', *, compile: 'Optional[CompileSpec]' = None, warmup: 'int' = 3, repeats: 'int' = 10, device: 'Optional[Union[str, torch.device]]' = None) -> 'CompileComparison'
+```
+
+Benchmark ``net`` eager and compiled (``compile``, default ``CompileSpec()``) from identical weights.
+
+
+#### `nnx.benchmarking.profile_forward`
+
+```python
+nnx.benchmarking.profile_forward(net: 'torch.nn.Module', inputs: 'Inputs', *, output_dir: 'Union[str, os.PathLike[str]]', wait: 'int' = 1, warmup: 'int' = 1, active: 'int' = 3, repeat: 'int' = 1, compile: 'Optional[CompileSpec]' = None, device: 'Optional[Union[str, torch.device]]' = None, row_limit: 'int' = 10) -> 'ProfileReport'
+```
+
+Profile ``net``'s forward with ``torch.profiler`` for exactly ``(wait + warmup + active) * repeat`` steps, writing Chrome traces to ``output_dir`` (created if needed). Every count is finite (``active`` and ``repeat`` at least 1). The profiler is stopped and its traces flushed whether the steps finish, raise or are cancelled. With ``compile`` and ``wait=warmup=0`` the first active step includes the compilation itself.
+
+
+#### `nnx.benchmarking.BenchmarkReport`
+
+```python
+class nnx.benchmarking.BenchmarkReport(*, label: 'str', backend: 'Optional[str]', device: 'str', shapes: 'tuple[tuple[int, ...], ...]', dtypes: 'tuple[str, ...]', batch_size: 'int', warmup: 'int', repeats: 'int', first_call_seconds: 'float', latencies: 'tuple[float, ...]', peak_memory_bytes: 'Optional[int]', weights_digest: 'str', torch_version: 'str') -> 'None'
+```
+
+One benchmarked configuration. Times are seconds; ``latencies`` are the warmed per-call times (``repeats`` of them).
+
+##### `nnx.benchmarking.BenchmarkReport.mean_seconds`
+
+```python
+property nnx.benchmarking.BenchmarkReport.mean_seconds
+```
+
+No public description is currently available.
+
+##### `nnx.benchmarking.BenchmarkReport.median_seconds`
+
+```python
+property nnx.benchmarking.BenchmarkReport.median_seconds
+```
+
+No public description is currently available.
+
+##### `nnx.benchmarking.BenchmarkReport.stdev_seconds`
+
+```python
+property nnx.benchmarking.BenchmarkReport.stdev_seconds
+```
+
+Sample standard deviation (``0.0`` for a single repeat).
+
+##### `nnx.benchmarking.BenchmarkReport.min_seconds`
+
+```python
+property nnx.benchmarking.BenchmarkReport.min_seconds
+```
+
+No public description is currently available.
+
+##### `nnx.benchmarking.BenchmarkReport.max_seconds`
+
+```python
+property nnx.benchmarking.BenchmarkReport.max_seconds
+```
+
+No public description is currently available.
+
+##### `nnx.benchmarking.BenchmarkReport.throughput`
+
+```python
+property nnx.benchmarking.BenchmarkReport.throughput
+```
+
+Warmed samples per second (``batch_size / mean_seconds``), where ``batch_size`` is the first input's leading dimension (batch-first inputs).
+
+##### `nnx.benchmarking.BenchmarkReport.state`
+
+```python
+nnx.benchmarking.BenchmarkReport.state(self) -> 'dict[str, Any]'
+```
+
+A plain, JSON-ready summary.
+
+
+#### `nnx.benchmarking.CompileComparison`
+
+```python
+class nnx.benchmarking.CompileComparison(*, eager: 'BenchmarkReport', compiled: 'BenchmarkReport', max_abs_diff: 'float') -> 'None'
+```
+
+An eager and a compiled benchmark of identical weights, and the largest absolute difference between their outputs.
+
+##### `nnx.benchmarking.CompileComparison.speedup`
+
+```python
+property nnx.benchmarking.CompileComparison.speedup
+```
+
+Warmed eager mean over compiled mean (> 1 means faster compiled; nothing is guaranteed).
+
+##### `nnx.benchmarking.CompileComparison.state`
+
+```python
+nnx.benchmarking.CompileComparison.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.benchmarking.ProfileReport`
+
+```python
+class nnx.benchmarking.ProfileReport(*, output_dir: 'str', trace_files: 'tuple[str, ...]', schedule: 'Mapping[str, int]', steps: 'int', table: 'str') -> 'None'
+```
+
+A finished profile: where its traces were written, the schedule and step count, and the top operators by self time.
+
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 #### `nnx.provenance.ExperimentManifest`
@@ -4301,10 +4537,10 @@ Canonical UTF-8 JSON of a JSON-like ``value``: sorted keys, arrays in order, com
 #### `nnx.provenance.Attempt`
 
 ```python
-class nnx.provenance.Attempt(attempt_id: 'str', fingerprint: 'str', run_id: 'str', status: 'str', started_at: 'str', finished_at: 'Optional[str]' = None, parent: 'Optional[Mapping[str, Any]]' = None, last_committed: 'Optional[Mapping[str, Any]]' = None, error: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+class nnx.provenance.Attempt(attempt_id: 'str', fingerprint: 'str', run_id: 'str', status: 'str', started_at: 'str', finished_at: 'Optional[str]' = None, parent: 'Optional[Mapping[str, Any]]' = None, last_committed: 'Optional[Mapping[str, Any]]' = None, error: 'Optional[Mapping[str, Any]]' = None, compile: 'Optional[Mapping[str, Any]]' = None) -> 'None'
 ```
 
-One execution of a plan: a fresh ``attempt_id`` per ``train()`` call, the plan's ``fingerprint`` and ``run_id``, its ``status`` (``running`` / ``completed`` / ``failed`` / ``cancelled``), the ``parent`` it resumed from (run, attempt, checkpoint tag and generation), the ``last_committed`` checkpoint (tag, epoch, generation) and, when it did not complete, the ``error`` (type and message).
+One execution of a plan: a fresh ``attempt_id`` per ``train()`` call, the plan's ``fingerprint`` and ``run_id``, its ``status`` (``running`` / ``completed`` / ``failed`` / ``cancelled``), the ``parent`` it resumed from (run, attempt, checkpoint tag and generation), the ``last_committed`` checkpoint (tag, epoch, generation) and, when it did not complete, the ``error`` (type and message). ``compile`` is the fit's compile record (FEAT-029) — requested and effective — when ``train(compile=...)`` was used; it is absent from ``state()`` otherwise.
 
 ##### `nnx.provenance.Attempt.state`
 
@@ -9298,10 +9534,10 @@ Returns:
 #### `nnx.nn.params.nn_run.NNRun`
 
 ```python
-class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None, precision: 'Optional[ResolvedPrecision]' = None) -> 'None'
+class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None, precision: 'Optional[ResolvedPrecision]' = None, compile: 'Optional[CompileRecord]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None, precision: 'Optional[ResolvedPrecision]' = None)
+NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None, precision: 'Optional[ResolvedPrecision]' = None, compile: 'Optional[CompileRecord]' = None)
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -9331,6 +9567,14 @@ No public description is currently available.
 
 ```python
 nnx.nn.params.nn_run.NNRun.with_precision(self, value: 'Optional[ResolvedPrecision]') -> 'NNRun'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_run.NNRun.with_compile`
+
+```python
+nnx.nn.params.nn_run.NNRun.with_compile(self, value: 'Optional[CompileRecord]') -> 'NNRun'
 ```
 
 No public description is currently available.
@@ -9509,7 +9753,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.

@@ -290,6 +290,28 @@ Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27
 
 @api nnx.result.inspect_bundle_result
 
+Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
+
+@api nnx.compilation.CompileSpec
+
+@api nnx.compilation.CompileRecord
+
+@api nnx.compilation.CompileFailed
+
+Bounded forward benchmarks and profiling (`nnx.benchmarking`):
+
+@api nnx.benchmarking.benchmark_forward
+
+@api nnx.benchmarking.compare_compile
+
+@api nnx.benchmarking.profile_forward
+
+@api nnx.benchmarking.BenchmarkReport
+
+@api nnx.benchmarking.CompileComparison
+
+@api nnx.benchmarking.ProfileReport
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest

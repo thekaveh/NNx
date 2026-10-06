@@ -2406,3 +2406,65 @@ records only, never a checkpoint unpickle, a factory or a registry. The
 exception-style APIs (`question_from_state`, `provider.decide`,
 `inspect_bundle`) are unchanged. See [Typed decisions §10.1](decisions.md#101-errors-as-values-nnxresult)
 and [`examples/result_boundaries.py`](https://github.com/thekaveh/NNx/blob/main/examples/result_boundaries.py).
+
+## 28. Opt-in compilation and benchmarks (`nnx.compilation`, `nnx.benchmarking`)
+
+`model.train(params, compile=CompileSpec())` runs the built-in step's forward
+— and the fit's validation — through `torch.compile` (FEAT-029). It is opt-in,
+deliberately narrow and **guarantees no speedup**:
+
+- **Scope.** Built-in non-graph nets, the default train step (no
+  `train_step_fn` or `objective`), full precision (FP32) and no
+  topology-changing callback (`QATLifecycleCallback`, or anything else that
+  declares `checkpoint_transforms`). Anything else is refused before a run is
+  reserved. DDP, quantization and the KV-cache generation path are not
+  covered.
+- **The canonical module stays canonical.** The compiled wrapper is built per
+  `train()` call beside `model.net` — never assigned to it — and dropped when
+  the fit ends. Optimizers own `model.net`'s parameters; checkpoints hold its
+  keys (never `_orig_mod.`); Hub and ONNX export, `summary`, weight tying and
+  every `predict` / `evaluate` / `generate` after the fit are eager (one a
+  callback runs during the fit goes through the wrapper). A resume builds a
+  fresh wrapper.
+- **Failure policy.** `CompileSpec(on_failure="error")` (default) raises
+  `CompileFailed` when a compiled forward fails to compile (with
+  `fullgraph=True`, a graph break does); `on_failure="eager"` re-runs *that
+  forward* eagerly — from the RNG state and buffers it started with — and
+  finishes the run eager. A failure the eager re-run hits too is the
+  forward's own error (a shape mistake, say): it propagates unchanged.
+  Hitting dynamo's recompile limit is a failure, never a silent eager
+  fallback (torch >= 2.6 reports it); since the limit is per code object and
+  process-wide, each fit gets it afresh on top of the entries earlier fits of
+  the same net class hold, so a sweep of many compiled fits in one process
+  keeps working (`torch._dynamo.reset()` clears the cache; dynamo's overall
+  cap per code object, `accumulated_recompile_limit`, still applies to very
+  long sweeps). Only the forward
+  is retried — a backward that fails to compile (recorded `failed`, stage
+  `backward`; conservatively, any error in the first backward after a new
+  graph compiled), clipping or the optimizer step propagates — so a partly
+  applied update is never replayed. Under `on_failure="error"` the model's
+  RNG and buffers are left as the failed call found them.
+- **Recorded.** `CompileRecord` holds the request (backend, `mode` /
+  `fullgraph` / `dynamic`, the policy, the torch version) and what took
+  effect: `compiled` (with `capture` `full` or `partial` and the
+  `graph_breaks` count), `eager` with the `restart` (phase, epoch, batch,
+  error), or `failed`. The same record is on `NNRun.compile`, in
+  `metadata.yaml`, in each stateful checkpoint's training state and, with a
+  provenance manifest, in `attempt.json` — never in the run id. The run and
+  its checkpoints carry it as of their last commit, `attempt.json` as of the
+  attempt's end (so a failure after the last commit shows only there). The
+  graph breaks are counted when the first call compiles; a graph served
+  from dynamo's process-wide cache (the same model or class compiled
+  earlier) leaves the capture unknown (`None`), and torch reuses it even
+  under `fullgraph=True`.
+
+`nnx.benchmarking` measures instead of assuming: `benchmark_forward` times
+the first call (compilation included) separately from `repeats` warmed calls
+after `warmup` untimed ones, synchronizing the device around each timed call
+and resetting CUDA peak-memory counters before the warmed region, and reports shapes, dtypes, backend,
+device and the latencies' mean / median / stdev. `compare_compile` benchmarks
+eager and compiled copies of identical weights; `profile_forward` runs
+`torch.profiler` with a finite `wait / warmup / active / repeat` schedule into
+an explicit `output_dir`, closed on success, error and cancellation, and never
+inside a timed region. See
+[`examples/benchmark_compile.py`](../examples/benchmark_compile.py).
