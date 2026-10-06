@@ -671,6 +671,20 @@ class _EagerHistory:
         return run.with_idps(self.records).save()
 
 
+class _ReplicaHistory(_EagerHistory):
+    """A DDP replica rank's records (FEAT-030): the same global records as
+    the writer's, kept in memory only — the writer alone persists them."""
+
+    def save_epoch(self, run: NNRun) -> None:
+        pass
+
+    def rollback_epoch(self, run: NNRun) -> None:
+        pass
+
+    def finish(self, run: NNRun) -> NNRun:
+        return run.with_idps(self.records)
+
+
 class _JournalHistory:
     """The last ``retention`` records in memory, every record in the run's
     journal."""

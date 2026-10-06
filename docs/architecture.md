@@ -67,3 +67,88 @@ unless they declare `history_access = "full"`, and a continuation writes its
 own run and chunk files, never its source's.
 
 ![NNx training lifecycle](assets/training-lifecycle.png)
+
+## 3. Single-node data parallelism (`nnx.distributed`)
+
+`train(params, distributed=DDP())` (FEAT-030) runs inside the process group
+`torchrun` started — NNx adds no runtime of its own:
+
+```text
+torchrun --standalone --nproc_per_node=2 train.py
+   ├── rank 0 (writer) ── init_process_group() ── train_loader / validation_loader ── model.train(distributed=DDP())
+   └── rank 1          ── init_process_group() ── train_loader / validation_loader ── model.train(distributed=DDP())
+                                  (gloo on CPU, nccl with one GPU per rank)
+```
+
+**Partitions.** `nnx.distributed.train_loader(dataset, batch_size, policy=, seed=)`
+deals each epoch's permutation (seeded by `seed + epoch`) to the ranks after
+padding (`"pad"` repeats leading rows) or dropping (`"drop"`) the tail, so every
+rank takes the same number of steps; a mismatch fails on every rank before the
+epoch. `validation_loader(dataset, batch_size)` shards rows `rank::world`
+*unpadded*: every row id is scored exactly once, a rank may have none, and the
+validation loop runs no collective.
+
+**One update.** Per microbatch:
+
+```text
+forward + backward through DDP  (no_sync until the window's last microbatch)
+   │   loss numerator only; finiteness agreed on every rank before backward
+   ▼
+window end:  W = all_reduce(sum of the ranks' loss denominators)
+   │   W == 0 for a task model → skip the update on every rank
+   ▼
+grad = DDP average × world_size / W        (an additive loss: × world_size)
+   ▼
+clip → optimizer.step()  — identical parameters on every rank
+```
+
+so each committed update equals one process training on the union of the
+ranks' batches, unequal valid counts included.
+
+**Records and decisions.** Each batch's outputs, targets and loss terms are
+gathered and scored the same way on every rank; validation gathers each
+rank's scored shard once. Records are therefore global and identical on every
+rank — monitors, `EarlyStopping`, BEST and the plateau scheduler decide alike,
+and every rank returns the same `NNRun` (id, records and the writer's
+provenance). Each step's gather carries the batch's outputs and targets, and
+validation gathers every scored output once: sized for supervised models.
+
+**One writer.** Only the writer rank (`DDP(writer_rank=0)`) holds the run lease
+and writes history, LAST / BEST / phase checkpoints, deferred callback
+checkpoints and the provenance attempt; each epoch's commit is agreed, so a
+failed write stops every rank. Checkpoints hold the canonical module's keys
+(DDP wraps `model.net` per fit and is never assigned to it) plus the world
+size, the partitions and every rank's RNG streams; a resume with the same
+world size and partition restores them all, any other fails before anything
+is restored (so does a single-process stateful resume of a distributed
+checkpoint; `resume_mode="weights_only"` starts fresh from its weights).
+Resume, component restore and epoch-end callback failures are agreed too;
+anything else failing on one rank only ends through the process group's
+timeout and `torchrun` stopping the other ranks.
+
+```text
+            writer rank                        other ranks
+lease       runs/.leases/<id>.lock             —
+history     runs/<id>/idps.csv, run.yaml       in memory (same records)
+checkpoint  LAST / BEST / phase / deferred     —
+callbacks   "all" + "writer" + writer_only()   "all"
+```
+
+**Callbacks** declare their rank behaviour (`Callback.distributed`): `"all"`
+(`EarlyStopping`, `LRMonitor`) run everywhere and must not write; `"writer"`
+(`ModelCheckpoint`, plain function callbacks) run on the writer only and may
+not carry checkpointed component state. `TensorBoardCallback` and
+`WandbCallback` write when constructed, so a borrowed instance is refused;
+`nnx.distributed.writer_only(lambda: TensorBoardCallback(...))` builds one on
+the writer alone. A callback that declares nothing is refused before training,
+on every rank.
+
+Exactness holds for deterministic forwards: batch normalization is refused
+(its running statistics would differ per rank), and dropout draws each rank's
+own stream, matching one process only in distribution.
+
+Out of scope: multi-node or elastic runs, FSDP / DeepSpeed, mixed precision,
+`compile=`, custom train or validation steps and objectives, history journals,
+graph neighbour sampling. See
+[`examples/ddp_supervised.py`](https://github.com/thekaveh/NNx/blob/main/examples/ddp_supervised.py).
+

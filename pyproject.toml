@@ -53,6 +53,10 @@ keywords = [
     # Post-#54 overnight-maintenance pass — nnx.viz (six model-internals
     # primitives + Captum attribution) had no matching keyword.
     "visualization", "explainability",
+    # FEAT-029: nnx.compilation / nnx.benchmarking.
+    "torch-compile", "profiling",
+    # FEAT-030: nnx.distributed.
+    "ddp", "distributed-training",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

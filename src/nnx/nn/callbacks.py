@@ -32,7 +32,18 @@ if TYPE_CHECKING:
 
 
 class Callback:
-    """Base class for training callbacks. Override any subset of the hooks."""
+    """Base class for training callbacks. Override any subset of the hooks.
+
+    ``distributed`` declares the callback's rank behaviour under
+    ``train(distributed=DDP())`` (FEAT-030): ``"all"`` — run on every rank
+    (it must not write files: records and decisions are identical on every
+    rank); ``"writer"`` — run on the writer rank only (it may write; it must
+    not change control flow such as ``ctx.should_stop``); ``"unsupported"``
+    — refused (it writes when constructed: use
+    ``nnx.distributed.writer_only``). ``None`` (undeclared) is refused under
+    DDP and ignored otherwise."""
+
+    distributed: Optional[str] = None
 
     def on_train_begin(self, ctx: _CallbackContext) -> None:
         pass
@@ -66,6 +77,8 @@ class _LegacyCallback(Callback):
     The original train() called the callable after each epoch with the running
     idps list and a `clear_output(wait=True)` first. This shim preserves both.
     """
+
+    distributed = "writer"  # a plain function may write anything: writer rank only (FEAT-030)
 
     def __init__(self, fn: Callable[[list[NNIterationDataPoint]], None]):
         self._fn = fn
@@ -182,6 +195,8 @@ class EarlyStopping(Callback):
 
         EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)
     """
+
+    distributed = "all"  # rank behaviour under DDP (FEAT-030)
 
     def __init__(
         self,
@@ -471,6 +486,8 @@ class ModelCheckpoint(Callback):
         tag: prefix in the filename, defaults to ``"custom"``.
     """
 
+    distributed = "writer"  # rank behaviour under DDP (FEAT-030)
+
     def __init__(self, epochs: Optional[list[int]] = None, tag: str = "custom"):
         if re.fullmatch(_MODEL_CHECKPOINT_TAG, tag) is None:
             raise ValueError(
@@ -530,6 +547,8 @@ class LRMonitor(Callback):
     of those epochs. ``bounded=False`` keeps every epoch's LR (one float
     each), and every update's, in any run.
     """
+
+    distributed = "all"  # rank behaviour under DDP (FEAT-030)
 
     def __init__(self, bounded: bool = True):
         self.history: list[float] = []
@@ -596,6 +615,8 @@ class TensorBoardCallback(Callback):
             partial training is visible in TB even if the process crashes.
     """
 
+    distributed = "unsupported"  # rank behaviour under DDP (FEAT-030)
+
     def __init__(self, log_dir: Optional[str] = None, flush_each_epoch: bool = True):
         try:
             from torch.utils.tensorboard import SummaryWriter
@@ -635,6 +656,8 @@ class WandbCallback(Callback):
     or `wandb_run=` to attach to an externally-managed run.
     """
 
+    distributed = "unsupported"  # rank behaviour under DDP (FEAT-030)
+
     def __init__(
         self,
         project: Optional[str] = None,
@@ -671,3 +694,19 @@ class WandbCallback(Callback):
     def on_train_end(self, ctx: _CallbackContext) -> None:
         if self._owns_run:
             self._run.finish()
+
+
+class _WriterOwned(Callback):
+    """``nnx.distributed.writer_only(factory)``: built by NNx — on the
+    writer rank only under DDP (FEAT-030), or directly otherwise."""
+
+    distributed = "writer"
+
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self.factory = factory
+
+    def build(self) -> Any:
+        callback = self.factory()
+        if not isinstance(callback, Callback):
+            raise TypeError(f"writer_only's factory must return a Callback, got {type(callback).__name__}")
+        return callback

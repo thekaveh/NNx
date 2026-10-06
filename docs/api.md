@@ -343,7 +343,7 @@ Returns ``path`` so calls can be chained.
 ##### `nnx.nn.nn_model.NNModel.train`
 
 ```python
-nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None, history: 'Optional[HistoryJournal]' = None, compile: 'Optional[CompileSpec]' = None) -> 'NNRun'
+nnx.nn.nn_model.NNModel.train(self, params: 'NNTrainParams', callbacks: 'Optional[list[CallbackLike]]' = None, train_step_fn: 'Optional[TrainStepFn]' = None, eval_step_fn: 'Optional[EvalStepFn]' = None, salt: 'Optional[str]' = None, components: 'Optional[list[Any]]' = None, objective: 'Optional[Callable[[Any], Any]]' = None, provenance: 'Optional[ExperimentManifest]' = None, history: 'Optional[HistoryJournal]' = None, compile: 'Optional[CompileSpec]' = None, distributed: 'Optional[Any]' = None) -> 'NNRun'
 ```
 
 Train the model and return its persisted run history.
@@ -401,6 +401,17 @@ Args:
         ``NNRun.compile`` records the request and what took effect.
         ``None`` (the default) trains eagerly. Never part of the run
         id.
+    distributed: Optional :class:`nnx.distributed.DDP` (FEAT-030):
+        train data-parallel over the process group ``torchrun``
+        started (``nnx.distributed.init_process_group()``), with
+        ``nnx.distributed.train_loader`` / ``validation_loader``
+        partitions. Each update equals a single process training on
+        the ranks' union batch; records are global and identical on
+        every rank; only the writer rank holds the lease and writes
+        artifacts, and every rank returns the same run. FP32, the
+        default steps and one node only — refused, on every rank
+        together, before any run is reserved otherwise. Never part
+        of the run id.
 
 Returns:
     The completed :class:`NNRun`, persisted with run metadata,
@@ -4139,6 +4150,147 @@ class nnx.benchmarking.ProfileReport(*, output_dir: 'str', trace_files: 'tuple[s
 ```
 
 A finished profile: where its traces were written, the schedule and step count, and the top operators by self time.
+
+
+Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture §3):
+
+#### `nnx.distributed.init_process_group`
+
+```python
+nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_seconds: 'float' = 120.0) -> 'tuple[int, int]'
+```
+
+Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever. With CUDA, each process takes ``cuda:LOCAL_RANK``.
+
+
+#### `nnx.distributed.train_loader`
+
+```python
+nnx.distributed.train_loader(dataset: 'Any', batch_size: 'int', *, policy: 'str' = 'pad', seed: 'int' = 0, shuffle: 'bool' = True, collate_fn: 'Optional[Callable[[list[Any]], Any]]' = None) -> 'ShardedLoader'
+```
+
+This rank's training loader: a per-epoch seeded partition of ``dataset`` evened out by ``policy`` (``"pad"`` or ``"drop"``), so every rank takes the same number of steps.
+
+
+#### `nnx.distributed.validation_loader`
+
+```python
+nnx.distributed.validation_loader(dataset: 'Any', batch_size: 'int', *, collate_fn: 'Optional[Callable[[list[Any]], Any]]' = None) -> 'ShardedLoader'
+```
+
+This rank's validation shard: rows ``rank::world_size``, unpadded — every row is scored exactly once across the ranks.
+
+
+#### `nnx.distributed.DDP`
+
+```python
+class nnx.distributed.DDP(*, writer_rank: 'int' = 0, find_unused_parameters: 'bool' = False) -> 'None'
+```
+
+``model.train(params, distributed=DDP())``: data-parallel training over the initialized process group. ``writer_rank`` owns every artifact; ``find_unused_parameters`` is passed to ``DistributedDataParallel``.
+
+
+#### `nnx.distributed.writer_only`
+
+```python
+nnx.distributed.writer_only(factory: 'Callable[[], Any]') -> 'Any'
+```
+
+A callback NNx builds on the writer rank only — for callbacks that write when constructed (``TensorBoardCallback``, ``WandbCallback``): ``callbacks=[writer_only(lambda: TensorBoardCallback("tb"))]``. Without ``distributed=``, the factory is simply called.
+
+
+#### `nnx.distributed.RankPartition`
+
+```python
+class nnx.distributed.RankPartition(n: 'int', *, rank: 'int', world_size: 'int', kind: 'str' = 'train', policy: 'str' = 'pad', shuffle: 'bool' = True, seed: 'int' = 0) -> 'None'
+```
+
+This rank's dataset indices, per epoch.
+
+**Details**
+
+```text
+``kind="train"``: a seeded permutation of ``range(n)`` (``seed + epoch``;
+identity order with ``shuffle=False``), evened out by ``policy`` —
+``"pad"`` repeats leading indices, ``"drop"`` drops the tail — and
+dealt ``rank::world_size``, so every rank serves the same count.
+``kind="validation"``: rows ``rank::world_size`` in order, unpadded
+(counts may differ; a rank may serve none).
+```
+
+##### `nnx.distributed.RankPartition.set_epoch`
+
+```python
+nnx.distributed.RankPartition.set_epoch(self, epoch: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.distributed.RankPartition.global_order`
+
+```python
+nnx.distributed.RankPartition.global_order(self) -> 'list[int]'
+```
+
+Every rank's indices for this epoch, before dealing (train: after padding or dropping).
+
+##### `nnx.distributed.RankPartition.indices`
+
+```python
+nnx.distributed.RankPartition.indices(self) -> 'list[int]'
+```
+
+No public description is currently available.
+
+##### `nnx.distributed.RankPartition.descriptor`
+
+```python
+nnx.distributed.RankPartition.descriptor(self) -> 'dict[str, Any]'
+```
+
+What a resume must match: the dataset size, world, kind, policy, shuffle and seed (never the epoch or rank).
+
+
+#### `nnx.distributed.ShardedLoader`
+
+```python
+class nnx.distributed.ShardedLoader(dataset: 'Any', batch_size: 'int', partition: 'RankPartition', *, collate_fn: 'Optional[Callable[[list[Any]], Any]]' = None) -> 'None'
+```
+
+A re-iterable loader over one rank's :class:`RankPartition` of a map-style dataset (``DataLoader`` underneath, in-process, ordered). ``set_epoch`` reseeds a train partition; ``ids()`` names the dataset rows this rank serves this epoch.
+
+##### `nnx.distributed.ShardedLoader.set_epoch`
+
+```python
+nnx.distributed.ShardedLoader.set_epoch(self, epoch: 'int') -> 'None'
+```
+
+No public description is currently available.
+
+##### `nnx.distributed.ShardedLoader.ids`
+
+```python
+nnx.distributed.ShardedLoader.ids(self) -> 'list[int]'
+```
+
+No public description is currently available.
+
+##### `nnx.distributed.ShardedLoader.descriptor`
+
+```python
+nnx.distributed.ShardedLoader.descriptor(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.distributed.DistributedFailure`
+
+```python
+class nnx.distributed.DistributedFailure
+```
+
+Raised on every rank when another rank failed (preflight, a non-finite loss, a step-count mismatch, a writer-side commit): the failing rank raises its own error, the others this one naming it.
 
 
 ### 2.12. Experiment provenance (`nnx.provenance`)
@@ -9526,7 +9678,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None, distributed: 'Optional[dict[str, Any]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.
@@ -11259,6 +11411,19 @@ class nnx.nn.callbacks.Callback()
 ```
 
 Base class for training callbacks. Override any subset of the hooks.
+
+**Details**
+
+```text
+``distributed`` declares the callback's rank behaviour under
+``train(distributed=DDP())`` (FEAT-030): ``"all"`` — run on every rank
+(it must not write files: records and decisions are identical on every
+rank); ``"writer"`` — run on the writer rank only (it may write; it must
+not change control flow such as ``ctx.should_stop``); ``"unsupported"``
+— refused (it writes when constructed: use
+``nnx.distributed.writer_only``). ``None`` (undeclared) is refused under
+DDP and ignored otherwise.
+```
 
 ##### `nnx.nn.callbacks.Callback.on_train_begin`
 

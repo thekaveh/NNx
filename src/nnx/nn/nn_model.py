@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import functools
 import inspect
 import json
@@ -39,6 +40,7 @@ from ..history import (
     _check_history,
     _dispatch_epoch_end,
     _lend_idps,
+    _ReplicaHistory,
     _training_history,
 )
 from ..models import (
@@ -1024,6 +1026,109 @@ def _record_step_loss(
     )
 
 
+def _agreed_step_loss(
+    ddp: Any,
+    terms: _StepLossTerms,
+    accumulation_state: Optional[GradientAccumulationState],
+    *,
+    should_step: bool,
+) -> Optional[float]:
+    """``_record_step_loss`` decided on every rank together (FEAT-030): a
+    non-finite loss on any rank raises ``FloatingPointError`` on all of
+    them, before any gradient collective could leave the others waiting."""
+    error: Optional[FloatingPointError] = None
+    value: Optional[float] = None
+    try:
+        if terms.valid is None and terms.normalization_weight == 0:
+            # This rank holds no valid target in the batch (all ignored): its
+            # NaN display loss is not a divergence — whether the *global*
+            # window has any is decided at the update (_global_window_check).
+            value = None
+        else:
+            value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+    except FloatingPointError as caught:
+        error = caught
+    failed = [rank for rank, bad in enumerate(ddp.gather(error is not None)) if bad]
+    if error is not None:
+        raise error
+    if failed:
+        raise FloatingPointError(f"non-finite training loss on rank(s) {failed}: every rank stops before the update")
+    return value
+
+
+def _global_window_check(
+    terms: _StepLossTerms, accumulation_state: Optional[GradientAccumulationState], global_weight: Optional[float]
+) -> None:
+    """A legacy (task-free) model whose whole *global* window holds no valid
+    target has a NaN loss, which one process training on the union batch
+    refuses: refuse it on every rank alike (FEAT-030)."""
+    if (
+        terms.valid is None
+        and accumulation_state is not None
+        and accumulation_state.normalization_required
+        and global_weight == 0
+    ):
+        raise FloatingPointError(
+            "non-finite training loss (nan): no rank's batch in this optimizer window has a valid target"
+        )
+
+
+def _cpu(value: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    return None if value is None else value.detach().cpu()
+
+
+def _global_records(
+    ddp: Any, terms: _StepLossTerms, accumulation_state: Optional[GradientAccumulationState]
+) -> tuple[_StepLossTerms, Optional[float]]:
+    """The global batch's record terms and display loss (FEAT-030): every
+    rank's outputs, targets, predictions and validity concatenated in rank
+    order, with the loss recomputed from every rank's numerator and
+    denominator — identical on every rank, so the records, summaries and
+    monitors agree. A global batch without a valid target shows what one
+    process would: the window's running mean so far (or 0.0), or no loss
+    for a task model."""
+    loss = float(terms.train_loss.detach())
+    window = (
+        (accumulation_state.loss_numerator, accumulation_state.normalization_weight)
+        if accumulation_state is not None
+        else (0.0, 0.0)
+    )
+    parts = ddp.gather(
+        (
+            _cpu(terms.output),
+            _cpu(terms.target),
+            _cpu(terms.prediction),
+            _cpu(terms.valid),
+            loss,
+            terms.normalization_weight,
+            window,
+        )
+    )
+
+    def joined(index: int) -> Optional[torch.Tensor]:
+        tensors = [part[index] for part in parts]
+        return None if tensors[0] is None else torch.cat(tensors)
+
+    weights = [part[5] for part in parts]
+    display: Optional[float]
+    if all(weight is None for weight in weights):  # an additive (sum) loss
+        total: Optional[float] = None
+        display = float(sum(part[4] for part in parts))
+    else:
+        total = float(sum(weight or 0.0 for weight in weights))
+        if total:
+            display = sum(part[4] * part[5] for part in parts if part[5]) / total
+        elif terms.valid is not None:
+            display = None  # an all-masked task batch has no loss of its own
+        else:
+            window_weight = sum(part[6][1] for part in parts)
+            display = sum(part[6][0] for part in parts) / window_weight if window_weight else 0.0
+    output, target = joined(0), joined(1)
+    assert output is not None and target is not None
+    loss_tensor = torch.tensor(float("nan") if display is None else display, dtype=torch.float64)
+    return _StepLossTerms(output, target, joined(2), joined(3), loss_tensor, loss_tensor, total), display
+
+
 def _window_is_masked(
     terms: _StepLossTerms,
     accumulation_state: Optional[GradientAccumulationState],
@@ -1114,6 +1219,270 @@ def _record_of(session: Optional[_CompileSession]) -> Any:
 
 def _state_of(session: Optional[_CompileSession]) -> Optional[dict[str, Any]]:
     return None if session is None else session.record.record()
+
+
+def _collectively(what: str) -> Any:
+    """``nnx.distributed.collectively`` (FEAT-030). Rule: never nest one in
+    another, and keep any collective inside such a block reached by every
+    rank alike — a rank failing before it would skip that gather and leave
+    the ranks one collective apart."""
+    from ..distributed import collectively
+
+    return collectively(what)
+
+
+def _writer_owned_callbacks(callbacks: Optional[list[Any]]) -> Optional[list[Any]]:
+    """Without DDP, ``nnx.distributed.writer_only`` callbacks are simply built."""
+    if not callbacks:
+        return callbacks
+    from .callbacks import _WriterOwned
+
+    return [callback.build() if isinstance(callback, _WriterOwned) else callback for callback in callbacks]
+
+
+def _distributed_scope(
+    model: Any,
+    params: Any,
+    callbacks: Optional[list[Any]],
+    *,
+    train_step_fn: Any,
+    eval_step_fn: Any,
+    objective: Any,
+    precision: ResolvedPrecision,
+    history: Any,
+    compile: Any,
+    writer: bool,
+) -> list[Any]:
+    """What DDP covers (FEAT-030), checked on each rank: the callbacks this
+    rank runs, or a ValueError."""
+    from ..distributed import ShardedLoader, classify_callbacks
+    from .callbacks import Callback
+
+    if objective is not None or train_step_fn not in (None, default_train_step) or eval_step_fn is not None:
+        raise ValueError(
+            "distributed= covers the default train and validation steps only (no custom steps or objective)"
+        )
+    if compile is not None:
+        raise ValueError("distributed= and compile= cannot be combined")
+    if history is not None:
+        raise ValueError("distributed= keeps the eager history; a HistoryJournal is not supported")
+    if precision.effective != "fp32":
+        raise ValueError(
+            f"distributed= trains in full precision (fp32) only; this run resolves to {precision.effective}"
+        )
+    batch_norms = [
+        type(m).__name__ for m in model.net.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)
+    ]
+    if batch_norms:
+        raise ValueError(
+            f"distributed= does not cover batch normalization ({sorted(set(batch_norms))}): its running statistics "
+            "would differ per rank, so no update would equal the union batch's"
+        )
+    if model.device.type == "cuda":
+        local = int(os.environ.get("LOCAL_RANK", "0"))
+        index = model.device.index if model.device.index is not None else torch.cuda.current_device()
+        if index != local:
+            raise ValueError(
+                f"this rank (LOCAL_RANK={local}) holds its model on cuda:{index}: build the model after "
+                "nnx.distributed.init_process_group(), which selects cuda:LOCAL_RANK"
+            )
+    if isinstance(model.params.net, Nets) and model.params.net in _GRAPH_NETS:
+        raise ValueError("distributed= does not cover graph nets (graph neighbour sampling is out of scope)")
+    train_loader = params.train_loader
+    if not isinstance(train_loader, ShardedLoader) or train_loader.partition.kind != "train":
+        raise ValueError(
+            "distributed= needs params.train_loader = nnx.distributed.train_loader(dataset, batch_size, ...) — "
+            "a partition that declares its padding/drop policy and epoch seeding"
+        )
+    if params.val_loader is not None and (
+        not isinstance(params.val_loader, ShardedLoader) or params.val_loader.partition.kind != "validation"
+    ):
+        raise ValueError(
+            "distributed= needs params.val_loader = nnx.distributed.validation_loader(dataset, batch_size) — an "
+            "unpadded shard that scores every row exactly once"
+        )
+    changing = [
+        type(cb).__name__
+        for cb in callbacks or ()
+        if isinstance(cb, Callback) and type(cb).checkpoint_transforms is not Callback.checkpoint_transforms
+    ]
+    if changing:
+        raise ValueError(f"callbacks {changing} change model.net's topology, which distributed= does not cover")
+    return classify_callbacks(model._normalize_callbacks(callbacks), writer=writer)
+
+
+def _distributed_session(
+    model: Any,
+    spec: Any,
+    *,
+    params: Any,
+    callbacks: Optional[list[Any]],
+    train_step_fn: Any,
+    eval_step_fn: Any,
+    objective: Any,
+    precision: ResolvedPrecision,
+    history: Any,
+    compile: Any,
+) -> tuple[Optional[Any], Optional[list[Any]]]:
+    """``(session, this rank's callbacks)`` for ``distributed=`` (FEAT-030),
+    decided collectively: every rank checks the scope and the partitions
+    agree, then every rank builds the DDP wrapper (itself a collective)."""
+    if spec is None:
+        return None, callbacks  # writer_only(...) wrappers were built at the top of train()
+    from ..distributed import DDP, _DDPSession, _world, agree
+
+    if not isinstance(spec, DDP):
+        raise TypeError(f"distributed must be an nnx.distributed.DDP or None, got {type(spec).__name__}")
+    rank, world_size = _world()
+    error: Optional[BaseException] = None
+    kept: list[Any] = []
+    descriptors: Any = None
+    try:
+        if spec.writer_rank >= world_size:
+            raise ValueError(f"writer_rank {spec.writer_rank} is outside a world of {world_size}")
+        kept = _distributed_scope(
+            model,
+            params,
+            callbacks,
+            train_step_fn=train_step_fn,
+            eval_step_fn=eval_step_fn,
+            objective=objective,
+            precision=precision,
+            history=history,
+            compile=compile,
+            writer=rank == spec.writer_rank,
+        )
+        partition = params.train_loader.partition
+        if (partition.rank, partition.world_size) != (rank, world_size):
+            raise ValueError(
+                f"the train partition was built for rank {partition.rank} of {partition.world_size}, "
+                f"this process is rank {rank} of {world_size}"
+            )
+        descriptors = (
+            params.train_loader.descriptor(),
+            None if params.val_loader is None else params.val_loader.descriptor(),
+        )
+    except Exception as caught:
+        error = caught
+    agree(error, "the distributed preflight")
+    from ..distributed import _send
+
+    if len({repr(item) for item in _send(descriptors)}) != 1:
+        raise ValueError("the ranks' train / validation partitions differ (dataset size, policy, seed or batch size)")
+    error = None
+    session = None
+    try:
+        session = _DDPSession(model.net, spec, model.device)
+    except Exception as caught:
+        error = caught
+    agree(error, "building the DDP wrapper")
+    return session, kept
+
+
+@contextlib.contextmanager
+def _distributing(model: Any, session: Optional[Any]) -> Iterator[None]:
+    """Route the train step through ``session``'s DDP wrapper for one fit."""
+    previous = model._ddp_session
+    model._ddp_session = session
+    try:
+        yield
+    finally:
+        model._ddp_session = previous
+
+
+class _Replay:
+    """A stand-in model for evaluating gathered outputs (FEAT-030): its
+    forward returns the precomputed ``(X, Y, logits)`` a rank produced;
+    everything else is the real model's."""
+
+    def __init__(self, model: Any) -> None:
+        self._model = model
+        self.net = torch.nn.Module()  # no parameters, no modes to restore
+        # A CPU copy: _evaluate moves the loss to the stand-in's device in
+        # place, which must never move the real model's loss (buffers included).
+        self.loss_fn = copy.deepcopy(model.loss_fn).to("cpu")
+        self.device = torch.device("cpu")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._model, name)
+
+    def _fwd_outputs(self, batch: Any) -> Any:
+        return batch
+
+    def _fwd_pass(self, batch: Any) -> Any:
+        X, Y, logits = batch
+        class_axis = -1 if self._model.params.net is Nets.TRANSFORMER else 1
+        Y_hat = (
+            (logits >= 0).to(dtype=torch.long)
+            if isinstance(self.loss_fn, torch.nn.BCEWithLogitsLoss)
+            else logits.argmax(dim=class_axis)
+        )
+        return X, Y, logits, Y_hat
+
+
+def _distributed_validation(model: Any, ddp: Any, params: Any) -> NNEvaluationDataPoint:
+    """Validation under DDP (FEAT-030): each rank scores its unpadded shard
+    with the canonical module — no collective inside the loop, so a rank
+    with no rows simply has nothing to score — then one gather gives every
+    rank the same global record. Every row id is scored exactly once."""
+    loader = params.val_loader
+    precision = _inference_precision(model)
+    training_modes = _capture_training_modes(model.net)
+    model.net.eval()
+    produced: list[tuple[Any, Any, Any]] = []
+    try:
+        with torch.no_grad():
+            for batch in loader:
+                with precision.autocast():
+                    X, Y, logits = model._fwd_outputs(batch)
+                produced.append(((), Y.detach().cpu(), precision.output(logits).detach().cpu()))
+    finally:
+        _restore_training_modes(training_modes)
+    gathered = ddp.gather((produced, loader.ids()))
+    ids = [row for _, rows in gathered for row in rows]
+    if len(ids) != len(set(ids)) or sorted(ids) != list(range(loader.partition.n)):
+        raise RuntimeError("distributed validation did not score every row exactly once")  # pragma: no cover
+    ddp.validation_ids = ids
+    batches = [batch for part, _ in gathered for batch in part]
+    replay = _Replay(model)
+    if params.metrics:
+        return _evaluate(replay, batches, params.extra_metrics, tuple(params.metrics), bounded=False, who="validation")
+    return _evaluate(replay, batches, params.extra_metrics, (), bounded=False, who="validation")
+
+
+def _distributed_state(ddp: Any, train_loader: Any, val_loader: Any, rank_rng: list[Any]) -> dict[str, Any]:
+    return {
+        "world_size": ddp.world_size,
+        "writer_rank": ddp.spec.writer_rank,
+        "train": train_loader.descriptor(),
+        "validation": None if val_loader is None else val_loader.descriptor(),
+        "rng_by_rank": rank_rng,
+    }
+
+
+def _check_distributed_resume(training_state: Mapping[str, Any], ddp: Any, train_loader: Any) -> Mapping[str, Any]:
+    """A DDP resume needs the same world size and train partition (FEAT-030),
+    checked before anything is restored; returns this rank's RNG state."""
+    from ..distributed import rng_restore
+
+    saved = training_state.get("distributed")
+    if saved is None:
+        raise ValueError(
+            "this checkpoint was not written by a distributed run: a distributed resume needs the world size and "
+            "partition it was trained with (resume_mode='weights_only' starts fresh from its weights)"
+        )
+    if saved["world_size"] != ddp.world_size:
+        raise ValueError(
+            f"the checkpoint was trained on {saved['world_size']} ranks, this world has {ddp.world_size}: "
+            "resume with the same world size (or resume_mode='weights_only')"
+        )
+    if saved["train"] != train_loader.descriptor():
+        raise ValueError(
+            f"the train partition changed since the checkpoint: {saved['train']} vs {train_loader.descriptor()}"
+        )
+    state = rng_restore(saved.get("rng_by_rank"), ddp.rank, ddp.world_size)
+    assert state is not None
+    return state
 
 
 @contextlib.contextmanager
@@ -1562,22 +1931,54 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     autocast = precision.autocast()
 
     adapter = getattr(model, "task_adapter", None)
-    with autocast:  # the forward and loss only; the backward runs outside autocast
-        terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches, precision)
-    loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
-    # FEAT-029: a compiled fit's backward may compile on first use; its
-    # failure is recorded honestly (never retried).
-    session = model._compile_session
-    with contextlib.nullcontext() if session is None else session.backward():
-        if scaler is not None:
-            scaler.scale(terms.backward_loss).backward()
+    # FEAT-030: under DDP the forward and backward run through the DDP
+    # wrapper, which synchronizes gradients only at a committed update.
+    ddp = getattr(model, "_ddp_session", None)
+    with contextlib.nullcontext() if ddp is None else ddp.step(sync=should_step):
+        with autocast:  # the forward and loss only; the backward runs outside autocast
+            terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches, precision)
+        if ddp is None:
+            loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
         else:
-            terms.backward_loss.backward()
+            # Every rank decides together — before any gradient collective.
+            loss_value = _agreed_step_loss(ddp, terms, accumulation_state, should_step=should_step)
+        # FEAT-029: a compiled fit's backward may compile on first use; its
+        # failure is recorded honestly (never retried).
+        session = getattr(model, "_compile_session", None)
+        with contextlib.nullcontext() if session is None else session.backward():
+            if scaler is not None:
+                scaler.scale(terms.backward_loss).backward()
+            else:
+                terms.backward_loss.backward()
+
+    # The batch's records: this rank's, or under DDP the global batch's.
+    if ddp is None:
+        record_terms = terms
+    else:
+        record_terms, loss_value = _global_records(ddp, terms, accumulation_state)
 
     if ctx.epoch_summary is not None:
-        _observe_epoch_summary(ctx.epoch_summary, model, terms, adapter)
+        _observe_epoch_summary(ctx.epoch_summary, model, record_terms, adapter)
 
-    if should_step and _window_is_masked(terms, accumulation_state, window_is_this_batch=cycle_size == 1):
+    # FEAT-030: the window's global loss denominator (one collective per
+    # committed update) normalizes the averaged gradient and decides a
+    # masked window on every rank alike.
+    global_weight = (
+        ddp.sum(accumulation_state.normalization_weight)
+        if ddp is not None and should_step and accumulation_state is not None
+        else None
+    )
+    if ddp is not None and should_step:
+        _global_window_check(terms, accumulation_state, global_weight)
+    masked = (
+        _window_is_masked(terms, accumulation_state, window_is_this_batch=cycle_size == 1)
+        if ddp is None
+        else terms.valid is not None
+        and accumulation_state is not None
+        and accumulation_state.normalization_required
+        and global_weight == 0
+    )
+    if should_step and masked:
         # FEAT-002: every target in this optimizer window is masked — there
         # is nothing to learn from, so no update is taken.
         model.net.zero_grad()
@@ -1585,7 +1986,15 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     elif should_step:
         if scaler is not None:
             scaler.unscale_(ctx.optimizer)
-        if (
+        if ddp is not None:
+            # DDP averaged the ranks' numerator gradients: world / W turns the
+            # average into the global batch's (an additive loss: its sum).
+            assert accumulation_state is not None and global_weight is not None
+            if not accumulation_state.normalization_required:
+                _scale_gradients(model.net, float(ddp.world_size))
+            elif global_weight:
+                _scale_gradients(model.net, ddp.world_size / global_weight)
+        elif (
             accumulation_state is not None
             and accumulation_state.normalization_required
             and accumulation_state.normalization_weight
@@ -1615,18 +2024,18 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             ctx.report_update()
 
     if adapter is not None:
-        assert terms.valid is not None
+        assert record_terms.valid is not None
         accumulator = adapter.accumulator(keep_arrays=bool(ctx.extra_metrics))
-        accumulator.update(terms.output, terms.target, terms.valid)
+        accumulator.update(record_terms.output, record_terms.target, record_terms.valid)
         return accumulator.result(
-            loss=loss_value if terms.normalization_weight != 0 else None,
+            loss=loss_value if record_terms.normalization_weight != 0 else None,
             extra_metrics=ctx.extra_metrics,
         )
-    assert terms.prediction is not None
+    assert record_terms.prediction is not None
     return _classification_edp_for_loss(
         loss_fn=model.loss_fn,
-        target=terms.target,
-        prediction=terms.prediction,
+        target=record_terms.target,
+        prediction=record_terms.prediction,
         loss=cast(float, loss_value),
         extra_metrics=ctx.extra_metrics,
     )
@@ -1923,6 +2332,9 @@ class NNModel(_HubMixinBase):
     # FEAT-029: the current fit's compiled forward, beside (never replacing)
     # ``net``; set only while ``train(compile=...)`` runs.
     _compile_session: Optional[_CompileSession] = None
+    # FEAT-030: the current fit's DDP session (wrapper and collectives),
+    # beside ``net``; set only while ``train(distributed=...)`` runs.
+    _ddp_session: Optional[Any] = None
 
     def __init__(
         self,
@@ -2617,6 +3029,7 @@ class NNModel(_HubMixinBase):
         provenance: Optional[ExperimentManifest] = None,
         history: Optional[HistoryJournal] = None,
         compile: Optional[CompileSpec] = None,
+        distributed: Optional[Any] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -2670,6 +3083,17 @@ class NNModel(_HubMixinBase):
                 ``NNRun.compile`` records the request and what took effect.
                 ``None`` (the default) trains eagerly. Never part of the run
                 id.
+            distributed: Optional :class:`nnx.distributed.DDP` (FEAT-030):
+                train data-parallel over the process group ``torchrun``
+                started (``nnx.distributed.init_process_group()``), with
+                ``nnx.distributed.train_loader`` / ``validation_loader``
+                partitions. Each update equals a single process training on
+                the ranks' union batch; records are global and identical on
+                every rank; only the writer rank holds the lease and writes
+                artifacts, and every rank returns the same run. FP32, the
+                default steps and one node only — refused, on every rank
+                together, before any run is reserved otherwise. Never part
+                of the run id.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -2693,6 +3117,10 @@ class NNModel(_HubMixinBase):
 
         # Checked before anything else: one owner per optimizer update.
         _check_update_owner(train_step_fn, objective)
+        if distributed is None:
+            # nnx.distributed.writer_only(...) without DDP: simply built, so
+            # every later check sees the real callback (FEAT-030).
+            callbacks = _writer_owned_callbacks(callbacks)
         _check_provenance(provenance)
         _check_history(history, callbacks)
         if train_step_fn is None or _recipe_transforms(self._topology_transforms):
@@ -2756,6 +3184,20 @@ class NNModel(_HubMixinBase):
         # FEAT-029: a compile request is checked (scope, backend) before any
         # run is reserved; the wrapper itself compiles lazily, on first use.
         compile_holder = _CompileHolder(_compile_session(self, compile, train_step_fn, objective, callbacks, precision))
+        # FEAT-030: a DDP request is checked on every rank together (scope,
+        # partitions, callbacks), then the DDP wrapper is built collectively.
+        ddp_session, callbacks = _distributed_session(
+            self,
+            distributed,
+            params=params,
+            callbacks=callbacks,
+            train_step_fn=train_step_fn,
+            eval_step_fn=eval_step_fn,
+            objective=objective,
+            precision=precision,
+            history=history,
+            compile=compile,
+        )
         run = NNRun(
             train=params,
             model=self.params,
@@ -2763,10 +3205,23 @@ class NNModel(_HubMixinBase):
             salt=salt,
             transforms=_recipe_transforms(self._topology_transforms),  # FEAT-016: part of the run id when present
         )
-        with run.writable_lease(overwrite=params.overwrite_existing), _compiling(self, compile_holder.session):
-            return _with_attempt(
+        with contextlib.ExitStack() as stack:
+            if ddp_session is None:
+                stack.enter_context(run.writable_lease(overwrite=params.overwrite_existing))
+            else:
+                from ..distributed import collectively
+
+                # Only the writer rank holds the lease; every rank learns
+                # whether it got it.
+                with collectively("reserving the run"):
+                    if ddp_session.writer:
+                        stack.enter_context(run.writable_lease(overwrite=params.overwrite_existing))
+            stack.enter_context(_compiling(self, compile_holder.session))
+            stack.enter_context(_distributing(self, ddp_session))
+            replica = ddp_session is not None and not ddp_session.writer
+            fitted = _with_attempt(
                 run,
-                provenance,
+                None if replica else provenance,  # the writer records the attempt
                 params,
                 execution=compile_holder.record,
                 fit=lambda: self._train_impl(
@@ -2783,6 +3238,11 @@ class NNModel(_HubMixinBase):
                     scaler=scaler,
                 ),
             )
+            if ddp_session is not None:
+                # Every rank returns the same run: the writer's provenance too.
+                records = ddp_session.gather(fitted.provenance if ddp_session.writer else None)
+                fitted = fitted.with_provenance(records[ddp_session.spec.writer_rank])
+            return fitted
 
     def _precision_for_training(self, train_step_fn: Optional[TrainStepFn]) -> ResolvedPrecision:
         """Resolve the run's precision (FEAT-028) — afresh, so the record
@@ -2863,6 +3323,8 @@ class NNModel(_HubMixinBase):
         train_loader = params.train_loader
         validate: bool = params.val_loader is not None
         compile_session = self._compile_session  # FEAT-029: None for an eager fit
+        ddp = self._ddp_session  # FEAT-030: None for a single-process fit
+        writes = ddp is None or ddp.writer  # only the writer rank persists anything
         from ..optimizers import _canonical_factory_state, optimizer_factory_state
 
         # FEAT-005: checkpointable components — callbacks, the step functions
@@ -2940,107 +3402,136 @@ class NNModel(_HubMixinBase):
         # Warm resume restores every stateful training component when the
         # source checkpoint has a versioned sidecar. Legacy optimizer-only
         # sidecars remain supported.
-        if params.resume_from_run_id is not None:
-            source = _load_resume_source(
-                params.resume_from_run_id,
-                params.resume_from_checkpoint,
-                params.resume_mode,
-                trainer=False,
-                live_transforms=self._topology_transforms,
-            )
-            training_state = source.training_state
-            if training_state is not None:
-                expected_optimizer = training_state.get("optimizer_type")
-                expected_scheduler = training_state.get("scheduler_type")
-                if expected_optimizer is not None and expected_optimizer != _component_type(optimizer):
-                    raise ValueError(
-                        f"resume optimizer type mismatch: checkpoint has {expected_optimizer}, "
-                        f"configuration builds {_component_type(optimizer)}"
+        # FEAT-030: under DDP every rank resumes — or fails — together: a
+        # failure on any rank (a missing component, a mismatch) raises on all.
+        try:
+            with contextlib.nullcontext() if ddp is None else _collectively("resuming the run"):
+                if params.resume_from_run_id is not None:
+                    source = _load_resume_source(
+                        params.resume_from_run_id,
+                        params.resume_from_checkpoint,
+                        params.resume_mode,
+                        trainer=False,
+                        live_transforms=self._topology_transforms,
                     )
-                if expected_scheduler is not None and expected_scheduler != _component_type(scheduler):
-                    raise ValueError(
-                        f"resume scheduler type mismatch: checkpoint has {expected_scheduler}, "
-                        f"configuration builds {_component_type(scheduler)}"
-                    )
-                # A registered factory is identified by id, version and config
-                # (None for a built-in, and for sidecars written before
-                # factories existed): any difference is a different optimizer.
-                expected_factory = training_state.get("optimizer_factory")
-                if _canonical_factory_state(expected_factory) != _canonical_factory_state(resume_optimizer_factory):
-                    raise ValueError(
-                        f"resume optimizer factory mismatch: checkpoint has {expected_factory}, "
-                        f"configuration builds {resume_optimizer_factory}"
-                    )
-                expected_topology = training_state.get("optimizer_topology")
-                if expected_topology is not None and expected_topology != resume_optimizer_topology:
-                    raise ValueError("resume optimizer parameter topology does not match the checkpoint")
-                _check_resume_precision(training_state, precision, scaler)
-                _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
-                completed_epoch = training_state.get("completed_epoch")
-                if completed_epoch is not None:
-                    start_epoch = int(completed_epoch) + 1
-                _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs, start_epoch=start_epoch)
-                # Worker capability is decided BEFORE any state is restored:
-                # ordinary training accepts any re-iterable batch source (a
-                # list, NNGraphDataset's one-element full-batch list, ...),
-                # which has no `num_workers`. Absent metadata means "no
-                # worker-local RNG to worry about"; a real DataLoader with
-                # workers keeps its warning. Nothing here iterates the source.
-                # Components are validated against the checkpoint before any
-                # state is mutated (one report listing every problem).
-                component_plan = _plan_component_restore(registry, training_state)
-                warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
-                previous_net_state = net_snapshot = _snapshot_state_dict(self.net.state_dict())
-                previous_rng_state = rng_snapshot = _capture_rng_state(train_loader)
-                try:
-                    self.net.load_state_dict(source.net_state)
-                    optimizer.load_state_dict(training_state["optimizer"])
-                    if training_state.get("scheduler") is not None:
-                        scheduler.load_state_dict(training_state["scheduler"])
-                    if scaler is not None and training_state.get("scaler") is not None:
-                        scaler.load_state_dict(training_state["scaler"])
-                    if training_state.get("rng") is not None:
-                        _restore_rng_state(training_state["rng"], train_loader)
-                except BaseException:
-                    self.net.load_state_dict(net_snapshot)
-                    _restore_rng_state(rng_snapshot, train_loader)
-                    raise
-                if warn_worker_rng:
-                    warnings.warn(
-                        "exact warm-resume continuity requires train_loader.num_workers=0; "
-                        "worker-local RNG state cannot be reconstructed",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                resume_status = ResumeStatus(
-                    mode="stateful",
-                    source_run_id=params.resume_from_run_id,
-                    source_checkpoint=source.label,
-                    source_epoch=source.checkpoint.idp.epoch_idx,
-                    fresh_components=tuple(component_plan.fresh),
-                )
-            else:
-                # Epoch numbering continues after the checkpoint's epoch; the
-                # optimizer, scheduler, scaler and components start fresh.
-                start_epoch = source.checkpoint.idp.epoch_idx + 1
-                _restore_weights_only(
-                    self.net,
-                    source,
-                    train_loader,
-                    params.resume_mode,
-                    fresh="optimizer, scheduler, scaler, RNG and component state",
-                )
-                resume_status = ResumeStatus(
-                    mode="weights_only",
-                    source_run_id=params.resume_from_run_id,
-                    source_checkpoint=source.label,
-                    source_epoch=source.checkpoint.idp.epoch_idx,
-                    fresh_components=registry.names,
-                )
+                    training_state = source.training_state
+                    if training_state is not None:
+                        expected_optimizer = training_state.get("optimizer_type")
+                        expected_scheduler = training_state.get("scheduler_type")
+                        if expected_optimizer is not None and expected_optimizer != _component_type(optimizer):
+                            raise ValueError(
+                                f"resume optimizer type mismatch: checkpoint has {expected_optimizer}, "
+                                f"configuration builds {_component_type(optimizer)}"
+                            )
+                        if expected_scheduler is not None and expected_scheduler != _component_type(scheduler):
+                            raise ValueError(
+                                f"resume scheduler type mismatch: checkpoint has {expected_scheduler}, "
+                                f"configuration builds {_component_type(scheduler)}"
+                            )
+                        # A registered factory is identified by id, version and config
+                        # (None for a built-in, and for sidecars written before
+                        # factories existed): any difference is a different optimizer.
+                        expected_factory = training_state.get("optimizer_factory")
+                        if _canonical_factory_state(expected_factory) != _canonical_factory_state(
+                            resume_optimizer_factory
+                        ):
+                            raise ValueError(
+                                f"resume optimizer factory mismatch: checkpoint has {expected_factory}, "
+                                f"configuration builds {resume_optimizer_factory}"
+                            )
+                        expected_topology = training_state.get("optimizer_topology")
+                        if expected_topology is not None and expected_topology != resume_optimizer_topology:
+                            raise ValueError("resume optimizer parameter topology does not match the checkpoint")
+                        _check_resume_precision(training_state, precision, scaler)
+                        _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
+                        completed_epoch = training_state.get("completed_epoch")
+                        if completed_epoch is not None:
+                            start_epoch = int(completed_epoch) + 1
+                        _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs, start_epoch=start_epoch)
+                        # Worker capability is decided BEFORE any state is restored:
+                        # ordinary training accepts any re-iterable batch source (a
+                        # list, NNGraphDataset's one-element full-batch list, ...),
+                        # which has no `num_workers`. Absent metadata means "no
+                        # worker-local RNG to worry about"; a real DataLoader with
+                        # workers keeps its warning. Nothing here iterates the source.
+                        # Components are validated against the checkpoint before any
+                        # state is mutated (one report listing every problem).
+                        component_plan = _plan_component_restore(registry, training_state)
+                        warn_worker_rng = (
+                            training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
+                        )
+                        # FEAT-030: same world size and partition, or nothing is restored.
+                        rank_rng: Optional[Mapping[str, Any]] = None
+                        if ddp is None and training_state.get("distributed") is not None:
+                            raise ValueError(
+                                f"this checkpoint was written by a {training_state['distributed']['world_size']}-rank "
+                                "distributed run: resume it with train(distributed=DDP()) on the same world size, or "
+                                "start from its weights with resume_mode='weights_only'"
+                            )
+                        if ddp is not None:
+                            # Agreed by the enclosing "resuming the run" block: a
+                            # collective block is never nested in another (a rank
+                            # failing before the inner one would skip its gather).
+                            rank_rng = _check_distributed_resume(training_state, ddp, train_loader)
+                        previous_net_state = net_snapshot = _snapshot_state_dict(self.net.state_dict())
+                        previous_rng_state = rng_snapshot = _capture_rng_state(train_loader)
+                        try:
+                            self.net.load_state_dict(source.net_state)
+                            optimizer.load_state_dict(training_state["optimizer"])
+                            if training_state.get("scheduler") is not None:
+                                scheduler.load_state_dict(training_state["scheduler"])
+                            if scaler is not None and training_state.get("scaler") is not None:
+                                scaler.load_state_dict(training_state["scaler"])
+                            if training_state.get("rng") is not None:
+                                _restore_rng_state(training_state["rng"], train_loader)
+                            if rank_rng is not None:  # this rank's own streams (FEAT-030)
+                                _restore_rng_state(dict(rank_rng), train_loader)
+                        except BaseException:
+                            self.net.load_state_dict(net_snapshot)
+                            _restore_rng_state(rng_snapshot, train_loader)
+                            raise
+                        if warn_worker_rng:
+                            warnings.warn(
+                                "exact warm-resume continuity requires train_loader.num_workers=0; "
+                                "worker-local RNG state cannot be reconstructed",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+                        resume_status = ResumeStatus(
+                            mode="stateful",
+                            source_run_id=params.resume_from_run_id,
+                            source_checkpoint=source.label,
+                            source_epoch=source.checkpoint.idp.epoch_idx,
+                            fresh_components=tuple(component_plan.fresh),
+                        )
+                    else:
+                        # Epoch numbering continues after the checkpoint's epoch; the
+                        # optimizer, scheduler, scaler and components start fresh.
+                        start_epoch = source.checkpoint.idp.epoch_idx + 1
+                        _restore_weights_only(
+                            self.net,
+                            source,
+                            train_loader,
+                            params.resume_mode,
+                            fresh="optimizer, scheduler, scaler, RNG and component state",
+                        )
+                        resume_status = ResumeStatus(
+                            mode="weights_only",
+                            source_run_id=params.resume_from_run_id,
+                            source_checkpoint=source.label,
+                            source_epoch=source.checkpoint.idp.epoch_idx,
+                            fresh_components=registry.names,
+                        )
+        except BaseException:
+            # Another rank's failure reaches a rank that restored cleanly only
+            # through the agreement: undo its restore too, like the failing one.
+            if ddp is not None and previous_net_state is not None and previous_rng_state is not None:
+                _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
+            raise
 
         # Every record in a list (idps.csv), or a bounded window plus the run's
         # history journal (FEAT-036); either way saved before LAST each epoch.
-        records = _training_history(run, history)
+        records = _training_history(run, history) if writes else _ReplicaHistory()
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
@@ -3049,7 +3540,8 @@ class NNModel(_HubMixinBase):
             n_iter = None
         best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 
-        Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
+        if writes:
+            Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
         ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
         ctx.history_retention = history.retention if history is not None else None
@@ -3095,7 +3587,8 @@ class NNModel(_HubMixinBase):
             # the first resumed epoch.
             if component_plan is not None:
                 try:
-                    restored = registry.restore(component_plan)
+                    with contextlib.nullcontext() if ddp is None else _collectively("restoring components"):
+                        restored = registry.restore(component_plan)
                 except BaseException:
                     assert previous_net_state is not None and previous_rng_state is not None
                     _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
@@ -3113,8 +3606,12 @@ class NNModel(_HubMixinBase):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
                 _set_loader_epoch(train_loader, idx_epoch)
-                for cb in normalized_callbacks:
-                    cb.on_epoch_begin(ctx)
+                if ddp is not None:
+                    # FEAT-030: unequal step counts fail on every rank, never hang.
+                    ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
+                with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
+                    for cb in normalized_callbacks:
+                        cb.on_epoch_begin(ctx)
 
                 records.begin_epoch()
                 accumulation_state = GradientAccumulationState()
@@ -3178,7 +3675,11 @@ class NNModel(_HubMixinBase):
 
                 if validate and compile_session is not None:
                     compile_session.where = {"phase": "validation", "epoch": idx_epoch}
-                if validate and eval_step_fn is not None:
+                if validate and ddp is not None:
+                    # FEAT-030: each rank scores its own shard; one gather
+                    # gives every rank the same global record.
+                    val_edp = _distributed_validation(self, ddp, params)
+                elif validate and eval_step_fn is not None:
                     assert params.val_loader is not None
                     # #86: pluggable validation step (mirrors train_step_fn) —
                     # LM/DPO/regression val metrics computed INSIDE the loop so
@@ -3238,7 +3739,14 @@ class NNModel(_HubMixinBase):
                 ctx.deferred_checkpoint_writes.clear()
                 # ctx.idps: the running list, or the journal's window (the whole
                 # history, read back, for a callback declaring history_access="full").
-                _dispatch_epoch_end(normalized_callbacks, ctx, records)
+                if ddp is None:
+                    _dispatch_epoch_end(normalized_callbacks, ctx, records)
+                else:
+                    # FEAT-030: a writer-only callback failing (a full disk,
+                    # say) stops every rank; and every rank stops together.
+                    with _collectively(f"epoch {idx_epoch}'s callbacks"):
+                        _dispatch_epoch_end(normalized_callbacks, ctx, records)
+                    ctx.should_stop = any(ddp.gather(bool(ctx.should_stop)))
 
                 # Prepare run history first (idps.csv, or the journal's chunks
                 # and manifest); the checkpoint is the epoch's commit marker and
@@ -3247,44 +3755,59 @@ class NNModel(_HubMixinBase):
                 # record as it stands now (an eager restart included).
                 run = run.with_compile(_record_of(compile_session))
                 ctx.run = run
-                records.save_epoch(run)
-                try:
-                    checkpoint = self._save_checkpoints(
-                        idp=records.last,
-                        run_id=run.id,
-                        idx_epoch=local_epoch,
-                        n_epochs=params.n_epochs,
-                        best_checkpoint=best_checkpoint,
-                        save_phase_checkpoints=params.save_phase_checkpoints,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        scaler=scaler,
-                        precision=precision.record(),
-                        compile=_state_of(compile_session),
-                        completed_epoch=idx_epoch,
-                        train_loader=train_loader,
-                        optimizer_factory=resume_optimizer_factory,
-                        components=registry.collect(),
-                        is_best=record.improved if record is not None else None,
-                        trained_recipe=run.transforms,
+                # FEAT-030: every rank's RNG streams go into the writer's
+                # checkpoint (a collective, so every rank takes part).
+                distributed_state = (
+                    None
+                    if ddp is None
+                    else _distributed_state(
+                        ddp, train_loader, params.val_loader, ddp.gather(_capture_rng_state(train_loader))
                     )
-                except BaseException:
-                    # LAST is the epoch commit marker. If it cannot be
-                    # published, restore history to the preceding epoch.
-                    committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
-                    if committed is None or committed.idp.epoch_idx != idx_epoch:
-                        records.rollback_epoch(run)
-                    raise
-                for deferred_checkpoint in ctx.deferred_checkpoint_writes:
-                    deferred_checkpoint()
+                )
+                commit_error: Optional[BaseException] = None
+                checkpoint: Optional[NNCheckpoint] = None
+                try:
+                    if writes:
+                        checkpoint = self._commit_epoch(
+                            records=records,
+                            run=run,
+                            ctx=ctx,
+                            idx_epoch=idx_epoch,
+                            local_epoch=local_epoch,
+                            params=params,
+                            best_checkpoint=best_checkpoint,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            scaler=scaler,
+                            precision=precision,
+                            compile_session=compile_session,
+                            train_loader=train_loader,
+                            resume_optimizer_factory=resume_optimizer_factory,
+                            registry=registry,
+                            record=record,
+                            distributed_state=distributed_state,
+                        )
+                except Exception as caught:
+                    if ddp is None:
+                        raise
+                    commit_error = caught
+                if ddp is not None:
+                    from ..distributed import agree
+
+                    # The writer's commit, agreed: a failure stops every rank,
+                    # and replicas never run ahead of what is on disk.
+                    agree(commit_error, f"committing epoch {idx_epoch}")
                 # In-memory best_checkpoint tracking must use the same
                 # comparison as the on-disk BEST write inside
                 # _save_checkpoints (val→train, error→loss, +inf fall-through).
                 # Without this, val_loader=None runs would silently overwrite
                 # best_checkpoint every epoch (because checkpoint.idp.val_edp
                 # is None there) while the on-disk BEST tracks training error,
-                # diverging the two views of "best".
-                if record is not None:
+                # diverging the two views of "best". A DDP replica writes no
+                # checkpoint and tracks none.
+                if checkpoint is None:
+                    pass
+                elif record is not None:
                     # FEAT-003: the monitor decides BEST (same rule as the
                     # on-disk BEST write above).
                     if record.improved:
@@ -3310,36 +3833,101 @@ class NNModel(_HubMixinBase):
         # in-memory checkpoint even though the disk copy is pre-mutation.
         # Costs one extra checkpoint write per training run. BEST is
         # deliberately untouched — it tracks the best *training-time* state.
-        if records:
-            final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
-            self._topology_transforms = final_transforms
-            NNCheckpoint(
-                idp=records.last,
-                model_params=self.params,
-                net_params=self.net_params,
-                net_state=self.net.state_dict(),
-                transforms=final_transforms,
-            ).save(
-                run=run.id,
-                type=Checkpoints.LAST,
-                optimizer_state=optimizer.state_dict(),
-                scheduler_state=scheduler.state_dict(),
-                scaler_state=scaler.state_dict() if scaler is not None else None,
-                precision=precision.record(),
-                compile=_state_of(compile_session),
-                rng_state=(pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)),
-                completed_epoch=records.last.epoch_idx,
-                resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
-                optimizer_type=_component_type(optimizer),
-                scheduler_type=_component_type(scheduler),
-                optimizer_topology=resume_optimizer_topology,
-                optimizer_factory=resume_optimizer_factory,
-                components=registry.collect(),
-            )
+        final_error: Optional[BaseException] = None
+        # FEAT-030: every rank's RNG for the final LAST, gathered outside the
+        # agreed block so a rank failing inside it can never skip the gather
+        # (distributed runs have no topology transforms: the live streams).
+        final_rng = ddp.gather(_capture_rng_state(train_loader)) if ddp is not None and records else None
+        try:
+            if records:
+                self._save_final_last(
+                    records=records,
+                    run=run,
+                    normalized_callbacks=normalized_callbacks,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    precision=precision,
+                    compile_session=compile_session,
+                    ddp=ddp,
+                    writes=writes,
+                    params=params,
+                    train_loader=train_loader,
+                    pre_transform_net_state=pre_transform_net_state,
+                    pre_transform_rng_state=pre_transform_rng_state,
+                    resume_optimizer_topology=resume_optimizer_topology,
+                    resume_optimizer_factory=resume_optimizer_factory,
+                    registry=registry,
+                    final_rng=final_rng,
+                )
+            saved = records.finish(run.with_compile(_record_of(compile_session)))
+        except Exception as caught:
+            if ddp is None:
+                raise
+            final_error = caught
+        if ddp is not None:
+            from ..distributed import agree
 
-        saved = records.finish(run.with_compile(_record_of(compile_session)))
-        _print_run_saved(run.id)
+            agree(final_error, "the final commit")
+        if writes:
+            _print_run_saved(run.id)
         return saved
+
+    def _save_final_last(
+        self,
+        *,
+        records: Any,
+        run: NNRun,
+        normalized_callbacks: list[Callback],
+        optimizer: torch.optim.Optimizer,
+        scheduler: Any,
+        scaler: Any,
+        precision: ResolvedPrecision,
+        compile_session: Optional[_CompileSession],
+        ddp: Any,
+        writes: bool,
+        params: NNTrainParams,
+        train_loader: Any,
+        pre_transform_net_state: Optional[dict[str, Any]],
+        pre_transform_rng_state: Optional[dict[str, Any]],
+        resume_optimizer_topology: Any,
+        resume_optimizer_factory: Any,
+        registry: ComponentRegistry,
+        final_rng: Optional[list[Any]] = None,
+    ) -> None:
+        """Re-save LAST from the live net after ``on_train_end`` (see #87)."""
+        final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
+        self._topology_transforms = final_transforms
+        rng_state = pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)
+        distributed_state = (
+            None if ddp is None else _distributed_state(ddp, train_loader, params.val_loader, final_rng or [])
+        )
+        if not writes:
+            return
+        NNCheckpoint(
+            idp=records.last,
+            model_params=self.params,
+            net_params=self.net_params,
+            net_state=self.net.state_dict(),
+            transforms=final_transforms,
+        ).save(
+            run=run.id,
+            type=Checkpoints.LAST,
+            optimizer_state=optimizer.state_dict(),
+            scheduler_state=scheduler.state_dict(),
+            scaler_state=scaler.state_dict() if scaler is not None else None,
+            precision=precision.record(),
+            compile=_state_of(compile_session),
+            distributed=distributed_state,
+            rng_state=rng_state,
+            completed_epoch=records.last.epoch_idx,
+            resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
+            optimizer_type=_component_type(optimizer),
+            scheduler_type=_component_type(scheduler),
+            optimizer_topology=resume_optimizer_topology,
+            optimizer_factory=resume_optimizer_factory,
+            components=registry.collect(),
+        )
 
     def evaluate(
         self, loader: Iterable[Any], extra_metrics=None, metrics: Sequence[MetricSpec] = ()
@@ -3697,7 +4285,7 @@ class NNModel(_HubMixinBase):
     def _net_forward(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> torch.Tensor:
         """Call the net on device-placed inputs; an adapter turns the raw
         return value into the output tensor."""
-        session = self._compile_session
+        session = getattr(self, "_compile_session", None) or getattr(self, "_ddp_session", None)
         raw = self.net(*args, **kwargs) if session is None else session.forward(*args, **kwargs)
         adapter = getattr(self, "_batch_adapter", None)
         return raw if adapter is None else adapter.output(raw)
@@ -3842,6 +4430,65 @@ class NNModel(_HubMixinBase):
         resolved = self.resolved_precision if isinstance(self, NNModel) else resolve_precision(self.params, self.device)
         return resolved.build_scaler()
 
+    def _commit_epoch(
+        self,
+        *,
+        records: Any,
+        run: NNRun,
+        ctx: Any,
+        idx_epoch: int,
+        local_epoch: int,
+        params: NNTrainParams,
+        best_checkpoint: Optional[NNCheckpoint],
+        optimizer: torch.optim.Optimizer,
+        scheduler: Any,
+        scaler: Any,
+        precision: ResolvedPrecision,
+        compile_session: Optional[_CompileSession],
+        train_loader: Any,
+        resume_optimizer_factory: Any,
+        registry: ComponentRegistry,
+        record: Any,
+        distributed_state: Optional[dict[str, Any]],
+    ) -> Optional[NNCheckpoint]:
+        """Commit one epoch: history first, then LAST (the commit marker),
+        phase / BEST checkpoints and the callbacks' deferred writes."""
+        # Prepare run history first (idps.csv, or the journal's chunks and
+        # manifest); the checkpoint is the epoch's commit marker and is never
+        # allowed to get ahead of the history.
+        records.save_epoch(run)
+        try:
+            checkpoint = self._save_checkpoints(
+                idp=records.last,
+                run_id=run.id,
+                idx_epoch=local_epoch,
+                n_epochs=params.n_epochs,
+                best_checkpoint=best_checkpoint,
+                save_phase_checkpoints=params.save_phase_checkpoints,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                precision=precision.record(),
+                compile=_state_of(compile_session),
+                distributed=distributed_state,
+                completed_epoch=idx_epoch,
+                train_loader=train_loader,
+                optimizer_factory=resume_optimizer_factory,
+                components=registry.collect(),
+                is_best=record.improved if record is not None else None,
+                trained_recipe=run.transforms,
+            )
+        except BaseException:
+            # LAST is the epoch commit marker. If it cannot be published,
+            # restore history to the preceding epoch.
+            committed = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+            if committed is None or committed.idp.epoch_idx != idx_epoch:
+                records.rollback_epoch(run)
+            raise
+        for deferred_checkpoint in ctx.deferred_checkpoint_writes:
+            deferred_checkpoint()
+        return checkpoint
+
     def _save_checkpoints(
         self,
         idp: NNIterationDataPoint,
@@ -3859,6 +4506,7 @@ class NNModel(_HubMixinBase):
         components: Optional[dict[str, Any]] = None,
         precision: Optional[dict[str, Any]] = None,
         compile: Optional[dict[str, Any]] = None,
+        distributed: Optional[dict[str, Any]] = None,
         optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
@@ -3895,7 +4543,13 @@ class NNModel(_HubMixinBase):
         # FEAT-028: the run's resolved precision record rides along, so a
         # stateful resume can refuse a different one.
         # FEAT-029: and so does the compile record (None for an eager run).
-        stateful_extras: dict[str, Any] = {"components": components, "precision": precision, "compile": compile}
+        # FEAT-030: a DDP run's world, partitions and every rank's RNG.
+        stateful_extras: dict[str, Any] = {
+            "components": components,
+            "precision": precision,
+            "compile": compile,
+            "distributed": distributed,
+        }
         if optimizers is not None:
             stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
 

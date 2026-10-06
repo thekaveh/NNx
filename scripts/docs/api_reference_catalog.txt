@@ -296,6 +296,24 @@ Bounded forward benchmarks and profiling (`nnx.benchmarking`):
 
 @api nnx.benchmarking.ProfileReport
 
+Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture §3):
+
+@api nnx.distributed.init_process_group
+
+@api nnx.distributed.train_loader
+
+@api nnx.distributed.validation_loader
+
+@api nnx.distributed.DDP
+
+@api nnx.distributed.writer_only
+
+@api nnx.distributed.RankPartition
+
+@api nnx.distributed.ShardedLoader
+
+@api nnx.distributed.DistributedFailure
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest

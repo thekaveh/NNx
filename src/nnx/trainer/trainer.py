@@ -542,7 +542,10 @@ class Trainer:
         from ..optimizers import optimizer_factory_state
 
         optimizer_factories = {name: optimizer_factory_state(params.optims[name]) for name in optimizers}
-        normalized_callbacks = NNModel._normalize_callbacks(callbacks)
+        from ..nn.nn_model import _writer_owned_callbacks
+
+        # nnx.distributed.writer_only(...) outside DDP: simply built (FEAT-030).
+        normalized_callbacks = NNModel._normalize_callbacks(_writer_owned_callbacks(callbacks))
         summarize = (
             bool(params.metrics)
             or monitor is not None
