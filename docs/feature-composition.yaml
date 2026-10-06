@@ -91,6 +91,26 @@ scenarios:
     tests: []
     rationale: The CPU runners cannot execute CUDA AMP and no test trains it on a real GPU; no claim without one.
     status: unverified
+  - id: TC-07
+    group: training-controls
+    features: [DDP, torch.compile]
+    entry_point: NNModel.train(distributed=DDP(), compile=CompileSpec())
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Refused on every rank before any run starts.
+    tests:
+      - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
+    rationale: Executed two-rank negative test; the refusal message is asserted on both ranks and no run directory is created.
+    status: unsupported
+  - id: TC-08
+    group: training-controls
+    features: [DDP, HistoryJournal]
+    entry_point: NNModel.train(distributed=DDP(), history=HistoryJournal(...))
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Refused on every rank before any run starts; DDP keeps the eager history.
+    tests:
+      - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
+    rationale: Executed two-rank negative test; the refusal message is asserted on both ranks and no run directory is created.
+    status: unsupported
   - id: CR-01
     group: checkpoint-resume
     features: [warm resume, list loader]
@@ -152,17 +172,6 @@ scenarios:
       - tests/test_ddp_resume.py::test_a_changed_world_or_partition_fails_before_anything_is_restored
     rationale: Executed negative test; weights asserted unchanged.
     status: unsupported
-  - id: CR-07
-    group: checkpoint-resume
-    features: [torch.compile, bounded benchmarks]
-    entry_point: nnx.benchmarking.compare_compile
-    profile: {device: cpu, dtype: fp32, dependencies: []}
-    expected: The eager and compiled sides start from identical weights and leave the caller's module unchanged; the compiled first call carries the compile cost, apart from warmed latency.
-    tests:
-      - tests/test_benchmarking.py::test_compare_compile_starts_both_sides_from_identical_weights
-      - tests/test_benchmarking.py::test_compiled_first_call_carries_the_compile_cost
-    rationale: Weight digests, outputs and the caller's state and mode are asserted; the first call is recorded apart from the warmed calls.
-    status: verified
   - id: MT-01
     group: model-transformations
     features: [torch.compile, QAT (topology-changing callback)]
@@ -202,6 +211,16 @@ scenarios:
     tests:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
     rationale: Executed negative test (among the preflight refusals).
+    status: unsupported
+  - id: MT-05
+    group: model-transformations
+    features: [torch.compile, custom train step or non-FP32 precision]
+    entry_point: NNModel.train(compile=CompileSpec(), train_step_fn=... | precision=bf16)
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Refused up front; compile covers the built-in train step in FP32 on built-in non-graph nets.
+    tests:
+      - tests/test_compile_execution.py::test_out_of_scope_requests_are_refused_up_front
+    rationale: Executed negative test; each refusal's type and message are asserted.
     status: unsupported
   - id: IE-01
     group: inference-export
@@ -254,6 +273,17 @@ scenarios:
       - tests/test_export_conformance.py::test_both_exporters_match_native_logits_in_onnx_runtime
     rationale: Owned by the dedicated export-conformance job (FEAT-038); this matrix does not certify ONNX Runtime parity on the CPU lane.
     status: unverified
+  - id: IE-06
+    group: inference-export
+    features: [torch.compile, bounded benchmarks]
+    entry_point: nnx.benchmarking.compare_compile
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The eager and compiled sides start from identical weights and leave the caller's module unchanged; the compiled first call carries the compile cost, apart from warmed latency.
+    tests:
+      - tests/test_benchmarking.py::test_compare_compile_starts_both_sides_from_identical_weights
+      - tests/test_benchmarking.py::test_compiled_first_call_carries_the_compile_cost
+    rationale: Weight digests, outputs and the caller's state and mode are asserted; the first call is recorded apart from the warmed calls.
+    status: verified
   - id: DR-01
     group: decisions-results
     features: [Jev provider, decision jobs]
@@ -351,7 +381,7 @@ scenarios:
       - tests/test_core_install.py::test_a_domain_request_names_its_extra
       - tests/test_core_install.py::test_plot_features_refuse_before_running_the_model
       - tests/test_core_install.py::test_lr_finder_refuses_before_touching_data_model_or_rng
-    rationale: Executed negative tests of the refusal and its timing.
+    rationale: Executed negative tests of the refusal and its timing; one case asserts that plain attribute access (no use) imports nothing.
     status: unsupported
   - id: EX-01
     group: training-controls

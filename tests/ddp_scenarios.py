@@ -22,6 +22,7 @@ import torch
 from nnx import (
     Activations,
     Checkpoints,
+    CompileSpec,
     Devices,
     Losses,
     Nets,
@@ -32,6 +33,7 @@ from nnx import (
     NNTrainParams,
 )
 from nnx import distributed as nnx_dist
+from nnx.history import HistoryJournal
 from nnx.monitors import MonitorSpec
 from nnx.nn.callbacks import Callback, EarlyStopping, ModelCheckpoint, TensorBoardCallback
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
@@ -191,6 +193,8 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             "writer_component": dict(callbacks=[WriterComponent()]),
             "writer_only_component": dict(callbacks=[nnx_dist.writer_only(WriterComponent)]),
             "batchnorm": dict(batchnorm=True),
+            "compile": dict(train_kwargs=dict(compile=CompileSpec(backend="aot_eager"))),
+            "history_journal": dict(train_kwargs=dict(history=HistoryJournal(retention=3, chunk_size=2))),
         }
         for label, options in attempts.items():
             if options.get("tensorboard"):
@@ -207,7 +211,12 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
             try:
                 built = batchnorm_model() if options.get("batchnorm") else model()
-                built.train(params=params(loader), callbacks=options.get("callbacks"), distributed=nnx_dist.DDP())
+                built.train(
+                    params=params(loader),
+                    callbacks=options.get("callbacks"),
+                    distributed=nnx_dist.DDP(),
+                    **options.get("train_kwargs", {}),
+                )
                 out["errors"][label] = None
             except BaseException as error:  # noqa: BLE001
                 out["errors"][label] = f"{type(error).__name__}: {error}"
