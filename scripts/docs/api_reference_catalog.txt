@@ -314,6 +314,24 @@ Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture
 
 @api nnx.distributed.DistributedFailure
 
+Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Concepts §29):
+
+@api nnx.search.search
+
+@api nnx.search.SearchSpace
+
+@api nnx.search.FloatParam
+
+@api nnx.search.IntParam
+
+@api nnx.search.CategoricalParam
+
+@api nnx.search.SearchBudget
+
+@api nnx.search.TrialOutcome
+
+@api nnx.search.SearchResult
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest

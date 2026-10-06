@@ -4293,6 +4293,144 @@ class nnx.distributed.DistributedFailure
 Raised on every rank when another rank failed (preflight, a non-finite loss, a step-count mismatch, a writer-side commit): the failing rank raises its own error, the others this one naming it.
 
 
+Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Concepts §29):
+
+#### `nnx.search.search`
+
+```python
+nnx.search.search(plan: 'Any', space: 'SearchSpace', *, apply: 'Callable[[Any, Mapping[str, Any]], Any]', monitor: 'Any', budget: 'SearchBudget', study_name: 'str', storage: 'Optional[str]' = None, sampler: 'Any' = None, pruner: 'Any' = None, clock: 'Callable[[], float]' = <built-in function monotonic>) -> 'SearchResult'
+```
+
+Run the budgeted search; see the module documentation.
+
+
+#### `nnx.search.SearchSpace`
+
+```python
+class nnx.search.SearchSpace(*params: 'SearchParam') -> 'None'
+```
+
+The parameters a trial draws, by unique name.
+
+##### `nnx.search.SearchSpace.state`
+
+```python
+nnx.search.SearchSpace.state(self) -> 'list[dict[str, Any]]'
+```
+
+No public description is currently available.
+
+##### `nnx.search.SearchSpace.digest`
+
+```python
+nnx.search.SearchSpace.digest(self) -> 'str'
+```
+
+No public description is currently available.
+
+
+#### `nnx.search.FloatParam`
+
+```python
+class nnx.search.FloatParam(*, name: 'str', low: 'float', high: 'float', log: 'bool' = False, step: 'Optional[float]' = None) -> 'None'
+```
+
+A float in ``[low, high]``: ``log`` samples on a log scale (``low > 0``), ``step`` discretizes (not with ``log``).
+
+##### `nnx.search.FloatParam.state`
+
+```python
+nnx.search.FloatParam.state(self) -> 'dict[str, Any]'
+```
+
+Fields that differ from their defaults; bounds as floats (so ``low=0`` and ``low=0.0`` are one space).
+
+##### `nnx.search.FloatParam.suggest`
+
+```python
+nnx.search.FloatParam.suggest(self, trial: 'Any') -> 'float'
+```
+
+No public description is currently available.
+
+
+#### `nnx.search.IntParam`
+
+```python
+class nnx.search.IntParam(*, name: 'str', low: 'int', high: 'int', log: 'bool' = False, step: 'int' = 1) -> 'None'
+```
+
+An int in ``[low, high]`` (inclusive): ``log`` (``low >= 1``) or a ``step``.
+
+##### `nnx.search.IntParam.state`
+
+```python
+nnx.search.IntParam.state(self) -> 'dict[str, Any]'
+```
+
+Fields that differ from their defaults.
+
+##### `nnx.search.IntParam.suggest`
+
+```python
+nnx.search.IntParam.suggest(self, trial: 'Any') -> 'int'
+```
+
+No public description is currently available.
+
+
+#### `nnx.search.CategoricalParam`
+
+```python
+class nnx.search.CategoricalParam(*, name: 'str', choices: 'tuple[Any, ...]') -> 'None'
+```
+
+One of ``choices`` (distinct ``None`` / bool / int / float / str).
+
+##### `nnx.search.CategoricalParam.state`
+
+```python
+nnx.search.CategoricalParam.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.search.CategoricalParam.suggest`
+
+```python
+nnx.search.CategoricalParam.suggest(self, trial: 'Any') -> 'Any'
+```
+
+No public description is currently available.
+
+
+#### `nnx.search.SearchBudget`
+
+```python
+class nnx.search.SearchBudget(*, trials: 'int', updates_per_trial: 'Optional[int]' = None, deadline_seconds: 'Optional[float]' = None) -> 'None'
+```
+
+``trials`` — the study's total (every state counts); ``updates_per_trial`` — committed optimizer updates per trial; ``deadline_seconds`` — wall time from the search's start.
+
+
+#### `nnx.search.TrialOutcome`
+
+```python
+class nnx.search.TrialOutcome(*, number: 'int', params: 'Mapping[str, Any]', state: 'str', reason: 'str', monitor_value: 'Optional[float]' = None, epochs: 'int' = 0, updates: 'int' = 0, seconds: 'float' = 0.0, overrun_seconds: 'Optional[float]' = None, observations: 'tuple[tuple[int, float], ...]' = (), attempt_id: 'Optional[str]' = None, run_id: 'Optional[str]' = None, checkpoint: 'Optional[str]' = None, error: 'Optional[str]' = None) -> 'None'
+```
+
+One trial: its Optuna ``number``, ``params``, ``state`` (``"completed"``, ``"pruned"``, ``"failed"`` or ``"running"`` for an orphan) and terminal ``reason``; the resources it used (``epochs``, committed ``updates``, ``seconds``, ``overrun_seconds`` past the deadline); its best finite ``monitor_value``, the validation ``observations`` ``(epoch, value)`` pruning saw; and its ``attempt_id``, ``run_id`` and BEST ``checkpoint`` path.
+
+
+#### `nnx.search.SearchResult`
+
+```python
+class nnx.search.SearchResult(*, study_name: 'str', outcomes: 'tuple[TrialOutcome, ...]', best: 'Optional[TrialOutcome]', asked: 'int', stop_reason: 'str', direction: 'str', monitor: 'str', deadline_overrun_seconds: 'Optional[float]' = None, trial_runs: 'Mapping[int, Any]' = <factory>) -> 'None'
+```
+
+Every trial of the study (priors included), the ``best`` completed one, how many this call asked, and why it stopped (``"budget"``, ``"deadline"`` or ``"exhausted"`` — a sampler ran out of points).
+
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 #### `nnx.provenance.ExperimentManifest`

@@ -57,6 +57,7 @@ from . import (
     provenance,
     prune,
     ranking,
+    search,
     streaming,
     tasks,
     transforms,
@@ -339,6 +340,8 @@ __all__ = [
     "benchmarking",
     # Single-node DDP under torchrun (train(distributed=...); FEAT-030)
     "distributed",
+    # Budgeted experiment search through Optuna (the `optuna` extra; FEAT-033)
+    "search",
     # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
     "tasks",
     "TaskSpec",

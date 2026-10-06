@@ -39,6 +39,7 @@ UNNUMBERED_EXAMPLES = [
     "regression_task.py",
     "run_bundle.py",
     "scheduler_clocks.py",
+    "search_offline.py",
     "split_replay.py",
     "tabular_validation.py",
 ]
@@ -139,6 +140,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("decision_jobs.py", "decision_jobs_workflow"),
     ("decision_jev.py", "decision_jev_workflow"),
     ("decision_nli.py", "decision_nli_workflow"),
+    ("search_offline.py", "search_workflow"),
     ("experiment_plan.py", "experiment_plan_workflow"),
     ("graph_classification_offline.py", "graph_classification_workflow"),
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),

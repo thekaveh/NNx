@@ -77,7 +77,9 @@ NO_UPDATE_REPORTER = _NoUpdateListener(refuse_names=True)
 def listens(report_update: Any) -> bool:
     """Whether a context's ``report_update`` reaches a clock (a step can
     then skip work, such as host syncs, only a listener needs)."""
-    return not isinstance(report_update, _NoUpdateListener)
+    if isinstance(report_update, _NoUpdateListener):
+        return False
+    return bool(getattr(report_update, "listening", True))
 
 
 def uses_update_clock(scheduler_params: Any) -> bool:
