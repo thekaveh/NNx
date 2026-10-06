@@ -41,6 +41,7 @@ UNNUMBERED_EXAMPLES = [
     "result_boundaries.py",
     "run_bundle.py",
     "scheduler_clocks.py",
+    "search_offline.py",
     "split_replay.py",
     "tabular_validation.py",
 ]
@@ -142,6 +143,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("decision_jobs.py", "decision_jobs_workflow"),
     ("decision_jev.py", "decision_jev_workflow"),
     ("decision_nli.py", "decision_nli_workflow"),
+    ("search_offline.py", "search_workflow"),
     ("result_boundaries.py", "result_boundaries_workflow"),
     ("ordered_logits_pipeline.py", "ordered_logits_pipeline_workflow"),
     ("experiment_plan.py", "experiment_plan_workflow"),

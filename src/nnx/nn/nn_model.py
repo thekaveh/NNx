@@ -3555,13 +3555,36 @@ class NNModel(_HubMixinBase):
         step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
         # FEAT-014: a step's committed updates drive an optimizer_update
         # clock (an objective's engine reports to the clock directly).
-        report_update: Callable[[], None] = (
+        clock_report: Callable[[], None] = (
             clock.report_update if clock is not None and engine is None else NO_UPDATE_REPORTER
         )
+
+        def _announce_update() -> None:
+            # FEAT-033: count the committed update and tell the listeners.
+            ctx.committed_updates += 1
+            for listener in list(ctx.update_listeners):
+                listener(ctx)
+
+        class _ReportUpdate:
+            """The step's ``report_update``: the clock's (refusing an
+            optimizer name, as ever), then the update listeners. ``listening``
+            says whether anything needs a judged step (``listens``)."""
+
+            def __call__(self, *names: Any) -> None:
+                clock_report(*names)
+                _announce_update()
+
+            @property
+            def listening(self) -> bool:
+                return listens(clock_report) or bool(ctx.update_listeners)
+
+        report_update: Callable[..., None] = _ReportUpdate()
+
         if engine is not None:
             assert objective is not None
             # Committed updates are announced to every callback.
             engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+            engine.listeners.append(lambda event: _announce_update())
             if clock is not None:
                 # After the callbacks: they see the learning rate the update
                 # was taken with; the clock then steps the schedule.
@@ -3570,6 +3593,7 @@ class NNModel(_HubMixinBase):
             ctx.update_count = engine.commits
 
         idx_iter = 0
+        stopped_mid_epoch = False
         pre_transform_net_state: Optional[dict[str, Any]] = None
         pre_transform_rng_state: Optional[dict[str, Any]] = None
         # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
@@ -3582,6 +3606,9 @@ class NNModel(_HubMixinBase):
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
             callback_lifecycle.start()
+            # FEAT-033: under DDP, whether any rank listens for updates (and
+            # may request a stop at one) is agreed once, not per batch.
+            ddp_listening = ddp is not None and any(ddp.gather(bool(ctx.update_listeners)))
             # FEAT-005: reset hooks (on_train_begin) have run once; now the
             # validated component states are restored, all-or-nothing, before
             # the first resumed epoch.
@@ -3662,6 +3689,25 @@ class NNModel(_HubMixinBase):
 
                     idx_iter += 1
                     tqdm_bar.update(1)
+
+                    if ddp is not None and ddp_listening:
+                        # FEAT-030: a stop request is decided on every rank alike
+                        # (gathered only when some rank listens for updates).
+                        ctx.stop_at_update = any(ddp.gather(bool(ctx.stop_at_update)))
+                    # Under DDP a mid-epoch stop needs the agreed request (no
+                    # rank listened: the epoch-end gather decides it instead).
+                    if ctx.stop_at_update and (ddp is None or ddp_listening):
+                        if is_last_batch:
+                            ctx.should_stop = True  # the epoch is complete: commit it, then stop
+                        else:
+                            # FEAT-033: stop at this update boundary; the epoch in
+                            # progress is discarded, never committed.
+                            stopped_mid_epoch = True
+                            records.discard_epoch()
+                            break
+
+                if stopped_mid_epoch:
+                    break
 
                 if records.epoch_is_empty():
                     # Zero batches this epoch: first epoch would crash on
@@ -3746,7 +3792,7 @@ class NNModel(_HubMixinBase):
                     # say) stops every rank; and every rank stops together.
                     with _collectively(f"epoch {idx_epoch}'s callbacks"):
                         _dispatch_epoch_end(normalized_callbacks, ctx, records)
-                    ctx.should_stop = any(ddp.gather(bool(ctx.should_stop)))
+                    ctx.should_stop = any(ddp.gather(bool(ctx.should_stop or ctx.stop_at_update)))
 
                 # Prepare run history first (idps.csv, or the journal's chunks
                 # and manifest); the checkpoint is the epoch's commit marker and
@@ -3817,7 +3863,9 @@ class NNModel(_HubMixinBase):
 
                 self._update_tqdm_postfix(tqdm_bar, optimizer, val_edp, train_edp, record)
 
-                if ctx.should_stop:
+                if ctx.should_stop or ctx.stop_at_update:
+                    # A stop requested at the epoch boundary (on_epoch_end)
+                    # stops here: the epoch is committed already.
                     break
 
             pre_transform_net_state = _snapshot_state_dict(self.net.state_dict())
@@ -3837,9 +3885,12 @@ class NNModel(_HubMixinBase):
         # FEAT-030: every rank's RNG for the final LAST, gathered outside the
         # agreed block so a rank failing inside it can never skip the gather
         # (distributed runs have no topology transforms: the live streams).
-        final_rng = ddp.gather(_capture_rng_state(train_loader)) if ddp is not None and records else None
+        # FEAT-033: after a mid-epoch stop the live tensors belong to no
+        # committed epoch: LAST is left as the last commit wrote it.
+        refresh_last = bool(records) and not stopped_mid_epoch
+        final_rng = ddp.gather(_capture_rng_state(train_loader)) if ddp is not None and refresh_last else None
         try:
-            if records:
+            if refresh_last:
                 self._save_final_last(
                     records=records,
                     run=run,
@@ -4717,3 +4768,12 @@ class _CallbackContext:
         # FEAT-014: the epoch's ``(update index, LR after its scheduler step)``
         # for the primary optimizer's optimizer_update clock (empty otherwise).
         self.update_lrs: list[tuple[int, float]] = []
+        # FEAT-033: called with this context after every committed optimizer
+        # update (default step and objective runs alike); a listener — or any
+        # hook — may set ``stop_at_update`` to stop at that update boundary.
+        # Mid-epoch, the epoch in progress is then discarded, never
+        # committed: LAST, its tensors and the history keep the previous
+        # epoch (no LAST at all before a first completed epoch).
+        self.update_listeners: list[Callable[[Any], None]] = []
+        self.stop_at_update: bool = False
+        self.committed_updates: int = 0

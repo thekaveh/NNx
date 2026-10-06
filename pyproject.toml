@@ -57,6 +57,8 @@ keywords = [
     "torch-compile", "profiling",
     # FEAT-030: nnx.distributed.
     "ddp", "distributed-training",
+    # FEAT-033: nnx.search.
+    "hyperparameter-search", "optuna",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -185,6 +187,9 @@ gguf-write = [
 # Jev models through the TypeSafe Python SDK. The pin is the range the
 # adapter is tested against; the SDK owns transport and retries.
 jev = ["typesafe-sdk>=0.7,<0.8"]
+# Budgeted experiment search (FEAT-033): nnx.search drives an Optuna study;
+# `import nnx` never imports it.
+optuna = ["optuna>=4.0,<6"]
 docs = [
     "cairosvg==2.9.0",
     "mkdocs>=1.5,<2",

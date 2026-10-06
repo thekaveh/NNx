@@ -509,3 +509,14 @@ assert not any(isinstance(obj, (nnx.NNModel, FixedHeadProvider)) for obj in gc.g
 assert threading.active_count() == before, threading.enumerate()
 """
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_importing_nnx_never_imports_optuna_or_creates_a_study():
+    """FEAT-033: nnx.search is bound at import, but Optuna loads only when a
+    search runs — importing nnx (with or without the extra) creates no study."""
+    import subprocess
+    import sys
+
+    code = "import sys, nnx; import nnx.search; print('optuna' in sys.modules)"
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert completed.stdout.strip() == "False"

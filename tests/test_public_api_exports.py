@@ -82,6 +82,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "ranking",
         "quantize",
         "result",
+        "search",
         "streaming",
         "surgery",
         "trainer",

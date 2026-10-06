@@ -373,6 +373,10 @@ def main() -> None:
     finally:
         pass
     torch.save(result, os.path.join(out_dir, f"rank{rank}.pt"))
+    # Tear down together: a rank destroying its group while a peer still
+    # holds open Gloo pairs can abort that peer ("terminate called without an
+    # active exception").
+    torch.distributed.barrier()
     torch.distributed.destroy_process_group()
 
 
