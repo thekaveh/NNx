@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import functools
 import inspect
@@ -31,6 +32,7 @@ from .._scheduler_clock import (
     uses_update_clock,
 )
 from .._update_engine import gradients_finite, scaler_step
+from ..compilation import CompileSpec, _CompileHolder, _CompileSession
 from ..components import ComponentRegistry, ComponentRestoreError, ResumeStatus
 from ..history import (
     HistoryJournal,
@@ -1062,18 +1064,91 @@ def _single_input_batch(model: Any, batch: Any, *, who: str) -> tuple[torch.Tens
     return args[0].to(model.device), target.to(model.device)
 
 
+_GRAPH_NETS = frozenset({Nets.GRAPH_ATT, Nets.GRAPH_CONV, Nets.GRAPH_SAGE})
+
+
+def _compile_session(
+    model: Any,
+    spec: Optional[CompileSpec],
+    train_step_fn: Any,
+    objective: Any,
+    callbacks: Optional[list[Any]],
+    precision: ResolvedPrecision,
+) -> Optional[_CompileSession]:
+    """A fit's compile session (FEAT-029), or ``None`` — the scope is
+    checked here, before any run is reserved: built-in non-graph nets, the
+    default step, full precision and no topology-changing callback."""
+    if spec is None:
+        return None
+    if not isinstance(spec, CompileSpec):
+        raise TypeError(f"compile must be an nnx.compilation.CompileSpec or None, got {type(spec).__name__}")
+    if objective is not None or train_step_fn not in (None, default_train_step):
+        raise ValueError(
+            "compile= covers the built-in train step only; drop train_step_fn / objective, or compile inside your own step"
+        )
+    net = model.params.net
+    if not isinstance(net, Nets) or net in _GRAPH_NETS:
+        raise ValueError(f"compile= covers the built-in non-graph nets only, got {net!r}")
+    if precision.effective != "fp32":
+        raise ValueError(
+            f"compile= covers full-precision (fp32) forwards only; this run trains in {precision.effective}"
+        )
+    from .callbacks import Callback
+
+    changing = [
+        type(cb).__name__
+        for cb in callbacks or ()
+        if isinstance(cb, Callback) and type(cb).checkpoint_transforms is not Callback.checkpoint_transforms
+    ]
+    if changing:
+        raise ValueError(
+            f"callbacks {changing} change model.net's topology mid-run (e.g. QAT), which a compiled forward would "
+            "not see; train without compile=, or without them"
+        )
+    return _CompileSession(model.net, spec)
+
+
+def _record_of(session: Optional[_CompileSession]) -> Any:
+    return None if session is None else session.record
+
+
+def _state_of(session: Optional[_CompileSession]) -> Optional[dict[str, Any]]:
+    return None if session is None else session.record.record()
+
+
+@contextlib.contextmanager
+def _compiling(model: Any, session: Optional[_CompileSession]) -> Iterator[None]:
+    """Route the model's forward through ``session`` for one fit; the
+    wrapper is dropped whatever the outcome (later calls are eager)."""
+    previous = model._compile_session
+    model._compile_session = session
+    try:
+        yield
+    finally:
+        # A nested train() (say, from a callback) restores the outer fit's session.
+        model._compile_session = previous
+
+
 def _check_provenance(provenance: Any) -> None:
     """Reject anything but an ExperimentManifest before a run is reserved."""
     if provenance is not None and not isinstance(provenance, ExperimentManifest):
         raise TypeError(f"provenance must be an nnx.provenance.ExperimentManifest, got {type(provenance).__name__}")
 
 
-def _with_attempt(run: Any, provenance: Optional[ExperimentManifest], params: Any, fit: Callable[[], Any]) -> Any:
+def _with_attempt(
+    run: Any,
+    provenance: Optional[ExperimentManifest],
+    params: Any,
+    fit: Callable[[], Any],
+    execution: Optional[Callable[[], Optional[dict[str, Any]]]] = None,
+) -> Any:
     """Run ``fit`` as one recorded attempt (FEAT-019) when a manifest is
     given — shared by ``NNModel.train`` and ``Trainer.train``. The attempt's
     final status (``completed``, ``failed``, or ``cancelled`` on
     ``KeyboardInterrupt``) and last committed checkpoint are recorded; a
-    failure to record a failed attempt never masks the training error."""
+    failure to record a failed attempt never masks the training error.
+    ``execution`` returns the fit's compile record (FEAT-029) when it ends,
+    whatever its outcome."""
     if provenance is None:
         return fit()
     from ..provenance import _AttemptRecorder
@@ -1083,6 +1158,7 @@ def _with_attempt(run: Any, provenance: Optional[ExperimentManifest], params: An
         provenance,
         parent_run_id=getattr(params, "resume_from_run_id", None),
         parent_checkpoint=getattr(params, "resume_from_checkpoint", None),
+        execution=execution,
     )
     recorder.start()
     try:
@@ -1489,10 +1565,14 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     with autocast:  # the forward and loss only; the backward runs outside autocast
         terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches, precision)
     loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
-    if scaler is not None:
-        scaler.scale(terms.backward_loss).backward()
-    else:
-        terms.backward_loss.backward()
+    # FEAT-029: a compiled fit's backward may compile on first use; its
+    # failure is recorded honestly (never retried).
+    session = getattr(model, "_compile_session", None)
+    with contextlib.nullcontext() if session is None else session.backward():
+        if scaler is not None:
+            scaler.scale(terms.backward_loss).backward()
+        else:
+            terms.backward_loss.backward()
 
     if ctx.epoch_summary is not None:
         _observe_epoch_summary(ctx.epoch_summary, model, terms, adapter)
@@ -1840,6 +1920,9 @@ class NNModel(_HubMixinBase):
     """
 
     net: torch.nn.Module
+    # FEAT-029: the current fit's compiled forward, beside (never replacing)
+    # ``net``; set only while ``train(compile=...)`` runs.
+    _compile_session: Optional[_CompileSession] = None
 
     def __init__(
         self,
@@ -2533,6 +2616,7 @@ class NNModel(_HubMixinBase):
         objective: Optional[Callable[[Any], Any]] = None,
         provenance: Optional[ExperimentManifest] = None,
         history: Optional[HistoryJournal] = None,
+        compile: Optional[CompileSpec] = None,
     ) -> NNRun:
         """Train the model and return its persisted run history.
 
@@ -2575,6 +2659,17 @@ class NNModel(_HubMixinBase):
                 of rewriting ``idps.csv`` each epoch. ``None`` (the default)
                 keeps the eager in-memory list and CSV. Never part of the
                 run id.
+            compile: Optional :class:`~nnx.compilation.CompileSpec`
+                (FEAT-029): run the built-in step's FP32 forward (and the
+                fit's validation) through ``torch.compile``. The wrapper is
+                built per call beside ``model.net``, never assigned to it, so
+                checkpoints, export and optimizers see the eager module.
+                Refused, before any run is reserved, with a custom
+                ``train_step_fn`` or ``objective``, a graph or custom net, a
+                reduced precision or a topology-changing callback (QAT).
+                ``NNRun.compile`` records the request and what took effect.
+                ``None`` (the default) trains eagerly. Never part of the run
+                id.
 
         Returns:
             The completed :class:`NNRun`, persisted with run metadata,
@@ -2658,6 +2753,9 @@ class NNModel(_HubMixinBase):
         # policy (FEAT-028) before any run is reserved.
         scaler = self._build_grad_scaler()
         _check_scaler_hook(precision, scaler, self.device.type)
+        # FEAT-029: a compile request is checked (scope, backend) before any
+        # run is reserved; the wrapper itself compiles lazily, on first use.
+        compile_holder = _CompileHolder(_compile_session(self, compile, train_step_fn, objective, callbacks, precision))
         run = NNRun(
             train=params,
             model=self.params,
@@ -2665,12 +2763,13 @@ class NNModel(_HubMixinBase):
             salt=salt,
             transforms=_recipe_transforms(self._topology_transforms),  # FEAT-016: part of the run id when present
         )
-        with run.writable_lease(overwrite=params.overwrite_existing):
+        with run.writable_lease(overwrite=params.overwrite_existing), _compiling(self, compile_holder.session):
             return _with_attempt(
                 run,
                 provenance,
                 params,
-                lambda: self._train_impl(
+                execution=compile_holder.record,
+                fit=lambda: self._train_impl(
                     params=params,
                     run=run,
                     optimizer=optimizer,
@@ -2763,6 +2862,7 @@ class NNModel(_HubMixinBase):
         assert params.train_loader is not None
         train_loader = params.train_loader
         validate: bool = params.val_loader is not None
+        compile_session = self._compile_session  # FEAT-029: None for an eager fit
         from ..optimizers import _canonical_factory_state, optimizer_factory_state
 
         # FEAT-005: checkpointable components — callbacks, the step functions
@@ -3003,7 +3103,11 @@ class NNModel(_HubMixinBase):
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
-            run = run.with_resume_status(resume_status).with_precision(precision)
+            run = (
+                run.with_resume_status(resume_status)
+                .with_precision(precision)
+                .with_compile(_record_of(compile_session))
+            )
             ctx.run = run
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
@@ -3042,6 +3146,8 @@ class NNModel(_HubMixinBase):
                     # The rate this batch trains with, for an update clock
                     # (its scheduler may step inside the step function).
                     lr_used = float(optimizer.param_groups[0]["lr"]) if clock is not None else None
+                    if compile_session is not None:
+                        compile_session.where = {"phase": "train", "epoch": idx_epoch, "batch": idx_batch}
                     train_edp = step_fn(step_ctx)
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
@@ -3070,6 +3176,8 @@ class NNModel(_HubMixinBase):
                         "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
                     )
 
+                if validate and compile_session is not None:
+                    compile_session.where = {"phase": "validation", "epoch": idx_epoch}
                 if validate and eval_step_fn is not None:
                     assert params.val_loader is not None
                     # #86: pluggable validation step (mirrors train_step_fn) —
@@ -3135,6 +3243,10 @@ class NNModel(_HubMixinBase):
                 # Prepare run history first (idps.csv, or the journal's chunks
                 # and manifest); the checkpoint is the epoch's commit marker and
                 # is never allowed to get ahead of the history.
+                # FEAT-029: the run and the checkpoint carry the compile
+                # record as it stands now (an eager restart included).
+                run = run.with_compile(_record_of(compile_session))
+                ctx.run = run
                 records.save_epoch(run)
                 try:
                     checkpoint = self._save_checkpoints(
@@ -3148,6 +3260,7 @@ class NNModel(_HubMixinBase):
                         scheduler=scheduler,
                         scaler=scaler,
                         precision=precision.record(),
+                        compile=_state_of(compile_session),
                         completed_epoch=idx_epoch,
                         train_loader=train_loader,
                         optimizer_factory=resume_optimizer_factory,
@@ -3213,6 +3326,7 @@ class NNModel(_HubMixinBase):
                 scheduler_state=scheduler.state_dict(),
                 scaler_state=scaler.state_dict() if scaler is not None else None,
                 precision=precision.record(),
+                compile=_state_of(compile_session),
                 rng_state=(pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)),
                 completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
@@ -3223,7 +3337,7 @@ class NNModel(_HubMixinBase):
                 components=registry.collect(),
             )
 
-        saved = records.finish(run)
+        saved = records.finish(run.with_compile(_record_of(compile_session)))
         _print_run_saved(run.id)
         return saved
 
@@ -3583,7 +3697,8 @@ class NNModel(_HubMixinBase):
     def _net_forward(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> torch.Tensor:
         """Call the net on device-placed inputs; an adapter turns the raw
         return value into the output tensor."""
-        raw = self.net(*args, **kwargs)
+        session = getattr(self, "_compile_session", None)
+        raw = self.net(*args, **kwargs) if session is None else session.forward(*args, **kwargs)
         adapter = getattr(self, "_batch_adapter", None)
         return raw if adapter is None else adapter.output(raw)
 
@@ -3743,6 +3858,7 @@ class NNModel(_HubMixinBase):
         optimizer_factory: Optional[dict[str, Any]] = None,
         components: Optional[dict[str, Any]] = None,
         precision: Optional[dict[str, Any]] = None,
+        compile: Optional[dict[str, Any]] = None,
         optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
@@ -3778,7 +3894,8 @@ class NNModel(_HubMixinBase):
         # component travel in the same generation sidecar.
         # FEAT-028: the run's resolved precision record rides along, so a
         # stateful resume can refuse a different one.
-        stateful_extras: dict[str, Any] = {"components": components, "precision": precision}
+        # FEAT-029: and so does the compile record (None for an eager run).
+        stateful_extras: dict[str, Any] = {"components": components, "precision": precision, "compile": compile}
         if optimizers is not None:
             stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
 

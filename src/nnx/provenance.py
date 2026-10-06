@@ -44,7 +44,7 @@ import numbers
 import os
 import uuid
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -406,7 +406,10 @@ class Attempt:
     (``running`` / ``completed`` / ``failed`` / ``cancelled``), the
     ``parent`` it resumed from (run, attempt, checkpoint tag and
     generation), the ``last_committed`` checkpoint (tag, epoch, generation)
-    and, when it did not complete, the ``error`` (type and message)."""
+    and, when it did not complete, the ``error`` (type and message).
+    ``compile`` is the fit's compile record (FEAT-029) — requested and
+    effective — when ``train(compile=...)`` was used; it is absent from
+    ``state()`` otherwise."""
 
     attempt_id: str
     fingerprint: str
@@ -417,13 +420,14 @@ class Attempt:
     parent: Optional[Mapping[str, Any]] = None
     last_committed: Optional[Mapping[str, Any]] = None
     error: Optional[Mapping[str, Any]] = None
+    compile: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.status not in ATTEMPT_STATUSES:
             raise ValueError(f"attempt status must be one of {ATTEMPT_STATUSES}, got {self.status!r}")
 
     def state(self) -> dict[str, Any]:
-        return {
+        state = {
             "format": FORMAT,
             "attempt_id": self.attempt_id,
             "fingerprint": self.fingerprint,
@@ -435,6 +439,9 @@ class Attempt:
             "last_committed": None if self.last_committed is None else dict(self.last_committed),
             "error": None if self.error is None else dict(self.error),
         }
+        if self.compile is not None:
+            state["compile"] = dict(self.compile)
+        return state
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> Attempt:
@@ -448,6 +455,7 @@ class Attempt:
             parent=state.get("parent"),
             last_committed=state.get("last_committed"),
             error=state.get("error"),
+            compile=state.get("compile"),
         )
 
 
@@ -537,6 +545,7 @@ class _AttemptRecorder:
         parent_run_id: Optional[str],
         parent_checkpoint: Any,
         root: Optional[str] = None,
+        execution: Optional[Callable[[], Optional[dict[str, Any]]]] = None,
     ) -> None:
         if not isinstance(manifest, ExperimentManifest):
             raise TypeError(f"provenance must be an nnx.provenance.ExperimentManifest, got {type(manifest).__name__}")
@@ -544,6 +553,7 @@ class _AttemptRecorder:
         self.manifest = manifest
         self.fingerprint = manifest.fingerprint()
         self.root = root
+        self.execution = execution
         parent = None
         if parent_run_id is not None:
             from .nn.nn_model import _IN_MEMORY_RESUME, _resume_checkpoint_type
@@ -582,6 +592,7 @@ class _AttemptRecorder:
             status="running",
             started_at=_now(),
             parent=parent,
+            compile=None if execution is None else execution(),
         )
 
     @property
@@ -604,6 +615,7 @@ class _AttemptRecorder:
             finished_at=_now(),
             last_committed=_checkpoint_summary(self.run_id, "last", self.root),
             error=None if error is None else {"type": type(error).__name__, "message": str(error)},
+            compile=None if self.execution is None else self.execution(),
         )
         _write_json(self._path(ATTEMPT_FILE), self.attempt.state())
 

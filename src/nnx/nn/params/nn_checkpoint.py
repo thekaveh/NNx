@@ -335,6 +335,7 @@ class NNCheckpoint:
         optimizer_topologies: Optional[dict[str, list[list[dict[str, Any]]]]] = None,
         optimizer_factories: Optional[dict[str, Optional[dict[str, Any]]]] = None,
         precision: Optional[dict[str, Any]] = None,
+        compile: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -398,6 +399,10 @@ class NNCheckpoint:
                 # FEAT-028: the run's resolved precision record (None when
                 # absent; older sidecars lack the key).
                 "precision": precision,
+                # FEAT-029: the fit's compile record (None for an eager run;
+                # older sidecars lack the key). Weights are always the eager
+                # module's: no wrapper prefix ever reaches net_state.
+                "compile": compile,
             }
             fd, checkpoint_tmp = tempfile.mkstemp(
                 prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)
