@@ -121,6 +121,7 @@ def main() -> None:
     with open(f"report-rank{rank}.json", "w", encoding="utf-8") as handle:
         json.dump(report, handle)
     print(json.dumps(report), flush=True)
+    torch.distributed.barrier()  # tear down together: no rank exits while a peer is mid-teardown
     torch.distributed.destroy_process_group()
 
 
