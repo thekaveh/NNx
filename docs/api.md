@@ -3984,37 +3984,6 @@ Unchanged: there is nothing to recover from.
 
 ```python
 nnx.result.Ok.unwrap(self) -> 'T'
-
-Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
-
-#### `nnx.compilation.CompileSpec`
-
-```python
-class nnx.compilation.CompileSpec(*, backend: 'str' = 'inductor', mode: 'Optional[str]' = None, fullgraph: 'bool' = False, dynamic: 'Optional[bool]' = None, on_failure: 'str' = 'error') -> 'None'
-```
-
-What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of :data:`COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``).
-
-##### `nnx.compilation.CompileSpec.options`
-
-```python
-nnx.compilation.CompileSpec.options(self) -> 'dict[str, Any]'
-```
-
-The keyword options passed to ``torch.compile``.
-
-##### `nnx.compilation.CompileSpec.state`
-
-```python
-nnx.compilation.CompileSpec.state(self) -> 'dict[str, Any]'
-```
-
-Fields that differ from their defaults (``{}`` for the defaults).
-
-##### `nnx.compilation.CompileSpec.from_state`
-
-```python
-nnx.compilation.CompileSpec.from_state(state: 'Mapping[str, Any]') -> 'CompileSpec'
 ```
 
 No public description is currently available.
@@ -4102,14 +4071,6 @@ class nnx.result.BoundaryError(code: 'str', where: 'str', context: 'Mapping[str,
 
 A typed failure at a boundary: a stable ``code``, ``where`` it happened (a field name or a path), a read-only ``context`` mapping and the original exception as ``cause``.
 
-#### `nnx.compilation.CompileRecord`
-
-```python
-class nnx.compilation.CompileRecord(*, backend: 'str', options: 'Mapping[str, Any]', on_failure: 'str', torch_version: 'str', effective: 'str' = 'pending', graph_breaks: 'Optional[int]' = None, restart: 'Optional[Mapping[str, Any]]' = None) -> 'None'
-```
-
-What a run asked to compile and what took effect.
-
 **Details**
 
 ```text
@@ -4181,6 +4142,53 @@ a ``PermissionError`` on the path itself, or a ``TypeError`` for a
 str).
 ```
 
+
+Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
+
+#### `nnx.compilation.CompileSpec`
+
+```python
+class nnx.compilation.CompileSpec(*, backend: 'str' = 'inductor', mode: 'Optional[str]' = None, fullgraph: 'bool' = False, dynamic: 'Optional[bool]' = None, on_failure: 'str' = 'error') -> 'None'
+```
+
+What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of :data:`COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``).
+
+##### `nnx.compilation.CompileSpec.options`
+
+```python
+nnx.compilation.CompileSpec.options(self) -> 'dict[str, Any]'
+```
+
+The keyword options passed to ``torch.compile``.
+
+##### `nnx.compilation.CompileSpec.state`
+
+```python
+nnx.compilation.CompileSpec.state(self) -> 'dict[str, Any]'
+```
+
+Fields that differ from their defaults (``{}`` for the defaults).
+
+##### `nnx.compilation.CompileSpec.from_state`
+
+```python
+nnx.compilation.CompileSpec.from_state(state: 'Mapping[str, Any]') -> 'CompileSpec'
+```
+
+No public description is currently available.
+
+
+#### `nnx.compilation.CompileRecord`
+
+```python
+class nnx.compilation.CompileRecord(*, backend: 'str', options: 'Mapping[str, Any]', on_failure: 'str', torch_version: 'str', effective: 'str' = 'pending', graph_breaks: 'Optional[int]' = None, restart: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+```
+
+What a run asked to compile and what took effect.
+
+**Details**
+
+```text
 ``backend`` / ``options`` / ``on_failure`` are the request and
 ``torch_version`` the framework that served it. ``effective`` is
 ``pending`` (no compiled forward has run yet), ``compiled``, ``eager``
