@@ -306,6 +306,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
                 {"21. Test import boundaries": "Test-Import-Boundaries.md"},
                 {"22. Changelog": "Changelog.md"},
                 {"23. License": "License.md"},
+                {"24. Decision-model pilot": "Decision-model-pilot.md"},
             ]
         },
     ]
