@@ -17,7 +17,8 @@ Six labelled rows with stable ids (0-5) train a small classifier:
   3. Only the writer rank (0) holds the run lease and writes
      ``<output>/runs/<id>/``; the other rank writes nothing.
 
-Each rank prints one JSON line: its rank, the run id, its validation ids
+Each rank prints one JSON report (and writes it to
+``<output>/report-rank<r>.json``): its rank, the run id, its validation ids
 (together they cover 0-5 exactly once), whether it owns the artifacts and
 its final validation accuracy.
 
@@ -115,6 +116,10 @@ def main() -> None:
         "artifacts": os.path.join(args.output, "runs", run.id) if owner else None,
         "val_accuracy": run.idps[-1].val_edp.accuracy if run.idps[-1].val_edp is not None else None,
     }
+    # Each rank writes its report to the shared output too: the ranks' stdout
+    # streams interleave under torchrun.
+    with open(f"report-rank{rank}.json", "w", encoding="utf-8") as handle:
+        json.dump(report, handle)
     print(json.dumps(report), flush=True)
     torch.distributed.destroy_process_group()
 

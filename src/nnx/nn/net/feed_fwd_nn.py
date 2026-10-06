@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +11,9 @@ from ..params.nn_params import NNParams
 
 
 class FeedFwdNN(nn.Module):
+    _params: NNParams
+    _hidden: tuple[tuple[Callable[[torch.Tensor], torch.Tensor], float], ...]
+
     def __init__(self, params: NNParams):
         super().__init__()
 
@@ -22,13 +26,30 @@ class FeedFwdNN(nn.Module):
             ]
         )
 
+    @property
+    def params(self) -> NNParams:
+        return self._params
+
+    @params.setter
+    def params(self, params: NNParams) -> None:
+        # Each hidden layer's activation function (stateless functionals) and
+        # dropout probability, resolved whenever the params are set (model
+        # surgery replaces them): the forward touches neither the params
+        # object nor the Activations enum, which torch.compile cannot trace
+        # on older torch (FEAT-029). Plain attributes: nothing is registered
+        # as a module or saved.
+        self.__dict__["_params"] = params
+        self.__dict__["_hidden"] = tuple(
+            (params.activation_for(i)(), params.dropout_for(i)) for i in range(len(params.dims) - 2)
+        )
+
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         X = X.view(X.size(0), -1)
 
-        for i, layer in enumerate(self.layers[:-1]):
+        for layer, (activation, dropout) in zip(self.layers[:-1], self._hidden, strict=True):
             X = layer(X)
-            X = self.params.activation_for(i)()(X)
-            X = F.dropout(X, p=self.params.dropout_for(i), training=self.training)
+            X = activation(X)
+            X = F.dropout(X, p=dropout, training=self.training)
 
         X = self.layers[-1](X)
 

@@ -354,13 +354,36 @@ class _CompileSession:
             self.record = replace(self.record, effective="eager", restart=restart)
             return eager_output
         compiled_now = _unique_graphs() > graphs_before
+        if first and not compiled_now and _cached_entries(self._net) == 0:
+            # Dynamo skipped the whole forward (it compiled nothing and holds
+            # no graph for it): never recorded as compiled.
+            skipped = RuntimeError(
+                "torch.compile compiled nothing: dynamo skipped the forward frame (see TORCH_LOGS=+dynamo)"
+            )
+            restart = self._fail(skipped, stage="forward")
+            if self.spec.on_failure == "error":
+                self.record = replace(self.record, effective="failed", restart=restart)
+                raise CompileFailed(
+                    f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}", self.record
+                )
+            self.record = replace(self.record, effective="eager", restart=restart)
+            return output
         if compiled_now and torch.is_grad_enabled():
             # A new training graph compiles its backward lazily, on its first backward.
             self._backward_proven = False
         if first:
             # Breaks are counted only when this call compiled: a frame served
             # from dynamo's cache compiles nothing, so its capture is unknown.
-            breaks = _counter("graph_break") - breaks_before if compiled_now else None
+            # A break shows as a counted break or as a further graph for the
+            # frame. Once the net class has compiled earlier in this process
+            # the counters are no longer reliable (torch may count a repeated
+            # break reason once), so the capture is then unknown.
+            graphs = _unique_graphs() - graphs_before
+            breaks = (
+                max(_counter("graph_break") - breaks_before, graphs - 1)
+                if compiled_now and self._allowance == 0
+                else None
+            )
             self.record = replace(self.record, effective="compiled", graph_breaks=breaks)
         return output
 

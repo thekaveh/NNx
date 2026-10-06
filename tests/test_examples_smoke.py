@@ -33,10 +33,12 @@ UNNUMBERED_EXAMPLES = [
     "history_journal.py",
     "offline_teacher_distillation.py",
     "optimizer_factories.py",
+    "ordered_logits_pipeline.py",
     "prediction_stream.py",
     "preprocessing_offline.py",
     "ranking_offline.py",
     "regression_task.py",
+    "result_boundaries.py",
     "run_bundle.py",
     "scheduler_clocks.py",
     "search_offline.py",
@@ -78,6 +80,7 @@ def test_example_imports_without_running_main(example):
         "preprocessing_offline.py",
         "ranking_offline.py",
         "regression_task.py",
+        "result_boundaries.py",
         "run_bundle.py",
         "scheduler_clocks.py",
         "split_replay.py",
@@ -141,6 +144,8 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("decision_jev.py", "decision_jev_workflow"),
     ("decision_nli.py", "decision_nli_workflow"),
     ("search_offline.py", "search_workflow"),
+    ("result_boundaries.py", "result_boundaries_workflow"),
+    ("ordered_logits_pipeline.py", "ordered_logits_pipeline_workflow"),
     ("experiment_plan.py", "experiment_plan_workflow"),
     ("graph_classification_offline.py", "graph_classification_workflow"),
     ("graph_optional_splits.py", "graph_optional_splits_workflow"),
@@ -232,7 +237,13 @@ def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subpro
     env["NNX_TQDM_DISABLE"] = "1"
     command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=2"]
     if sys.platform == "darwin":
-        command.append("--local-addr=127.0.0.1")
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        command = [sys.executable, "-m", "torch.distributed.run", "--nnodes=1", "--master_addr=127.0.0.1"]
+        command += [f"--master_port={port}", "--nproc_per_node=2"]
         env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
     return subprocess.run(
         [*command, str(ROOT / "examples" / script), *args],
@@ -252,7 +263,7 @@ def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
         "ddp_supervised.py", ["--device", "cpu", "--epochs", "2", "--output", str(out)], tmp_path, 240
     )
     assert completed.returncode == 0, completed.stderr[-4000:]
-    reports = [json.loads(line) for line in completed.stdout.splitlines() if line.startswith('{"rank"')]
+    reports = [json.loads((out / f"report-rank{rank}.json").read_text(encoding="utf-8")) for rank in (0, 1)]
     assert sorted(report["rank"] for report in reports) == [0, 1]
     ids = [row for report in reports for row in report["validation_ids"]]
     assert sorted(ids) == list(range(6)) and len(ids) == 6  # every id exactly once
