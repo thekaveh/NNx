@@ -5,7 +5,13 @@ training and specialization toolkits. (Comparing your own runs — repeated
 seeds, paired configurations — is `nnx.comparison`, described in
 [`docs/concepts.md` §23](concepts.md).) Competitor behavior was last checked
 against official documentation on **2026-08-08**; follow the linked sources
-before making a version-sensitive platform decision.
+before making a version-sensitive platform decision. NNx's own claims about
+**combinations** of its features — which are verified, refused or unverified on
+which profile — live in the
+[feature-composition matrix](feature-composition.md) (for example accumulation
+`TC-01`, DDP parity `TC-04`, compile and resume `CR-02`, compile with QAT refused
+`MT-01`, CUDA AMP unverified on CPU `TC-06`); the rows below describe single
+capabilities.
 
 ## 1. Quick decision matrix
 

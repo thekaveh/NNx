@@ -28,6 +28,18 @@ pip install "thekaveh-nnx[optuna]"           # search_offline.py
 
 Working from a git checkout instead of PyPI? See [CONTRIBUTING.md §1](../CONTRIBUTING.md#1-getting-set-up) for the editable + dev install.
 
+**Which examples are evidence.** Every example is imported by
+`tests/test_examples_smoke.py`, but an import-only smoke test is a reference,
+never proof that the example works. Examples 01, 05 and 26 run end to end and
+are registered scenarios of the
+[feature-composition matrix](../docs/feature-composition.md) (`EX-01`, `EX-05`,
+`EX-26`); the import-only samples are references, not evidence. To check one:
+
+```bash
+python scripts/check_feature_composition.py --check   # EX-01's node ids are collected
+python -m pytest "tests/test_examples_smoke.py::test_representative_examples_run_end_to_end[01_synthetic_classification.py]"
+```
+
 ## 2. Catalog
 
 Ordered from foundational to most specialized. Each numbered prefix on the filename matches the order below.
