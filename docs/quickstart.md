@@ -787,3 +787,29 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 ### 3.9. Link and edge prediction
 
 `nnx.link_tasks` (the `graph` extra) splits edges, not nodes: `split = split_links(edge_index, num_nodes, val=0.1, test=0.1, seed=0)` gives a replayable manifest (canonical edges, fixed held-out negatives from the complement), and `task = LinkTask(split)` builds candidate batches over the training topology only — `task.loader("train" | "val" | "test", x, batch_size)`. Train `NNModelParams(net=link_predictor_spec(input_dim=...))` with `objective=task.objective()` and `eval_step_fn=task.eval_step()`, select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("auroc")`, and score candidates with `prediction = task.predict(model, loader)` and `link_metrics(prediction.logits, prediction.targets, from_logits=True)` — computed from the float64 logits, as the evaluator's are, so a confident model's AUROC / AP / BCE stay exact. A held-out positive in a message graph fails before any update, and the default `train` / `predict` paths refuse link batches (use the task's objective, evaluator and `predict`). See [Concepts → Link and edge prediction](concepts.md#26-link-and-edge-prediction-nnxlink_tasks) and [`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).
+
+
+### 3.10. Data-parallel training on one machine
+
+Launch one process per device with `torchrun`; NNx partitions the data, keeps
+every update equal to the union batch's and lets one rank write the run:
+
+```python
+# train.py — torchrun --standalone --nproc_per_node=2 train.py
+from nnx import distributed
+
+distributed.init_process_group()  # env:// from torchrun; gloo on CPU, nccl with CUDA
+params = NNTrainParams(
+    n_epochs=3,
+    train_loader=distributed.train_loader(train_set, batch_size=32, policy="pad", seed=0),
+    val_loader=distributed.validation_loader(val_set, batch_size=64),
+    optim=NNOptimParams.builder().adamw(max_lr=1e-3).build(),
+)
+run = model.train(params=params, distributed=distributed.DDP())  # the same run on every rank
+```
+
+FP32, the default steps and one optimizer on one node; callbacks declare
+their rank behaviour (`Callback.distributed`) and `TensorBoardCallback` /
+`WandbCallback` go through `distributed.writer_only(...)`. See
+[Architecture §3](architecture.md#3-single-node-data-parallelism-nnxdistributed) and
+[`examples/ddp_supervised.py`](https://github.com/thekaveh/NNx/blob/main/examples/ddp_supervised.py).

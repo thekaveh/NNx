@@ -11,7 +11,8 @@ before making a version-sensitive platform decision.
 
 | If you need... | Reach for |
 |---|---|
-| Distributed multi-GPU training (DDP / FSDP / DeepSpeed) | **Lightning** or **Accelerate** |
+| Multi-node, elastic or sharded training (FSDP / DeepSpeed) | **Lightning** or **Accelerate** |
+| Single-node data parallelism (DDP under `torchrun`) | NNx `nnx.distributed` (FP32, default steps), or **Lightning** / **Accelerate** for more |
 | Production-grade LM fine-tuning + Hub model zoo | **HF Transformers + PEFT + TRL** |
 | Production-scale diffusion (SD, SDXL, ControlNet) | **HF diffusers** |
 | Algorithmic-methods benchmarking (SAM / BlurPool / SqueezeExcite) | **MosaicML Composer** |
@@ -48,12 +49,12 @@ Each row: what NNx ships today, the credible competitor on that axis, and the sc
 
 | Aspect | NNx | Lightning + Accelerate |
 |---|---|---|
-| DDP | Not shipped | Built-in |
+| DDP | Opt-in, single node: `train(distributed=DDP())` under `torchrun`; FP32, default steps, one optimizer | Built-in |
 | FSDP | Not shipped | Built-in |
 | DeepSpeed | Not shipped | Integrated |
 | `torch.compile` | Opt-in, scoped: `train(compile=CompileSpec())` for the built-in step's FP32 forward on built-in non-graph nets; not with DDP or quantization; no speedup guaranteed | Per-strategy opt-in |
 
-If you need distributed training, NNx is the wrong tool today.
+If you need multi-node, elastic or sharded training, NNx is the wrong tool today.
 
 ### 3.3. PEFT methods
 
@@ -180,7 +181,7 @@ no superiority claim.
 - You need graph neural networks alongside LM / diffusion / PEFT in the same project.
 - Reproducibility via `run.id` content-addressing has organizational value.
 - You want model-surgery primitives (Net2Net, low-rank).
-- You're running on a single GPU and don't need distributed.
+- You're on one machine — one GPU, or several through `torchrun` and `nnx.distributed`.
 - You prefer a tight, hold-in-your-head core over a deep ecosystem.
 
 **Use Lightning when** you need distributed training, accelerator strategy abstraction, or the deep callback-integrations ecosystem.
@@ -193,8 +194,14 @@ no superiority claim.
 
 ## 5. Scope explicit
 
-This page documents NNx's current coverage as of `main`. Distributed training,
-Lightning-style strategy abstraction, and a CLI equivalent are not shipped.
+This page documents NNx's current coverage as of `main`. Multi-node, elastic
+and sharded (FSDP / DeepSpeed) training, Lightning-style strategy abstraction,
+and a CLI equivalent are not shipped. Data parallelism is opt-in and single-node
+(FEAT-030, `nnx.distributed`): `torchrun` launches the processes, PyTorch's
+`DistributedDataParallel` averages gradients, and NNx makes every update equal
+the union batch's, keeps one writer rank for artifacts, and refuses — on every
+rank together — what it does not cover (custom steps or objectives, mixed
+precision, `compile=`, a history journal, graph nets, an undeclared callback).
 `torch.compile` is opt-in and deliberately narrow (FEAT-029, `nnx.compilation`):
 the built-in train step's full-precision (FP32) forward on built-in non-graph
 nets, refused with custom steps, reduced precision or topology-changing
