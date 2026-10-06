@@ -230,7 +230,13 @@ def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subpro
     env["NNX_TQDM_DISABLE"] = "1"
     command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=2"]
     if sys.platform == "darwin":
-        command.append("--local-addr=127.0.0.1")
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        command = [sys.executable, "-m", "torch.distributed.run", "--nnodes=1", "--master_addr=127.0.0.1"]
+        command += [f"--master_port={port}", "--nproc_per_node=2"]
         env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
     return subprocess.run(
         [*command, str(ROOT / "examples" / script), *args],

@@ -34,17 +34,27 @@ def launch(
     env = os.environ.copy()
     env["NNX_TQDM_DISABLE"] = "1"
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT / "src"), env.get("PYTHONPATH")]))
-    command = [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={nproc}"]
-    if sys.platform == "darwin":
-        # macOS hosts often resolve their own name to an unreachable address:
-        # keep the rendezvous and Gloo on loopback (a single node either way).
-        command.append("--local-addr=127.0.0.1")
-        env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
+    command = [sys.executable, "-m", "torch.distributed.run", *_single_node_flags(env), f"--nproc_per_node={nproc}"]
     command += [str(ROOT / "tests" / "ddp_scenarios.py"), scenario, str(out)]
     completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout)
     if check and completed.returncode != 0:
         raise AssertionError(f"torchrun {scenario} failed:\n{completed.stdout[-4000:]}\n{completed.stderr[-6000:]}")
     return completed
+
+
+def _single_node_flags(env: dict) -> list[str]:
+    """``--standalone``; on macOS, whose hosts often resolve their own name
+    to an unreachable address, a static single-node rendezvous on loopback
+    instead (with Gloo on loopback too) — the same single node either way."""
+    if sys.platform != "darwin":
+        return ["--standalone"]
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
+    return ["--nnodes=1", "--master_addr=127.0.0.1", f"--master_port={port}"]
 
 
 def results(out: Path, nproc: int = 2) -> list[dict]:
@@ -224,8 +234,10 @@ def test_preflight_refusals_fail_on_every_rank_before_any_run(tmp_path):
         "batchnorm",
     ):
         assert first["errors"][label] is not None and second["errors"][label] is not None, label
+        assert (first["errors"][label] == "unavailable") == (second["errors"][label] == "unavailable"), label
     assert "declare its rank behaviour" in first["errors"]["undeclared_callback"]
-    assert "writer_only" in first["errors"]["borrowed_tensorboard"]
+    if first["errors"]["borrowed_tensorboard"] != "unavailable":  # needs the tensorboard extra
+        assert "writer_only" in first["errors"]["borrowed_tensorboard"]
     assert "train_loader" in first["errors"]["plain_loader"]
     assert "component state" in first["errors"]["writer_component"]
     assert "component state" in first["errors"]["writer_only_component"]

@@ -47,11 +47,18 @@ def test_execution_owned_callbacks_are_built_on_the_writer_only(writer):
     assert (out / "runs" / first["run_id"] / "checkpoints").exists()
 
 
-def test_canonical_keys_in_checkpoint_hub_and_export(writer):
-    out, (first, second) = writer
+def test_canonical_keys_in_checkpoint(writer):
+    _, (first, second) = writer
     assert first["last_keys"] == second["last_keys"]
     assert not [key for key in first["last_keys"] if key.startswith("module.")]
     assert set(first["state"]) == set(first["last_keys"])
+
+
+def test_canonical_keys_in_hub_and_onnx_export(writer):
+    for extra in ("safetensors", "huggingface_hub", "onnx"):
+        pytest.importorskip(extra)
+    out, (first, _) = writer
+    assert first["exported"]
     config = json.loads((out / "hub" / "config.json").read_text(encoding="utf-8"))
     assert config
     from safetensors.torch import load_file

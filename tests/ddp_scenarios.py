@@ -121,6 +121,17 @@ class WriterComponent(Callback):
         pass
 
 
+class EventLog(Callback):
+    """Writes a file when constructed, like TensorBoardCallback / WandbCallback."""
+
+    distributed = "unsupported"
+
+    def __init__(self, directory: str) -> None:
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, f"events.{os.getpid()}"), "w", encoding="utf-8") as handle:
+            handle.write("constructed\n")
+
+
 class FailingWriterCallback(Callback):
     distributed = "writer"
 
@@ -174,7 +185,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out["errors"] = {}
         attempts = {
             "undeclared_callback": dict(callbacks=[Undeclared()]),
-            "borrowed_tensorboard": dict(callbacks=[TensorBoardCallback(log_dir=f"tb-borrowed-{rank}")]),
+            "borrowed_tensorboard": dict(tensorboard=True),
             "plain_loader": dict(plain=True),
             "partition_mismatch": dict(mismatch=True),
             "writer_component": dict(callbacks=[WriterComponent()]),
@@ -182,6 +193,12 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             "batchnorm": dict(batchnorm=True),
         }
         for label, options in attempts.items():
+            if options.get("tensorboard"):
+                try:
+                    options = dict(callbacks=[TensorBoardCallback(log_dir=f"tb-borrowed-{rank}")])
+                except ImportError:  # the tensorboard extra is not installed here
+                    out["errors"][label] = "unavailable"
+                    continue
             if options.get("plain"):
                 loader = [(torch.randn(2, FEATURES), torch.randint(0, CLASSES, (2,)))]
             elif options.get("mismatch"):
@@ -276,7 +293,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
 
         def tensorboard():
             calls["factory"] += 1
-            return TensorBoardCallback(log_dir="tb-writer")
+            return EventLog("tb-writer")
 
         from nnx.provenance import ExperimentManifest
 
@@ -304,9 +321,14 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
         out["last"] = NNCheckpoint.load_training_state(run.id, Checkpoints.LAST)["distributed"]
         out["last_keys"] = sorted(NNCheckpoint.load(run.id, Checkpoints.LAST).net_state)
+        out["exported"] = False
         if rank == 0:
-            m.save_pretrained("hub")
-            m.to_onnx("net.onnx", torch.randn(2, FEATURES))
+            try:  # Hub and ONNX export need the hub / onnx extras
+                m.save_pretrained("hub")
+                m.to_onnx("net.onnx", torch.randn(2, FEATURES))
+                out["exported"] = True
+            except ImportError:
+                pass
     elif name in ("resume_full", "resume_first", "resume_second", "resume_changed"):
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         m = model()
