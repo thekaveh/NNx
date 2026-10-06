@@ -81,6 +81,7 @@ def test_specialized_public_facades_are_available_from_top_level():
         "prune",
         "ranking",
         "quantize",
+        "result",
         "search",
         "streaming",
         "surgery",
@@ -273,3 +274,23 @@ def test_streaming_api_is_public_and_complete():
     for name in ("PredictionStream", "PredictionBatch", "StreamingMetrics", "MetricSnapshot", "streaming_eval_step"):
         assert getattr(nnx, name) is getattr(streaming, name) and name in nnx.__all__
     assert "streaming" in nnx.__all__ and callable(nnx.NNModel.iter_predict)
+
+
+def test_the_result_facade_exports_its_types_and_boundaries():
+    """FEAT-025: ``nnx.result`` is opt-in — reached as a module, its names
+    are not flattened into the top-level ``nnx`` namespace."""
+    import nnx
+
+    expected = {
+        "BoundaryError",
+        "Err",
+        "Ok",
+        "Result",
+        "UnwrapError",
+        "decide_result",
+        "inspect_bundle_result",
+        "validate_decision_request_result",
+    }
+    assert set(nnx.result.__all__) == expected
+    assert all(hasattr(nnx.result, name) for name in expected)
+    assert not {"Ok", "Err", "Result"} & set(nnx.__all__)
