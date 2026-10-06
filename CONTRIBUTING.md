@@ -86,6 +86,33 @@ uv run pytest -k "graph"               # name filter
 uv run pytest --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
+### 5.1. Feature combinations
+
+`docs/feature-composition.yaml` records which feature **combinations** are
+verified, unsupported or unverified, each with a stable scenario ID (`TC-01`,
+`CR-03`, `MT-01`, ...), its profile and the pytest node ids that prove it;
+[Feature composition](docs/feature-composition.md) renders it. When a change
+moves a boundary — what two features do together, what is refused, a test
+being renamed — review the scenario IDs it touches (`grep` the registry for the
+feature or the test file) and update their `status`, `expected` and `tests`:
+
+```bash
+uv run python scripts/check_feature_composition.py --check                 # schema, unique IDs, every node id collected
+uv run python scripts/check_feature_composition.py --check --run --report composition.json  # run and gate them
+uv run python scripts/check_feature_composition.py --render                # refresh the committed page (no evidence)
+```
+
+An import, a skip, an xfail or a setup / teardown failure is never proof of a
+combination: a verified scenario lists tests that assert its behaviour and pass
+in every phase; an unsupported one links an executed negative test (or the
+exact documented limitation). The CI `feature-composition` job fails when a
+verified row fails or loses coverage.
+
+The gate is strict only on the published profile's OS (Linux): there, `--run`
+also fails when an extra in `evidence_profile.dependencies` is not installed,
+so run it after `uv sync --all-extras`. Elsewhere, rows needing a missing extra
+are simply not judged.
+
 Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixtures (session-wide NNX_TQDM_DISABLE, a per-test env_snapshot cache reset, and a dynamo-dispatch skip guard); otherwise it's intentionally minimal. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
 
 ## 6. Submitting a PR

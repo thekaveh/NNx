@@ -307,6 +307,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
                 {"22. Changelog": "Changelog.md"},
                 {"23. License": "License.md"},
                 {"24. Decision-model pilot": "Decision-model-pilot.md"},
+                {"25. Feature composition": "Feature-composition.md"},
             ]
         },
     ]
@@ -1188,3 +1189,73 @@ def test_blockquoted_heading_anchors_are_validated(tmp_path: Path, surface: str,
     )
 
     validate_links(tmp_path, surface)
+
+
+# FEAT-039: the feature-composition page reaches both surfaces from one report.
+
+_REPOSITORY = Path(__file__).resolve().parents[1]
+
+
+def _composition_tracked_copy(tmp_path, dirname="repo"):
+    import shutil
+    import subprocess
+
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=_REPOSITORY, capture_output=True, text=True, check=True
+    ).stdout
+    tracked = [name for name in listing.split("\0") if name]
+    copy_root = tmp_path / dirname
+    for name in tracked:
+        source = _REPOSITORY / name
+        if source.is_file():
+            (copy_root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, copy_root / name)
+    subprocess.run(["git", "init", "-q"], cwd=copy_root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=copy_root, check=True)
+    return copy_root
+
+
+def _composition_build_both(copy_root):
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "PYTHONPATH": f"{copy_root / 'src'}{os.pathsep}{copy_root}"}
+    subprocess.run(
+        [sys.executable, "-m", "scripts.docs.build_docs"], cwd=copy_root, env=env, check=True, capture_output=True
+    )
+    site = (copy_root / "generated" / "site" / "Feature-composition.md").read_text(encoding="utf-8")
+    wiki = (copy_root / "generated" / "wiki" / "Feature-composition.md").read_text(encoding="utf-8")
+    return site, wiki
+
+
+def test_feature_composition_site_and_wiki_render_one_report_with_an_identical_evidence_digest(tmp_path):
+    """The published path: render the page from a report in a clean copy of
+    the tracked files, build both surfaces, and find the same evidence line
+    on each. A second fresh copy (the wiki job's checkout) judges the report
+    current. A stale or missing report renders every cell unverified; the
+    unit tests in tests/test_feature_composition.py cover that page."""
+    from scripts import check_feature_composition as fc
+
+    registry = fc.load_registry()
+    copy_root = _composition_tracked_copy(tmp_path)
+    nodes = {
+        t: {"setup": "passed", "call": "passed", "teardown": "passed", "xfail": False}
+        for s in registry["scenarios"]
+        for t in s["tests"]
+    }
+    expected = registry["evidence_profile"]
+    profile = {
+        **expected,
+        "devices": [expected["device"]],
+        "torch": "2.13.0",
+        "dependencies": list(fc.KNOWN_DEPENDENCIES),
+    }
+    report = fc.evidence(registry, nodes, profile=profile, root=copy_root)
+    page = copy_root / "docs" / "feature-composition.md"
+    page.write_text(fc.render(registry, report, root=copy_root), encoding="utf-8")
+    site, wiki = _composition_build_both(copy_root)
+    line = f"`{report['digest'][:16]}`"
+    assert line in site and line in wiki
+    assert site.count("**verified**") == wiki.count("**verified**") > 0
+    assert fc.staleness(registry, report, root=_composition_tracked_copy(tmp_path, "fresh")) is None

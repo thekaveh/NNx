@@ -232,6 +232,8 @@ def test_preflight_refusals_fail_on_every_rank_before_any_run(tmp_path):
         "writer_component",
         "writer_only_component",
         "batchnorm",
+        "compile",
+        "history_journal",
     ):
         assert first["errors"][label] is not None and second["errors"][label] is not None, label
         assert (first["errors"][label] == "unavailable") == (second["errors"][label] == "unavailable"), label
@@ -246,6 +248,9 @@ def test_preflight_refusals_fail_on_every_rank_before_any_run(tmp_path):
         or "rank 0" in second["errors"]["writer_only_component"]
     )
     assert "batch normalization" in first["errors"]["batchnorm"]
+    for errors in (first["errors"], second["errors"]):
+        assert errors["compile"] == "ValueError: distributed= and compile= cannot be combined"
+        assert "HistoryJournal is not supported" in errors["history_journal"]
     assert (
         "partitions differ" in first["errors"]["partition_mismatch"]
         or "partition" in first["errors"]["partition_mismatch"]
