@@ -34,6 +34,8 @@ class TransformerNN(nn.Module):
     def __init__(self, params: NNTransformerParams):
         super().__init__()
         self.params = params
+        # Read once: the forward never touches the params object (FEAT-029).
+        self._max_seq_len = params.max_seq_len
 
         self.tok_embed = nn.Embedding(num_embeddings=params.vocab_size, embedding_dim=params.d_model)
         # GPT-2/LLaMA-style small-std init. nn.Embedding's default is
@@ -79,8 +81,8 @@ class TransformerNN(nn.Module):
             (batch, seq, vocab_size) logits — pre-softmax.
         """
         b, t = tokens.shape
-        if t > self.params.max_seq_len:
-            raise ValueError(f"input sequence length ({t}) exceeds max_seq_len={self.params.max_seq_len}")
+        if t > self._max_seq_len:
+            raise ValueError(f"input sequence length ({t}) exceeds max_seq_len={self._max_seq_len}")
         x = self.tok_embed(tokens)  # (B, T, d_model)
         for block in self.blocks:
             x, _ = block(x, use_cache=False)

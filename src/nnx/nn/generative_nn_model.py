@@ -23,6 +23,7 @@ from ..generation.logits_processors import (
     TopPFilter,
     apply_chain,
 )
+from ..generation.pipeline import OrderedLogitsPipeline
 from ..generation.sampling import sample_next_token
 from ..utils import _capture_training_modes, _restore_training_modes
 from .nn_model import NNModel
@@ -86,6 +87,7 @@ class GenerativeNNModel(NNModel):
         use_cache: bool = True,
         logits_chain: Optional[LogitsChain] = None,
         on_token: Optional[Callable[[int], None]] = None,
+        logits_pipeline: Optional[OrderedLogitsPipeline] = None,
     ) -> str:
         """Autoregressive decode from ``prompt``.
 
@@ -124,6 +126,12 @@ class GenerativeNNModel(NNModel):
                 Power-user path for custom logit processors (e.g.,
                 logit-bias for forbidden tokens). When ``None`` (the
                 default), behavior is unchanged.
+            logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`
+                (FEAT-037): its stages run exactly in declared order,
+                compiled once per call into fresh processors; like
+                ``logits_chain`` it replaces the inline kwargs. Passing
+                both ``logits_chain`` and ``logits_pipeline`` raises
+                ``ValueError`` before the model is touched.
             on_token: optional callback invoked with each newly
                 generated token id immediately after it is appended.
                 Lets callers stream partial output or drive progress
@@ -146,6 +154,14 @@ class GenerativeNNModel(NNModel):
         ``nnx.diffusion.sample``, ``nnx.embeddings.embed_texts``,
         ``nnx.viz.activation_map``, and ``nnx.lr_finder``.
         """
+        if logits_chain is not None and logits_pipeline is not None:
+            raise ValueError(
+                "pass either logits_chain (a LogitsChain) or logits_pipeline (an OrderedLogitsPipeline), not both"
+            )
+        if isinstance(logits_chain, OrderedLogitsPipeline):
+            raise TypeError("logits_chain got an OrderedLogitsPipeline: pass it as logits_pipeline=")
+        if logits_pipeline is not None and not isinstance(logits_pipeline, OrderedLogitsPipeline):
+            raise TypeError(f"logits_pipeline must be an OrderedLogitsPipeline, got {type(logits_pipeline).__name__}")
         if self.tokenizer is None:
             raise ValueError(
                 "GenerativeNNModel.generate requires a tokenizer. "
@@ -177,7 +193,10 @@ class GenerativeNNModel(NNModel):
         #     through TemperatureScaling so the sampler path is
         #     uniform).
         processors: list[LogitsProcessor]
-        if logits_chain is not None:
+        if logits_pipeline is not None:
+            # Declared order, compiled once for this call (FEAT-037).
+            processors = logits_pipeline.processors()
+        elif logits_chain is not None:
             processors = list(logits_chain.processors)
         else:
             processors = []
