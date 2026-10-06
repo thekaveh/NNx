@@ -261,7 +261,7 @@ def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
         "ddp_supervised.py", ["--device", "cpu", "--epochs", "2", "--output", str(out)], tmp_path, 240
     )
     assert completed.returncode == 0, completed.stderr[-4000:]
-    reports = [json.loads(line) for line in completed.stdout.splitlines() if line.startswith('{"rank"')]
+    reports = [json.loads((out / f"report-rank{rank}.json").read_text(encoding="utf-8")) for rank in (0, 1)]
     assert sorted(report["rank"] for report in reports) == [0, 1]
     ids = [row for report in reports for row in report["validation_ids"]]
     assert sorted(ids) == list(range(6)) and len(ids) == 6  # every id exactly once
