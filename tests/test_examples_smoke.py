@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import runpy
 import subprocess
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # they are imported (without running main) and, below, executed.
 UNNUMBERED_EXAMPLES = [
     "abstention_offline.py",
+    "benchmark_compile.py",
     "builder_branching.py",
     "calibration_offline.py",
     "compare_seeds.py",
@@ -176,6 +178,47 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
         # Helpers that need an optional extra raise ImportError naming it:
         # an explicit skip in a core-only environment, never a silent pass.
         pytest.skip(f"{name}:{helper} needs an optional extra: {exc}")
+
+
+def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_path):
+    """FEAT-029: ``examples/benchmark_compile.py --device cpu --warmup 3
+    --repeats 10`` trains with the advertised inductor backend, reloads its
+    checkpoint eagerly and prints separate compile, warmed and profile
+    output — real numbers from this host, no speedup asserted."""
+    env = os.environ.copy()
+    env["NNX_TQDM_DISABLE"] = "1"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "examples" / "benchmark_compile.py"),
+            "--device",
+            "cpu",
+            "--warmup",
+            "3",
+            "--repeats",
+            "10",
+            "--output-dir",
+            str(tmp_path / "profile"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    report = json.loads(completed.stdout[completed.stdout.index("{\n") :])
+    assert set(report) == {"compile", "warmed", "profile"}
+    assert report["compile"]["training"]["effective"] == "compiled"
+    assert report["compile"]["training"]["backend"] == "inductor"
+    assert report["compile"]["checkpoint_reloaded_eagerly"] is True
+    assert report["compile"]["first_call_seconds"]["compiled"] > 0
+    warmed = report["warmed"]
+    assert (warmed["warmup"], warmed["repeats"], warmed["device"], warmed["backend"]) == (3, 10, "cpu", "inductor")
+    assert warmed["weights_digest_match"] and warmed["max_abs_diff"] <= 1e-5
+    assert warmed["eager"]["mean_seconds"] > 0 and warmed["compiled"]["mean_seconds"] > 0
+    assert report["profile"]["steps"] == 5 and report["profile"]["trace_files"]
+    assert os.listdir(tmp_path / "profile")
 
 
 def test_the_precision_example_runs_bf16_where_the_host_supports_it(tmp_path, monkeypatch):

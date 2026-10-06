@@ -31,9 +31,11 @@ except ImportError:  # pragma: no cover — Python <3.8.
 
 from . import (
     abstention,
+    benchmarking,
     bundles,
     calibration,
     comparison,
+    compilation,
     components,
     data_splits,
     decisions,
@@ -59,6 +61,7 @@ from . import (
     transforms,
     viz,
 )
+from .compilation import CompileFailed, CompileRecord, CompileSpec
 from .components import ComponentRegistry, ComponentRestoreError, ComponentSpec, ResumeStatus, StatefulComponent
 from .diffusion import (
     DiffusionMLP,
@@ -326,6 +329,13 @@ __all__ = [
     "ResolvedPrecision",
     "PrecisionUnsupportedError",
     "precision_support",
+    # Opt-in torch.compile of the built-in FP32 forward (train(compile=...); FEAT-029)
+    "compilation",
+    "CompileSpec",
+    "CompileRecord",
+    "CompileFailed",
+    # Bounded forward benchmarks and profiling (FEAT-029)
+    "benchmarking",
     # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
     "tasks",
     "TaskSpec",

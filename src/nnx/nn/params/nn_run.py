@@ -20,6 +20,7 @@ import yaml
 from filelock import FileLock
 
 from ..._metrics import _resolve_metric
+from ...compilation import CompileRecord
 from ...components import ResumeStatus
 from ...history import HISTORY_DIR, HistoryCorruptionError, _journal_epoch_series, _JournalReader, has_journal
 from ...precision import ResolvedPrecision
@@ -569,6 +570,18 @@ def _load_resume_status(metadata: Optional[Mapping[str, Any]]) -> Optional[Resum
         return None
 
 
+def _load_compile(metadata: Optional[Mapping[str, Any]]) -> Optional[CompileRecord]:
+    """The compile record in ``metadata.yaml`` (FEAT-029); ``None`` for an
+    eager run, runs written before it, or when unreadable."""
+    record = metadata.get("compile") if metadata is not None else None
+    if not isinstance(record, dict):
+        return None
+    try:
+        return CompileRecord.from_record(record)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _load_precision(metadata: Optional[Mapping[str, Any]]) -> Optional[ResolvedPrecision]:
     """The resolved precision recorded in ``metadata.yaml`` (FEAT-028);
     ``None`` for runs written before it or when unreadable."""
@@ -627,6 +640,10 @@ class NNRun:
     # the fallback reason and TF32, separately. Runtime/provenance only —
     # never part of state() or the run id; written to metadata.yaml.
     precision: Optional[ResolvedPrecision] = field(repr=False, compare=False, default=None)
+    # What train(compile=...) asked for and what took effect (FEAT-029);
+    # ``None`` for an eager run. Runtime/provenance only — never part of
+    # state() or the run id; written to metadata.yaml.
+    compile: Optional[CompileRecord] = field(repr=False, compare=False, default=None)
 
     def __str__(self):
         # Delegate to NNSchedulerParams.__str__ for the scheduler block —
@@ -862,6 +879,9 @@ class NNRun:
     def with_precision(self, value: Optional[ResolvedPrecision]) -> NNRun:
         return replace(self, precision=value)
 
+    def with_compile(self, value: Optional[CompileRecord]) -> NNRun:
+        return replace(self, compile=value)
+
     def with_idps(self, value: list[NNIterationDataPoint]) -> NNRun:
         return replace(self, idps=value)
 
@@ -993,6 +1013,8 @@ class NNRun:
             metadata["resume"] = self.resume_status.state()
         if self.precision is not None:
             metadata["precision"] = self.precision.record()
+        if self.compile is not None:
+            metadata["compile"] = self.compile.record()
         _atomic_write_text(metadata_path, yaml.safe_dump(metadata, sort_keys=True))
 
         if self.history is None:
@@ -1118,6 +1140,7 @@ class NNRun:
                 idps=idps,
                 resume_status=_load_resume_status(metadata),
                 precision=_load_precision(metadata),
+                compile=_load_compile(metadata),
                 provenance=_load_provenance_tolerantly(id, root),
                 # realpath: a run loaded through runs/best keeps its own journal.
                 history=os.path.realpath(journal.directory) if journal is not None else None,

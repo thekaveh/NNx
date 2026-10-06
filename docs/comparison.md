@@ -51,9 +51,9 @@ Each row: what NNx ships today, the credible competitor on that axis, and the sc
 | DDP | Not shipped | Built-in |
 | FSDP | Not shipped | Built-in |
 | DeepSpeed | Not shipped | Integrated |
-| `torch.compile` | Not shipped (deferred) | Per-strategy opt-in |
+| `torch.compile` | Opt-in, scoped: `train(compile=CompileSpec())` for the built-in step's FP32 forward on built-in non-graph nets; not with DDP or quantization; no speedup guaranteed | Per-strategy opt-in |
 
-If you need any of these, NNx is the wrong tool today.
+If you need distributed training, NNx is the wrong tool today.
 
 ### 3.3. PEFT methods
 
@@ -194,9 +194,13 @@ no superiority claim.
 ## 5. Scope explicit
 
 This page documents NNx's current coverage as of `main`. Distributed training,
-`torch.compile` integration, Lightning-style strategy abstraction, and a CLI
-equivalent are not shipped. If you need those capabilities, NNx today is the
-wrong tool.
+Lightning-style strategy abstraction, and a CLI equivalent are not shipped.
+`torch.compile` is opt-in and deliberately narrow (FEAT-029, `nnx.compilation`):
+the built-in train step's full-precision (FP32) forward on built-in non-graph
+nets, refused with custom steps, reduced precision or topology-changing
+callbacks (QAT), and not combined with DDP or quantization; it guarantees no
+speedup — `nnx.benchmarking` measures compile cost and warmed latency on your
+hardware. If you need the missing capabilities, NNx today is the wrong tool.
 
 This page does not promise untracked roadmap work. Future capabilities should
 appear here only after they ship or when they have a linked, approved public

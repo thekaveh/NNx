@@ -54,9 +54,11 @@ def test_core_public_exports_are_available_from_top_level():
 def test_specialized_public_facades_are_available_from_top_level():
     facades = [
         "abstention",
+        "benchmarking",
         "bundles",
         "calibration",
         "comparison",
+        "compilation",
         "data_splits",
         "decisions",
         "diffusion",
