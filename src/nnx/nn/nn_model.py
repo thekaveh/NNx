@@ -1567,7 +1567,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
     # FEAT-029: a compiled fit's backward may compile on first use; its
     # failure is recorded honestly (never retried).
-    session = model._compile_session
+    session = getattr(model, "_compile_session", None)
     with contextlib.nullcontext() if session is None else session.backward():
         if scaler is not None:
             scaler.scale(terms.backward_loss).backward()
@@ -3697,7 +3697,7 @@ class NNModel(_HubMixinBase):
     def _net_forward(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> torch.Tensor:
         """Call the net on device-placed inputs; an adapter turns the raw
         return value into the output tensor."""
-        session = self._compile_session
+        session = getattr(self, "_compile_session", None)
         raw = self.net(*args, **kwargs) if session is None else session.forward(*args, **kwargs)
         adapter = getattr(self, "_batch_adapter", None)
         return raw if adapter is None else adapter.output(raw)
