@@ -4065,7 +4065,8 @@ A typed failure at a boundary: a stable ``code``, ``where`` it happened (a field
 ```text
 Equality compares ``code``, ``where`` and ``context`` (not ``cause``:
 exceptions compare by identity); the hash uses ``code`` and ``where``.
-It pickles and deep-copies (``context`` as a plain mapping).
+It pickles and deep-copies (``context`` as a plain mapping); being
+read-only, ``context`` is not supported by ``dataclasses.asdict``.
 ```
 
 
@@ -4126,7 +4127,8 @@ Summarize the run bundle at ``path`` with :func:`nnx.bundles.inspect_bundle` —
 ``BundleError`` (not a bundle, a malformed or tampered manifest) is
 ``"bundle_invalid"``, its cause kept. Other exceptions propagate —
 a ``PermissionError`` on the path itself, or a ``TypeError`` for a
-``path`` that is not a str or ``os.PathLike``.
+``path`` that is not a str or ``os.PathLike`` (``where`` is always a
+str).
 ```
 
 
