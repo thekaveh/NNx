@@ -357,6 +357,14 @@ class _JournalWriter:
         self._lines[-1] = _record_line(record)
         self._pending[-1] = record
 
+    def discard_pending(self, count: int) -> None:
+        """Forget up to ``count`` newest unwritten records (FEAT-033). Any
+        already flushed to a chunk stay beyond the published manifest — an
+        uncommitted tail every reader ignores."""
+        keep = max(len(self._pending) - count, 0)
+        del self._pending[keep:]
+        del self._lines[keep:]
+
     def _flush(self, count: int) -> None:
         self._write_chunk(self._pending[:count], self._lines[:count])
         del self._pending[:count]
@@ -650,6 +658,10 @@ class _EagerHistory:
     def replace_last(self, record: NNIterationDataPoint) -> None:
         self.records[-1] = record
 
+    def discard_epoch(self) -> None:
+        """Drop the epoch in progress (a stop at an update boundary, FEAT-033)."""
+        del self.records[self._epoch_start :]
+
     def __bool__(self) -> bool:
         return bool(self.records)
 
@@ -711,6 +723,17 @@ class _JournalHistory:
         self._writer.append(record)
         self._window.append(record)
         self._epoch_records += 1
+
+    def discard_epoch(self) -> None:
+        """Drop the epoch in progress (a stop at an update boundary, FEAT-033):
+        the writer forgets its unwritten records, and the window is read back
+        from the committed journal — the epoch's records may have evicted
+        part of it, and keeping a copy would double the memory bound."""
+        self._writer.discard_pending(self._epoch_records)
+        self._epoch_records = 0
+        self._window.clear()
+        if os.path.exists(os.path.join(self.directory, _MANIFEST)):  # nothing committed yet otherwise
+            self._window.extend(_JournalReader(self.directory).tail(self.spec.retention, None))
 
     @property
     def last(self) -> NNIterationDataPoint:

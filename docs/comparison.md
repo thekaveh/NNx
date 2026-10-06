@@ -159,6 +159,11 @@ NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's not
 NNx ships only the NLI baseline as a provider; transfer to a decision task is
 measured on labelled records, never assumed, and GLiClass is a follow-on
 comparison under the same provider contract rather than a shipped adapter.
+A local label-conditioned scorer is a research pilot (FEAT-023), **experimental
+and no-go**: its mechanics are verified offline, and its empirical comparison
+against these baselines is blocked (resources not supplied; the empirical runs
+are outside this repository)
+([Decision-model pilot](decision-model-pilot.md)).
 
 ### 3.12. Decision-provider benchmarking
 

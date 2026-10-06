@@ -416,6 +416,25 @@ The paradigm step-fn factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup
 
 See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh/NNx/blob/main/examples/05_custom_train_step_autoencoder.py) for an end-to-end autoencoder example.
 
+**Stopping at an update boundary (FEAT-033).** Every committed optimizer
+update — reported by a step (`ctx.report_update()`) or by the shared update
+engine — increments the callback context's `committed_updates` and calls each
+function in `ctx.update_listeners` (a callback appends one in
+`on_train_begin`). Setting `ctx.stop_at_update = True` from a listener stops
+training right after that batch (set in `on_epoch_end`, it stops at that epoch
+boundary): on an epoch's last batch the epoch completes and commits as usual;
+inside an epoch the epoch in progress is **discarded, never committed** —
+LAST, its tensors and the history keep the previous epoch (no LAST at all
+before a first completed epoch), and the final LAST refresh is skipped so live
+weights are never relabelled as a committed epoch's. The in-memory
+`model.net` keeps the partial epoch's weights; reload LAST for the committed
+ones. Under DDP a mid-epoch request is agreed across ranks when a listener
+was registered in `on_train_begin` on any rank; otherwise the request takes
+effect at the epoch boundary, agreed there. `committed_updates` is exact for
+fp16 (a skipped scaler step is not counted) while a listener or an update
+clock is attached. `nnx.search` uses it for its update caps and deadlines
+(§29).
+
 ### 6.2. Custom evaluation
 
 `NNModel.train(..., eval_step_fn=...)` accepts the validation-side equivalent of
@@ -2468,3 +2487,62 @@ eager and compiled copies of identical weights; `profile_forward` runs
 an explicit `output_dir`, closed on success, error and cancellation, and never
 inside a timed region. See
 [`examples/benchmark_compile.py`](../examples/benchmark_compile.py).
+
+## 29. Budgeted experiment search (`nnx.search`)
+
+`nnx.search.search(plan, space, apply=..., monitor=..., budget=..., study_name=...)`
+(FEAT-033, the `optuna` extra) runs a sequential Optuna study over an
+[experiment plan](#20-experiment-plans-nnxplans). Each trial's parameters go
+through `apply(plan, params)`, which returns a **new** plan — the base plan is
+never changed — and `ExperimentPlan.fit` builds a fresh model, optimizer,
+loaders and callbacks (the plan's data and callbacks must be factories), with
+its own attempt id and run directory.
+
+```text
+validate (space, budget, monitor = plan's val monitor, factories, stored identity)
+  └─ while trials so far < budget.trials and the deadline has not passed:
+        Study.optimize(objective, n_trials=1)
+           params = sampler.ask → plan = apply(base, params) → plan.fit(attempt)
+             per committed update: update cap / deadline → stop at that update
+             per validated epoch:  report(value, step=epoch) → prune? / deadline?
+           → value (completed) | TrialPruned | failure (non-finite, error, no epoch)
+```
+
+- **One monitor.** Trials are scored by a *validation* `MonitorSpec` equal to
+  the plan's own `NNTrainParams.monitor` (re-checked on every plan `apply`
+  returns), and a trial's value is the run's own monitor decision — the value
+  of the epoch its BEST checkpoint holds, `min_delta` and ties included. A
+  training or last-batch value never scores a trial; a missing or non-finite
+  value fails it.
+- **Errors.** A fit that raises is a failed trial, recorded with its
+  message (`TrialOutcome.error`), and the search goes on. A configuration
+  error — `apply` raising, returning something other than a plan, or a plan
+  the search cannot score (borrowed callbacks, another monitor) — fails that
+  trial (it counts against a stored study's budget) and stops the search with
+  the error. `updates_per_trial` is refused
+  for a plan with its own `train_step_fn` (it may not report updates).
+- **The budget counts every trial**: completed, failed, pruned and orphaned
+  ones (left running by a crashed process) — only enqueued, never-run trials do
+  not. A sampler that runs out of points (an exhausted `GridSampler`) ends the
+  search with `stop_reason="exhausted"`, spending no budget. Reopening a stored study continues it; a study whose space, monitor or
+  plan identity differs is refused before any trial.
+- **Caps.** `SearchBudget(updates_per_trial=N)` stops a trial right after its
+  N-th committed optimizer update (a partial accumulation window is not one);
+  `deadline_seconds` starts no trial once expired and stops a running one at
+  its next update or epoch boundary, recording the overrun. Both are
+  non-preemptive. A trial stopped inside an epoch keeps only its committed
+  epochs: LAST, its tensors and the history stay those of the last completed
+  epoch (`ctx.stop_at_update`, Concepts §6), and there is no LAST before a
+  first completed epoch.
+- **Outcomes** (`TrialOutcome`) keep the parameters, state and terminal
+  reason, the resources used, the best monitor value, the pruning
+  observations and the attempt / run / checkpoint links; `SearchResult.best`
+  is the completed trial with the best finite value.
+- **Cancellation** (`KeyboardInterrupt`) runs the fit's callback cleanup,
+  releases its run lease, records the trial as failed and propagates.
+
+NNx's artifacts live under `runs/`, Optuna's in the `storage` URL (in memory
+when `None`); this process is the study's only writer. Samplers keep their own
+limits. See
+[`examples/search_offline.py`](../examples/search_offline.py).
+
