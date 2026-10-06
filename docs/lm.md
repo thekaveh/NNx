@@ -21,11 +21,12 @@ training is out of scope.
 | `nnx.NNTransformerParams` | Frozen dataclass (subclass of `NNParams`) — `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Every optional field omits itself from `state()` when at default (the omit-when-default invariant). `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult` and `max_seq_len` are positive integer counts — NumPy integers are normalized to `int`; floats, booleans and strings raise `ValueError` at construction — with `d_model % n_heads == 0` and an even head width (`d_model / n_heads`, required by RoPE). |
 | `nnx.NNTokenizerParams` | Wraps `tokenizers.Tokenizer`; `state()` returns `{"path": "<tokenizer.json>"}`. Available when `thekaveh-nnx[lm]` is installed. |
 | `nnx.train_bpe(...)` | Quick BPE training helper (Whitespace pre-tokenizer + BPE + BpeTrainer). |
-| `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed, use_cache, logits_chain)`. |
+| `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed, use_cache, logits_chain, on_token, logits_pipeline)`. |
 | `nnx.{TemperatureScaling, TopKFilter, TopPFilter, RepetitionPenalty, apply_chain}` | LogitsProcessor chain — same shape as HF transformers' `LogitsProcessorList`. |
 | `nnx.NNTransformerParamsBuilder` | Fluent variant-gated builder for `NNTransformerParams` — hides the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`); reach via `NNTransformerParams.builder()`. |
 | `nnx.LogitsChain` | Frozen-dataclass wrapper around `list[LogitsProcessor]` with `.apply(logits, token_history) -> Tensor`. Pass via `GenerativeNNModel.generate(logits_chain=...)`. |
 | `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into NNx's canonical order at `.build()`. Reach via `LogitsChain.builder()`. |
+| `nnx.OrderedLogitsPipeline` | Immutable stages (`LogitsStage` specs, `CustomStage` callables) run in exactly their declared order; `append` / `prepend` return new pipelines; versioned `state()` / `from_state()` (custom stages via a registered `LogitsStageCodec`). Pass via `generate(logits_pipeline=...)` — see §5.1. |
 
 ## 2. Install
 
@@ -246,6 +247,57 @@ canonical group in the order they were added.
 When `logits_chain=None` (the default), `generate()` constructs the
 chain from the kwargs exactly as it did before — the new path is
 purely opt-in.
+
+### 5.1. Ordered pipelines: `OrderedLogitsPipeline`
+
+`LogitsChain` (through its builder) **sorts** the standard processors into
+the canonical order. When the order is the point — temperature before the
+nucleus cut, a stage applied twice, a custom stage between two built-ins —
+use an `OrderedLogitsPipeline` (FEAT-037), which runs its stages **exactly
+in declared order** and is immutable data:
+
+```python
+from nnx.generation import CustomStage, LogitsStage, OrderedLogitsPipeline
+
+pipeline = OrderedLogitsPipeline.of(LogitsStage.temperature(0.5), LogitsStage.top_p(0.8))
+stricter = pipeline.append(LogitsStage.top_k(5))      # a new pipeline; `pipeline` is unchanged
+text = model.generate(prompt="Once upon", max_new_tokens=64, logits_pipeline=stricter)
+pipeline.state()  # {"version": 1, "stages": [{"kind": "temperature", "value": 0.5}, {"kind": "top_p", "value": 0.8}]}
+```
+
+Order changes the result: on logits `[2, 1, 0]`, temperature 0.5 then
+top-p 0.8 keeps one finite logit, top-p 0.8 then temperature 0.5 keeps two.
+
+| | `generate(temperature=..., top_k=...)` | `LogitsChain` | `OrderedLogitsPipeline` | `apply_chain(processors=...)` |
+|---|---|---|---|---|
+| Order | canonical (penalty → top-k → top-p → temperature) | canonical; custom processors after | exactly as declared, duplicates kept | the list's order |
+| Holds | kwargs | processor instances (mutable list) | frozen stage specs + custom callables | processor instances |
+| Serializable | — | no | yes: `state()` / `from_state()` (version 1) | no |
+
+- **Precedence.** `generate()` uses `logits_pipeline` or `logits_chain`
+  instead of the inline kwargs; passing both raises `ValueError` before the
+  model is touched. The pipeline is compiled into fresh processors once
+  per call, on the cached and uncached paths alike, and token history,
+  `on_token`, `stop` and `max_new_tokens` behave as with the equivalent
+  explicit processor list.
+- **Validation.** Every stage value is checked (finite, in its domain)
+  when the stage is made. A zero-temperature stage is greedy — it emits
+  `±inf` argmax markers — so it is **terminal**: appending after it, or
+  prepending it before other stages, raises; nothing is reordered.
+- **Immutability.** `append` / `prepend` return new pipelines. A built-in
+  processor passed in (its exact type) is copied into a `LogitsStage` spec
+  by value, so mutating it later changes nothing; a nested pipeline is
+  flattened into its stages.
+- **Custom stages.** `CustomStage(fn, tag=...)` (or any callable, including
+  a subclass of a built-in processor, which keeps its own `__call__`) runs
+  at its declared position; its state is the caller's — the pipeline keeps
+  the reference — and it is opaque to the terminal rule. It serializes only through a `LogitsStageCodec` registered for
+  its tag with `register_logits_stage_codec`; data never names code to
+  import, and a pipeline is never part of a checkpoint or a run identity.
+
+[`examples/ordered_logits_pipeline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ordered_logits_pipeline.py)
+runs the order oracle, a round trip and a tiny local-tokenizer generation
+offline.
 
 ## 6. How it composes with the rest of NNx
 

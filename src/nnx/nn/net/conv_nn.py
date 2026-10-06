@@ -51,25 +51,32 @@ class ConvNN(nn.Module):
                 for in_dim, out_dim in zip(fc_dims, fc_dims[1:], strict=False)
             ]
         )
+        # Everything the forward reads from the params, resolved once: the
+        # forward touches neither the params object nor the Activations enum,
+        # which torch.compile cannot trace on older torch (FEAT-029).
+        self._side = params.image_side()
+        self._in_channels = params.in_channels
+        self._pool_size = params.pool_size
+        self._conv_activation = params.activation() if params.activation is not None else None
+        self._hidden = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(len(self.fcs) - 1))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        side = self.params.image_side()
-        X = X.view(X.size(0), self.params.in_channels, side, side)
+        X = X.view(X.size(0), self._in_channels, self._side, self._side)
 
-        activation = self.params.activation
+        activation = self._conv_activation
         if activation is None:
             raise ValueError("ConvNN requires a scalar activation for convolution blocks")
         for conv in self.convs:
             X = conv(X)
-            X = activation()(X)
-            X = F.max_pool2d(X, kernel_size=self.params.pool_size)
+            X = activation(X)
+            X = F.max_pool2d(X, kernel_size=self._pool_size)
 
         X = X.view(X.size(0), -1)
 
-        for i, fc in enumerate(self.fcs[:-1]):
+        for fc, (hidden_activation, dropout) in zip(self.fcs[:-1], self._hidden, strict=True):
             X = fc(X)
-            X = self.params.activation_for(i)()(X)
-            X = F.dropout(X, p=self.params.dropout_for(i), training=self.training)
+            X = hidden_activation(X)
+            X = F.dropout(X, p=dropout, training=self.training)
 
         return self.fcs[-1](X)
 
