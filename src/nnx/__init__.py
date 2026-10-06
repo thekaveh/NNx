@@ -54,6 +54,7 @@ from . import (
     provenance,
     prune,
     ranking,
+    result,
     streaming,
     tasks,
     transforms,
@@ -429,6 +430,8 @@ __all__ = [
     "NNParamGroupSpec",
     # Provider-neutral typed decisions (FEAT-009)
     "decisions",
+    # Opt-in Result at fallible boundaries (FEAT-025)
+    "result",
     # Versioned experiment provenance manifests (FEAT-019)
     "provenance",
     # Reproducible group, time and stratified splits (FEAT-017)
