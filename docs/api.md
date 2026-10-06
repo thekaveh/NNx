@@ -676,7 +676,7 @@ first and attach the tokenizer later.
 ##### `nnx.nn.generative_nn_model.GenerativeNNModel.generate`
 
 ```python
-nnx.nn.generative_nn_model.GenerativeNNModel.generate(self, prompt: 'str', *, max_new_tokens: 'int' = 64, temperature: 'float' = 1.0, top_k: 'Optional[int]' = None, top_p: 'Optional[float]' = None, repetition_penalty: 'float' = 1.0, stop: 'Optional[list[str]]' = None, seed: 'Optional[int]' = None, use_cache: 'bool' = True, logits_chain: 'Optional[LogitsChain]' = None, on_token: 'Optional[Callable[[int], None]]' = None) -> 'str'
+nnx.nn.generative_nn_model.GenerativeNNModel.generate(self, prompt: 'str', *, max_new_tokens: 'int' = 64, temperature: 'float' = 1.0, top_k: 'Optional[int]' = None, top_p: 'Optional[float]' = None, repetition_penalty: 'float' = 1.0, stop: 'Optional[list[str]]' = None, seed: 'Optional[int]' = None, use_cache: 'bool' = True, logits_chain: 'Optional[LogitsChain]' = None, on_token: 'Optional[Callable[[int], None]]' = None, logits_pipeline: 'Optional[OrderedLogitsPipeline]' = None) -> 'str'
 ```
 
 Autoregressive decode from ``prompt``.
@@ -719,6 +719,12 @@ Args:
         Power-user path for custom logit processors (e.g.,
         logit-bias for forbidden tokens). When ``None`` (the
         default), behavior is unchanged.
+    logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`
+        (FEAT-037): its stages run exactly in declared order,
+        compiled once per call into fresh processors; like
+        ``logits_chain`` it replaces the inline kwargs. Passing
+        both ``logits_chain`` and ``logits_pipeline`` raises
+        ``ValueError`` before the model is touched.
     on_token: optional callback invoked with each newly
         generated token id immediately after it is appended.
         Lets callers stream partial output or drive progress
@@ -15082,6 +15088,181 @@ Standard processors that were chained are emitted in the
 fixed `_CANONICAL_ORDER`; custom processors come after, in
 the order they were added.
 ```
+
+
+#### `nnx.generation.OrderedLogitsPipeline`
+
+```python
+class nnx.generation.OrderedLogitsPipeline(stages: 'tuple[Stage, ...]' = ()) -> 'None'
+```
+
+Decoding stages run exactly in declared order. See the module docstring for immutability, validation, the terminal greedy rule, custom stages and serialization.
+
+##### `nnx.generation.OrderedLogitsPipeline.of`
+
+```python
+nnx.generation.OrderedLogitsPipeline.of(*stages: 'Any') -> 'OrderedLogitsPipeline'
+```
+
+A pipeline of ``stages`` in this order.
+
+##### `nnx.generation.OrderedLogitsPipeline.append`
+
+```python
+nnx.generation.OrderedLogitsPipeline.append(self, *stages: 'Any') -> 'OrderedLogitsPipeline'
+```
+
+A new pipeline with ``stages`` after this one's.
+
+##### `nnx.generation.OrderedLogitsPipeline.prepend`
+
+```python
+nnx.generation.OrderedLogitsPipeline.prepend(self, *stages: 'Any') -> 'OrderedLogitsPipeline'
+```
+
+A new pipeline with ``stages`` before this one's.
+
+##### `nnx.generation.OrderedLogitsPipeline.processors`
+
+```python
+nnx.generation.OrderedLogitsPipeline.processors(self) -> 'list[LogitsProcessor]'
+```
+
+Fresh processors for every stage, in order (custom stages are the caller's callables).
+
+##### `nnx.generation.OrderedLogitsPipeline.state`
+
+```python
+nnx.generation.OrderedLogitsPipeline.state(self) -> 'dict[str, Any]'
+```
+
+``{"version": 1, "stages": [...]}``, one tagged entry per stage in order. A custom stage needs a registered codec for its tag.
+
+##### `nnx.generation.OrderedLogitsPipeline.from_state`
+
+```python
+nnx.generation.OrderedLogitsPipeline.from_state(state: 'Mapping[str, Any]') -> 'OrderedLogitsPipeline'
+```
+
+Rebuild a pipeline from :meth:`state`. A custom entry is decoded only by a codec registered in this process for its tag.
+
+
+#### `nnx.generation.LogitsStage`
+
+```python
+class nnx.generation.LogitsStage(kind: 'str', value: 'Union[int, float]') -> 'None'
+```
+
+One built-in decoding stage: ``kind`` is ``"repetition_penalty"`` (``>= 1``), ``"top_k"`` (an integer ``>= 1``), ``"top_p"`` (in ``(0, 1]``) or ``"temperature"`` (``>= 0``; ``0`` is greedy and terminal). Values are validated here, before any generation.
+
+##### `nnx.generation.LogitsStage.temperature`
+
+```python
+nnx.generation.LogitsStage.temperature(value: 'float') -> 'LogitsStage'
+```
+
+No public description is currently available.
+
+##### `nnx.generation.LogitsStage.top_k`
+
+```python
+nnx.generation.LogitsStage.top_k(value: 'int') -> 'LogitsStage'
+```
+
+No public description is currently available.
+
+##### `nnx.generation.LogitsStage.top_p`
+
+```python
+nnx.generation.LogitsStage.top_p(value: 'float') -> 'LogitsStage'
+```
+
+No public description is currently available.
+
+##### `nnx.generation.LogitsStage.repetition_penalty`
+
+```python
+nnx.generation.LogitsStage.repetition_penalty(value: 'float') -> 'LogitsStage'
+```
+
+No public description is currently available.
+
+##### `nnx.generation.LogitsStage.terminal`
+
+```python
+property nnx.generation.LogitsStage.terminal
+```
+
+Whether this is a greedy (zero-temperature) stage: it emits ``±inf`` argmax markers, so nothing may follow it.
+
+##### `nnx.generation.LogitsStage.processor`
+
+```python
+nnx.generation.LogitsStage.processor(self) -> 'LogitsProcessor'
+```
+
+A fresh processor for this stage.
+
+##### `nnx.generation.LogitsStage.state`
+
+```python
+nnx.generation.LogitsStage.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+
+#### `nnx.generation.CustomStage`
+
+```python
+class nnx.generation.CustomStage(function: 'Callable[[torch.Tensor, list[int]], torch.Tensor]', tag: 'Optional[str]' = None) -> 'None'
+```
+
+A user callable ``(logits, token_history) -> logits`` at a declared position. Its state belongs to the caller: the pipeline keeps this reference and never copies it. ``tag`` names the :class:`LogitsStageCodec` that can serialize it; without a registered codec the stage is runtime-only.
+
+##### `nnx.generation.CustomStage.processor`
+
+```python
+nnx.generation.CustomStage.processor(self) -> 'LogitsProcessor'
+```
+
+No public description is currently available.
+
+
+#### `nnx.generation.LogitsStageCodec`
+
+```python
+class nnx.generation.LogitsStageCodec(tag: 'str', encode: 'Callable[[Callable[..., Any]], Mapping[str, Any]]', decode: 'Callable[[Mapping[str, Any]], Callable[[torch.Tensor, list[int]], torch.Tensor]]') -> 'None'
+```
+
+How to serialize custom stages tagged ``tag``: ``encode(function)`` returns a JSON-like mapping, ``decode(mapping)`` returns the callable. Registered in-process with :func:`register_logits_stage_codec`; data never names code to import.
+
+
+#### `nnx.generation.register_logits_stage_codec`
+
+```python
+nnx.generation.register_logits_stage_codec(codec: 'LogitsStageCodec') -> 'None'
+```
+
+Register ``codec`` for its tag (re-registering a tag replaces it).
+
+
+#### `nnx.generation.unregister_logits_stage_codec`
+
+```python
+nnx.generation.unregister_logits_stage_codec(tag: 'str') -> 'None'
+```
+
+Remove the codec registered for ``tag`` (a missing tag is a no-op).
+
+
+#### `nnx.generation.registered_logits_stage_codecs`
+
+```python
+nnx.generation.registered_logits_stage_codecs() -> 'tuple[str, ...]'
+```
+
+The registered codec tags, in registration order.
 
 
 #### `nnx.generation.TemperatureScaling`

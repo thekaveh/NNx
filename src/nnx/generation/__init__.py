@@ -19,6 +19,19 @@ Public surface:
     matches the :class:`nnx.NNTransformerParamsBuilder` convention.
   * :func:`sample_next_token` — sample one next token given prepared
     logits + an optional torch.Generator for seeded sampling.
+  * :class:`OrderedLogitsPipeline` (FEAT-037) — immutable stages run in
+    exactly their declared order (``append`` / ``prepend`` return new
+    pipelines); pass via ``generate(logits_pipeline=...)``.
+  * :class:`LogitsStage` — a validated built-in stage spec
+    (temperature / top-k / top-p / repetition penalty); a zero-temperature
+    stage is terminal.
+  * :class:`CustomStage` — a caller-owned callable at a declared position.
+  * :class:`LogitsStageCodec` — serializes custom stages of one tag.
+  * :data:`PIPELINE_VERSION` — the pipeline state version (1).
+  * :func:`register_logits_stage_codec` /
+    :func:`unregister_logits_stage_codec` /
+    :func:`registered_logits_stage_codecs` — the in-process codec registry
+    (data never names code to import).
 
 The chain design mirrors HF transformers' ``LogitsProcessorList`` — the
 caller composes the processors in the order they want them applied, and
@@ -38,6 +51,16 @@ from .logits_processors import (
     TopPFilter,
     apply_chain,
 )
+from .pipeline import (
+    PIPELINE_VERSION,
+    CustomStage,
+    LogitsStage,
+    LogitsStageCodec,
+    OrderedLogitsPipeline,
+    register_logits_stage_codec,
+    registered_logits_stage_codecs,
+    unregister_logits_stage_codec,
+)
 from .sampling import sample_next_token
 
 __all__ = [
@@ -50,4 +73,12 @@ __all__ = [
     "RepetitionPenalty",
     "apply_chain",
     "sample_next_token",
+    "OrderedLogitsPipeline",
+    "LogitsStage",
+    "CustomStage",
+    "LogitsStageCodec",
+    "PIPELINE_VERSION",
+    "register_logits_stage_codec",
+    "unregister_logits_stage_codec",
+    "registered_logits_stage_codecs",
 ]
