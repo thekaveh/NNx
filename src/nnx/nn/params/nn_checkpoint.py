@@ -336,6 +336,7 @@ class NNCheckpoint:
         optimizer_factories: Optional[dict[str, Optional[dict[str, Any]]]] = None,
         precision: Optional[dict[str, Any]] = None,
         compile: Optional[dict[str, Any]] = None,
+        distributed: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -403,6 +404,9 @@ class NNCheckpoint:
                 # older sidecars lack the key). Weights are always the eager
                 # module's: no wrapper prefix ever reaches net_state.
                 "compile": compile,
+                # FEAT-030: a DDP run's world size, partitions and every
+                # rank's RNG streams (None for a single-process run).
+                "distributed": distributed,
             }
             fd, checkpoint_tmp = tempfile.mkstemp(
                 prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)

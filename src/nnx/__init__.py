@@ -39,6 +39,7 @@ from . import (
     components,
     data_splits,
     decisions,
+    distributed,
     embeddings,
     graph_tasks,
     history,
@@ -344,6 +345,8 @@ __all__ = [
     "CompileFailed",
     # Bounded forward benchmarks and profiling (FEAT-029)
     "benchmarking",
+    # Single-node DDP under torchrun (train(distributed=...); FEAT-030)
+    "distributed",
     # Task adapters (opt-in via NNModelParams(task=...); FEAT-002)
     "tasks",
     "TaskSpec",

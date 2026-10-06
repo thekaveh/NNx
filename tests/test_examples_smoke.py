@@ -20,6 +20,7 @@ UNNUMBERED_EXAMPLES = [
     "calibration_offline.py",
     "compare_seeds.py",
     "custom_module.py",
+    "ddp_supervised.py",
     "decision_benchmark_offline.py",
     "decision_fixed_head.py",
     "decision_jev.py",
@@ -224,6 +225,66 @@ def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_pa
     assert warmed["eager"]["mean_seconds"] > 0 and warmed["compiled"]["mean_seconds"] > 0
     assert report["profile"]["steps"] == 5 and report["profile"]["trace_files"]
     assert os.listdir(tmp_path / "profile")
+
+
+def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess:
+    """``torchrun --standalone --nproc_per_node=2 <script> <args>`` (on macOS
+    the rendezvous and Gloo stay on loopback: hosts often resolve their own
+    name to an unreachable address)."""
+    env = os.environ.copy()
+    env["NNX_TQDM_DISABLE"] = "1"
+    command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=2"]
+    if sys.platform == "darwin":
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        command = [sys.executable, "-m", "torch.distributed.run", "--nnodes=1", "--master_addr=127.0.0.1"]
+        command += [f"--master_port={port}", "--nproc_per_node=2"]
+        env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
+    return subprocess.run(
+        [*command, str(ROOT / "examples" / script), *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
+    """FEAT-030: two CPU ranks under ``torchrun --standalone``; exactly-once
+    validation ids, one run id, one artifact owner."""
+    out = tmp_path / "ddp-out"
+    completed = _torchrun(
+        "ddp_supervised.py", ["--device", "cpu", "--epochs", "2", "--output", str(out)], tmp_path, 240
+    )
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    reports = [json.loads((out / f"report-rank{rank}.json").read_text(encoding="utf-8")) for rank in (0, 1)]
+    assert sorted(report["rank"] for report in reports) == [0, 1]
+    ids = [row for report in reports for row in report["validation_ids"]]
+    assert sorted(ids) == list(range(6)) and len(ids) == 6  # every id exactly once
+    assert len({report["run_id"] for report in reports}) == 1
+    assert [report["owns_artifacts"] for report in sorted(reports, key=lambda r: r["rank"])] == [True, False]
+    runs = [name for name in os.listdir(out / "runs") if not name.startswith(".") and name != "best"]
+    assert runs == [reports[0]["run_id"]]
+
+
+def test_the_ddp_example_terminates_after_an_injected_failure(tmp_path):
+    """``--inject-failure``: rank 1 raises; the launch ends non-zero within
+    a bounded time and leaves no worker behind."""
+    out = tmp_path / "ddp-fail"
+    completed = _torchrun(
+        "ddp_supervised.py",
+        ["--device", "cpu", "--epochs", "3", "--output", str(out), "--inject-failure"],
+        tmp_path,
+        180,
+    )
+    assert completed.returncode != 0
+    assert "injected failure on rank 1" in completed.stdout + completed.stderr
+    leftover = subprocess.run(["pgrep", "-f", str(out)], capture_output=True, text=True)
+    assert leftover.stdout.strip() == "", f"orphaned workers: {leftover.stdout}"
 
 
 def test_the_precision_example_runs_bf16_where_the_host_supports_it(tmp_path, monkeypatch):

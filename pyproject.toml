@@ -55,6 +55,8 @@ keywords = [
     "visualization", "explainability",
     # FEAT-029: nnx.compilation / nnx.benchmarking.
     "torch-compile", "profiling",
+    # FEAT-030: nnx.distributed.
+    "ddp", "distributed-training",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
