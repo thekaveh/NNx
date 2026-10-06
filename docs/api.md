@@ -10234,6 +10234,14 @@ parameters converted when you call :meth:`to`, etc.
 :vartype training: bool
 ```
 
+##### `nnx.nn.net.feed_fwd_nn.FeedFwdNN.params`
+
+```python
+property nnx.nn.net.feed_fwd_nn.FeedFwdNN.params
+```
+
+No public description is currently available.
+
 ##### `nnx.nn.net.feed_fwd_nn.FeedFwdNN.forward`
 
 ```python
