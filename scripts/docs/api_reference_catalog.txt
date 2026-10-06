@@ -274,6 +274,22 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.benchmark.BenchmarkError
 
+Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27):
+
+@api nnx.result.Ok
+
+@api nnx.result.Err
+
+@api nnx.result.UnwrapError
+
+@api nnx.result.BoundaryError
+
+@api nnx.result.validate_decision_request_result
+
+@api nnx.result.decide_result
+
+@api nnx.result.inspect_bundle_result
+
 ### 2.12. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest
@@ -940,6 +956,20 @@ Walkthrough at [HuggingFace Hub](hub.md).
 @api nnx.generation.LogitsChain
 
 @api nnx.generation.LogitsChainBuilder
+
+@api nnx.generation.OrderedLogitsPipeline
+
+@api nnx.generation.LogitsStage
+
+@api nnx.generation.CustomStage
+
+@api nnx.generation.LogitsStageCodec
+
+@api nnx.generation.register_logits_stage_codec
+
+@api nnx.generation.unregister_logits_stage_codec
+
+@api nnx.generation.registered_logits_stage_codecs
 
 @api nnx.generation.TemperatureScaling
 
