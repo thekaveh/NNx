@@ -59,7 +59,16 @@ ID_PATTERN = re.compile(r"^[A-Z]{2}-\d{2}$")
 IMPORT_ONLY = "tests/test_examples_smoke.py::test_example_imports_without_running_main"
 # The optional packages a profile can name (import names); "cuda" and the
 # Gloo backend are capabilities, not packages.
-KNOWN_DEPENDENCIES = ("optuna", "onnx", "onnxscript", "onnxruntime", "torchao", "tensorboard", "safetensors")
+KNOWN_DEPENDENCIES = (
+    "optuna",
+    "onnx",
+    "onnxscript",
+    "onnxruntime",
+    "torchao",
+    "tensorboard",
+    "safetensors",
+    "typesafe_sdk",
+)
 RUN_TIMEOUT_SECONDS = 1800
 
 

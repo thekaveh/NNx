@@ -43,16 +43,44 @@ PASSED = {"setup": "passed", "call": "passed", "teardown": "passed", "xfail": Fa
 # ---------------- the registry ----------------
 
 
+# The features this matrix composes, each by the test module that owns its
+# behaviour: every one must be exercised in at least one registered scenario.
+FEATURE_TEST_MODULES = {
+    "FEAT-010 Jev adapter": "tests/test_decision_jev.py",
+    "FEAT-023 decision-model pilot": "tests/test_decision_model_pilot.py",
+    "FEAT-025 result boundaries": "tests/test_result_boundaries.py",
+    "FEAT-029 compile": "tests/test_compile_execution.py",
+    "FEAT-029 benchmarks": "tests/test_benchmarking.py",
+    "FEAT-030 DDP": "tests/test_ddp_adapter.py",
+    "FEAT-031 lazy domains": "tests/test_core_install.py",
+    "FEAT-033 search": "tests/test_search.py",
+    "FEAT-037 ordered logits": "tests/test_ordered_logits_pipeline.py",
+}
+
+
+def test_every_composed_feature_appears_in_a_scenario(registry):
+    cited = {test.split("::")[0] for scenario in registry["scenarios"] for test in scenario["tests"]}
+    missing = [feature for feature, module in FEATURE_TEST_MODULES.items() if module not in cited]
+    assert missing == []
+
+
 def test_the_registry_is_valid_with_unique_ids(registry):
     assert fc.validate_registry(registry) == []
     ids = [scenario["id"] for scenario in registry["scenarios"]]
     assert len(ids) == len(set(ids))
 
 
-def test_twelve_or_more_scenarios_span_the_four_interaction_groups(registry):
+def test_twelve_or_more_scenarios_span_every_interaction_group(registry):
     assert len(registry["scenarios"]) >= 12
     groups = {scenario["group"] for scenario in registry["scenarios"]}
-    assert groups == {"training-controls", "checkpoint-resume", "model-transformations", "inference-export"}
+    assert groups == {
+        "training-controls",
+        "checkpoint-resume",
+        "model-transformations",
+        "inference-export",
+        "decisions-results",
+        "packaging",
+    }
     statuses = {scenario["status"] for scenario in registry["scenarios"]}
     assert statuses == {"verified", "unsupported", "unverified"}
     for scenario in registry["scenarios"]:

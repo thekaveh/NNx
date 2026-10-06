@@ -23,12 +23,14 @@ evidence_profile:
   os: linux
   python: "3.12"
   device: cpu
-  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors]
+  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk]
 groups:
   training-controls: Training controls
   checkpoint-resume: Checkpoint and resume
   model-transformations: Model transformations
   inference-export: Inference and export
+  decisions-results: Decisions and typed results
+  packaging: Packaging and optional domains
 scenarios:
   - id: TC-01
     group: training-controls
@@ -150,6 +152,17 @@ scenarios:
       - tests/test_ddp_resume.py::test_a_changed_world_or_partition_fails_before_anything_is_restored
     rationale: Executed negative test; weights asserted unchanged.
     status: unsupported
+  - id: CR-07
+    group: checkpoint-resume
+    features: [torch.compile, bounded benchmarks]
+    entry_point: nnx.benchmarking.compare_compile
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The eager and compiled sides start from identical weights and leave the caller's module unchanged; the compiled first call carries the compile cost, apart from warmed latency.
+    tests:
+      - tests/test_benchmarking.py::test_compare_compile_starts_both_sides_from_identical_weights
+      - tests/test_benchmarking.py::test_compiled_first_call_carries_the_compile_cost
+    rationale: Weight digests, outputs and the caller's state and mode are asserted; the first call is recorded apart from the warmed calls.
+    status: verified
   - id: MT-01
     group: model-transformations
     features: [torch.compile, QAT (topology-changing callback)]
@@ -241,6 +254,105 @@ scenarios:
       - tests/test_export_conformance.py::test_both_exporters_match_native_logits_in_onnx_runtime
     rationale: Owned by the dedicated export-conformance job (FEAT-038); this matrix does not certify ONNX Runtime parity on the CPU lane.
     status: unverified
+  - id: DR-01
+    group: decisions-results
+    features: [Jev provider, decision jobs]
+    entry_point: nnx.decisions.jev + DecisionJob
+    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk]}
+    expected: A provider failure crossing a decision job surfaces as the job's typed cause with its request id; the job's questions share one request and nothing is retried; a sync-only client runs one call at a time.
+    tests:
+      - tests/test_decision_jev.py::test_a_failure_crossing_a_decision_job_keeps_its_reason_and_request_id
+      - tests/test_decision_jev.py::test_a_sync_only_injection_is_sync_only_and_a_job_runs_it_one_call_at_a_time
+    rationale: A recording client answers 429 through the real adapter; the cause type, request id and call count are asserted.
+    status: verified
+  - id: DR-02
+    group: decisions-results
+    features: [Jev provider, decision benchmark]
+    entry_point: nnx.decisions.jev + decision benchmark collector
+    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk]}
+    expected: A provider failure crossing a benchmark collection keeps its typed reason and request id.
+    tests:
+      - tests/test_decision_jev.py::test_a_failure_crossing_a_benchmark_keeps_its_reason_and_request_id
+    rationale: Every collected record is failed with the typed reason and request id; one call, no retry.
+    status: verified
+  - id: DR-03
+    group: decisions-results
+    features: [Result boundaries, decision providers]
+    entry_point: nnx.result
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A provider failure becomes an Err keeping its cause and request id; an abstention is a success; other exceptions propagate.
+    tests:
+      - tests/test_result_boundaries.py::test_a_provider_failure_is_an_err_keeping_its_cause_and_request_id
+      - tests/test_result_boundaries.py::test_abstention_is_a_success_with_probabilities_and_reasons
+      - tests/test_result_boundaries.py::test_other_provider_exceptions_propagate
+    rationale: The Result variant and its fields are asserted.
+    status: verified
+  - id: DR-04
+    group: decisions-results
+    features: [Result boundaries, run bundles]
+    entry_point: nnx.result + run bundle inspection
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Inspecting a bundle never unpickles; a malformed bundle keeps its code, path and cause through composition.
+    tests:
+      - tests/test_result_boundaries.py::test_inspecting_a_bundle_never_reaches_torch_load
+      - tests/test_result_boundaries.py::test_a_malformed_bundle_keeps_code_path_and_cause_through_composition
+    rationale: A fixture makes any unpickling fail; the composed error's fields are asserted.
+    status: verified
+  - id: DR-05
+    group: decisions-results
+    features: [decision-model pilot, model factory registry, checkpoint reload]
+    entry_point: examples/decision_model_pilot.py
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The pilot's model registers through register_model_factory with no new Nets member and reconstructs from its checkpoint with candidate-aligned records.
+    tests:
+      - tests/test_decision_model_pilot.py::test_the_recipe_registers_through_feat_006_without_a_new_nets_member
+      - tests/test_decision_model_pilot.py::test_the_checkpoint_reconstructs_with_candidate_aligned_records_and_identities
+    rationale: Rebuilds the scorer from its checkpoint and checks every replay record against the question's candidate order and identities.
+    status: verified
+  - id: DR-06
+    group: decisions-results
+    features: [decision-model pilot, compute cap, checkpoints]
+    entry_point: examples/decision_model_pilot.py (ComputeCap)
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The cap is never exceeded; a capped first epoch produces no checkpoint; exhaustion records a stop and keeps the artifacts.
+    tests:
+      - tests/test_decision_model_pilot.py::test_the_cap_is_never_exceeded_and_a_capped_first_epoch_produces_no_checkpoint
+      - tests/test_decision_model_pilot.py::test_budget_exhaustion_records_a_stop_and_keeps_the_artifacts
+    rationale: Counts committed steps and checks the run directory.
+    status: verified
+  - id: DR-07
+    group: decisions-results
+    features: [decision-model pilot, empirical claims]
+    entry_point: examples/decision_model_pilot.py --empirical
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: The empirical mode reports blocked (no licensed held-out corpus) even with every resource present; no empirical claim is made.
+    tests:
+      - tests/test_decision_model_pilot.py::test_the_empirical_mode_with_every_resource_present_still_reports_blocked
+    rationale: Executed negative test of the documented no-go (docs/decision-model-pilot.md).
+    status: unsupported
+  - id: PK-01
+    group: packaging
+    features: [core install without domain extras, train / predict / save / reload]
+    entry_point: pip install thekaveh-nnx (no domains)
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: With the vision, graph and plotting stacks hidden, a core install trains, predicts, saves and reloads, and lists only usable names.
+    tests:
+      - tests/test_core_install.py::test_a_core_install_trains_predicts_saves_and_reloads_without_the_domains
+      - tests/test_core_install.py::test_a_core_install_lists_only_usable_names_and_pydoc_works
+    rationale: Runs in a subprocess whose import hook blocks the domain packages.
+    status: verified
+  - id: PK-02
+    group: packaging
+    features: [domain features, missing domain extras]
+    entry_point: nnx.<domain name> without its extra
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A domain name without its extra is refused, naming the extra, before data, model or random state is touched.
+    tests:
+      - tests/test_core_install.py::test_a_domain_request_names_its_extra
+      - tests/test_core_install.py::test_plot_features_refuse_before_running_the_model
+      - tests/test_core_install.py::test_lr_finder_refuses_before_touching_data_model_or_rng
+    rationale: Executed negative tests of the refusal and its timing.
+    status: unsupported
   - id: EX-01
     group: training-controls
     features: [synthetic classification example, end to end]
