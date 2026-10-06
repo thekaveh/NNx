@@ -88,15 +88,22 @@ from .finetune import (
 
 # LogitsProcessor chain — pure-torch, no optional deps; always available.
 from .generation import (
+    CustomStage,
     LogitsChain,
     LogitsChainBuilder,
     LogitsProcessor,
+    LogitsStage,
+    LogitsStageCodec,
+    OrderedLogitsPipeline,
     RepetitionPenalty,
     TemperatureScaling,
     TopKFilter,
     TopPFilter,
     apply_chain,
+    register_logits_stage_codec,
+    registered_logits_stage_codecs,
     sample_next_token,
+    unregister_logits_stage_codec,
 )
 from .lr_finder import LRFinderResult, lr_finder
 from .models import (
@@ -394,6 +401,14 @@ __all__ = [
     "RepetitionPenalty",
     "apply_chain",
     "sample_next_token",
+    # Ordered logits pipelines (FEAT-037)
+    "OrderedLogitsPipeline",
+    "LogitsStage",
+    "CustomStage",
+    "LogitsStageCodec",
+    "register_logits_stage_codec",
+    "unregister_logits_stage_codec",
+    "registered_logits_stage_codecs",
     # Datasets
     "NNDataset",
     "NNGraphDataset",
