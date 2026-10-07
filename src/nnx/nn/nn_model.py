@@ -82,6 +82,7 @@ from .params.nn_checkpoint import (
     _MODEL_CHECKPOINT_TAG,
     NNCheckpoint,
     NNCheckpointTransform,
+    ResumePointError,
     _snapshot_state_dict,
     _tensor_state_dict,
 )
@@ -242,6 +243,47 @@ def _check_resume_horizon(
         )
 
 
+def _manifest_lineage(manifest: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    """The resume point's generation and checkpoint id for ``ResumeStatus``
+    (#394); nothing for a checkpoint without a manifest."""
+    if manifest is None:
+        return {}
+    return {"source_generation": manifest.get("generation"), "source_checkpoint_id": manifest.get("checkpoint_id")}
+
+
+def _session_epochs(params: Any, start_epoch: int, counters: Optional[Mapping[str, Any]], where: str) -> int:
+    """How many epochs this session trains (#394). ``resume_epochs="additional"``:
+    ``n_epochs`` more. ``"planned"``: up to the run's planned ``n_epochs`` in
+    total — refused, before anything is restored, when the source planned a
+    different total or has already completed it."""
+    if getattr(params, "resume_epochs", "additional") != "planned":
+        return params.n_epochs
+    if counters is None:
+        raise ValueError(
+            f"{where}: resume_epochs='planned' continues a run's training state; this resume restores the weights "
+            "only (resume_mode='weights_only', or a checkpoint without training state) — resume statefully, or "
+            "use resume_epochs='additional'"
+        )
+    if counters.get("planned_n_epochs") is None or counters.get("global_step") is None:
+        raise ValueError(
+            f"{where}: its checkpoint predates resume counters (#394), so its plan and logical step are unknown — "
+            "resume it with resume_epochs='additional'"
+        )
+    saved_plan = counters.get("planned_n_epochs")
+    if saved_plan is not None and saved_plan != params.n_epochs:
+        raise ValueError(
+            f"{where} planned {saved_plan} epochs; a planned resume continues that plan — set n_epochs={saved_plan}, "
+            "or resume with resume_epochs='additional' to train n_epochs more"
+        )
+    remaining = params.n_epochs - start_epoch
+    if remaining <= 0:
+        raise ValueError(
+            f"{where} already completed its planned {params.n_epochs} epochs (through epoch {start_epoch - 1}): "
+            "nothing is left to resume"
+        )
+    return remaining
+
+
 @dataclass(frozen=True)
 class _ResumeSource:
     checkpoint: NNCheckpoint
@@ -250,6 +292,9 @@ class _ResumeSource:
     training_state: Optional[dict[str, Any]]
     net_state: dict[str, Any]
     label: str
+    # #394: the verified resume-point manifest (None for a checkpoint written
+    # before manifests, or an in-memory source).
+    manifest: Optional[dict[str, Any]] = None
 
 
 # A checkpoint and its training state held in memory under (run id, label) for
@@ -268,9 +313,13 @@ def _load_resume_source(
     a bundle ``resume_mode`` cannot use."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
     in_memory = _IN_MEMORY_RESUME.get()
+    manifest: Optional[dict[str, Any]] = None
     if in_memory is not None and in_memory[:2] == (run_id, str(ckpt_type)):
         ckpt, training_state = in_memory[2], in_memory[3]
     else:
+        # #394: a torn, mixed or corrupted resume point is refused here, with
+        # its reason, before anything is restored from it.
+        manifest = NNCheckpoint.verify(run=run_id, type=cast(Any, ckpt_type))
         ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
@@ -297,7 +346,7 @@ def _load_resume_source(
         )
     label = str(ckpt_type)
     training_state = _resume_training_state(training_state, mode, f"{run_id}/{label}", trainer=trainer)
-    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label)
+    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest)
 
 
 def _restore_weights_only(
@@ -3161,6 +3210,11 @@ class NNModel(_HubMixinBase):
                 "model has no trainable parameters — did you freeze('*')? Unfreeze something before train()."
             )
 
+        if params.resume_epochs == "planned" and params.resume_from_run_id is None:
+            raise ValueError(
+                "resume_epochs='planned' continues a run's plan: set resume_from_run_id (it does nothing on a "
+                "fresh run)"
+            )
         if params.seed is not None:
             from ..seeding import set_seed
 
@@ -3398,6 +3452,10 @@ class NNModel(_HubMixinBase):
             )
             registry.register(engine)
         start_epoch = 0
+        # #394: the epochs this session trains, and the logical position a
+        # planned resume continues from.
+        session_epochs = params.n_epochs
+        restored_counters: Mapping[str, Any] = {}
 
         # Warm resume restores every stateful training component when the
         # source checkpoint has a versioned sidecar. Legacy optimizer-only
@@ -3447,7 +3505,29 @@ class NNModel(_HubMixinBase):
                         completed_epoch = training_state.get("completed_epoch")
                         if completed_epoch is not None:
                             start_epoch = int(completed_epoch) + 1
-                        _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs, start_epoch=start_epoch)
+                        counters = training_state.get("counters") or {}
+                        if (
+                            source.manifest is not None
+                            and source.manifest.get("checkpoint_id") != source.checkpoint.training_state_id
+                        ):
+                            raise ResumePointError(
+                                f"resume_from_run_id={params.resume_from_run_id!r}/{source.label}: the resume point "
+                                "changed while it was being read — retry once its writer has finished"
+                            )
+                        session_epochs = _session_epochs(
+                            params, start_epoch, counters, f"resume_from_run_id={params.resume_from_run_id!r}"
+                        )
+                        if params.resume_epochs == "planned":
+                            restored_counters = counters
+                            if clock is not None:
+                                # The scheduler's horizon is the whole plan; the
+                                # clock's budget check needs the updates still to run.
+                                clock.planned = (
+                                    planned_updates(train_loader, params.optim.accumulate_grad_batches, session_epochs)
+                                    if owns_windows
+                                    else None
+                                )
+                        _check_resume_horizon(params.scheduler, n_epochs=session_epochs, start_epoch=start_epoch)
                         # Worker capability is decided BEFORE any state is restored:
                         # ordinary training accepts any re-iterable batch source (a
                         # list, NNGraphDataset's one-element full-batch list, ...),
@@ -3503,11 +3583,15 @@ class NNModel(_HubMixinBase):
                             source_checkpoint=source.label,
                             source_epoch=source.checkpoint.idp.epoch_idx,
                             fresh_components=tuple(component_plan.fresh),
+                            **_manifest_lineage(source.manifest),
                         )
                     else:
                         # Epoch numbering continues after the checkpoint's epoch; the
                         # optimizer, scheduler, scaler and components start fresh.
                         start_epoch = source.checkpoint.idp.epoch_idx + 1
+                        session_epochs = _session_epochs(
+                            params, start_epoch, None, f"resume_from_run_id={params.resume_from_run_id!r}"
+                        )
                         _restore_weights_only(
                             self.net,
                             source,
@@ -3521,6 +3605,7 @@ class NNModel(_HubMixinBase):
                             source_checkpoint=source.label,
                             source_epoch=source.checkpoint.idp.epoch_idx,
                             fresh_components=registry.names,
+                            **_manifest_lineage(source.manifest),
                         )
         except BaseException:
             # Another rank's failure reaches a rank that restored cleanly only
@@ -3535,7 +3620,7 @@ class NNModel(_HubMixinBase):
         # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
         # Fall back to None so tqdm renders without a total instead of crashing.
         try:
-            n_iter: Optional[int] = int(params.n_epochs * len(cast(Sized, train_loader)))
+            n_iter: Optional[int] = int(session_epochs * len(cast(Sized, train_loader)))
         except TypeError:
             n_iter = None
         best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
@@ -3544,6 +3629,7 @@ class NNModel(_HubMixinBase):
             Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
         ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
+        ctx.scheduler = scheduler  # read-only view for callbacks (#394)
         ctx.history_retention = history.retention if history is not None else None
         ctx.history_records = records
         # Default to the standard supervised step when the caller doesn't
@@ -3592,7 +3678,9 @@ class NNModel(_HubMixinBase):
             step_fn = _ObjectiveStep(objective, engine)
             ctx.update_count = engine.commits
 
-        idx_iter = 0
+        # #394: a planned resume continues the logical step and update counters.
+        idx_iter = int(restored_counters.get("global_step") or 0)
+        ctx.committed_updates = int(restored_counters.get("committed_updates") or 0)
         stopped_mid_epoch = False
         pre_transform_net_state: Optional[dict[str, Any]] = None
         pre_transform_rng_state: Optional[dict[str, Any]] = None
@@ -3629,7 +3717,7 @@ class NNModel(_HubMixinBase):
                 .with_compile(_record_of(compile_session))
             )
             ctx.run = run
-            for local_epoch in range(params.n_epochs):
+            for local_epoch in range(session_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
                 _set_loader_epoch(train_loader, idx_epoch)
@@ -3819,8 +3907,15 @@ class NNModel(_HubMixinBase):
                             run=run,
                             ctx=ctx,
                             idx_epoch=idx_epoch,
-                            local_epoch=local_epoch,
+                            # Phase tags follow the plan's logical epochs on a
+                            # planned resume (#394), the session's otherwise.
+                            local_epoch=idx_epoch if params.resume_epochs == "planned" else local_epoch,
                             params=params,
+                            counters={
+                                "global_step": idx_iter,
+                                "committed_updates": ctx.committed_updates,
+                                "planned_n_epochs": start_epoch + session_epochs,
+                            },
                             best_checkpoint=best_checkpoint,
                             optimizer=optimizer,
                             scheduler=scheduler,
@@ -3910,6 +4005,12 @@ class NNModel(_HubMixinBase):
                     resume_optimizer_factory=resume_optimizer_factory,
                     registry=registry,
                     final_rng=final_rng,
+                    # No batch runs after the last commit, so its counters hold.
+                    counters={
+                        "global_step": idx_iter,
+                        "committed_updates": ctx.committed_updates,
+                        "planned_n_epochs": start_epoch + session_epochs,
+                    },
                 )
             saved = records.finish(run.with_compile(_record_of(compile_session)))
         except Exception as caught:
@@ -3945,6 +4046,7 @@ class NNModel(_HubMixinBase):
         resume_optimizer_factory: Any,
         registry: ComponentRegistry,
         final_rng: Optional[list[Any]] = None,
+        counters: Optional[dict[str, Any]] = None,
     ) -> None:
         """Re-save LAST from the live net after ``on_train_end`` (see #87)."""
         final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
@@ -3978,6 +4080,7 @@ class NNModel(_HubMixinBase):
             optimizer_topology=resume_optimizer_topology,
             optimizer_factory=resume_optimizer_factory,
             components=registry.collect(),
+            counters=counters,
         )
 
     def evaluate(
@@ -4490,6 +4593,7 @@ class NNModel(_HubMixinBase):
         idx_epoch: int,
         local_epoch: int,
         params: NNTrainParams,
+        counters: Optional[dict[str, Any]],
         best_checkpoint: Optional[NNCheckpoint],
         optimizer: torch.optim.Optimizer,
         scheduler: Any,
@@ -4528,6 +4632,7 @@ class NNModel(_HubMixinBase):
                 components=registry.collect(),
                 is_best=record.improved if record is not None else None,
                 trained_recipe=run.transforms,
+                counters=counters,
             )
         except BaseException:
             # LAST is the epoch commit marker. If it cannot be published,
@@ -4563,6 +4668,7 @@ class NNModel(_HubMixinBase):
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
         is_best: Optional[bool] = None,
         trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
+        counters: Optional[dict[str, Any]] = None,
     ) -> NNCheckpoint:
         """Publish LAST, the due phase tag and — when this epoch is the best
         so far — BEST. ``is_best`` is the monitor's decision (FEAT-003);
@@ -4600,6 +4706,7 @@ class NNModel(_HubMixinBase):
             "precision": precision,
             "compile": compile,
             "distributed": distributed,
+            "counters": counters,
         }
         if optimizers is not None:
             stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
@@ -4777,3 +4884,6 @@ class _CallbackContext:
         self.update_listeners: list[Callable[[Any], None]] = []
         self.stop_at_update: bool = False
         self.committed_updates: int = 0
+        # #394: the training scheduler, read-only for callbacks (None outside
+        # NNModel.train, e.g. a Trainer's named schedulers).
+        self.scheduler: Any = None

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import os
+import signal
 import tempfile
+import threading
 import uuid
 from collections import OrderedDict
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Optional
@@ -138,18 +143,220 @@ def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]
     return {key: value.detach().contiguous().clone() for key, value in state.items()}
 
 
+def _fsync_file(path: str) -> None:
+    """Flush a written file to stable storage (best effort: some platforms
+    refuse fsync on a handle they cannot write through)."""
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _fsync_directory(path: str) -> None:
+    """Persist a rename: fsync the directory (a no-op where unsupported)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _atomic_torch_save(obj, path: str) -> None:
-    """torch.save(obj, path) wrapped with tmp + rename so a
-    KeyboardInterrupt during the pickle never leaves a half-written
-    .pt file at the destination."""
+    """torch.save(obj, path) wrapped with tmp + fsync + rename so a
+    KeyboardInterrupt (or a crash) during the pickle never leaves a
+    half-written .pt file at the destination."""
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
     os.close(fd)
     try:
         torch.save(obj, tmp)
+        _fsync_file(tmp)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+# --- resume points (#394) ------------------------------------------------------------------------
+
+_RESUME_POINT_FORMAT = "nnx.resume-point/1"
+
+
+class ResumePointError(ValueError):
+    """A resume point that cannot be trusted: torn (its manifest names
+    another checkpoint), mixed (files from different generations) or
+    corrupted (a file's digest differs). Raised before anything is
+    restored; the message says which and why."""
+
+
+def _manifest_path(checkpoint_path: str) -> str:
+    return f"{checkpoint_path}.manifest.json"
+
+
+def _staged_manifest_path(checkpoint_path: str) -> str:
+    """The next generation's manifest, written before its checkpoint is
+    published: a crash between publishing and the live manifest leaves it to
+    be promoted by :meth:`NNCheckpoint.verify` once its digests check out."""
+    return f"{checkpoint_path}.manifest.staged.json"
+
+
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _read_manifest(checkpoint_path: str) -> Optional[dict[str, Any]]:
+    path = _manifest_path(checkpoint_path)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise ResumePointError(f"unreadable resume-point manifest {os.path.basename(path)}: {error}") from error
+    if not isinstance(manifest, dict) or manifest.get("format") != _RESUME_POINT_FORMAT:
+        raise ResumePointError(f"{os.path.basename(path)} is not an NNx resume-point manifest")
+    return manifest
+
+
+def _write_manifest(checkpoint_path: str, manifest: dict[str, Any], *, staged: bool = False) -> None:
+    path = _staged_manifest_path(checkpoint_path) if staged else _manifest_path(checkpoint_path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, sort_keys=True, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+@contextlib.contextmanager
+def _deferred_interrupt():
+    """Hold a Ctrl-C (SIGINT) until the block ends, so it cannot land between
+    the paired replaces of one resume point; raise it right after. Only the
+    main thread can install handlers; elsewhere the block runs as is."""
+    if threading.current_thread() is not threading.main_thread() or signal.getsignal(signal.SIGINT) in (
+        signal.SIG_IGN,
+        None,
+    ):
+        yield
+        return
+    received: list[Any] = []
+
+    def hold(signum: int, frame: Any) -> None:
+        received.append((signum, frame))
+        if len(received) > 1:  # insisting: stop now
+            raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGINT, hold)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    if received:
+        if previous is signal.default_int_handler or not callable(previous):
+            raise KeyboardInterrupt
+        previous(*received[0])  # the caller's own handler, as if the signal had just arrived
+
+
+def _publish(checkpoint_path: str, written: str, manifest: dict[str, Any]) -> None:
+    """Publish one resume point (#394): stage its manifest, rename the written
+    checkpoint into place, then write the live manifest — the window a Ctrl-C
+    is held for. A crash inside it leaves the staged manifest, which
+    :meth:`NNCheckpoint.verify` promotes once every listed digest matches."""
+    _write_manifest(checkpoint_path, manifest, staged=True)
+    with _deferred_interrupt():
+        os.replace(written, checkpoint_path)
+        _write_manifest(checkpoint_path, manifest)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(_staged_manifest_path(checkpoint_path))
+    _fsync_directory(os.path.dirname(checkpoint_path))
+
+
+def _manifest_problem(directory: str, checkpoint_name: str, manifest: Mapping[str, Any]) -> Optional[str]:
+    """Why a manifest does not describe the files on disk, or ``None``."""
+    files = manifest.get("files")
+    if not isinstance(files, dict) or checkpoint_name not in files:
+        return f"the manifest does not list {checkpoint_name}"
+    for name in files:
+        if os.path.basename(name) != name:
+            return f"the manifest lists a path, not a file name: {name!r}"
+        if not os.path.exists(os.path.join(directory, name)):
+            return f"torn resume point — {name} (generation {manifest.get('generation')}) is missing"
+    checkpoint_id = manifest.get("checkpoint_id")
+    if checkpoint_id is not None:
+        sidecar = f"{checkpoint_name}.opt.{checkpoint_id}.pt"
+        if sidecar not in files:
+            return (
+                f"torn resume point — the manifest names checkpoint {checkpoint_id}, whose training state "
+                f"{sidecar} it does not list"
+            )
+    mismatched = sorted(name for name, digest in files.items() if _sha256(os.path.join(directory, name)) != digest)
+    if mismatched:
+        return f"digest mismatch in {', '.join(mismatched)} — the file changed after it was written"
+    return None
+
+
+def _read_staged_manifest(checkpoint_path: str) -> Optional[dict[str, Any]]:
+    """A staged manifest left by an interrupted publish, or ``None``."""
+    try:
+        with open(_staged_manifest_path(checkpoint_path), encoding="utf-8") as handle:
+            staged = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return staged if isinstance(staged, dict) and staged.get("format") == _RESUME_POINT_FORMAT else None
+
+
+def _next_generation(checkpoint_path: str) -> int:
+    """The tag's next generation ordinal: one more than the larger of its live
+    manifest's and a staged one's (an interrupted publish), 1 for a first
+    save or after an unreadable manifest."""
+    try:
+        live = _read_manifest(checkpoint_path)
+    except ResumePointError:
+        live = None
+    ordinals = [
+        value
+        for value in (m.get("generation") for m in (live, _read_staged_manifest(checkpoint_path)) if m is not None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    ]
+    return max(ordinals) + 1 if ordinals else 1
+
+
+def _manifest(
+    ordinal: int,
+    checkpoint_id: Optional[str],
+    completed_epoch: Any,
+    counters: Optional[dict[str, Any]],
+    files: dict[str, str],
+) -> dict[str, Any]:
+    counters = counters or {}
+    return {
+        "format": _RESUME_POINT_FORMAT,
+        "generation": ordinal,
+        "checkpoint_id": checkpoint_id,
+        "completed_epoch": completed_epoch,
+        "global_step": counters.get("global_step"),
+        "committed_updates": counters.get("committed_updates"),
+        "planned_n_epochs": counters.get("planned_n_epochs"),
+        "files": files,
+    }
 
 
 def _net_params_from_json(raw: str) -> Optional[NNParams]:
@@ -337,8 +544,19 @@ class NNCheckpoint:
         precision: Optional[dict[str, Any]] = None,
         compile: Optional[dict[str, Any]] = None,
         distributed: Optional[dict[str, Any]] = None,
+        counters: Optional[dict[str, Any]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
+
+        Every save is a resume point (#394): a manifest
+        (``<tag>.pt.manifest.json``, written last) stamps it with the tag's
+        generation ordinal, the checkpoint id and the SHA-256 of each file it
+        consists of, so a resume refuses a torn, mixed or corrupted point
+        (:meth:`verify`). Files are fsynced before they are renamed into
+        place, and a Ctrl-C arriving meanwhile is held until the point is
+        complete. ``counters`` (the run's logical position: ``global_step``,
+        ``committed_updates``, ``planned_n_epochs``) rides in the training
+        state.
 
         ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
         mapping of every registered component's versioned state; it lives
@@ -363,8 +581,23 @@ class NNCheckpoint:
         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
         sidecar_path = ckpt_path + ".opt.pt"
         with FileLock(ckpt_path + ".lock"):
+            ordinal = _next_generation(ckpt_path)
+            completed = self.idp.epoch_idx if completed_epoch is None else completed_epoch
             if optimizer_state is None and optimizers_state is None:
-                replace(self, training_state_id=None, training_state_present=False).to_file(path=ckpt_path)
+                fd, weights_tmp = tempfile.mkstemp(
+                    prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)
+                )
+                os.close(fd)  # to_file replaces it: nothing is removed before the point is published
+                try:
+                    replace(self, training_state_id=None, training_state_present=False).to_file(path=weights_tmp)
+                    _fsync_file(weights_tmp)
+                    manifest = _manifest(
+                        ordinal, None, completed, counters, {os.path.basename(ckpt_path): _sha256(weights_tmp)}
+                    )
+                    _publish(ckpt_path, weights_tmp, manifest)
+                finally:
+                    if os.path.exists(weights_tmp):
+                        os.remove(weights_tmp)
                 if os.path.exists(sidecar_path):
                     os.remove(sidecar_path)
                 for generation_sidecar in _generation_sidecar_paths(ckpt_path):
@@ -386,7 +619,11 @@ class NNCheckpoint:
                 "scheduler_type": scheduler_type,
                 "scaler": scaler_state,
                 "rng": rng_state,
-                "completed_epoch": self.idp.epoch_idx if completed_epoch is None else completed_epoch,
+                "completed_epoch": completed,
+                # #394: the resume point's generation ordinal and the run's
+                # logical position (None when the caller keeps none).
+                "generation": ordinal,
+                "counters": counters,
                 "model": resume_net_state,
                 # FEAT-005: checkpointable components and Trainer's named
                 # optimizers / schedulers (None when absent).
@@ -416,8 +653,13 @@ class NNCheckpoint:
             generation_sidecar_path = _generation_sidecar_path(ckpt_path, generation)
             try:
                 stamped.to_file(checkpoint_tmp)
+                _fsync_file(checkpoint_tmp)
                 _atomic_torch_save(training_state, generation_sidecar_path)
-                os.replace(checkpoint_tmp, ckpt_path)
+                files = {
+                    os.path.basename(ckpt_path): _sha256(checkpoint_tmp),
+                    os.path.basename(generation_sidecar_path): _sha256(generation_sidecar_path),
+                }
+                _publish(ckpt_path, checkpoint_tmp, _manifest(ordinal, generation, completed, counters, files))
                 _atomic_torch_save(training_state, sidecar_path)
                 for old_sidecar in _generation_sidecar_paths(ckpt_path):
                     if old_sidecar != generation_sidecar_path:
@@ -425,6 +667,64 @@ class NNCheckpoint:
             finally:
                 if os.path.exists(checkpoint_tmp):
                     os.remove(checkpoint_tmp)
+
+    @staticmethod
+    def resume_point(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """The manifest stamping this checkpoint's resume point (#394) —
+        ``generation``, ``checkpoint_id``, ``completed_epoch``,
+        ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the
+        ``files`` with their SHA-256 — or ``None`` for a checkpoint written
+        before manifests existed. Read as is; :meth:`verify` checks it."""
+        return _read_manifest(_checkpoint_path(run, type, root=root))
+
+    @staticmethod
+    def verify(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Check a resume point before anything is restored from it and
+        return its manifest (``None`` for a checkpoint without one, which
+        loads as before). Raises :class:`ResumePointError` naming the reason:
+        a listed file missing or a manifest naming another checkpoint
+        (*torn*), files of different generations (*mixed*), or a file whose
+        SHA-256 differs (*digest mismatch*). No file is unpickled to decide
+        and nothing is written: a point whose writer stopped between
+        publishing the checkpoint and its live manifest is recognized by its
+        staged manifest — every digest matching — and that manifest is
+        returned (the writer's next save makes it live)."""
+        ckpt_path = _checkpoint_path(run, type, root=root)
+        label = f"{run}/{type}"
+        directory = os.path.dirname(ckpt_path)
+        name = os.path.basename(ckpt_path)
+        if not os.path.isdir(directory):
+            return None
+        with FileLock(ckpt_path + ".lock"):  # one consistent view against a concurrent writer
+            manifest = _read_manifest(ckpt_path)
+            problem = None if manifest is None else _manifest_problem(directory, name, manifest)
+            if manifest is None or problem is not None:
+                staged = _read_staged_manifest(ckpt_path)
+                if staged is not None and _manifest_problem(directory, name, staged) is None:
+                    manifest, problem = staged, None
+            if manifest is None:
+                return None
+            if problem is not None:
+                raise ResumePointError(f"{label}: {problem}")
+            checkpoint_id = manifest.get("checkpoint_id")
+            if checkpoint_id is not None:
+                sidecar = os.path.join(directory, f"{name}.opt.{checkpoint_id}.pt")
+                try:
+                    state = torch.load(sidecar, map_location="cpu", weights_only=True, mmap=True)
+                except FileNotFoundError as error:
+                    raise ResumePointError(
+                        f"{label}: torn resume point — {os.path.basename(sidecar)} is missing"
+                    ) from error
+                if (
+                    isinstance(state, dict)
+                    and "generation" in state
+                    and state["generation"] != manifest.get("generation")
+                ):
+                    raise ResumePointError(
+                        f"{label}: mixed resume point — the manifest is generation {manifest.get('generation')}, "
+                        f"the training state generation {state['generation']}"
+                    )
+        return manifest
 
     @staticmethod
     def load_training_state(

@@ -1870,7 +1870,7 @@ Saved component state that cannot be restored: every problem found (missing, unk
 #### `nnx.components.ResumeStatus`
 
 ```python
-class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = (), source_epoch: 'Optional[int]' = None) -> 'None'
+class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = (), source_epoch: 'Optional[int]' = None, source_generation: 'Optional[int]' = None, source_checkpoint_id: 'Optional[str]' = None) -> 'None'
 ```
 
 How a training session started.
@@ -1892,6 +1892,9 @@ Attributes:
     fresh_components: registered components that kept their fresh
         state (optional components absent from the checkpoint, or every
         component on a weights-only resume).
+    source_generation / source_checkpoint_id: the resume point's
+        generation ordinal and checkpoint id from its manifest (#394);
+        ``None`` for a checkpoint written before manifests existed.
 ```
 
 ##### `nnx.components.ResumeStatus.state`
@@ -8879,7 +8882,7 @@ No public description is currently available.
 #### `nnx.nn.params.nn_train_params.NNTrainParams`
 
 ```python
-class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None, clock='epoch'), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, metrics: 'tuple[MetricSpec, ...]' = (), monitor: 'Optional[MonitorSpec]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto') -> 'None'
+class nnx.nn.params.nn_train_params.NNTrainParams(*, n_epochs: 'int', scheduler: 'NNSchedulerParams' = NNSchedulerParams(min_lr=1e-07, factor=0.95, patience=8, cooldown=2, threshold=0.001, kind=None, step_size=None, T_max=None, max_lr=None, total_steps=None, warmup_steps=None, clock='epoch'), optim: 'Union[NNOptimParams, NNOptimFactoryParams]' = NNOptimParams(name=adam, max_lr=0.01, weight_decay=5e-05, momentum=(0.9, 0.999), grad_clip_norm=None, accumulate_grad_batches=1, param_groups=None, eps=1e-08), seed: 'Optional[int]' = None, data_id: 'Optional[str]' = None, save_phase_checkpoints: 'bool' = True, train_loader: 'Optional[Iterable[Any]]' = None, val_loader: 'Optional[Iterable[Any]]' = None, metrics: 'tuple[MetricSpec, ...]' = (), monitor: 'Optional[MonitorSpec]' = None, extra_metrics: 'Optional[Mapping[str, Callable]]' = None, resume_from_run_id: 'Optional[str]' = None, resume_from_checkpoint: 'Optional[str]' = 'last', parent_run_id: 'Optional[str]' = None, overwrite_existing: 'bool' = False, resume_mode: 'str' = 'auto', resume_epochs: 'str' = 'additional') -> 'None'
 ```
 
 Training configuration.
@@ -10043,7 +10046,7 @@ atomicity guarantee NNRun.save offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None, distributed: 'Optional[dict[str, Any]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None, distributed: 'Optional[dict[str, Any]]' = None, counters: 'Optional[dict[str, Any]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.
@@ -10051,6 +10054,16 @@ Save the checkpoint to disk atomically.
 **Details**
 
 ```text
+Every save is a resume point (#394): a manifest
+(``<tag>.pt.manifest.json``, written last) stamps it with the tag's
+generation ordinal, the checkpoint id and the SHA-256 of each file it
+consists of, so a resume refuses a torn, mixed or corrupted point
+(:meth:`verify`). Files are fsynced before they are renamed into
+place, and a Ctrl-C arriving meanwhile is held until the point is
+complete. ``counters`` (the run's logical position: ``global_step``,
+``committed_updates``, ``planned_n_epochs``) rides in the training
+state.
+
 ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
 mapping of every registered component's versioned state; it lives
 in the same generation sidecar as the optimizer state, so a model
@@ -10070,6 +10083,22 @@ The immutable generation sidecar is committed first and the checkpoint
 second. The checkpoint names the sidecar it owns, so interruption
 between replacements leaves the previous generation resumable.
 ```
+
+##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.resume_point`
+
+```python
+nnx.nn.params.nn_checkpoint.NNCheckpoint.resume_point(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
+```
+
+The manifest stamping this checkpoint's resume point (#394) — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint written before manifests existed. Read as is; :meth:`verify` checks it.
+
+##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.verify`
+
+```python
+nnx.nn.params.nn_checkpoint.NNCheckpoint.verify(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
+```
+
+Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises :class:`ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). No file is unpickled to decide and nothing is written: a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_training_state`
 
@@ -10178,6 +10207,15 @@ nnx.nn.params.nn_checkpoint.NNCheckpoint.load(run: 'str', type: 'Checkpoints', r
 ```
 
 No public description is currently available.
+
+
+#### `nnx.nn.params.nn_checkpoint.ResumePointError`
+
+```python
+class nnx.nn.params.nn_checkpoint.ResumePointError
+```
+
+A resume point that cannot be trusted: torn (its manifest names another checkpoint), mixed (files from different generations) or corrupted (a file's digest differs). Raised before anything is restored; the message says which and why.
 
 
 #### `nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint`

@@ -1444,6 +1444,72 @@ Built-in components are `EarlyStopping` (`early_stopping`, optional) and the ste
 
 `resume_mode` (on `NNTrainParams` and `NNTrainerParams`, runtime-only) chooses what a resume restores. `"auto"` (default) restores the complete training state when the checkpoint has it and otherwise its weights, with a warning; `"stateful"` requires the training state and fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, say); `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh — epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon. The returned run reports what happened in `run.resume_status` — a `ResumeStatus` with `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint (and that checkpoint's epoch, `source_epoch`), and the restored and freshly started component names — and `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
+### 14.3. Exact resume to the planned horizon
+
+A stateful resume restores the model, optimizer, scheduler, scaler, every
+random stream (Python, NumPy, torch, CUDA / MPS and the loaders' generators)
+and every component, so a run split at an epoch boundary continues bit for
+bit on deterministic single-process training with in-process loaders
+(`num_workers=0`) — `ReduceLROnPlateau` included. `resume_epochs` (on `NNTrainParams`)
+chooses what `n_epochs` means on that resume:
+
+- `"additional"` (default) trains `n_epochs` **more** after the checkpoint's
+  epoch, as NNx always has.
+- `"planned"` continues the run's **own plan**: it trains up to `n_epochs` in
+  total, carrying on the logical step counter (`iter_idx`), the committed
+  updates (`ctx.committed_updates`, so a budgeted search's update cap counts
+  the source's updates too) and the phase-checkpoint cadence; an
+  `optimizer_update` scheduler keeps its one horizon over the whole plan. It
+  needs a stateful resume from a checkpoint that records its plan: a
+  weights-only resume, a checkpoint written before resume counters, a source
+  that planned a different total, or one that has already finished its plan
+  is refused before anything is restored. It is part of the run id (it
+  changes what trains) and omitted from `state()` at its default. A
+  `Trainer` always resumes `"additional"`.
+
+```python
+plan = NNTrainParams(n_epochs=4, train_loader=train_loader, val_loader=val_loader, seed=0)
+first = model.train(params=plan, callbacks=[stop_after_epoch_1])            # epochs 0-1, then interrupted
+rest = NNModel(...).train(params=replace(
+    plan, resume_from_run_id=first.id, resume_mode="stateful", resume_epochs="planned"
+))                                                                            # epochs 2-3: equals 4 straight epochs
+```
+
+**Resume points.** Every checkpoint is one resume point: the checkpoint file,
+its generation-addressed training-state sidecar and a manifest
+(`<tag>.pt.manifest.json`, written last) holding the tag's `generation`
+ordinal, the `checkpoint_id`, the logical position (`completed_epoch`,
+`global_step`, `committed_updates`, `planned_n_epochs`) and the SHA-256 of
+each file. Files are fsynced before they are renamed into place; the manifest
+is staged before the checkpoint is published and made live right after, and a
+Ctrl-C in that window is held until the point is complete (a second one stops
+at once). A writer that dies inside it leaves a point whose staged manifest
+matches every file: verification reads that manifest rather than refusing the
+point (it never writes; the run's next save makes it live). A resume
+verifies the point first — `NNCheckpoint.verify(run, type)` — and refuses
+with `ResumePointError` a *torn* point (a listed file missing, or a manifest
+naming another checkpoint), a *mixed* one (files of different generations)
+or a *corrupted* one (a digest mismatch); `NNCheckpoint.resume_point(run,
+type)` reads the manifest. A checkpoint written before manifests loads as
+before. Stopping (`should_stop`, an interrupt) leaves the last committed
+point intact.
+
+**Identity and lineage.** A resume never writes to its source: the resumed
+session's run id hashes its parent (`parent_run_id`, `parent_checkpoint`),
+and `run.resume_status` — stored in `metadata.yaml` under `resume`, never in
+`run.yaml`, whose content *is* the run id — records the source run,
+checkpoint, epoch, `source_generation` and `source_checkpoint_id`. A second
+resume of the same parent with the same configuration maps to the same child
+id — a retry after a failed child, too — so give it a `salt=` (or a
+`data_id`) to keep both, or `overwrite_existing=True` to replace the child.
+
+**Callback and scheduler state.** A callback carries state across a resume
+by implementing the component protocol (§14.1: `component_spec`,
+`component_state`, `load_component_state`) — NNx's counterpart of a
+`state_dict` / `load_state_dict` pair — and reads the training scheduler
+through `ctx.scheduler` (read-only; `None` in a `Trainer`, whose schedulers
+are named).
+
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 
 The decoder-only LM path is the largest architectural addition since the

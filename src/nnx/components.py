@@ -152,6 +152,9 @@ class ResumeStatus:
         fresh_components: registered components that kept their fresh
             state (optional components absent from the checkpoint, or every
             component on a weights-only resume).
+        source_generation / source_checkpoint_id: the resume point's
+            generation ordinal and checkpoint id from its manifest (#394);
+            ``None`` for a checkpoint written before manifests existed.
     """
 
     mode: str = "fresh"
@@ -160,6 +163,8 @@ class ResumeStatus:
     restored_components: tuple[str, ...] = ()
     fresh_components: tuple[str, ...] = ()
     source_epoch: Optional[int] = None
+    source_generation: Optional[int] = None
+    source_checkpoint_id: Optional[str] = None
 
     def state(self) -> dict[str, Any]:
         state: dict[str, Any] = {
@@ -171,6 +176,10 @@ class ResumeStatus:
         }
         if self.source_epoch is not None:  # omitted when unknown: earlier metadata reads the same
             state["source_epoch"] = self.source_epoch
+        if self.source_generation is not None:
+            state["source_generation"] = self.source_generation
+        if self.source_checkpoint_id is not None:
+            state["source_checkpoint_id"] = self.source_checkpoint_id
         return state
 
     @staticmethod
@@ -182,6 +191,8 @@ class ResumeStatus:
             restored_components=tuple(state.get("restored_components") or ()),
             fresh_components=tuple(state.get("fresh_components") or ()),
             source_epoch=state.get("source_epoch"),
+            source_generation=state.get("source_generation"),
+            source_checkpoint_id=state.get("source_checkpoint_id"),
         )
 
     def __post_init__(self) -> None:
