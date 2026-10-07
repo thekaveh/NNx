@@ -298,6 +298,7 @@ def test_with_the_extras_installed_the_flat_names_are_the_deep_classes():
         "graph_conv",
         "graph_sage",
         "transformer",
+        "vit",  # #395
     ]
     with pytest.raises(AttributeError, match="no attribute 'NotAThing'"):
         nnx.NotAThing  # noqa: B018

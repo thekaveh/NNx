@@ -247,7 +247,7 @@ classifier, FEAT-026) is refused before anything is written.
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
 
 ```python
-nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, precision: 'Optional[PrecisionPolicy]' = None, **model_kwargs: 'Any') -> 'Self'
+nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, precision: 'Optional[PrecisionPolicy]' = None, exclude_submodules: 'Sequence[str]' = (), **model_kwargs: 'Any') -> 'Self'
 ```
 
 Rebuild a model, replay topology transforms, and load its weights.
@@ -255,6 +255,12 @@ Rebuild a model, replay topology transforms, and load its weights.
 **Details**
 
 ```text
+``exclude_submodules`` names top-level submodules the training run
+attached to the net that are not part of the rebuilt architecture —
+a JEPA predictor registered as ``model.net._jepa_predictor``, say —
+whose weights are left out; every other weight still loads strictly.
+A name the checkpoint does not hold raises ``ValueError``.
+
 Ordinary and legacy FP32 checkpoints have no transforms. Converted
 QAT checkpoints replay their persisted torchao recipe before state
 loading; unsupported recipes fail explicitly rather than constructing
@@ -4395,6 +4401,35 @@ nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_s
 ```
 
 Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever. With CUDA, each process takes ``cuda:LOCAL_RANK``.
+
+
+#### `nnx.distributed.shutdown`
+
+```python
+nnx.distributed.shutdown(*, timeout_seconds: 'float' = 60.0) -> 'None'
+```
+
+Leave the process group together, then destroy it: the counterpart of :func:`init_process_group`, called once training is over.
+
+**Details**
+
+```text
+Every rank meets at a teardown barrier before the group is destroyed, so
+no rank tears its connections down while a peer still uses them (with
+Gloo, a peer can otherwise abort: "terminate called without an active
+exception"). With Gloo the wait is bounded by ``timeout_seconds``: when a
+rank does not arrive in time the others raise ``RuntimeError`` instead of
+blocking in the call, and leave the group to process exit (destroying it
+then could block on the missing rank). The timed-out barrier stays queued,
+so the process itself may still wait at exit until the missing rank
+arrives (its barrier then completes against the queued one) or the
+group's own timeout (``init_process_group(timeout_seconds=...)``) expires.
+With NCCL, older torch releases ignore ``timeout_seconds`` unless
+``TORCH_NCCL_BLOCKING_WAIT=1`` is set, so the wait is bounded by the
+group's timeout instead. Without a process group, or after a successful
+call, it does nothing; after a failed call the group is still
+initialized (``init_process_group()`` returns it as is), so exit.
+```
 
 
 #### `nnx.distributed.train_loader`
@@ -9685,6 +9720,39 @@ nnx.nn.params.nn_conv_params.NNConvParams.from_state(state: 'dict') -> 'NNConvPa
 No public description is currently available.
 
 
+#### `nnx.nn.params.nn_vit_params.NNViTParams`
+
+```python
+class nnx.nn.params.nn_vit_params.NNViTParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None, image_size: 'int', patch_size: 'int', d_model: 'int', n_layers: 'int', in_channels: 'int' = 3, ffn_mult: 'int' = 4, attn_dropout: 'float' = 0.0, resid_dropout: 'float' = 0.0) -> 'None'
+```
+
+Parameters for :class:`~nnx.nn.net.vit_nn.ViTNN`, built by ``Nets.VIT``.
+
+##### `nnx.nn.params.nn_vit_params.NNViTParams.n_patches`
+
+```python
+property nnx.nn.params.nn_vit_params.NNViTParams.n_patches
+```
+
+Patch tokens per image (the encoder adds one CLS token).
+
+##### `nnx.nn.params.nn_vit_params.NNViTParams.state`
+
+```python
+nnx.nn.params.nn_vit_params.NNViTParams.state(self) -> 'dict'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_vit_params.NNViTParams.from_state`
+
+```python
+nnx.nn.params.nn_vit_params.NNViTParams.from_state(state: 'dict') -> 'NNViTParams'
+```
+
+No public description is currently available.
+
+
 #### `nnx.nn.params.nn_moe_params.NNMoEParams`
 
 ```python
@@ -11666,7 +11734,7 @@ Enum value `negative_log_likelihood`.
 class nnx.nn.enum.nets.Nets(Enum)
 ```
 
-Enum values: `CONV`, `FEED_FWD`, `FEED_FWD_MOE`, `GRAPH_ATT`, `GRAPH_CONV`, `GRAPH_SAGE`, `TRANSFORMER`.
+Enum values: `CONV`, `FEED_FWD`, `FEED_FWD_MOE`, `GRAPH_ATT`, `GRAPH_CONV`, `GRAPH_SAGE`, `TRANSFORMER`, `VIT`.
 
 ##### `nnx.nn.enum.nets.Nets.CONV`
 
@@ -11723,6 +11791,14 @@ nnx.nn.enum.nets.Nets.TRANSFORMER = 'transformer'
 ```
 
 Enum value `transformer`.
+
+##### `nnx.nn.enum.nets.Nets.VIT`
+
+```python
+nnx.nn.enum.nets.Nets.VIT = 'vit'
+```
+
+Enum value `vit`.
 
 
 #### `nnx.nn.enum.optims.Optims`

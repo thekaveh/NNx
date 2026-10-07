@@ -1,0 +1,24 @@
+id: caccfb2e2e30a6de9234b7cfea8fb070
+model:
+  device: cpu
+  loss: cross_entropy
+  net: feed_fwd
+net:
+  activation: relu
+  dropout_prob: 0.0
+  hidden_dims: '[3]'
+  input_dim: 4
+  output_dim: 2
+train:
+  n_epochs: 1
+  optim:
+    max_lr: 0.1
+    momentum: '0.9'
+    name: sgd
+    weight_decay: 0.0
+  scheduler:
+    cooldown: 2
+    factor: 0.95
+    min_lr: 1.0e-07
+    patience: 8
+    threshold: 0.001

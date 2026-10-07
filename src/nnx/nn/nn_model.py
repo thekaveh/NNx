@@ -10,6 +10,7 @@ import math
 import os
 import re
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -302,6 +303,32 @@ class _ResumeSource:
 _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint, Optional[dict[str, Any]]]]] = (
     contextvars.ContextVar("nnx_in_memory_resume", default=None)
 )
+
+
+def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mapping[str, Any]:
+    """``state`` without the weights of the named top-level submodules
+    (``from_checkpoint(exclude_submodules=...)``); every name must be present."""
+    if isinstance(names, str):
+        raise TypeError("exclude_submodules must be a sequence of submodule names, not a string")
+    names = tuple(names or ())  # a one-shot iterable is read once
+    if not names:
+        return state
+    held = {key.split(".", 1)[0] for key in state if "." in key}
+    unknown = sorted(set(names) - held)
+    if unknown:
+        raise ValueError(
+            f"exclude_submodules names {unknown}, which the checkpoint does not hold (its submodules: {sorted(held)})"
+        )
+    excluded = tuple(f"{name}." for name in names)
+    kept: OrderedDict[str, Any] = OrderedDict(
+        (key, value) for key, value in state.items() if not key.startswith(excluded)
+    )
+    metadata = getattr(state, "_metadata", None)  # per-module versions load_state_dict reads
+    if metadata is not None:
+        kept._metadata = OrderedDict(  # type: ignore[attr-defined]
+            (key, value) for key, value in metadata.items() if not key.startswith(excluded) and key not in names
+        )
+    return kept
 
 
 def _load_resume_source(
@@ -2719,9 +2746,16 @@ class NNModel(_HubMixinBase):
         module: Optional[torch.nn.Module] = None,
         batch_adapter: Optional[BatchAdapter] = None,
         precision: Optional[PrecisionPolicy] = None,
+        exclude_submodules: Sequence[str] = (),
         **model_kwargs: Any,
     ) -> Self:
         """Rebuild a model, replay topology transforms, and load its weights.
+
+        ``exclude_submodules`` names top-level submodules the training run
+        attached to the net that are not part of the rebuilt architecture —
+        a JEPA predictor registered as ``model.net._jepa_predictor``, say —
+        whose weights are left out; every other weight still loads strictly.
+        A name the checkpoint does not hold raises ``ValueError``.
 
         Ordinary and legacy FP32 checkpoints have no transforms. Converted
         QAT checkpoints replay their persisted torchao recipe before state
@@ -2774,18 +2808,27 @@ class NNModel(_HubMixinBase):
 
         _replay_transforms(model, transforms)
         model._topology_transforms = _canonical_transforms(transforms)
+        net_state = _without_submodules(checkpoint.net_state, exclude_submodules)
         if not transforms:
-            _refuse_unrecorded_recipe_state(checkpoint.net_state, model.net.state_dict())
+            _refuse_unrecorded_recipe_state(net_state, model.net.state_dict())
         if not isinstance(net, Nets):
-            check_state_schema(model.net, checkpoint.net_state, what=f"checkpoint of {net}")
+            check_state_schema(model.net, net_state, what=f"checkpoint of {net}")
 
         try:
-            model.net.load_state_dict(checkpoint.net_state)
+            model.net.load_state_dict(net_state)
         except RuntimeError as error:
-            if not transforms and _looks_like_converted_qat_state(checkpoint.net_state):
+            if not transforms and _looks_like_converted_qat_state(net_state):
                 raise ValueError(
                     "converted QAT checkpoint lacks reconstruction metadata; "
                     "recreate its torchao topology with the original qat_config and groupsize"
+                ) from error
+            children = {name for name, _ in model.net.named_children()}
+            attached = sorted({key.split(".", 1)[0] for key in net_state if "." in key} - children)
+            if attached:
+                raise RuntimeError(
+                    f"{error}\nThe checkpoint holds submodules the rebuilt {type(model.net).__name__} does not have "
+                    f"({', '.join(attached)}): NNModel.from_checkpoint(checkpoint, exclude_submodules="
+                    f"{tuple(attached)!r}) rebuilds the architecture without them"
                 ) from error
             raise
 
