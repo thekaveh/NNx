@@ -33,8 +33,10 @@ error, and a few combinators compose them without ever catching anything::
   - :func:`validate_decision_request_result` builds a typed question from
     plain data — :class:`~nnx.decisions.InvalidDecisionRequest` becomes
     ``"invalid_decision_request"``. No provider is involved.
-  - :func:`decide_result` asks a provider — ``ProviderFailure`` becomes
-    ``"provider_failure"`` and ``UnsupportedCapability`` ``"unsupported"``.
+  - :func:`decide_result` asks a provider — ``InvalidDecisionResponse`` (a
+    malformed answer) becomes ``"invalid_decision_response"``, any other
+    ``ProviderFailure`` ``"provider_failure"`` and ``UnsupportedCapability``
+    ``"unsupported"``.
     With an abstention policy, an abstention is a **success**: the ``Ok``
     holds every row's ``SelectiveDecision``, probabilities and reasons
     included.
@@ -251,11 +253,15 @@ def decide_result(
     ``Ok`` holds the results, one per input — or, with an abstention
     ``policy`` (and the ``model_id`` it was tuned for), each row's
     ``SelectiveDecision``: an abstention is a success whose probabilities
-    and reason are kept. Only a provider failure is an error:
-    ``ProviderFailure`` becomes ``"provider_failure"`` and
-    ``UnsupportedCapability`` ``"unsupported"``; anything else propagates.
+    and reason are kept. Only the provider's own failures are errors:
+    ``InvalidDecisionResponse`` (an answer that does not fit the question)
+    becomes ``"invalid_decision_response"``, any other ``ProviderFailure``
+    (an outage, a timeout, a refused credential) ``"provider_failure"``, and
+    ``UnsupportedCapability`` ``"unsupported"``; the first two keep the
+    error's ``request_id`` in ``context``. The codes follow the exception
+    type, not whether a retry would help. Anything else propagates.
     """
-    from .decisions.schema import ProviderFailure, UnsupportedCapability
+    from .decisions.schema import InvalidDecisionResponse, ProviderFailure, UnsupportedCapability
 
     if policy is not None and not isinstance(model_id, str):
         raise TypeError(
@@ -266,6 +272,9 @@ def decide_result(
         results = tuple(provider.decide(question, inputs))
     except UnsupportedCapability as error:
         return Err(BoundaryError("unsupported", where="provider.decide", context=context, cause=error))
+    except InvalidDecisionResponse as error:  # before ProviderFailure: a malformed Jev answer is both
+        context = {**context, "request_id": getattr(error, "request_id", None)}
+        return Err(BoundaryError("invalid_decision_response", where="provider.decide", context=context, cause=error))
     except ProviderFailure as error:
         context = {**context, "request_id": getattr(error, "request_id", None)}
         return Err(BoundaryError("provider_failure", where="provider.decide", context=context, cause=error))

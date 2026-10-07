@@ -2410,7 +2410,7 @@ answer the question without narrowing).
 
 ```text
 plain data ──► validate_decision_request_result ──bind──► decide_result ──► Ok(results | SelectiveDecisions)
-                     │ InvalidDecisionRequest                │ ProviderFailure / UnsupportedCapability
+                     │ InvalidDecisionRequest                │ InvalidDecisionResponse / ProviderFailure / UnsupportedCapability
                      └──► Err(BoundaryError(code, where, context, cause)) ◄──┘   (anything else propagates)
 path ──► inspect_bundle_result ──► Ok(BundleInfo) | Err(artifact_missing | bundle_invalid)
 ```
@@ -2419,7 +2419,8 @@ Each wrapper converts exactly the exceptions it declares into an
 `Err(BoundaryError(code, where, context, cause))`:
 `validate_decision_request_result` builds the typed question from plain data
 (an invalid request never reaches a provider), `decide_result` separates a
-provider failure from a successful abstention, and `inspect_bundle_result`
+malformed answer (`invalid_decision_response`) and a provider failure
+(`provider_failure`) from a successful abstention, and `inspect_bundle_result`
 delegates to the safe `nnx.bundles.inspect_bundle` — manifest and JSON
 records only, never a checkpoint unpickle, a factory or a registry. The
 exception-style APIs (`question_from_state`, `provider.decide`,
