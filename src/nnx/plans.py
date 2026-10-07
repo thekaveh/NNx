@@ -1019,7 +1019,16 @@ class ExperimentPlan:
         run id and directory. ``overwrite_existing`` is never set; reusing
         an ``attempt`` id for the same configuration raises
         ``FileExistsError`` from ``NNModel.train``.
+
+        The fit trains in this process (no ``distributed=``): inside a
+        ``torch.distributed`` process group of more than one rank (a
+        ``torchrun`` launch) it raises ``RuntimeError`` before seeding,
+        calling a factory or creating a run; a one-rank group behaves as no
+        group.
         """
+        from .distributed import _refuse_multi_rank
+
+        _refuse_multi_rank("ExperimentPlan.fit()")  # before seeding, a factory call or a run
         found = self.validate().diagnostics
         if attempt is not None and (not isinstance(attempt, str) or not attempt.strip()):
             found += (Diagnostic("attempt", f"must be a non-empty string, got {attempt!r}"),)

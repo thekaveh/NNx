@@ -662,3 +662,25 @@ def test_round_twenty_five_each_setting_is_restored_on_its_own():
         assert os.environ.get("CUBLAS_WORKSPACE_CONFIG") == state["env"]["CUBLAS_WORKSPACE_CONFIG"]
     finally:
         _restore_seed_settings(state)
+
+
+def _world(monkeypatch, size: int) -> None:
+    """Pretend a torchrun process group of ``size`` ranks is initialized."""
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda group=None: size)
+
+
+def test_fit_refuses_inside_a_multi_rank_process_group(tmp_path, monkeypatch):
+    """FIX-028: a plan trains in one process (no ``distributed=``); under
+    torchrun every rank would train its own copy into the same runs/, so the
+    fit refuses before seeding, calling a factory or creating a run."""
+    monkeypatch.chdir(tmp_path)
+    _world(monkeypatch, 2)
+    built = []
+    plan = _plan().with_data(lambda: built.append("train") or _train_loader(), identity="counted")
+    rng = torch.get_rng_state()
+    with pytest.raises(RuntimeError, match="single process.*world size 2"):
+        plan.fit()
+    assert built == [] and not (tmp_path / "runs").exists()
+    assert torch.equal(torch.get_rng_state(), rng)

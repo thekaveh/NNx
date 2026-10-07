@@ -502,3 +502,73 @@ def test_the_live_smoke_refuses_an_alias(monkeypatch, capsys):
     monkeypatch.setattr(typesafe_sdk, "TypeSafeClient", lambda **kwargs: pytest.fail("built a client"))
     assert module.main(["--model", "jev-latest"]) == 2
     assert "pinned version" in capsys.readouterr().err
+
+
+# --- FEAT-044: a JevProvider through the Result boundary ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("make_error", "expected", "request_id"),
+    [
+        (lambda: typesafe_sdk.TypeSafeAPITimeoutError(5.0), JevTimeout, None),
+        (lambda: _api_error(401, request_id="req-auth"), JevAuthenticationError, "req-auth"),
+        (lambda: _api_error(429, request_id="req-rate"), JevRateLimited, "req-rate"),
+        (lambda: _api_error(500, request_id="req-down"), JevError, "req-down"),
+    ],
+    ids=["timeout", "auth", "rate-limit", "server"],
+)
+def test_decide_result_turns_a_jev_failure_into_a_provider_failure_err(make_error, expected, request_id):
+    from nnx.result import decide_result
+
+    client = Recorder(lambda s, q, k: make_error())
+    result = decide_result(JevProvider(client), SPAM, ["x"])
+    assert result.is_err
+    error = result.error
+    assert (error.code, error.where) == ("provider_failure", "provider.decide")
+    assert type(error.cause) is expected and error.context["request_id"] == request_id
+    assert error.context["provider"] == "JevProvider" and error.context["question"] == SPAM.digest()
+    assert len(client.calls) == 1  # no retry above the SDK's own policy
+
+
+def _drifted(s, q, k):
+    bad = {
+        "type": "choice",
+        "choice": "sports",
+        "confidence": 0.9,
+        "probabilities": {"sports": 0.9, "the economy": 0.3, "technology": 0.1},
+    }
+    return _response({"q0": bad}, request_id="req-sum")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "request_id"),
+    [
+        (lambda s, q, k: _response({"q0": {"type": "noul"}}, request_id="req-bad"), "req-bad"),
+        (lambda s, q, k: _response({}, request_id="req-none"), "req-none"),
+        (_drifted, "req-sum"),
+        (lambda s, q, k: _response({"q0": {"type": "noul", "noul": 0.5}}, request_id="req-kind"), "req-kind"),
+    ],
+    ids=["sdk-validation", "no-answer", "sum-drift", "wrong-kind"],
+)
+def test_decide_result_reports_a_malformed_jev_answer_as_an_invalid_response(outcome, request_id):
+    """A malformed answer is data the service sent, not an outage: it gets
+    its own code, apart from ``provider_failure``."""
+    from nnx.result import decide_result
+
+    client = Recorder(outcome)
+    result = decide_result(JevProvider(client), TOPIC, ["x"])
+    assert result.is_err
+    error = result.error
+    assert (error.code, error.where) == ("invalid_decision_response", "provider.decide")
+    assert isinstance(error.cause, JevMalformedResponse) and error.context["request_id"] == request_id
+    assert len(client.calls) == 1
+
+
+def test_decide_result_returns_aligned_jev_results():
+    from nnx.result import decide_result
+
+    result = decide_result(JevProvider(Recorder()), TOPIC, ["one", "two"])
+    assert result.is_ok
+    rows = result.unwrap()
+    assert len(rows) == 2 and all(isinstance(row, ChoiceResult) for row in rows)
+    assert all([option for option, _ in row.distribution] == list(TOPIC.option_ids) for row in rows)

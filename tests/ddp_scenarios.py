@@ -223,6 +223,63 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out["runs_after_preflight"] = (
             sorted(n for n in os.listdir("runs") if not n.startswith(".")) if os.path.isdir("runs") else []
         )
+    elif name == "single_process_entries":
+        # FIX-028: the single-process entry points refuse a multi-rank group
+        # before any study, factory call or run; one rank behaves as before.
+        from nnx.plans import ExperimentPlan
+        from nnx.search import FloatParam, SearchBudget, SearchSpace, search
+
+        built = []
+
+        def train_factory():
+            built.append(rank)
+            return torch.utils.data.DataLoader(train_set(), batch_size=4)
+
+        plan = (
+            ExperimentPlan()
+            .with_net(
+                NNParams(
+                    input_dim=FEATURES,
+                    output_dim=CLASSES,
+                    hidden_dims=[6],
+                    dropout_prob=0.0,
+                    activation=Activations.RELU,
+                )
+            )
+            .with_model(NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
+            .with_train(
+                NNTrainParams(
+                    n_epochs=1,
+                    optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+                    monitor=MonitorSpec("loss"),
+                )
+            )
+            .with_data(train_factory, val=lambda: torch.utils.data.DataLoader(val_set(), batch_size=4), identity="rows")
+            .with_seed(3)
+        )
+        out["errors"] = {}
+        try:
+            out["fit_run"] = plan.fit().run.id
+            out["errors"]["fit"] = None
+        except BaseException as error:  # noqa: BLE001
+            out["errors"]["fit"] = f"{type(error).__name__}: {error}"
+        try:
+            result = search(
+                plan,
+                SearchSpace(FloatParam(name="lr", low=1e-3, high=1e-1, log=True)),
+                apply=lambda base, chosen: base.with_optim(NNOptimParams.builder().sgd(max_lr=chosen["lr"]).build()),
+                monitor=MonitorSpec("loss"),
+                budget=SearchBudget(trials=1),
+                study_name="entries",
+                storage="sqlite:///study.db",
+            )
+            out["search_states"] = [outcome.state for outcome in result.outcomes]
+            out["errors"]["search"] = None
+        except BaseException as error:  # noqa: BLE001
+            out["errors"]["search"] = f"{type(error).__name__}: {error}"
+        out["factory_calls"] = len(built)
+        out["study_written"] = os.path.exists("study.db")
+        out["runs"] = sorted(n for n in os.listdir("runs") if not n.startswith(".")) if os.path.isdir("runs") else []
     elif name == "all_ignored_rank":
         # rows 1 and 3 ignored, no shuffle: rank 1's first batch has no valid target
         m = model()

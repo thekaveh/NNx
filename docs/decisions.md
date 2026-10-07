@@ -593,6 +593,8 @@ except InvalidDecisionRequest as error:
     report("invalid_decision_request", error)
 except UnsupportedCapability as error:
     report("unsupported", error)
+except InvalidDecisionResponse as error:  # before ProviderFailure: a malformed Jev answer is both
+    report("invalid_decision_response", error)
 except ProviderFailure as error:
     report("provider_failure", error)
 
@@ -602,7 +604,8 @@ from nnx.result import decide_result, validate_decision_request_result
 outcome = validate_decision_request_result("choice", prompt, options).bind(
     lambda question: decide_result(provider, question, texts)
 )
-# Ok(results) — or Err(BoundaryError(code="invalid_decision_request" | "provider_failure" | "unsupported", ...))
+# Ok(results) — or Err(BoundaryError(code="invalid_decision_request" | "invalid_decision_response"
+#                                     | "provider_failure" | "unsupported", ...))
 ```
 
 - `validate_decision_request_result(kind, prompt, options)` builds the
@@ -611,11 +614,17 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
   empty prompt, an unknown kind) becomes `Err(code="invalid_decision_request")`,
   and the provider is never called.
 - `decide_result(provider, question, inputs, policy=None, model_id=None)`
-  turns exactly `ProviderFailure` into `"provider_failure"` (its
-  `request_id` kept in the context) and `UnsupportedCapability` into
-  `"unsupported"`. With an abstention policy, abstaining is a **success**:
-  the `Ok` holds each row's `SelectiveDecision`, probabilities and reason
-  included.
+  turns exactly `InvalidDecisionResponse` — an answer that does not fit the
+  question, such as a `JevMalformedResponse` — into
+  `"invalid_decision_response"`, any other `ProviderFailure` (an outage, a
+  timeout, a refused credential, a rate limit) into `"provider_failure"`
+  (both keep the error's `request_id` in the context), and
+  `UnsupportedCapability` into `"unsupported"`. The codes follow the
+  exception type, not whether a retry would help: a refused credential is a
+  `"provider_failure"` too, so branch on the `cause` when that matters. A
+  `JevProvider` composes as is: each typed Jev error is its `cause`. With an
+  abstention policy, abstaining is a **success**: the `Ok` holds each row's
+  `SelectiveDecision`, probabilities and reason included.
 - Each `Err` holds a `BoundaryError(code, where, context, cause)`; any other
   exception propagates. Combinators (`map`, `bind`, `map_error`,
   `recover`) never catch a callback's exception, a callback that returns a

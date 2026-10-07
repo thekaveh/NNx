@@ -533,3 +533,30 @@ def test_a_journal_history_keeps_its_committed_window_after_a_mid_epoch_stop():
     assert seen["idps"] == committed
     last = NNCheckpoint.load(run=run_.id, type=Checkpoints.LAST)
     assert last is not None and last.idp.epoch_idx == 0
+
+
+def _world(monkeypatch, size: int) -> None:
+    """Pretend a torchrun process group of ``size`` ranks is initialized."""
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda group=None: size)
+
+
+def test_search_refuses_inside_a_multi_rank_process_group(tmp_path, monkeypatch):
+    """FIX-028: under torchrun every rank would run its own study; the search
+    is sequential and single-process, so it refuses before any study,
+    factory or run exists."""
+    _world(monkeypatch, 2)
+    calls = Calls()
+    storage = f"sqlite:///{tmp_path / 'study.db'}"
+    with pytest.raises(RuntimeError, match="single process.*world size 2"):
+        run(plan(calls), storage=storage)
+    assert not (tmp_path / "study.db").exists()
+    assert (calls.train, calls.val, calls.callbacks) == (0, 0, 0)
+    assert runs_on_disk() == []
+
+
+def test_trial_control_declares_no_rank_behaviour():
+    """Trials never run under DDP (the search refuses a multi-rank group), so
+    the per-trial callback claims no distributed behaviour."""
+    assert "distributed" not in vars(_TrialControl)
