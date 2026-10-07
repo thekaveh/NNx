@@ -4127,9 +4127,13 @@ Ask ``provider`` ``question`` for ``inputs``.
 ``Ok`` holds the results, one per input — or, with an abstention
 ``policy`` (and the ``model_id`` it was tuned for), each row's
 ``SelectiveDecision``: an abstention is a success whose probabilities
-and reason are kept. Only a provider failure is an error:
-``ProviderFailure`` becomes ``"provider_failure"`` and
-``UnsupportedCapability`` ``"unsupported"``; anything else propagates.
+and reason are kept. Only the provider's own failures are errors:
+``InvalidDecisionResponse`` (an answer that does not fit the question)
+becomes ``"invalid_decision_response"``, any other ``ProviderFailure``
+(an outage, a timeout, a refused credential) ``"provider_failure"``, and
+``UnsupportedCapability`` ``"unsupported"``; the first two keep the
+error's ``request_id`` in ``context``. The codes follow the exception
+type, not whether a retry would help. Anything else propagates.
 ```
 
 
