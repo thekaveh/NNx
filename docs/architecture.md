@@ -159,6 +159,7 @@ own stream, matching one process only in distribution.
 
 Out of scope: multi-node or elastic runs, FSDP / DeepSpeed, mixed precision,
 `compile=`, custom train or validation steps and objectives, history journals,
-graph neighbour sampling. See
+graph neighbour sampling. `ExperimentPlan.fit` and `nnx.search.search` train in
+one process and refuse a group of more than one rank. See
 [`examples/ddp_supervised.py`](https://github.com/thekaveh/NNx/blob/main/examples/ddp_supervised.py).
 

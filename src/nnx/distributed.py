@@ -58,7 +58,9 @@ for supervised models, not for huge vocabularies.
 Scope: one node, FP32, the default train and validation steps, one
 optimizer, a fixed topology without batch normalization, map-style datasets. Out: multi-node or elastic
 runs, FSDP / DeepSpeed, mixed precision, ``compile=``, custom steps or
-objectives, history journals, graph neighbour sampling.
+objectives, history journals, graph neighbour sampling. ``ExperimentPlan.fit``
+and ``nnx.search.search`` train in one process and refuse a group of more
+than one rank.
 
 Recipe::
 
@@ -164,6 +166,22 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
             f"{timeout_seconds:g}s ({reason}); the process group is left for process exit"
         )
     dist.destroy_process_group()
+
+
+def _refuse_multi_rank(entry: str) -> None:
+    """Refuse a single-process entry point (``search()``, ``ExperimentPlan.fit``)
+    inside an initialized process group of more than one rank: every rank
+    would otherwise run its own copy against the same working directory."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    world_size = dist.get_world_size()
+    if world_size > 1:
+        raise RuntimeError(
+            f"{entry} trains in a single process, but this process belongs to a torch.distributed "
+            f"process group of world size {world_size} (torchrun?): every rank would run its own copy "
+            "into the same working directory. Run it without torchrun, or train one model across the "
+            "ranks with model.train(..., distributed=nnx.distributed.DDP())."
+        )
 
 
 def _int(value: Any, what: str, *, minimum: int) -> int:

@@ -353,3 +353,31 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
     assert first["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in first["error"], first
     assert first["seconds"] < 6 and first["initialized_after"] is True
     assert late["error"] is None and late["seconds"] < 6 and late["initialized_after"] is False
+
+
+def test_single_process_entry_points_refuse_a_multi_rank_group(tmp_path):
+    """FIX-028: ``ExperimentPlan.fit`` and ``nnx.search.search`` train in one
+    process; under a two-rank torchrun both refuse on every rank before any
+    factory call, study or run exists."""
+    out = tmp_path / "entries"
+    launch("single_process_entries", out)
+    for result in results(out):
+        for entry in ("fit", "search"):
+            assert result["errors"][entry].startswith("RuntimeError: "), result["errors"]
+            assert "single process" in result["errors"][entry] and "world size 2" in result["errors"][entry]
+        assert result["factory_calls"] == 0 and not result["study_written"] and result["runs"] == []
+
+
+def test_single_process_entry_points_run_in_a_one_rank_group(tmp_path):
+    """World size 1 under torchrun behaves as without a process group."""
+    import importlib.util
+
+    out = tmp_path / "entries-1"
+    launch("single_process_entries", out, nproc=1)
+    (result,) = results(out, nproc=1)
+    assert result["errors"]["fit"] is None and result["fit_run"] in result["runs"]
+    if importlib.util.find_spec("optuna") is not None:
+        assert result["errors"]["search"] is None and result["search_states"] == ["completed"]
+        assert result["study_written"]
+    else:  # without the optuna extra the search fails on its import, not on the guard
+        assert "optuna" in result["errors"]["search"] and "single process" not in result["errors"]["search"]

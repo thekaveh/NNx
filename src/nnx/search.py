@@ -45,8 +45,11 @@ imports Optuna or creates a study.
   releases its run lease, records the trial as failed and propagates.
 
 Trials run sequentially in this process, which is the study's only
-writer; NNx artifacts live under ``runs/`` and Optuna's in ``storage`` (an
-in-memory study when ``None``). Samplers keep their own limits (a seeded
+writer: inside a ``torch.distributed`` process group of more than one rank
+(a ``torchrun`` launch) ``search`` raises ``RuntimeError`` before loading or
+creating a study, rather than run one study per rank. NNx artifacts live
+under ``runs/`` and Optuna's in ``storage`` (an in-memory study when
+``None``). Samplers keep their own limits (a seeded
 ``TPESampler`` is reproducible only sequentially).
 """
 
@@ -300,8 +303,6 @@ class _TrialControl(Callback):
     """The per-trial callback: caps, deadline, monitor observations and
     pruning. Built fresh for every trial."""
 
-    distributed = "all"
-
     def __init__(
         self, *, trial: Any, monitor: Any, budget: SearchBudget, deadline: Optional[float], clock: Callable[[], float]
     ) -> None:
@@ -479,6 +480,9 @@ def search(
     clock: Callable[[], float] = time.monotonic,
 ) -> SearchResult:
     """Run the budgeted search; see the module documentation."""
+    from .distributed import _refuse_multi_rank
+
+    _refuse_multi_rank("nnx.search.search()")  # sequential and single-process: never one study per rank
     if not isinstance(space, SearchSpace):
         raise TypeError(f"space must be an nnx.search.SearchSpace, got {type(space).__name__}")
     if not isinstance(budget, SearchBudget):
