@@ -12,9 +12,11 @@ no-op.
 
 Usage::
 
-    python scripts/release/finalize_changelog.py [CHANGELOG.md] [--check]
+    python3 scripts/release/finalize_changelog.py [CHANGELOG.md] [--check | --release-notes VERSION]
 
-``--check`` writes nothing and exits 1 when the file would change.
+``--check`` writes nothing and exits 1 when the file would change;
+``--release-notes VERSION`` prints that version's section (the GitHub
+release body the workflow publishes on release).
 """
 
 from __future__ import annotations
@@ -35,18 +37,34 @@ def _strip_blank(lines: list[str]) -> list[str]:
     return lines[start:end]
 
 
+def _headings(lines: list[str]) -> list[int]:
+    """Indices of ``## `` section headings, outside fenced code blocks."""
+    found, fenced = [], False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("## "):
+            found.append(index)
+    return found
+
+
 def finalize(text: str) -> str:
     """The changelog with the curated ``[Unreleased]`` notes moved under the
     release heading release-please put above them (see the module docstring)."""
     lines = text.split("\n")
-    try:
-        unreleased = lines.index(UNRELEASED)
-    except ValueError:
-        raise ValueError(f"the changelog has no {UNRELEASED!r} section") from None
-    headings = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    headings = _headings(lines)
+    unreleased = next((i for i in headings if lines[i].rstrip() == UNRELEASED), None)
+    if unreleased is None:
+        raise ValueError(f"the changelog has no {UNRELEASED!r} section")
     if headings[0] == unreleased:  # nothing above the curated notes: nothing to finalize
         return text
     release = headings[0]
+    above = [lines[i] for i in headings if release < i < unreleased]
+    if above:
+        raise ValueError(
+            f"more than one release section lies above {UNRELEASED!r} ({lines[release]!r}, {above[0]!r}, ...): "
+            "a release merged without its finalize — fix the changelog by hand rather than drop a section"
+        )
     following = next((i for i in headings if i > unreleased), len(lines))
     curated = _strip_blank(lines[unreleased + 1 : following])
     if curated:
@@ -56,13 +74,29 @@ def finalize(text: str) -> str:
     return "\n".join([*lines[:release], UNRELEASED, "", *body, *lines[following:]])
 
 
+def release_notes(text: str, version: str) -> str:
+    """The body of the ``## [<version>]`` section — the curated notes the
+    GitHub release publishes (release-please would use its generated list)."""
+    lines = text.split("\n")
+    headings = _headings(lines)
+    start = next((i for i in headings if lines[i].startswith(f"## [{version}]")), None)
+    if start is None:
+        raise ValueError(f"the changelog has no section for {version}")
+    end = next((i for i in headings if i > start), len(lines))
+    return "\n".join(_strip_blank(lines[start + 1 : end])) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("path", nargs="?", default="CHANGELOG.md")
     parser.add_argument("--check", action="store_true", help="exit 1 when the file would change; write nothing")
+    parser.add_argument("--release-notes", metavar="VERSION", help="print that version's section and exit")
     args = parser.parse_args(argv)
     path = Path(args.path)
     text = path.read_text(encoding="utf-8")
+    if args.release_notes:
+        sys.stdout.write(release_notes(text, args.release_notes.removeprefix("v")))
+        return 0
     finalized = finalize(text)
     if finalized == text:
         print(f"{path}: already final")

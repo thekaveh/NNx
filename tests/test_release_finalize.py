@@ -18,13 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from scripts.release.finalize_changelog import finalize
+from scripts.release.finalize_changelog import finalize, release_notes
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures" / "release_finalize"
-# release-please's generic updater: the semantic version on every line that
-# carries the marker.
-_MARKED_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?")
+# release-please's generic updater (17.6.0, src/updaters/generic.ts): the first
+# semantic version on every line that carries the marker.
+_MARKED_VERSION = re.compile(
+    r"(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(-(?P<pre>[\w.]+))?(\+(?P<build>[-\w.]+))?"
+)
 
 
 def _release_please_bump(text: str, version: str) -> str:
@@ -61,6 +63,26 @@ def test_without_curated_notes_the_generated_list_stays():
     )
 
 
+def test_two_unfinalized_releases_are_refused_rather_than_one_dropped():
+    text = "# C\n\n## [0.6.0](x) (d)\n\n* new\n\n## [0.5.0](x) (d)\n\n* older\n\n## [Unreleased]\n\n- curated\n"
+    with pytest.raises(ValueError, match="more than one release section"):
+        finalize(text)
+
+
+def test_a_heading_inside_a_fenced_block_is_content():
+    text = "# C\n\n## [0.5.0](x) (d)\n\n* gen\n\n## [Unreleased]\n\n```md\n## not a heading\n```\n"
+    assert finalize(text) == "# C\n\n## [Unreleased]\n\n## [0.5.0](x) (d)\n\n```md\n## not a heading\n```\n"
+
+
+def test_the_release_notes_are_the_curated_section():
+    after = (FIXTURES / "after.md").read_text(encoding="utf-8")
+    notes = release_notes(after, "0.4.0")
+    assert notes.startswith("### Added\n") and "Ordered logits pipelines" in notes and "## [" not in notes
+    assert "([486ad73]" not in notes  # never the generated commit list
+    with pytest.raises(ValueError, match="no section for 9.9.9"):
+        release_notes(after, "9.9.9")
+
+
 def test_a_changelog_without_an_unreleased_section_is_refused():
     with pytest.raises(ValueError, match=r"\[Unreleased\]"):
         finalize("# Changelog\n\n## [0.5.0](x) (2026-11-01)\n\n* a\n")
@@ -90,5 +112,6 @@ def test_the_api_reference_version_line_is_bumped_by_release_please():
 
 def test_the_release_workflow_finalizes_the_release_branch():
     workflow = (ROOT / ".github" / "workflows" / "release-please.yml").read_text(encoding="utf-8")
-    assert "python scripts/release/finalize_changelog.py" in workflow
+    assert "python3 scripts/release/finalize_changelog.py CHANGELOG.md\n" in workflow
     assert "git add uv.lock CHANGELOG.md" in workflow
+    assert '--release-notes "$RELEASE_TAG"' in workflow and "gh release edit" in workflow
