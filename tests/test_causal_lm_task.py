@@ -199,12 +199,27 @@ def test_epoch_nll_is_total_over_valid_tokens_whatever_the_batching_or_padding()
     x = _ids(6, 5, seed=3).clamp(min=1)
     y = _ids(6, 5, seed=4).clamp(min=1)
     y[0, 3:] = 0  # an uneven row: two padded positions
+    # The invariance under test is the task's token-weighted aggregation, not
+    # the batch-invariance of float32 CPU kernels (which round differently per
+    # batch shape on some platforms): compare the batchings in float64, where
+    # kernel rounding (~1e-15) sits far below the bound.
+    exact = _model()
+    exact.net.load_state_dict(model.net.state_dict())
+    exact.net.double()
     values = []
     for batch_size in (1, 2, 4, 6):
-        record = task.eval_step()(_Ctx(model, DataLoader(TensorDataset(x, y), batch_size=batch_size)))
+        record = task.eval_step()(_Ctx(exact, DataLoader(TensorDataset(x, y), batch_size=batch_size)))
         values.append((record.loss, record.count))
     assert len({count for _, count in values}) == 1
     assert max(v for v, _ in values) - min(v for v, _ in values) < 1e-9
+    # A wrong aggregation, the mean of per-batch means, misses the bound: the
+    # uneven row puts 18 valid tokens in one batch of 4 and 10 in the other.
+    with torch.no_grad():
+        means = [
+            F.cross_entropy(exact.net(xb)[yb != 0], yb[yb != 0], reduction="mean").item()
+            for xb, yb in DataLoader(TensorDataset(x, y), batch_size=4)
+        ]
+    assert abs(sum(means) / len(means) - values[0][0]) > 1e-6
     # Extra padding columns change nothing.
     padded_x = torch.cat([x, torch.ones(6, 2, dtype=torch.long)], dim=1)
     padded_y = torch.cat([y, torch.zeros(6, 2, dtype=torch.long)], dim=1)
