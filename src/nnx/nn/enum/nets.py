@@ -27,6 +27,9 @@ class Nets(Enum):
     # this enum variant is back-compat-safe: existing run.yaml files
     # that don't reference it deserialize unchanged through Nets(<str>).
     TRANSFORMER = "transformer"
+    # Vision Transformer encoder (#395); consumed by NNViTParams. Back-compat-
+    # safe addition (see the TRANSFORMER comment).
+    VIT = "vit"
 
     def __str__(self) -> str:
         return self.value
@@ -41,11 +44,13 @@ class Nets(Enum):
         from ..params.nn_conv_params import NNConvParams
         from ..params.nn_moe_params import NNMoEParams
         from ..params.nn_transformer_params import NNTransformerParams
+        from ..params.nn_vit_params import NNViTParams
 
         specialized = {
             Nets.CONV: NNConvParams,
             Nets.FEED_FWD_MOE: NNMoEParams,
             Nets.TRANSFORMER: NNTransformerParams,
+            Nets.VIT: NNViTParams,
         }
         expected_type = specialized.get(self)
         if expected_type is not None and not isinstance(params, expected_type):
@@ -79,3 +84,18 @@ class Nets(Enum):
                 return GraphSageNN(params=params)
             case Nets.TRANSFORMER:
                 return TransformerNN(params=cast(NNTransformerParams, params))
+            case Nets.VIT:
+                from ..net.vit_nn import ViTNN
+
+                vit = cast(NNViTParams, params)
+                return ViTNN(
+                    image_size=vit.image_size,
+                    patch_size=vit.patch_size,
+                    in_channels=vit.in_channels,
+                    d_model=vit.d_model,
+                    n_layers=vit.n_layers,
+                    n_heads=cast(int, vit.n_heads),
+                    ffn_mult=vit.ffn_mult,
+                    attn_dropout=vit.attn_dropout,
+                    resid_dropout=vit.resid_dropout,
+                )

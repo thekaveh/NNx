@@ -247,7 +247,7 @@ classifier, FEAT-026) is refused before anything is written.
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
 
 ```python
-nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, precision: 'Optional[PrecisionPolicy]' = None, **model_kwargs: 'Any') -> 'Self'
+nnx.nn.nn_model.NNModel.from_checkpoint(checkpoint: 'NNCheckpoint', device: 'Optional[Devices]' = None, *, module: 'Optional[torch.nn.Module]' = None, batch_adapter: 'Optional[BatchAdapter]' = None, precision: 'Optional[PrecisionPolicy]' = None, exclude_submodules: 'Sequence[str]' = (), **model_kwargs: 'Any') -> 'Self'
 ```
 
 Rebuild a model, replay topology transforms, and load its weights.
@@ -255,6 +255,12 @@ Rebuild a model, replay topology transforms, and load its weights.
 **Details**
 
 ```text
+``exclude_submodules`` names top-level submodules the training run
+attached to the net that are not part of the rebuilt architecture —
+a JEPA predictor registered as ``model.net._jepa_predictor``, say —
+whose weights are left out; every other weight still loads strictly.
+A name the checkpoint does not hold raises ``ValueError``.
+
 Ordinary and legacy FP32 checkpoints have no transforms. Converted
 QAT checkpoints replay their persisted torchao recipe before state
 loading; unsupported recipes fail explicitly rather than constructing
@@ -9672,6 +9678,39 @@ nnx.nn.params.nn_conv_params.NNConvParams.from_state(state: 'dict') -> 'NNConvPa
 No public description is currently available.
 
 
+#### `nnx.nn.params.nn_vit_params.NNViTParams`
+
+```python
+class nnx.nn.params.nn_vit_params.NNViTParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None, image_size: 'int', patch_size: 'int', d_model: 'int', n_layers: 'int', in_channels: 'int' = 3, ffn_mult: 'int' = 4, attn_dropout: 'float' = 0.0, resid_dropout: 'float' = 0.0) -> 'None'
+```
+
+Parameters for :class:`~nnx.nn.net.vit_nn.ViTNN`, built by ``Nets.VIT``.
+
+##### `nnx.nn.params.nn_vit_params.NNViTParams.n_patches`
+
+```python
+property nnx.nn.params.nn_vit_params.NNViTParams.n_patches
+```
+
+Patch tokens per image (the encoder adds one CLS token).
+
+##### `nnx.nn.params.nn_vit_params.NNViTParams.state`
+
+```python
+nnx.nn.params.nn_vit_params.NNViTParams.state(self) -> 'dict'
+```
+
+No public description is currently available.
+
+##### `nnx.nn.params.nn_vit_params.NNViTParams.from_state`
+
+```python
+nnx.nn.params.nn_vit_params.NNViTParams.from_state(state: 'dict') -> 'NNViTParams'
+```
+
+No public description is currently available.
+
+
 #### `nnx.nn.params.nn_moe_params.NNMoEParams`
 
 ```python
@@ -11618,7 +11657,7 @@ Enum value `negative_log_likelihood`.
 class nnx.nn.enum.nets.Nets(Enum)
 ```
 
-Enum values: `CONV`, `FEED_FWD`, `FEED_FWD_MOE`, `GRAPH_ATT`, `GRAPH_CONV`, `GRAPH_SAGE`, `TRANSFORMER`.
+Enum values: `CONV`, `FEED_FWD`, `FEED_FWD_MOE`, `GRAPH_ATT`, `GRAPH_CONV`, `GRAPH_SAGE`, `TRANSFORMER`, `VIT`.
 
 ##### `nnx.nn.enum.nets.Nets.CONV`
 
@@ -11675,6 +11714,14 @@ nnx.nn.enum.nets.Nets.TRANSFORMER = 'transformer'
 ```
 
 Enum value `transformer`.
+
+##### `nnx.nn.enum.nets.Nets.VIT`
+
+```python
+nnx.nn.enum.nets.Nets.VIT = 'vit'
+```
+
+Enum value `vit`.
 
 
 #### `nnx.nn.enum.optims.Optims`

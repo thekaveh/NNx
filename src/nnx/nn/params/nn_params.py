@@ -222,4 +222,9 @@ class NNParams:
             from .nn_conv_params import NNConvParams
 
             return NNConvParams.from_state(state)
+        if "patch_size" in state:
+            # Local import: nn_vit_params imports this module (#395).
+            from .nn_vit_params import NNViTParams
+
+            return NNViTParams.from_state(state)
         return NNParams.from_state(state)
