@@ -42,9 +42,9 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
-    Activations, Devices, Losses, Nets,
-    NNModel, NNModelParams, NNOptimParams, NNParams, NNSchedulerParams, NNTrainParams, Optims,
-    ViTNN, JEPAPredictor,
+    Devices, Losses, Nets,
+    NNModel, NNModelParams, NNOptimParams, NNSchedulerParams, NNTrainParams, NNViTParams, Optims,
+    JEPAPredictor,
     build_target_encoder, jepa_train_step_factory, random_block_mask, set_seed,
 )
 
@@ -56,18 +56,15 @@ loader = DataLoader(
     batch_size=8,
 )
 
-# NNModel with a placeholder NNParams; the real net is the ViT below.
+# The trainable ViT context encoder: Nets.VIT builds ViTNN from NNViTParams.
 model = NNModel(
-    net_params=NNParams(
-        input_dim=3 * 32 * 32, output_dim=64, hidden_dims=[64],
-        dropout_prob=0.0, activation=Activations.RELU,
+    net_params=NNViTParams(
+        input_dim=3 * 32 * 32, output_dim=64,   # in_channels * image_size**2; d_model
+        dropout_prob=0.0, image_size=32, patch_size=4,
+        d_model=64, n_layers=4, n_heads=4,
     ),
-    params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    params=NNModelParams(net=Nets.VIT, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
 )
-
-# Swap in the trainable ViT context encoder.
-model.net = ViTNN(image_size=32, patch_size=4, in_channels=3,
-                  d_model=64, n_layers=4, n_heads=4).to(model.device)
 
 # EMA target + predictor (registered under model.net so the optimizer
 # trains both encoder and predictor jointly).
@@ -98,6 +95,25 @@ run = model.train(
     ),
 )
 ```
+
+**Storing and rebuilding the encoder.** `NNViTParams` carries every `ViTNN`
+setting into `run.yaml` and the checkpoints (`NNRun.load` returns them as the
+run's `net`), and `NNModel.from_checkpoint` rebuilds the encoder through
+`Nets.VIT` with its trained weights — no caller-side swap. The recipe above
+registers the predictor under `model.net` (so the optimizer trains it), which
+puts the predictor's weights in the same checkpoint; rebuild the encoder
+without them:
+
+```python
+from nnx import Checkpoints, NNCheckpoint
+
+checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+encoder = NNModel.from_checkpoint(checkpoint, exclude_submodules=("_jepa_predictor",))
+```
+
+Every other weight still loads strictly, and a name the checkpoint does not
+hold is refused. Without `exclude_submodules`, the error names the extra
+submodules.
 
 The full example with an optional CIFAR-10 download lives in
 [`examples/16_ijepa_image_plumbing.py`](https://github.com/thekaveh/NNx/blob/main/examples/16_ijepa_image_plumbing.py).

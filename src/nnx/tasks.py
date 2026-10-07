@@ -368,6 +368,11 @@ class TaskAdapter:
                 "task adapters drive (N, C) supervised outputs; language-model tasks on Nets.TRANSFORMER "
                 "are out of scope — use GenerativeNNModel or a custom step"
             )
+        if net is Nets.VIT:
+            raise TaskValidationError(
+                "task adapters drive (N, C) supervised outputs; Nets.VIT is an encoder returning one "
+                "d_model vector per token (B, n_patches + 1, d_model) — put a head on it in a custom step"
+            )
         if loss not in self._enum_losses:
             allowed = ", ".join(f"Losses.{item.name}" for item in self._enum_losses)
             raise TaskValidationError(f"a {self.kind} task needs {allowed}, got Losses.{loss.name}")
