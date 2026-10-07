@@ -16,6 +16,8 @@ Six labelled rows with stable ids (0-5) train a small classifier:
      same run id and the same global records.
   3. Only the writer rank (0) holds the run lease and writes
      ``<output>/runs/<id>/``; the other rank writes nothing.
+  4. ``nnx.distributed.shutdown()`` leaves the process group together: a
+     bounded teardown barrier, then the group is destroyed.
 
 Each rank prints one JSON report (and writes it to
 ``<output>/report-rank<r>.json``): its rank, the run id, its validation ids
@@ -121,8 +123,7 @@ def main() -> None:
     with open(f"report-rank{rank}.json", "w", encoding="utf-8") as handle:
         json.dump(report, handle)
     print(json.dumps(report), flush=True)
-    torch.distributed.barrier()  # tear down together: no rank exits while a peer is mid-teardown
-    torch.distributed.destroy_process_group()
+    nnx_dist.shutdown()  # leave together: no rank exits while a peer is mid-teardown
 
 
 if __name__ == "__main__":

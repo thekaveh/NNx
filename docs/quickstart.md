@@ -806,6 +806,7 @@ params = NNTrainParams(
     optim=NNOptimParams.builder().adamw(max_lr=1e-3).build(),
 )
 run = model.train(params=params, distributed=distributed.DDP())  # the same run on every rank
+distributed.shutdown()  # leave together: a bounded barrier, then the group is destroyed
 ```
 
 FP32, the default steps and one optimizer on one node; callbacks declare
