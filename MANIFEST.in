@@ -4,6 +4,8 @@
 # with "fixture not found" (conftest defines load-bearing fixtures and
 # the macOS OMP guards).
 recursive-include tests *.py
+# Fixture files the tests read (release-note snapshots).
+recursive-include tests/fixtures *.md
 
 # Ship the historical record + contributor onramp in the sdist. setuptools
 # auto-includes LICENSE + README (via pyproject metadata) but not these,

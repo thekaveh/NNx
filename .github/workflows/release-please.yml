@@ -66,11 +66,15 @@ jobs:
             git fetch origin "$branch"
             git checkout --detach "origin/$branch"
             uv lock
-            if ! git diff --quiet -- uv.lock; then
+            # FIX-029: the curated [Unreleased] notes replace release-please's
+            # generated list under the version heading (docs/api.md's version
+            # line is bumped by release-please itself through extra-files).
+            python scripts/release/finalize_changelog.py CHANGELOG.md
+            if ! git diff --quiet -- uv.lock CHANGELOG.md; then
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git add uv.lock
-              git commit -m "chore: refresh release lockfile"
+              git add uv.lock CHANGELOG.md
+              git commit -m "chore: refresh release lockfile and finalize the release notes"
               git push origin "HEAD:$branch"
             fi
             gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
