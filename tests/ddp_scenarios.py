@@ -223,6 +223,40 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out["runs_after_preflight"] = (
             sorted(n for n in os.listdir("runs") if not n.startswith(".")) if os.path.isdir("runs") else []
         )
+    elif name == "shutdown":
+        # FEAT-042: leave together; a second call is a no-op.
+        nnx_dist.shutdown(timeout_seconds=30)
+        out["initialized_after"] = torch.distributed.is_initialized()
+        nnx_dist.shutdown(timeout_seconds=30)
+        out["second_call"] = "no-op"
+    elif name == "shutdown_missing":
+        # FEAT-042: rank 1 never reaches the teardown; rank 0's shutdown is bounded.
+        import time
+
+        if rank == 0:
+            start = time.monotonic()
+            try:
+                nnx_dist.shutdown(timeout_seconds=3)
+                out["error"] = None
+            except BaseException as error:  # noqa: BLE001 - recorded for the test
+                out["error"] = f"{type(error).__name__}: {error}"
+            out["seconds"] = time.monotonic() - start
+            out["initialized_after"] = torch.distributed.is_initialized()
+            out["teardown_done"] = True  # the group is left for process exit
+        else:
+            # Arrives after rank 0's wait timed out: rank 0 has raised (its
+            # process stays at exit, its barrier still queued), so this
+            # barrier completes against the queued one.
+            time.sleep(6)
+            start = time.monotonic()
+            try:
+                nnx_dist.shutdown(timeout_seconds=3)
+                out["error"] = None
+            except BaseException as error:  # noqa: BLE001 - recorded for the test
+                out["error"] = f"{type(error).__name__}: {error}"
+            out["seconds"] = time.monotonic() - start
+            out["initialized_after"] = torch.distributed.is_initialized()
+
     elif name == "single_process_entries":
         # FIX-028: the single-process entry points refuse a multi-rank group
         # before any study, factory call or run; one rank behaves as before.
@@ -439,11 +473,8 @@ def main() -> None:
     finally:
         pass
     torch.save(result, os.path.join(out_dir, f"rank{rank}.pt"))
-    # Tear down together: a rank destroying its group while a peer still
-    # holds open Gloo pairs can abort that peer ("terminate called without an
-    # active exception").
-    torch.distributed.barrier()
-    torch.distributed.destroy_process_group()
+    if not result.get("teardown_done"):
+        nnx_dist.shutdown()  # leave together (a no-op when the scenario already did)
 
 
 if __name__ == "__main__":

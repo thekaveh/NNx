@@ -78,12 +78,14 @@ Recipe::
         optim=...,
     )
     run = model.train(params=params, distributed=distributed.DDP())
+    distributed.shutdown()  # leave together: no rank exits while a peer is mid-teardown
 """
 
 from __future__ import annotations
 
 import contextlib
 import datetime
+import math
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -99,6 +101,7 @@ __all__ = [
     "RankPartition",
     "ShardedLoader",
     "init_process_group",
+    "shutdown",
     "train_loader",
     "validation_loader",
     "writer_only",
@@ -121,6 +124,48 @@ def _world() -> tuple[int, int]:
             "and call nnx.distributed.init_process_group() first"
         )
     return dist.get_rank(), dist.get_world_size()
+
+
+def shutdown(*, timeout_seconds: float = 60.0) -> None:
+    """Leave the process group together, then destroy it: the counterpart of
+    :func:`init_process_group`, called once training is over.
+
+    Every rank meets at a teardown barrier before the group is destroyed, so
+    no rank tears its connections down while a peer still uses them (with
+    Gloo, a peer can otherwise abort: "terminate called without an active
+    exception"). With Gloo the wait is bounded by ``timeout_seconds``: when a
+    rank does not arrive in time the others raise ``RuntimeError`` instead of
+    blocking in the call, and leave the group to process exit (destroying it
+    then could block on the missing rank). The timed-out barrier stays queued,
+    so the process itself may still wait at exit until the missing rank
+    arrives (its barrier then completes against the queued one) or the
+    group's own timeout (``init_process_group(timeout_seconds=...)``) expires.
+    With NCCL, older torch releases ignore ``timeout_seconds`` unless
+    ``TORCH_NCCL_BLOCKING_WAIT=1`` is set, so the wait is bounded by the
+    group's timeout instead. Without a process group, or after a successful
+    call, it does nothing; after a failed call the group is still
+    initialized (``init_process_group()`` returns it as is), so exit."""
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError(f"timeout_seconds must be a finite number > 0, got {timeout_seconds!r}")
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    reason = "it timed out"
+    try:
+        work = dist.barrier(async_op=True)
+        arrived = work is not None and work.wait(timeout=datetime.timedelta(seconds=timeout_seconds))
+    except Exception as error:  # a timed-out wait raises (Gloo; NCCL on recent torch)
+        arrived, reason = False, f"{type(error).__name__}: {error}"
+    if not arrived:
+        raise RuntimeError(
+            f"nnx.distributed.shutdown(): not every rank reached the teardown barrier within "
+            f"{timeout_seconds:g}s ({reason}); the process group is left for process exit"
+        )
+    dist.destroy_process_group()
 
 
 def _refuse_multi_rank(entry: str) -> None:
