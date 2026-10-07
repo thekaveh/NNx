@@ -111,6 +111,17 @@ scenarios:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
     rationale: Executed two-rank negative test; the refusal message is asserted on both ranks and no run directory is created.
     status: unsupported
+  - id: TC-09
+    group: training-controls
+    features: [DDP, budgeted search, experiment plans]
+    entry_point: nnx.search.search / ExperimentPlan.fit under torchrun
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Refused on every rank of a multi-rank group before any study, factory call or run; a one-rank group behaves as no group.
+    tests:
+      - tests/test_ddp_adapter.py::test_single_process_entry_points_refuse_a_multi_rank_group
+      - tests/test_ddp_adapter.py::test_single_process_entry_points_run_in_a_one_rank_group
+    rationale: Executed two-rank negative test (refusal message, no study, factory call or run on any rank) and a one-rank positive control.
+    status: unsupported
   - id: CR-01
     group: checkpoint-resume
     features: [warm resume, list loader]
@@ -310,9 +321,10 @@ scenarios:
     features: [Result boundaries, decision providers]
     entry_point: nnx.result
     profile: {device: cpu, dtype: fp32, dependencies: []}
-    expected: A provider failure becomes an Err keeping its cause and request id; an abstention is a success; other exceptions propagate.
+    expected: A provider failure becomes an Err keeping its cause and request id, a malformed answer Err("invalid_decision_response") for any provider; an abstention is a success; other exceptions propagate.
     tests:
       - tests/test_result_boundaries.py::test_a_provider_failure_is_an_err_keeping_its_cause_and_request_id
+      - tests/test_result_boundaries.py::test_a_malformed_answer_is_an_invalid_response_err_whatever_the_provider
       - tests/test_result_boundaries.py::test_abstention_is_a_success_with_probabilities_and_reasons
       - tests/test_result_boundaries.py::test_other_provider_exceptions_propagate
     rationale: The Result variant and its fields are asserted.
@@ -360,6 +372,18 @@ scenarios:
       - tests/test_decision_model_pilot.py::test_the_empirical_mode_with_every_resource_present_still_reports_blocked
     rationale: Executed negative test of the documented no-go (docs/decision-model-pilot.md).
     status: unsupported
+  - id: DR-08
+    group: decisions-results
+    features: [Jev provider, Result boundaries]
+    entry_point: nnx.result.decide_result(JevProvider(...), ...)
+    profile: {device: cpu, dtype: fp32, dependencies: [typesafe_sdk, httpx2]}
+    expected: Each typed Jev failure becomes Err("provider_failure") and a malformed answer Err("invalid_decision_response"), both keeping the cause and request id; a success is Ok with candidate-aligned results.
+    tests:
+      - tests/test_decision_jev.py::test_decide_result_turns_a_jev_failure_into_a_provider_failure_err
+      - tests/test_decision_jev.py::test_decide_result_reports_a_malformed_jev_answer_as_an_invalid_response
+      - tests/test_decision_jev.py::test_decide_result_returns_aligned_jev_results
+    rationale: A recording client drives the real adapter through decide_result; the code, cause type and request id are asserted, with one call per failure.
+    status: verified
   - id: PK-01
     group: packaging
     features: [core install without domain extras, train / predict / save / reload]

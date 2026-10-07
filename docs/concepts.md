@@ -1795,8 +1795,16 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
     built — a factory-made callback's monitor included — and raises
     `PlanError`.
   - `raise_for_errors()` raises `PlanError` listing them all. `fit()` calls
-    it first (an invalid `attempt` id is listed with the rest); `probe()`
+    it first, right after the multi-rank check below (an invalid `attempt`
+    id is listed with the rest); `probe()`
     checks the model, network and seed it needs.
+- **One process.** `fit()` trains in this process (it never passes
+  `distributed=`), so inside a `torch.distributed` process group of more than
+  one rank — a `torchrun` launch — it raises `RuntimeError` before seeding,
+  calling a factory or creating a run, instead of letting every rank train
+  its own copy into the same `runs/`. A one-rank group behaves as no group.
+  To train one model across ranks, use `model.train(..., distributed=DDP())`
+  ([Architecture §3](architecture.md#3-single-node-data-parallelism-nnxdistributed)).
 - **Probe: effectful, restored.** `probe(example_batch)` seeds, builds a
   temporary model and runs one forward pass in eval mode under
   `torch.no_grad()`.
@@ -2411,7 +2419,7 @@ answer the question without narrowing).
 
 ```text
 plain data ──► validate_decision_request_result ──bind──► decide_result ──► Ok(results | SelectiveDecisions)
-                     │ InvalidDecisionRequest                │ ProviderFailure / UnsupportedCapability
+                     │ InvalidDecisionRequest                │ InvalidDecisionResponse / ProviderFailure / UnsupportedCapability
                      └──► Err(BoundaryError(code, where, context, cause)) ◄──┘   (anything else propagates)
 path ──► inspect_bundle_result ──► Ok(BundleInfo) | Err(artifact_missing | bundle_invalid)
 ```
@@ -2420,7 +2428,8 @@ Each wrapper converts exactly the exceptions it declares into an
 `Err(BoundaryError(code, where, context, cause))`:
 `validate_decision_request_result` builds the typed question from plain data
 (an invalid request never reaches a provider), `decide_result` separates a
-provider failure from a successful abstention, and `inspect_bundle_result`
+malformed answer (`invalid_decision_response`) and a provider failure
+(`provider_failure`) from a successful abstention, and `inspect_bundle_result`
 delegates to the safe `nnx.bundles.inspect_bundle` — manifest and JSON
 records only, never a checkpoint unpickle, a factory or a registry. The
 exception-style APIs (`question_from_state`, `provider.decide`,
@@ -2500,6 +2509,7 @@ loaders and callbacks (the plan's data and callbacks must be factories), with
 its own attempt id and run directory.
 
 ```text
+refuse a multi-rank process group (torchrun) ── before anything below
 validate (space, budget, monitor = plan's val monitor, factories, stored identity)
   └─ while trials so far < budget.trials and the deadline has not passed:
         Study.optimize(objective, n_trials=1)
@@ -2543,7 +2553,9 @@ validate (space, budget, monitor = plan's val monitor, factories, stored identit
   releases its run lease, records the trial as failed and propagates.
 
 NNx's artifacts live under `runs/`, Optuna's in the `storage` URL (in memory
-when `None`); this process is the study's only writer. Samplers keep their own
+when `None`); this process is the study's only writer: inside a process group of
+more than one rank (`torchrun`), `search()` raises `RuntimeError` before
+loading or creating a study, so no rank runs a study of its own. Samplers keep their own
 limits. See
 [`examples/search_offline.py`](../examples/search_offline.py).
 
