@@ -186,6 +186,7 @@ from .nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
 from .nn.params.nn_train_params import NNTrainParams
 from .nn.params.nn_transformer_params import NNTransformerParams
 from .nn.params.nn_transformer_params_builder import NNTransformerParamsBuilder
+from .nn.params.nn_vit_params import NNViTParams
 from .objectives import (
     KDObjective,
     LossTerm,
@@ -537,6 +538,7 @@ __all__ = [
     "JEPAPredictor",
     "JEPATrainStep",
     "ViTNN",
+    "NNViTParams",
     "ViTBlock",
     "dpo_train_step_factory",
     # Mixture-of-Experts

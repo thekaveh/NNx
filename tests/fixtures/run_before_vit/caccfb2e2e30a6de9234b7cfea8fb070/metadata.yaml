@@ -1,0 +1,36 @@
+cuda_available: false
+cuda_device_count: 0
+git_commit: null
+git_dirty: null
+nnx: 0.3.0
+numpy: 2.5.1
+platform: macOS-27.0.1-arm64-arm-64bit
+precision:
+  autocast_dtype: null
+  covers:
+  - NNModel.train (default step and objectives)
+  - evaluate()
+  - predict() / predict_proba()
+  device: cpu
+  effective: fp32
+  fallback_reason: null
+  grad_scaler: false
+  not_covered:
+  - Trainer.train(objective=...)
+  - nnx.lr_finder
+  - nnx.diffusion.sampling
+  - generation
+  requested: fp32
+  source: default
+  tf32:
+    cuda_matmul: false
+    cudnn_conv: true
+    cudnn_rnn: true
+python: 3.12.9
+resume:
+  fresh_components: []
+  mode: fresh
+  restored_components: []
+  source_checkpoint: null
+  source_run_id: null
+torch: 2.13.0

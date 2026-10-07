@@ -75,10 +75,20 @@ own run and chunk files, never its source's.
 
 ```text
 torchrun --standalone --nproc_per_node=2 train.py
-   ├── rank 0 (writer) ── init_process_group() ── train_loader / validation_loader ── model.train(distributed=DDP())
-   └── rank 1          ── init_process_group() ── train_loader / validation_loader ── model.train(distributed=DDP())
+   ├── rank 0 (writer) ── init_process_group() ── train_loader / validation_loader ── model.train(distributed=DDP()) ── shutdown()
+   └── rank 1          ── init_process_group() ── train_loader / validation_loader ── model.train(distributed=DDP()) ── shutdown()
                                   (gloo on CPU, nccl with one GPU per rank)
 ```
+
+**Teardown.** `nnx.distributed.shutdown(timeout_seconds=60)` ends the
+recipe: every rank meets at a teardown barrier, then the group is destroyed,
+so no rank tears down its connections while a peer still uses them. The wait
+is bounded (with Gloo; with NCCL on older torch, by the group's own timeout):
+a rank that does not arrive in time makes the others raise `RuntimeError`
+instead of blocking in the call. The group is then left for process exit, and
+the process may still wait at exit until the missing rank arrives or the
+group's timeout expires. Without a process group, or after a successful call,
+it does nothing.
 
 **Partitions.** `nnx.distributed.train_loader(dataset, batch_size, policy=, seed=)`
 deals each epoch's permutation (seeded by `seed + epoch`) to the ranks after
