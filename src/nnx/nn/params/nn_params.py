@@ -223,7 +223,9 @@ class NNParams:
 
             return NNConvParams.from_state(state)
         if "patch_size" in state:
-            # Local import: nn_vit_params imports this module (#395).
+            # Checked last: a future patch-based params class (a patchify-stem
+            # conv, MLP-Mixer, Swin) needs its own discriminator checked
+            # before this one. Local import: nn_vit_params imports this module (#395).
             from .nn_vit_params import NNViTParams
 
             return NNViTParams.from_state(state)

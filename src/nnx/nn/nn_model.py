@@ -265,6 +265,7 @@ def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mappi
     (``from_checkpoint(exclude_submodules=...)``); every name must be present."""
     if isinstance(names, str):
         raise TypeError("exclude_submodules must be a sequence of submodule names, not a string")
+    names = tuple(names or ())  # a one-shot iterable is read once
     if not names:
         return state
     held = {key.split(".", 1)[0] for key in state if "." in key}
@@ -2758,9 +2759,9 @@ class NNModel(_HubMixinBase):
 
         _replay_transforms(model, transforms)
         model._topology_transforms = _canonical_transforms(transforms)
-        if not transforms:
-            _refuse_unrecorded_recipe_state(checkpoint.net_state, model.net.state_dict())
         net_state = _without_submodules(checkpoint.net_state, exclude_submodules)
+        if not transforms:
+            _refuse_unrecorded_recipe_state(net_state, model.net.state_dict())
         if not isinstance(net, Nets):
             check_state_schema(model.net, net_state, what=f"checkpoint of {net}")
 
@@ -2777,8 +2778,8 @@ class NNModel(_HubMixinBase):
             if attached:
                 raise RuntimeError(
                     f"{error}\nThe checkpoint holds submodules the rebuilt {type(model.net).__name__} does not have "
-                    f"({', '.join(attached)}): pass exclude_submodules={tuple(attached)!r} to rebuild the "
-                    "architecture without them"
+                    f"({', '.join(attached)}): NNModel.from_checkpoint(checkpoint, exclude_submodules="
+                    f"{tuple(attached)!r}) rebuilds the architecture without them"
                 ) from error
             raise
 
