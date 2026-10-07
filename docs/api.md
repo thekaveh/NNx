@@ -4390,6 +4390,35 @@ nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_s
 Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever. With CUDA, each process takes ``cuda:LOCAL_RANK``.
 
 
+#### `nnx.distributed.shutdown`
+
+```python
+nnx.distributed.shutdown(*, timeout_seconds: 'float' = 60.0) -> 'None'
+```
+
+Leave the process group together, then destroy it: the counterpart of :func:`init_process_group`, called once training is over.
+
+**Details**
+
+```text
+Every rank meets at a teardown barrier before the group is destroyed, so
+no rank tears its connections down while a peer still uses them (with
+Gloo, a peer can otherwise abort: "terminate called without an active
+exception"). With Gloo the wait is bounded by ``timeout_seconds``: when a
+rank does not arrive in time the others raise ``RuntimeError`` instead of
+blocking in the call, and leave the group to process exit (destroying it
+then could block on the missing rank). The timed-out barrier stays queued,
+so the process itself may still wait at exit until the missing rank
+arrives (its barrier then completes against the queued one) or the
+group's own timeout (``init_process_group(timeout_seconds=...)``) expires.
+With NCCL, older torch releases ignore ``timeout_seconds`` unless
+``TORCH_NCCL_BLOCKING_WAIT=1`` is set, so the wait is bounded by the
+group's timeout instead. Without a process group, or after a successful
+call, it does nothing; after a failed call the group is still
+initialized (``init_process_group()`` returns it as is), so exit.
+```
+
+
 #### `nnx.distributed.train_loader`
 
 ```python

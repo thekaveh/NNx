@@ -315,3 +315,41 @@ def test_the_replay_never_moves_the_real_loss():
     model.loss_fn = torch.nn.CrossEntropyLoss(weight=torch.ones(scenarios.CLASSES))
     replay = _Replay(model)
     assert replay.loss_fn is not model.loss_fn and replay.loss_fn.weight is not model.loss_fn.weight
+
+
+def test_shutdown_without_a_process_group_is_a_no_op():
+    """FEAT-042: nothing to leave outside torchrun; the timeout is checked first."""
+    from nnx import distributed as nnx_dist
+
+    assert not torch.distributed.is_initialized()
+    nnx_dist.shutdown()
+    nnx_dist.shutdown(timeout_seconds=1)
+    for bad in (0, -1.0, float("inf"), float("nan"), True, "5"):
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            nnx_dist.shutdown(timeout_seconds=bad)  # type: ignore[arg-type]
+
+
+def test_shutdown_leaves_the_group_together_and_a_second_call_is_a_no_op(tmp_path):
+    out = tmp_path / "shutdown"
+    launch("shutdown", out)
+    for result in results(out):
+        assert result["initialized_after"] is False and result["second_call"] == "no-op"
+
+
+def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
+    """Rank 1 reaches the teardown only after rank 0's wait timed out: rank 0's
+    shutdown raises within its timeout instead of blocking (leaving the group
+    to process exit), and the late rank's barrier completes against the one
+    rank 0 left queued, so it leaves cleanly; the launch neither hangs nor
+    aborts."""
+    import time
+
+    out = tmp_path / "shutdown-missing"
+    start = time.monotonic()
+    completed = launch("shutdown_missing", out, check=False, timeout=120)
+    assert time.monotonic() - start < 90
+    assert completed.returncode == 0 and "terminate called" not in completed.stderr
+    first, late = results(out)
+    assert first["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in first["error"], first
+    assert first["seconds"] < 6 and first["initialized_after"] is True
+    assert late["error"] is None and late["seconds"] < 6 and late["initialized_after"] is False
