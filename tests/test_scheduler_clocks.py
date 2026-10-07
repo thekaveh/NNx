@@ -1028,6 +1028,7 @@ def _make_legacy_sidecar(run_id, root):
         state.pop(key, None)
     state["nnx_training_state_version"] = 3
     torch.save(state, sidecar)
+    (sidecar.parent / "last.pt.manifest.json").unlink()  # legacy checkpoints carry no manifest (#394)
 
 
 def test_a_checkpoint_from_before_component_state_cannot_resume_on_the_update_clock(tmp_path):

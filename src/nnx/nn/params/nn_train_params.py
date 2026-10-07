@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 
 RESUME_MODES = ("auto", "stateful", "weights_only")
+RESUME_EPOCHS = ("additional", "planned")
 
 
 def _validate_resume_mode(mode: object, owner: str) -> None:
@@ -119,6 +120,12 @@ class NNTrainParams:
     # anything when the checkpoint is weights-only; "weights_only" restores
     # only the model weights and starts every component fresh.
     resume_mode: str = field(repr=False, default="auto")
+    # #394 — what `n_epochs` means on a resume: "additional" (default) trains
+    # n_epochs more after the checkpoint's epoch; "planned" continues the
+    # run's own plan up to n_epochs in total, with the logical step and
+    # update counters carried on. Part of the run identity (it changes what
+    # trains), emitted only when not the default.
+    resume_epochs: str = field(repr=False, default="additional")
 
     def __post_init__(self):
         # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in the train
@@ -144,6 +151,11 @@ class NNTrainParams:
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainParams")
+        if self.resume_epochs not in RESUME_EPOCHS:
+            raise ValueError(
+                f"NNTrainParams.resume_epochs must be one of {', '.join(repr(m) for m in RESUME_EPOCHS)}, "
+                f"got {self.resume_epochs!r}"
+            )
         _validate_monitoring(self, "NNTrainParams")
 
     def with_train_loader(self, value: Iterable[Any]) -> NNTrainParams:
@@ -176,6 +188,8 @@ class NNTrainParams:
             d["parent_checkpoint"] = self.resume_from_checkpoint
         if self.save_phase_checkpoints is not True:
             d["save_phase_checkpoints"] = self.save_phase_checkpoints
+        if self.resume_epochs != "additional":
+            d["resume_epochs"] = self.resume_epochs
         if self.metrics:
             d["metrics"] = [spec.state() for spec in self.metrics]
         if self.monitor is not None:
@@ -196,6 +210,7 @@ class NNTrainParams:
             parent_run_id=state.get("parent_run_id"),
             resume_from_checkpoint=state.get("parent_checkpoint", "last"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
+            resume_epochs=state.get("resume_epochs", "additional"),
             metrics=tuple(MetricSpec.from_state(m) for m in state.get("metrics") or ()),
             monitor=MonitorSpec.from_state(state["monitor"]) if state.get("monitor") is not None else None,
         )

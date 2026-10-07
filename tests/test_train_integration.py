@@ -39,6 +39,19 @@ from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
 from nnx.nn.params.nn_train_params import NNTrainParams
 
 
+def _restamp(sidecar) -> None:
+    """Record a deliberately edited sidecar in its resume-point manifest (#394),
+    as if the run had written that content: the test then exercises the check
+    it targets rather than the digest check."""
+    import hashlib
+    import json
+
+    manifest_path = sidecar.parent / (sidecar.name.split(".opt.")[0] + ".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][sidecar.name] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def _save_checkpoint_in_process(checkpoint, root: str, marker: int) -> None:
     checkpoint.save(
         run="concurrent-run",
@@ -570,6 +583,7 @@ def test_failed_resume_rolls_back_model_and_loader_rng(tmp_path, monkeypatch):
     state = torch.load(sidecar, weights_only=True)
     state["optimizer"]["param_groups"] = []
     torch.save(state, sidecar)
+    _restamp(sidecar)
 
     resume_loader = DataLoader(
         train_loader.dataset,
@@ -861,6 +875,7 @@ def test_warm_resume_rejects_grad_scaler_presence_changes(tmp_path, monkeypatch,
     state = torch.load(sidecar, weights_only=True)
     state["scaler"] = saved_scaler
     torch.save(state, sidecar)
+    _restamp(sidecar)
 
     monkeypatch.setattr(NNModel, "_build_grad_scaler", lambda _self: current_scaler)
     with pytest.raises(ValueError, match="GradScaler presence mismatch"):
@@ -1973,6 +1988,7 @@ def test_legacy_sidecars_without_component_state_resume_with_fresh_components(tm
         state.pop(key)
     state["nnx_training_state_version"] = 3  # as written before FEAT-005
     torch.save(state, sidecar)
+    (sidecar.parent / "last.pt.manifest.json").unlink()  # legacy checkpoints carry no manifest (#394)
 
     resumed_params = _train_params(train_loader, val_loader, n_epochs=1)
     from dataclasses import replace

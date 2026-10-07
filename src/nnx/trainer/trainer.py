@@ -74,6 +74,7 @@ from ..nn.nn_model import (
     _final_transforms,
     _load_resume_source,
     _loader_num_workers,
+    _manifest_lineage,
     _monitored_plateau,
     _monitoring_preflight,
     _named_training_state,
@@ -966,6 +967,7 @@ class Trainer:
                 source_checkpoint=source.label,
                 source_epoch=source.checkpoint.idp.epoch_idx,
                 fresh_components=registry.names,
+                **_manifest_lineage(source.manifest),
             )
             return source.checkpoint.idp.epoch_idx + 1, None, status, None
 
@@ -1050,5 +1052,6 @@ class Trainer:
             source_checkpoint=source.label,
             source_epoch=source.checkpoint.idp.epoch_idx,
             fresh_components=tuple(component_plan.fresh),
+            **_manifest_lineage(source.manifest),
         )
         return start_epoch, component_plan, status, rollback
