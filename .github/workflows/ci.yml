@@ -24,7 +24,8 @@ jobs:
     name: lint-and-test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # Caps a hung pytest run; default is 6 hours on GitHub-hosted runners.
-    timeout-minutes: 20
+    # The full suite takes ~19 min on the slowest leg (3.11) before the mkdocs step.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
