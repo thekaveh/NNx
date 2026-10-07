@@ -429,6 +429,42 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 out["exported"] = True
             except ImportError:
                 pass
+    elif name in ("resume_planned_first", "resume_planned_second"):
+        # #394: a planned resume under DDP continues the plan of 2 epochs.
+        class StopAfterFirst(Callback):
+            distributed = "all"
+
+            def on_epoch_end(self, ctx):
+                if ctx.epoch == 0:
+                    ctx.should_stop = True
+
+        loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
+        m = model()
+        if name == "resume_planned_first":
+            run = m.train(
+                params=params(loader, n_epochs=2, data_id="planned"),
+                callbacks=[StopAfterFirst()],
+                distributed=nnx_dist.DDP(),
+            )
+            if rank == 0:
+                with open("planned_run_id.txt", "w", encoding="utf-8") as handle:
+                    handle.write(run.id)
+        else:
+            first_id = open("planned_run_id.txt", encoding="utf-8").read().strip()
+            run = m.train(
+                params=params(
+                    loader,
+                    n_epochs=2,
+                    data_id="planned",
+                    resume_from_run_id=first_id,
+                    resume_mode="stateful",
+                    resume_epochs="planned",
+                ),
+                distributed=nnx_dist.DDP(),
+            )
+        out.update(summary(run))
+        out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
+        out["rng_after"] = torch.get_rng_state()
     elif name in ("resume_full", "resume_first", "resume_second", "resume_changed"):
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         m = model()

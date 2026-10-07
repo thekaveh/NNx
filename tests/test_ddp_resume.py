@@ -99,6 +99,18 @@ def test_two_epochs_equal_one_plus_a_resume(resumed):
         assert torch.equal(split["rng_after"], full["rng_after"])  # each rank's own streams restored
 
 
+def test_a_planned_resume_continues_the_plan_on_every_rank(resumed, tmp_path_factory):
+    """#394 under DDP: stopped after epoch 0 of a 2-epoch plan, a planned
+    resume trains epoch 1 only and equals the uninterrupted run."""
+    planned = tmp_path_factory.mktemp("ddp-planned")
+    launch("resume_planned_first", planned)
+    launch("resume_planned_second", planned)
+    for full, split in zip(resumed["full"], results(planned), strict=True):
+        assert split["epochs"] == [1]
+        assert_close_states(split["state"], full["state"])
+        assert torch.equal(split["rng_after"], full["rng_after"])
+
+
 def test_a_changed_world_or_partition_fails_before_anything_is_restored(resumed):
     for rank in resumed["changed"]["partition"]:
         assert "train partition changed" in rank["error"] and rank["unchanged"]

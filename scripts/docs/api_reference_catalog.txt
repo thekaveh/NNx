@@ -672,6 +672,8 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.nn.params.nn_checkpoint.NNCheckpoint
 
+@api nnx.nn.params.nn_checkpoint.ResumePointError
+
 @api nnx.nn.params.nn_iteration_data_point.NNIterationDataPoint
 
 @api nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
