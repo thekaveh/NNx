@@ -17,6 +17,7 @@ from nnx.decisions import (
     Choice,
     ChoiceResult,
     InvalidDecisionRequest,
+    InvalidDecisionResponse,
     ProviderFailure,
     UnsupportedCapability,
     validate_response,
@@ -115,9 +116,26 @@ def test_a_provider_failure_is_an_err_keeping_its_cause_and_request_id():
     assert refused.error.code == "unsupported"
 
 
+def test_a_malformed_answer_is_an_invalid_response_err_whatever_the_provider():
+    """FEAT-044: data that does not fit the question gets its own code, apart
+    from an outage, for every provider (a malformed Jev answer is also a
+    ProviderFailure; see tests/test_decision_jev.py)."""
+    malformed = InvalidDecisionResponse("the distribution sums to 1.3")
+    result = decide_result(Spy(raises=malformed), TOPIC, ["text"])
+    assert (result.error.code, result.error.where, result.error.cause) == (
+        "invalid_decision_response",
+        "provider.decide",
+        malformed,
+    )
+    assert result.error.context["request_id"] is None
+
+
 def test_other_provider_exceptions_propagate():
     with pytest.raises(RuntimeError, match="a bug"):
         decide_result(Spy(raises=RuntimeError("a bug")), TOPIC, ["text"])
+    # InvalidDecisionResponse is a ValueError: a plain ValueError still propagates.
+    with pytest.raises(ValueError, match="not a decision error"):
+        decide_result(Spy(raises=ValueError("not a decision error")), TOPIC, ["text"])
 
 
 def test_abstention_is_a_success_with_probabilities_and_reasons():
