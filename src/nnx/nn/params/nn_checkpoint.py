@@ -205,8 +205,9 @@ def _manifest_path(checkpoint_path: str) -> str:
 
 def _staged_manifest_path(checkpoint_path: str) -> str:
     """The next generation's manifest, written before its checkpoint is
-    published: a crash between publishing and the live manifest leaves it to
-    be promoted by :meth:`NNCheckpoint.verify` once its digests check out."""
+    published: a crash between publishing and the live manifest leaves it for
+    :meth:`NNCheckpoint.verify` to read once its digests check out (the next
+    save makes it live)."""
     return f"{checkpoint_path}.manifest.staged.json"
 
 
@@ -279,7 +280,8 @@ def _publish(checkpoint_path: str, written: str, manifest: dict[str, Any]) -> No
     """Publish one resume point (#394): stage its manifest, rename the written
     checkpoint into place, then write the live manifest — the window a Ctrl-C
     is held for. A crash inside it leaves the staged manifest, which
-    :meth:`NNCheckpoint.verify` promotes once every listed digest matches."""
+    :meth:`NNCheckpoint.verify` reads once every listed digest matches (the
+    next save makes it live)."""
     _write_manifest(checkpoint_path, manifest, staged=True)
     with _deferred_interrupt():
         os.replace(written, checkpoint_path)
@@ -674,7 +676,10 @@ class NNCheckpoint:
         ``generation``, ``checkpoint_id``, ``completed_epoch``,
         ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the
         ``files`` with their SHA-256 — or ``None`` for a checkpoint written
-        before manifests existed. Read as is; :meth:`verify` checks it."""
+        before manifests existed. Read as is: after an interrupted publish
+        the live manifest may name the previous checkpoint while a staged one
+        describes the published files — :meth:`verify` checks both and
+        returns the one that matches."""
         return _read_manifest(_checkpoint_path(run, type, root=root))
 
     @staticmethod

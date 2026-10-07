@@ -10090,7 +10090,7 @@ between replacements leaves the previous generation resumable.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.resume_point(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-The manifest stamping this checkpoint's resume point (#394) — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint written before manifests existed. Read as is; :meth:`verify` checks it.
+The manifest stamping this checkpoint's resume point (#394) — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint written before manifests existed. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — :meth:`verify` checks both and returns the one that matches.
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.verify`
 
