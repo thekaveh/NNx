@@ -111,6 +111,17 @@ scenarios:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
     rationale: Executed two-rank negative test; the refusal message is asserted on both ranks and no run directory is created.
     status: unsupported
+  - id: TC-09
+    group: training-controls
+    features: [DDP, budgeted search, experiment plans]
+    entry_point: nnx.search.search / ExperimentPlan.fit under torchrun
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: Refused on every rank of a multi-rank group before any study, factory call or run; a one-rank group behaves as no group.
+    tests:
+      - tests/test_ddp_adapter.py::test_single_process_entry_points_refuse_a_multi_rank_group
+      - tests/test_ddp_adapter.py::test_single_process_entry_points_run_in_a_one_rank_group
+    rationale: Executed two-rank negative test (refusal message, no study, factory call or run on any rank) and a one-rank positive control.
+    status: unsupported
   - id: CR-01
     group: checkpoint-resume
     features: [warm resume, list loader]
