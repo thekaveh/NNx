@@ -6579,6 +6579,12 @@ resume. The run's ``salt`` is ``"plan-attempt:<attempt>"``, where
 run id and directory. ``overwrite_existing`` is never set; reusing
 an ``attempt`` id for the same configuration raises
 ``FileExistsError`` from ``NNModel.train``.
+
+The fit trains in this process (no ``distributed=``): inside a
+``torch.distributed`` process group of more than one rank (a
+``torchrun`` launch) it raises ``RuntimeError`` before seeding,
+calling a factory or creating a run; a one-rank group behaves as no
+group.
 ```
 
 

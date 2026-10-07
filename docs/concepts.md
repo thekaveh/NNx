@@ -1794,8 +1794,16 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
     built — a factory-made callback's monitor included — and raises
     `PlanError`.
   - `raise_for_errors()` raises `PlanError` listing them all. `fit()` calls
-    it first (an invalid `attempt` id is listed with the rest); `probe()`
+    it first, right after the multi-rank check below (an invalid `attempt`
+    id is listed with the rest); `probe()`
     checks the model, network and seed it needs.
+- **One process.** `fit()` trains in this process (it never passes
+  `distributed=`), so inside a `torch.distributed` process group of more than
+  one rank — a `torchrun` launch — it raises `RuntimeError` before seeding,
+  calling a factory or creating a run, instead of letting every rank train
+  its own copy into the same `runs/`. A one-rank group behaves as no group.
+  To train one model across ranks, use `model.train(..., distributed=DDP())`
+  ([Architecture §3](architecture.md#3-single-node-data-parallelism-nnxdistributed)).
 - **Probe: effectful, restored.** `probe(example_batch)` seeds, builds a
   temporary model and runs one forward pass in eval mode under
   `torch.no_grad()`.
@@ -2500,6 +2508,7 @@ loaders and callbacks (the plan's data and callbacks must be factories), with
 its own attempt id and run directory.
 
 ```text
+refuse a multi-rank process group (torchrun) ── before anything below
 validate (space, budget, monitor = plan's val monitor, factories, stored identity)
   └─ while trials so far < budget.trials and the deadline has not passed:
         Study.optimize(objective, n_trials=1)
@@ -2543,7 +2552,9 @@ validate (space, budget, monitor = plan's val monitor, factories, stored identit
   releases its run lease, records the trial as failed and propagates.
 
 NNx's artifacts live under `runs/`, Optuna's in the `storage` URL (in memory
-when `None`); this process is the study's only writer. Samplers keep their own
+when `None`); this process is the study's only writer: inside a process group of
+more than one rank (`torchrun`), `search()` raises `RuntimeError` before
+loading or creating a study, so no rank runs a study of its own. Samplers keep their own
 limits. See
 [`examples/search_offline.py`](../examples/search_offline.py).
 
