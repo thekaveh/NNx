@@ -15,6 +15,10 @@
         {
           "type": "generic",
           "path": "src/nnx/__init__.py"
+        },
+        {
+          "type": "generic",
+          "path": "docs/api.md"
         }
       ]
     }

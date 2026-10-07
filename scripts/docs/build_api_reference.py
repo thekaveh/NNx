@@ -67,6 +67,10 @@ def _signature(path: str, value: Any) -> str:
     if isinstance(value, property):
         return f"property {path}"
     if not callable(value):
+        if path == "nnx.__version__":
+            # release-please bumps the marked line on its release branch (FIX-029),
+            # where the installed metadata then reports the same version.
+            return f"{path} = {value!r}  # x-release-please-version"
         return f"{path} = {value!r}"
     try:
         raw_signature = inspect.signature(value)
