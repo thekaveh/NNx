@@ -2,8 +2,8 @@
 
 Demonstrates:
 
-  1. Building a small ViT-S with :class:`ViTNN` (32x32 inputs,
-     4x4 patches → 64 tokens per image, 4 layers, 4 heads).
+  1. Building a small ViT-S through ``Nets.VIT`` and :class:`NNViTParams`
+     (32x32 inputs, 4x4 patches → 64 tokens per image, 4 layers, 4 heads).
   2. Constructing the EMA target encoder via
      :func:`build_target_encoder` and the predictor via
      :class:`JEPAPredictor`, attached to ``model.net`` so the
@@ -44,7 +44,6 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
-    Activations,
     Callback,
     Devices,
     JEPAPredictor,
@@ -53,9 +52,9 @@ from nnx import (
     NNModel,
     NNModelParams,
     NNOptimParams,
-    NNParams,
     NNSchedulerParams,
     NNTrainParams,
+    NNViTParams,
     Optims,
     ViTNN,
     build_target_encoder,
@@ -143,10 +142,18 @@ def objective_mode() -> dict:
     """
     set_seed(0)
     model = NNModel(
-        net_params=NNParams(input_dim=12, output_dim=4, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        net_params=NNViTParams(
+            input_dim=3 * 16 * 16,
+            output_dim=16,
+            dropout_prob=0.0,
+            image_size=16,
+            patch_size=4,
+            d_model=16,
+            n_layers=1,
+            n_heads=2,
+        ),
+        params=NNModelParams(net=Nets.VIT, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
-    model.net = ViTNN(image_size=16, patch_size=4, in_channels=3, d_model=16, n_layers=1, n_heads=2)
     target_encoder = build_target_encoder(model.net)
     predictor = JEPAPredictor(embed_dim=16, n_patches=model.net.n_patches, predictor_dim=8, n_layers=1, n_heads=2)
     model.net.add_module("_jepa_predictor", predictor)  # owned by the optimizer, saved once with the net
@@ -206,32 +213,25 @@ def main():
     set_seed(0)
     loader = _make_cifar_loader(args.batch_size) if args.cifar else _make_synthetic_loader(batch_size=args.batch_size)
 
-    # The base NNParams is a placeholder; the real net is the ViT
-    # swapped onto model.net below. The placeholder mirrors the input
-    # surface so the run.yaml stays readable.
+    # The trainable context encoder: Nets.VIT builds ViTNN from NNViTParams,
+    # so run.yaml records the real architecture (#395).
     model = NNModel(
-        net_params=NNParams(
-            input_dim=3 * 32 * 32,
-            output_dim=128,
-            hidden_dims=[128],
+        net_params=NNViTParams(
+            input_dim=3 * 32 * 32,  # in_channels * image_size ** 2
+            output_dim=64,  # d_model: one vector per token
             dropout_prob=0.0,
-            activation=Activations.RELU,
+            image_size=32,
+            patch_size=4,
+            d_model=64,
+            n_layers=4,
+            n_heads=4,
         ),
         params=NNModelParams(
-            net=Nets.FEED_FWD,
+            net=Nets.VIT,
             device=Devices.CPU,
             loss=Losses.CROSS_ENTROPY,  # unused by JEPA but required by NNModelParams
         ),
     )
-    # The trainable context encoder.
-    model.net = ViTNN(
-        image_size=32,
-        patch_size=4,
-        in_channels=3,
-        d_model=64,
-        n_layers=4,
-        n_heads=4,
-    ).to(model.device)
 
     # EMA target encoder + predictor.
     target_encoder = build_target_encoder(model.net)

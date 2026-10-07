@@ -658,6 +658,8 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.nn.params.nn_conv_params.NNConvParams
 
+@api nnx.nn.params.nn_vit_params.NNViTParams
+
 @api nnx.nn.params.nn_moe_params.NNMoEParams
 
 @api nnx.nn.params.nn_tokenizer_params.NNTokenizerParams
