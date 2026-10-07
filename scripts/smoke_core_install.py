@@ -178,7 +178,16 @@ def main(argv: list[str] | None = None) -> int:
         assert present == (extra in extras), f"{distribution} installed={present} for profile {args.profile!r}"
 
     nets = [member.value for member in nnx.Nets]
-    assert nets == ["conv", "feed_fwd", "feed_fwd_moe", "graph_att", "graph_conv", "graph_sage", "transformer"], nets
+    assert nets == [
+        "conv",
+        "feed_fwd",
+        "feed_fwd_moe",
+        "graph_att",
+        "graph_conv",
+        "graph_sage",
+        "transformer",
+        "vit",
+    ], nets
     with tempfile.TemporaryDirectory() as workdir:
         _core_round_trip(Path(workdir))
     loaded = sorted(module for module in DOMAIN.values() if module in sys.modules)
