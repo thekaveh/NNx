@@ -70,7 +70,7 @@ from .nn.params.nn_model_params import NNModelParams
 from .nn.params.nn_optim_params import NNOptimParams
 from .nn.params.nn_params import NNParams
 from .nn.params.nn_scheduler_params import NNSchedulerParams
-from .nn.params.nn_train_params import NNTrainParams, _validate_resume_mode
+from .nn.params.nn_train_params import NNTrainParams, _validate_resume_epochs, _validate_resume_mode
 from .precision import PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 
 if TYPE_CHECKING:
@@ -208,6 +208,7 @@ class _Resume:
     run_id: Any
     checkpoint: Any
     mode: Any
+    epochs: Any = None
 
 
 class _Marker:
@@ -280,8 +281,9 @@ class ExperimentPlan:
     - ``with_step_fns``, ``with_objective``, ``with_components`` and
       ``with_provenance``, which are borrowed, and ``with_batch_adapter``
       for a registered module's inputs;
-    - ``resuming(run_id, checkpoint="last", mode=None)`` (``mode`` defaults
-      to the training parameters' ``resume_mode``).
+    - ``resuming(run_id, checkpoint="last", mode=None, epochs=None)``
+      (``mode`` and ``epochs`` default to the training parameters'
+      ``resume_mode`` and ``resume_epochs``).
 
     Plan-level arguments (data, seed, callbacks, factories, steps, resume)
     are recorded as given and checked by :meth:`validate`, so every problem
@@ -443,15 +445,27 @@ class ExperimentPlan:
     def with_provenance(self, manifest: Any) -> ExperimentPlan:
         return replace(self, provenance=manifest)
 
-    def resuming(self, run_id: str, *, checkpoint: str = "last", mode: Optional[str] = None) -> ExperimentPlan:
+    def resuming(
+        self,
+        run_id: str,
+        *,
+        checkpoint: str = "last",
+        mode: Optional[str] = None,
+        epochs: Optional[str] = None,
+    ) -> ExperimentPlan:
         """Warm-resume from the run ``run_id``'s ``checkpoint``. The source
         run is recorded as the new run's parent lineage and is never
         overwritten: the resumed fit writes its own run directory. ``mode``
         (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the
-        training parameters' own ``resume_mode``."""
+        training parameters' own ``resume_mode``. ``epochs`` sets what
+        ``n_epochs`` means on the resume and defaults to the training
+        parameters' own ``resume_epochs``: ``"additional"`` trains
+        ``n_epochs`` more; ``"planned"`` continues the source run's plan up
+        to ``n_epochs`` in total, which needs its training state (a
+        ``"weights_only"`` mode is refused)."""
         if isinstance(checkpoint, Checkpoints):
             checkpoint = checkpoint.value  # the tag string NNTrainParams records as lineage
-        return replace(self, resume=_Resume(run_id, checkpoint, mode))
+        return replace(self, resume=_Resume(run_id, checkpoint, mode, epochs))
 
     def without_resume(self) -> ExperimentPlan:
         return replace(self, resume=None)
@@ -740,6 +754,19 @@ class ExperimentPlan:
                 _validate_resume_mode(resume.mode, "resuming()")
             except ValueError as exc:
                 report("resume.mode", str(exc))
+        if resume.epochs is not None:
+            try:
+                _validate_resume_epochs(resume.epochs, "resuming()")
+            except ValueError as exc:
+                report("resume.epochs", str(exc))
+        epochs = resume.epochs if resume.epochs is not None else getattr(train, "resume_epochs", None)
+        mode = resume.mode if resume.mode is not None else getattr(train, "resume_mode", None)
+        if epochs == "planned" and mode == "weights_only":  # the loop's own refusal, before any run is reserved
+            report(
+                "resume.epochs",
+                "'planned' continues the source run's training state; resume_mode='weights_only' restores the "
+                "weights only — resume statefully, or use epochs='additional'",
+            )
         if train is not None and train.parent_run_id is not None:
             report(
                 "resume",
@@ -912,6 +939,8 @@ class ExperimentPlan:
             changes.update(resume_from_run_id=self.resume.run_id, resume_from_checkpoint=self.resume.checkpoint)
             if self.resume.mode is not None:  # else the training parameters' own resume_mode
                 changes["resume_mode"] = self.resume.mode
+            if self.resume.epochs is not None:  # else the training parameters' own resume_epochs
+                changes["resume_epochs"] = self.resume.epochs
         return replace(self.train, **changes)
 
     # --- probing (effectful, restored) -------------------------------------------------------

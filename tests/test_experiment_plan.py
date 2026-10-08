@@ -682,3 +682,36 @@ def test_precision_round_five_plans_check_the_policy_before_anything_runs():
     report = mixup.validate()
     assert report.paths == ("train_step_fn",) and "full precision only" in report.diagnostics[0].message
     assert _plan().with_step_fns(train_step_fn=mixup_train_step_factory()).validate().ok  # fp32 takes it
+
+
+# --- FEAT-048: resuming(..., epochs=) ------------------------------------------------------------
+
+
+def test_resume_epochs_reaches_the_fit_and_otherwise_defaults_to_the_training_parameters():
+    planned = _plan().with_train(NNTrainParams(n_epochs=2, resume_epochs="planned"))
+    assert planned.resuming("abc")._compile_train(None, None).resume_epochs == "planned"  # inherited
+    resumed = _plan().resuming("abc", mode="stateful", epochs="planned")
+    assert resumed.resume.epochs == "planned"
+    assert resumed._compile_train(None, None).resume_epochs == "planned"
+    assert resumed._compile_train(None, None).state()["resume_epochs"] == "planned"
+    additional = planned.resuming("abc", epochs="additional")._compile_train(None, None)
+    assert additional.resume_epochs == "additional"
+    assert "resume_epochs" not in additional.state()  # omitted at the default, as NNTrainParams does
+    assert "resume_epochs" not in _plan().resuming("abc")._compile_train(None, None).state()
+
+
+def test_resume_epochs_uses_the_training_rule():
+    report = _plan().resuming("abc", epochs="sometimes").validate()
+    assert report.paths == ("resume.epochs",)
+    assert "resume_epochs must be one of 'additional', 'planned'" in report.diagnostics[0].message
+    both = _plan().resuming("", mode="never", epochs="all").validate()
+    assert both.paths == ("resume.run_id", "resume.mode", "resume.epochs")  # every problem, at once
+
+
+def test_a_planned_resume_of_the_weights_only_is_refused_at_validation():
+    report = _plan().resuming("abc", mode="weights_only", epochs="planned").validate()
+    assert report.paths == ("resume.epochs",) and "weights_only" in report.diagnostics[0].message
+    inherited = _plan().with_train(NNTrainParams(n_epochs=2, resume_mode="weights_only"))
+    assert inherited.resuming("abc", epochs="planned").validate().paths == ("resume.epochs",)
+    assert inherited.resuming("abc", mode="stateful", epochs="planned").validate().ok
+    assert _plan().resuming("abc", epochs="planned").validate().ok  # "auto" restores the state when saved
