@@ -30,7 +30,7 @@ jobs:
   # permanent).
   test:
     name: Test before release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -62,6 +62,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install diagram rendering runtime
+        # A package-mirror stall fails here, not after the whole job budget.
+        timeout-minutes: 5
         run: sudo apt-get update && sudo apt-get install --yes libcairo2
 
       - name: Install uv
@@ -112,7 +114,7 @@ jobs:
   build-distributions:
     name: Build and verify sdist + wheel
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -216,7 +218,7 @@ jobs:
     # anything is published.
     name: Artifact profile (${{ matrix.profile }}, ${{ matrix.pair }} torch)
     needs: build-distributions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     permissions:
       contents: read
@@ -302,7 +304,7 @@ jobs:
     name: Publish verified distributions to PyPI
     needs: [build-distributions, artifact-profiles]
     if: inputs.tag_name != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment:
       name: pypi
@@ -330,7 +332,7 @@ jobs:
     # Only runs on Release Please publishes, not workflow_dispatch dry runs
     # (since the dry-run path skips the pypi-publish step).
     if: inputs.tag_name != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     # Least-privilege: this job only fetches from PyPI + imports nnx.
     # No GITHUB_TOKEN scopes beyond contents:read needed.
@@ -455,7 +457,7 @@ jobs:
     name: Publish verified GitHub release
     needs: [build-distributions, verify-published]
     if: inputs.tag_name != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write # Upload verified artifacts and publish the draft GitHub release.
     steps:

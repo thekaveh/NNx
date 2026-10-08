@@ -20,7 +20,7 @@ concurrency:
 jobs:
   release-please:
     name: Prepare release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     # release-please pushes its release branch and opens or updates a PR.
     permissions:
