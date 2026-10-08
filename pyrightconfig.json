@@ -3,7 +3,8 @@
     "src",
     "scripts/docs",
     "scripts/check_feature_composition.py",
-    "scripts/composition_plugin.py"
+    "scripts/composition_plugin.py",
+    "scripts/release"
   ],
   "exclude": [
     "**/__pycache__",

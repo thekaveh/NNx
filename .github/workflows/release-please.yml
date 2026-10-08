@@ -66,16 +66,41 @@ jobs:
             git fetch origin "$branch"
             git checkout --detach "origin/$branch"
             uv lock
-            if ! git diff --quiet -- uv.lock; then
+            # FIX-029: the curated [Unreleased] notes replace release-please's
+            # generated list under the version heading (docs/api.md's version
+            # line is bumped by release-please itself through extra-files).
+            python3 scripts/release/finalize_changelog.py CHANGELOG.md
+            if ! git diff --quiet -- uv.lock CHANGELOG.md; then
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git add uv.lock
-              git commit -m "chore: refresh release lockfile"
+              git add uv.lock CHANGELOG.md
+              git commit -m "chore: refresh release lockfile and finalize the release notes"
               git push origin "HEAD:$branch"
             fi
             gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
           done
+
+      - name: Checkout main for the release notes
+        # The push being handled (github.sha), whose CHANGELOG holds the
+        # released version's section: no ref taken from an action output.
+        if: steps.release.outputs.release_created == 'true'
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Publish the curated release notes
+        # FIX-029: release-please drafts the release from its generated
+        # commit list; the curated CHANGELOG section replaces it.
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/finalize_changelog.py CHANGELOG.md --release-notes "$RELEASE_TAG" > "$RUNNER_TEMP/notes.md"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
 
       - name: Dispatch verified release workflow
         if: steps.release.outputs.release_created == 'true'
