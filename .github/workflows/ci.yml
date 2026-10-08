@@ -24,7 +24,8 @@ jobs:
     name: lint-and-test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # Caps a hung pytest run; default is 6 hours on GitHub-hosted runners.
-    # The full suite takes ~19 min on the slowest leg (3.11) before the mkdocs step.
+    # The suite runs on every core (pytest -n auto, FIX-031); serially it took
+    # ~19 min on the slowest leg (3.11, with coverage).
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -86,9 +87,9 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
           if [[ "$PYTHON_VERSION" == "3.11" ]]; then
-            uv run --frozen pytest --cov=nnx --cov-report=term-missing --cov-report=xml
+            uv run --frozen pytest -n auto --cov=nnx --cov-report=term-missing --cov-report=xml
           else
-            uv run --frozen pytest
+            uv run --frozen pytest -n auto
           fi
 
       - name: Build docs with mkdocs --strict

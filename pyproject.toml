@@ -108,6 +108,8 @@ domains = ["thekaveh-nnx[vision,graph,plots]"]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
+    # Runs the suite on every core (FIX-031): CI uses `-n auto`.
+    "pytest-xdist>=3.6",
     # Pinned upper bound: ruff regularly adds new lint/format rules
     # between minor versions; without a ceiling, a fresh `pip install -e
     # .[dev]` six months from now can fail CI on rules that didn't
