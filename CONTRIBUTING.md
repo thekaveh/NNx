@@ -26,7 +26,7 @@ unset).
 Verify a clean baseline:
 
 ```bash
-uv run pytest -n auto                  # full suite, on every core (pytest-xdist)
+uv run pytest -n logical --dist loadgroup  # full suite, on every CPU (pytest-xdist)
 uv run ruff check src/ tests/ examples/ scripts/  # lint
 uv run ruff format --check src/ tests/ examples/ scripts/  # format check
 uv run pyright --warnings              # type check
@@ -80,10 +80,10 @@ Useful env vars:
 ## 5. Testing
 
 ```bash
-uv run pytest -n auto                  # full suite, on every core (pytest-xdist)
+uv run pytest -n logical --dist loadgroup  # full suite, on every CPU (pytest-xdist)
 uv run pytest tests/test_pass2_n_series.py::test_n7_evaluate_aggregates_across_batches
 uv run pytest -k "graph"               # name filter
-uv run pytest --cov=nnx --cov-report=term-missing  # with coverage
+uv run pytest -n logical --dist loadgroup --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
 ### 5.1. Feature combinations

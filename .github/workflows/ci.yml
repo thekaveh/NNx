@@ -24,8 +24,10 @@ jobs:
     name: lint-and-test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # Caps a hung pytest run; default is 6 hours on GitHub-hosted runners.
-    # The suite runs on every core (pytest -n auto, FIX-031); serially it took
-    # ~19 min on the slowest leg (3.11, with coverage).
+    # The suite runs on every logical CPU (pytest -n logical, FIX-031; `auto`
+    # counts physical cores, 2 on a 4-vCPU runner), with each torchrun module
+    # kept on one worker (--dist loadgroup); serially it took ~19 min on the
+    # slowest leg (3.11, with coverage).
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -87,9 +89,9 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
           if [[ "$PYTHON_VERSION" == "3.11" ]]; then
-            uv run --frozen pytest -n auto --cov=nnx --cov-report=term-missing --cov-report=xml
+            uv run --frozen pytest -n logical --dist loadgroup --cov=nnx --cov-report=term-missing --cov-report=xml
           else
-            uv run --frozen pytest -n auto
+            uv run --frozen pytest -n logical --dist loadgroup
           fi
 
       - name: Build docs with mkdocs --strict
