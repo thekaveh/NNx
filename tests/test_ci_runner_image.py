@@ -3,21 +3,22 @@
 ``ubuntu-latest`` moves to Ubuntu 26 from October 19, 2026 (and to later
 images after that) without a change in this repository. Jobs name the image
 they were verified on instead; moving to a new one is a deliberate change
-(CONTRIBUTING §7), checked by this test and a CI run on the new label. A
+(CONTRIBUTING §7.1), checked by this test and a CI run on the new label. A
 package-mirror stall in an apt step fails within its own timeout instead of
 consuming the whole job budget (#433 lost 30 minutes to one)."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
 RUNNER = "ubuntu-26.04"
-APT_STEP_MINUTES = 10
+APT_STEP_MINUTES = 5
 
 
 def _jobs():
@@ -38,6 +39,8 @@ def test_the_workflows_exist():
 
 @pytest.mark.parametrize(("workflow", "job_name", "job"), list(_jobs()), ids=lambda value: str(value)[:40])
 def test_every_job_runs_on_the_pinned_image(workflow, job_name, job):
+    if "uses" in job:  # a reusable-workflow call runs on the called workflow's image
+        return
     assert job.get("runs-on") == RUNNER, f"{workflow}:{job_name} runs on {job.get('runs-on')!r}"
 
 
@@ -46,7 +49,7 @@ def test_every_apt_step_has_its_own_short_timeout():
         (workflow, job_name, step)
         for workflow, job_name, job in _jobs()
         for step in job.get("steps") or []
-        if "apt-get" in str(step.get("run", ""))
+        if re.search(r"\bapt(-get)? ", str(step.get("run", "")))
     ]
     assert apt_steps, "the cairo runtime is installed with apt somewhere"
     for workflow, job_name, step in apt_steps:
