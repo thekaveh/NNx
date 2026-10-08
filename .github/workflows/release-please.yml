@@ -81,12 +81,13 @@ jobs:
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
           done
 
-      - name: Checkout the release commit for its notes
+      - name: Checkout main for the release notes
+        # The push being handled (github.sha), whose CHANGELOG holds the
+        # released version's section: no ref taken from an action output.
         if: steps.release.outputs.release_created == 'true'
         # actions/checkout@v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ steps.release.outputs.sha }}
           persist-credentials: false
 
       - name: Publish the curated release notes
