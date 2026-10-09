@@ -18,6 +18,11 @@ from typing import Any, BinaryIO, Literal, Optional, cast
 import torch
 from filelock import FileLock
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
+
 from ...monitors import MonitorRecord
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -144,16 +149,33 @@ def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]
     return {key: value.detach().contiguous().clone() for key, value in state.items()}
 
 
+def _full_fsync(fd: int) -> None:
+    """Flush ``fd`` to stable storage (FIX-030): ``fcntl(fd, F_FULLFSYNC)``
+    where the platform has it — on macOS ``fsync`` only reaches the drive's
+    cache, which a power loss can drop — else ``os.fsync``. Best effort: a
+    filesystem refusing ``F_FULLFSYNC`` falls back to ``os.fsync``, and one
+    refusing both does not fail the save."""
+    full = getattr(fcntl, "F_FULLFSYNC", None)
+    if fcntl is not None and full is not None:
+        try:
+            fcntl.fcntl(fd, full)
+            return
+        except OSError:
+            pass
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+
+
 def _fsync_directory(path: str) -> None:
-    """Persist a rename: fsync the directory (a no-op where unsupported)."""
+    """Persist a rename: flush the directory (a no-op where unsupported)."""
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
         return
     try:
-        os.fsync(fd)
-    except OSError:
-        pass
+        _full_fsync(fd)
     finally:
         os.close(fd)
 
@@ -222,10 +244,7 @@ def _atomic_torch_save(obj, path: str) -> str:
                     raise writer.error from None  # as raised, not as torch's RuntimeError
                 raise
             handle.flush()
-            try:
-                os.fsync(handle.fileno())
-            except OSError:  # best effort: some platforms refuse fsync on this handle
-                pass
+            _full_fsync(handle.fileno())
         os.replace(tmp, path)
         return writer.hexdigest()
     finally:
@@ -286,7 +305,7 @@ def _write_manifest(checkpoint_path: str, manifest: dict[str, Any], *, staged: b
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(manifest, handle, sort_keys=True, indent=1)
             handle.flush()
-            os.fsync(handle.fileno())
+            _full_fsync(handle.fileno())
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

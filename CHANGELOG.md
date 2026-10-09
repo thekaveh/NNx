@@ -36,6 +36,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Fixed
 
+- **Resume points are durable on macOS.** Every resume-point flush (checkpoint, training state, manifests, directory) uses `fcntl(F_FULLFSYNC)` where the platform has it — macOS's `fsync` only reaches the drive's cache, so a power loss could lose a point its manifest called complete — and `os.fsync` elsewhere; a filesystem refusing the flush no longer fails a manifest write ([#443](https://github.com/thekaveh/NNx/issues/443)).
 - **`nnx.search.search()` and `ExperimentPlan.fit()` refuse a multi-rank process group.** Both train in a single process (a plan never passes `distributed=`); launched under `torchrun`, every rank ran its own study or fit into the same working directory. Inside an initialized `torch.distributed` group of world size > 1 they now raise `RuntimeError` before loading or creating a study, calling a factory, seeding or creating a run; a one-rank group behaves as before. Train one model across ranks with `model.train(..., distributed=DDP())` ([#417](https://github.com/thekaveh/NNx/issues/417)).
 
 ## [0.3.0](https://github.com/thekaveh/NNx/compare/v0.2.3...v0.3.0) (2026-10-04)
