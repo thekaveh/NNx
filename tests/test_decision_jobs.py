@@ -524,8 +524,21 @@ def test_task_cancellation_cleans_up_the_cancel_event_waiter():
 
 def test_a_success_finishing_with_a_failure_is_kept():
     class Together(TextProvider):
+        """Both calls are in flight before either answers: on a loaded
+        runner a fixed sleep let q0 fail before q1 was dispatched."""
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.in_flight = 0
+            self.both: asyncio.Event | None = None
+
         async def adecide_many(self, questions, texts):
-            await asyncio.sleep(0.01)
+            if self.both is None:
+                self.both = asyncio.Event()
+            self.in_flight += 1
+            if self.in_flight == 2:
+                self.both.set()
+            await asyncio.wait_for(self.both.wait(), timeout=30)
             return self.decide_many(questions, texts)
 
     provider = Together(fail_on={"Mentions word0"})
