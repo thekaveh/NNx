@@ -159,11 +159,16 @@ def _fsync_directory(path: str) -> None:
 
 
 class _HashingWriter:
-    """An unbuffered binary file that SHA-256s every byte as it is written
-    (FEAT-045): a resume point's digests come from the write itself, never
-    from reading the file back. A large chunk is hashed on a helper thread
-    while it is written (``hashlib`` and the write both release the GIL), so
-    a save costs about the larger of the two rather than their sum."""
+    """A binary file that SHA-256s every byte as it is written (FEAT-045):
+    a resume point's digests come from the write itself, never from reading
+    the file back. A chunk of ``_OVERLAP_BYTES`` or more is hashed on a helper
+    thread while it is written (``hashlib`` and the write both release the
+    GIL), so it costs about the larger of the two rather than their sum.
+
+    torch's zip writer calls :meth:`write` from C++ and turns anything raised
+    there into a ``RuntimeError``; the first exception is kept in ``error``
+    for :func:`_atomic_torch_save` to re-raise as itself (a Ctrl-C stays a
+    ``KeyboardInterrupt``, a full disk an ``OSError``)."""
 
     _OVERLAP_BYTES = 1 << 20  # smaller chunks are hashed inline
 
@@ -171,26 +176,29 @@ class _HashingWriter:
         self._handle = handle
         self._pool = pool
         self._digest = hashlib.sha256()
-
-    def _write_all(self, view: memoryview) -> None:
-        while view.nbytes:
-            view = view[self._handle.write(view) :]  # a raw file may write part of it
+        self.error: Optional[BaseException] = None
 
     def write(self, data: Any) -> int:
-        view = memoryview(data).cast("B")
-        if view.nbytes < self._OVERLAP_BYTES:
-            self._digest.update(view)
-            self._write_all(view)
-            return view.nbytes
-        hashed = self._pool.submit(self._digest.update, view)
+        if self.error is not None:
+            raise self.error
         try:
-            self._write_all(view)
-        finally:
-            hashed.result()  # in order, and before torch may reuse the buffer
-        return view.nbytes
+            view = memoryview(data).cast("B")
+            if view.nbytes < self._OVERLAP_BYTES:
+                self._digest.update(view)
+                self._handle.write(view)  # a buffered file writes it all, or raises
+                return view.nbytes
+            hashed = self._pool.submit(self._digest.update, view)
+            try:
+                self._handle.write(view)
+            finally:
+                hashed.result()  # in order, and before torch may reuse the buffer
+            return view.nbytes
+        except BaseException as error:
+            self.error = error
+            raise
 
-    def flush(self) -> None:  # unbuffered: nothing is held back
-        pass
+    def flush(self) -> None:
+        self._handle.flush()
 
     def hexdigest(self) -> str:
         return self._digest.hexdigest()
@@ -203,9 +211,17 @@ def _atomic_torch_save(obj, path: str) -> str:
     bytes written, hashed as they are written (FEAT-045)."""
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
     try:
-        with os.fdopen(fd, "wb", buffering=0) as handle, ThreadPoolExecutor(max_workers=1) as pool:
+        with os.fdopen(fd, "wb", buffering=1 << 20) as handle, ThreadPoolExecutor(max_workers=1) as pool:
             writer = _HashingWriter(handle, pool)
-            torch.save(obj, cast(BinaryIO, writer))  # torch.save only calls write()
+            try:
+                # torch.save calls write() and flush() on it; the writer has no
+                # fileno(), which would let a legacy-format save bypass write().
+                torch.save(obj, cast(BinaryIO, writer))
+            except BaseException:
+                if writer.error is not None:
+                    raise writer.error from None  # as raised, not as torch's RuntimeError
+                raise
+            handle.flush()
             try:
                 os.fsync(handle.fileno())
             except OSError:  # best effort: some platforms refuse fsync on this handle

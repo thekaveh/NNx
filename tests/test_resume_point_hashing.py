@@ -139,3 +139,59 @@ def test_a_training_run_reads_no_resume_point_back_while_saving(tmp_path, monkey
         trained = _train()
     for tag in (Checkpoints.LAST, Checkpoints.BEST):
         assert NNCheckpoint.verify(trained.id, tag) is not None
+
+
+def test_large_chunks_are_hashed_on_the_helper_thread_and_partial_state_is_never_lost(tmp_path, monkeypatch):
+    """Every chunk of at least ``_OVERLAP_BYTES`` goes through the helper
+    thread; the digest still equals the file's."""
+    monkeypatch.setattr(nn_checkpoint._HashingWriter, "_OVERLAP_BYTES", 1)
+    submitted = []
+    real_submit = nn_checkpoint.ThreadPoolExecutor.submit
+
+    def counting_submit(self, fn, *args, **kwargs):
+        submitted.append(args[0].nbytes)
+        return real_submit(self, fn, *args, **kwargs)
+
+    monkeypatch.setattr(nn_checkpoint.ThreadPoolExecutor, "submit", counting_submit)
+    state = {"big": torch.randn(1024, 1024), "small": torch.arange(5), "meta": [1, "two"]}  # 4 MiB + more
+    path = str(tmp_path / "state.pt")
+    digest = nn_checkpoint._atomic_torch_save(state, path)
+    with open(path, "rb") as handle:
+        assert digest == hashlib.sha256(handle.read()).hexdigest()
+    assert sum(submitted) == os.path.getsize(path)  # every byte went through the helper thread
+    loaded = torch.load(path, weights_only=False)
+    assert torch.equal(loaded["big"], state["big"]) and loaded["meta"] == [1, "two"]
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt(), OSError(28, "No space left on device")])
+def test_an_error_inside_a_write_surfaces_as_itself_and_leaves_no_file(tmp_path, monkeypatch, error):
+    """torch's zip writer turns an exception raised in write() into a
+    RuntimeError; the save re-raises the original (a Ctrl-C stays a
+    KeyboardInterrupt, a full disk an OSError) and leaves neither the
+    destination nor a temp."""
+    real_fdopen = os.fdopen
+
+    class Failing:
+        def __init__(self, handle) -> None:
+            self.handle, self.writes = handle, 0
+
+        def write(self, data):
+            self.writes += 1
+            if self.writes == 3:
+                raise error
+            return self.handle.write(data)
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self.handle.__exit__(*exc)
+
+    monkeypatch.setattr(nn_checkpoint.os, "fdopen", lambda *a, **k: Failing(real_fdopen(*a, **k)))
+    with pytest.raises(type(error)) as caught:
+        nn_checkpoint._atomic_torch_save({"w": torch.randn(64, 64), "b": torch.randn(64)}, str(tmp_path / "x.pt"))
+    assert caught.value is error
+    assert os.listdir(tmp_path) == []
