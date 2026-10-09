@@ -6,7 +6,8 @@ the CHANGELOG finalize) used to be made with ``git push``: GitHub marked it
 ``require_extra_approval_for_unattributed_changes`` then held every release PR
 for an approving review (#399). A commit created through the REST API with
 ``GITHUB_TOKEN`` and no author or committer is signed by GitHub, like
-release-please's own, so a green release PR merges without one."""
+release-please's own (whether that alone clears the ruleset is shown on the
+next release PR)."""
 
 from __future__ import annotations
 
@@ -39,6 +40,12 @@ def test_the_workflow_commits_through_the_api_and_never_pushes_the_release_branc
     assert run.index("scripts/release/api_commit.py") < run.index("gh workflow run ci.yml")
     assert run.index("scripts/release/api_commit.py") < run.index("gh workflow run security.yml")
     assert '--ref "$branch"' in run
+    # on the release branch's head as fetched (the finalize only touched the working tree)
+    assert 'git checkout --detach "origin/$branch"' in run and '--parent "$(git rev-parse HEAD)"' in run
+    assert '--branch "$branch"' in run
+    # a clean tree for the next release branch
+    assert run.index("scripts/release/api_commit.py") < run.index("git checkout -- uv.lock CHANGELOG.md")
+    assert "git push" not in WORKFLOW.read_text(encoding="utf-8")  # in no step
 
 
 class FakeGitHub:

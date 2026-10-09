@@ -4,8 +4,9 @@ The release workflow's own commit on a release-please branch (the lockfile
 refresh and the CHANGELOG finalize) is made here rather than with
 ``git push``: a commit created through the REST API with ``GITHUB_TOKEN`` and
 no author or committer is signed by GitHub — *verified*, like release-please's
-own — so the ``main`` ruleset's ``require_extra_approval_for_unattributed_changes``
-does not hold a green release PR for an approving review.
+own — rather than an unverified pushed commit, which the ``main`` ruleset's
+``require_extra_approval_for_unattributed_changes`` held for an approving
+review on release PR #399.
 
 It creates a blob per file, a tree over the branch head's (every other file
 unchanged), a commit whose only parent is that head, then fast-forwards the

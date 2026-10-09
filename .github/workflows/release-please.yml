@@ -72,14 +72,15 @@ jobs:
             python3 scripts/release/finalize_changelog.py CHANGELOG.md
             if ! git diff --quiet -- uv.lock CHANGELOG.md; then
               # FIX-033: committed through the API, so GitHub signs it
-              # (verified, like release-please's own commit) and the ruleset
-              # does not hold the release PR for an approving review. The
+              # (verified, like release-please's own commit) instead of a
+              # pushed commit the ruleset reads as an unattributed change. The
               # branch is fast-forwarded from the head checked out above.
               python3 scripts/release/api_commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" \
                 --parent "$(git rev-parse HEAD)" \
                 --message "chore: refresh release lockfile and finalize the release notes" \
                 uv.lock CHANGELOG.md
             fi
+            git checkout -- uv.lock CHANGELOG.md  # a clean tree for the next release branch
             gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
           done
