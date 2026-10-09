@@ -4,90 +4,9 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
-## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
-
-
-### ⚠ BREAKING CHANGES
-
-* **packaging:** torchvision, torch_geometric and plotly are no longer installed by `pip install thekaveh-nnx`. Install `thekaveh-nnx[domains]` (or the one extra you use) to keep the previous dependency set.
-
-### Features
-
-* **bundles,hub:** rebuild JEPA-trained encoders without the predictor (FEAT-047) ([70932cc](https://github.com/thekaveh/NNx/commit/70932cc34f9bc610637d610804e0cc1afa32844a))
-* **bundles,hub:** rebuild JEPA-trained encoders without the predictor (FEAT-047) ([f192d36](https://github.com/thekaveh/NNx/commit/f192d367dc52879ada37afe10ec37f180fbe4cf9)), closes [#441](https://github.com/thekaveh/NNx/issues/441)
-* **compilation:** opt-in torch.compile and bounded benchmarks (FEAT-029) ([b7c408f](https://github.com/thekaveh/NNx/commit/b7c408ff465051f3f58f81522bb4ba456967736e))
-* **decisions:** Jev adapter over the TypeSafe SDK (FEAT-010) ([486ad73](https://github.com/thekaveh/NNx/commit/486ad73c8daf92ff54d8de721b6267beb21c8fe8))
-* **decisions:** Jev adapter over the TypeSafe SDK (FEAT-010) ([248447f](https://github.com/thekaveh/NNx/commit/248447f7d3938f37f2ad46e98859ab78f5933162))
-* **decisions:** label-conditioned decision-model research pilot (FEAT-023) ([05fd9a4](https://github.com/thekaveh/NNx/commit/05fd9a4183937de12950f4b7377c339dc82998a1))
-* **decisions:** label-conditioned decision-model research pilot (FEAT-023) ([c320604](https://github.com/thekaveh/NNx/commit/c320604bc996c918f8d8335cb9e5aeddd0572f87))
-* **distributed:** a bounded DDP teardown, nnx.distributed.shutdown() (FEAT-042) ([f30bb84](https://github.com/thekaveh/NNx/commit/f30bb8407935107a9e9f7de240f5e00ced1d36e9))
-* **distributed:** a bounded DDP teardown, nnx.distributed.shutdown() (FEAT-042) ([c840393](https://github.com/thekaveh/NNx/commit/c8403936e47ea167b87bd36d280328379cbe72ab)), closes [#419](https://github.com/thekaveh/NNx/issues/419)
-* **distributed:** single-node DDP under torchrun (FEAT-030) ([f897877](https://github.com/thekaveh/NNx/commit/f897877d7a2ac5d6232ee6ce32325544d6648052))
-* **distributed:** verify a DDP resume point once and share the verdict (FEAT-046) ([a902b7e](https://github.com/thekaveh/NNx/commit/a902b7e247ce7e8cc96287ceb1b6a2490186db30))
-* **distributed:** verify a DDP resume point once and share the verdict (FEAT-046) ([ccd7023](https://github.com/thekaveh/NNx/commit/ccd702344347998ff27ec55a09d2f26bf67548d6)), closes [#440](https://github.com/thekaveh/NNx/issues/440)
-* **docs:** a feature-composition matrix gated by executed evidence (FEAT-039) ([6c7e714](https://github.com/thekaveh/NNx/commit/6c7e7140ce04a6a77d968e07d86b2048041b1ded))
-* **docs:** a feature-composition matrix gated by executed evidence (FEAT-039) ([758632f](https://github.com/thekaveh/NNx/commit/758632f3d5691c1cd40e65dddb66c82695b87dff)), closes [#256](https://github.com/thekaveh/NNx/issues/256)
-* **docs:** compose the Jev, result-boundary, pilot, packaging and benchmark features in the matrix ([2b9ca7b](https://github.com/thekaveh/NNx/commit/2b9ca7b3f187e2922e7e242c5fdadc467b0c0d61)), closes [#256](https://github.com/thekaveh/NNx/issues/256)
-* **generation:** immutable ordered logits pipelines (FEAT-037) ([6e08c33](https://github.com/thekaveh/NNx/commit/6e08c33dd8231f1955c74c0d251247120212a76c))
-* **generation:** immutable ordered logits pipelines (FEAT-037) ([fb38ccb](https://github.com/thekaveh/NNx/commit/fb38ccbb81628aa2c0d3529fa488ed91870017e6))
-* **nets:** a public ViT network type, Nets.VIT and NNViTParams ([#395](https://github.com/thekaveh/NNx/issues/395)) ([5bbf577](https://github.com/thekaveh/NNx/commit/5bbf5771bb46f7c19e7a78b5f9ab6fe60881a5aa))
-* **nets:** a public ViT network type, Nets.VIT and NNViTParams ([#395](https://github.com/thekaveh/NNx/issues/395)) ([8c818d1](https://github.com/thekaveh/NNx/commit/8c818d16f857f2b9f1c151e09cc89779893312a8))
-* **packaging:** lazy graph, vision and plotting dependencies (FEAT-031) ([c7681e1](https://github.com/thekaveh/NNx/commit/c7681e10aa8eeafec55fe88f57f95819cde9e5dd))
-* **plans:** resuming(..., epochs=) carries resume_epochs into the fit (FEAT-048) ([ec5c58d](https://github.com/thekaveh/NNx/commit/ec5c58d76ba0eb2c15aa16f097d38b68d05f8fb1))
-* **plans:** resuming(..., epochs=) carries resume_epochs into the fit (FEAT-048) ([5c7cb89](https://github.com/thekaveh/NNx/commit/5c7cb89c0e0cd572c1f78a5f171704b607ae26e0)), closes [#442](https://github.com/thekaveh/NNx/issues/442)
-* **result:** a malformed provider answer is its own boundary code; JevProvider composes with decide_result (FEAT-044) ([ac4ef52](https://github.com/thekaveh/NNx/commit/ac4ef52c4e38cadb8c1f6e6954934c3c1185e36d))
-* **result:** a malformed provider answer is its own boundary code; JevProvider composes with decide_result (FEAT-044) ([4296a1d](https://github.com/thekaveh/NNx/commit/4296a1d98a510e03e2d6803f0815f82ef7c9b203)), closes [#421](https://github.com/thekaveh/NNx/issues/421)
-* **result:** opt-in Result at fallible boundaries (FEAT-025) ([c7b2ab9](https://github.com/thekaveh/NNx/commit/c7b2ab95f6e1915e409e6860bd26d1e83070594a))
-* **resume:** exact resume to the planned horizon and verified resume points ([#394](https://github.com/thekaveh/NNx/issues/394)) ([7234f0d](https://github.com/thekaveh/NNx/commit/7234f0df573b19737479d28548431d5876a4c4d4))
-* **resume:** exact resume to the planned horizon and verified resume points ([#394](https://github.com/thekaveh/NNx/issues/394)) ([f7ff1cb](https://github.com/thekaveh/NNx/commit/f7ff1cb9202074451e3b013fbd658911eda58122))
-* **search:** budgeted experiment search through an optional Optuna adapter (FEAT-033) ([4d267a2](https://github.com/thekaveh/NNx/commit/4d267a2f1ab631f166e4c079670f3c595e823cee))
-
-
-### Bug Fixes
-
-* **bundles,hub:** hint registered modules too and merge names already passed (FEAT-047 review) ([e2af0eb](https://github.com/thekaveh/NNx/commit/e2af0ebaddbfcfb40c79b61358745d25c3af9f65)), closes [#441](https://github.com/thekaveh/NNx/issues/441)
-* **checkpoint:** flush resume points with F_FULLFSYNC where the platform has it (FIX-030) ([0b14a6a](https://github.com/thekaveh/NNx/commit/0b14a6acf974fbc851d61255d1ac263416a3b135))
-* **checkpoint:** flush resume points with F_FULLFSYNC where the platform has it (FIX-030) ([bc43da8](https://github.com/thekaveh/NNx/commit/bc43da8543e65441bfa72616793d387a69a33213)), closes [#443](https://github.com/thekaveh/NNx/issues/443)
-* **checkpoint:** keep a Ctrl-C a KeyboardInterrupt and buffer the hashed write (FEAT-045 review) ([6af3cde](https://github.com/thekaveh/NNx/commit/6af3cded91adf3b127b57ae85211275005cbc7e6)), closes [#439](https://github.com/thekaveh/NNx/issues/439)
-* **checkpoint:** raise real I/O errors from a resume-point flush and skip the alias flush (FIX-030 review) ([b0af023](https://github.com/thekaveh/NNx/commit/b0af0234e29076d2bfc0586130c388dd8ea13c4e)), closes [#443](https://github.com/thekaveh/NNx/issues/443)
-* **ci:** audit-clean fsspec and an extras-safe Jev example registration ([3b81356](https://github.com/thekaveh/NNx/commit/3b81356f8d1de79791510ce8b566d2441a3b0fca))
-* **ci:** the installed-artifact smoke expects Nets.VIT ([0101a55](https://github.com/thekaveh/NNx/commit/0101a552673cc398f8cf3a35cc942bec3ef13712))
-* **ci:** the installed-artifact smoke expects Nets.VIT ([57ecf01](https://github.com/thekaveh/NNx/commit/57ecf014dc1e8f3d4d7480265d11465ada570492)), closes [#395](https://github.com/thekaveh/NNx/issues/395)
-* **compilation:** compile the built-in nets on the torch 2.4 floor (FEAT-029) ([d3d41bd](https://github.com/thekaveh/NNx/commit/d3d41bd6d90805f28b896d756001c5002ab2accb))
-* **compilation:** compile the built-in nets on the torch 2.4 floor, and never record a skipped forward as compiled ([0a97a36](https://github.com/thekaveh/NNx/commit/0a97a361672cc54c2184d9b00ed1d1df22892aa9))
-* **compilation:** read the compile session tolerantly from step stand-ins ([e5df4bc](https://github.com/thekaveh/NNx/commit/e5df4bcd7ccae04d1d142afca4c2d6092e9334e0))
-* **deps:** lock multidict 6.9.1 and werkzeug 3.1.9 (CVE-2026-104874, CVE-2026-102598) ([4630eea](https://github.com/thekaveh/NNx/commit/4630eeaa4652d1b672f73e68efc7d778088572cf))
-* **deps:** pin cairosvg 2.9.1 (CVE-2026-107378) ([bc5e6d2](https://github.com/thekaveh/NNx/commit/bc5e6d281bfc7544becff941f0af87ed568821d9))
-* **deps:** pin cairosvg 2.9.1 (CVE-2026-107378) ([87a752d](https://github.com/thekaveh/NNx/commit/87a752de8f7fb89ccbc14afb23d48373df597488)), closes [#445](https://github.com/thekaveh/NNx/issues/445)
-* **distributed:** fail an invalid run id alike on every rank and share the verdict by gather (FEAT-046 review) ([7a27dfe](https://github.com/thekaveh/NNx/commit/7a27dfe70e7bfa3422ebe20781ea7bca08168caa)), closes [#440](https://github.com/thekaveh/NNx/issues/440)
-* **nets:** name NNModel.from_checkpoint in the exclusion hint; read exclude_submodules once ([be17337](https://github.com/thekaveh/NNx/commit/be17337aa5819fe4de685c7ac358732cf66165eb)), closes [#395](https://github.com/thekaveh/NNx/issues/395)
-* **plans:** refuse a planned horizon with no run to resume at validation (FEAT-048 review) ([aca65ce](https://github.com/thekaveh/NNx/commit/aca65ce28ad7617b6fc8bb90379ac3381481d380)), closes [#442](https://github.com/thekaveh/NNx/issues/442)
-* **release:** check out the pushed main commit for the release notes ([4deeb81](https://github.com/thekaveh/NNx/commit/4deeb81f2fcdecfb648b51cd3801d2f6377d26e3))
-* **release:** check out the pushed main commit for the release notes ([5f7ebe4](https://github.com/thekaveh/NNx/commit/5f7ebe428db83cdd711742d2daae2ec2846c74aa)), closes [#418](https://github.com/thekaveh/NNx/issues/418)
-* **release:** publish the curated notes as the release body; refuse two unfinalized releases ([4b203c0](https://github.com/thekaveh/NNx/commit/4b203c011540e21cc69df9d02db5e3d228fc82c9)), closes [#418](https://github.com/thekaveh/NNx/issues/418)
-* **release:** release PRs pass their checks without a manual finalize commit (FIX-029) ([6900c79](https://github.com/thekaveh/NNx/commit/6900c7901baf6f63a471513b39417801fbdbf730))
-* **release:** release PRs pass their checks without a manual finalize commit (FIX-029) ([2df9afe](https://github.com/thekaveh/NNx/commit/2df9afefe68605e96a3d9af38718d6b31d6c47cc)), closes [#418](https://github.com/thekaveh/NNx/issues/418)
-* **run:** read a run's history back exactly in NNRun.load ([718ca55](https://github.com/thekaveh/NNx/commit/718ca5575f976f332d87c1eab0583188835c81bc))
-* **run:** read a run's history back exactly in NNRun.load ([1f95679](https://github.com/thekaveh/NNx/commit/1f95679bc13fc646cf60b7329cbffc1f6fa99f06)), closes [#443](https://github.com/thekaveh/NNx/issues/443)
-* **search:** refuse budgeted search and plan fits inside a multi-rank process group (FIX-028) ([fad194c](https://github.com/thekaveh/NNx/commit/fad194c31d6ffc298be9abd8b20f2f8b925c27e0))
-* **search:** refuse budgeted search and plan fits inside a multi-rank process group (FIX-028) ([d428f77](https://github.com/thekaveh/NNx/commit/d428f7793485c5c24318488ad22de616b4dc08ff)), closes [#417](https://github.com/thekaveh/NNx/issues/417)
-
-
-### Performance Improvements
-
-* **checkpoint:** hash resume points while they are written (FEAT-045) ([e40f5fe](https://github.com/thekaveh/NNx/commit/e40f5feae39ab256c2248802f6820ec47929eee4))
-* **checkpoint:** hash resume points while they are written (FEAT-045) ([c6f8365](https://github.com/thekaveh/NNx/commit/c6f8365d2b5c8dc70665c9a38cf79e2e496041af)), closes [#439](https://github.com/thekaveh/NNx/issues/439)
-
-
-### Documentation
-
-* **api:** regenerate the API reference after merging develop ([de16f55](https://github.com/thekaveh/NNx/commit/de16f55bb7c97bb034fa9ea3c0358d3769c6218e))
-* **api:** regenerate the API reference after merging develop ([0b7e508](https://github.com/thekaveh/NNx/commit/0b7e508ba761c42f3fd0e9e21315a773631fca38))
-* **changelog:** list Added before Changed under Unreleased ([34d2108](https://github.com/thekaveh/NNx/commit/34d210808d320c8cc41d3382dd40e70fbd5141e5))
-* **changelog:** list Added before Changed under Unreleased ([b48fe08](https://github.com/thekaveh/NNx/commit/b48fe08f4a999ab0570ccc29d17d8939b50b3cdc))
-* **resume:** verify reads a staged manifest; the next save makes it live ([495e99e](https://github.com/thekaveh/NNx/commit/495e99e4e819a5af51ef428195318f943dd7273e)), closes [#394](https://github.com/thekaveh/NNx/issues/394)
-
 ## [Unreleased]
+
+## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
 
 ### Added
 
