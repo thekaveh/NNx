@@ -713,5 +713,20 @@ def test_a_planned_resume_of_the_weights_only_is_refused_at_validation():
     assert report.paths == ("resume.epochs",) and "weights_only" in report.diagnostics[0].message
     inherited = _plan().with_train(NNTrainParams(n_epochs=2, resume_mode="weights_only"))
     assert inherited.resuming("abc", epochs="planned").validate().paths == ("resume.epochs",)
+    both_inherited = _plan().with_train(NNTrainParams(n_epochs=2, resume_mode="weights_only", resume_epochs="planned"))
+    assert both_inherited.resuming("abc").validate().paths == ("train.resume_epochs",)  # the field the caller set
+    planned = _plan().with_train(NNTrainParams(n_epochs=2, resume_epochs="planned"))
+    assert planned.resuming("abc", mode="weights_only").validate().paths == ("resume.mode",)
     assert inherited.resuming("abc", mode="stateful", epochs="planned").validate().ok
     assert _plan().resuming("abc", epochs="planned").validate().ok  # "auto" restores the state when saved
+
+
+def test_a_planned_horizon_without_a_run_to_resume_is_refused_at_validation():
+    planned = _plan().with_train(NNTrainParams(n_epochs=2, resume_epochs="planned"))
+    for plan in (planned, planned.resuming("abc").without_resume()):
+        report = plan.validate()
+        assert report.paths == ("train.resume_epochs",) and "resumes none" in report.diagnostics[0].message
+    assert planned.resuming("abc").validate().ok
+    np = pytest.importorskip("numpy")
+    odd = _plan().resuming("abc", mode=np.array([1, 2]), epochs=np.array([1, 2]))  # type: ignore[arg-type]
+    assert odd.validate().paths == ("resume.mode", "resume.epochs")  # diagnostics, not a crash

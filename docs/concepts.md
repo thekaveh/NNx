@@ -1924,7 +1924,8 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
     and leaves the parent's artifacts untouched. `mode` and `epochs` set the
     fit's `resume_mode` and `resume_epochs` (§14.3), else the training
     parameters' own apply; `validate()` checks both as `NNTrainParams` does,
-    and reports `epochs="planned"` with a `"weights_only"` mode. A plan
+    and reports a `"planned"` horizon with a `"weights_only"` mode or with no
+    run to resume, on the field the caller set. A plan
     stopped after epoch 1 of 4 and resumed with
     `resuming(first.run.id, mode="stateful", epochs="planned")` trains epochs
     2–3 and equals the uninterrupted plan bit for bit.

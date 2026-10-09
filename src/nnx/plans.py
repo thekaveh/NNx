@@ -739,6 +739,7 @@ class ExperimentPlan:
 
     def _check_resume(self, report: Callable[[str, str], None], train: Optional[NNTrainParams]) -> None:
         resume = self.resume
+        self._check_planned_horizon(report, train, resume)
         if resume is None:
             return
         if not isinstance(resume.run_id, str) or not resume.run_id.strip():
@@ -759,14 +760,6 @@ class ExperimentPlan:
                 _validate_resume_epochs(resume.epochs, "resuming()")
             except ValueError as exc:
                 report("resume.epochs", str(exc))
-        epochs = resume.epochs if resume.epochs is not None else getattr(train, "resume_epochs", None)
-        mode = resume.mode if resume.mode is not None else getattr(train, "resume_mode", None)
-        if epochs == "planned" and mode == "weights_only":  # the loop's own refusal, before any run is reserved
-            report(
-                "resume.epochs",
-                "'planned' continues the source run's training state; resume_mode='weights_only' restores the "
-                "weights only — resume statefully, or use epochs='additional'",
-            )
         if train is not None and train.parent_run_id is not None:
             report(
                 "resume",
@@ -775,6 +768,35 @@ class ExperimentPlan:
             )
         if train is not None and train.resume_from_run_id is not None:
             report("resume", "train already resumes from a run; set the resume once, on the plan")
+
+    @staticmethod
+    def _check_planned_horizon(
+        report: Callable[[str, str], None], train: Optional[NNTrainParams], resume: Optional[_Resume]
+    ) -> None:
+        """The loop's own refusals of ``resume_epochs="planned"`` that need no
+        source run, reported before any factory runs or run is reserved: no
+        run to resume, or a weights-only resume. Each is reported on the
+        field the caller set (the plan's ``resuming()`` arguments, else the
+        training parameters)."""
+        explicit_epochs = resume is not None and resume.epochs is not None
+        explicit_mode = resume is not None and resume.mode is not None
+        epochs = resume.epochs if resume is not None and explicit_epochs else getattr(train, "resume_epochs", None)
+        mode = resume.mode if resume is not None and explicit_mode else getattr(train, "resume_mode", None)
+        if not (isinstance(epochs, str) and epochs == "planned"):
+            return
+        epochs_path = "resume.epochs" if explicit_epochs else "train.resume_epochs"
+        if resume is None and getattr(train, "resume_from_run_id", None) is None:
+            report(
+                epochs_path,
+                "'planned' continues a run's plan, and this plan resumes none — resume one with "
+                "resuming(run_id, ...), or use resume_epochs='additional'",
+            )
+        elif isinstance(mode, str) and mode == "weights_only":
+            report(
+                epochs_path if explicit_epochs or not explicit_mode else "resume.mode",
+                "'planned' continues the source run's training state; resume_mode='weights_only' restores the "
+                "weights only — resume statefully, or use epochs='additional'",
+            )
 
     def _check_monitoring(self, report: Callable[[str, str], None], train: NNTrainParams, has_val: bool) -> None:
         """The metric and monitor rules ``NNModel.train`` applies before
