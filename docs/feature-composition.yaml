@@ -23,7 +23,7 @@ evidence_profile:
   os: linux
   python: "3.12"
   device: cpu
-  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk, httpx2, tokenizers]
+  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk, httpx2, tokenizers, huggingface_hub]
 groups:
   training-controls: Training controls
   checkpoint-resume: Checkpoint and resume
@@ -304,6 +304,28 @@ scenarios:
       - tests/test_benchmarking.py::test_compare_compile_starts_both_sides_from_identical_weights
       - tests/test_benchmarking.py::test_compiled_first_call_carries_the_compile_cost
     rationale: Weight digests, outputs and the caller's state and mode are asserted; the first call is recorded apart from the warmed calls.
+    status: verified
+  - id: IE-07
+    group: inference-export
+    features: [JEPA predictor under model.net, run bundles]
+    entry_point: reconstruct_bundle(path, exclude_submodules=("_jepa_predictor",))
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A real JEPA run's bundle rebuilds the encoder bit-exact without the predictor; without the option the error names it, and the rebuilt encoder refuses resume().
+    tests:
+      - tests/test_jepa_encoder_rebuild.py::test_a_jepa_run_bundle_rebuilds_its_encoder_bit_exact
+      - tests/test_jepa_encoder_rebuild.py::test_an_encoder_rebuilt_without_its_predictor_does_not_resume
+    rationale: Every encoder tensor and a forward pass are compared with the trained model's.
+    status: verified
+  - id: IE-08
+    group: inference-export
+    features: [JEPA predictor under model.net, Hugging Face Hub save]
+    entry_point: NNModel.from_pretrained(model_id, exclude_submodules=("_jepa_predictor",))
+    profile: {device: cpu, dtype: fp32, dependencies: [huggingface_hub, safetensors]}
+    expected: A Hub save with the predictor attached rebuilds the encoder bit-exact; every other key stays strict.
+    tests:
+      - tests/test_jepa_encoder_rebuild.py::test_a_hub_save_with_the_predictor_attached_rebuilds_its_encoder
+      - tests/test_jepa_encoder_rebuild.py::test_hub_exclusion_stays_strict_for_every_other_key
+    rationale: Encoder tensors and outputs are compared; a dropped encoder key is still refused.
     status: verified
   - id: DR-01
     group: decisions-results

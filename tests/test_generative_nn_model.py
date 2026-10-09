@@ -561,8 +561,10 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
     """Performance regression test: the cache path should be measurably
     faster than the full-recompute path on a non-trivial generation.
 
-    We use a small Transformer (4 layers, 64 d_model) generating 128
-    new tokens so the O(T^2) vs O(T) cost gap is clearly visible. The
+    We use a small Transformer (4 layers, 64 d_model) generating 256
+    new tokens so the O(T^2) vs O(T) cost gap is clearly visible (about
+    3x on a laptop; 128 tokens left only ~1.8x, too little margin for a
+    loaded 4-vCPU runner). The
     threshold is set conservatively (≥1.2x) because CPU timing on shared
     CI is noisy. This test makes no performance claim for other processors,
     context lengths, or workloads; it only guards against losing the useful
@@ -580,7 +582,7 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
         n_heads=4,
         d_model=64,
         ffn_mult=4,
-        max_seq_len=256,
+        max_seq_len=512,
     )
     model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
     torch.manual_seed(3)
@@ -591,7 +593,7 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
     model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=True)
     model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=False)
 
-    n_new = 128
+    n_new = 256
 
     # The process's CPU time, not wall time: the suite runs in parallel
     # (pytest-xdist, FIX-031), and other workers' load stretches wall time

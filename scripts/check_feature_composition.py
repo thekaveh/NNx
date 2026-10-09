@@ -70,6 +70,7 @@ KNOWN_DEPENDENCIES = (
     "typesafe_sdk",
     "httpx2",
     "tokenizers",
+    "huggingface_hub",
 )
 RUN_TIMEOUT_SECONDS = 1800
 
