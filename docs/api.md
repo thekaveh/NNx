@@ -10144,8 +10144,9 @@ Every save is a resume point (#394): a manifest
 (``<tag>.pt.manifest.json``, written last) stamps it with the tag's
 generation ordinal, the checkpoint id and the SHA-256 of each file it
 consists of, so a resume refuses a torn, mixed or corrupted point
-(:meth:`verify`). Files are fsynced before they are renamed into
-place, and a Ctrl-C arriving meanwhile is held until the point is
+(:meth:`verify`). Files are flushed to stable storage
+(``F_FULLFSYNC`` on macOS, ``fsync`` elsewhere) before they are
+renamed into place, and a Ctrl-C arriving meanwhile is held until the point is
 complete. ``counters`` (the run's logical position: ``global_step``,
 ``committed_updates``, ``planned_n_epochs``) rides in the training
 state.

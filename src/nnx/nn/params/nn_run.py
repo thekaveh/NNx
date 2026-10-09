@@ -343,10 +343,12 @@ def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optiona
     return -1 if last is None else last.idp.epoch_idx
 
 
-def _read_idps_csv(csv_path: str, *, exact: bool = False) -> list[NNIterationDataPoint]:
-    """Every record of an ``idps.csv``. ``exact`` parses floats round-trip
-    (``migrate_history``, FEAT-036); ``NNRun.load`` keeps pandas' default
-    parser, as it always has."""
+def _read_idps_csv(csv_path: str, *, exact: bool = True) -> list[NNIterationDataPoint]:
+    """Every record of an ``idps.csv``, its floats parsed round-trip, so a
+    loaded run's history equals the trained run's bit for bit (``to_csv``
+    writes each float's shortest round-trip repr; pandas' default parser
+    misreads about one in five by one ULP). ``exact=False`` is that default
+    parser."""
     try:
         # "round_trip" is accepted by every supported pandas, though pandas 2.x
         # leaves it out of the parameter's annotation.
@@ -1102,7 +1104,7 @@ class NNRun:
         journal = _JournalReader(os.path.join(run_path, HISTORY_DIR)) if has_journal(run_path) else None
         idps: list[NNIterationDataPoint] = []
         if journal is None:
-            idps = _read_idps_csv(csv_path)
+            idps = _read_idps_csv(csv_path)  # round-trip floats: the history as it was trained
 
         if committed_epoch is _COMPUTE:
             committed_epoch = _committed_epoch(id, run_path, root)
