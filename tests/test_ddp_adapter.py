@@ -25,6 +25,10 @@ import ddp_scenarios as scenarios  # noqa: E402
 
 RTOL, ATOL = 1e-6, 1e-7
 
+# Every torchrun launch shares one worker (FIX-031): its module-scoped launch
+# runs once, and no two 2-rank launches compete for a CI runner's 4 vCPUs.
+pytestmark = pytest.mark.xdist_group("torchrun")
+
 
 def launch(
     scenario: str, out: Path, *, nproc: int = 2, check: bool = True, timeout: float = 240
@@ -36,10 +40,23 @@ def launch(
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT / "src"), env.get("PYTHONPATH")]))
     command = [sys.executable, "-m", "torch.distributed.run", *_single_node_flags(env), f"--nproc_per_node={nproc}"]
     command += [str(ROOT / "tests" / "ddp_scenarios.py"), scenario, str(out)]
-    completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout)
+    try:
+        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as expired:  # say where it hung
+        raise AssertionError(
+            f"torchrun {scenario} timed out after {timeout:.0f} s:\n{_text(expired.stdout)[-4000:]}\n"
+            f"{_text(expired.stderr)[-6000:]}"
+        ) from None
     if check and completed.returncode != 0:
         raise AssertionError(f"torchrun {scenario} failed:\n{completed.stdout[-4000:]}\n{completed.stderr[-6000:]}")
     return completed
+
+
+def _text(output: object) -> str:
+    """A timed-out run's partial output (bytes or str, or None)."""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", "replace")
+    return output or ""
 
 
 def _single_node_flags(env: dict) -> list[str]:

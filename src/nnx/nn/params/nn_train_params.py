@@ -23,6 +23,13 @@ def _validate_resume_mode(mode: object, owner: str) -> None:
         raise ValueError(f"{owner}.resume_mode must be one of {', '.join(repr(m) for m in RESUME_MODES)}, got {mode!r}")
 
 
+def _validate_resume_epochs(epochs: object, owner: str) -> None:
+    if epochs not in RESUME_EPOCHS:
+        raise ValueError(
+            f"{owner}.resume_epochs must be one of {', '.join(repr(m) for m in RESUME_EPOCHS)}, got {epochs!r}"
+        )
+
+
 def _validate_monitoring(params: Any, owner: str) -> None:
     """Normalize ``metrics`` to a tuple of uniquely named specs and check
     that ``monitor`` names ``loss`` / ``error`` or a declared metric (no
@@ -151,11 +158,7 @@ class NNTrainParams:
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainParams")
-        if self.resume_epochs not in RESUME_EPOCHS:
-            raise ValueError(
-                f"NNTrainParams.resume_epochs must be one of {', '.join(repr(m) for m in RESUME_EPOCHS)}, "
-                f"got {self.resume_epochs!r}"
-            )
+        _validate_resume_epochs(self.resume_epochs, "NNTrainParams")
         _validate_monitoring(self, "NNTrainParams")
 
     def with_train_loader(self, value: Iterable[Any]) -> NNTrainParams:

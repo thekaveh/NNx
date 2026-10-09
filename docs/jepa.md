@@ -113,7 +113,24 @@ encoder = NNModel.from_checkpoint(checkpoint, exclude_submodules=("_jepa_predict
 
 Every other weight still loads strictly, and a name the checkpoint does not
 hold is refused. Without `exclude_submodules`, the error names the extra
-submodules.
+submodules and the option of the entry point you called. The other two
+rebuild paths take the same option:
+
+```python
+from nnx.bundles import export_bundle, reconstruct_bundle
+
+export_bundle(run.id, "jepa-bundle")  # a run bundle of the checkpoint
+encoder = reconstruct_bundle("jepa-bundle", exclude_submodules=("_jepa_predictor",)).model
+
+model.save_pretrained("jepa-hub")  # a Hub save of the trained model, predictor attached
+encoder = NNModel.from_pretrained("jepa-hub", exclude_submodules=("_jepa_predictor",))
+```
+
+Unlike `from_pretrained(..., strict=False)`, which also accepts *missing*
+weights, `exclude_submodules` drops only the named submodules. An encoder
+rebuilt from a bundle this way serves inference; it cannot
+`ReconstructedBundle.resume()` the run, whose training state includes the
+predictor.
 
 The full example with an optional CIFAR-10 download lives in
 [`examples/16_ijepa_image_plumbing.py`](https://github.com/thekaveh/NNx/blob/main/examples/16_ijepa_image_plumbing.py).

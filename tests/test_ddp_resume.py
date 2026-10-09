@@ -14,6 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_ddp_adapter import assert_close_states, launch, results  # noqa: E402
 
+# Every torchrun launch shares one worker (FIX-031): its module-scoped launch
+# runs once, and no two 2-rank launches compete for a CI runner's 4 vCPUs.
+pytestmark = pytest.mark.xdist_group("torchrun")
+
 
 @pytest.fixture(scope="module")
 def writer(tmp_path_factory) -> tuple[Path, list[dict]]:
@@ -131,3 +135,40 @@ def test_a_single_process_stateful_resume_of_a_distributed_checkpoint_is_refused
             model().train(params=params([(data.X, data.y)], n_epochs=1, data_id="split", resume_from_run_id=first_id))
     finally:
         os.chdir(previous)
+
+
+# --- FEAT-046: one rank verifies the resume point -----------------------------------------------
+
+
+def test_only_the_writer_rank_hashes_the_resume_point(resumed):
+    writer, other = resumed["split"]
+    assert (writer["verified"], other["verified"]) == (1, 0)  # the writer's verdict was shared
+    assert other["hashed"] == 0  # (the writer also hashes its own saves while training)
+    writer, other = resumed["changed"]["partition"]  # verified once, then refused for its partition
+    assert (writer["verified"], other["verified"]) == (1, 0)
+    assert writer["hashed"] == 2 and other["hashed"] == 0  # the checkpoint and its training state
+
+
+@pytest.fixture(scope="module")
+def corrupted(tmp_path_factory) -> list[dict]:
+    out = tmp_path_factory.mktemp("ddp-corrupt")
+    launch("resume_first", out)
+    launch("resume_corrupt", out)
+    return results(out)
+
+
+def test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason(corrupted):
+    for rank in corrupted:
+        assert rank["error"].startswith("ResumePointError: "), rank["error"]
+        assert "digest mismatch in last.pt.opt." in rank["error"] and rank["unchanged"]
+    writer, other = corrupted
+    assert writer["error"] == other["error"]  # the same reason on every rank
+    assert (writer["verified"], other["verified"]) == (1, 0)
+    assert writer["hashed"] >= 1 and other["hashed"] == 0
+
+
+def test_an_invalid_run_id_fails_alike_on_every_rank(tmp_path):
+    launch("resume_bad_id", tmp_path)
+    for rank in results(tmp_path):
+        assert rank["error"].startswith("ValueError: "), rank["error"]  # not a DistributedFailure elsewhere
+        assert rank["verified"] == 0 and rank["hashed"] == 0

@@ -561,8 +561,10 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
     """Performance regression test: the cache path should be measurably
     faster than the full-recompute path on a non-trivial generation.
 
-    We use a small Transformer (4 layers, 64 d_model) generating 128
-    new tokens so the O(T^2) vs O(T) cost gap is clearly visible. The
+    We use a small Transformer (4 layers, 64 d_model) generating 256
+    new tokens so the O(T^2) vs O(T) cost gap is clearly visible (about
+    3x on a laptop; 128 tokens left only ~1.8x, too little margin for a
+    loaded 4-vCPU runner). The
     threshold is set conservatively (≥1.2x) because CPU timing on shared
     CI is noisy. This test makes no performance claim for other processors,
     context lengths, or workloads; it only guards against losing the useful
@@ -580,7 +582,7 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
         n_heads=4,
         d_model=64,
         ffn_mult=4,
-        max_seq_len=256,
+        max_seq_len=512,
     )
     model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
     torch.manual_seed(3)
@@ -591,26 +593,31 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
     model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=True)
     model.generate(prompt="the", max_new_tokens=2, temperature=0.0, use_cache=False)
 
-    n_new = 128
+    n_new = 256
 
-    # Run each path a few times and take the min — fewer noise spikes
-    # than a single-shot measurement.
-    def _time_path(use_cache: bool, repeats: int = 3) -> float:
-        times = []
-        for _ in range(repeats):
-            t0 = time.perf_counter()
-            model.generate(prompt="the", max_new_tokens=n_new, temperature=0.0, use_cache=use_cache)
-            times.append(time.perf_counter() - t0)
-        return min(times)
+    # The process's CPU time, not wall time: the suite runs in parallel
+    # (pytest-xdist, FIX-031), and other workers' load stretches wall time
+    # without changing the work this process does. The two paths are
+    # interleaved and each takes its min over the repeats, so a load spike
+    # cannot favour one path.
+    def _cpu_time(use_cache: bool) -> float:
+        t0 = time.process_time()
+        model.generate(prompt="the", max_new_tokens=n_new, temperature=0.0, use_cache=use_cache)
+        return time.process_time() - t0
 
-    t_full = _time_path(use_cache=False)
-    t_cached = _time_path(use_cache=True)
+    full_times, cached_times = [], []
+    for _ in range(3):
+        full_times.append(_cpu_time(use_cache=False))
+        cached_times.append(_cpu_time(use_cache=True))
+    t_full, t_cached = min(full_times), min(cached_times)
 
     speedup = t_full / t_cached if t_cached > 0 else float("inf")
     # Print so `pytest -s` shows the actual numbers — useful for
     # tracking the speedup over time.
-    print(f"\n[kv-cache] full={t_full:.3f}s  cached={t_cached:.3f}s  speedup={speedup:.2f}x")
-    assert speedup >= 1.2, f"Expected ≥1.2x speedup, got {speedup:.2f}x (full={t_full:.3f}s, cached={t_cached:.3f}s)"
+    print(f"\n[kv-cache] full={t_full:.3f}s  cached={t_cached:.3f}s CPU  speedup={speedup:.2f}x")
+    assert speedup >= 1.2, (
+        f"Expected ≥1.2x speedup, got {speedup:.2f}x (full={t_full:.3f}s, cached={t_cached:.3f}s CPU)"
+    )
 
 
 def test_generate_requires_tokenizer(tmp_path):
