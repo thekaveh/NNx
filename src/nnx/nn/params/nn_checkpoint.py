@@ -10,9 +10,10 @@ import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Optional
+from typing import Any, BinaryIO, Literal, Optional, cast
 
 import torch
 from filelock import FileLock
@@ -143,21 +144,6 @@ def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]
     return {key: value.detach().contiguous().clone() for key, value in state.items()}
 
 
-def _fsync_file(path: str) -> None:
-    """Flush a written file to stable storage (best effort: some platforms
-    refuse fsync on a handle they cannot write through)."""
-    try:
-        fd = os.open(path, os.O_RDWR)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
-
-
 def _fsync_directory(path: str) -> None:
     """Persist a rename: fsync the directory (a no-op where unsupported)."""
     try:
@@ -172,16 +158,76 @@ def _fsync_directory(path: str) -> None:
         os.close(fd)
 
 
-def _atomic_torch_save(obj, path: str) -> None:
+class _HashingWriter:
+    """A binary file that SHA-256s every byte as it is written (FEAT-045):
+    a resume point's digests come from the write itself, never from reading
+    the file back. A chunk of ``_OVERLAP_BYTES`` or more is hashed on a helper
+    thread while it is written (``hashlib`` and the write both release the
+    GIL), so it costs about the larger of the two rather than their sum.
+
+    torch's zip writer calls :meth:`write` from C++ and turns anything raised
+    there into a ``RuntimeError``; the first exception is kept in ``error``
+    for :func:`_atomic_torch_save` to re-raise as itself (a Ctrl-C stays a
+    ``KeyboardInterrupt``, a full disk an ``OSError``)."""
+
+    _OVERLAP_BYTES = 1 << 20  # smaller chunks are hashed inline
+
+    def __init__(self, handle: Any, pool: ThreadPoolExecutor) -> None:
+        self._handle = handle
+        self._pool = pool
+        self._digest = hashlib.sha256()
+        self.error: Optional[BaseException] = None
+
+    def write(self, data: Any) -> int:
+        if self.error is not None:
+            raise self.error
+        try:
+            view = memoryview(data).cast("B")
+            if view.nbytes < self._OVERLAP_BYTES:
+                self._digest.update(view)
+                self._handle.write(view)  # a buffered file writes it all, or raises
+                return view.nbytes
+            hashed = self._pool.submit(self._digest.update, view)
+            try:
+                self._handle.write(view)
+            finally:
+                hashed.result()  # in order, and before torch may reuse the buffer
+            return view.nbytes
+        except BaseException as error:
+            self.error = error
+            raise
+
+    def flush(self) -> None:
+        self._handle.flush()
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+
+def _atomic_torch_save(obj, path: str) -> str:
     """torch.save(obj, path) wrapped with tmp + fsync + rename so a
     KeyboardInterrupt (or a crash) during the pickle never leaves a
-    half-written .pt file at the destination."""
+    half-written .pt file at the destination. Returns the SHA-256 of the
+    bytes written, hashed as they are written (FEAT-045)."""
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
-    os.close(fd)
     try:
-        torch.save(obj, tmp)
-        _fsync_file(tmp)
+        with os.fdopen(fd, "wb", buffering=1 << 20) as handle, ThreadPoolExecutor(max_workers=1) as pool:
+            writer = _HashingWriter(handle, pool)
+            try:
+                # torch.save calls write() and flush() on it; the writer has no
+                # fileno(), which would let a legacy-format save bypass write().
+                torch.save(obj, cast(BinaryIO, writer))
+            except BaseException:
+                if writer.error is not None:
+                    raise writer.error from None  # as raised, not as torch's RuntimeError
+                raise
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:  # best effort: some platforms refuse fsync on this handle
+                pass
         os.replace(tmp, path)
+        return writer.hexdigest()
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -589,13 +635,11 @@ class NNCheckpoint:
                 fd, weights_tmp = tempfile.mkstemp(
                     prefix=f".{os.path.basename(ckpt_path)}.", dir=os.path.dirname(ckpt_path)
                 )
-                os.close(fd)  # to_file replaces it: nothing is removed before the point is published
+                os.close(fd)  # the save replaces it: nothing is removed before the point is published
                 try:
-                    replace(self, training_state_id=None, training_state_present=False).to_file(path=weights_tmp)
-                    _fsync_file(weights_tmp)
-                    manifest = _manifest(
-                        ordinal, None, completed, counters, {os.path.basename(ckpt_path): _sha256(weights_tmp)}
-                    )
+                    weights_only = replace(self, training_state_id=None, training_state_present=False)
+                    digest = _atomic_torch_save(weights_only, weights_tmp)  # to_file's pickle, hashed as written
+                    manifest = _manifest(ordinal, None, completed, counters, {os.path.basename(ckpt_path): digest})
                     _publish(ckpt_path, weights_tmp, manifest)
                 finally:
                     if os.path.exists(weights_tmp):
@@ -654,12 +698,12 @@ class NNCheckpoint:
             os.remove(checkpoint_tmp)
             generation_sidecar_path = _generation_sidecar_path(ckpt_path, generation)
             try:
-                stamped.to_file(checkpoint_tmp)
-                _fsync_file(checkpoint_tmp)
-                _atomic_torch_save(training_state, generation_sidecar_path)
+                # to_file's pickle and the sidecar, each hashed as it is written (FEAT-045)
                 files = {
-                    os.path.basename(ckpt_path): _sha256(checkpoint_tmp),
-                    os.path.basename(generation_sidecar_path): _sha256(generation_sidecar_path),
+                    os.path.basename(ckpt_path): _atomic_torch_save(stamped, checkpoint_tmp),
+                    os.path.basename(generation_sidecar_path): _atomic_torch_save(
+                        training_state, generation_sidecar_path
+                    ),
                 }
                 _publish(ckpt_path, checkpoint_tmp, _manifest(ordinal, generation, completed, counters, files))
                 _atomic_torch_save(training_state, sidecar_path)
