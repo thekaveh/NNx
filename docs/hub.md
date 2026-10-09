@@ -157,6 +157,17 @@ safetensors weights into the freshly-built `self.net`. An unknown
 operation or version is refused before any tensor is loaded. Bit-exact
 round-trip on tensors; `state()` form identical on the params.
 
+A model saved with extra top-level submodules attached to its net — a JEPA
+predictor registered as `model.net._jepa_predictor` — rebuilds without
+them through `exclude_submodules`; every other key still loads strictly
+(`strict=False` would also accept missing weights), and a name the saved
+weights do not hold is refused. Without it, the error names the extra
+submodules and this option:
+
+```python
+encoder = NNModel.from_pretrained("./jepa-model", exclude_submodules=("_jepa_predictor",))
+```
+
 ### 2.4. Publish to the Hub
 
 ```python

@@ -305,6 +305,28 @@ _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint,
 )
 
 
+# The call a "load without the attached submodules" hint names (FEAT-047):
+# each rebuild entry point names its own exclude_submodules= option.
+_REBUILD_CALL: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "nnx_rebuild_call", default="NNModel.from_checkpoint(checkpoint, exclude_submodules={names!r})"
+)
+
+
+def _attached_submodules_error(error: RuntimeError, net: torch.nn.Module, state: Mapping[str, Any], call: str):
+    """``error`` explained, when the weights hold top-level submodules the
+    rebuilt ``net`` lacks (a JEPA predictor the training run registered under
+    ``model.net``, say): ``call`` — the caller's entry point, formatted with
+    ``names`` — rebuilds without them. ``None`` when nothing is attached."""
+    children = {name for name, _ in net.named_children()}
+    attached = sorted({key.split(".", 1)[0] for key in state if "." in key} - children)
+    if not attached:
+        return None
+    return RuntimeError(
+        f"{error}\nThe weights hold submodules the rebuilt {type(net).__name__} does not have "
+        f"({', '.join(attached)}): {call.format(names=tuple(attached))} rebuilds the architecture without them"
+    )
+
+
 def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mapping[str, Any]:
     """``state`` without the weights of the named top-level submodules
     (``from_checkpoint(exclude_submodules=...)``); every name must be present."""
@@ -2822,14 +2844,9 @@ class NNModel(_HubMixinBase):
                     "converted QAT checkpoint lacks reconstruction metadata; "
                     "recreate its torchao topology with the original qat_config and groupsize"
                 ) from error
-            children = {name for name, _ in model.net.named_children()}
-            attached = sorted({key.split(".", 1)[0] for key in net_state if "." in key} - children)
-            if attached:
-                raise RuntimeError(
-                    f"{error}\nThe checkpoint holds submodules the rebuilt {type(model.net).__name__} does not have "
-                    f"({', '.join(attached)}): NNModel.from_checkpoint(checkpoint, exclude_submodules="
-                    f"{tuple(attached)!r}) rebuilds the architecture without them"
-                ) from error
+            explained = _attached_submodules_error(error, model.net, net_state, _REBUILD_CALL.get())
+            if explained is not None:
+                raise explained from error
             raise
 
         return model
@@ -2948,6 +2965,7 @@ class NNModel(_HubMixinBase):
         map_location: str = "cpu",
         strict: bool = True,
         precision: Optional[PrecisionPolicy] = None,
+        exclude_submodules: Sequence[str] = (),
         **model_kwargs,
     ) -> NNModel:
         """Rebuild an NNModel from a save_pretrained directory or Hub repo.
@@ -2971,6 +2989,13 @@ class NNModel(_HubMixinBase):
         FEAT-028: the saved precision policy is re-resolved on the
         ``map_location`` device, never taken from saved metadata;
         ``precision=`` replaces it (and the legacy ``mixed_precision`` flag).
+
+        FEAT-047: ``exclude_submodules`` names top-level submodules saved
+        with the net that are not part of the rebuilt architecture — a JEPA
+        predictor registered as ``model.net._jepa_predictor``, say — whose
+        weights are left out; every other key still loads under ``strict``
+        (unlike ``strict=False``, a missing weight is still refused). A name
+        the saved weights do not hold raises ``ValueError``.
         """
         # The mixin inspects NNModel.__init__'s signature and auto-injects
         # matching config.json entries ("net_params"/"params") as kwargs.
@@ -3062,12 +3087,19 @@ class NNModel(_HubMixinBase):
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
         _replay_transforms(model, transforms)
         model._topology_transforms = _canonical_transforms(transforms)
-        state_dict = load_file(weights_path, device=str(torch_load_device))
+        state_dict = _without_submodules(load_file(weights_path, device=str(torch_load_device)), exclude_submodules)
         if not transforms and strict:
             _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
         if net_params is None and strict:
             check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
-        model.net.load_state_dict(state_dict, strict=strict)
+        try:
+            model.net.load_state_dict(state_dict, strict=strict)
+        except RuntimeError as error:
+            call = "NNModel.from_pretrained(model_id, exclude_submodules={names!r})"
+            explained = _attached_submodules_error(error, model.net, state_dict, call) if strict else None
+            if explained is not None:
+                raise explained from error
+            raise
         return model
 
     def freeze(self, *patterns: str) -> int:
