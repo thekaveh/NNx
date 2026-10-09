@@ -33,6 +33,28 @@ from torch_geometric.data import Data  # noqa: E402
 
 from nnx.nn.dataset.nn_graph_dataset import NNGraphDataset  # noqa: E402
 
+CORA_ROOT = os.path.expanduser("~/.cache/nnx-test-data")
+
+
+def _fetch_cora(attempts: int = 4, first_wait: float = 5.0) -> None:
+    """Download Cora into the test cache, retrying a transient failure: the
+    raw files come from github.com, which answered 504 on two CI legs at once
+    (#456). Files already fetched are kept between attempts; the last
+    failure is raised as is."""
+    import time
+
+    from torch_geometric.datasets import Planetoid
+
+    for attempt in range(attempts):
+        try:
+            Planetoid(root=CORA_ROOT, name="Cora")
+            return
+        except Exception:  # aiohttp / urllib errors; the dataset itself never raises here once fetched
+            if attempt == attempts - 1:
+                raise
+            time.sleep(first_wait * 2**attempt)
+
+
 # ---------------------------------------------------------------------------
 # Shared synthetic-graph stub
 # ---------------------------------------------------------------------------
@@ -181,7 +203,8 @@ def test_full_batch_cora_parity(tmp_path, monkeypatch):
         def __init__(self, root, transform=None):
             super().__init__(root=root, name="Cora", transform=transform)
 
-    cora_root = os.path.expanduser("~/.cache/nnx-test-data")
+    _fetch_cora()
+    cora_root = CORA_ROOT
 
     ds = NNGraphDataset(
         ds_class=CoraFullBatch,
@@ -470,3 +493,28 @@ def test_full_graph_train_without_validation(tmp_path, monkeypatch):
         trainer_step_fn=_graph_step,
     )
     assert evaluate_calls == [] and all(idp.val_edp is None for idp in trainer_run.idps)
+
+
+def test_fetching_cora_retries_a_transient_failure(monkeypatch):
+    """A 504 (or any download error) is retried with backoff; one that
+    persists is raised after the last attempt."""
+    import torch_geometric.datasets
+
+    calls, waits = [], []
+
+    def flaky(root, name):
+        calls.append(name)
+        if len(calls) < 3:
+            raise OSError("504 Gateway Time-out")
+
+    monkeypatch.setattr(torch_geometric.datasets, "Planetoid", flaky)
+    monkeypatch.setattr("time.sleep", waits.append)
+    _fetch_cora()
+    assert calls == ["Cora"] * 3 and waits == [5.0, 10.0]
+
+    calls.clear()
+    monkeypatch.setattr(
+        torch_geometric.datasets, "Planetoid", lambda root, name: (_ for _ in ()).throw(OSError("down"))
+    )
+    with pytest.raises(OSError, match="down"):
+        _fetch_cora(attempts=2, first_wait=0.0)
