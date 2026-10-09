@@ -8,6 +8,7 @@ fails a save on a filesystem that refuses either."""
 
 from __future__ import annotations
 
+import errno
 import os
 import types
 
@@ -22,7 +23,7 @@ from nnx.nn.params.nn_checkpoint import NNCheckpoint
 
 class Recorder:
     def __init__(
-        self, monkeypatch, *, full: bool, full_fails: bool = False, fsync_fails: bool = False, code: int = 45
+        self, monkeypatch, *, full: bool, full_fails: bool = False, fsync_fails: bool = False, code: int = 0
     ) -> None:
         self.full_calls: list[int] = []
         self.fsync_calls: list[int] = []
@@ -34,7 +35,8 @@ class Recorder:
                 assert command == 51
                 self.full_calls.append(fd)
                 if full_fails:
-                    raise OSError(code, os.strerror(code))
+                    failure = code or errno.ENOTSUP  # by default: not supported on this filesystem
+                    raise OSError(failure, os.strerror(failure))
                 return 0
 
             fake.fcntl = fcntl
@@ -43,7 +45,7 @@ class Recorder:
         def fsync(fd):
             self.fsync_calls.append(fd)
             if fsync_fails:
-                raise OSError(code if code != 45 else 22, "flush failed")
+                raise OSError(code or errno.EINVAL, "flush failed")
 
         monkeypatch.setattr(nn_checkpoint.os, "fsync", fsync)
 
@@ -118,8 +120,6 @@ def test_the_real_platform_call_succeeds(tmp_path):
 def test_a_real_io_error_fails_the_save_and_keeps_the_previous_point(tmp_path, monkeypatch):
     """Only an unsupported flush is tolerated: an EIO raises, and the live
     manifest still names the previous point."""
-    import errno
-
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     torch.manual_seed(0)
