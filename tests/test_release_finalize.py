@@ -113,5 +113,5 @@ def test_the_api_reference_version_line_is_bumped_by_release_please():
 def test_the_release_workflow_finalizes_the_release_branch():
     workflow = (ROOT / ".github" / "workflows" / "release-please.yml").read_text(encoding="utf-8")
     assert "python3 scripts/release/finalize_changelog.py CHANGELOG.md\n" in workflow
-    assert "git add uv.lock CHANGELOG.md" in workflow
+    assert "uv.lock CHANGELOG.md\n" in workflow  # both committed (through the API, FIX-033)
     assert '--release-notes "$RELEASE_TAG"' in workflow and "gh release edit" in workflow

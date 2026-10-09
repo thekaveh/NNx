@@ -25,7 +25,7 @@ jobs:
     # release-please pushes its release branch and opens or updates a PR.
     permissions:
       actions: write # Dispatch required checks for the managed release PR.
-      contents: write # Push the managed release branch and tag.
+      contents: write # Commit to the managed release branch (through the API) and tag it.
       pull-requests: write # Open or update the managed release PR.
     steps:
       - name: Release Please
@@ -71,11 +71,14 @@ jobs:
             # line is bumped by release-please itself through extra-files).
             python3 scripts/release/finalize_changelog.py CHANGELOG.md
             if ! git diff --quiet -- uv.lock CHANGELOG.md; then
-              git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git add uv.lock CHANGELOG.md
-              git commit -m "chore: refresh release lockfile and finalize the release notes"
-              git push origin "HEAD:$branch"
+              # FIX-033: committed through the API, so GitHub signs it
+              # (verified, like release-please's own commit) and the ruleset
+              # does not hold the release PR for an approving review. The
+              # branch is fast-forwarded from the head checked out above.
+              python3 scripts/release/api_commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" \
+                --parent "$(git rev-parse HEAD)" \
+                --message "chore: refresh release lockfile and finalize the release notes" \
+                uv.lock CHANGELOG.md
             fi
             gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
