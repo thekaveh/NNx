@@ -1487,9 +1487,12 @@ stable storage before they are renamed into place, and the directory after:
 with `fcntl(F_FULLFSYNC)` on macOS (whose `fsync` only reaches the drive's
 cache) and `os.fsync` on Linux and elsewhere — so on both, a point whose
 manifest says it is complete survives a power loss, as far as the drive honours
-the flush. A filesystem that refuses the flush does not fail the save (the
-point is then only as durable as that filesystem); Windows durability is not
-guaranteed beyond `os.fsync`. The manifest
+the flush. A filesystem that does not support the flush does not fail the
+save (the point is then only as durable as that filesystem), while a real I/O
+error (`EIO`, a full disk) does. On Windows the files are flushed with
+`os.fsync` but the renames are not (a directory cannot be flushed there). This
+covers resume points; the run's other files (`run.yaml`, history, bundles)
+use `os.fsync`. The manifest
 is staged before the checkpoint is published and made live right after, and a
 Ctrl-C in that window is held until the point is complete (a second one stops
 at once). A writer that dies inside it leaves a point whose staged manifest

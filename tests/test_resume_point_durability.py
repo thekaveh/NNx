@@ -21,7 +21,9 @@ from nnx.nn.params.nn_checkpoint import NNCheckpoint
 
 
 class Recorder:
-    def __init__(self, monkeypatch, *, full: bool, full_fails: bool = False, fsync_fails: bool = False) -> None:
+    def __init__(
+        self, monkeypatch, *, full: bool, full_fails: bool = False, fsync_fails: bool = False, code: int = 45
+    ) -> None:
         self.full_calls: list[int] = []
         self.fsync_calls: list[int] = []
         fake = types.SimpleNamespace()
@@ -32,7 +34,7 @@ class Recorder:
                 assert command == 51
                 self.full_calls.append(fd)
                 if full_fails:
-                    raise OSError(45, "Operation not supported")
+                    raise OSError(code, os.strerror(code))
                 return 0
 
             fake.fcntl = fcntl
@@ -41,7 +43,7 @@ class Recorder:
         def fsync(fd):
             self.fsync_calls.append(fd)
             if fsync_fails:
-                raise OSError(22, "Invalid argument")
+                raise OSError(code if code != 45 else 22, "flush failed")
 
         monkeypatch.setattr(nn_checkpoint.os, "fsync", fsync)
 
@@ -100,8 +102,8 @@ def test_every_resume_point_flush_goes_through_it(tmp_path, monkeypatch, full):
             run.id, Checkpoints.LAST, optimizer_state=state["optimizer"], scheduler_state=state["scheduler"]
         )
     flushed = calls.full_calls if full else calls.fsync_calls
-    # checkpoint + generation sidecar + .opt.pt alias + staged and live manifests + the directory
-    assert len(flushed) >= 6
+    # checkpoint + generation sidecar + staged and live manifests + the directory (not the .opt.pt alias)
+    assert len(flushed) == 5
     assert NNCheckpoint.verify(run.id, Checkpoints.LAST) is not None
 
 
@@ -111,3 +113,37 @@ def test_the_real_platform_call_succeeds(tmp_path):
         handle.flush()
         nn_checkpoint._full_fsync(handle.fileno())
     assert os.path.getsize(tmp_path / "f") == 1
+
+
+def test_a_real_io_error_fails_the_save_and_keeps_the_previous_point(tmp_path, monkeypatch):
+    """Only an unsupported flush is tolerated: an EIO raises, and the live
+    manifest still names the previous point."""
+    import errno
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    run = model.train(params=NNTrainParams(n_epochs=1, train_loader=[(torch.randn(4, 4), torch.tensor([0, 1, 0, 1]))]))
+    checkpoint = NNCheckpoint.load(run.id, Checkpoints.LAST)
+    state = NNCheckpoint.load_training_state(run.id, Checkpoints.LAST)
+    before = NNCheckpoint.resume_point(run.id, Checkpoints.LAST)
+    for full in (True, False):
+        with monkeypatch.context() as scoped:
+            Recorder(scoped, full=full, full_fails=True, fsync_fails=True, code=errno.EIO)
+            with pytest.raises(OSError) as caught:
+                checkpoint.save(run.id, Checkpoints.LAST, optimizer_state=state["optimizer"])
+        assert caught.value.errno == errno.EIO
+        assert NNCheckpoint.resume_point(run.id, Checkpoints.LAST) == before
+        assert NNCheckpoint.verify(run.id, Checkpoints.LAST) == before
+
+
+def test_the_real_platform_call_succeeds_on_a_directory(tmp_path):
+    fd = os.open(tmp_path, os.O_RDONLY)
+    try:
+        nn_checkpoint._full_fsync(fd)
+    finally:
+        os.close(fd)

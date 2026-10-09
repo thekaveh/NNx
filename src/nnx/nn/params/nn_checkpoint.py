@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -149,23 +150,35 @@ def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]
     return {key: value.detach().contiguous().clone() for key, value in state.items()}
 
 
+# A flush the filesystem or descriptor does not support (FIX-030): tolerated.
+# Anything else (EIO, ENOSPC, EDQUOT, ...) is a failed write and propagates.
+_UNSUPPORTED_FLUSH = frozenset(
+    code
+    for code in (errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", None), errno.EINVAL, errno.ENOTTY, errno.EBADF)
+    if code is not None
+)
+
+
 def _full_fsync(fd: int) -> None:
     """Flush ``fd`` to stable storage (FIX-030): ``fcntl(fd, F_FULLFSYNC)``
     where the platform has it — on macOS ``fsync`` only reaches the drive's
-    cache, which a power loss can drop — else ``os.fsync``. Best effort: a
-    filesystem refusing ``F_FULLFSYNC`` falls back to ``os.fsync``, and one
-    refusing both does not fail the save."""
+    cache, which a power loss can drop — else ``os.fsync``. A filesystem that
+    does not support ``F_FULLFSYNC`` falls back to ``os.fsync``, and one that
+    supports neither does not fail the save; a real I/O error (``EIO``,
+    ``ENOSPC``, ...) is raised, so a save never reports success over it."""
     full = getattr(fcntl, "F_FULLFSYNC", None)
     if fcntl is not None and full is not None:
         try:
             fcntl.fcntl(fd, full)
             return
-        except OSError:
-            pass
+        except OSError as error:
+            if error.errno not in _UNSUPPORTED_FLUSH:
+                raise
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as error:
+        if error.errno not in _UNSUPPORTED_FLUSH:
+            raise
 
 
 def _fsync_directory(path: str) -> None:
@@ -226,11 +239,13 @@ class _HashingWriter:
         return self._digest.hexdigest()
 
 
-def _atomic_torch_save(obj, path: str) -> str:
+def _atomic_torch_save(obj, path: str, *, durable: bool = True) -> str:
     """torch.save(obj, path) wrapped with tmp + fsync + rename so a
     KeyboardInterrupt (or a crash) during the pickle never leaves a
     half-written .pt file at the destination. Returns the SHA-256 of the
-    bytes written, hashed as they are written (FEAT-045)."""
+    bytes written, hashed as they are written (FEAT-045). ``durable=False``
+    skips the flush to stable storage (a compatibility copy nothing resumes
+    from)."""
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(os.path.abspath(path)))
     try:
         with os.fdopen(fd, "wb", buffering=1 << 20) as handle, ThreadPoolExecutor(max_workers=1) as pool:
@@ -244,7 +259,8 @@ def _atomic_torch_save(obj, path: str) -> str:
                     raise writer.error from None  # as raised, not as torch's RuntimeError
                 raise
             handle.flush()
-            _full_fsync(handle.fileno())
+            if durable:
+                _full_fsync(handle.fileno())
         os.replace(tmp, path)
         return writer.hexdigest()
     finally:
@@ -619,8 +635,9 @@ class NNCheckpoint:
         (``<tag>.pt.manifest.json``, written last) stamps it with the tag's
         generation ordinal, the checkpoint id and the SHA-256 of each file it
         consists of, so a resume refuses a torn, mixed or corrupted point
-        (:meth:`verify`). Files are fsynced before they are renamed into
-        place, and a Ctrl-C arriving meanwhile is held until the point is
+        (:meth:`verify`). Files are flushed to stable storage
+        (``F_FULLFSYNC`` on macOS, ``fsync`` elsewhere) before they are
+        renamed into place, and a Ctrl-C arriving meanwhile is held until the point is
         complete. ``counters`` (the run's logical position: ``global_step``,
         ``committed_updates``, ``planned_n_epochs``) rides in the training
         state.
@@ -725,7 +742,8 @@ class NNCheckpoint:
                     ),
                 }
                 _publish(ckpt_path, checkpoint_tmp, _manifest(ordinal, generation, completed, counters, files))
-                _atomic_torch_save(training_state, sidecar_path)
+                # the legacy alias: a resume reads the generation sidecar, so no flush (FIX-030)
+                _atomic_torch_save(training_state, sidecar_path, durable=False)
                 for old_sidecar in _generation_sidecar_paths(ckpt_path):
                     if old_sidecar != generation_sidecar_path:
                         os.remove(old_sidecar)
