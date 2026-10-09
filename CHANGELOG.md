@@ -39,6 +39,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Fixed
 
+- **`NNRun.load` reads a run's history back exactly.** `idps.csv` is now parsed round-trip: pandas' default float parser misread about one value in five by one ULP, so a loaded run's losses, learning rates and metrics could differ from the trained run's in the last digit.
 - **`nnx.search.search()` and `ExperimentPlan.fit()` refuse a multi-rank process group.** Both train in a single process (a plan never passes `distributed=`); launched under `torchrun`, every rank ran its own study or fit into the same working directory. Inside an initialized `torch.distributed` group of world size > 1 they now raise `RuntimeError` before loading or creating a study, calling a factory, seeding or creating a run; a one-rank group behaves as before. Train one model across ranks with `model.train(..., distributed=DDP())` ([#417](https://github.com/thekaveh/NNx/issues/417)).
 
 ## [0.3.0](https://github.com/thekaveh/NNx/compare/v0.2.3...v0.3.0) (2026-10-04)
