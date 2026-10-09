@@ -132,6 +132,9 @@ size, the partitions and every rank's RNG streams; a resume with the same
 world size and partition restores them all, any other fails before anything
 is restored (so does a single-process stateful resume of a distributed
 checkpoint; `resume_mode="weights_only"` starts fresh from its weights).
+The writer rank alone verifies the resume point (its files' SHA-256) and
+shares the manifest or the refusal, so the other ranks never hash it and a
+torn, mixed or corrupted point is refused on every rank with the same reason.
 Resume, component restore and epoch-end callback failures are agreed too;
 anything else failing on one rank only ends through the process group's
 timeout and `torchrun` stopping the other ranks.

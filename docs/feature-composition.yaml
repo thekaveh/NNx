@@ -193,6 +193,16 @@ scenarios:
       - tests/test_plan_execution.py::test_a_planned_plan_resume_equals_the_uninterrupted_plan_bit_for_bit
     rationale: Compares every weight tensor and the final validation metrics; the resume trains epochs 2-3 only.
     status: verified
+  - id: CR-08
+    group: checkpoint-resume
+    features: [DDP, corrupted resume point]
+    entry_point: NNModel.train(distributed=DDP(), resume)
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
+    expected: The writer rank alone verifies the point; a corrupted one is refused on every rank with the same reason, before anything is restored.
+    tests:
+      - tests/test_ddp_resume.py::test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason
+    rationale: Executed two-rank negative test (one flipped byte); per-rank verify and hash counts and unchanged weights asserted.
+    status: unsupported
   - id: MT-01
     group: model-transformations
     features: [torch.compile, QAT (topology-changing callback)]
