@@ -257,6 +257,7 @@ def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subpro
     )
 
 
+@pytest.mark.xdist_group("torchrun")  # one torchrun launch at a time (FIX-031)
 def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
     """FEAT-030: two CPU ranks under ``torchrun --standalone``; exactly-once
     validation ids, one run id, one artifact owner."""
@@ -275,6 +276,7 @@ def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
     assert runs == [reports[0]["run_id"]]
 
 
+@pytest.mark.xdist_group("torchrun")  # one torchrun launch at a time (FIX-031)
 def test_the_ddp_example_terminates_after_an_injected_failure(tmp_path):
     """``--inject-failure``: rank 1 raises; the launch ends non-zero within
     a bounded time and leaves no worker behind."""
