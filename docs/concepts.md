@@ -1485,7 +1485,9 @@ its generation-addressed training-state sidecar and a manifest
 (`<tag>.pt.manifest.json`, written last) holding the tag's `generation`
 ordinal, the `checkpoint_id`, the logical position (`completed_epoch`,
 `global_step`, `committed_updates`, `planned_n_epochs`) and the SHA-256 of
-each file. Files are fsynced before they are renamed into place; the manifest
+each file, computed as the file is written (a save never reads a file back to
+hash it; only a resume's verification reads them). Files are fsynced before
+they are renamed into place; the manifest
 is staged before the checkpoint is published and made live right after, and a
 Ctrl-C in that window is held until the point is complete (a second one stops
 at once). A writer that dies inside it leaves a point whose staged manifest
