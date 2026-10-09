@@ -43,8 +43,22 @@ def test_pytest_xdist_is_a_dev_dependency():
     assert any(spec.startswith("pytest-xdist") for spec in project["optional-dependencies"]["dev"])
 
 
-def test_each_torchrun_module_stays_on_one_worker():
+def test_every_torchrun_launch_shares_one_worker():
     """A module-scoped torchrun fixture runs once per worker that gets one of
-    its tests; grouping the module keeps it to one launch."""
-    for name in ("test_ddp_adapter.py", "test_ddp_resume.py", "test_decision_model_pilot.py"):
-        assert "pytestmark = pytest.mark.xdist_group(" in (ROOT / "tests" / name).read_text(encoding="utf-8"), name
+    its tests, and two concurrent 2-rank launches oversubscribe a 4-vCPU
+    runner (a launch timed out at 240 s on #453): every test that launches
+    torchrun is in the one ``torchrun`` group."""
+    for name in ("test_ddp_adapter.py", "test_ddp_resume.py"):
+        assert 'pytestmark = pytest.mark.xdist_group("torchrun")' in (ROOT / "tests" / name).read_text(encoding="utf-8")
+    smoke = (ROOT / "tests" / "test_examples_smoke.py").read_text(encoding="utf-8")
+    for test in (
+        "test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner",
+        "test_the_ddp_example_terminates_after_an_injected_failure",
+    ):
+        assert f'@pytest.mark.xdist_group("torchrun")  # one torchrun launch at a time (FIX-031)\ndef {test}(' in smoke
+    launchers = sorted(
+        path.name
+        for path in (ROOT / "tests").glob("test_*.py")
+        if "torch.distributed.run" in path.read_text(encoding="utf-8")
+    )
+    assert launchers == ["test_ci_parallel_suite.py", "test_ddp_adapter.py", "test_examples_smoke.py"], launchers
