@@ -14,6 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_ddp_adapter import assert_close_states, launch, results  # noqa: E402
 
+# Every torchrun launch shares one worker (FIX-031): its module-scoped launch
+# runs once, and no two 2-rank launches compete for a CI runner's 4 vCPUs.
+pytestmark = pytest.mark.xdist_group("torchrun")
+
 
 @pytest.fixture(scope="module")
 def writer(tmp_path_factory) -> tuple[Path, list[dict]]:

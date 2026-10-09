@@ -1468,6 +1468,10 @@ chooses what `n_epochs` means on that resume:
   changes what trains) and omitted from `state()` at its default. A
   `Trainer` always resumes `"additional"`.
 
+An experiment plan asks for it with
+`resuming(run_id, mode="stateful", epochs="planned")` (§20); `epochs`
+defaults to the training parameters' own `resume_epochs`.
+
 ```python
 plan = NNTrainParams(n_epochs=4, train_loader=train_loader, val_loader=val_loader, seed=0)
 first = model.train(params=plan, callbacks=[stop_after_epoch_1])            # epochs 0-1, then interrupted
@@ -1917,9 +1921,16 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
   - A plan never sets `overwrite_existing`, and `validate()` rejects it, so
     reusing an attempt id for the same configuration raises
     `FileExistsError`.
-  - `resuming(run_id, checkpoint="last", mode=None)` warm-restarts into a
-    new run that records the source as `parent_run_id` and leaves the
-    parent's artifacts untouched.
+  - `resuming(run_id, checkpoint="last", mode=None, epochs=None)`
+    warm-restarts into a new run that records the source as `parent_run_id`
+    and leaves the parent's artifacts untouched. `mode` and `epochs` set the
+    fit's `resume_mode` and `resume_epochs` (§14.3), else the training
+    parameters' own apply; `validate()` checks both as `NNTrainParams` does,
+    and reports a `"planned"` horizon with a `"weights_only"` mode or with no
+    run to resume, on the field the caller set. A plan
+    stopped after epoch 1 of 4 and resumed with
+    `resuming(first.run.id, mode="stateful", epochs="planned")` trains epochs
+    2–3 and equals the uninterrupted plan bit for bit.
 - **Metrics.** `FitResult.metrics["train"]` and `["val"]` are
   `SplitMetrics(split, available, epoch, source, values, reason)`, read from
   the run's final epoch. No loader is iterated a second time.
@@ -2132,7 +2143,11 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   the source; to serve it, keep `.model` and drop the `ReconstructedBundle`,
   which holds a `"resume"` bundle's training state for `resume()`. Bundles
   hold `NNModel` runs: artifacts a subclass keeps outside the checkpoint (a
-  `GenerativeNNModel` tokenizer) are not bundled. Like
+  `GenerativeNNModel` tokenizer) are not bundled. `exclude_submodules=`
+  rebuilds without top-level submodules the training run attached to the
+  net (a JEPA predictor, see [JEPA](jepa.md)), every other weight still
+  strict, as `NNModel.from_checkpoint` and `from_pretrained` do; such a
+  model serves inference and cannot `resume()`. Like
   `from_pretrained` with a `config.json`, reconstruction builds the
   architecture the bundle's parameters describe: read an untrusted bundle's
   `inspect_bundle(...).model_params` before reconstructing it.

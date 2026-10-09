@@ -6350,8 +6350,9 @@ Build it with the ``with_*`` methods, each of which returns a new plan:
 - ``with_step_fns``, ``with_objective``, ``with_components`` and
   ``with_provenance``, which are borrowed, and ``with_batch_adapter``
   for a registered module's inputs;
-- ``resuming(run_id, checkpoint="last", mode=None)`` (``mode`` defaults
-  to the training parameters' ``resume_mode``).
+- ``resuming(run_id, checkpoint="last", mode=None, epochs=None)``
+  (``mode`` and ``epochs`` default to the training parameters'
+  ``resume_mode`` and ``resume_epochs``).
 
 Plan-level arguments (data, seed, callbacks, factories, steps, resume)
 are recorded as given and checked by :meth:`validate`, so every problem
@@ -6523,10 +6524,10 @@ No public description is currently available.
 ##### `nnx.plans.ExperimentPlan.resuming`
 
 ```python
-nnx.plans.ExperimentPlan.resuming(self, run_id: 'str', *, checkpoint: 'str' = 'last', mode: 'Optional[str]' = None) -> 'ExperimentPlan'
+nnx.plans.ExperimentPlan.resuming(self, run_id: 'str', *, checkpoint: 'str' = 'last', mode: 'Optional[str]' = None, epochs: 'Optional[str]' = None) -> 'ExperimentPlan'
 ```
 
-Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``.
+Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``. ``epochs`` sets what ``n_epochs`` means on the resume and defaults to the training parameters' own ``resume_epochs``: ``"additional"`` trains ``n_epochs`` more; ``"planned"`` continues the source run's plan up to ``n_epochs`` in total, which needs its training state (a ``"weights_only"`` mode is refused).
 
 ##### `nnx.plans.ExperimentPlan.without_resume`
 
@@ -7073,7 +7074,7 @@ Check the whole bundle at ``path`` and summarize it: every listed payload presen
 #### `nnx.bundles.reconstruct_bundle`
 
 ```python
-nnx.bundles.reconstruct_bundle(path: 'Union[str, os.PathLike[str]]', *, factories: 'Optional[Mapping[tuple[str, int], ModelFactory]]' = None, components: 'Optional[Iterable[Any]]' = None, device: 'Any' = None, batch_adapter: 'Optional[BatchAdapter]' = None) -> 'ReconstructedBundle'
+nnx.bundles.reconstruct_bundle(path: 'Union[str, os.PathLike[str]]', *, factories: 'Optional[Mapping[tuple[str, int], ModelFactory]]' = None, components: 'Optional[Iterable[Any]]' = None, device: 'Any' = None, batch_adapter: 'Optional[BatchAdapter]' = None, exclude_submodules: 'Sequence[str]' = ()) -> 'ReconstructedBundle'
 ```
 
 Validate the bundle at ``path`` and rebuild its model.
@@ -7095,6 +7096,13 @@ Args:
     batch_adapter: how a registered module sees a batch
         (``nnx.models.BatchAdapter``), as passed to ``NNModel`` — it is
         runtime-only, never stored.
+    exclude_submodules: top-level submodules the training run attached
+        to the net that are not part of the rebuilt architecture — a
+        JEPA predictor registered as ``model.net._jepa_predictor``, say
+        — whose weights are left out, as in
+        ``NNModel.from_checkpoint``; every other weight still loads
+        strictly. A model rebuilt without them serves inference and
+        cannot :meth:`~ReconstructedBundle.resume`.
 
 Everything missing — the model factory, a required or incompatible
 component — is reported in one :class:`BundleReconstructionError` before
@@ -7135,7 +7143,7 @@ Attributes:
 #### `nnx.bundles.ReconstructedBundle`
 
 ```python
-class nnx.bundles.ReconstructedBundle(model: 'NNModel', info: 'BundleInfo', calibrators: 'tuple[TemperatureCalibrator, ...]', _checkpoint: 'NNCheckpoint', _training_state: 'Optional[dict[str, Any]]') -> 'None'
+class nnx.bundles.ReconstructedBundle(model: 'NNModel', info: 'BundleInfo', calibrators: 'tuple[TemperatureCalibrator, ...]', _checkpoint: 'NNCheckpoint', _training_state: 'Optional[dict[str, Any]]', _excluded: 'tuple[str, ...]' = ()) -> 'None'
 ```
 
 A model rebuilt from a validated bundle, its calibrators and — for a ``"resume"`` bundle — the training state :meth:`resume` continues from.

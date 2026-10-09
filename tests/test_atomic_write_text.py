@@ -159,6 +159,10 @@ def test_bare_filename_keeps_temp_in_destination_directory(tmp_path, monkeypatch
     workdir = tmp_path / "work"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
+    # A private system temp dir: parallel workers (pytest-xdist) write to the shared one.
+    system_tmp = tmp_path / "system-tmp"
+    system_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_tmp))
     before_system_tmp = set(os.listdir(tempfile.gettempdir()))
     record: dict = {}
     _inject(monkeypatch, "none", record)
