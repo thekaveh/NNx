@@ -34,6 +34,11 @@ from torch_geometric.data import Data  # noqa: E402
 from nnx.nn.dataset.nn_graph_dataset import NNGraphDataset  # noqa: E402
 
 CORA_ROOT = os.path.expanduser("~/.cache/nnx-test-data")
+# The same files PyG's Planetoid fetches, from the raw host directly: its
+# default github.com/.../raw/... URL redirects through a gateway that answered
+# 504 on CI legs for every attempt (#456), while raw.githubusercontent.com
+# serves them at once.
+CORA_URL = "https://raw.githubusercontent.com/kimiyoung/planetoid/master/data"
 
 
 def _fetch_cora(attempts: int = 4, first_wait: float = 5.0) -> None:
@@ -45,9 +50,12 @@ def _fetch_cora(attempts: int = 4, first_wait: float = 5.0) -> None:
 
     from torch_geometric.datasets import Planetoid
 
+    class Cora(Planetoid):
+        url = CORA_URL
+
     for attempt in range(attempts):
         try:
-            Planetoid(root=CORA_ROOT, name="Cora")
+            Cora(root=CORA_ROOT, name="Cora")
             return
         except Exception:  # aiohttp / urllib errors; the dataset itself never raises here once fetched
             if attempt == attempts - 1:
@@ -200,6 +208,8 @@ def test_full_batch_cora_parity(tmp_path, monkeypatch):
 
     # Named subclass so ds_class.__name__ == "CoraFullBatch" (meaningful name).
     class CoraFullBatch(Planetoid):
+        url = CORA_URL
+
         def __init__(self, root, transform=None):
             super().__init__(root=root, name="Cora", transform=transform)
 
@@ -502,19 +512,25 @@ def test_fetching_cora_retries_a_transient_failure(monkeypatch):
 
     calls, waits = [], []
 
-    def flaky(root, name):
-        calls.append(name)
-        if len(calls) < 3:
-            raise OSError("504 Gateway Time-out")
+    class Flaky:
+        url = None
 
-    monkeypatch.setattr(torch_geometric.datasets, "Planetoid", flaky)
+        def __init__(self, root, name):
+            calls.append((type(self).url, name))
+            if len(calls) < 3:
+                raise OSError("504 Gateway Time-out")
+
+    monkeypatch.setattr(torch_geometric.datasets, "Planetoid", Flaky)
     monkeypatch.setattr("time.sleep", waits.append)
     _fetch_cora()
-    assert calls == ["Cora"] * 3 and waits == [5.0, 10.0]
+    assert calls == [(CORA_URL, "Cora")] * 3 and waits == [5.0, 10.0]  # from the raw host
 
     calls.clear()
-    monkeypatch.setattr(
-        torch_geometric.datasets, "Planetoid", lambda root, name: (_ for _ in ()).throw(OSError("down"))
-    )
+
+    class Down:
+        def __init__(self, root, name):
+            raise OSError("down")
+
+    monkeypatch.setattr(torch_geometric.datasets, "Planetoid", Down)
     with pytest.raises(OSError, match="down"):
         _fetch_cora(attempts=2, first_wait=0.0)
