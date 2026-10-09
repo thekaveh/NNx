@@ -138,10 +138,11 @@ def test_a_single_process_stateful_resume_of_a_distributed_checkpoint_is_refused
 
 def test_only_the_writer_rank_hashes_the_resume_point(resumed):
     writer, other = resumed["split"]
-    assert writer["hashed"] >= 2  # the checkpoint and its training state
-    assert other["hashed"] == 0  # the writer's verdict was shared
+    assert (writer["verified"], other["verified"]) == (1, 0)  # the writer's verdict was shared
+    assert other["hashed"] == 0  # (the writer also hashes its own saves while training)
     writer, other = resumed["changed"]["partition"]  # verified once, then refused for its partition
-    assert writer["hashed"] >= 2 and other["hashed"] == 0
+    assert (writer["verified"], other["verified"]) == (1, 0)
+    assert writer["hashed"] == 2 and other["hashed"] == 0  # the checkpoint and its training state
 
 
 @pytest.fixture(scope="module")
@@ -158,4 +159,12 @@ def test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason(cor
         assert "digest mismatch in last.pt.opt." in rank["error"] and rank["unchanged"]
     writer, other = corrupted
     assert writer["error"] == other["error"]  # the same reason on every rank
+    assert (writer["verified"], other["verified"]) == (1, 0)
     assert writer["hashed"] >= 1 and other["hashed"] == 0
+
+
+def test_an_invalid_run_id_fails_alike_on_every_rank(tmp_path):
+    launch("resume_bad_id", tmp_path)
+    for rank in results(tmp_path):
+        assert rank["error"].startswith("ValueError: "), rank["error"]  # not a DistributedFailure elsewhere
+        assert rank["verified"] == 0 and rank["hashed"] == 0

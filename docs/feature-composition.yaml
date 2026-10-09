@@ -191,8 +191,7 @@ scenarios:
     expected: The writer rank alone verifies the point; a corrupted one is refused on every rank with the same reason, before anything is restored.
     tests:
       - tests/test_ddp_resume.py::test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason
-      - tests/test_ddp_resume.py::test_only_the_writer_rank_hashes_the_resume_point
-    rationale: Executed two-rank negative test (one flipped byte); per-rank hash counts and unchanged weights asserted.
+    rationale: Executed two-rank negative test (one flipped byte); per-rank verify and hash counts and unchanged weights asserted.
     status: unsupported
   - id: MT-01
     group: model-transformations

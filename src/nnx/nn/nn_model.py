@@ -333,17 +333,17 @@ def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mappi
 
 def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[dict[str, Any]]:
     """``NNCheckpoint.verify`` of the resume point, once (FEAT-046): under
-    DDP the writer rank verifies it and broadcasts the manifest or its
-    refusal, so the other ranks never hash it — and every rank refuses a
-    torn, mixed or corrupted point together, naming the reason. Every rank
-    must reach this alike: it is the first thing the "resuming the run" block
-    can fail on."""
+    DDP the writer rank verifies it and shares the manifest or its refusal
+    (``ddp.gather``), so the other ranks never hash it — and every rank
+    refuses a torn, mixed or corrupted point together, naming the reason.
+    Everything before it in the "resuming the run" block is decided alike on
+    every rank (the same parameters), so every rank reaches the gather."""
     if ddp is None:
         return NNCheckpoint.verify(run=run_id, type=ckpt_type)
-    import torch.distributed as dist
-
     from ..distributed import DistributedFailure
+    from .params.nn_checkpoint import _checkpoint_path
 
+    _checkpoint_path(run_id, ckpt_type)  # an invalid run id fails alike on every rank, as itself
     refusal: Optional[BaseException] = None
     verdict: Any = None
     if ddp.writer:
@@ -352,9 +352,7 @@ def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[di
         except Exception as error:  # shared below, then raised on every rank
             refusal = error
             verdict = ("refused", type(error).__name__, str(error))
-    shared = [verdict]
-    dist.broadcast_object_list(shared, src=ddp.spec.writer_rank)
-    verdict = shared[0]
+    verdict = ddp.gather(verdict)[ddp.spec.writer_rank]
     if verdict[0] == "verified":
         return verdict[1]
     if refusal is not None:
@@ -362,6 +360,7 @@ def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[di
     kind, message = verdict[1], verdict[2]
     if kind == ResumePointError.__name__:
         raise ResumePointError(message)
+    # Anything else (an unreadable file, say) is the writer's: named, with its type.
     raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
 
 
