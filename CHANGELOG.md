@@ -6,6 +6,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
+
 ### Added
 
 - **JEPA-trained encoders rebuild without the predictor from bundles and the Hub.** `reconstruct_bundle(..., exclude_submodules=...)` and `NNModel.from_pretrained(..., exclude_submodules=...)` leave out the named top-level submodules (the `_jepa_predictor` the JEPA recipe registers under `model.net`) as `from_checkpoint` does since #395, every other weight still strict (unlike `strict=False`, a missing weight is refused). When the weights hold submodules the rebuilt net lacks, the error (a strict load's, or a registered module's schema check) names them and the option of the entry point called, with any names already passed — a bundle's no longer suggests `from_checkpoint`, and the Hub's no longer surfaces torch's bare error. A bundle rebuilt without a submodule serves inference and refuses `resume()` ([#441](https://github.com/thekaveh/NNx/issues/441)).
