@@ -25,6 +25,9 @@ import ddp_scenarios as scenarios  # noqa: E402
 
 RTOL, ATOL = 1e-6, 1e-7
 
+# One worker runs this module, so its module-scoped torchrun launch runs once (FIX-031).
+pytestmark = pytest.mark.xdist_group("ddp_adapter")
+
 
 def launch(
     scenario: str, out: Path, *, nproc: int = 2, check: bool = True, timeout: float = 240

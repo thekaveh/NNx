@@ -103,7 +103,7 @@ jobs:
       - name: Run pytest
         env:
           NNX_TQDM_DISABLE: "1"
-        run: uv run --frozen pytest
+        run: uv run --frozen pytest -n logical --dist loadgroup
 
       - name: Build docs with mkdocs --strict
         run: |
