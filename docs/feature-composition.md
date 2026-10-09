@@ -39,6 +39,7 @@ cell reads *unverified*.
 | CR-04 | stop at an update boundary + LAST checkpoint | cpu / fp32 / optuna | A mid-epoch stop leaves LAST, its tensors and the history at the previous committed epoch. | **unverified** — no evidence report | `tests/test_search.py::test_a_mid_epoch_stop_leaves_the_last_commit_unrelabelled` |
 | CR-05 | on_train_end mutation + LAST refresh | cpu / fp32 / core | LAST holds the post-on_train_end weights; BEST keeps the training-time state. | **unverified** — no evidence report | `tests/test_train_end_checkpoint.py::test_last_checkpoint_contains_on_train_end_mutation`<br>`tests/test_train_end_checkpoint.py::test_best_checkpoint_stays_pre_mutation` |
 | CR-06 | DDP + changed world size or partition | cpu / fp32 / torch.distributed gloo | Refused before anything is restored. | **unverified** — no evidence report | `tests/test_ddp_resume.py::test_a_changed_world_or_partition_fails_before_anything_is_restored` |
+| CR-08 | DDP + corrupted resume point | cpu / fp32 / torch.distributed gloo | The writer rank alone verifies the point; a corrupted one is refused on every rank with the same reason, before anything is restored. | **unverified** — no evidence report | `tests/test_ddp_resume.py::test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason`<br>`tests/test_ddp_resume.py::test_only_the_writer_rank_hashes_the_resume_point` |
 
 ## Model transformations
 

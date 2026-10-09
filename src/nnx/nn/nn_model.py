@@ -331,13 +331,54 @@ def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mappi
     return kept
 
 
+def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[dict[str, Any]]:
+    """``NNCheckpoint.verify`` of the resume point, once (FEAT-046): under
+    DDP the writer rank verifies it and broadcasts the manifest or its
+    refusal, so the other ranks never hash it — and every rank refuses a
+    torn, mixed or corrupted point together, naming the reason. Every rank
+    must reach this alike: it is the first thing the "resuming the run" block
+    can fail on."""
+    if ddp is None:
+        return NNCheckpoint.verify(run=run_id, type=ckpt_type)
+    import torch.distributed as dist
+
+    from ..distributed import DistributedFailure
+
+    refusal: Optional[BaseException] = None
+    verdict: Any = None
+    if ddp.writer:
+        try:
+            verdict = ("verified", NNCheckpoint.verify(run=run_id, type=ckpt_type))
+        except Exception as error:  # shared below, then raised on every rank
+            refusal = error
+            verdict = ("refused", type(error).__name__, str(error))
+    shared = [verdict]
+    dist.broadcast_object_list(shared, src=ddp.spec.writer_rank)
+    verdict = shared[0]
+    if verdict[0] == "verified":
+        return verdict[1]
+    if refusal is not None:
+        raise refusal
+    kind, message = verdict[1], verdict[2]
+    if kind == ResumePointError.__name__:
+        raise ResumePointError(message)
+    raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
+
+
 def _load_resume_source(
-    run_id: str, checkpoint: Any, mode: str, *, trainer: bool, live_transforms: Sequence[Any] = ()
+    run_id: str,
+    checkpoint: Any,
+    mode: str,
+    *,
+    trainer: bool,
+    live_transforms: Sequence[Any] = (),
+    ddp: Any = None,
 ) -> _ResumeSource:
     """Read the checkpoint a resume starts from — shared by ``NNModel.train``
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
-    a bundle ``resume_mode`` cannot use."""
+    a bundle ``resume_mode`` cannot use. Under DDP (``ddp``, the fit's
+    session) only the writer rank verifies the point (FEAT-046)."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
     in_memory = _IN_MEMORY_RESUME.get()
     manifest: Optional[dict[str, Any]] = None
@@ -346,7 +387,7 @@ def _load_resume_source(
     else:
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it.
-        manifest = NNCheckpoint.verify(run=run_id, type=cast(Any, ckpt_type))
+        manifest = _verified_resume_point(run_id, cast(Any, ckpt_type), ddp)
         ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
@@ -3514,6 +3555,7 @@ class NNModel(_HubMixinBase):
                         params.resume_mode,
                         trainer=False,
                         live_transforms=self._topology_transforms,
+                        ddp=ddp,
                     )
                     training_state = source.training_state
                     if training_state is not None:
