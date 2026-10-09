@@ -183,6 +183,16 @@ scenarios:
       - tests/test_ddp_resume.py::test_a_changed_world_or_partition_fails_before_anything_is_restored
     rationale: Executed negative test; weights asserted unchanged.
     status: unsupported
+  - id: CR-07
+    group: checkpoint-resume
+    features: [experiment plans, planned-horizon resume]
+    entry_point: ExperimentPlan.resuming(run_id, mode="stateful", epochs="planned")
+    profile: {device: cpu, dtype: fp32, dependencies: []}
+    expected: A plan stopped after epoch 1 of 4 and resumed to its plan equals the uninterrupted plan bit for bit.
+    tests:
+      - tests/test_plan_execution.py::test_a_planned_plan_resume_equals_the_uninterrupted_plan_bit_for_bit
+    rationale: Compares every weight tensor and the final validation metrics; the resume trains epochs 2-3 only.
+    status: verified
   - id: MT-01
     group: model-transformations
     features: [torch.compile, QAT (topology-changing callback)]
