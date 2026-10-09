@@ -19,7 +19,7 @@ permissions:
 jobs:
   pip-audit:
     name: pip-audit (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     strategy:
       fail-fast: false

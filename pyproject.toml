@@ -10,7 +10,7 @@ release = [
     "twine==7.0.0",
 ]
 docs-publish = [
-    "cairosvg==2.9.0",
+    "cairosvg==2.9.1",
     "markdown==3.10.3",
     "pyyaml==6.0.3",
 ]
@@ -191,7 +191,7 @@ jev = ["typesafe-sdk>=0.7,<0.8"]
 # `import nnx` never imports it.
 optuna = ["optuna>=4.0,<6"]
 docs = [
-    "cairosvg==2.9.0",
+    "cairosvg==2.9.1",
     "mkdocs>=1.5,<2",
     "mkdocs-material>=9.5",
     # Keep a ceiling so docs rendering remains reproducible across
