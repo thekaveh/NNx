@@ -63,7 +63,7 @@ import shutil
 import stat
 import sys
 import uuid
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, BinaryIO, Optional, Union
 
@@ -190,6 +190,7 @@ class ReconstructedBundle:
     calibrators: tuple[TemperatureCalibrator, ...]
     _checkpoint: NNCheckpoint = field(repr=False)
     _training_state: Optional[dict[str, Any]] = field(repr=False)
+    _excluded: tuple[str, ...] = field(default=(), repr=False)  # submodules rebuilt without (FEAT-047)
 
     @property
     def capability(self) -> str:
@@ -225,6 +226,13 @@ class ReconstructedBundle:
             raise BundleCapabilityError(
                 f"the run bundle {self.info.path!r} holds a Trainer's training state (named optimizers); resume() "
                 "continues NNModel.train runs only — the model and its weights are still yours to use"
+            )
+        if self._excluded:
+            raise BundleCapabilityError(
+                f"the model was rebuilt from {self.info.path!r} without {', '.join(self._excluded)} "
+                "(exclude_submodules=): it serves inference only, since the run's training state covers those "
+                "submodules; to continue training, resume the original run (resume_from_run_id) on a model with "
+                "them attached"
             )
         if self._checkpoint.transforms:
             recipes = ", ".join(transform.name for transform in self._checkpoint.transforms)
@@ -1389,6 +1397,7 @@ def reconstruct_bundle(
     components: Optional[Iterable[Any]] = None,
     device: Any = None,
     batch_adapter: Optional[BatchAdapter] = None,
+    exclude_submodules: Sequence[str] = (),
 ) -> ReconstructedBundle:
     """Validate the bundle at ``path`` and rebuild its model.
 
@@ -1406,13 +1415,20 @@ def reconstruct_bundle(
         batch_adapter: how a registered module sees a batch
             (``nnx.models.BatchAdapter``), as passed to ``NNModel`` — it is
             runtime-only, never stored.
+        exclude_submodules: top-level submodules the training run attached
+            to the net that are not part of the rebuilt architecture — a
+            JEPA predictor registered as ``model.net._jepa_predictor``, say
+            — whose weights are left out, as in
+            ``NNModel.from_checkpoint``; every other weight still loads
+            strictly. A model rebuilt without them serves inference and
+            cannot :meth:`~ReconstructedBundle.resume`.
 
     Everything missing — the model factory, a required or incompatible
     component — is reported in one :class:`BundleReconstructionError` before
     any model is allocated. Calibrators with a fingerprint ``model_id`` are
     checked against the rebuilt weights.
     """
-    from .nn.nn_model import NNModel
+    from .nn.nn_model import NNModel, _excluded_names
     from .nn.params.nn_checkpoint import NNCheckpoint
 
     read = _read(path, full=True)
@@ -1469,12 +1485,22 @@ def reconstruct_bundle(
     )
     from .models import _supplied_factories
 
+    excluded = _excluded_names(exclude_submodules)
     with _supplied_factories(factories):
-        model = NNModel.from_checkpoint(checkpoint, batch_adapter=batch_adapter)
+        model = NNModel._rebuild_from_checkpoint(
+            checkpoint,
+            None,
+            module=None,
+            batch_adapter=batch_adapter,
+            precision=None,
+            exclude_submodules=excluded,
+            rebuild_call="reconstruct_bundle(path, exclude_submodules={names!r})",
+        )
     return ReconstructedBundle(
         model=model,
         info=read.info,
         calibrators=read.calibrators,
         _checkpoint=checkpoint,
         _training_state=training_state,
+        _excluded=tuple(excluded),
     )

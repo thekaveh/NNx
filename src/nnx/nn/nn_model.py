@@ -305,6 +305,31 @@ _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint,
 )
 
 
+def _attached_submodules_error(
+    error: Exception, net: torch.nn.Module, state: Mapping[str, Any], call: str, excluded: Sequence[str] = ()
+) -> Optional[Exception]:
+    """``error`` (a strict load's or a state-schema check's), explained when
+    the weights hold top-level submodules the rebuilt ``net`` lacks — a JEPA
+    predictor the training run registered under ``model.net``, say: ``call``,
+    the caller's entry point formatted with ``names`` (the ``excluded`` names
+    already passed plus these), rebuilds without them. ``None`` when nothing
+    is attached (FEAT-047)."""
+    children = {name for name, _ in net.named_children()}
+    attached = sorted({key.split(".", 1)[0] for key in state if "." in key} - children)
+    if not attached:
+        return None
+    return type(error)(
+        f"{error}\nThe weights hold submodules the rebuilt {type(net).__name__} does not have "
+        f"({', '.join(attached)}): {call.format(names=(*excluded, *attached))} rebuilds the architecture without them"
+    )
+
+
+def _excluded_names(names: Any) -> Any:
+    """``exclude_submodules`` read once: a tuple of its names (``None`` is
+    none); a string is passed on for :func:`_without_submodules` to refuse."""
+    return names if isinstance(names, str) else tuple(names or ())
+
+
 def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mapping[str, Any]:
     """``state`` without the weights of the named top-level submodules
     (``from_checkpoint(exclude_submodules=...)``); every name must be present."""
@@ -317,7 +342,7 @@ def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mappi
     unknown = sorted(set(names) - held)
     if unknown:
         raise ValueError(
-            f"exclude_submodules names {unknown}, which the checkpoint does not hold (its submodules: {sorted(held)})"
+            f"exclude_submodules names {unknown}, which the saved weights do not hold (their submodules: {sorted(held)})"
         )
     excluded = tuple(f"{name}." for name in names)
     kept: OrderedDict[str, Any] = OrderedDict(
@@ -331,13 +356,53 @@ def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mappi
     return kept
 
 
+def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[dict[str, Any]]:
+    """``NNCheckpoint.verify`` of the resume point, once (FEAT-046): under
+    DDP the writer rank verifies it and shares the manifest or its refusal
+    (``ddp.gather``), so the other ranks never hash it — and every rank
+    refuses a torn, mixed or corrupted point together, naming the reason.
+    Everything before it in the "resuming the run" block is decided alike on
+    every rank (the same parameters), so every rank reaches the gather."""
+    if ddp is None:
+        return NNCheckpoint.verify(run=run_id, type=ckpt_type)
+    from ..distributed import DistributedFailure
+    from .params.nn_checkpoint import _checkpoint_path
+
+    _checkpoint_path(run_id, ckpt_type)  # an invalid run id fails alike on every rank, as itself
+    refusal: Optional[BaseException] = None
+    verdict: Any = None
+    if ddp.writer:
+        try:
+            verdict = ("verified", NNCheckpoint.verify(run=run_id, type=ckpt_type))
+        except Exception as error:  # shared below, then raised on every rank
+            refusal = error
+            verdict = ("refused", type(error).__name__, str(error))
+    verdict = ddp.gather(verdict)[ddp.spec.writer_rank]
+    if verdict[0] == "verified":
+        return verdict[1]
+    if refusal is not None:
+        raise refusal
+    kind, message = verdict[1], verdict[2]
+    if kind == ResumePointError.__name__:
+        raise ResumePointError(message)
+    # Anything else (an unreadable file, say) is the writer's: named, with its type.
+    raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
+
+
 def _load_resume_source(
-    run_id: str, checkpoint: Any, mode: str, *, trainer: bool, live_transforms: Sequence[Any] = ()
+    run_id: str,
+    checkpoint: Any,
+    mode: str,
+    *,
+    trainer: bool,
+    live_transforms: Sequence[Any] = (),
+    ddp: Any = None,
 ) -> _ResumeSource:
     """Read the checkpoint a resume starts from — shared by ``NNModel.train``
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
-    a bundle ``resume_mode`` cannot use."""
+    a bundle ``resume_mode`` cannot use. Under DDP (``ddp``, the fit's
+    session) only the writer rank verifies the point (FEAT-046)."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
     in_memory = _IN_MEMORY_RESUME.get()
     manifest: Optional[dict[str, Any]] = None
@@ -346,7 +411,7 @@ def _load_resume_source(
     else:
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it.
-        manifest = NNCheckpoint.verify(run=run_id, type=cast(Any, ckpt_type))
+        manifest = _verified_resume_point(run_id, cast(Any, ckpt_type), ddp)
         ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
@@ -2776,6 +2841,34 @@ class NNModel(_HubMixinBase):
         run fails here; ``precision=`` replaces the saved policy (and the
         legacy ``mixed_precision`` flag) for this model.
         """
+        return cls._rebuild_from_checkpoint(
+            checkpoint,
+            device,
+            module=module,
+            batch_adapter=batch_adapter,
+            precision=precision,
+            exclude_submodules=exclude_submodules,
+            rebuild_call="NNModel.from_checkpoint(checkpoint, exclude_submodules={names!r})",
+            **model_kwargs,
+        )
+
+    @classmethod
+    def _rebuild_from_checkpoint(
+        cls,
+        checkpoint: NNCheckpoint,
+        device: Optional[Devices],
+        *,
+        module: Optional[torch.nn.Module],
+        batch_adapter: Optional[BatchAdapter],
+        precision: Optional[PrecisionPolicy],
+        exclude_submodules: Sequence[str],
+        rebuild_call: str,
+        **model_kwargs: Any,
+    ) -> Self:
+        """:meth:`from_checkpoint`, whose attached-submodules hint names
+        ``rebuild_call`` — the caller's own entry point (``reconstruct_bundle``
+        rebuilds through here)."""
+        excluded = _excluded_names(exclude_submodules)
         model_params = checkpoint.model_params if device is None else replace(checkpoint.model_params, device=device)
         if precision is not None:
             model_params = replace(model_params, precision=precision, mixed_precision=False)
@@ -2808,11 +2901,17 @@ class NNModel(_HubMixinBase):
 
         _replay_transforms(model, transforms)
         model._topology_transforms = _canonical_transforms(transforms)
-        net_state = _without_submodules(checkpoint.net_state, exclude_submodules)
+        net_state = _without_submodules(checkpoint.net_state, excluded)
         if not transforms:
             _refuse_unrecorded_recipe_state(net_state, model.net.state_dict())
         if not isinstance(net, Nets):
-            check_state_schema(model.net, net_state, what=f"checkpoint of {net}")
+            try:
+                check_state_schema(model.net, net_state, what=f"checkpoint of {net}")
+            except ValueError as error:
+                explained = _attached_submodules_error(error, model.net, net_state, rebuild_call, excluded)
+                if explained is not None:
+                    raise explained from error
+                raise
 
         try:
             model.net.load_state_dict(net_state)
@@ -2822,14 +2921,9 @@ class NNModel(_HubMixinBase):
                     "converted QAT checkpoint lacks reconstruction metadata; "
                     "recreate its torchao topology with the original qat_config and groupsize"
                 ) from error
-            children = {name for name, _ in model.net.named_children()}
-            attached = sorted({key.split(".", 1)[0] for key in net_state if "." in key} - children)
-            if attached:
-                raise RuntimeError(
-                    f"{error}\nThe checkpoint holds submodules the rebuilt {type(model.net).__name__} does not have "
-                    f"({', '.join(attached)}): NNModel.from_checkpoint(checkpoint, exclude_submodules="
-                    f"{tuple(attached)!r}) rebuilds the architecture without them"
-                ) from error
+            explained = _attached_submodules_error(error, model.net, net_state, rebuild_call, excluded)
+            if explained is not None:
+                raise explained from error
             raise
 
         return model
@@ -2948,6 +3042,7 @@ class NNModel(_HubMixinBase):
         map_location: str = "cpu",
         strict: bool = True,
         precision: Optional[PrecisionPolicy] = None,
+        exclude_submodules: Sequence[str] = (),
         **model_kwargs,
     ) -> NNModel:
         """Rebuild an NNModel from a save_pretrained directory or Hub repo.
@@ -2971,6 +3066,13 @@ class NNModel(_HubMixinBase):
         FEAT-028: the saved precision policy is re-resolved on the
         ``map_location`` device, never taken from saved metadata;
         ``precision=`` replaces it (and the legacy ``mixed_precision`` flag).
+
+        FEAT-047: ``exclude_submodules`` names top-level submodules saved
+        with the net that are not part of the rebuilt architecture — a JEPA
+        predictor registered as ``model.net._jepa_predictor``, say — whose
+        weights are left out; every other key still loads under ``strict``
+        (unlike ``strict=False``, a missing weight is still refused). A name
+        the saved weights do not hold raises ``ValueError``.
         """
         # The mixin inspects NNModel.__init__'s signature and auto-injects
         # matching config.json entries ("net_params"/"params") as kwargs.
@@ -3062,12 +3164,20 @@ class NNModel(_HubMixinBase):
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
         _replay_transforms(model, transforms)
         model._topology_transforms = _canonical_transforms(transforms)
-        state_dict = load_file(weights_path, device=str(torch_load_device))
+        excluded = _excluded_names(exclude_submodules)
+        state_dict = _without_submodules(load_file(weights_path, device=str(torch_load_device)), excluded)
+        call = "NNModel.from_pretrained(model_id, exclude_submodules={names!r})"
         if not transforms and strict:
             _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
-        if net_params is None and strict:
-            check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
-        model.net.load_state_dict(state_dict, strict=strict)
+        try:
+            if net_params is None and strict:
+                check_state_schema(model.net, state_dict, what=f"Hub artifact of {params.net}")
+            model.net.load_state_dict(state_dict, strict=strict)
+        except (RuntimeError, ValueError) as error:
+            explained = _attached_submodules_error(error, model.net, state_dict, call, excluded) if strict else None
+            if explained is not None:
+                raise explained from error
+            raise
         return model
 
     def freeze(self, *patterns: str) -> int:
@@ -3514,6 +3624,7 @@ class NNModel(_HubMixinBase):
                         params.resume_mode,
                         trainer=False,
                         live_transforms=self._topology_transforms,
+                        ddp=ddp,
                     )
                     training_state = source.training_state
                     if training_state is not None:

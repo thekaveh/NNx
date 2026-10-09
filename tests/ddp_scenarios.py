@@ -465,17 +465,49 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out.update(summary(run))
         out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
         out["rng_after"] = torch.get_rng_state()
-    elif name in ("resume_full", "resume_first", "resume_second", "resume_changed"):
+    elif name in ("resume_full", "resume_first", "resume_second", "resume_changed", "resume_corrupt", "resume_bad_id"):
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         m = model()
+        import nnx.nn.params.nn_checkpoint as nn_checkpoint
+
+        hashed: list[str] = []  # FEAT-046: the files this rank hashes to verify the resume point
+        real_sha256 = nn_checkpoint._sha256
+
+        def counting_sha256(path):
+            hashed.append(path)
+            return real_sha256(path)
+
+        nn_checkpoint._sha256 = counting_sha256
+        verified: list[str] = []  # the ranks' NNCheckpoint.verify calls
+        real_verify = nn_checkpoint.NNCheckpoint.verify
+
+        def counting_verify(*args, **kwargs):
+            verified.append(str(kwargs.get("run", args[0] if args else None)))
+            return real_verify(*args, **kwargs)
+
+        nn_checkpoint.NNCheckpoint.verify = staticmethod(counting_verify)
         if name == "resume_full":
             run = m.train(params=params(loader, n_epochs=2, data_id="full"), distributed=nnx_dist.DDP())
         elif name == "resume_first":
             run = m.train(params=params(loader, n_epochs=1, data_id="split"), distributed=nnx_dist.DDP())
         else:
-            first_id = open("first_run_id.txt", encoding="utf-8").read().strip()
+            if name == "resume_bad_id":
+                first_id = "../outside"  # refused by the run-id check, on every rank alike
+            else:
+                first_id = open("first_run_id.txt", encoding="utf-8").read().strip()
             if name == "resume_changed":
                 loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=4)  # a different partition
+            if name == "resume_corrupt":  # the writer flips a byte of LAST's training state, then all resume
+                if rank == 0:
+                    checkpoint_path = nn_checkpoint._checkpoint_path(first_id, Checkpoints.LAST)
+                    point = nn_checkpoint.NNCheckpoint.resume_point(first_id, Checkpoints.LAST)
+                    (state,) = [name for name in point["files"] if name != os.path.basename(checkpoint_path)]
+                    with open(os.path.join(os.path.dirname(checkpoint_path), state), "r+b") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        last = handle.read(1)
+                        handle.seek(-1, os.SEEK_END)
+                        handle.write(bytes([last[0] ^ 0xFF]))
+                torch.distributed.barrier()
             before = {k: v.clone() for k, v in m.net.state_dict().items()}
             try:
                 run = m.train(
@@ -485,6 +517,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             except BaseException as error:  # noqa: BLE001
                 out["error"] = f"{type(error).__name__}: {error}"
                 out["unchanged"] = all(torch.equal(before[k], v) for k, v in m.net.state_dict().items())
+                out["hashed"], out["verified"] = len(hashed), len(verified)
                 return out
         out.update(summary(run))
         out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
@@ -492,6 +525,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             with open("first_run_id.txt", "w", encoding="utf-8") as handle:
                 handle.write(run.id)
         out["rng_after"] = torch.get_rng_state()
+        out["hashed"], out["verified"] = len(hashed), len(verified)
     else:
         raise SystemExit(f"unknown scenario {name}")
     return out

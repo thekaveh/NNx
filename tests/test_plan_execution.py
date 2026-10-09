@@ -684,3 +684,31 @@ def test_fit_refuses_inside_a_multi_rank_process_group(tmp_path, monkeypatch):
         plan.fit()
     assert built == [] and not (tmp_path / "runs").exists()
     assert torch.equal(torch.get_rng_state(), rng)
+
+
+class StopAfter(Callback):
+    """Stop once epoch ``epoch`` is committed."""
+
+    def __init__(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def on_epoch_end(self, ctx) -> None:
+        if ctx.epoch == self.epoch:
+            ctx.should_stop = True
+
+
+def test_a_planned_plan_resume_equals_the_uninterrupted_plan_bit_for_bit(tmp_path, monkeypatch):
+    """FEAT-048: a plan stopped after epoch 1 of 4 and resumed through
+    ``resuming(..., epochs="planned")`` trains epochs 2 and 3 only and ends
+    with the uninterrupted plan's weights, bit for bit."""
+    monkeypatch.chdir(tmp_path)
+    plan = _plan().with_epochs(4)
+    whole = plan.fit()
+    first = plan.with_callbacks(StopAfter(1)).fit()
+    assert sorted({idp.epoch_idx for idp in first.run.idps}) == [0, 1]
+    resumed = plan.resuming(first.run.id, mode="stateful", epochs="planned").fit()
+    assert sorted({idp.epoch_idx for idp in resumed.run.idps}) == [2, 3]  # up to the plan, not 4 more
+    assert resumed.run.state()["train"]["resume_epochs"] == "planned"
+    for name, weight in whole.model.net.state_dict().items():
+        assert torch.equal(weight, resumed.model.net.state_dict()[name]), name
+    assert resumed.metrics["val"] == whole.metrics["val"]

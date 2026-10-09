@@ -238,7 +238,7 @@ def test_a_jepa_trained_encoder_rebuilds_without_its_predictor(tmp_path, monkeyp
     assert any(key.startswith("_jepa_predictor.") for key in checkpoint.net_state)
     with pytest.raises(RuntimeError, match=r"exclude_submodules=\('_jepa_predictor',\)"):
         NNModel.from_checkpoint(checkpoint)
-    with pytest.raises(ValueError, match="does not hold"):
+    with pytest.raises(ValueError, match="do not hold"):
         NNModel.from_checkpoint(checkpoint, exclude_submodules=("_jepa_predicter",))
     encoder = NNModel.from_checkpoint(checkpoint, exclude_submodules=("_jepa_predictor",))
     assert isinstance(encoder.net, ViTNN) and not hasattr(encoder.net, "_jepa_predictor")
