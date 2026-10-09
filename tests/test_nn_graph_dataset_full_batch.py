@@ -33,6 +33,36 @@ from torch_geometric.data import Data  # noqa: E402
 
 from nnx.nn.dataset.nn_graph_dataset import NNGraphDataset  # noqa: E402
 
+CORA_ROOT = os.path.expanduser("~/.cache/nnx-test-data")
+# The same files PyG's Planetoid fetches, from the raw host directly: its
+# default github.com/.../raw/... URL redirects through a gateway that answered
+# 504 on CI legs for every attempt (#456), while raw.githubusercontent.com
+# serves them at once.
+CORA_URL = "https://raw.githubusercontent.com/kimiyoung/planetoid/master/data"
+
+
+def _fetch_cora(attempts: int = 4, first_wait: float = 5.0) -> None:
+    """Download Cora into the test cache, retrying a transient failure: the
+    raw files come from github.com, which answered 504 on two CI legs at once
+    (#456). Files already fetched are kept between attempts; the last
+    failure is raised as is."""
+    import time
+
+    from torch_geometric.datasets import Planetoid
+
+    class Cora(Planetoid):
+        url = CORA_URL
+
+    for attempt in range(attempts):
+        try:
+            Cora(root=CORA_ROOT, name="Cora")
+            return
+        except Exception:  # aiohttp / urllib errors; the dataset itself never raises here once fetched
+            if attempt == attempts - 1:
+                raise
+            time.sleep(first_wait * 2**attempt)
+
+
 # ---------------------------------------------------------------------------
 # Shared synthetic-graph stub
 # ---------------------------------------------------------------------------
@@ -178,10 +208,13 @@ def test_full_batch_cora_parity(tmp_path, monkeypatch):
 
     # Named subclass so ds_class.__name__ == "CoraFullBatch" (meaningful name).
     class CoraFullBatch(Planetoid):
+        url = CORA_URL
+
         def __init__(self, root, transform=None):
             super().__init__(root=root, name="Cora", transform=transform)
 
-    cora_root = os.path.expanduser("~/.cache/nnx-test-data")
+    _fetch_cora()
+    cora_root = CORA_ROOT
 
     ds = NNGraphDataset(
         ds_class=CoraFullBatch,
@@ -470,3 +503,34 @@ def test_full_graph_train_without_validation(tmp_path, monkeypatch):
         trainer_step_fn=_graph_step,
     )
     assert evaluate_calls == [] and all(idp.val_edp is None for idp in trainer_run.idps)
+
+
+def test_fetching_cora_retries_a_transient_failure(monkeypatch):
+    """A 504 (or any download error) is retried with backoff; one that
+    persists is raised after the last attempt."""
+    import torch_geometric.datasets
+
+    calls, waits = [], []
+
+    class Flaky:
+        url = None
+
+        def __init__(self, root, name):
+            calls.append((type(self).url, name))
+            if len(calls) < 3:
+                raise OSError("504 Gateway Time-out")
+
+    monkeypatch.setattr(torch_geometric.datasets, "Planetoid", Flaky)
+    monkeypatch.setattr("time.sleep", waits.append)
+    _fetch_cora()
+    assert calls == [(CORA_URL, "Cora")] * 3 and waits == [5.0, 10.0]  # from the raw host
+
+    calls.clear()
+
+    class Down:
+        def __init__(self, root, name):
+            raise OSError("down")
+
+    monkeypatch.setattr(torch_geometric.datasets, "Planetoid", Down)
+    with pytest.raises(OSError, match="down"):
+        _fetch_cora(attempts=2, first_wait=0.0)
