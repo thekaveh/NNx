@@ -14,6 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_ddp_adapter import assert_close_states, launch, results  # noqa: E402
 
+# One worker runs this module, so its module-scoped torchrun launch runs once (FIX-031).
+pytestmark = pytest.mark.xdist_group("ddp_resume")
+
 
 @pytest.fixture(scope="module")
 def writer(tmp_path_factory) -> tuple[Path, list[dict]]:

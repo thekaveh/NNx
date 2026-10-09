@@ -593,24 +593,29 @@ def test_kv_cache_speedup_at_long_context(tmp_path):
 
     n_new = 128
 
-    # Run each path a few times and take the min — fewer noise spikes
-    # than a single-shot measurement.
-    def _time_path(use_cache: bool, repeats: int = 3) -> float:
-        times = []
-        for _ in range(repeats):
-            t0 = time.perf_counter()
-            model.generate(prompt="the", max_new_tokens=n_new, temperature=0.0, use_cache=use_cache)
-            times.append(time.perf_counter() - t0)
-        return min(times)
+    # The process's CPU time, not wall time: the suite runs in parallel
+    # (pytest-xdist, FIX-031), and other workers' load stretches wall time
+    # without changing the work this process does. The two paths are
+    # interleaved and each takes its min over the repeats, so a load spike
+    # cannot favour one path.
+    def _cpu_time(use_cache: bool) -> float:
+        t0 = time.process_time()
+        model.generate(prompt="the", max_new_tokens=n_new, temperature=0.0, use_cache=use_cache)
+        return time.process_time() - t0
 
-    t_full = _time_path(use_cache=False)
-    t_cached = _time_path(use_cache=True)
+    full_times, cached_times = [], []
+    for _ in range(3):
+        full_times.append(_cpu_time(use_cache=False))
+        cached_times.append(_cpu_time(use_cache=True))
+    t_full, t_cached = min(full_times), min(cached_times)
 
     speedup = t_full / t_cached if t_cached > 0 else float("inf")
     # Print so `pytest -s` shows the actual numbers — useful for
     # tracking the speedup over time.
-    print(f"\n[kv-cache] full={t_full:.3f}s  cached={t_cached:.3f}s  speedup={speedup:.2f}x")
-    assert speedup >= 1.2, f"Expected ≥1.2x speedup, got {speedup:.2f}x (full={t_full:.3f}s, cached={t_cached:.3f}s)"
+    print(f"\n[kv-cache] full={t_full:.3f}s  cached={t_cached:.3f}s CPU  speedup={speedup:.2f}x")
+    assert speedup >= 1.2, (
+        f"Expected ≥1.2x speedup, got {speedup:.2f}x (full={t_full:.3f}s, cached={t_cached:.3f}s CPU)"
+    )
 
 
 def test_generate_requires_tokenizer(tmp_path):

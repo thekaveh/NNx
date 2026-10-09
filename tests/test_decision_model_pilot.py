@@ -18,6 +18,9 @@ from nnx.decisions import Boolean, Choice, Score, UnsupportedCapability  # noqa:
 from nnx.decisions.benchmark import read_records  # noqa: E402
 from nnx.nn.enum.nets import Nets  # noqa: E402
 
+# One worker runs this module, so its module-scoped torchrun launch runs once (FIX-031).
+pytestmark = pytest.mark.xdist_group("decision_model_pilot")
+
 
 @pytest.fixture(autouse=True)
 def _quiet(tmp_path, monkeypatch):
