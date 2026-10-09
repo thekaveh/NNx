@@ -22,7 +22,7 @@ permissions:
 jobs:
   lint-and-test:
     name: lint-and-test (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Caps a hung pytest run; default is 6 hours on GitHub-hosted runners.
     # The suite runs on every logical CPU (pytest -n logical, FIX-031; `auto`
     # counts physical cores, 2 on a 4-vCPU runner), with each torchrun module
@@ -47,7 +47,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install diagram rendering runtime
-        run: sudo apt-get update && sudo apt-get install --yes libcairo2
+        # A package-mirror stall fails here, not after the whole job budget.
+        timeout-minutes: 5
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install --yes libcairo2
 
       - name: Install uv
         # astral-sh/setup-uv@v9.0.0
@@ -118,7 +120,7 @@ jobs:
     # test does not pass (a skip, an xfail or a setup / teardown failure
     # never counts). The evidence report is kept as an artifact.
     name: feature-composition
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -170,7 +172,7 @@ jobs:
     # It never uses the dynamo dispatch-error skip fixture and downloads
     # nothing beyond the locked packages.
     name: export-conformance (ONNX Runtime, CPU)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -267,7 +269,7 @@ jobs:
     # extras work and absent ones name their extra. The report records the
     # closure and three cold-import timings (no threshold asserted).
     name: installed-profile (${{ matrix.profile }}, ${{ matrix.pair }} torch)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -374,7 +376,7 @@ jobs:
     # tests/test_train_integration.py asserts the pyproject side.
     # (Static name: the `env` context is not available in a job's `name`.)
     name: floor-deps (torch 2.4.1, Python 3.10)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     env:
       TORCH_FLOOR: "2.4.1"

@@ -135,6 +135,10 @@ The end-to-end flow:
 
 The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit:** after development resumes, such an artifact can contain code newer than the release while still carrying the last release number. Use editable installs for local source work. Distributable artifacts must come from Release Please's dispatched release workflow, which verifies tag/version agreement before publishing; direct tag pushes do not publish packages.
 
+### 7.1. CI runner image
+
+Every workflow job runs on one pinned GitHub-hosted image, `ubuntu-26.04` (`tests/test_ci_runner_image.py` checks it), never on a moving label such as `ubuntu-latest`, which GitHub re-points to new Ubuntu releases without a change in this repository. Moving to a new image is a deliberate pull request: change every `runs-on` and the test's `RUNNER` together, let that pull request's CI run on the new image (plus the release scripts — `scripts/release/finalize_changelog.py` runs on the image's system `python3`), and note the result. apt steps carry their own short `timeout-minutes`, so a package-mirror stall fails fast instead of consuming the job's budget.
+
 ## 8. Things we won't merge
 
 - Changes that break on-disk format compatibility without a versioned reader.
