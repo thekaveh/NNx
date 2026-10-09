@@ -230,8 +230,9 @@ class ReconstructedBundle:
         if self._excluded:
             raise BundleCapabilityError(
                 f"the model was rebuilt from {self.info.path!r} without {', '.join(self._excluded)} "
-                "(exclude_submodules=), so it cannot take the run's training state; reconstruct the bundle without "
-                "exclude_submodules and attach those submodules as the training run did"
+                "(exclude_submodules=): it serves inference only, since the run's training state covers those "
+                "submodules; to continue training, resume the original run (resume_from_run_id) on a model with "
+                "them attached"
             )
         if self._checkpoint.transforms:
             recipes = ", ".join(transform.name for transform in self._checkpoint.transforms)
@@ -1427,7 +1428,7 @@ def reconstruct_bundle(
     any model is allocated. Calibrators with a fingerprint ``model_id`` are
     checked against the rebuilt weights.
     """
-    from .nn.nn_model import _REBUILD_CALL, NNModel
+    from .nn.nn_model import NNModel, _excluded_names
     from .nn.params.nn_checkpoint import NNCheckpoint
 
     read = _read(path, full=True)
@@ -1484,14 +1485,17 @@ def reconstruct_bundle(
     )
     from .models import _supplied_factories
 
-    # A string is refused by from_checkpoint; any other iterable is read once.
-    excluded = exclude_submodules if isinstance(exclude_submodules, str) else tuple(exclude_submodules)
-    token = _REBUILD_CALL.set("reconstruct_bundle(path, exclude_submodules={names!r})")
-    try:
-        with _supplied_factories(factories):
-            model = NNModel.from_checkpoint(checkpoint, batch_adapter=batch_adapter, exclude_submodules=excluded)
-    finally:
-        _REBUILD_CALL.reset(token)
+    excluded = _excluded_names(exclude_submodules)
+    with _supplied_factories(factories):
+        model = NNModel._rebuild_from_checkpoint(
+            checkpoint,
+            None,
+            module=None,
+            batch_adapter=batch_adapter,
+            precision=None,
+            exclude_submodules=excluded,
+            rebuild_call="reconstruct_bundle(path, exclude_submodules={names!r})",
+        )
     return ReconstructedBundle(
         model=model,
         info=read.info,

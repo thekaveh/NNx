@@ -299,7 +299,7 @@ scenarios:
     group: inference-export
     features: [JEPA predictor under model.net, run bundles]
     entry_point: reconstruct_bundle(path, exclude_submodules=("_jepa_predictor",))
-    profile: {device: cpu, dtype: fp32, dependencies: [safetensors]}
+    profile: {device: cpu, dtype: fp32, dependencies: []}
     expected: A real JEPA run's bundle rebuilds the encoder bit-exact without the predictor; without the option the error names it, and the rebuilt encoder refuses resume().
     tests:
       - tests/test_jepa_encoder_rebuild.py::test_a_jepa_run_bundle_rebuilds_its_encoder_bit_exact
