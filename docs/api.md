@@ -6350,8 +6350,9 @@ Build it with the ``with_*`` methods, each of which returns a new plan:
 - ``with_step_fns``, ``with_objective``, ``with_components`` and
   ``with_provenance``, which are borrowed, and ``with_batch_adapter``
   for a registered module's inputs;
-- ``resuming(run_id, checkpoint="last", mode=None)`` (``mode`` defaults
-  to the training parameters' ``resume_mode``).
+- ``resuming(run_id, checkpoint="last", mode=None, epochs=None)``
+  (``mode`` and ``epochs`` default to the training parameters'
+  ``resume_mode`` and ``resume_epochs``).
 
 Plan-level arguments (data, seed, callbacks, factories, steps, resume)
 are recorded as given and checked by :meth:`validate`, so every problem
@@ -6523,10 +6524,10 @@ No public description is currently available.
 ##### `nnx.plans.ExperimentPlan.resuming`
 
 ```python
-nnx.plans.ExperimentPlan.resuming(self, run_id: 'str', *, checkpoint: 'str' = 'last', mode: 'Optional[str]' = None) -> 'ExperimentPlan'
+nnx.plans.ExperimentPlan.resuming(self, run_id: 'str', *, checkpoint: 'str' = 'last', mode: 'Optional[str]' = None, epochs: 'Optional[str]' = None) -> 'ExperimentPlan'
 ```
 
-Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``.
+Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``. ``epochs`` sets what ``n_epochs`` means on the resume and defaults to the training parameters' own ``resume_epochs``: ``"additional"`` trains ``n_epochs`` more; ``"planned"`` continues the source run's plan up to ``n_epochs`` in total, which needs its training state (a ``"weights_only"`` mode is refused).
 
 ##### `nnx.plans.ExperimentPlan.without_resume`
 
