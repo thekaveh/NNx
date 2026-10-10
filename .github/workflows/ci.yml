@@ -53,7 +53,7 @@ jobs:
 
       - name: Install uv
         # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           enable-cache: false
           version: "0.12.3"
@@ -107,7 +107,7 @@ jobs:
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'
         # actions/upload-artifact@v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: coverage-xml
           path: coverage.xml
@@ -137,7 +137,7 @@ jobs:
 
       - name: Install uv
         # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           enable-cache: false
           version: "0.12.3"
@@ -153,7 +153,7 @@ jobs:
       - name: Upload the evidence report
         if: always()
         # actions/upload-artifact@v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: feature-composition-report
           path: feature-composition-report.json
@@ -189,7 +189,7 @@ jobs:
 
       - name: Install uv
         # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           enable-cache: false
           version: "0.12.3"
@@ -249,7 +249,7 @@ jobs:
       - name: Keep the conformance evidence
         if: always()
         # actions/upload-artifact@v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: export-conformance
           path: |
@@ -297,7 +297,7 @@ jobs:
 
       - name: Install uv
         # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           enable-cache: false
           version: "0.12.3"
@@ -358,7 +358,7 @@ jobs:
 
       - name: Upload the profile report
         # actions/upload-artifact@v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: installed-profile-${{ matrix.profile }}-${{ matrix.pair }}
           path: ${{ runner.temp }}/profile-*.json

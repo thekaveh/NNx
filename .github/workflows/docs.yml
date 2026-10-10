@@ -77,7 +77,7 @@ jobs:
         run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install --yes libcairo2
       - name: Install docs + feature extras
         # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           enable-cache: false
           version: "0.12.3"
@@ -94,7 +94,7 @@ jobs:
           uv run --frozen python scripts/check_feature_composition.py --render --report feature-composition-report.json
       - name: Keep the evidence report for the wiki job
         # actions/upload-artifact@v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: feature-composition-report
           path: feature-composition-report.json
@@ -135,7 +135,7 @@ jobs:
       - id: deployment
         name: Deploy Pages
         # actions/deploy-pages@v5.0.0
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
 
   wiki:
     name: Publish GitHub wiki
@@ -160,7 +160,7 @@ jobs:
 
       - name: Install uv
         # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
           enable-cache: false
           version: "0.12.3"
@@ -170,7 +170,7 @@ jobs:
 
       - name: Fetch the build job's evidence report
         # actions/download-artifact@v7.0.0
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: feature-composition-report
 
