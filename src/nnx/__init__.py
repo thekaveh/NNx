@@ -25,9 +25,9 @@ try:
         # Editable install before metadata exists, or run from the source
         # tree without installation. Keep in sync with pyproject.toml
         # [project] version on every bump.
-        __version__ = "0.4.0"  # x-release-please-version
+        __version__ = "0.4.1"  # x-release-please-version
 except ImportError:  # pragma: no cover — Python <3.8.
-    __version__ = "0.4.0"  # x-release-please-version
+    __version__ = "0.4.1"  # x-release-please-version
 
 from . import (
     abstention,
