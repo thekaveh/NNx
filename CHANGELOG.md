@@ -4,6 +4,8 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [Unreleased]
+
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-10)
 
 
@@ -11,8 +13,6 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 * **release:** build the artifact smoke venvs on the runner's work disk ([f629865](https://github.com/thekaveh/NNx/commit/f62986590a171ea5f69b20d9f821596946793631))
 * **release:** build the artifact smoke venvs on the runner's work disk ([76b6706](https://github.com/thekaveh/NNx/commit/76b670649489281a03e5ada16d5ed8bc595de813)), closes [#445](https://github.com/thekaveh/NNx/issues/445)
-
-## [Unreleased]
 
 ## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
 
