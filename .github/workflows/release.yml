@@ -188,7 +188,9 @@ jobs:
           index=0
           for artifact in dist/*.whl dist/*.tar.gz; do
             index=$((index + 1))
-            venv="/tmp/nnx-artifact-smoke-$index"
+            # The runner's work disk: on ubuntu-26.04 the system temp dir is a capped
+            # tmpfs, which a full torch install overflows (v0.4.0's release).
+            venv="$RUNNER_TEMP/nnx-artifact-smoke-$index"
             python -m venv "$venv"
             uv pip sync --python "$venv/bin/python" --require-hashes smoke-requirements.txt
             uv pip install --python "$venv/bin/python" --no-deps --no-build-isolation "$artifact"
@@ -200,6 +202,7 @@ jobs:
           files = importlib.metadata.files("thekaveh-nnx") or []
           assert any(str(path) == "nnx/py.typed" for path in files)
           PY
+            rm -rf "$venv"  # one full install on disk at a time
           done
 
       - name: Upload verified distributions
