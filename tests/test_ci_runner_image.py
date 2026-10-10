@@ -55,3 +55,12 @@ def test_every_apt_step_has_its_own_short_timeout():
     for workflow, job_name, step in apt_steps:
         minutes = step.get("timeout-minutes")
         assert isinstance(minutes, int) and 0 < minutes <= APT_STEP_MINUTES, (workflow, job_name, step.get("name"))
+
+
+def test_no_step_writes_under_tmp():
+    """On ubuntu-26.04 /tmp is a size-capped tmpfs: the v0.4.0 release's
+    artifact smoke test overflowed it installing torch ("Disk quota
+    exceeded"). Steps use $RUNNER_TEMP, on the runner's work disk."""
+    for workflow, job_name, job in _jobs():
+        for step in job.get("steps") or []:
+            assert "/tmp" not in str(step.get("run", "")), (workflow, job_name, step.get("name"))
