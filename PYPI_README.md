@@ -41,87 +41,52 @@
 </p>
 
 <!-- executive-summary:start -->
-NNx is a lightweight PyTorch toolkit for repeatable training, evaluation, and visualization. It owns the routine experiment infrastructure: frozen configuration objects, supervised train/eval/predict orchestration, callbacks, schedulers, metrics, and content-addressed checkpoints that support reliable resume and inspection. Models and per-step logic remain replaceable, so the same loop can serve standard networks, graph neural networks, transformers, diffusion, representation learning, fine-tuning, and multi-optimizer workflows. Focused modules add PEFT, quantization, pruning, model surgery, embeddings, export, and diagnostics without forcing those concerns into the core loop. NNx is aimed at researchers and engineers who want transparent PyTorch code and durable experiments without adopting a larger training platform.
+NNx is a lightweight PyTorch toolkit for repeatable training, evaluation and visualization. It provides frozen configuration objects, a supervised train, evaluate and predict loop, callbacks, metrics, and content-addressed checkpoints that support resume. Your models and per-step logic stay replaceable, so one loop serves standard, graph and transformer networks and other training methods. NNx is for researchers and engineers who want transparent PyTorch code without a larger training platform.
 <!-- executive-summary:end -->
 
 ## 1. Overview
 
-NNx owns the boilerplate around supervised training so you can focus on the model: it builds the network from frozen-dataclass configs, runs the train / eval / predict loop, manages checkpoints under a content-addressed `runs/<id>/` directory, dispatches a documented Callback lifecycle, and exposes pluggable extension points for fine-tuning, multi-optimizer training, diffusion, alternative training paradigms, and parameter-efficient fine-tuning.
+### 1.1. Capabilities
 
-### 1.1. Architecture
+- **Training loop** — `NNModel` train, evaluate and predict, with callbacks, schedulers, FP32/FP16/BF16 precision, gradient accumulation and clipping, declared metrics, and a multi-optimizer `Trainer`.
+- **Runs and resume** — content-addressed run directories, checkpoint tags, verified warm resume, experiment plans and provenance records.
+- **Tasks** — classification, regression, multilabel, ranking, graph classification and link prediction.
+- **Training methods** — custom step functions and objectives, distillation, contrastive learning, Mixup and CutMix, Mixture of Experts, diffusion, I-JEPA and DPO.
+- **Fine-tuning and transforms** — layer freezing, LoRA, DoRA, IA3, prefix and prompt tuning, quantization, pruning and model surgery.
+- **Networks and export** — feed-forward, convolutional, graph, transformer and ViT networks; a small language-model path; ONNX, Hub, safetensors and experimental GGUF export.
+- **Evaluation and decisions** — reproducible splits, calibration, abstention, multi-seed comparison and typed decisions.
 
-![NNx architecture](https://raw.githubusercontent.com/thekaveh/NNx/main/docs/assets/architecture.png)
-
-The architecture separates user-facing orchestration, per-batch extension hooks, callback lifecycle, and persisted run artifacts.
-
-**Reading the diagram top-to-bottom (summary):**
-
-1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The remaining specialization packages provide model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`), and diagnostics (`viz`) that compose around the loop rather than injecting hooks.
-3. The **Training-loop internals** run per-batch step hooks inside the data loop, then `_save_checkpoints` once per completed epoch; `_step_scheduler` steps each scheduler once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
-4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
-5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.
-
-See [docs/concepts.md §1](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#1-architecture) for the full 8-layer breakdown.
-
-### 1.2. Capabilities at a glance
-
-- **Generic training loop** — callbacks, early stopping, schedulers (`Schedulers` enum: `REDUCE_LR_ON_PLATEAU` / `STEP` / `COSINE_ANNEALING` / `ONE_CYCLE` / `LINEAR_WARMUP_DECAY`), an explicit FP32 / FP16 / BF16 precision policy (`PrecisionPolicy`), gradient clipping, gradient accumulation, seeded reproducibility, custom metrics, declared metrics with one named monitor shared by BEST selection, plateau scheduling and early stopping (`MetricSpec` / `MonitorSpec`), and objectives (`LossTerm`s with explicit denominators) over one shared update engine that gives accumulation and clipping to `NNModel` and `Trainer` alike, plus the precision policy (`supervised_objective`, `kd_objective`, `diffusion_objective`, `jepa_objective`).
-- **Content-addressed persistence** — `NNRun` saves `run.yaml` + `idps.csv` + `metadata.yaml` under `runs/<id>/` (where `id` is the md5 of `state()`). LAST is the epoch commit marker: failed LAST writes roll history back, while failures in later ancillary tags retain the committed history/LAST pair. `NNRun.load()` truncates history newer than LAST after an interrupted process. `NNCheckpoint` saves FIRST / Q1 / Q2 / Q3 / LAST / BEST with generation-addressed training-state sidecars for warm resume. Opt-in `history=HistoryJournal(retention, chunk_size)` (`nnx.history`) keeps a bounded window in memory and appends every record once to `runs/<id>/history/` instead of rewriting `idps.csv`, with lazy tail reads, CSV export and lineage-aware iteration.
-- **Task adapters** — declare `NNModelParams(task=TaskSpec.regression(n))` (or `.multilabel(n, threshold=...)` / `.categorical(n, ignore_index=...)`) and the default training step, `evaluate()` and `predict()` validate batches before any update, mask NaN / ignored targets out of loss and metrics alike, average the loss over valid targets (exact under uneven batches and gradient accumulation) and report `mse` / `mae` (or subset / element accuracy) without fabricated classification fields. See `examples/regression_task.py`.
-- **Query-grouped ranking** — `nnx.ranking.RankingTask` trains a scorer with a pairwise logistic objective over unequal-relevance pairs within each query and evaluates MRR@k, Recall@k and NDCG@k per complete query (ties broken by candidate id, queries without a relevant candidate excluded and counted), selectable by name with `MonitorSpec("ndcg_at_10")`. See `examples/ranking_offline.py`.
-- **Graph-level classification** — `nnx.graph_tasks` classifies whole graphs: a `GraphCollection` with stable graph ids, mean / sum pooling, loss and metrics over labeled graphs, and one prediction row per graph keyed by its id through training, prediction and reload. See `examples/graph_classification_offline.py`.
-- **Link and edge prediction** — `nnx.link_tasks` splits edges (not nodes) into a replayable manifest, passes messages over training edges only, draws negatives from the graph's complement, reports exact AUROC / AP and refuses a held-out positive in a message graph before any update. See `examples/link_prediction_offline.py`.
-- **`train_step_fn` hook** — swap the per-batch supervised step for any user-supplied function. Unblocks autoencoder / VAE / recommendation / diffusion / KD / SimCLR / Mixup / CutMix paradigms (link prediction is built in: `nnx.link_tasks`) without modifying NNx internals.
-- **Fine-tuning (transfer learning)** — `nnx.finetune.{freeze, unfreeze, load_pretrained, NNParamGroupSpec, build_param_groups}` plus `NNModel.{freeze, unfreeze, export_state_dict}`. Glob-pattern layer freezing, external state-dict loading with optional key remapping, per-layer-group learning rates via `NNOptimParams.param_groups`.
-- **Multi-optimizer `Trainer`** — `nnx.trainer.Trainer` parallels `NNModel.train()` for scenarios that need disjoint optimizers (GAN G/D, actor-critic). Accepts a name-keyed dict of `NNOptimParams` (or registered `NNOptimFactoryParams`); each entry's `NNParamGroupSpec` scopes the optimizer under strict-partition semantics.
-- **Optimizers** — built-in SGD / Nesterov SGD / Adam / AMSGrad / **AdamW** (decoupled weight decay) via `Optims`, plus **registered optimizer factories** (`nnx.register_optimizer_factory` + `NNOptimFactoryParams(OptimizerFactorySpec(id, version, config))`) for any other `torch.optim.Optimizer`. `NNModel` and `Trainer` build both through one hook, `nnx.build_optimizer`, which checks a factory's optimizer owns exactly the resolved parameter groups; `run.yaml` stores only the factory's id/version/config, so runs reload offline and resume validates the factory identity. See [Concepts §3.1](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#31-optimizers-adamw-registered-factories-and-the-shared-build-hook).
-- **Diffusion (DDPM)** — `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. LINEAR / COSINE noise schedules, a small conditional MLP denoiser, a DDPM-style training step factory that plugs into the `train_step_fn` hook (or `diffusion_objective`, the same loss over the shared update engine, with its own checkpointed generator), and a reverse-diffusion sampler.
-- **Training paradigms** — `nnx.paradigms.{kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo}_train_step_factory` plus `born_again_train`. Hinton-style knowledge distillation (teacher frozen, soft+hard loss mix), FitNets-style **feature distillation** (`feature_kd_train_step_factory` adds an MSE term between named teacher/student intermediate activations via forward hooks, mixed in with `beta`), SimCLR contrastive (NT-Xent loss exposed), Mixup and CutMix batch augmentation, sparse top-k **Mixture-of-Experts** (softmax-gated routing + Switch-style load-balancing aux loss + drop-in `nnx.MoELinear`), **I-JEPA** self-supervised pretraining (masked patches → latent prediction against an EMA target encoder; ships with `JEPAPredictor`, `build_target_encoder`, `update_ema`, `random_block_mask`, and a small `ViTNN` encoder; `jepa_objective` runs it over the shared update engine with one EMA step per committed update), **Born-Again Networks** (iterated self-distillation across G generations), **offline teacher distributions** (`nnx.paradigms.offline_distillation`: distill from stored, permissioned teacher probabilities — no live teacher, no logits, no `T²` — with records aligned by sample and candidate id and reports that keep teacher agreement apart from labelled quality), and **DPO** (Rafailov et al. 2023 — preference-pair fine-tuning against a frozen reference policy via the chosen-vs-rejected log-ratio objective). All share an internal `_step_helpers.finalize_step` for grad-clip + NaN guard.
-- **Parameter-efficient fine-tuning (PEFT) — LoRA + DoRA + IA3 + Prefix + Prompt + Adapters** — `nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer, DoRALinear, apply_dora_to, IA3Linear, apply_ia3_to, save_ia3_weights, load_ia3_weights, PrefixTuner, PromptTuner, save_prefix_weights, load_prefix_weights, save_prompt_weights, load_prompt_weights}`. **LoRA** wraps `nn.Linear` submodules in-place with a frozen base + trainable low-rank residual (B is zero-initialized so output at step 0 equals the pretrained behavior). **DoRA** ([Liu et al., 2024](https://arxiv.org/abs/2402.09353)) extends LoRA with a trainable per-output-row magnitude vector using only `out_features` extra parameters per layer. **IA3** (NeurIPS 2022) is the smallest adapter in the family: a single learned per-output-dim scaling vector applied to a frozen Linear's output. **PrefixTuner** prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`; **PromptTuner** prepends learned soft-prompt embeddings ahead of the input tokens. `save_*_weights` persist only the trainable delta for each method.
-- **Quantization** — torchao-based **PTQ INT8 weight-only** via `nnx.quantize.quantize_int8(model)` (one call, no calibration data, no retraining; returns a new instance of the *same* model class — a `GenerativeNNModel` keeps its tokenizer and `generate` — whose `net.Linear` weights are stored in int8 per-channel with FP32 activations; the quantized model still ONNX-exports) and **QAT 8da4w** via `nnx.quantize.{qat_train_step_factory, QATLifecycleCallback}` (Int8DynActInt4WeightQATQuantizer fake-quant during training, real-quant on convert). Opt-in extra: `pip install thekaveh-nnx[quantize]`.
-- **Pruning** — `nnx.prune.magnitude_prune` (mask-based unstructured, checkpoint-safe) and `nnx.prune.semi_structured_24` (2:4 semi-structured via torchao, Ampere+ hardware speedups).
-- **Model surgery — Net2Net + drop + low-rank + embedding** — `nnx.surgery.{widen, deepen, drop_layer, low_rank_factorize, expand_embedding}`. `widen` and `deepen` are function-preserving Net2Net edits (Chen/Goodfellow/Shlens, ICLR 2016) on validated topologies — `widen` for a Linear inside `nn.Sequential` / `FeedFwdNN.layers` with only elementwise ops before its consumer (Softmax/LayerNorm/BatchNorm boundaries, other containers and aliased modules are rejected up front), `deepen` through ReLU — so the surged module's forward output matches the original's *before* refinement and a freshly described `NNModel` can resume training immediately without an accuracy cliff. `low_rank_factorize` is SVD truncation on a Linear (exact at max rank, Eckart-Young-bounded below it). `drop_layer` replaces a named layer with `nn.Identity`; `expand_embedding` grows an Embedding's row count and returns a frozen-mask for the original rows. Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "refine after surgery" loop. Recorded recipes (`nnx.transforms.TransformRecipe`: LoRA on explicit Linear targets, SVD low-rank replacement) are validated up front and travel with every checkpoint and Hub save, so `from_checkpoint` / `from_pretrained` rebuild the transformed topology without rerunning SVD.
-- **Embeddings — contrastive trainer + FAISS export** — `nnx.embeddings.{ContrastiveTextDataset, train_contrastive, embed_texts, text_contrastive_train_step_factory, export_to_faiss, export_to_safetensors}`. Train a domain-specific text embedder from `(anchor, positive)` pairs via the existing NT-Xent machinery, then export to a FAISS index file that any RAG framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume. NNx's job ends at the FAISS index — chunking / reranking / prompt orchestration live downstream. Optional dep: `pip install "thekaveh-nnx[embeddings]"` for `faiss-cpu` + `sentence-transformers`.
-- **Networks** — `FeedFwdNN`, `FeedFwdMoENN`, `ConvNN`, `GraphConvNN` / `GraphSageNN` / `GraphAttNN` (all built on the shared `GraphNNBase`), `TransformerNN` (decoder-only LM: RMSNorm + RoPE + SwiGLU + tied embeddings + KV-cache), and `ViTNN` (small ViT encoder used as the I-JEPA backbone; `Nets.VIT` builds it from `NNViTParams`, and `NNModel.from_checkpoint`, `reconstruct_bundle` and `NNModel.from_pretrained` rebuild a stored encoder — a JEPA run's with `exclude_submodules=("_jepa_predictor",)`).
-- **Language modeling (opt-in via `thekaveh-nnx[lm]`)** — `TransformerNN` + `NNTransformerParams` + `NNTokenizerParams` (HF Rust BPE wrapper) + `GenerativeNNModel.generate(prompt, ...)` with **KV-cache acceleration** for autoregressive decoding. A CPU regression test requires cached decoding to be at least 1.2× faster than full recomputation for its fixed 128-token workload; results on other hardware and workloads vary. Past `max_seq_len`, the cache rebuilds per step and converges to full-recompute cost. Greedy / top-k / top-p / repetition-penalty sampling is provided through a `LogitsProcessor` chain. See [docs/lm.md](https://github.com/thekaveh/NNx/blob/main/docs/lm.md) for the full walkthrough; `examples/11_tinystories_lm.py` ships an end-to-end TinyStories-class training run.
-- **Experimental GGUF export (opt-in via `thekaveh-nnx[gguf-write]`)** — `nnx.interop.write_gguf(model, tokenizer, path)` writes a structurally valid GGUF artifact with NNx tensor names and `general.architecture=nnx_transformer`. Stock llama.cpp, Ollama, and LM Studio do not implement that architecture; use the output for inspection or a reader explicitly patched for NNx. See [docs/gguf.md](https://github.com/thekaveh/NNx/blob/main/docs/gguf.md).
-- **HuggingFace Hub (opt-in via `thekaveh-nnx[hub]`)** — `NNModel` mixes in `PyTorchModelHubMixin`: `save_pretrained` / `push_to_hub` / `from_pretrained`, with safetensors as an opt-in checkpoint format via `NNCheckpoint.to_file(format="safetensors")`. See [docs/hub.md](https://github.com/thekaveh/NNx/blob/main/docs/hub.md).
-- **Datasets** — `NNDataset` (torchvision `VisionDataset` wrapper), `NNGraphDataset` (PyG single-graph wrapper using `NeighborLoader`), `NNTabularDataset` (pandas DataFrame → train/val/test loaders), `NNPreferenceDataset` (tokenized `(prompt, chosen, rejected)` preference triples for DPO).
-- **Params** — frozen, kw-only, slotted dataclasses for every config knob: `NNParams`, `NNModelParams`, `NNTrainParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTrainerParams`. Every params object round-trips through `state()` / `from_state()`. New fields omit themselves from `state()` when at their default so existing `run.id` hashes are preserved.
-- **Fluent params construction** — `NNSchedulerParams.builder()`, `NNOptimParams.builder()`, `NNTransformerParams.builder()`, and `NNTrainerParams.builder()` (the composite, wraps the prior two for the multi-optim Trainer) expose variant-gated `.adam(...)` / `.sgd(...)` / `.one_cycle(...)` / etc. methods so the user can't construct an invalid kind/field combination. `LogitsChain.builder()` extends the pattern to the LM-decoding path — chain custom logit processors in any order; the Builder sorts them into NNx's canonical order (matching `generate()`'s inline-kwargs chain) before decoding runs. When the order itself matters, `OrderedLogitsPipeline` runs immutable stages exactly as declared (`append` / `prepend` return new pipelines, a zero-temperature stage is terminal, built-in stages round-trip through versioned state) via `generate(logits_pipeline=...)`; `apply_chain` stays the raw list form. All Builders are purely additive; the existing direct-kwarg ctors keep working. The four params Builders branch with `.copy()` (complete or partial, no cross-talk) and rebuild from an existing value with `Builder.from_params(params)` (`build()` reproduces it exactly, same `state()` and run id) — see `examples/builder_branching.py`.
-- **Enums-as-factories** — `Nets`, `Losses`, `Optims`, `Schedulers`, `Activations`, `Devices`, `Checkpoints`, `NoiseSchedulers`. Each enum value's `__call__` constructs the underlying object; adding a new option is a single-place change.
-- **Experiment provenance** — opt-in `train(..., provenance=ExperimentManifest(...))` records the declared intent (task, labels, model descriptor, data and split identities, objective version) with a canonical SHA-256 fingerprint and a fresh attempt record per fit (status, last committed checkpoint, resume lineage), kept separate from `run.id` and the environment snapshot; `nnx.provenance.compare` diffs two plans without loading models.
-- **Reproducible splits** — `nnx.data_splits.plan_split` plans group, chronological (cutoffs + gap) and stratified splits by sample id into a JSON `SplitManifest`; `NNTabularDataset(split=manifest, id_col=...)` replays it on reordered rows without `random_split`, and duplicate, missing or unexpected ids or a changed source identity fail before any loader exists. See `examples/split_replay.py`.
-- **Train-only preprocessing** — `nnx.preprocessing.Standardizer` fits on an explicit training membership (never a held-out row), reuses its frozen float64 statistics under a declared column / order / dtype schema, and reloads from JSON to serve a model without refitting; `NNTabularDataset(standardize=True)` fits on the training split, and `NNDataset(train_transform=..., eval_transform=...)` gives each split its own transform over an untouched base dataset. See `examples/preprocessing_offline.py`.
-- **Fitted calibration** — `nnx.calibration.fit_temperature` fits one scalar temperature on a named calibration split (float64, never the train or test split), returns a failure instead of a NaN calibrator, and binds the result to its label order and model id; the JSON calibrator serves raw and calibrated probabilities side by side and reports held-out NLL, Brier and reliability bins before and after — saying so when calibration made things worse. See `examples/calibration_offline.py`.
-- **Abstention** — `nnx.abstention` policies accept a row only when its top probability (or top-two margin) reaches a threshold and abstain otherwise, keeping the prediction, distribution and reason; `select_threshold` tunes the threshold on a named validation split against an empirical risk ceiling, and reports give coverage over every row and selective risk over the accepted ones (unavailable, never 0, when nothing is accepted). See `examples/abstention_offline.py`.
-- **Experiment plans** — an immutable `ExperimentPlan` branches a configuration without copying dataclasses (`with_epochs`, `with_seed`, `with_data`, ...). It separates a pure `validate()`, which aggregates field-path diagnostics and reads no loader, from an effectful `probe(batch)`, which restores the ambient RNG and backend settings, and from `fit()`, which compiles to the existing `NNModel.train` loop as a distinct attempt with its own run directory. See `examples/experiment_plan.py`.
-- **Multi-seed summaries and paired comparisons** — `nnx.comparison` reports repeated runs as a population, read-only: each `Observation` declares its metric (name, direction, unit), evaluation split, checkpoint-selection rule, configuration, data and split identity, replicate key and attempt status, and `summarize` stratifies incompatible observations instead of pooling them (count, mean, sample standard deviation with `n - 1`; failed and non-finite attempts stay counted). `compare` pairs two configurations by declared replicate keys and reports signed `B - A` deltas; `observations_from_runs` reads saved runs without loading a model. See `examples/compare_seeds.py`.
-- **Typed decisions** — `nnx.decisions` asks provider-neutral `Choice` / `Boolean` / `Score` questions and returns validated, labelled probabilities; `FixedHeadProvider` serves a trained classifier's head (exact label space or bijection, capabilities checked before any model call), and `NLIProvider` is a local label-conditioned baseline that scores candidates supplied at inference with a caller-supplied NLI model (nothing downloaded; scores recorded as uncalibrated); `JevProvider` (the `jev` extra) asks hosted Jev models through the TypeSafe SDK, with typed failures and the SDK owning retries. `DecisionJob` batches independent questions into the fewest provider calls and chains dependent ones, fail-fast, sync or async. `nnx.decisions.benchmark` scores providers on identical samples and replays saved records offline (coverage counts, accuracy, macro-F1, exact NLL, Brier, reliability, grouped bootstrap intervals). See [docs/decisions.md](https://github.com/thekaveh/NNx/blob/main/docs/decisions.md), `examples/decision_fixed_head.py`, `examples/decision_nli.py`, `examples/decision_jev.py`, `examples/decision_jobs.py` and `examples/decision_benchmark_offline.py`.
-- **Your own modules** — `NNModel` also trains any `torch.nn.Module`: register a factory (`register_model_factory`, `ModelSpec(id, version, config, seed)`) for a portable model that rebuilds from checkpoints, safetensors and the Hub, or wrap an instance as is (`NNModel(module=m, ...)`, runtime-only); `PositionalInputs` / `KeywordInputs` batch adapters feed positional or keyword `forward`s. See `examples/custom_module.py`.
-- **Callbacks** — `Callback` base class with `on_{train,epoch}_{begin,end}` hooks. Stock: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom-epoch tags), `TensorBoardCallback` (opt-in via `thekaveh-nnx[tensorboard]`), `WandbCallback` (opt-in via `thekaveh-nnx[wandb]`). Legacy `Callable[[List[IDP]], None]` is still accepted.
-- **Visualization** — `VisUtils` (and module-level aliases) returns Plotly `Figure` objects: `confusion_matrix`, `classification_report` (returns a DataFrame), `multi_line_plot`, `scatter_plot`, `two_dim_tsne_checkpoint_logits`.
-- **Model-internals viz** — `nnx.viz.summary` (Keras-style parameter table via `torchinfo`), `nnx.viz.weight_histogram` (per-layer Plotly histogram grid), `nnx.viz.activation_map` (forward-hook activation heatmaps), `nnx.viz.attribute` (Captum-backed input attribution: `integrated_gradients` / `gradient_shap` / `deep_lift` / `saliency` / `input_x_gradient` / `occlusion`, returns the attribution tensor plus a Plotly heatmap), `nnx.viz.gradient_flow` (per-layer L2 gradient-norm bar chart for vanishing/exploding diagnostics, call after `loss.backward()`), and `nnx.viz.netron_export` (write the underlying network to a `.onnx` artifact for Netron). Companion to the existing `nnx.vis_utils` run-output viz; opt-in via `pip install thekaveh-nnx[viz]` (pulls `torchinfo` + `captum` + Plotly; the Netron browser viewer is `thekaveh-nnx[viz-interactive]`).
-- **Reproducibility + training diagnostics** — `nnx.set_seed(seed, strict=False)` pins every RNG + cuDNN; `nnx.dataloader_worker_init_fn` handles per-worker seeds; `NNTrainParams.seed` runs `set_seed` at `train()` entry. `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` runs a fastai-style exponential LR sweep and returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure; the sweep restores model state, every module's train/eval mode, loader generators, and Python/NumPy/PyTorch RNG state on exit.
-- **Type-checked downstream** — NNx ships a PEP 561 `py.typed` marker so consumers' `pyright` / `mypy` honor the public-surface annotations on `NNModel`, the params dataclasses, callbacks, and enums (rather than seeing every symbol as `Any`).
-- **Opt-in `torch.compile`, measured** — `model.train(params, compile=CompileSpec())` compiles the built-in step's FP32 forward through a per-fit wrapper beside `model.net` (checkpoints, export and later inference stay eager), records requested vs effective state on the run, checkpoints and provenance, and never guarantees a speedup: `nnx.benchmarking` separates first-call compile cost from warmed latency and profiles with a finite `torch.profiler` schedule. Not with DDP or quantization. See [Concepts §28](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#28-opt-in-compilation-and-benchmarks-nnxcompilation-nnxbenchmarking).
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` exports the network via the legacy `torch.onnx.export` (no `onnxscript` dep needed). Pass `dynamo=True` (opt-in via `thekaveh-nnx[onnx-dynamo]`) to dispatch through PyTorch's newer `torch.export`-based exporter (default in torch>=2.9; supports >2 GB models via external data; generally faster). Structural validity and numerical parity are separate claims: `nnx.export_conformance` executes both exporters' FP32 feed-forward profiles in ONNX Runtime on CPU and records every stage and artifact hash (`scripts/check_export_conformance.py`, extra `onnx-runtime`); other targets stay structural. See [Export conformance](https://github.com/thekaveh/NNx/blob/main/docs/export-conformance.md).
+The [Capability reference](https://github.com/thekaveh/NNx/blob/main/docs/capabilities.md) describes each item with its entry points. [Concepts](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md) explains how the parts fit together.
 
 ## 2. Install
 
-### 2.1. Runtime
+### 2.1. Release or source
+
+This documentation describes the current source on `main`. The newest PyPI release can be older: compare its version on [PyPI](https://pypi.org/project/thekaveh-nnx/#history) with the [Changelog](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md). A release does not have the features or extras added after it, and `pip` warns when a requested extra does not exist in the installed version.
+
+Install the newest release from PyPI:
 
 ```bash
-pip install thekaveh-nnx                        # core: training, prediction, persistence (latest release from PyPI)
-pip install "thekaveh-nnx[domains]"             # + the vision, graph and plotting stacks (everything core held before 0.4)
+pip install thekaveh-nnx                        # core: training, prediction, persistence
+pip install "thekaveh-nnx[domains]"             # + the vision, graph and plotting stacks
 ```
 
-The core install is torch, NumPy, pandas, scikit-learn and a few small utilities: `import nnx` loads no vision, graph or plotting stack. Those are extras — `vision` (torchvision: `NNDataset`), `graph` (PyTorch Geometric: the graph nets, `NNGraphDataset`, `nnx.graph_tasks`, `nnx.link_tasks`) and `plots` (Plotly: `VisUtils`, `nnx.lr_finder`, the `NNRun` chart) — and using one without its extra raises an `ImportError` naming it (`pip install "thekaveh-nnx[graph]"`). `domains` installs all three.
+Install the current source when you need a feature or extra that the release does not have:
 
-Python 3.10+ with PyTorch 2.4+ (torchvision 0.19+ with the `vision` extra) — the oldest pair the full test suite passes on; see the [PyTorch support matrix](https://github.com/thekaveh/NNx/blob/main/docs/external-contracts.md#21-pytorch-support-matrix) for every tested torch / torchvision / Python combination and which carry real CUDA evidence. Tested on 3.10 through 3.14. Examples in [examples/](https://github.com/thekaveh/NNx/tree/main/examples) are runnable on CPU. Optional extras keep their own version constraints (`torchao` for `[quantize]` is validated only against the frozen lock, not the floor).
+```bash
+pip install "thekaveh-nnx @ git+https://github.com/thekaveh/NNx.git@main"
+pip install "thekaveh-nnx[domains] @ git+https://github.com/thekaveh/NNx.git@main"
+```
 
-### 2.2. Optional extras
+### 2.2. Requirements
+
+The core install is torch, NumPy, pandas, scikit-learn and a few small utilities: `import nnx` loads no vision, graph or plotting stack. Those stacks are the `vision`, `graph` and `plots` extras, and `domains` installs all three. Using one without its extra raises an `ImportError` that names the extra.
+
+NNx needs Python 3.10 or later with PyTorch 2.4 or later (torchvision 0.19 or later with the `vision` extra), and is tested on Python 3.10 through 3.14. The [PyTorch support matrix](https://github.com/thekaveh/NNx/blob/main/docs/external-contracts.md#21-pytorch-support-matrix) lists every tested combination and which have real CUDA evidence. Optional extras keep their own version constraints. The examples in [examples/](https://github.com/thekaveh/NNx/tree/main/examples) run on CPU.
+
+### 2.3. Optional extras
+
+Add an extra to either install command, for example `"thekaveh-nnx[graph,plots]"`.
 
 ```bash
 pip install "thekaveh-nnx[vision]"              # NNDataset (torchvision datasets)
@@ -130,8 +95,8 @@ pip install "thekaveh-nnx[plots]"               # VisUtils, nnx.lr_finder, the N
 pip install "thekaveh-nnx[domains]"             # vision + graph + plots
 pip install "thekaveh-nnx[tensorboard]"         # TensorBoardCallback
 pip install "thekaveh-nnx[wandb]"               # WandbCallback
-pip install "thekaveh-nnx[onnx]"                # NNModel.to_onnx validation tooling
-pip install "thekaveh-nnx[onnx-dynamo]"         # NNModel.to_onnx(dynamo=True) — torch.export-based exporter
+pip install "thekaveh-nnx[onnx]"                # NNModel.to_onnx (legacy exporter)
+pip install "thekaveh-nnx[onnx-dynamo]"         # NNModel.to_onnx(dynamo=True): adds onnxscript
 pip install "thekaveh-nnx[onnx-runtime]"        # ONNX Runtime CPU execution: nnx.export_conformance parity profiles
 pip install "thekaveh-nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ INT8)
 pip install "thekaveh-nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
@@ -140,6 +105,8 @@ pip install "thekaveh-nnx[lm]"                  # TransformerNN + HF tokenizer +
 pip install "thekaveh-nnx[gguf-write]"          # experimental NNx GGUF writer
 pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export
 pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)
+pip install "thekaveh-nnx[jev]"                 # nnx.decisions.JevProvider (hosted Jev models)
+pip install "thekaveh-nnx[optuna]"              # nnx.search: budgeted experiment search
 pip install "thekaveh-nnx[docs]"                # local documentation build toolchain
 ```
 
@@ -150,7 +117,7 @@ python -m pip install -r requirements-tools.txt
 uv sync --all-extras --frozen
 ```
 
-For local development (editable install from a git checkout, including the test/lint toolchain), see [CONTRIBUTING.md §1](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md#1-getting-set-up).
+For an editable install with the test and lint toolchain, see [CONTRIBUTING.md §1](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md#1-getting-set-up).
 
 ## 3. Quickstart
 
@@ -243,7 +210,9 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 ))
 ```
 
-Callback and step state continues too: `EarlyStopping`'s patience, the I-JEPA EMA target encoder, the diffusion and JEPA objectives' state (generator; EMA target and counter) and any object passed through `train(..., components=[...])` are versioned **components** (`nnx.components`), validated before anything is mutated and restored transactionally after the callbacks' reset hooks. `resume_mode` (`"auto"` / `"stateful"` / `"weights_only"`) chooses what is restored, and `run.resume_status` reports it. `resume_epochs="planned"` (on an experiment plan, `resuming(..., epochs="planned")`) continues a run's own plan up to its `n_epochs` (logical steps, updates and phase tags carried on) — on deterministic single-process training with in-process loaders, a run split at epoch boundaries equals the uninterrupted run bit for bit — and every checkpoint is a generation-stamped, SHA-256-digested resume point, so a torn, mixed or corrupted one is refused with its reason (`ResumePointError`). The multi-optimizer `nnx.trainer.Trainer` resumes every named optimizer and scheduler via `NNTrainerParams.builder().resume_from(run_id)`. See [Concepts §14](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#14-resuming-training).
+Callback and step state continues too. `EarlyStopping`'s patience, the I-JEPA EMA target encoder, objective state and any object passed through `train(..., components=[...])` are versioned components (`nnx.components`), validated before anything changes. `resume_mode` (`"auto"`, `"stateful"` or `"weights_only"`) chooses what is restored, and `run.resume_status` reports it.
+
+`resume_epochs="planned"` continues a run's own plan up to its `n_epochs`; on an experiment plan, use `resuming(..., epochs="planned")`. With deterministic single-process training and in-process loaders, a run split at epoch boundaries equals the uninterrupted run bit for bit. Every checkpoint is a SHA-256-digested resume point, so a torn, mixed or corrupted one is refused with its reason (`ResumePointError`). The multi-optimizer `Trainer` resumes through `NNTrainerParams.builder().resume_from(run_id)`. See [Concepts §14](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#14-resuming-training).
 
 > **Scope:** Loader and sampler generators are restored by stable seed identity. Exact continuation still requires `train_loader.num_workers=0`, because worker-local RNG state cannot be reconstructed. Resume happens at completed-epoch boundaries.
 
@@ -319,28 +288,45 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 
 `from_checkpoint` also replays persisted topology transforms before loading weights. In particular, QAT-produced `LAST` checkpoints record their torchao recipe and reload as converted quantized models without downstream prepare/convert code.
 
-## 5. Documentation
+## 5. Architecture
+
+![NNx architecture](https://raw.githubusercontent.com/thekaveh/NNx/main/docs/assets/architecture.png)
+
+The architecture separates user-facing orchestration, per-batch extension hooks, callback lifecycle, and persisted run artifacts.
+
+**Reading the diagram top-to-bottom (summary):**
+
+1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The remaining specialization packages provide model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`), and diagnostics (`viz`) that compose around the loop rather than injecting hooks.
+3. The **Training-loop internals** run per-batch step hooks inside the data loop, then `_save_checkpoints` once per completed epoch; `_step_scheduler` steps each scheduler once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
+4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
+5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.
+
+[Concepts §1](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#1-architecture) gives the full 8-layer breakdown, and [Architecture](https://github.com/thekaveh/NNx/blob/main/docs/architecture.md) gives the exact callback and commit ordering.
+
+## 6. Documentation
 
 The documentation below covers the public API, architecture, extension contracts, and runnable examples.
 
-### 5.1. Conceptual + reference
+### 6.1. Conceptual + reference
 
-- [Concepts](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md) — architecture deep-dive, persistence layout, callback protocol, every specialization in detail. Read this when you want to understand how the pieces fit together (callbacks, params hashing, train_step_fn hook, multi-optim Trainer, paradigms, PEFT).
-- [Quickstart](https://github.com/thekaveh/NNx/blob/main/docs/quickstart.md) — paste-runnable example with variations. Read this when you want to copy a working snippet and iterate from there.
-- [Language modeling](https://github.com/thekaveh/NNx/blob/main/docs/lm.md) — the decoder-only Transformer path: `TransformerNN` + HF tokenizer + `GenerativeNNModel.generate()` with KV-cache. Read this when you want to train a tiny LM end-to-end on CPU.
-- [Direct Preference Optimization](https://github.com/thekaveh/NNx/blob/main/docs/dpo.md) — `dpo_train_step_factory` for fine-tuning a TransformerNN against `(prompt, chosen, rejected)` preference pairs via the Rafailov et al. 2023 chosen-vs-rejected log-ratio objective against a frozen reference policy. Read this when you have preference data and want to steer LM behavior post-SFT without reward modeling or RL.
-- [Typed decisions](https://github.com/thekaveh/NNx/blob/main/docs/decisions.md) — `nnx.decisions`, the inference branch: provider-neutral `Choice` / `Boolean` / `Score` questions, validated labelled probabilities, declared provider capabilities, the fixed-head adapter for trained classifiers, the NLI baseline for labels supplied at inference, the Jev adapter for hosted models, deferred decision jobs (batching, continuations, fail-fast, cancellation) and the offline-first provider benchmark. Read this when a caller needs a named, validated answer rather than positional logits.
-- [I-JEPA](https://github.com/thekaveh/NNx/blob/main/docs/jepa.md) — Joint Embedding Predictive Architecture: masked-patch → latent-prediction self-supervised pretraining against an EMA target encoder. Read this when you want to pretrain a vision encoder without pixel-reconstruction or strong augmentations.
-- [Experimental GGUF export](https://github.com/thekaveh/NNx/blob/main/docs/gguf.md) — `nnx.interop.write_gguf` for producing and inspecting an NNx-tagged GGUF artifact; includes the official llama.cpp `llama-quantize` build path and the current stock-runtime limitation.
-- [HuggingFace Hub](https://github.com/thekaveh/NNx/blob/main/docs/hub.md) — safetensors checkpoints + `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`. Read this when you want to publish a trained model to the Hub, load from it, or write checkpoints in a format outside-of-Python tools (ComfyUI, vLLM, AutoGPTQ) can read.
-- [Embeddings + FAISS export](https://github.com/thekaveh/NNx/blob/main/docs/embeddings.md) — walkthrough for training a domain-specific text embedder via contrastive learning and exporting it to a FAISS index for any RAG stack to consume.
-- [Model surgery](https://github.com/thekaveh/NNx/blob/main/docs/surgery.md) — walkthrough of the `nnx.surgery` primitives (`widen` / `deepen` / `drop_layer` / `low_rank_factorize` / `expand_embedding`), the function-preservation contract, before/after parameter-count tables, and the "load checkpoint → surgery → refine via `NNModel.train()` → save" pattern.
+- [Concepts](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md) — architecture, persistence layout, the callback protocol and every specialization in detail.
+- [Capability reference](https://github.com/thekaveh/NNx/blob/main/docs/capabilities.md) — every capability with its entry points, grouped by task.
+- [Quickstart](https://github.com/thekaveh/NNx/blob/main/docs/quickstart.md) — a runnable example with variations to copy and adapt.
+- [Language modeling](https://github.com/thekaveh/NNx/blob/main/docs/lm.md) — train a small decoder-only `TransformerNN` end to end on CPU and generate text.
+- [Direct Preference Optimization](https://github.com/thekaveh/NNx/blob/main/docs/dpo.md) — fine-tune a language model on `(prompt, chosen, rejected)` preference pairs against a frozen reference policy, without reward modeling or RL.
+- [Typed decisions](https://github.com/thekaveh/NNx/blob/main/docs/decisions.md) — ask `Choice`, `Boolean` or `Score` questions and get validated, labelled probabilities from trained classifiers, NLI models or hosted Jev models; includes decision jobs and the provider benchmark.
+- [I-JEPA](https://github.com/thekaveh/NNx/blob/main/docs/jepa.md) — self-supervised pretraining of a vision encoder by predicting masked patches in latent space.
+- [Experimental GGUF export](https://github.com/thekaveh/NNx/blob/main/docs/gguf.md) — write and inspect an NNx-tagged GGUF file, and the current stock-runtime limits.
+- [HuggingFace Hub](https://github.com/thekaveh/NNx/blob/main/docs/hub.md) — safetensors checkpoints and `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`.
+- [Embeddings + FAISS export](https://github.com/thekaveh/NNx/blob/main/docs/embeddings.md) — train a text embedder with contrastive learning and export a FAISS index.
+- [Model surgery](https://github.com/thekaveh/NNx/blob/main/docs/surgery.md) — the `nnx.surgery` primitives, their function-preservation contract, and the load, edit, refine and save workflow.
 - [API reference](https://github.com/thekaveh/NNx/blob/main/docs/api.md) — signatures and docstrings for public symbols.
-- [Comparison vs Lightning / HF / fastai / Composer](https://github.com/thekaveh/NNx/blob/main/docs/comparison.md) — honest scope-explicit comparison: when to use NNx vs Lightning vs HF Transformers vs fastai vs MosaicML Composer, axis by axis. Read this when you're picking a PyTorch training toolkit and want a real decision matrix instead of a marketing page.
+- [Comparison vs Lightning / HF / fastai / Composer](https://github.com/thekaveh/NNx/blob/main/docs/comparison.md) — when to use NNx or another PyTorch training toolkit, compared axis by axis.
 - [Architecture](https://github.com/thekaveh/NNx/blob/main/docs/architecture.md) — the system overview and exact training lifecycle, including callback, scheduler, history, and checkpoint ordering.
-- [External dependency contracts](https://github.com/thekaveh/NNx/blob/main/docs/external-contracts.md) — ledger of optional integrations, version sources, verification coverage, and intentionally gated real-service checks. Read this before changing dependency ranges, external CLI commands, or publish workflows.
+- [External dependency contracts](https://github.com/thekaveh/NNx/blob/main/docs/external-contracts.md) — optional integrations, version sources and verification coverage; read it before changing dependency ranges or publish workflows.
 
-### 5.2. Workflow + history
+### 6.2. Workflow + history
 
 - [Examples catalog](https://github.com/thekaveh/NNx/blob/main/examples/README.md) — ordered tour of the 26 runnable scripts under `examples/`, grouped foundational to specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF inspection, self-supervised learning, pruning, surgery, explainability, DPO, and distillation variants).
 - [Test import boundaries](https://github.com/thekaveh/NNx/blob/main/tests/README.md) — when tests should use the public facade and when a deep implementation import is intentional.
@@ -348,16 +334,16 @@ The documentation below covers the public API, architecture, extension contracts
 - [Security policy](https://github.com/thekaveh/NNx/blob/main/SECURITY.md) — supported versions, private vulnerability reporting, and the checkpoint trust boundary.
 - [Changelog](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md) — release history (Keep-a-Changelog format), back-compat migration notes, and on-disk run.id hash shifts when they occur.
 
-## 6. Project
+## 7. Project
 
-### 6.1. Status
+### 7.1. Status
 
 Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix obvious bugs (see [CHANGELOG](https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
 
-### 6.2. Contributing
+### 7.2. Contributing
 
 Bug reports and PRs are welcome via GitHub issues. See [CONTRIBUTING.md](https://github.com/thekaveh/NNx/blob/main/CONTRIBUTING.md) for setup, verification, and the complete style guide.
 
-### 6.3. License
+### 7.3. License
 
 Apache License 2.0. Copyright 2026 Kaveh Razavi. See [LICENSE](https://github.com/thekaveh/NNx/blob/main/LICENSE).

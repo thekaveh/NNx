@@ -41,12 +41,12 @@
 </p>
 
 <!-- executive-summary:start -->
-NNx is a lightweight PyTorch toolkit for repeatable training, evaluation, and visualization. It owns the routine experiment infrastructure: frozen configuration objects, supervised train/eval/predict orchestration, callbacks, schedulers, metrics, and content-addressed checkpoints that support reliable resume and inspection. Models and per-step logic remain replaceable, so the same loop can serve standard networks, graph neural networks, transformers, diffusion, representation learning, fine-tuning, and multi-optimizer workflows. Focused modules add PEFT, quantization, pruning, model surgery, embeddings, export, and diagnostics without forcing those concerns into the core loop. NNx is aimed at researchers and engineers who want transparent PyTorch code and durable experiments without adopting a larger training platform.
+NNx is a lightweight PyTorch toolkit for repeatable training, evaluation and visualization. It provides frozen configuration objects, a supervised train, evaluate and predict loop, callbacks, metrics, and content-addressed checkpoints that support resume. Your models and per-step logic stay replaceable, so one loop serves standard, graph and transformer networks and other training methods. NNx is for researchers and engineers who want transparent PyTorch code without a larger training platform.
 <!-- executive-summary:end -->
 
 ## 1. Why NNx
 
-If you've ever found yourself rewriting the same training loop, the same checkpoint shuffling, and the same metric plotting from project to project, that's NNx's purpose: a tight, opinionated layer that owns the boring parts so you can focus on the model.
+NNx owns the code that repeats across training projects: the loop, checkpoint handling and metric reporting. You write the model and, when you need to, the per-step logic.
 
 ### 1.1. Core capabilities
 
@@ -55,7 +55,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 - **Warm-resume training** — restore model, validated optimizer topology, scheduler, scaler, completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG state from a matching generation-addressed sidecar.
 - **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
 - **TensorBoard and Weights & Biases callbacks** — opt-in via extras.
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` with a single method call. Defaults to the legacy `torch.onnx.export` path (no extra deps); pass `dynamo=True` (with `thekaveh-nnx[onnx-dynamo]` installed) to use PyTorch's newer `torch.export`-based exporter. Both exporters' FP32 feed-forward profiles are executed in ONNX Runtime and checked for parity ([Export conformance](export-conformance.md)).
+- **ONNX export** — `NNModel.to_onnx(path, example_input)` uses the legacy `torch.onnx.export`, which needs the `onnx` extra. `dynamo=True` uses PyTorch's `torch.export`-based exporter, which also needs `onnxscript` (the `onnx-dynamo` extra). Both exporters' FP32 feed-forward profiles are checked for parity in ONNX Runtime ([Export conformance](export-conformance.md)).
 
 ### 1.2. Specializations
 
@@ -79,6 +79,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 ### 2.1. Get running
 
+- [Install](../README.md#2-install) — a PyPI release or the current source, and the optional extras.
 - [Quickstart](quickstart.md) — five minutes to a trained model, paste-runnable.
 
 ### 2.2. Understand the design
@@ -100,6 +101,7 @@ If you've ever found yourself rewriting the same training loop, the same checkpo
 
 ### 2.4. Look things up
 
+- [Capability reference](capabilities.md) — every capability with its entry points, grouped by task.
 - [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
 - [Examples catalog](../examples/README.md) — annotated index of the runnable scripts under `examples/`.
 - [CONTRIBUTING](../CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.

@@ -9,6 +9,8 @@ pip install thekaveh-nnx                # core (covers every example not listed 
 python examples/01_synthetic_classification.py
 ```
 
+The examples track the current source. If one needs a feature that your PyPI release does not have, install the source as shown in the [README](../README.md#2-install).
+
 `01_synthetic_classification.py` and `25_conv_classifier.py` run on the core install alone (CI runs both on the core wheel and sdist).
 
 A handful of examples depend on optional extras — install them as needed:

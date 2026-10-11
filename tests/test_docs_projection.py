@@ -100,8 +100,68 @@ def test_primary_openers_share_centered_brand_contract_and_executive_summary():
         assert SUPPORT_LINE in text
         for badge in (*STATUS_BADGES, *CORE_STACK_BADGES, *OPTIONAL_STACK_BADGES):
             assert f'alt="{badge}"' in text
-    assert _lead_summary(readme) == _lead_summary(home)
-    assert 100 <= len(_lead_summary(readme).split()) <= 150
+    assert _lead_summary(readme) == _lead_summary(home)  # one shared summary, no length quota
+
+
+def _h2_titles(text: str) -> list[str]:
+    return [line[3:].split(". ", 1)[-1].strip() for line in text.splitlines() if line.startswith("## ")]
+
+
+def test_readme_reaches_install_and_a_first_model_before_the_detailed_reference():
+    """#472 NN-02: the reader gets installation and a first trained model
+    before the architecture walkthrough; the detailed capability inventory
+    lives on its own reference page, linked from the overview."""
+    readme = (build_docs.ROOT / "README.md").read_text(encoding="utf-8")
+    titles = _h2_titles(readme)
+    assert titles.index("Install") < titles.index("Quickstart") < titles.index("Architecture")
+    overview = readme[readme.index("## 1. Overview") : readme.index("## 2. Install")]
+    assert "(docs/capabilities.md)" in overview
+    assert "§11b" not in readme and "Builder.from_params" not in overview  # reference detail stays off the entry path
+    pages = {page.source.relative_to(build_docs.ROOT).as_posix() for _, group in load_sections() for page in group}
+    assert "docs/capabilities.md" in pages
+
+
+def test_install_guidance_separates_the_release_from_the_current_source():
+    """#472 NN-01: the newest PyPI release can lag the documented source, so
+    the README gives both routes; every extra the manifest defines is listed."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
+
+    readme = (build_docs.ROOT / "README.md").read_text(encoding="utf-8")
+    install = readme[readme.index("## 2. Install") : readme.index("## 3. Quickstart")]
+    assert "pip install thekaveh-nnx " in install
+    assert 'pip install "thekaveh-nnx[domains] @ git+https://github.com/thekaveh/NNx.git@main"' in install
+    extras = tomllib.loads((build_docs.ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]
+    for extra in set(extras) - {"dev", "notebook"}:
+        assert f'"thekaveh-nnx[{extra}]"' in install, extra
+    for page in ("docs/quickstart.md", "docs/index.md", "examples/README.md"):
+        assert "README.md#2-install" in (build_docs.ROOT / page).read_text(encoding="utf-8"), page
+
+
+def test_onnx_export_prerequisites_agree_across_surfaces():
+    """#472 NN-05: the legacy exporter needs the onnx package (torch raises
+    'Module onnx is not installed!' without it); dynamo also needs onnxscript."""
+    for path in ("README.md", "docs/index.md", "docs/capabilities.md"):
+        text = (build_docs.ROOT / path).read_text(encoding="utf-8")
+        assert "no extra dep" not in text, path
+        assert "onnx` extra" in text or "thekaveh-nnx[onnx]" in text, path
+        assert "onnxscript" in text, path
+
+
+def test_public_text_carries_no_private_knowledge_base_links():
+    """#472 NN-06/NN-07: [[name]] labels from the maintainers' notes render as
+    broken wiki links; the changelog and the builders' docstrings explain
+    themselves instead."""
+    label = re.compile(r"\[\[[a-z][a-z -]*\]\]")
+    assert not label.findall((build_docs.ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
+    for name in ("nn_optim_params_builder", "nn_scheduler_params_builder", "nn_transformer_params_builder"):
+        source = (build_docs.ROOT / "src" / "nnx" / "nn" / "params" / f"{name}.py").read_text(encoding="utf-8")
+        assert not label.findall(source), name
+    assert not label.findall((build_docs.ROOT / "docs" / "api.md").read_text(encoding="utf-8"))
 
 
 def test_primary_openers_place_product_poster_before_first_section():
@@ -308,6 +368,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
                 {"23. License": "License.md"},
                 {"24. Decision-model pilot": "Decision-model-pilot.md"},
                 {"25. Feature composition": "Feature-composition.md"},
+                {"26. Capability reference": "Capability-reference.md"},
             ]
         },
     ]
