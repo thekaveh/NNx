@@ -62,7 +62,7 @@ The [Capability reference](docs/capabilities.md) describes each item with its en
 
 ### 2.1. Release or source
 
-This documentation describes the source on `main`: NNx 0.4.0 and its unreleased changes. <!-- x-release-please-version -->
+This documentation describes the source on `main`: NNx 0.4.1 and its unreleased changes. <!-- x-release-please-version -->
 
 Install the newest release from PyPI, then check its version:
 
