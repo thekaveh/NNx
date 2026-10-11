@@ -82,7 +82,7 @@ If you need multi-node, elastic or sharded training, NNx is the wrong tool today
 | Aspect | NNx | HF `generate` |
 |---|---|---|
 | Greedy / top-k / top-p / temperature / repetition penalty | Yes | Yes |
-| KV cache | Yes (default-on; regression-tested at ≥1.2× CPU for the fixed 128-token workload) | Yes |
+| KV cache | Yes (default-on; regression-tested at ≥1.2× CPU for the fixed 256-token workload) | Yes |
 | Beam search | Not shipped | Yes |
 | Contrastive search | Not shipped | Yes |
 | Constrained generation (vocab / regex / grammar) | Not shipped | Yes |

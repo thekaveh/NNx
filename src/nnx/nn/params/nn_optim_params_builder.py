@@ -257,14 +257,15 @@ class NNOptimParamsBuilder:
     def build(self) -> NNOptimParams:
         """Construct the dataclass from the fields the user touched.
 
-        Pre-empts the dataclass's missing-required-argument TypeError
-        with an actionable Builder-level ValueError naming the variant
-        methods — matches the [[builder-pattern-shape]] §11b convention
-        that PR #52 established on NNTrainerParamsBuilder.
+        Checks for the required fields first: when no variant method was
+        called, it raises a ValueError that names the variant methods,
+        rather than the dataclass's missing-argument TypeError. Every
+        params Builder's ``build()`` behaves this way.
 
-        Forwards only the keys present in `self._fields` so the
-        dataclass defaults govern every untouched optional field —
-        that's what preserves the omit-when-default state() invariant.
+        Only the fields the caller set are passed to the dataclass, so
+        every untouched optional field keeps its default. ``state()``
+        omits fields at their default, so the built value has the same
+        ``state()`` and run id as one constructed directly.
 
         Raises:
             ValueError: if no variant method (`.adam`, `.adam_amsgrad`,
