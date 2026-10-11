@@ -143,7 +143,7 @@ def test_install_guidance_separates_the_release_from_the_current_source():
     # The documented version is the source's; release-please bumps the marked line.
     version = tomllib.loads((build_docs.ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     (marked,) = [line for line in install.splitlines() if "x-release-please-version" in line]
-    assert f"NNx {version}," in marked
+    assert f"NNx {version} and its unreleased changes" in marked
     config = json.loads((build_docs.ROOT / "release-please-config.json").read_text(encoding="utf-8"))
     bumped = {entry["path"] for entry in config["packages"]["."]["extra-files"]}
     assert {"README.md", "PYPI_README.md"} <= bumped
@@ -1328,3 +1328,16 @@ def test_feature_composition_site_and_wiki_render_one_report_with_an_identical_e
     assert line in site and line in wiki
     assert site.count("**verified**") == wiki.count("**verified**") > 0
     assert fc.staleness(registry, report, root=_composition_tracked_copy(tmp_path, "fresh")) is None
+
+
+def test_raw_html_images_resolve_from_each_site_page(tmp_path: Path):
+    """#472: MkDocs adjusts Markdown image paths for directory URLs but not
+    raw-HTML ``src``; the README's banner on the Repository overview page
+    (served at /Repository-Overview/) reaches the assets one level up."""
+    site = tmp_path / "site"
+    render_site(site)
+    home = (site / "index.md").read_text(encoding="utf-8")
+    overview = (site / "Repository-Overview.md").read_text(encoding="utf-8")
+    assert '<img src="assets/nnx-poster.png"' in home
+    assert '<img src="../assets/nnx-poster.png"' in overview
+    assert (site / "assets" / "nnx-poster.png").is_file()

@@ -50,6 +50,8 @@ result = model.predict(X=X_val)
 print(f"predicted {len(result.classes)} samples")
 ```
 
+Run ids are content-addressed, so running the same script again in the same directory raises `FileExistsError`. Delete `runs/` first, or pass `overwrite_existing=True` to `NNTrainParams`.
+
 ## 2. Common variations
 
 ### 2.1. GPU / Apple Silicon

@@ -1,7 +1,9 @@
 # 26. Capability reference
 
-This page lists what NNx provides, grouped by task. Each entry names its entry
-points and links to the guide or example that shows it. For installation and a
+This page lists the main capabilities of NNx, grouped by task. Each entry names
+its entry points and links to the guide or example that shows it. It describes
+the current source; an older PyPI release can lack some entries (see
+[Release or source](../README.md#21-release-or-source)). For installation and a
 first trained model, see the [README](../README.md#2-install) and the
 [Quickstart](quickstart.md). Extras named here are installed as
 `pip install "thekaveh-nnx[<extra>]"`.
@@ -42,7 +44,7 @@ first trained model, see the [README](../README.md#2-install) and the
   hooks. Built in: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom
   epoch tags), `TensorBoardCallback` (`tensorboard` extra) and `WandbCallback`
   (`wandb` extra). A legacy `Callable[[List[IDP]], None]` is still accepted.
-- **Data-parallel training.** `model.train(params, distributed=DDP())` runs
+- **Data-parallel training.** `model.train(params, distributed=nnx.distributed.DDP())` runs
   one process per device under `torchrun` on one machine. NNx partitions the
   data and keeps every update equal to the union batch's, and one rank writes
   the run. See
@@ -67,7 +69,7 @@ first trained model, see the [README](../README.md#2-install) and the
   sidecar. A resume restores the optimizer, scheduler, scaler, loader
   generators and every RNG stream; a torn or corrupted resume point is refused
   before anything is restored. See [Concepts §14](concepts.md#14-resuming-training).
-- **Bounded history.** `history=HistoryJournal(retention, chunk_size)` keeps a
+- **Bounded history.** `history=nnx.history.HistoryJournal(retention, chunk_size)` keeps a
   bounded window in memory and appends each record once to
   `runs/<id>/history/`, with lazy tail reads and CSV export.
 - **Experiment plans.** An immutable `ExperimentPlan` branches a configuration
@@ -164,6 +166,10 @@ clipping.
 - **Networks.** `FeedFwdNN`, `FeedFwdMoENN`, `ConvNN`, `GraphConvNN`,
   `GraphSageNN`, `GraphAttNN`, `TransformerNN` and `ViTNN` (`Nets.VIT` with
   `NNViTParams`). The graph networks need the `graph` extra.
+- **Causal language-model task.** `nnx.lm_tasks.CausalLMTask` provides the
+  next-token objective and evaluation for a `TransformerNN`, reporting token
+  NLL, perplexity and accuracy. See
+  [Quickstart §3.6](quickstart.md#36-causal-language-models).
 - **Language modeling** (`lm` extra). `TransformerNN` is a decoder-only model
   with RMSNorm, RoPE, SwiGLU, tied embeddings and a KV cache.
   `GenerativeNNModel.generate()` supports greedy, top-k, top-p and
@@ -198,6 +204,8 @@ clipping.
 - **Train-only preprocessing.** `nnx.preprocessing.Standardizer` fits on the
   training rows only and reloads from JSON. See
   `examples/preprocessing_offline.py`.
+- **Probabilities.** `NNModel.predict_proba(X, ProbabilitySpec(...))` returns
+  probabilities for an explicitly declared task; `predict()` is unchanged.
 - **Streaming prediction and metrics.** `NNModel.iter_predict(loader)` yields
   predictions batch by batch with bounded memory, and `nnx.streaming`
   provides mergeable metrics. See
@@ -230,8 +238,8 @@ clipping.
   `Builder.from_params(params)` rebuilds an existing value. See
   `examples/builder_branching.py`.
 - **Enum factories.** `Nets`, `Losses`, `Optims`, `Schedulers`, `Activations`,
-  `Devices`, `Checkpoints` and `NoiseSchedulers` construct their objects when
-  called.
+  `Devices` and `NoiseSchedulers` construct their objects when called.
+  `Checkpoints` names the checkpoint tags.
 - **Reproducibility.** `nnx.set_seed(seed)` seeds every RNG and cuDNN;
   `nnx.dataloader_worker_init_fn` seeds loader workers.
 - **Learning-rate finder** (`plots` extra). `nnx.lr_finder` runs an

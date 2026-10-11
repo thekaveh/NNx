@@ -128,5 +128,5 @@ def test_release_please_bumps_the_readme_version_line_and_its_pypi_copy_alike():
     (line,) = [entry for entry in readme.split("\n") if marker in entry]
     assert [entry for entry in pypi.split("\n") if marker in entry] == [line]
     bumped = _release_please_bump(readme, "9.8.7")
-    assert "NNx 9.8.7, the current source" in bumped
-    assert _release_please_bump(pypi, "9.8.7").count("NNx 9.8.7,") == 1
+    assert "NNx 9.8.7 and its unreleased changes" in bumped
+    assert _release_please_bump(pypi, "9.8.7").count("NNx 9.8.7 and") == 1

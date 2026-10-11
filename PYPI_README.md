@@ -62,7 +62,7 @@ The [Capability reference](https://github.com/thekaveh/NNx/blob/main/docs/capabi
 
 ### 2.1. Release or source
 
-This documentation describes NNx 0.4.0, the current source on `main`. <!-- x-release-please-version -->
+This documentation describes the source on `main`: NNx 0.4.0 and its unreleased changes. <!-- x-release-please-version -->
 
 Install the newest release from PyPI, then check its version:
 
@@ -166,7 +166,11 @@ print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 logits, classes = model.predict(X=X_val.numpy())  # returns PredictResult(logits=..., classes=...)
 ```
 
+Run ids are content-addressed, so running the same script again in the same directory raises `FileExistsError`. Delete `runs/` first, or pass `overwrite_existing=True` to `NNTrainParams`.
+
 ## 4. Advanced patterns
+
+These patterns use the current source; an older PyPI release can lack some of them (see [Release or source](#21-release-or-source)).
 
 ### 4.1. Switching networks
 
@@ -268,8 +272,8 @@ NNModelParams(..., precision=PrecisionPolicy("bf16"))                   # CPU, o
 NNModelParams(..., precision=PrecisionPolicy("fp16", fallback="fp32"))  # CUDA fp16, else recorded fp32
 ```
 
-An unsupported request fails before any run is reserved unless it names a
-fallback; `run.precision` records the requested and effective precision, the
+An unsupported request fails before any run is reserved, unless it names a
+fallback. `run.precision` records the requested and effective precision, the
 fallback reason and TF32. The legacy `mixed_precision=True` (CUDA FP16,
 silently FP32 elsewhere) keeps its meaning and run id. See
 [Quickstart §2.2](https://github.com/thekaveh/NNx/blob/main/docs/quickstart.md#22-precision-fp32-fp16-and-bf16).
@@ -304,8 +308,8 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 **Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
-3. The **Training-loop internals** run per-batch step hooks inside the data loop, then `_save_checkpoints` once per completed epoch; `_step_scheduler` steps each scheduler once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories that share one step-finalization helper. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
+3. The **training-loop internals** run the per-batch step hook inside the data loop and save checkpoints once per completed epoch. Each scheduler steps once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm and diffusion step factories also apply a NaN guard and gradient clipping.
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.
 

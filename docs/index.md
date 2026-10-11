@@ -65,7 +65,7 @@ The [Capability reference](capabilities.md) describes each item with its entry p
 ### 2.1. Get running
 
 - [Install](../README.md#2-install) — a PyPI release or the current source, and the optional extras.
-- [Quickstart](quickstart.md) — five minutes to a trained model, paste-runnable.
+- [Quickstart](quickstart.md) — a runnable example that trains a model in seconds.
 
 ### 2.2. Understand the design
 
@@ -91,7 +91,7 @@ The [Capability reference](capabilities.md) describes each item with its entry p
 - [Examples catalog](../examples/README.md) — annotated index of the runnable scripts under `examples/`.
 - [CONTRIBUTING](../CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
 - [Security policy](../SECURITY.md) — supported versions and private reporting instructions.
-- [CHANGELOG](../CHANGELOG.md) — user-visible changes per PR.
+- [CHANGELOG](../CHANGELOG.md) — release history and unreleased changes.
 
 ## 3. Status
 

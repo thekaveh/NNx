@@ -1056,8 +1056,15 @@ def _rewrite_reference_definitions(text: str, rewrite_target) -> str:
     return "".join(chunks)
 
 
-def rewrite_markdown(source: Path, text: str, source_map: dict[Path, str], surface: str = "wiki") -> str:
-    """Rewrite local Markdown links for a self-contained wiki page."""
+def rewrite_markdown(
+    source: Path, text: str, source_map: dict[Path, str], surface: str = "wiki", html_image_base: str = ""
+) -> str:
+    """Rewrite local Markdown links for a self-contained wiki page.
+
+    ``html_image_base`` prefixes a rewritten local image in raw HTML: MkDocs
+    resolves Markdown image paths against each page's directory URL but
+    leaves raw-HTML ``src`` as written, so a site page below the root needs
+    ``"../"`` (#472)."""
 
     def rewrite_target(target: str, *, is_image: bool) -> str | None:
         target = html_unescape(target)
@@ -1108,12 +1115,18 @@ def rewrite_markdown(source: Path, text: str, source_map: dict[Path, str], surfa
             return f"{prefix}[{link.label}]({link.target})"
         return f"{prefix}[{link.label}]({rewritten})"
 
+    def html_image(target: str) -> str | None:
+        rewritten = rewrite_target(target, is_image=True)
+        return None if rewritten is None else html_image_base + rewritten
+
     def replace_html_value(target: HtmlTarget) -> str:
         if target.attr != "srcset":
-            return rewrite_target(target.target, is_image=target.tag != "a") or target.target
+            if target.tag == "a":
+                return rewrite_target(target.target, is_image=False) or target.target
+            return html_image(target.target) or target.target
         rewritten_candidates = []
         for url, descriptor in _srcset_candidates(target.target):
-            rewritten = rewrite_target(url, is_image=True) or url
+            rewritten = html_image(url) or url
             rewritten_candidates.append(f"{rewritten} {descriptor}" if descriptor else rewritten)
         return ", ".join(rewritten_candidates)
 
