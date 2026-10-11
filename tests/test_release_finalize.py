@@ -115,3 +115,18 @@ def test_the_release_workflow_finalizes_the_release_branch():
     assert "python3 scripts/release/finalize_changelog.py CHANGELOG.md\n" in workflow
     assert "uv.lock CHANGELOG.md\n" in workflow  # both committed (through the API, FIX-033)
     assert '--release-notes "$RELEASE_TAG"' in workflow and "gh release edit" in workflow
+
+
+def test_release_please_bumps_the_readme_version_line_and_its_pypi_copy_alike():
+    """#472: the README names the version it documents on a marked line that
+    release-please bumps in README.md and PYPI_README.md (both extra-files);
+    the PyPI copy carries the line unchanged, so the bumped pair stays in
+    sync and `build_pypi_readme --check` passes on the release PR."""
+    marker = "x-release-please-version"
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    pypi = (ROOT / "PYPI_README.md").read_text(encoding="utf-8")
+    (line,) = [entry for entry in readme.split("\n") if marker in entry]
+    assert [entry for entry in pypi.split("\n") if marker in entry] == [line]
+    bumped = _release_please_bump(readme, "9.8.7")
+    assert "NNx 9.8.7, the current source" in bumped
+    assert _release_please_bump(pypi, "9.8.7").count("NNx 9.8.7,") == 1

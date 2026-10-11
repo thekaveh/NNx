@@ -26,8 +26,8 @@ first trained model, see the [README](../README.md#2-install) and the
   `NNModel` and `Trainer` alike. Built-in objectives: `supervised_objective`,
   `kd_objective`, `diffusion_objective` and `jepa_objective`.
 - **Custom steps.** The `train_step_fn` hook replaces the per-batch supervised
-  step with your own function, for autoencoders, VAEs, recommendation or other
-  methods, without changing NNx internals.
+  step with your own function. Use it for autoencoders, VAEs, recommendation
+  or other methods without changing NNx internals.
 - **Multi-optimizer `Trainer`.** `nnx.trainer.Trainer` parallels
   `NNModel.train()` for disjoint optimizers, such as GAN generator and
   discriminator or actor-critic. Each entry of its name-keyed optimizer
@@ -42,6 +42,11 @@ first trained model, see the [README](../README.md#2-install) and the
   hooks. Built in: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint` (custom
   epoch tags), `TensorBoardCallback` (`tensorboard` extra) and `WandbCallback`
   (`wandb` extra). A legacy `Callable[[List[IDP]], None]` is still accepted.
+- **Data-parallel training.** `model.train(params, distributed=DDP())` runs
+  one process per device under `torchrun` on one machine. NNx partitions the
+  data and keeps every update equal to the union batch's, and one rank writes
+  the run. See
+  [Quickstart §3.10](quickstart.md#310-data-parallel-training-on-one-machine).
 - **Opt-in compilation.** `model.train(params, compile=CompileSpec())` compiles
   the built-in step's FP32 forward pass; checkpoints, export and later
   inference stay eager. It records requested and effective state and never
@@ -108,9 +113,8 @@ first trained model, see the [README](../README.md#2-install) and the
 ## 4. Training methods
 
 - **Diffusion (DDPM).** `nnx.diffusion` provides LINEAR and COSINE noise
-  schedules, a conditional MLP denoiser (`DiffusionMLP`), a training step
-  factory or `diffusion_objective`, and a reverse-diffusion sampler
-  (`sample`).
+  schedules and a conditional MLP denoiser (`DiffusionMLP`). Train with a step
+  factory or `diffusion_objective`, and sample with `sample`.
 - **Distillation.** `kd_train_step_factory` mixes Hinton-style soft and hard
   losses with a frozen teacher. `feature_kd_train_step_factory` adds an MSE
   term between named intermediate activations. `born_again_train` iterates
@@ -194,6 +198,10 @@ clipping.
 - **Train-only preprocessing.** `nnx.preprocessing.Standardizer` fits on the
   training rows only and reloads from JSON. See
   `examples/preprocessing_offline.py`.
+- **Streaming prediction and metrics.** `NNModel.iter_predict(loader)` yields
+  predictions batch by batch with bounded memory, and `nnx.streaming`
+  provides mergeable metrics. See
+  [Concepts §21](concepts.md#21-streaming-prediction-and-mergeable-metrics-nnxstreaming).
 - **Calibration.** `nnx.calibration.fit_temperature` fits one temperature on a
   named calibration split and reports NLL, Brier and reliability before and
   after. See `examples/calibration_offline.py`.
@@ -204,8 +212,8 @@ clipping.
   without pooling incompatible observations and pairs two configurations by
   replicate key. See `examples/compare_seeds.py`.
 - **Typed decisions.** `nnx.decisions` asks `Choice`, `Boolean` or `Score`
-  questions and returns validated, labelled probabilities from a trained
-  classifier, a local NLI model or hosted Jev models (`jev` extra). See
+  questions and returns validated, labelled probabilities. Providers serve a
+  trained classifier, a local NLI model or hosted Jev models (`jev` extra). See
   [Typed decisions](decisions.md).
 
 ## 8. Configuration, diagnostics and typing
@@ -235,5 +243,8 @@ clipping.
 - **Model internals** (`viz` extra). `nnx.viz` provides `summary`,
   `weight_histogram`, `activation_map`, `attribute` (Captum), `gradient_flow`
   and `netron_export`, which also needs the `onnx` extra.
+- **Errors as values.** `nnx.result` provides opt-in `Ok` and `Err` values
+  for code that prefers to branch on a value; every NNx API still raises. See
+  [Concepts §27](concepts.md#27-errors-as-values-nnxresult).
 - **Typing.** NNx ships a PEP 561 `py.typed` marker, so `pyright` and `mypy`
   use its annotations.

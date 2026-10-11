@@ -1546,7 +1546,7 @@ alongside `NNModel` rather than replacing it:
   repetition_penalty, stop, seed, use_cache, logits_chain)`. The
   generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
-  the returned KV-cache. The fixed 128-token CPU regression test requires at
+  the returned KV-cache. The fixed 256-token CPU regression test requires at
   least a 1.2× improvement over full recomputation; other workloads and hardware
   vary. Greedy decoding
   is available via `temperature=0` (the default `temperature=1.0`

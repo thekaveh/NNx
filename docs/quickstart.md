@@ -2,7 +2,7 @@
 
 An end-to-end CPU example you can paste into a Python REPL. Trains a tiny feed-forward classifier on random data so you can verify the install in under five seconds.
 
-Install NNx first with `pip install thekaveh-nnx`. This guide describes the current source, and the newest PyPI release can be older; to install the source, or to choose extras, see the [README install section](../README.md#2-install).
+Install NNx first with `pip install thekaveh-nnx`. This guide describes the current source, and the newest PyPI release can be older. To install the source or choose extras, see the [README install section](../README.md#2-install).
 
 ## 1. Minimal example
 

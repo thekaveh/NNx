@@ -48,32 +48,17 @@ NNx is a lightweight PyTorch toolkit for repeatable training, evaluation and vis
 
 NNx owns the code that repeats across training projects: the loop, checkpoint handling and metric reporting. You write the model and, when you need to, the per-step logic.
 
-### 1.1. Core capabilities
+### 1.1. Capabilities
 
-- **Generic training loop** — callbacks, early stopping, schedulers, an FP32 / FP16 / BF16 precision policy, gradient clipping, gradient accumulation, and seeded reproducibility.
-- **Content-addressed checkpoint management** — FIRST / Q1 / Q2 / Q3 / LAST / BEST tags, ordered history → LAST → ancillary commits, and a `runs/best` pointer that advances only after the final durable save.
-- **Warm-resume training** — restore model, validated optimizer topology, scheduler, scaler, completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG state from a matching generation-addressed sidecar.
-- **Custom metrics injection** — plug in any `callable(Y_true, Y_pred) -> float` via `NNTrainParams.extra_metrics`.
-- **TensorBoard and Weights & Biases callbacks** — opt-in via extras.
-- **ONNX export** — `NNModel.to_onnx(path, example_input)` uses the legacy `torch.onnx.export`, which needs the `onnx` extra. `dynamo=True` uses PyTorch's `torch.export`-based exporter, which also needs `onnxscript` (the `onnx-dynamo` extra). Both exporters' FP32 feed-forward profiles are checked for parity in ONNX Runtime ([Export conformance](export-conformance.md)).
+- **Training loop** — `NNModel` train, evaluate and predict, with callbacks, schedulers, FP32/FP16/BF16 precision, gradient accumulation and clipping, declared metrics, and a multi-optimizer `Trainer`.
+- **Runs and resume** — content-addressed run directories, checkpoint tags, verified warm resume, experiment plans and provenance records.
+- **Tasks** — classification, regression, multilabel, ranking, graph classification and link prediction.
+- **Training methods** — custom step functions and objectives, distillation, contrastive learning, Mixup and CutMix, Mixture of Experts, diffusion, I-JEPA and DPO.
+- **Fine-tuning and transforms** — layer freezing, LoRA, DoRA, IA3, prefix and prompt tuning, quantization, pruning and model surgery.
+- **Networks and export** — feed-forward, convolutional, graph, transformer and ViT networks; a small language-model path; ONNX, Hub, safetensors and experimental GGUF export.
+- **Evaluation and decisions** — reproducible splits, calibration, abstention, multi-seed comparison and typed decisions.
 
-### 1.2. Specializations
-
-- **Fine-tuning (transfer learning)** — glob-pattern layer freezing, external state-dict loading, per-layer-group learning rates.
-- **Parameter-efficient fine-tuning (PEFT)** — **LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters**. Per-method `save_*_weights` / `load_*_weights` persist only the trainable delta.
-- **Multi-optimizer `Trainer`** — parallel to `NNModel.train()` for GAN / actor-critic workflows with a name-keyed dict of optimizers scoped via `NNParamGroupSpec`.
-- **Quantization** — PTQ INT8 weight-only (`quantize_int8`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`) via `torchao`.
-- **Pruning** — magnitude unstructured (checkpoint-safe) and 2:4 semi-structured via torchao.
-- **Model surgery** — `widen` / `deepen` (function-preserving Net2Net), `drop_layer`, `low_rank_factorize` (SVD), `expand_embedding`.
-- **Diffusion (DDPM)** — noise-prediction training and reverse-diffusion sampling.
-- **Training paradigms** — knowledge distillation (Hinton + FitNets-style feature-KD), contrastive (SimCLR / NT-Xent), Mixup, CutMix, sparse top-k Mixture-of-Experts (`MoELinear` + Switch-style aux loss), I-JEPA self-supervised pretraining, DPO preference fine-tuning, Born-Again iterated self-distillation; diffusion, I-JEPA and KD also as objectives over the shared update engine.
-- **Language modeling** — `TransformerNN` (decoder-only: RMSNorm + RoPE + SwiGLU + KV-cache) + `NNTransformerParams` + `NNTokenizerParams` + `GenerativeNNModel.generate()` with greedy / top-k / top-p / repetition-penalty sampling.
-- **Embeddings + FAISS** — contrastive text-embedder training + FAISS index export for downstream RAG.
-- **Experimental GGUF export** — write and inspect an NNx-tagged `.gguf`, or prepare a bundle for a runtime patched to support the NNx architecture. Stock llama.cpp, Ollama, and LM Studio do not implement `nnx_transformer`.
-- **HuggingFace Hub** — `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel` via the `PyTorchModelHubMixin`, plus safetensors checkpoint format.
-- **Model-internals visualization** — `nnx.viz.summary` (torchinfo) + `weight_histogram` + `activation_map` + `attribute` (Captum) + `gradient_flow` (per-layer gradient-norm diagnostic) + `netron_export`.
-- **Training-loop diagnostics** — `nnx.lr_finder(model, train_loader, *, loss_fn, ...)` returns the Smith-2017 suggested one-cycle `max_lr` plus a Plotly figure while restoring model state, mixed per-module modes, loader generators, and all global RNG streams.
-- **Type-checked downstream** — PEP 561 `py.typed` marker so consumers' `pyright` / `mypy` honor the public-surface annotations.
+The [Capability reference](capabilities.md) describes each item with its entry points. [Concepts](concepts.md) explains how the parts fit together.
 
 ## 2. Where to next
 
@@ -84,7 +69,7 @@ NNx owns the code that repeats across training projects: the loop, checkpoint ha
 
 ### 2.2. Understand the design
 
-- [Concepts](concepts.md) — what an `NNRun` is, where things land on disk, how the enum-as-factory pattern works, how the thirteen specialization subpackages compose (including the typed-decision inference branch).
+- [Concepts](concepts.md) — runs and their on-disk layout, the enum factories, and how the specialization subpackages compose.
 
 ### 2.3. Deep-dive guides
 
@@ -101,7 +86,7 @@ NNx owns the code that repeats across training projects: the loop, checkpoint ha
 
 ### 2.4. Look things up
 
-- [Capability reference](capabilities.md) — every capability with its entry points, grouped by task.
+- [Capability reference](capabilities.md) — the main capabilities with their entry points, grouped by task.
 - [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
 - [Examples catalog](../examples/README.md) — annotated index of the runnable scripts under `examples/`.
 - [CONTRIBUTING](../CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
@@ -110,4 +95,4 @@ NNx owns the code that repeats across training projects: the loop, checkpoint ha
 
 ## 3. Status
 
-Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix bugs (see [CHANGELOG](../CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
+Alpha. Before 1.0, bug fixes can change behavior (see the [Changelog](../CHANGELOG.md)), but public APIs are renamed only when they cannot work as designed.

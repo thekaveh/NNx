@@ -62,27 +62,29 @@ The [Capability reference](docs/capabilities.md) describes each item with its en
 
 ### 2.1. Release or source
 
-This documentation describes the current source on `main`. The newest PyPI release can be older: compare its version on [PyPI](https://pypi.org/project/thekaveh-nnx/#history) with the [Changelog](CHANGELOG.md). A release does not have the features or extras added after it, and `pip` warns when a requested extra does not exist in the installed version.
+This documentation describes NNx 0.4.0, the current source on `main`. <!-- x-release-please-version -->
 
-Install the newest release from PyPI:
+Install the newest release from PyPI, then check its version:
 
 ```bash
-pip install thekaveh-nnx                        # core: training, prediction, persistence
-pip install "thekaveh-nnx[domains]"             # + the vision, graph and plotting stacks
+pip install thekaveh-nnx
+python -c "import nnx; print(nnx.__version__)"
 ```
 
-Install the current source when you need a feature or extra that the release does not have:
+The newest PyPI release can be older than this documentation. An older release lacks the features and extras added after it, as listed in the [Changelog](CHANGELOG.md). In that case, install the current source instead:
 
 ```bash
 pip install "thekaveh-nnx @ git+https://github.com/thekaveh/NNx.git@main"
-pip install "thekaveh-nnx[domains] @ git+https://github.com/thekaveh/NNx.git@main"
+pip install "thekaveh-nnx[domains] @ git+https://github.com/thekaveh/NNx.git@main"   # with an extra
 ```
+
+The requirements and extras below describe this version. `pip` warns when a requested extra does not exist in the version it installs.
 
 ### 2.2. Requirements
 
-The core install is torch, NumPy, pandas, scikit-learn and a few small utilities: `import nnx` loads no vision, graph or plotting stack. Those stacks are the `vision`, `graph` and `plots` extras, and `domains` installs all three. Using one without its extra raises an `ImportError` that names the extra.
+The core install is torch, NumPy, pandas, scikit-learn and a few small utilities. `import nnx` loads no vision, graph or plotting stack. Those stacks are the `vision`, `graph` and `plots` extras, and `domains` installs all three. Using one without its extra raises an `ImportError` that names the extra.
 
-NNx needs Python 3.10 or later with PyTorch 2.4 or later (torchvision 0.19 or later with the `vision` extra), and is tested on Python 3.10 through 3.14. The [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) lists every tested combination and which have real CUDA evidence. Optional extras keep their own version constraints. The examples in [examples/](examples/) run on CPU.
+NNx needs Python 3.10 or later and PyTorch 2.4 or later; the `vision` extra needs torchvision 0.19 or later. It is tested on Python 3.10 through 3.14. The [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) lists every tested combination and which have real CUDA evidence. Optional extras keep their own version constraints. The examples in [examples/](examples/) run on CPU.
 
 ### 2.3. Optional extras
 
@@ -162,11 +164,6 @@ run = model.train(params=train_params, callbacks=[EarlyStopping(patience=5)])
 # 4. Use it
 print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 logits, classes = model.predict(X=X_val.numpy())  # returns PredictResult(logits=..., classes=...)
-
-# Opt-in probabilities with an explicit task declaration (predict() is unchanged)
-from nnx import ProbabilitySpec
-proba = model.predict_proba(X_val.numpy(), ProbabilitySpec(kind="categorical", class_axis=1))
-proba.probabilities, proba.decoded, proba.sample_ids  # softmax rows sum to 1; ids align with X_val
 ```
 
 ## 4. Advanced patterns
@@ -185,7 +182,17 @@ NNModelParams(net=Nets.GRAPH_ATT,   device=Devices.CPU, loss=Losses.CROSS_ENTROP
 
 See [examples/](examples/) for runnable end-to-end scripts.
 
-### 4.2. Reproducibility
+### 4.2. Probabilities
+
+`predict()` returns logits and classes. For probabilities, declare the task explicitly:
+
+```python
+from nnx import ProbabilitySpec
+proba = model.predict_proba(X_val.numpy(), ProbabilitySpec(kind="categorical", class_axis=1))
+proba.probabilities, proba.decoded, proba.sample_ids  # softmax rows sum to 1; ids align with X_val
+```
+
+### 4.3. Reproducibility
 
 ```python
 from nnx import set_seed, dataloader_worker_init_fn
@@ -194,7 +201,7 @@ DataLoader(..., worker_init_fn=dataloader_worker_init_fn)
 NNTrainParams(seed=42, ...)                         # pins again at train() entry
 ```
 
-### 4.3. Warm-resume training
+### 4.4. Warm-resume training
 
 ```python
 run = model.train(params=NNTrainParams(n_epochs=10, ...))
@@ -216,7 +223,7 @@ Callback and step state continues too. `EarlyStopping`'s patience, the I-JEPA EM
 
 > **Scope:** Loader and sampler generators are restored by stable seed identity. Exact continuation still requires `train_loader.num_workers=0`, because worker-local RNG state cannot be reconstructed. Resume happens at completed-epoch boundaries.
 
-### 4.4. Custom metrics
+### 4.5. Custom metrics
 
 ```python
 NNTrainParams(
@@ -236,7 +243,7 @@ NNTrainParams(..., metrics=[MetricSpec("nll"), MetricSpec("brier")], monitor=mon
 
 See [Concepts §6.4](docs/concepts.md#64-named-metrics-and-monitors): custom metrics register with `nnx.register_metric`, training records carry a whole-epoch `train_summary` and the epoch's monitor `selection`, and named-monitor runs never claim `runs/best`.
 
-### 4.5. Visualization
+### 4.6. Visualization
 
 ```python
 from nnx import VisUtils
@@ -245,7 +252,7 @@ fig.show()
 df = VisUtils.classification_report(y_true, y_pred)  # DataFrame
 ```
 
-### 4.6. Auto device detection
+### 4.7. Auto device detection
 
 ```python
 from nnx import Devices
@@ -253,7 +260,7 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.get(), loss=Losses.CROSS_ENTROPY
 # Devices.get() picks MPS (Apple) > CUDA > CPU.
 ```
 
-### 4.7. Precision (FP32 / FP16 / BF16)
+### 4.8. Precision (FP32 / FP16 / BF16)
 
 ```python
 from nnx import PrecisionPolicy
@@ -267,7 +274,7 @@ fallback reason and TF32. The legacy `mixed_precision=True` (CUDA FP16,
 silently FP32 elsewhere) keeps its meaning and run id. See
 [Quickstart §2.2](docs/quickstart.md#22-precision-fp32-fp16-and-bf16).
 
-### 4.8. Scheduler choices
+### 4.9. Scheduler choices
 
 By default the scheduler is `ReduceLROnPlateau` driven by the params dataclass. Pass `kind=` to switch:
 
@@ -277,7 +284,7 @@ NNSchedulerParams(..., kind=Schedulers.COSINE_ANNEALING, T_max=100)
 # Or: STEP, ONE_CYCLE, LINEAR_WARMUP_DECAY
 ```
 
-### 4.9. Loading a run
+### 4.10. Loading a run
 
 ```python
 from nnx import NNRun, NNCheckpoint, Checkpoints
@@ -297,7 +304,7 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 **Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The remaining specialization packages provide model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`), and diagnostics (`viz`) that compose around the loop rather than injecting hooks.
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; `_step_helpers` supplies shared step finalization. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
 3. The **Training-loop internals** run per-batch step hooks inside the data loop, then `_save_checkpoints` once per completed epoch; `_step_scheduler` steps each scheduler once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm/diffusion step factories additionally route through `finalize_step` (NaN guard + grad-clip).
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.
@@ -311,11 +318,11 @@ The documentation below covers the public API, architecture, extension contracts
 ### 6.1. Conceptual + reference
 
 - [Concepts](docs/concepts.md) — architecture, persistence layout, the callback protocol and every specialization in detail.
-- [Capability reference](docs/capabilities.md) — every capability with its entry points, grouped by task.
+- [Capability reference](docs/capabilities.md) — the main capabilities with their entry points, grouped by task.
 - [Quickstart](docs/quickstart.md) — a runnable example with variations to copy and adapt.
 - [Language modeling](docs/lm.md) — train a small decoder-only `TransformerNN` end to end on CPU and generate text.
 - [Direct Preference Optimization](docs/dpo.md) — fine-tune a language model on `(prompt, chosen, rejected)` preference pairs against a frozen reference policy, without reward modeling or RL.
-- [Typed decisions](docs/decisions.md) — ask `Choice`, `Boolean` or `Score` questions and get validated, labelled probabilities from trained classifiers, NLI models or hosted Jev models; includes decision jobs and the provider benchmark.
+- [Typed decisions](docs/decisions.md) — ask `Choice`, `Boolean` or `Score` questions and get validated, labelled probabilities. Covers the providers, decision jobs and the provider benchmark.
 - [I-JEPA](docs/jepa.md) — self-supervised pretraining of a vision encoder by predicting masked patches in latent space.
 - [Experimental GGUF export](docs/gguf.md) — write and inspect an NNx-tagged GGUF file, and the current stock-runtime limits.
 - [HuggingFace Hub](docs/hub.md) — safetensors checkpoints and `save_pretrained` / `push_to_hub` / `from_pretrained` on `NNModel`.
@@ -328,7 +335,7 @@ The documentation below covers the public API, architecture, extension contracts
 
 ### 6.2. Workflow + history
 
-- [Examples catalog](examples/README.md) — ordered tour of the 26 runnable scripts under `examples/`, grouped foundational to specialized (core loop, fine-tuning, paradigms, quantization, embeddings, language modeling, GGUF inspection, self-supervised learning, pruning, surgery, explainability, DPO, and distillation variants).
+- [Examples catalog](examples/README.md) — an ordered tour of the runnable scripts under `examples/`, from the core loop to specialized methods.
 - [Test import boundaries](tests/README.md) — when tests should use the public facade and when a deep implementation import is intentional.
 - [Contributing](CONTRIBUTING.md) — setup, back-compat invariants, test policy, the omit-when-default rule for params, what we will and won't merge.
 - [Security policy](SECURITY.md) — supported versions, private vulnerability reporting, and the checkpoint trust boundary.
@@ -338,7 +345,7 @@ The documentation below covers the public API, architecture, extension contracts
 
 ### 7.1. Status
 
-Alpha. API is stable for the existing `thekaveh/ml` notebook consumer; pre-1.0 means we'll fix obvious bugs (see [CHANGELOG](CHANGELOG.md)) without renaming public APIs unless they're broken in ways notebooks can't work around.
+Alpha. Before 1.0, bug fixes can change behavior (see the [Changelog](CHANGELOG.md)), but public APIs are renamed only when they cannot work as designed.
 
 ### 7.2. Contributing
 

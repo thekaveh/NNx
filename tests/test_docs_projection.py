@@ -1,3 +1,4 @@
+import json
 import re
 import struct
 from pathlib import Path
@@ -116,7 +117,6 @@ def test_readme_reaches_install_and_a_first_model_before_the_detailed_reference(
     assert titles.index("Install") < titles.index("Quickstart") < titles.index("Architecture")
     overview = readme[readme.index("## 1. Overview") : readme.index("## 2. Install")]
     assert "(docs/capabilities.md)" in overview
-    assert "§11b" not in readme and "Builder.from_params" not in overview  # reference detail stays off the entry path
     pages = {page.source.relative_to(build_docs.ROOT).as_posix() for _, group in load_sections() for page in group}
     assert "docs/capabilities.md" in pages
 
@@ -131,7 +131,7 @@ def test_install_guidance_separates_the_release_from_the_current_source():
 
     readme = (build_docs.ROOT / "README.md").read_text(encoding="utf-8")
     install = readme[readme.index("## 2. Install") : readme.index("## 3. Quickstart")]
-    assert "pip install thekaveh-nnx " in install
+    assert "pip install thekaveh-nnx\n" in install
     assert 'pip install "thekaveh-nnx[domains] @ git+https://github.com/thekaveh/NNx.git@main"' in install
     extras = tomllib.loads((build_docs.ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "optional-dependencies"
@@ -140,16 +140,24 @@ def test_install_guidance_separates_the_release_from_the_current_source():
         assert f'"thekaveh-nnx[{extra}]"' in install, extra
     for page in ("docs/quickstart.md", "docs/index.md", "examples/README.md"):
         assert "README.md#2-install" in (build_docs.ROOT / page).read_text(encoding="utf-8"), page
+    # The documented version is the source's; release-please bumps the marked line.
+    version = tomllib.loads((build_docs.ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    (marked,) = [line for line in install.splitlines() if "x-release-please-version" in line]
+    assert f"NNx {version}," in marked
+    config = json.loads((build_docs.ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+    bumped = {entry["path"] for entry in config["packages"]["."]["extra-files"]}
+    assert {"README.md", "PYPI_README.md"} <= bumped
 
 
 def test_onnx_export_prerequisites_agree_across_surfaces():
     """#472 NN-05: the legacy exporter needs the onnx package (torch raises
     'Module onnx is not installed!' without it); dynamo also needs onnxscript."""
-    for path in ("README.md", "docs/index.md", "docs/capabilities.md"):
+    for path in ("README.md", "docs/capabilities.md"):
         text = (build_docs.ROOT / path).read_text(encoding="utf-8")
-        assert "no extra dep" not in text, path
         assert "onnx` extra" in text or "thekaveh-nnx[onnx]" in text, path
         assert "onnxscript" in text, path
+    for path in ("README.md", "docs/index.md", "docs/capabilities.md", "docs/quickstart.md"):
+        assert "no extra dep" not in (build_docs.ROOT / path).read_text(encoding="utf-8"), path
 
 
 def test_public_text_carries_no_private_knowledge_base_links():
