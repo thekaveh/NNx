@@ -4,6 +4,8 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
+## [Unreleased]
+
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 
 
@@ -19,8 +21,6 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 * repair audited documentation across README, site and wiki ([#472](https://github.com/thekaveh/NNx/issues/472)) ([812d6d1](https://github.com/thekaveh/NNx/commit/812d6d1a515ca0a20f40bb0bf67f24cfe95facf9))
 * repair the audited documentation across README, site and wiki ([#472](https://github.com/thekaveh/NNx/issues/472)) ([ff082fc](https://github.com/thekaveh/NNx/commit/ff082fc31a3c8b8c174dbb6dfe13f43b8f7bd84d))
 * version-aware install guidance and the audit's follow-ups ([#472](https://github.com/thekaveh/NNx/issues/472)) ([b8e12f6](https://github.com/thekaveh/NNx/commit/b8e12f64e3488de8c79a388ff7e68bde7c9af836))
-
-## [Unreleased]
 
 ## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
 
