@@ -1181,7 +1181,7 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 
 `nnx.viz.gradient_flow(model)` is the diagnostic for vanishing / exploding gradients during training. Call after `loss.backward()` and before `optimizer.zero_grad()`; returns a Plotly bar chart of per-trainable-parameter L2 gradient norms. Frozen parameters (`requires_grad=False`) and parameters that weren't reached by the forward pass (gradient is `None`) are skipped. Raises `ValueError` with a helpful message if no parameter has a gradient — the usual cause is forgetting `loss.backward()`.
 
-`nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/). Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install thekaveh-nnx[viz-interactive]`).
+`nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/); the export needs the `onnx` extra. Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install thekaveh-nnx[viz-interactive]`).
 
 ```python
 import torch
@@ -1546,7 +1546,7 @@ alongside `NNModel` rather than replacing it:
   repetition_penalty, stop, seed, use_cache, logits_chain)`. The
   generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
-  the returned KV-cache. The fixed 128-token CPU regression test requires at
+  the returned KV-cache. The fixed 256-token CPU regression test requires at
   least a 1.2× improvement over full recomputation; other workloads and hardware
   vary. Greedy decoding
   is available via `temperature=0` (the default `temperature=1.0`

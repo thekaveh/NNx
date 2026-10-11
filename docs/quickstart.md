@@ -2,6 +2,8 @@
 
 An end-to-end CPU example you can paste into a Python REPL. Trains a tiny feed-forward classifier on random data so you can verify the install in under five seconds.
 
+Install NNx first with `pip install thekaveh-nnx`. This guide describes the current source, and the newest PyPI release can be older. To install the source or choose extras, see the [README install section](../README.md#2-install).
+
 ## 1. Minimal example
 
 ```python
@@ -47,6 +49,8 @@ print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 result = model.predict(X=X_val)
 print(f"predicted {len(result.classes)} samples")
 ```
+
+Run ids are content-addressed, so running the same script again in the same directory raises `FileExistsError`. Delete `runs/` first, or pass `overwrite_existing=True` to `NNTrainParams`.
 
 ## 2. Common variations
 

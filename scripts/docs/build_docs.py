@@ -237,7 +237,9 @@ def _render_page(page: Page, surface: str, source_map: dict[Path, str]) -> str:
     text = page.source.read_text(encoding="utf-8")
     if page.source.name == "LICENSE":
         text = f"# {page.number}. License\n\n```text\n{text.rstrip()}\n```\n"
-    return rewrite_markdown(page.source, text, source_map, surface=surface)
+    # A site page below the root (directory URLs) reaches the assets one level up.
+    html_image_base = "../" if surface == "site" and page.slug != "Home" else ""
+    return rewrite_markdown(page.source, text, source_map, surface=surface, html_image_base=html_image_base)
 
 
 def _prepare_output(output: Path) -> None:
@@ -362,9 +364,12 @@ def validate_links(root: Path, surface: str) -> None:
             validate_destination(source, destination)
 
     def validate_html(source: Path, text: str) -> None:
+        # MkDocs serves a site page below the root at <stem>/ and leaves raw
+        # HTML paths as written, so they resolve from that directory (#472).
+        served = root / source.stem / source.name if surface == "site" and source.name != "index.md" else source
         for target in iter_html_targets(text):
             for destination in html_target_destinations(target):
-                validate_destination(source, destination)
+                validate_destination(served if _lookup_path(destination) else source, destination)
         css_parser = _EmbeddedCssParser()
         css_parser.feed(text)
         for css in css_parser.snippets:

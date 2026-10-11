@@ -9222,14 +9222,15 @@ Construct the dataclass from the fields the user touched.
 **Details**
 
 ```text
-Pre-empts the dataclass's missing-required-argument TypeError
-with an actionable Builder-level ValueError naming the variant
-methods — matches the [[builder-pattern-shape]] §11b convention
-that PR #52 established on NNTrainerParamsBuilder.
+Checks for the required fields first: when no variant method was
+called, it raises a ValueError that names the variant methods,
+rather than the dataclass's missing-argument TypeError. Every
+params Builder's ``build()`` behaves this way.
 
-Forwards only the keys present in `self._fields` so the
-dataclass defaults govern every untouched optional field —
-that's what preserves the omit-when-default state() invariant.
+Only the fields the caller set are passed to the dataclass, so
+every untouched optional field keeps its default. ``state()``
+omits fields at their default, so the built value has the same
+``state()`` and run id as one constructed directly.
 
 Raises:
     ValueError: if no variant method (`.adam`, `.adam_amsgrad`,
@@ -9444,14 +9445,15 @@ Construct the dataclass from the fields the user touched.
 **Details**
 
 ```text
-Pre-empts the dataclass's missing-required-argument TypeError
-with an actionable Builder-level ValueError naming the variant
-methods — matches the [[builder-pattern-shape]] §11b convention
-that PR #52 established on NNTrainerParamsBuilder.
+Checks for the required fields first: when no variant method was
+called, it raises a ValueError that names the variant methods,
+rather than the dataclass's missing-argument TypeError. Every
+params Builder's ``build()`` behaves this way.
 
-Forwards only the keys present in `self._fields` so the
-dataclass defaults govern every untouched field — that's what
-preserves the omit-when-default state() invariant.
+Only the fields the caller set are passed to the dataclass, so
+every untouched field keeps its default. ``state()`` omits fields
+at their default, so the built value has the same ``state()`` and
+run id as one constructed directly.
 
 Raises:
     ValueError: if no variant method (`.reduce_on_plateau`,
@@ -9644,11 +9646,10 @@ Construct the dataclass.
 **Details**
 
 ```text
-Pre-empts the dataclass's missing-required-argument TypeError
-with an actionable Builder-level ValueError naming the setter
-methods that haven't been called yet — matches the
-[[builder-pattern-shape]] §11b convention that PR #52
-established on NNTrainerParamsBuilder.
+Checks for the required fields first: when a required setter was
+not called, it raises a ValueError that names the missing setter
+methods, rather than the dataclass's missing-argument TypeError.
+Every params Builder's ``build()`` behaves this way.
 
 Supplies `dropout_prob=0.0` — the one dead parent-NNParams field
 the TransformerNN net never reads but the parent dataclass

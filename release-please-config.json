@@ -19,6 +19,14 @@
         {
           "type": "generic",
           "path": "docs/api.md"
+        },
+        {
+          "type": "generic",
+          "path": "README.md"
+        },
+        {
+          "type": "generic",
+          "path": "PYPI_README.md"
         }
       ]
     }
