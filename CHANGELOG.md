@@ -6,6 +6,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Fixed
+
+- **A DDP fit releases its wrapper when it ends.** After `train(distributed=DDP())`, including one that raised (a non-finite loss, say), the `DistributedDataParallel` wrapper and its hold on the process group are dropped. They no longer live on in an exception's traceback until an arbitrary garbage collection, possibly after the group is destroyed. `nnx.distributed.shutdown()` also collects such garbage before leaving the group ([#478](https://github.com/thekaveh/NNx/issues/478)).
+
 ## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
 
 ### Added

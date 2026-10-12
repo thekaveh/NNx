@@ -13,6 +13,9 @@ reference. Not collected by pytest (no ``test_`` prefix).
 
 from __future__ import annotations
 
+import atexit
+import faulthandler
+import gc
 import os
 import sys
 import traceback
@@ -183,6 +186,11 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         except BaseException as error:  # noqa: BLE001 - recorded for the test
             out["error"] = type(error).__name__
             out["message"] = str(error)
+        # #478: the failed fit's DDP wrapper is dropped on every rank, even the
+        # one whose error (and its traceback) is still alive here.
+        from torch.nn.parallel import DistributedDataParallel
+
+        out["live_ddp"] = sum(isinstance(item, DistributedDataParallel) for item in gc.get_objects())
     elif name == "preflight":
         out["errors"] = {}
         attempts = {
@@ -526,15 +534,48 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 handle.write(run.id)
         out["rng_after"] = torch.get_rng_state()
         out["hashed"], out["verified"] = len(hashed), len(verified)
+    elif name == "parked":
+        # #478: rank 1 parks while rank 0 waits at a barrier, so the scenario
+        # hangs; its faulthandler dump must name where rank 1 is.
+        if rank == 1:
+            _parked_for_diagnostics()
+        torch.distributed.barrier()
     else:
         raise SystemExit(f"unknown scenario {name}")
     return out
 
 
+def _parked_for_diagnostics() -> None:
+    import time
+
+    time.sleep(float(os.environ.get("NNX_DDP_PARK_SECONDS", "20")))
+
+
+def _watch_for_hangs(out_dir: str) -> None:
+    """#478: every thread's stack goes to ``faults-<pid>.txt`` in OUT_DIR when
+    the rank aborts (SIGABRT, SIGSEGV, ...) and, once, after
+    ``NNX_DDP_DUMP_AFTER`` seconds (default 200, before ``launch()``'s
+    240 s timeout), so a failed or hung scenario says where each rank was.
+    The watchdog stays armed through teardown and interpreter exit, where a
+    rank can also hang."""
+    faults = open(os.path.join(out_dir, f"faults-{os.getpid()}.txt"), "w", encoding="utf-8")  # noqa: SIM115
+    faulthandler.enable(file=faults, all_threads=True)
+    faulthandler.dump_traceback_later(float(os.environ.get("NNX_DDP_DUMP_AFTER", "200")), repeat=False, file=faults)
+
+
+def _mark(phase: str) -> None:
+    """A per-rank progress line on stderr (#478): a failed launch shows the
+    last phase each rank reached."""
+    print(f"[ddp-scenario pid={os.getpid()} rank={os.environ.get('RANK', '?')}] {phase}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     name, out_dir = sys.argv[1], sys.argv[2]
     os.chdir(out_dir)
+    _watch_for_hangs(out_dir)
+    atexit.register(_mark, "interpreter exiting")
     rank, world_size = nnx_dist.init_process_group(timeout_seconds=float(os.environ.get("NNX_DDP_TIMEOUT", "60")))
+    _mark(f"joined the group: {name}")
     try:
         result = scenario(name, rank, world_size)
     except BaseException:
@@ -543,8 +584,10 @@ def main() -> None:
     finally:
         pass
     torch.save(result, os.path.join(out_dir, f"rank{rank}.pt"))
+    _mark("result saved")
     if not result.get("teardown_done"):
         nnx_dist.shutdown()  # leave together (a no-op when the scenario already did)
+    _mark("left the group")
 
 
 if __name__ == "__main__":
