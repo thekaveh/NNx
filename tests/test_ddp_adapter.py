@@ -418,12 +418,14 @@ def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
     """#478: a scenario that hangs or aborts says where each rank was. Every
     rank's faulthandler dumps its stacks before the launch timeout, and
     launch() attaches them to the failure."""
-    monkeypatch.setenv("NNX_DDP_DUMP_AFTER", "4")
-    monkeypatch.setenv("NNX_DDP_PARK_SECONDS", "20")
-    monkeypatch.setenv("NNX_DDP_TIMEOUT", "15")  # the ranks also end on their own afterwards
+    # The dump is timed from the rank's start; torchrun startup and imports
+    # take several seconds on a CI runner, so the launch allows ample time.
+    monkeypatch.setenv("NNX_DDP_DUMP_AFTER", "3")
+    monkeypatch.setenv("NNX_DDP_PARK_SECONDS", "40")
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "35")  # the ranks also end on their own afterwards
     with pytest.raises(AssertionError) as caught:
-        launch("parked", tmp_path / "parked", timeout=12)
+        launch("parked", tmp_path / "parked", timeout=30)
     message = str(caught.value)
-    assert "timed out after 12 s" in message and "rank stacks:" in message
+    assert "timed out after 30 s" in message and "rank stacks:" in message
     assert "_parked_for_diagnostics" in message  # the parked rank's own frame
     assert message.count("joined the group: parked") == 2  # each rank's last phase
