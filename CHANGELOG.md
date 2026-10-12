@@ -6,12 +6,15 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Fixed
+
+- **A DDP fit releases its wrapper when it ends.** After `train(distributed=DDP())`, including one that raised (a non-finite loss, say), the `DistributedDataParallel` wrapper and its hold on the process group are dropped. They no longer live on in an exception's traceback until an arbitrary garbage collection, possibly after the group is destroyed. `nnx.distributed.shutdown()` also collects such garbage before leaving the group ([#478](https://github.com/thekaveh/NNx/issues/478)).
+
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 
 
 ### Bug Fixes
 
-* **release:** build the artifact smoke venvs on the runner's work disk ([f629865](https://github.com/thekaveh/NNx/commit/f62986590a171ea5f69b20d9f821596946793631))
 * **release:** build the artifact smoke venvs on the runner's work disk ([76b6706](https://github.com/thekaveh/NNx/commit/76b670649489281a03e5ada16d5ed8bc595de813)), closes [#445](https://github.com/thekaveh/NNx/issues/445)
 
 
