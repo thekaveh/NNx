@@ -14,7 +14,6 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Bug Fixes
 
-* **release:** build the artifact smoke venvs on the runner's work disk ([f629865](https://github.com/thekaveh/NNx/commit/f62986590a171ea5f69b20d9f821596946793631))
 * **release:** build the artifact smoke venvs on the runner's work disk ([76b6706](https://github.com/thekaveh/NNx/commit/76b670649489281a03e5ada16d5ed8bc595de813)), closes [#445](https://github.com/thekaveh/NNx/issues/445)
 
 
