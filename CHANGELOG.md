@@ -6,6 +6,22 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **release:** build the artifact smoke venvs on the runner's work disk ([f629865](https://github.com/thekaveh/NNx/commit/f62986590a171ea5f69b20d9f821596946793631))
+* **release:** build the artifact smoke venvs on the runner's work disk ([76b6706](https://github.com/thekaveh/NNx/commit/76b670649489281a03e5ada16d5ed8bc595de813)), closes [#445](https://github.com/thekaveh/NNx/issues/445)
+
+
+### Documentation
+
+* fix the site banner path and the re-audit's follow-ups ([#472](https://github.com/thekaveh/NNx/issues/472)) ([cb36cd1](https://github.com/thekaveh/NNx/commit/cb36cd11908ca0ea7f568281fbb981784714a6a5))
+* repair audited documentation across README, site and wiki ([#472](https://github.com/thekaveh/NNx/issues/472)) ([812d6d1](https://github.com/thekaveh/NNx/commit/812d6d1a515ca0a20f40bb0bf67f24cfe95facf9))
+* repair the audited documentation across README, site and wiki ([#472](https://github.com/thekaveh/NNx/issues/472)) ([ff082fc](https://github.com/thekaveh/NNx/commit/ff082fc31a3c8b8c174dbb6dfe13f43b8f7bd84d))
+* version-aware install guidance and the audit's follow-ups ([#472](https://github.com/thekaveh/NNx/issues/472)) ([b8e12f6](https://github.com/thekaveh/NNx/commit/b8e12f64e3488de8c79a388ff7e68bde7c9af836))
+
 ## [0.4.0](https://github.com/thekaveh/NNx/compare/v0.3.0...v0.4.0) (2026-10-09)
 
 ### Added
