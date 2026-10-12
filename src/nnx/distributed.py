@@ -85,11 +85,12 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import gc
 import math
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import torch
 import torch.distributed as dist
@@ -154,6 +155,10 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
         raise ValueError(f"timeout_seconds must be a finite number > 0, got {timeout_seconds!r}")
     if not dist.is_available() or not dist.is_initialized():
         return
+    # A DDP wrapper still reachable only through garbage (an exception's
+    # traceback, say) holds the group through its Reducer: collect it while
+    # the group is alive, not at an arbitrary later point (#478).
+    gc.collect()
     reason = "it timed out"
     try:
         work = dist.barrier(async_op=True)
@@ -463,6 +468,15 @@ class _DDPSession:
         )
         self.in_step = False
         self.validation_ids: list[int] = []
+
+    def release(self) -> None:
+        """Drop the DDP wrapper when the fit ends (#478). Its Reducer holds
+        the process group; a rank that raised (a non-finite loss, say) would
+        otherwise keep it alive through the exception's traceback until an
+        arbitrary garbage collection, possibly after the group is destroyed.
+        The session's collectives (``gather``, ``sum``) keep working."""
+        self.module = cast(Any, None)
+        self._net = cast(Any, None)
 
     # the forward the train step routes through DDP; everything else is canonical
     def forward(self, *args: Any, **kwargs: Any) -> Any:

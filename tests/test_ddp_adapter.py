@@ -45,11 +45,24 @@ def launch(
     except subprocess.TimeoutExpired as expired:  # say where it hung
         raise AssertionError(
             f"torchrun {scenario} timed out after {timeout:.0f} s:\n{_text(expired.stdout)[-4000:]}\n"
-            f"{_text(expired.stderr)[-6000:]}"
+            f"{_text(expired.stderr)[-6000:]}{_rank_stacks(out)}"
         ) from None
     if check and completed.returncode != 0:
-        raise AssertionError(f"torchrun {scenario} failed:\n{completed.stdout[-4000:]}\n{completed.stderr[-6000:]}")
+        raise AssertionError(
+            f"torchrun {scenario} failed:\n{completed.stdout[-4000:]}\n{completed.stderr[-6000:]}{_rank_stacks(out)}"
+        )
     return completed
+
+
+def _rank_stacks(out: Path) -> str:
+    """#478: the stacks each rank's faulthandler wrote (on an abort, or before
+    the launch timeout), for a failure message."""
+    dumps = [
+        f"\n--- {path.name} ---\n{path.read_text(encoding='utf-8', errors='replace')[-6000:]}"
+        for path in sorted(out.glob("faults-*.txt"))
+        if path.stat().st_size
+    ]
+    return "\n\nrank stacks:" + "".join(dumps) if dumps else ""
 
 
 def _text(output: object) -> str:
@@ -217,6 +230,7 @@ def test_a_non_finite_loss_on_one_rank_stops_every_rank(tmp_path):
     errors = results(out)
     assert [rank["error"] for rank in errors] == ["FloatingPointError", "FloatingPointError"]
     assert any("non-finite training loss on rank(s)" in rank["message"] for rank in errors)
+    assert [rank["live_ddp"] for rank in errors] == [0, 0]  # released on every rank (#478)
 
 
 def test_unequal_step_counts_fail_collectively_not_hang(tmp_path):
@@ -398,3 +412,20 @@ def test_single_process_entry_points_run_in_a_one_rank_group(tmp_path):
         assert result["study_written"]
     else:  # without the optuna extra the search fails on its import, not on the guard
         assert "optuna" in result["errors"]["search"] and "single process" not in result["errors"]["search"]
+
+
+def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
+    """#478: a scenario that hangs or aborts says where each rank was. Every
+    rank's faulthandler dumps its stacks before the launch timeout, and
+    launch() attaches them to the failure."""
+    # The dump is timed from the rank's start; torchrun startup and imports
+    # take several seconds on a CI runner, so the launch allows ample time.
+    monkeypatch.setenv("NNX_DDP_DUMP_AFTER", "3")
+    monkeypatch.setenv("NNX_DDP_PARK_SECONDS", "40")
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "35")  # the ranks also end on their own afterwards
+    with pytest.raises(AssertionError) as caught:
+        launch("parked", tmp_path / "parked", timeout=30)
+    message = str(caught.value)
+    assert "timed out after 30 s" in message and "rank stacks:" in message
+    assert "_parked_for_diagnostics" in message  # the parked rank's own frame
+    assert message.count("joined the group: parked") == 2  # each rank's last phase

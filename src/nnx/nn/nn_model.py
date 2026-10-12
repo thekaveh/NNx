@@ -1529,6 +1529,8 @@ def _distributing(model: Any, session: Optional[Any]) -> Iterator[None]:
         yield
     finally:
         model._ddp_session = previous
+        if session is not None:
+            session.release()  # the wrapper does not outlive the fit (#478)
 
 
 class _Replay:
