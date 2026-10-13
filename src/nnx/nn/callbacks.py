@@ -120,19 +120,18 @@ def _warn_at_user_frame(
     frame = sys._getframe(1)
     while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).split(".")[0] == "nnx":
         frame = frame.f_back
-    where = dict(
-        filename=frame.f_code.co_filename,
-        lineno=frame.f_lineno,
-        module=frame.f_globals.get("__name__"),
-        registry=frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None,
-    )
+    filename, lineno = frame.f_code.co_filename, frame.f_lineno
+    module = frame.f_globals.get("__name__")
+    registry = frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None
     try:
-        warnings.warn_explicit(message, category, **where, module_globals=frame.f_globals)
+        warnings.warn_explicit(
+            message, category, filename, lineno, module=module, registry=registry, module_globals=frame.f_globals
+        )
     except (ImportError, ValueError):
         # A REPL / ``-c`` / notebook ``__main__`` has no loader to read its
         # source from, and CPython raises while looking it up (before any
         # filter runs): warn without the source line rather than crash.
-        warnings.warn_explicit(message, category, **where)
+        warnings.warn_explicit(message, category, filename, lineno, module=module, registry=registry)
 
 
 class EarlyStopping(Callback):

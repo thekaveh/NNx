@@ -3198,10 +3198,10 @@ deliberately narrow and **guarantees no speedup**:
 - **Recorded.** `CompileRecord` holds the request and what took effect. The
   request is the backend, `mode` / `fullgraph` / `dynamic`, the policy and
   the torch version. The effect is one of these:
-  - `pending`: no compiled forward has run yet.
-  - `compiled`, with `capture` `full` or `partial` and the `graph_breaks` count.
-  - `eager`, with the `restart` (phase, epoch, batch, error).
-  - `failed`.
+    - `pending`: no compiled forward has run yet.
+    - `compiled`, with `capture` `full` or `partial` and the `graph_breaks` count.
+    - `eager`, with the `restart` (phase, epoch, batch, error).
+    - `failed`.
 - **Where the record lives.** The same record is on `NNRun.compile`, in
   `metadata.yaml` and in each stateful checkpoint's training state. With a
   provenance manifest, it is also in `attempt.json`. It is never in the run
