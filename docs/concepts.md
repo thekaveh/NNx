@@ -658,7 +658,7 @@ clock is attached. `nnx.search` uses it for its update caps and deadlines
 `train_step_fn`. NNx calls it once per epoch under `torch.no_grad()`, with the
 net in eval mode. Every submodule's training mode is restored after the call. The hook
 receives an `EvalStepContext` containing the model, complete `val_loader`,
-`extra_metrics`, and `epoch_idx`. It owns iteration and aggregation across the
+`extra_metrics`, `epoch_idx` and the run's declared `metrics` (§6.4). It owns iteration and aggregation across the
 loader and returns one `NNEvaluationDataPoint` for the epoch. NNx persists that
 result in `idp.val_edp`, including custom values in `extra`.
 
@@ -2106,7 +2106,7 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 
 **`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
 
-With `bake=False` the masks stay. `NNModel.train` refuses a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization, because its checkpoints could not be reloaded. Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations`. Alternatively, train the net as `NNModel(module=...)`.
+With `bake=False` the masks stay. `NNModel.train` refuses a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization, because its checkpoints could not be reloaded. Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations` (`remove_weight_norm` / `remove_spectral_norm` for the legacy hooks). Alternatively, train the net as `NNModel(module=...)`.
 
 **`nnx.surgery`** provides `widen` / `deepen`, `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 
@@ -3066,10 +3066,9 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 ```
 
 - **The manifest.** Edges are canonicalised and de-duplicated before they
-  are split. So a duplicate can never sit in two splits, and in an
-  undirected split neither can a reverse (a directed split keeps `u→v` and
-  `v→u` apart). An
-  explicit `LinkSplit` refuses non-canonical, repeated or cross-split edges
+  are split. So a duplicate can never sit in two splits. In an undirected
+  split, neither can a reverse; a directed split keeps `u→v` and `v→u`
+  apart. An explicit `LinkSplit` refuses non-canonical, repeated or cross-split edges
   and barred self-loops. It records directedness, the self-loop policy, the
   seed and the topology policy. `replay(edge_index)` re-derives it with a
   local generator (never the global RNG) and refuses a mismatch.

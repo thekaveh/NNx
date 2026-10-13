@@ -28,6 +28,7 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from .._validation import require_count
 from ..nn.enum.activations import Activations
 from ..nn.net.feed_fwd_nn import FeedFwdNN
 from ._utils import copy_param_roles, get_module, set_module
@@ -94,6 +95,7 @@ def widen(
     if not isinstance(source_layer, nn.Linear):
         raise TypeError(f"widen target {layer_name!r} is {type(source_layer).__name__}, expected nn.Linear")
     cur = source_layer.out_features
+    new_width = require_count(new_width, "new_width", owner="widen", minimum=1)
     if new_width <= cur:
         raise ValueError(f"new_width must be > current out_features ({cur}); got {new_width}")
     # Prove the target→consumer path on the SOURCE before copying or

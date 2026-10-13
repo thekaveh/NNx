@@ -28,6 +28,7 @@ from typing import Any
 
 import torch
 
+from ..nn.enum.nets import Nets
 from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
 from ..nn.params.nn_train_params import NNTrainParams
@@ -78,9 +79,13 @@ def born_again_train(
     Raises:
         ValueError: if ``generations < 1``; if ``generations > 1`` and the
             optimizer accumulates gradients, ``alpha`` / ``temperature``
-            are out of range, or the head has a single output with
-            ``alpha > 0`` (no class distribution to distill). Nothing is
-            trained.
+            are out of range, the head has a single output with
+            ``alpha > 0`` (no class distribution to distill; the width is
+            read from the net's ``params.output_dim`` or from the last layer
+            of an ``nn.Sequential``), or the net is a ``TransformerNN``
+            (sequence output). Nothing is trained then. Another module's
+            single-output head is refused by the KD step at generation 1,
+            after generation 0 trained.
         TypeError: if the training loader holds stored teacher records
             (for any ``generations``), or if ``generations > 1`` and a
             keyword is not a :func:`kd_train_step_factory` parameter.
@@ -132,6 +137,13 @@ def born_again_train(
             # (registration order is data flow only there).
             head = model.net[-1]
             width = head.out_features if isinstance(head, torch.nn.Linear) else None
+        if getattr(model.params, "net", None) is Nets.TRANSFORMER:
+            # The KD step scores (rows, classes) logits: it would refuse a
+            # sequence model's output at generation 1, after generation 0 trained.
+            raise ValueError(
+                "born_again_train distills generations 1+ over (rows, classes) logits, but a TransformerNN "
+                "outputs a sequence; use generations=1"
+            )
         if width == 1 and bound.arguments["alpha"] > 0:
             raise ValueError(
                 "born_again_train distills generations 1+ over class logits, but the head has a single output; "

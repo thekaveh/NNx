@@ -230,7 +230,7 @@ The primitives above edit a module and record nothing, so a model they changed c
 - unbaked prune masks;
 - `weight_norm` / `spectral_norm` parametrizations.
 
-Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations`, or train the net as `NNModel(module=...)`. NNx can replay two topology changes: LoRA on explicit `nn.Linear` targets and SVD low-rank replacement. For these, use a **recipe** (`nnx.transforms`):
+Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations` (`remove_weight_norm` / `remove_spectral_norm` for the legacy hooks). Alternatively, train the net as `NNModel(module=...)`. NNx can replay two topology changes: LoRA on explicit `nn.Linear` targets and SVD low-rank replacement. For these, use a **recipe** (`nnx.transforms`):
 
 ```python
 from nnx.optimizers import build_optimizer

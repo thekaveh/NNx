@@ -36,6 +36,7 @@ import torch
 import torch.nn.functional as F
 
 from .._step_helpers import finalize_step, imperative_step
+from .._validation import require_count
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -91,6 +92,8 @@ def dpo_train_step_factory(
     """
     if not math.isfinite(beta) or beta <= 0:
         raise ValueError(f"beta must be a finite positive number, got {beta}")
+    if pad_token_id is not None:  # a bool or a negative id would mask nothing
+        pad_token_id = require_count(pad_token_id, "pad_token_id", owner="dpo_train_step_factory", minimum=0)
 
     # Freeze the reference and pin to eval mode. The policy's training
     # never touches the reference; this just guards against accidental

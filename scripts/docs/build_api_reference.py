@@ -114,12 +114,14 @@ def _class_members(value: type, documented: frozenset[type] = frozenset()) -> li
     # Public members an undocumented nnx base contributes (JsonArtifact.save,
     # _Counted.coverage) are part of the class's API, so they render too; a
     # base with its own catalog entry (NNModel, Question) documents them there.
-    # The walk stops at the first documented base; an optional-extra stub
-    # (no huggingface_hub) never renders, so the output is the same either way.
+    # A documented base documents its own ancestry, so that part of the MRO is
+    # skipped; an undocumented mixin beside it still renders. An optional-extra
+    # stub (no huggingface_hub) never renders, so the output is the same either way.
+    covered = {ancestor for base in value.__mro__[1:] if base in documented for ancestor in base.__mro__}
     owners = [value]
     for base in value.__mro__[1:]:
-        if base in documented:
-            break
+        if base in covered:
+            continue
         if base.__module__.split(".")[0] == "nnx" and not base.__dict__.get("_optional_stub", False):
             owners.append(base)
     seen: set[str] = set()

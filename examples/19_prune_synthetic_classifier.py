@@ -1,10 +1,10 @@
-"""Magnitude pruning demo — sparsify a tiny classifier, verify accuracy holds.
+"""Magnitude pruning demo — sparsify a tiny classifier and measure the accuracy cost.
 
 Pipeline:
 
   1. Build a small FeedFwdNN classifier on a synthetic 3-class dataset
      (no real MNIST download; keeps the example CPU-runnable + offline).
-  2. Train to convergence.
+  2. Train for five epochs.
   3. Snapshot the FP32 val accuracy.
   4. Apply `nnx.prune.magnitude_prune(net, sparsity=0.5)`. With
      `bake=True` (default), the state_dict keys stay identical to the

@@ -614,3 +614,27 @@ def test_a_benchmark_inside_an_event_loop_spends_no_budget_on_an_async_only_prov
     collection = asyncio.run(cell())
     assert collection.calls == 0 and {record.status for record in collection.records} == {"unsupported"}
     assert client.calls == []
+
+
+def test_a_sync_wrapper_that_runs_its_own_loop_serves_an_async_only_provider(built):
+    # The synchronous mark covers the entry point's own loop, not a loop the
+    # provider starts itself.
+    from nnx.decisions.benchmark import Budget, Sample, collect
+
+    client = AsyncRecorder()
+    jev = JevProvider(async_client=client)
+
+    class SyncWrapper:
+        name = "wrapped-jev"
+
+        def capabilities(self):
+            return jev.capabilities()
+
+        def decide(self, question, inputs):
+            return asyncio.run(jev.adecide(question, inputs))
+
+    result = DecisionJob.ask(SPAM, id="q").run(SyncWrapper(), state=["x"])
+    assert result.outcomes["q"].kind == "answered"
+    samples = [Sample("s0", SPAM, "text 0", label=True)]
+    collection = collect(SyncWrapper(), samples, provider_id="wrapped", budget=Budget(max_calls=2))
+    assert {record.status for record in collection.records} == {"answered"}

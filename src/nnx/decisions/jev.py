@@ -73,7 +73,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
-from .providers import _SYNC_CALLER, Capabilities, Question
+from .providers import Capabilities, Question, _synchronous_caller
 from .schema import (
     Boolean,
     Choice,
@@ -379,7 +379,7 @@ class JevProvider:
         the provider's capabilities — no network I/O."""
         if not isinstance(question, (Choice, Boolean, Score)):
             raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
-        if self._client is None and not self._builds and (_SYNC_CALLER.get() or not _in_event_loop()):
+        if self._client is None and not self._builds and (_synchronous_caller() or not _in_event_loop()):
             # A synchronous caller (collect, DecisionJob.run) with only an async
             # client: refuse before a call is counted, not inside decide_many.
             raise InvalidDecisionRequest(

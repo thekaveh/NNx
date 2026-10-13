@@ -29,6 +29,7 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from .._validation import require_count
 from ._utils import copy_param_roles
 
 InitStrategy = Literal["zeros", "copy_mean"]
@@ -67,6 +68,7 @@ def expand_embedding(
     if not isinstance(emb, nn.Embedding):
         raise TypeError(f"expand_embedding requires an nn.Embedding, got {type(emb).__name__}")
     old_num = emb.num_embeddings
+    new_num_embeddings = require_count(new_num_embeddings, "new_num_embeddings", owner="expand_embedding", minimum=1)
     if new_num_embeddings <= old_num:
         raise ValueError(f"new_num_embeddings must be > current ({old_num}); got {new_num_embeddings}")
     if init not in ("zeros", "copy_mean"):

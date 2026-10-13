@@ -30,6 +30,7 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from .._validation import require_count
 from ._utils import copy_param_roles
 
 _SUPPORTED_METHODS = ("svd",)
@@ -71,6 +72,9 @@ def low_rank_factorize(
     out_features = linear.out_features
     in_features = linear.in_features
     max_rank = min(out_features, in_features)
+    rank = require_count(
+        rank, "rank", owner="low_rank_factorize", minimum=0
+    )  # the range message below names the bounds
     if not (1 <= rank <= max_rank):
         raise ValueError(f"rank must be in [1, min(out_features, in_features) = {max_rank}]; got {rank}")
 

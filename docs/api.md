@@ -10557,7 +10557,7 @@ The manifest stamping this checkpoint's resume point — ``generation``, ``check
 nnx.nn.params.nn_checkpoint.NNCheckpoint.verify(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). Only the matching training-state sidecar is read, with ``torch.load(weights_only=True)``, to compare its generation; no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
+Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). Every listed file is hashed; only the matching training-state sidecar is deserialized, with ``torch.load(weights_only=True)``, to compare its generation; no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_training_state`
 
@@ -14688,9 +14688,13 @@ Returns:
 Raises:
     ValueError: if ``generations < 1``; if ``generations > 1`` and the
         optimizer accumulates gradients, ``alpha`` / ``temperature``
-        are out of range, or the head has a single output with
-        ``alpha > 0`` (no class distribution to distill). Nothing is
-        trained.
+        are out of range, the head has a single output with
+        ``alpha > 0`` (no class distribution to distill; the width is
+        read from the net's ``params.output_dim`` or from the last layer
+        of an ``nn.Sequential``), or the net is a ``TransformerNN``
+        (sequence output). Nothing is trained then. Another module's
+        single-output head is refused by the KD step at generation 1,
+        after generation 0 trained.
     TypeError: if the training loader holds stored teacher records
         (for any ``generations``), or if ``generations > 1`` and a
         keyword is not a :func:`kd_train_step_factory` parameter.

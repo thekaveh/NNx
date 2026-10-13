@@ -158,6 +158,11 @@ class NNPreferenceDataset(NNDatasetBase):
         # (FIX-022): `None` is the only full-split sentinel.
         requested = require_batch_sizes(self.batch_sizes, owner="NNPreferenceDataset")
 
+        vocab = getattr(self.tokenizer, "vocab_size", None)
+        if vocab is not None and self.pad_token_id >= int(vocab):  # the embedding lookup would fail mid-step
+            raise ValueError(
+                f"NNPreferenceDataset pad_token_id={self.pad_token_id} is outside the vocabulary ({vocab})"
+            )
         # Encode everything via the tokenizer up-front.
         encode = self.tokenizer.encode  # type: ignore[attr-defined]
         p_ids = [encode(p) for p in self.prompts]

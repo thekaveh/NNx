@@ -118,7 +118,7 @@ Notes for section 2.1:
 
 - Trains a small classifier one epoch with `train(compile=CompileSpec())` (inductor). It reloads its LAST checkpoint eagerly (no `_orig_mod.` keys, identical logits).
 - `compare_compile` times eager and compiled copies of the same weights. It reports the first call (compilation included) separately from warmed mean / median / stdev and throughput.
-- `profile_forward` writes a finite-schedule `torch.profiler` trace to `--output-dir`. The script prints separate `compile`, `warmed` and `profile` sections.
+- `profile_forward` writes a finite-schedule `torch.profiler` trace to `--output-dir`. Without that option the trace goes to a temporary directory, removed on exit. The script prints separate `compile`, `warmed` and `profile` sections.
 - No speedup is claimed. It covers FP32 built-in nets only; not with DDP or quantization.
 - Run `python examples/benchmark_compile.py --device cpu --warmup 3 --repeats 10`. It needs a working C++ toolchain for inductor.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py`, which runs exactly that command.
@@ -458,7 +458,7 @@ Notes for section 2.7:
 - Immutable `append` / `prepend`: a duplicated temperature equals one combined stage. A zero-temperature stage is refused anywhere but last.
 - A versioned `state()` / `from_state()` round trip serializes a custom stage through a registered `LogitsStageCodec`.
 - Seeded `generate(logits_pipeline=...)` on a tiny local-tokenizer transformer matches the explicit processor list on the cached and uncached paths.
-- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `ordered_logits_pipeline_workflow()`, `-k ordered_logits_pipeline`). It is not in the end-to-end list, since step 4 needs the `lm` extra.
+- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `ordered_logits_pipeline_workflow()`, `-k ordered_logits_pipeline`). Its bounded helper covers it, so it is not in the end-to-end list.
 
 **`11_tinystories_lm.py`**
 

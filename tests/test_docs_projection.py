@@ -1428,3 +1428,30 @@ def test_api_reference_ignores_the_hub_stub_without_huggingface_hub():
     _HubMixinBase.__module__ = "nnx.nn.nn_model"
     Model = type("Model", (_HubMixinBase,), {"__module__": "nnx.nn.nn_model", "train": lambda self: None})
     assert [name for name, _ in _class_members(Model)] == ["train"]
+
+
+def test_api_reference_keeps_an_undocumented_mixin_beside_a_documented_base():
+    from scripts.docs.build_api_reference import _class_members
+
+    class Documented:
+        def fit(self): ...
+
+    class Mixin:
+        def save(self): ...
+
+    for cls in (Documented, Mixin):
+        cls.__module__ = "nnx.example"
+    Model = type("Model", (Documented, Mixin), {"__module__": "nnx.example"})
+    assert [name for name, _ in _class_members(Model, frozenset({Documented}))] == ["save"]
+
+
+def test_the_real_hub_stub_is_marked_for_the_api_reference():
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.modules['huggingface_hub'] = None\n"
+        "import nnx.nn.nn_model as m\n"
+        "assert m._HubMixinBase.__dict__.get('_optional_stub') is True\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, timeout=120)

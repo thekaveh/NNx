@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, random_split
 from ..._optional import require
 from ..._validation import require_batch_sizes, require_count
 from ...preprocessing import SplitView, describe_transform
+from ...seeding import _global_rng_kept
 from .nn_dataset_base import NNDatasetBase
 
 # The vision extra (FEAT-031): importing this module needs torchvision.
@@ -118,15 +119,21 @@ class NNDataset(NNDatasetBase):
         # yield PIL Images without `transform`, and everything downstream
         # (input_dim inference, batching) needs tensors.
         raw = full_train_dataset[0][0]
-        # What the model sees at evaluation and in training: both must be tensors.
-        for transform in (self.eval_transform, self.train_transform):
-            sample = raw if transform is None else transform(raw)
-            if not hasattr(sample, "shape"):
+        # What the model sees at evaluation and in training: both must be
+        # tensors. A random augmentation's draw here must not move the
+        # caller's random streams.
+        with _global_rng_kept():
+            probes = [
+                raw if transform is None else transform(raw)
+                for transform in (self.eval_transform, self.train_transform)
+            ]
+        for probe in probes:
+            if not hasattr(probe, "shape"):
                 raise ValueError(
-                    f"{self.ds_class.__name__} samples have no .shape (got {type(sample).__name__}) — "
+                    f"{self.ds_class.__name__} samples have no .shape (got {type(probe).__name__}) — "
                     "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
                 )
-        sample = raw if self.eval_transform is None else self.eval_transform(raw)
+        sample = probes[0]
 
         # `None` → one batch holding the complete split; an explicit
         # positive size is kept verbatim (an `is None` test, not

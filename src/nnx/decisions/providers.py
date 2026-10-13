@@ -3,6 +3,7 @@ fixed-head NNx adapter."""
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import numbers
 from collections.abc import Iterable, Mapping, Sequence
@@ -25,14 +26,29 @@ from .schema import (
 
 # Set while a synchronous entry point (DecisionJob.run, benchmark.collect)
 # runs, so a provider's check() can refuse what only its async path serves
-# before a call is counted, even inside an event loop (a notebook cell).
-_SYNC_CALLER: ContextVar[bool] = ContextVar("nnx_decisions_sync_caller", default=False)
+# before a call is counted, even inside an event loop (a notebook cell). It
+# holds the loop the entry point was called from (None outside one): a loop
+# a provider starts itself (asyncio.run inside decide) is not synchronous.
+_NOT_SYNCHRONOUS = object()
+_SYNC_CALLER: ContextVar[Any] = ContextVar("nnx_decisions_sync_caller", default=_NOT_SYNCHRONOUS)
+
+
+def _running_loop() -> Any:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _synchronous_caller() -> bool:
+    """Whether the current code runs directly under a synchronous entry point."""
+    return _SYNC_CALLER.get() is _running_loop()
 
 
 def _synchronous(function: Any) -> Any:
     @functools.wraps(function)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        token = _SYNC_CALLER.set(True)
+        token = _SYNC_CALLER.set(_running_loop())
         try:
             return function(*args, **kwargs)
         finally:

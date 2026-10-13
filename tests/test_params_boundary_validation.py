@@ -1738,3 +1738,53 @@ def test_a_legacy_spectral_norm_is_reported_as_a_parametrization_not_a_prune_mas
     with pytest.raises(ValueError, match="layers.0.weight are reparameterized") as caught:
         model.train(params=_one_epoch())
     assert "remove_spectral_norm" in str(caught.value) and "pruning" not in str(caught.value)
+
+
+def test_born_again_refuses_a_sequence_model_before_generation_zero(tmp_path, monkeypatch):
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams, NNTransformerParams, born_again_train
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+        ),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    with pytest.raises(ValueError, match="outputs a sequence"):
+        born_again_train(model, train_params=_one_epoch(), generations=2)
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("pad", [True, -1])
+def test_dpo_refuses_a_pad_id_that_masks_nothing(pad):
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams
+    from nnx.paradigms.dpo import dpo_train_step_factory
+
+    ref = NNModel(module=torch.nn.Linear(2, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    with pytest.raises(ValueError, match="pad_token_id"):
+        dpo_train_step_factory(ref, pad_token_id=pad)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: __import__("nnx").surgery.low_rank_factorize(__import__("torch").nn.Linear(4, 4), rank=2.0),
+        lambda: __import__("nnx").surgery.low_rank_factorize(__import__("torch").nn.Linear(4, 4), rank=True),
+        lambda: __import__("nnx").surgery.expand_embedding(
+            __import__("torch").nn.Embedding(4, 2), new_num_embeddings=8.0
+        ),
+    ],
+    ids=["rank_float", "rank_bool", "embeddings_float"],
+)
+def test_surgery_sizes_must_be_whole_numbers(call):
+    with pytest.raises(ValueError, match="rank|new_num_embeddings"):
+        call()
