@@ -1061,8 +1061,12 @@ class NNRun:
                 if winner != current:
                     _publish_best(runs_root, best_run_path, winner)
                 return
-            best_ckpt = NNCheckpoint.load(run=current, type=Checkpoints.BEST, root=root)
-            if _best_err(mine) < _best_err(best_ckpt):
+            # The incumbent's files may be damaged: an ineligible incumbent
+            # is skipped as the election skips it, never fatal to this run.
+            best_ckpt = _committed_best_checkpoint(runs_root, current, root)
+            if best_ckpt is None:
+                _publish_best(runs_root, best_run_path, _elect_best(runs_root, root, prefer=self.id))
+            elif _best_err(mine) < _best_err(best_ckpt):
                 _point_best(best_run_path, run_path)
 
     @staticmethod

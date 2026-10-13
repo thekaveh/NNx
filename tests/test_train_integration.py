@@ -2447,3 +2447,32 @@ def test_default_step_refuses_a_regression_loss_without_a_task(tmp_path, monkeyp
     with_task = replace(mse, task=TaskSpec.regression(1))
     run = NNModel(net_params=net_params, params=with_task).train(params=params)
     assert run.idps[-1].train_edp.loss is not None
+
+
+def test_a_damaged_best_incumbent_does_not_fail_a_later_run(tmp_path, monkeypatch):
+    """runs/best points at a run whose BEST checkpoint is truncated: a later,
+    unrelated train() completes, and the pointer is re-elected among
+    eligible runs instead of raising at the very end."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, val_loader = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+
+    def fit(seed):
+        return NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=1,
+                seed=seed,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            )
+        )
+
+    first = fit(0)
+    assert _read_best_pointer(os.path.join("runs", "best")) == first.id
+    best = tmp_path / "runs" / first.id / "checkpoints" / "best.pt"
+    best.write_bytes(best.read_bytes()[: best.stat().st_size // 2])
+    second = fit(1)  # used to raise PytorchStreamReader failed reading zip archive
+    assert _read_best_pointer(os.path.join("runs", "best")) == second.id
