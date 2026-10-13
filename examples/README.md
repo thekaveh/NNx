@@ -31,12 +31,12 @@ pip install "thekaveh-nnx[jev]"              # decision_jev.py
 
 Working from a git checkout instead of PyPI? See [CONTRIBUTING.md §1](../CONTRIBUTING.md#1-getting-set-up) for the editable + dev install.
 
-**Which examples are evidence.** Every example is imported by
-`tests/test_examples_smoke.py`, but an import-only smoke test is a reference,
-never proof that the example works. Examples 01, 05 and 26 run end to end.
-They are registered scenarios of the
+**Which examples are evidence.** `tests/test_examples_smoke.py` imports every
+example, runs many of them end to end and executes their bounded helpers.
+Examples that are only imported are references, not evidence that they work.
+Examples 01, 05 and 26 are the registered scenarios of the
 [feature-composition matrix](../docs/feature-composition.md) (`EX-01`, `EX-05`,
-`EX-26`). The import-only samples are references, not evidence. To check one:
+`EX-26`). To check one:
 
 ```bash
 python scripts/check_feature_composition.py --check   # EX-01's node ids are collected

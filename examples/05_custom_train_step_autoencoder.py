@@ -86,10 +86,6 @@ def main():
 
         loss_val = float(loss.detach())
         return NNEvaluationDataPoint(
-            f1=0.0,
-            recall=0.0,
-            accuracy=0.0,
-            precision=0.0,
             loss=loss_val,
             error=loss_val,  # use loss as the "error" so BEST tracking is meaningful
         )

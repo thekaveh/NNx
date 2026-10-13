@@ -200,7 +200,7 @@ def nonfinite_metric_workflow() -> dict:
 
     def scripted_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
         error, loss = scripted_val[ctx.epoch_idx]
-        return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=loss, error=error)
+        return NNEvaluationDataPoint(loss=loss, error=error)
 
     train_signal: dict[int, float] = {}
 

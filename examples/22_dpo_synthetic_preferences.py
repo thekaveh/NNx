@@ -6,7 +6,7 @@ Pipeline:
   2. Synthesize 64 (prompt, chosen, rejected) triples where the
      "chosen" continuation contains a specific token sequence and the
      "rejected" one doesn't.
-  3. Wrap the pretrained model as the frozen reference policy.
+  3. Copy the initial (untrained) model as the frozen reference policy.
   4. Run `dpo_train_step_factory(ref_model=...)` for a handful of epochs.
   5. Print the chosen-minus-rejected log-prob gap before and after DPO.
 
@@ -269,7 +269,7 @@ def main() -> None:
 
     frozen_count = sum(not p.requires_grad for p in ref_model.net.parameters())
     trained_count = sum(p.requires_grad for p in model.net.parameters())
-    print("DPO training complete on 64 synthetic preference triples.")
+    print(f"DPO training complete on {len(pref_ds.train_loader.dataset)} of 64 synthetic preference triples.")
     print(f"Reference policy: frozen ({frozen_count} param tensors).")
     print(f"Trained policy:   updated ({trained_count} param tensors).")
     print(f"Chosen   log-prob — before DPO: {pre_chosen_lp:+.3f},  after DPO: {post_chosen_lp:+.3f}")

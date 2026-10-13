@@ -134,33 +134,14 @@ def main():
     set_seed(0)
     loader = make_mixture_loader()
 
-    # An NNModel with placeholder NNParams; the real network is the
-    # DiffusionMLP swapped in below. The placeholder mirrors the
-    # diffusion net's surface dim so the run.yaml stays readable.
+    # The diffusion net's forward is (x_t, t) -> epsilon, not a built-in
+    # net: NNModel(module=...) wraps the instance itself, and its run id
+    # records the module's topology (two different DiffusionMLPs are two
+    # runs). The loss is unused: the diffusion step / objective owns it.
     model = NNModel(
-        net_params=NNParams(
-            input_dim=2,
-            output_dim=2,
-            hidden_dims=[16],
-            dropout_prob=0.0,
-            activation=Activations.RELU,
-        ),
-        params=NNModelParams(
-            net=Nets.FEED_FWD,
-            device=Devices.CPU,
-            loss=Losses.CROSS_ENTROPY,
-        ),
+        module=DiffusionMLP(input_dim=2, hidden_dims=[64, 64], time_embed_dim=16),
+        params=NNModelParams(device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
     )
-    # The FeedFwdNN built by Nets.FEED_FWD has forward(X) → logits — wrong
-    # shape for diffusion (which needs forward(x_t, t) → ε). Swap it for
-    # the DiffusionMLP. NNModel.train() reaches model.net.parameters()
-    # and model.net_params (stored on the model itself, not the net),
-    # so this substitution works without further setup.
-    model.net = DiffusionMLP(
-        input_dim=2,
-        hidden_dims=[64, 64],
-        time_embed_dim=16,
-    ).to(model.device)
 
     # T=200 is enough for this toy problem and keeps sampling fast.
     schedule = NoiseSchedulers.LINEAR(T=200)

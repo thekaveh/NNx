@@ -10,9 +10,9 @@ each other.
 
 Real distribution: a 1D mixture of N(-3, 0.5) and N(3, 0.5). After
 training, G's samples move toward the real modes near ±3; this minimal
-GAN often covers only one of them (mode collapse). The training loop
-prints the combined (D + G) loss per epoch. An adversarial loss need not
-decrease, so read the printed sample statistics, not the loss.
+GAN often covers only one of them (mode collapse). The script prints the
+first and last record's loss, (D + G) / 2, and eight samples of G. An
+adversarial loss need not decrease, so read the samples, not the loss.
 
 Ownership: ``gan_step`` (the ``trainer_step_fn``) owns every optimizer
 update — it zeroes, back-propagates and steps ``optimizers["D"]`` and
@@ -53,20 +53,17 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
-    Activations,
     Callback,
     Checkpoints,
     Devices,
     EarlyStopping,
     Losses,
-    Nets,
     NNCheckpoint,
     NNEvaluationDataPoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
     NNParamGroupSpec,
-    NNParams,
     NNRun,
     NNSchedulerParams,
     NNTrainerParams,
@@ -136,30 +133,10 @@ def _make_loader(n: int, batch_size: int = 64) -> DataLoader:
 
 
 def _make_gan_model() -> NNModel:
-    # NNModel is happy with a placeholder NNParams here; the real net is
-    # swapped in after construction. The placeholder dims (LATENT_DIM→1)
-    # echo G's surface shape so the run.yaml stays interpretable.
-    model = NNModel(
-        net_params=NNParams(
-            input_dim=LATENT_DIM,
-            output_dim=1,
-            hidden_dims=[],
-            dropout_prob=0.0,
-            activation=Activations.RELU,
-        ),
-        params=NNModelParams(
-            net=Nets.FEED_FWD,
-            device=Devices.CPU,
-            loss=Losses.CROSS_ENTROPY,
-        ),
-    )
-    # Swap the FeedFwdNN built by Nets.FEED_FWD for the GAN composite.
-    # The Trainer never calls model.net(...) — it walks
-    # model.net.named_parameters() and dispatches the step fn — so the
-    # only thing this substitution affects is the optimizer's view of
-    # the parameters.
-    model.net = MiniGAN().to(model.device)
-    return model
+    # The G/D composite is not a built-in net: NNModel(module=...) wraps the
+    # instance itself, and its run id records the module's topology. The
+    # loss is unused: gan_step computes both losses itself.
+    return NNModel(module=MiniGAN(), params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
 
 
 def gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
@@ -200,10 +177,6 @@ def gan_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
 
     avg = float((d_loss + g_loss).detach()) / 2
     return NNEvaluationDataPoint(
-        f1=0.0,
-        recall=0.0,
-        accuracy=0.0,
-        precision=0.0,
         loss=avg,
         # Use g_loss as the "error" so BEST tracking favors checkpoints
         # where G is fooling D well.
@@ -410,7 +383,8 @@ def main():
     print(f"\nGAN combined loss: {first:.4f} → {last:.4f}")
     print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 
-    # Quick "sanity look": G's samples should now cluster near ±3.
+    # Quick sanity look: G's samples move toward the real modes near ±3
+    # (often only one of them: mode collapse).
     z = torch.randn(8, LATENT_DIM)
     samples = model.net.G(z).detach().squeeze(-1).tolist()
     rendered = ", ".join(f"{s:+.2f}" for s in samples)

@@ -1258,16 +1258,16 @@ Diffusion lives entirely on top of the `train_step_fn` hook (§6) — no Trainer
 from nnx import (
     DiffusionMLP, NoiseSchedulers,
     diffusion_train_step_factory, sample,
-    NNModel, NNModelParams, NNParams, NNTrainParams, NNOptimParams,
-    Activations, Devices, Losses, Nets, Optims,
+    NNModel, NNModelParams, NNTrainParams, Losses,
 )
 
-model = NNModel(net_params=..., params=NNModelParams(net=Nets.FEED_FWD, ...))
-# The Nets.FEED_FWD factory builds a classifier — wrong shape for diffusion
-# (`forward(x_t, t) → ε`). Swap it for the DiffusionMLP. NNModel.train()
-# reads model.net.parameters() + model.net_params, both of which survive
-# this substitution.
-model.net = DiffusionMLP(input_dim=2, hidden_dims=[64, 64], time_embed_dim=16)
+# DiffusionMLP's forward is (x_t, t) -> epsilon, not a built-in net:
+# NNModel(module=...) wraps it, and the run id records its topology (§3.2).
+# The loss is unused; the diffusion step owns it.
+model = NNModel(
+    module=DiffusionMLP(input_dim=2, hidden_dims=[64, 64], time_embed_dim=16),
+    params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR),
+)
 
 schedule = NoiseSchedulers.LINEAR(T=200)         # or NoiseSchedulers.COSINE
 step_fn  = diffusion_train_step_factory(schedule)
