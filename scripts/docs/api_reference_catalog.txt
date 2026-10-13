@@ -542,6 +542,8 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.precision.precision_support
 
+@api nnx.precision.full_precision_only
+
 ### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
 @api nnx.comparison.Metric

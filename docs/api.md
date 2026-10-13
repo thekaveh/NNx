@@ -7550,6 +7550,24 @@ The precision matrix as this host sees it: for each device type (``"cpu"``, ``"c
 ```
 
 
+#### `nnx.precision.full_precision_only`
+
+```python
+nnx.precision.full_precision_only(step: 'Any') -> 'Any'
+```
+
+Mark ``step`` as running in full precision only and return it.
+
+**Details**
+
+```text
+``NNModel.train`` refuses a reduced precision policy for a marked step
+before anything is reserved. A wrapper around a built-in paradigm step
+keeps that refusal when it is marked too (or built with
+``functools.wraps``, which copies the marker).
+```
+
+
 ### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
 #### `nnx.comparison.Metric`
