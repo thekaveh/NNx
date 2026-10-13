@@ -332,7 +332,7 @@ scenarios:
     expected: Executed logits match the native model.
     tests:
       - tests/test_export_conformance.py::test_both_exporters_match_native_logits_in_onnx_runtime
-    rationale: Owned by the dedicated export-conformance job (FEAT-038); this matrix does not certify ONNX Runtime parity on the CPU lane.
+    rationale: Owned by the dedicated export-conformance job (docs/export-conformance.md); this matrix does not certify ONNX Runtime parity on the CPU lane.
     status: unverified
   - id: IE-06
     group: inference-export

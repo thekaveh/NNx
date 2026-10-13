@@ -1963,7 +1963,7 @@ the forward pass. It declares:
 
 ```text
 batch ──split()──► inputs, targets, loss_mask ──valid()──► one set of valid positions
-   task.objective(): LossTerm("token_ce", Σ CE over valid, denominator=#valid)   # FEAT-004 engine
+   task.objective(): LossTerm("token_ce", Σ CE over valid, denominator=#valid)   # the shared update engine
    task.eval_step(): loss = metrics["nll"] = Σ NLL / Σ #valid (whole loader), perplexity = exp(nll)
 ```
 
@@ -2817,7 +2817,7 @@ before any update:
 
 ```text
 batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping with those keys
-   task.objective():  LossTerm("pairwise_logistic", Σ softplus(-(s_hi - s_lo)), denominator)   # FEAT-004 engine
+   task.objective():  LossTerm("pairwise_logistic", Σ softplus(-(s_hi - s_lo)), denominator)   # the shared update engine
    task.eval_step():  buffer the stream ─► group by query ─► rank by score (ties: candidate id) ─► MRR@k, Recall@k, NDCG@k
 ```
 
