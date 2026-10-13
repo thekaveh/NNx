@@ -290,6 +290,8 @@ def prediction_from_logits(
         ids = np.arange(n_samples, dtype=np.int64)
     else:
         ids = to_numpy(sample_ids, copy=False)
+        if ids.ndim == 1 and ids.size == 0:
+            ids = ids.astype(np.int64)  # an empty list is float64 in NumPy
         if ids.ndim != 1 or ids.shape[0] != n_samples or ids.dtype.kind not in "iu":
             raise PredictionValidationError(
                 f"sample_ids must be one integer id per sample ({n_samples}), got shape {ids.shape} "

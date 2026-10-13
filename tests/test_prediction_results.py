@@ -300,3 +300,14 @@ def test_spec_is_rejected_on_the_first_loader_batch():
     with pytest.raises(PredictionValidationError, match="label"):
         model.predict_proba(_Loader(), ProbabilitySpec(kind="categorical", labels=("a", "b")))
     assert seen == [0]
+
+
+def test_zero_rows_with_an_empty_sample_id_list():
+    """An empty list is float64 in NumPy; zero rows with sample_ids=[] are
+    accepted like sample_ids=None (as the calibration helpers do)."""
+    import numpy as np
+
+    from nnx.prediction import ProbabilitySpec, prediction_from_logits
+
+    result = prediction_from_logits(np.zeros((0, 3)), ProbabilitySpec("categorical"), sample_ids=[])
+    assert result.sample_ids.shape == (0,) and result.sample_ids.dtype == np.int64

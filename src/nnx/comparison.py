@@ -1435,7 +1435,9 @@ def observations_from_runs(
                 )
             if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
-        train = run_state.get("train") or {}
+        # An NNModel run keeps its training params under "train", a Trainer
+        # run under "trainer" (as the seed and parent lookups read them).
+        train = run_state.get("train") or run_state.get("trainer") or {}
         manifest = None if provenance is None else provenance.manifest
         data = None if manifest is None else _identities(manifest.data)
         if data is None and train.get("data_id") is not None:

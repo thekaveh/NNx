@@ -530,6 +530,31 @@ def _model():
 MANIFEST = ExperimentManifest(data={"train": hash_bytes(b"toy-32")})
 
 
+def test_a_trainer_run_without_provenance_keeps_its_data_id(tmp_path, monkeypatch):
+    """A Trainer run stores its params under "trainer": its data_id is the
+    data identity, as an NNModel run's is."""
+    from nnx.objectives import supervised_objective
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(0))
+    loader = DataLoader(TensorDataset(X, (X[:, 0] > 0).long()), batch_size=8)
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .seed(0)
+        .data_id("toy")
+        .train_loader(loader)
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    run = Trainer(_model()).train(params=params, objective=supervised_objective())
+    (item,) = observations_from_runs([run.id], metric=Metric("loss", "minimize"), split="train")
+    assert item.data == "data_id:toy"
+
+
 def test_trainer_and_resumed_runs_pool_across_seeds(tmp_path, monkeypatch):
     from nnx.objectives import supervised_objective
     from nnx.trainer import NNTrainerParams, Trainer
