@@ -311,21 +311,23 @@ def test_a_scaler_skipped_step_fires_no_success_hook():
         assert torch.equal(value, before[key]), key
 
 
-def test_only_optimizers_holding_a_gradient_update_and_report_it():
-    """An optimizer whose parameters got no gradient this window (frozen or
-    unused) is not stepped, counted or announced — its update-clock
-    scheduler and on_optimizer_update callbacks must not see an update."""
+def test_every_named_optimizer_counts_a_committed_window():
+    """A committed window advances every optimizer's update count — one
+    whose parameters got no gradient (frozen) is not stepped, but its
+    update clock stays aligned with the others."""
     model = _linear()
     weight, bias = model.net.layers[0].weight, model.net.layers[0].bias
     bias.requires_grad_(False)  # frozen for this window
+    before = bias.detach().clone()
     events = []
     engine = UpdateEngine(
         optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": torch.optim.SGD([bias], lr=0.1)},
         listeners=[events.append],
     )
     _run_window(engine, supervised_objective(), model)
-    assert [event.optimizer for event in events] == ["weight"]
-    assert engine.update_counts == {"weight": 1, "bias": 0} and engine.commits == 1
+    assert sorted(event.optimizer for event in events) == ["bias", "weight"]
+    assert engine.update_counts == {"weight": 1, "bias": 1} and engine.commits == 1
+    assert torch.equal(bias.detach(), before)  # counted, not changed
 
 
 def _nan_objective(ctx):

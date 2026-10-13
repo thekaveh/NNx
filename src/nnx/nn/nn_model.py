@@ -988,6 +988,13 @@ def _classification_edp_for_loss(
     loss: float,
     extra_metrics: Optional[Mapping[str, Callable]],
 ) -> NNEvaluationDataPoint:
+    if isinstance(loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)):
+        # Without a task the default steps score classification (argmax
+        # predictions, accuracy / F1), which a regression target cannot be.
+        raise ValueError(
+            f"the default steps score classification and cannot score {type(loss_fn).__name__} targets: declare "
+            "the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass train_step_fn / objective"
+        )
     metric_target, metric_prediction = _classification_metric_tensors(loss_fn, target, prediction)
     if metric_target.numel() == 0:
         return NNEvaluationDataPoint(
@@ -2593,18 +2600,6 @@ class NNModel(_HubMixinBase):
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
 
-    def _check_default_step_loss(self) -> None:
-        """The default step without a task scores classification (argmax
-        predictions, accuracy / F1): refuse a regression loss before any run
-        is reserved, rather than failing in the metrics on the first batch."""
-        regression_losses = (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
-        if getattr(self, "task_adapter", None) is None and isinstance(self.loss_fn, regression_losses):
-            raise ValueError(
-                f"the default training step scores classification and cannot score {type(self.loss_fn).__name__} "
-                "targets: declare the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass "
-                "train_step_fn / objective"
-            )
-
     def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
         """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
         when the model built its module (a shape is ``None`` for an
@@ -3359,8 +3354,6 @@ class NNModel(_HubMixinBase):
         if params is None:
             raise ValueError("train params must be non-None")
         self._check_task_preflight()
-        if train_step_fn is None and objective is None:
-            self._check_default_step_loss()
         # FEAT-028: the precision policy is resolved once, before any run is
         # reserved; the loop, validation and prediction reuse it.
         precision = self._precision_for_training(train_step_fn)

@@ -20,8 +20,12 @@ for each microbatch. This engine owns everything after that:
 3. mixed precision: ``unscale`` → gradient clipping → ``step`` →
    ``update``, in that order (the objective's forward already ran under
    autocast);
-4. a *committed-update* event fires once per successful optimizer update —
-   never for a microbatch, an all-masked window or a skipped step. Before
+4. a *committed-update* event fires for every named optimizer once per
+   committed window — never for a microbatch, an all-masked window or a
+   skipped step. An optimizer whose parameters got no gradient in the
+   window (frozen during a warm-up, say) is not stepped or unscaled, but it
+   still counts the committed window, so every optimizer's update clock
+   advances together. Before
    the events are delivered, the objective's own ``after_update`` hook runs
    once per committed update (all named optimizers stepped) — a JEPA
    objective advances its EMA target there (FEAT-040).
@@ -239,8 +243,9 @@ class UpdateEngine:
 
     def commit(self, *, epoch_idx: int, batch_idx: int) -> tuple[UpdateEvent, ...]:
         """Close the window: combine, (unscale), clip, step. Returns one
-        event per optimizer that committed an update (none when the window
-        was empty, all-masked, non-finite or skipped by the scaler)."""
+        event per named optimizer for a committed window (none when the
+        window was empty, all-masked, non-finite or skipped by the scaler);
+        an optimizer without gradients is not stepped but still counts."""
         try:
             if not self._microbatches:
                 return ()
@@ -251,16 +256,12 @@ class UpdateEngine:
             if not values:
                 return ()  # every term fully masked: nothing to learn from
             self._assign_gradients()
-            # Only optimizers holding a gradient this window update: a frozen
-            # or unused one has nothing to step (or unscale — GradScaler
-            # refuses to step an optimizer it never checked), so it gets no
-            # event and its update-clock scheduler does not advance.
-            stepping = [name for name, opt in self.optimizers.items() if _holds_gradient(opt)]
-            if not stepping:
-                return ()
             scaled: list[torch.optim.Optimizer] = []
             if self.scaler is not None:
-                scaled = [self.optimizers[name] for name in stepping]
+                # The scaler sees only optimizers holding a gradient this window
+                # (a frozen or unused one has nothing to unscale, and GradScaler
+                # refuses to step an optimizer it never checked).
+                scaled = [opt for opt in self.optimizers.values() if _holds_gradient(opt)]
                 for optimizer in scaled:
                     self.scaler.unscale_(optimizer)
                 if not self._gradients_finite():
@@ -289,11 +290,11 @@ class UpdateEngine:
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
             elif self.scaler is None:
-                for name in stepping:
-                    self.optimizers[name].step()
+                for optimizer in self.optimizers.values():
+                    optimizer.step()
             self.commits += 1
             events = []
-            for name in stepping:
+            for name in self.optimizers:
                 self.update_counts[name] += 1
                 events.append(
                     UpdateEvent(

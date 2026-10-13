@@ -2387,10 +2387,10 @@ def test_fp16_scaler_state_round_trips_a_resume(tmp_path, monkeypatch):
     assert _CpuScaler.loaded == [{"scale": saved_scale}]  # the scaler continues from the checkpoint
 
 
-def test_default_step_refuses_a_regression_loss_without_a_task_before_any_run(tmp_path, monkeypatch):
+def test_default_step_refuses_a_regression_loss_without_a_task(tmp_path, monkeypatch):
     """The default step scores classification; an MSE model without a task
-    is refused with a hint before a run directory exists, and the same model
-    with a regression task trains."""
+    fails on its first batch with a hint (not inside scikit-learn's
+    metrics), leaves no run behind, and with a regression task trains."""
     from dataclasses import replace
 
     from nnx import TaskSpec
@@ -2406,7 +2406,8 @@ def test_default_step_refuses_a_regression_loss_without_a_task_before_any_run(tm
     )
     with pytest.raises(ValueError, match="TaskSpec.regression"):
         NNModel(net_params=net_params, params=mse).train(params=params)
-    assert not (tmp_path / "runs").exists()
+    runs = tmp_path / "runs"
+    assert not runs.exists() or not [entry for entry in os.listdir(runs) if not entry.startswith(".")]
     with_task = replace(mse, task=TaskSpec.regression(1))
     run = NNModel(net_params=net_params, params=with_task).train(params=params)
     assert run.idps[-1].train_edp.loss is not None
