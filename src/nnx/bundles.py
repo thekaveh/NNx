@@ -199,7 +199,8 @@ class ReconstructedBundle:
     @property
     def resume_checkpoint(self) -> str:
         """The checkpoint label a resumed run records as its parent
-        checkpoint (``"bundle-<generation>_e<epoch>"``)."""
+        checkpoint (``"bundle-<generation[:16]>_e<epoch>"``: the first 16
+        hex characters of the generation)."""
         return f"bundle-{self.info.generation[:16]}_e{self.info.epoch}"
 
     def resume(self, params: NNTrainParams, **train_kwargs: Any) -> NNRun:

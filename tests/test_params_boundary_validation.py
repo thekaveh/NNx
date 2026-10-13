@@ -391,3 +391,19 @@ def test_evaluation_metrics_print_their_values():
 
     text = repr(NNEvaluationDataPoint(loss=1.0, extra={"bleu": 0.5}))
     assert "{'bleu': 0.5}" in text and "object at 0x" not in text
+
+
+def test_an_int_too_large_for_a_float_is_a_field_naming_value_error():
+    from nnx import NNOptimParams
+
+    with pytest.raises(ValueError, match="max_lr"):
+        NNOptimParams.builder().adam(max_lr=10**400).build()
+
+
+def test_multi_line_plot_refuses_more_lines_than_dash_styles():
+    pytest.importorskip("plotly")
+    from nnx.vis_utils import VisUtils
+
+    xs = [0, 1]
+    with pytest.raises(ValueError, match="at most 4 lines"):
+        VisUtils.multi_line_plot(xs, [[[0, 1]] * 5], "t", (["g"], [str(i) for i in range(5)]), "x", "y")

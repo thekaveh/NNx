@@ -352,8 +352,8 @@ class ExperimentManifest:
         """A manifest from an existing model's declarations: its task and
         label order, its model descriptor and built-in net params, its
         recorded transformation recipe when it has one, and — when given — the training configuration
-        (``NNTrainParams.state()`` without ``n_epochs`` and the resume
-        lineage, which describe an attempt; loaders are never read) and a
+        (``NNTrainParams.state()`` without ``n_epochs``, ``resume_epochs``
+        and the resume lineage, which describe an attempt; loaders are never read) and a
         fitted ``nnx.preprocessing.Standardizer``, recorded as
         ``config["preprocessing"]``: its schema, frozen statistics and
         fit-membership identity, never recomputed. Builds no model and

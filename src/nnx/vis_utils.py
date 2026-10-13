@@ -121,6 +121,8 @@ class VisUtils:
         fig = make_subplots()
 
         ls = ["solid", "dash", "dot", "dashdot"]
+        if any(len(ys) > len(ls) for ys in yss):
+            raise ValueError(f"multi_line_plot draws at most {len(ls)} lines per group (one dash style each)")
         cs = VisUtils.generate_colors(n=len(yss))
         n_lines_per_series = len(yss[0])
 

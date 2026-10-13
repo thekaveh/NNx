@@ -470,7 +470,7 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   immutable form, and equality follows the canonical bytes.
 - **`ExperimentManifest.for_model(...)`** collects the model's task and labels
   (§6.3) and its model descriptor (§3.2). When given the training
-  configuration, it records it without `n_epochs` and the resume lineage,
+  configuration, it records it without `n_epochs`, `resume_epochs` and the resume lineage,
   which describe an attempt. So a resume of the same plan keeps the
   fingerprint. It builds no model and reads no loader.
 - **Identity references** are `declared`, `digest` or `unknown`. A `declared`
@@ -2715,7 +2715,7 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   in memory; it never becomes a pickle. One resumed epoch equals the
   uninterrupted run.
 - **Resume lineage.** The resumed run records `resume_checkpoint`
-  (`"bundle-<generation>_e<epoch>"`) as its parent checkpoint. With
+  (`"bundle-<generation[:16]>_e<epoch>"`, the generation's first 16 hex characters) as its parent checkpoint. With
   `provenance=...`, its attempt links the bundle's run, epoch and generation
   without reading anything from disk.
 - **Resume refusals.** These raise `BundleCapabilityError` before anything
