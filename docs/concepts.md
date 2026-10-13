@@ -1033,8 +1033,9 @@ An objective may also define two hooks:
 - `check_run(model, *, optimizers, callbacks)` — `NNModel.train` and
   `Trainer.train` call it with the built optimizers before any run is
   reserved. It refuses a combination the objective cannot train.
-- `after_update(events)` — called once per committed update, after every
-  named optimizer stepped and before callbacks see the events. The JEPA EMA
+- `after_update(events)` — called once per committed update, after the
+  window's step and before callbacks see the events. An optimizer without
+  gradients in the window is not stepped. The JEPA EMA
   target advances there, never per microbatch or after a skipped window.
 
 Both adapters are checkpointable components, so a stateful resume continues
@@ -1054,8 +1055,8 @@ is read or any parameter changes. So does passing the imperative diffusion or
 JEPA step as `objective=`: it steps the optimizer itself, so the engine
 would step it twice. So does passing an `Objective` as the step function.
 
-In `Trainer` the engine steps every named optimizer once per committed
-update. Each is clipped with its own `grad_clip_norm`, and all share one
+In `Trainer` the engine steps every named optimizer that holds gradients
+once per committed update. Each is clipped with its own `grad_clip_norm`, and all share one
 `accumulate_grad_batches`. The engine emits one event per named optimizer.
 
 An explicit `NNModelParams.precision` applies to `Trainer` objectives too.
@@ -1241,9 +1242,9 @@ There is **no** `default_trainer_step`. Multi-optim updates are inherently scena
 - A `trainer_step_fn` run refuses `grad_clip_norm` and an `accumulate_grad_batches` other than 1 on any named optimizer. The Trainer cannot apply them to a step function's updates. Clip or accumulate inside the step function, or pass `objective=` instead.
 - The Trainer owns the epoch loop and steps each registered scheduler once per epoch. On the `optimizer_update` clock (§2.5), it steps a scheduler after each update the step reports with `ctx.report_update(name)`. Each optimizer keeps its own count.
 
-`auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update). An objective run has no step function to take the timing over, so it refuses `auto_step_schedulers=False` when schedulers are set.
+`auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update). An objective run has no step function to take the timing over, so it refuses `auto_step_schedulers=False`, which would leave even the default plateau schedulers unstepped.
 
-Trainer-level `extra_metrics` are `callable(y_true, y_pred)`. The built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively, pass `objective=` (§6.5) instead of a step function. The shared update engine then steps every named optimizer once per committed update.
+Trainer-level `extra_metrics` are `callable(y_true, y_pred)`. The built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively, pass `objective=` (§6.5) instead of a step function. The shared update engine then steps every named optimizer that holds gradients once per committed update.
 
 ### 8.3. NNRun integration
 

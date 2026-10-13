@@ -701,3 +701,23 @@ def test_a_trainer_binds_a_writer_only_callbacks_monitor(tmp_path, monkeypatch):
     early = writer_only(lambda: EarlyStopping(monitor=MonitorSpec(metric="nll"), patience=5))
     run = Trainer(_model()).train(params=params, trainer_step_fn=_trainer_step, callbacks=[early])
     assert len(run.idps) == 2
+
+
+def test_an_epoch_summary_keeps_each_windows_term_weight():
+    """A KL weight annealed across windows (0 then 1): the epoch loss is the
+    weighted sum per (name, reduction, weight), not the first window's
+    weight applied to every window's numerator."""
+    from types import SimpleNamespace
+
+    from nnx.monitors import _TrainEpochSummary
+
+    summary = _TrainEpochSummary((), None, None)
+
+    def term(numerator, denominator, weight, reduction="mean"):
+        return SimpleNamespace(
+            name="kl", reduction=reduction, weight=weight, _numerator_value=numerator, denominator=denominator
+        )
+
+    summary.observe_terms([term(10.0, 5, 0.0)])
+    summary.observe_terms([term(2.0, 5, 1.0)])
+    assert summary._terms_loss() == pytest.approx(0.4)

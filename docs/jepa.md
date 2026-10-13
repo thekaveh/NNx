@@ -241,8 +241,8 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   precision, clipping and the optimizer step, with the objective's
   non-finite policy (`nonfinite="fail"` or `"skip"`).
 * **EMA, once per committed update.** The target advances in the
-  objective's `after_update` hook. This runs after every named optimizer
-  stepped, from the updated online weights, and before callbacks see the
+  objective's `after_update` hook. This runs after the window's step, from
+  the updated online weights, and before callbacks see the
   update event. It never runs per microbatch and never for a skipped window.
 
     `ema_momentum` is fixed in `[0, 1)`. `ema_updates` counts this run's EMA

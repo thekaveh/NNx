@@ -70,6 +70,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - The imperative diffusion and JEPA steps honour the model's batch adapter.
     - `NoiseSchedulers` validate `T` and the cosine `s`; `save_pretrained` refuses quantized weights before writing.
     - `link_metrics` refuses NaN logits and non-finite categorical logits; a 1-D `attention_mask` is an `LMTaskError`.
+    - An objective run's whole-epoch training loss keeps each window's term weight and reduction (an annealed weight used the epoch's first).
+    - `CategoricalParam` refuses choices that compare equal (`True`, `1`, `1.0`), which optuna would collapse.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)

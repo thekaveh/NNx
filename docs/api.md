@@ -835,8 +835,10 @@ Args:
         loss terms over each window (the optimizers'
         ``accumulate_grad_batches``, which must agree), clips each
         optimizer's parameters with its own ``grad_clip_norm`` and
-        steps every named optimizer once per committed update,
-        announcing each to ``Callback.on_optimizer_update``.
+        steps every named optimizer that holds gradients once per
+        committed update (an optimizer without gradients is not
+        stepped but still counts), announcing each to
+        ``Callback.on_optimizer_update``.
     provenance: an optional ``nnx.provenance.ExperimentManifest``:
         the declared intent, recorded with a fresh
         attempt exactly as ``NNModel.train`` records it.
@@ -869,7 +871,9 @@ Raises:
         any optim's NNOptimParams.is_valid() returns False, a
         trainer_step_fn run sets grad_clip_norm or
         accumulate_grad_batches, an objective run's optimizers share
-        a parameter, or a callback registers update listeners.
+        a parameter, an objective run sets
+        auto_step_schedulers=False, or a callback registers update
+        listeners.
     RuntimeError: in a process group of more than one rank.
 ```
 

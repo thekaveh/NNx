@@ -1640,3 +1640,16 @@ def test_an_objective_run_refuses_schedulers_nothing_would_step(tmp_path, monkey
 
     with pytest.raises(ValueError, match="would never step"):
         Trainer(_gan_like_model()).train(replace(params, auto_step_schedulers=False), objective=supervised_objective())
+
+
+def test_an_objective_run_refuses_unstepped_default_schedulers(tmp_path, monkeypatch):
+    """Without explicit schedulers each optimizer still gets the default
+    plateau scheduler: auto_step_schedulers=False would leave it unstepped."""
+    from dataclasses import replace
+
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    params = replace(_two_optimizer_params(1), schedulers={}, auto_step_schedulers=False)
+    with pytest.raises(ValueError, match="would never step"):
+        Trainer(_gan_like_model()).train(params, objective=supervised_objective())

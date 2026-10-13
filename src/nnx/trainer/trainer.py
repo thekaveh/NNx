@@ -343,8 +343,10 @@ class Trainer:
                 loss terms over each window (the optimizers'
                 ``accumulate_grad_batches``, which must agree), clips each
                 optimizer's parameters with its own ``grad_clip_norm`` and
-                steps every named optimizer once per committed update,
-                announcing each to ``Callback.on_optimizer_update``.
+                steps every named optimizer that holds gradients once per
+                committed update (an optimizer without gradients is not
+                stepped but still counts), announcing each to
+                ``Callback.on_optimizer_update``.
             provenance: an optional ``nnx.provenance.ExperimentManifest``:
                 the declared intent, recorded with a fresh
                 attempt exactly as ``NNModel.train`` records it.
@@ -377,7 +379,9 @@ class Trainer:
                 any optim's NNOptimParams.is_valid() returns False, a
                 trainer_step_fn run sets grad_clip_norm or
                 accumulate_grad_batches, an objective run's optimizers share
-                a parameter, or a callback registers update listeners.
+                a parameter, an objective run sets
+                auto_step_schedulers=False, or a callback registers update
+                listeners.
             RuntimeError: in a process group of more than one rank.
         """
         from ..distributed import _refuse_multi_rank
@@ -425,9 +429,10 @@ class Trainer:
                     f"optimizers {ignored} set grad_clip_norm or accumulate_grad_batches, which a trainer_step_fn "
                     "never applies: clip / accumulate inside the step function, or train with an objective"
                 )
-        if objective is not None and not params.auto_step_schedulers and params.schedulers:
+        if objective is not None and not params.auto_step_schedulers:
             # No step function exists to take the timing over: the schedules
-            # would silently never step.
+            # (every optimizer's default plateau scheduler included) would
+            # silently never step.
             raise ValueError(
                 "auto_step_schedulers=False hands scheduler timing to a trainer_step_fn; an objective run has "
                 "none, so its schedulers would never step"

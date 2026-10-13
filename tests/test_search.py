@@ -542,3 +542,11 @@ def test_trial_control_declares_no_rank_behaviour():
     """Trials never run under DDP (the search refuses a multi-rank group), so
     the per-trial callback claims no distributed behaviour."""
     assert "distributed" not in vars(_TrialControl)
+
+
+@pytest.mark.parametrize("choices", [(True, 1, 1.0), (0, False)])
+def test_categorical_choices_that_compare_equal_are_refused(choices):
+    """optuna stores a choice by its index: equal choices would collapse, so
+    a trial would report a value it did not run with."""
+    with pytest.raises(ValueError, match="distinct"):
+        CategoricalParam(name="c", choices=choices)

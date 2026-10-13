@@ -195,8 +195,10 @@ class CategoricalParam:
             raise ValueError(f"{self.name}: choices must not be empty")
         if not all(choice is None or isinstance(choice, (bool, int, float, str)) for choice in choices):
             raise TypeError(f"{self.name}: choices must be None, bool, int, float or str")
-        if len({repr(choice) for choice in choices}) != len(choices):
-            raise ValueError(f"{self.name}: choices must be distinct")
+        # Distinct by type and by equality: optuna stores a choice by
+        # choices.index(value), so True, 1 and 1.0 would collapse to one.
+        if len({repr(choice) for choice in choices}) != len(choices) or len(set(choices)) != len(choices):
+            raise ValueError(f"{self.name}: choices must be distinct (and not equal, as True == 1 == 1.0)")
         object.__setattr__(self, "choices", choices)
 
     def state(self) -> dict[str, Any]:

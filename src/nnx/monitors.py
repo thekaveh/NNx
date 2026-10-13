@@ -852,8 +852,8 @@ class _TrainEpochSummary:
         self._error = _WeightedMean()
         self._pending: Optional[tuple[Optional[float], Optional[float]]] = None
         self._records = 0
-        # Objective runs: {term name: [reduction, weight, Σ numerator, Σ denominator]}.
-        self._terms: dict[str, list[Any]] = {}
+        # Objective runs: {(name, reduction, weight): [reduction, weight, Σ numerator, Σ denominator]}.
+        self._terms: dict[tuple[str, str, float], list[Any]] = {}
         self._pending_terms = False
 
     def observe(
@@ -874,9 +874,13 @@ class _TrainEpochSummary:
     def observe_terms(self, terms: Sequence[Any]) -> None:
         """Called for each objective microbatch with its ``LossTerm``\\ s:
         normalized terms add their numerators and denominators, summed terms
-        their totals."""
+        their totals. A term is keyed by its name, reduction and weight: the
+        engine pins those within one window only, so a weight annealed (or a
+        reduction changed) across windows starts its own sum rather than
+        taking the epoch's first."""
         for term in terms:
-            entry = self._terms.setdefault(term.name, [term.reduction, term.weight, 0.0, 0.0])
+            key = (term.name, term.reduction, float(term.weight))
+            entry = self._terms.setdefault(key, [term.reduction, term.weight, 0.0, 0.0])
             entry[2] += term._numerator_value
             if term.reduction == "mean":
                 entry[3] += float(term.denominator)

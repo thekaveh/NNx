@@ -27,7 +27,7 @@ for each microbatch. This engine owns everything after that:
    still counts the committed window, so every optimizer's update clock
    advances together. Before
    the events are delivered, the objective's own ``after_update`` hook runs
-   once per committed update (all named optimizers stepped) — a JEPA
+   once per committed update, after the window's step — a JEPA
    objective advances its EMA target there (FEAT-040).
 
 Non-finite losses or gradients follow a declared policy: ``"fail"`` raises
@@ -122,7 +122,7 @@ class UpdateEngine:
         self.precision = precision
         self.listeners: list[Callable[[UpdateEvent], None]] = list(listeners)
         # Called once per committed update with its events (one per named
-        # optimizer), after every optimizer stepped and before the listeners.
+        # optimizer), after the window's step and before the listeners.
         self.commit_hooks: list[Callable[[tuple[UpdateEvent, ...]], None]] = list(commit_hooks)
         # Every optimizer's parameters, each once, in a stable order; which of
         # them require gradients is decided per microbatch (freezing).

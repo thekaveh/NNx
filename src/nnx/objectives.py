@@ -41,7 +41,8 @@ prediction) are the objective counterparts of the diffusion and JEPA step
 factories. An objective may also define ``check_run(model, *, optimizers,
 callbacks)`` — run before any run is reserved, to refuse a combination it
 cannot train — and ``after_update(events)``, run once per committed update
-after every optimizer stepped (the JEPA EMA target advances there).
+after the window's step (an optimizer without gradients is not stepped; the
+JEPA EMA target advances there).
 """
 
 from __future__ import annotations
