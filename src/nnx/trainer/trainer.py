@@ -425,6 +425,13 @@ class Trainer:
                     f"optimizers {ignored} set grad_clip_norm or accumulate_grad_batches, which a trainer_step_fn "
                     "never applies: clip / accumulate inside the step function, or train with an objective"
                 )
+        if objective is not None and not params.auto_step_schedulers and params.schedulers:
+            # No step function exists to take the timing over: the schedules
+            # would silently never step.
+            raise ValueError(
+                "auto_step_schedulers=False hands scheduler timing to a trainer_step_fn; an objective run has "
+                "none, so its schedulers would never step"
+            )
         objective_window = _objective_window(params) if objective is not None else 1
         for name, opt_params in params.optims.items():
             if not opt_params.is_valid():

@@ -22,12 +22,10 @@ migrates the schedule once up-front.
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, first_input, imperative_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -76,16 +74,9 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         m.net.train()
         m.net.zero_grad()
 
-        # Standard NNx dataloader contract: batch is (X, Y) or a single
-        # tensor; Y is unused by diffusion. Use unpack_batch when the net
-        # supplies one, fall back to direct unpacking otherwise.
-        if hasattr(m.net, "unpack_batch"):
-            (x_0,), _ = cast(Any, m.net).unpack_batch(ctx.batch)
-        elif isinstance(ctx.batch, (list, tuple)):
-            x_0 = ctx.batch[0]
-        else:
-            x_0 = ctx.batch
-        x_0 = x_0.to(m.device)
+        # The one input, as diffusion_objective reads it: the model's batch
+        # adapter, else the net's unpack_batch, else (X, Y) / a tensor.
+        x_0 = first_input(m, ctx.batch, who="diffusion_train_step_factory")
 
         B = x_0.shape[0]
         t = torch.randint(0, schedule.T, (B,), device=m.device)

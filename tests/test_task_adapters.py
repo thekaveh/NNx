@@ -490,3 +490,24 @@ def test_a_task_state_without_its_kind_is_a_task_error():
 
     with pytest.raises(TaskValidationError, match="'kind'"):
         TaskSpec.from_state({"version": 1})
+
+
+@pytest.mark.parametrize(
+    ("spec", "target"),
+    [
+        (TaskSpec.categorical(3, ignore_index=-100), torch.tensor([-100, -100])),
+        (TaskSpec.regression(3), torch.full((2, 3), float("nan"))),
+    ],
+    ids=["categorical", "regression"],
+)
+def test_a_fully_masked_batch_with_infinite_outputs_adds_an_exact_zero(spec, target):
+    """A -inf class mask in the outputs must not turn the all-masked batch's
+    zero numerator into NaN (it would poison the evaluated loss sum)."""
+    adapter = task_adapter(spec)
+    output = torch.tensor([[0.0, 1.0, -float("inf")], [1.0, 0.0, -float("inf")]], requires_grad=True)
+    loss_fn = torch.nn.CrossEntropyLoss() if spec.kind == "categorical" else torch.nn.MSELoss()
+    prepared = adapter.prepare(output, target)
+    _, numerator, weight = adapter.loss_terms(loss_fn, *prepared)
+    assert weight == 0.0 and float(numerator) == 0.0
+    numerator.backward()
+    assert torch.isfinite(output.grad).all()

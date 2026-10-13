@@ -89,10 +89,20 @@ def test_to_migrates_all_tensors():
 
 
 def test_invalid_T_raises():
-    with pytest.raises(ValueError, match="T must be positive"):
+    with pytest.raises(ValueError, match="T >= 1"):
         NoiseSchedulers.LINEAR(T=0)
-    with pytest.raises(ValueError, match="T must be positive"):
+    with pytest.raises(ValueError, match="T >= 1"):
         NoiseSchedulers.COSINE(T=-5)
+    for bad in (10.5, True):  # a fractional step count, a bool read as one step
+        with pytest.raises(ValueError, match="T"):
+            NoiseSchedulers.LINEAR(T=bad)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0.0])
+def test_cosine_offset_must_be_finite_and_positive(bad):
+    """s=nan / inf built an all-NaN schedule without raising."""
+    with pytest.raises(ValueError, match="s"):
+        NoiseSchedulers.COSINE(T=10, s=bad)
 
 
 def test_linear_invalid_beta_bounds_raises():

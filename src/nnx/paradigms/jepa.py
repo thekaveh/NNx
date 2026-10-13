@@ -37,7 +37,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, first_input, imperative_step
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -390,16 +390,10 @@ def jepa_train_step_factory(
         # submodule of `model.net` (the recommended path).
         predictor.zero_grad()
 
-        # Standard dataloader contract: (X, Y) or single tensor. Y is
-        # ignored — JEPA is self-supervised.
+        # The one input, as the JEPA objective reads it (the model's batch
+        # adapter, else unpack_batch, else (X, Y) / a tensor). Y is ignored.
         dynamic_net = cast(Any, m.net)
-        if hasattr(dynamic_net, "unpack_batch"):
-            (x,), _ = dynamic_net.unpack_batch(ctx.batch)
-        elif isinstance(ctx.batch, (list, tuple)):
-            x = ctx.batch[0]
-        else:
-            x = ctx.batch
-        x = x.to(m.device)
+        x = first_input(m, ctx.batch, who="jepa_train_step_factory")
 
         # Sample the per-step mask. Both masks are 1-D length n_patches.
         n_patches = int(dynamic_net.n_patches)

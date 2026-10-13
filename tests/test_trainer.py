@@ -1626,3 +1626,17 @@ def test_a_refused_owner_pair_never_runs_a_writer_only_factory(tmp_path, monkeyp
             _two_optimizer_params(1), trainer_step_fn=_two_step, objective=supervised_objective(), callbacks=[factory]
         )
     assert built == []
+
+
+def test_an_objective_run_refuses_schedulers_nothing_would_step(tmp_path, monkeypatch):
+    """auto_step_schedulers=False hands timing to a step function; an
+    objective run has none, so its schedules would silently never step."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    from dataclasses import replace
+
+    params = _two_optimizer_params(1)
+
+    with pytest.raises(ValueError, match="would never step"):
+        Trainer(_gan_like_model()).train(replace(params, auto_step_schedulers=False), objective=supervised_objective())

@@ -270,3 +270,37 @@ def test_one_cycle_peaks_against_a_factory_optimizers_configured_base_lr():
         assert sorted(group["max_lr"] for group in optimizer.param_groups) == pytest.approx([0.5, 1.0])
     finally:
         unregister_optimizer_factory("test.adam_default_lr", 1)
+
+
+def test_one_cycle_keeps_a_single_scoped_groups_multiplier():
+    """A Trainer's strict optimizer may hold one group at lr_multiplier=0.1:
+    its peak is 0.1 * max_lr, as it is beside a sibling group."""
+    import torch
+
+    from nnx import NNOptimParams, NNParamGroupSpec, NNSchedulerParams, Optims, Schedulers
+    from nnx.optimizers import build_optimizer
+
+    net = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    optimizer = build_optimizer(
+        net,
+        NNOptimParams(
+            name=Optims.SGD,
+            max_lr=1e-2,
+            momentum=0.9,
+            weight_decay=0.0,
+            param_groups=[NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.1)],
+        ),
+        strict_param_groups=True,
+    )
+    params = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=1.0,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        total_steps=10,
+    )
+    Schedulers.ONE_CYCLE(optimizer, params, n_epochs=10)
+    assert [group["max_lr"] for group in optimizer.param_groups] == pytest.approx([0.1])

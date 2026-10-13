@@ -203,3 +203,19 @@ def test_prompt_tuner_refuses_a_prompt_that_fills_the_context():
     model = _tiny_transformer()
     with pytest.raises(ValueError, match="max_seq_len"):
         PromptTuner(model, n_prompt_tokens=model.params.max_seq_len)
+
+
+@pytest.mark.parametrize("bad", [2.0, True])
+def test_peft_sizes_must_be_integers_checked_before_freezing(bad):
+    """A fractional size failed inside torch.empty after the base was
+    frozen; a bool read as 1. Both are refused before anything changes."""
+    from torch import nn
+
+    from nnx import apply_lora_to
+
+    model = nn.Sequential(nn.Linear(4, 4))
+    with pytest.raises(ValueError, match="r"):
+        apply_lora_to(model, "*", r=bad)
+    assert all(p.requires_grad for p in model.parameters())
+    with pytest.raises(ValueError, match="n_prompt_tokens"):
+        PromptTuner(_tiny_transformer(), n_prompt_tokens=bad)

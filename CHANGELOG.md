@@ -61,6 +61,15 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `FixedHeadProvider` refuses a regression loss without a task.
     - `LogitsChainBuilder` refuses custom processors after `temperature(0.0)`, which would corrupt the greedy choice.
     - `link_metrics` refuses probabilities outside `[0, 1]` (pass logits with `from_logits=True`).
+    - A fully masked task batch with infinite outputs no longer turns the evaluated loss into NaN.
+    - OneCycle keeps a single scoped group's multiplier (a Trainer's strict optimizer).
+    - A Trainer objective run refuses `auto_step_schedulers=False` with schedulers (nothing would step them); `NNTrainerParams` checks its `optims` / `schedulers` containers.
+    - A custom eval step's `extra`-only validation record survives `NNRun.load`.
+    - `NNTransformerParams.tie_embeddings` must be a bool; recipes accept NumPy integer `r` / `rank`; LoRA, prefix and prompt sizes must be integers, checked before the base is frozen.
+    - `NLIProvider.check` refuses a bad request before any model call, so jobs and the benchmark spend no call on it.
+    - The imperative diffusion and JEPA steps honour the model's batch adapter.
+    - `NoiseSchedulers` validate `T` and the cosine `s`; `save_pretrained` refuses quantized weights before writing.
+    - `link_metrics` refuses NaN logits and non-finite categorical logits; a 1-D `attention_mask` is an `LMTaskError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)

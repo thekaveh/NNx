@@ -428,3 +428,15 @@ def test_adapters_compose_with_an_int8_quantized_base(adapter):
     for name, p in trained.items():
         assert p.dtype == torch.float32 and p.device.type == "cpu", name
         assert p.grad is not None and torch.isfinite(p.grad).all(), name
+
+
+def test_save_pretrained_refuses_quantized_weights_before_writing(tiny_model, tmp_path):
+    """safetensors cannot store torchao's quantized tensor subclasses: the
+    refusal comes before the directory exists (it failed midway, leaving an
+    empty directory)."""
+    pytest.importorskip("huggingface_hub")
+    q = quantize_int8(tiny_model)
+    target = tmp_path / "qdir"
+    with pytest.raises(ValueError, match="quantized tensor"):
+        q.save_pretrained(target)
+    assert not target.exists()

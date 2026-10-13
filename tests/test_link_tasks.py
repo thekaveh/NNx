@@ -826,3 +826,14 @@ def test_link_metrics_refuses_logits_passed_as_probabilities():
     with pytest.raises(LinkTaskError, match="from_logits=True"):
         link_metrics([[2.0, -1.0], [0.1, 0.9]], [0, 1])
     assert link_metrics([5.0, -3.0], [1, 0], from_logits=True)["accuracy"].value == 1.0
+
+
+def test_link_metrics_refuses_logits_it_cannot_score():
+    with pytest.raises(LinkTaskError, match="NaN"):
+        link_metrics([float("nan"), 1.0], [1, 1], from_logits=True)
+    with pytest.raises(LinkTaskError, match="NaN"):
+        link_metrics([[float("nan"), 1.0], [0.1, 0.9]], [0, 1], from_logits=True)
+    with pytest.raises(LinkTaskError, match="finite"):
+        link_metrics([[float("inf"), 1.0], [0.1, 0.9]], [0, 1], from_logits=True)
+    # Binary logits stay exact at any confidence, infinite ones included.
+    assert link_metrics([float("inf"), -float("inf")], [1, 0], from_logits=True)["bce"].value == 0.0

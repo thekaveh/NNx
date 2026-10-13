@@ -25,7 +25,8 @@ window and masked (ignored) targets give exactly the full-batch update. The
 engine then runs autocast (around the objective's forward) → unscale →
 clip → step, applies the objective's non-finite policy (``"fail"`` raises
 before anything is stepped; ``"skip"`` drops the window) and fires one
-committed-update event per successful optimizer update, delivered to
+committed-update event per named optimizer per committed window (an
+optimizer without gradients is not stepped but still counts), delivered to
 ``Callback.on_optimizer_update``.
 
 Imperative step functions and ``finalize_step`` are unchanged; a run uses
@@ -217,8 +218,9 @@ class Objective:
         Raise to refuse; the default accepts every run."""
 
     def after_update(self, events: tuple[UpdateEvent, ...]) -> None:
-        """Called once per committed update — after every named optimizer
-        stepped, never for a microbatch or a skipped window — with its
+        """Called once per committed update — after the window's step (an
+        optimizer without gradients is not stepped), never for a microbatch
+        or a skipped window — with its
         events (one per optimizer), before callbacks see them. The default
         does nothing."""
 

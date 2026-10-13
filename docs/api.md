@@ -2403,7 +2403,7 @@ Refuse a run this objective cannot train — called by ``NNModel.train`` and ``T
 nnx.objectives.Objective.after_update(self, events: 'tuple[UpdateEvent, ...]') -> 'None'
 ```
 
-Called once per committed update — after every named optimizer stepped, never for a microbatch or a skipped window — with its events (one per optimizer), before callbacks see them. The default does nothing.
+Called once per committed update — after the window's step (an optimizer without gradients is not stepped), never for a microbatch or a skipped window — with its events (one per optimizer), before callbacks see them. The default does nothing.
 
 
 #### `nnx.objectives.SupervisedObjective`
@@ -3122,6 +3122,14 @@ nnx.decisions.NLIProvider.hypotheses(self, question: 'Question') -> 'list[str]'
 ```
 
 The hypothesis per candidate (a Choice, in its option order) or the one hypothesis of a Boolean.
+
+##### `nnx.decisions.NLIProvider.check`
+
+```python
+nnx.decisions.NLIProvider.check(self, question: 'Question', inputs: 'Any') -> 'None'
+```
+
+Every check `decide` makes before calling the model — the question, the texts (non-empty strings), the capabilities and the tokenizer-only length check of each pair — so a caller (a decision job, the benchmark) can refuse a request without spending a call.
 
 ##### `nnx.decisions.NLIProvider.decide`
 

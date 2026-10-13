@@ -41,6 +41,7 @@ from typing import Union
 import torch
 from torch import nn
 
+from .._validation import require_count
 from ..nn.net.transformer_nn import TransformerNN
 from ._mode import inherit_training_mode
 from ._source import _resolve_source_to_state_dict
@@ -75,8 +76,13 @@ class PromptTuner(nn.Module):
         super().__init__()
         if not isinstance(model, TransformerNN):
             raise TypeError(f"PromptTuner requires a TransformerNN, got {type(model).__name__}")
-        if n_prompt_tokens <= 0:
-            raise ValueError(f"n_prompt_tokens must be positive, got {n_prompt_tokens}")
+        n_prompt_tokens = require_count(
+            n_prompt_tokens,
+            "n_prompt_tokens",
+            owner="PromptTuner",
+            minimum=1,
+            domain_message=f"n_prompt_tokens must be positive, got {n_prompt_tokens}",
+        )
         if n_prompt_tokens >= model.params.max_seq_len:
             raise ValueError(
                 f"n_prompt_tokens={n_prompt_tokens} leaves no room for input tokens "

@@ -153,6 +153,23 @@ class NNTrainerParams:
         # must never change this frozen configuration (FIX-010). Values
         # are shared by reference on purpose: params dataclasses are
         # immutable and metric callables are runtime-only objects.
+        from ..optimizers import NNOptimFactoryParams
+
+        # Container shapes fail here, naming the field, not as an
+        # AttributeError in state() or Trainer.train.
+        for name, kinds in (
+            ("optims", (NNOptimParams, NNOptimFactoryParams)),
+            ("schedulers", (NNSchedulerParams,)),
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, Mapping):
+                raise ValueError(f"NNTrainerParams.{name} must be a mapping of name -> params, got {value!r}")
+            wrong = sorted(str(key) for key, item in value.items() if not isinstance(item, kinds))
+            if wrong:
+                expected = " / ".join(kind.__name__ for kind in kinds)
+                raise ValueError(f"NNTrainerParams.{name} entries {wrong} must be {expected}")
+        if self.extra_metrics is not None and not isinstance(self.extra_metrics, Mapping):
+            raise ValueError("NNTrainerParams.extra_metrics must be a mapping of name -> callable or None")
         for name in ("optims", "schedulers", "extra_metrics"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, _FrozenMapping):

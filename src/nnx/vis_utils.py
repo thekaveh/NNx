@@ -47,7 +47,11 @@ class VisUtils:
     and `nnx.vis_utils`'s module-level aliases (which re-export the most
     common methods of this class for ergonomic top-level access).
 
-    Class attributes are styling defaults shared by every plotting method:
+    Class attributes are the plotting methods' styling defaults.
+    ``confusion_matrix`` reads them at each call. ``multi_line_plot``,
+    ``scatter_plot`` and ``two_dim_tsne_checkpoint_logits`` take them as
+    keyword defaults fixed when the class is defined: pass ``renderer=`` /
+    ``fig_size=`` (and so on) per call to change them there.
 
     - `TITLE_SIZE` / `LABEL_SIZE`: Plotly title and axis-label font sizes.
     - `FIG_SIZE`: default `(width, height)` in pixels.
@@ -339,7 +343,7 @@ class VisUtils:
                 col_ts="target",
                 label_xs="tsne_1",
                 label_ys="tsne_2",
-                title=f"2D t-SNE of output logits of best checkpoint @ epoch={checkpoint.idp.epoch_idx}",
+                title=f"2D t-SNE of output logits of the checkpoint @ epoch={checkpoint.idp.epoch_idx}",
             ),
         )
 

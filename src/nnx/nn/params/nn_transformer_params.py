@@ -91,6 +91,8 @@ class NNTransformerParams(NNParams):
             if not _is_probability(value):  # a real number in [0, 1], as NNParams.dropout_prob
                 raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value!r}")
             object.__setattr__(self, name, plain_real(value))
+        if not isinstance(self.tie_embeddings, bool):  # a truthy string would tie while run.yaml recorded it
+            raise ValueError(f"NNTransformerParams.tie_embeddings must be a bool, got {self.tie_embeddings!r}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
         # RoPE rotates pairs of head channels, so the head width must be

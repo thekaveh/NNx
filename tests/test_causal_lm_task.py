@@ -518,3 +518,9 @@ def test_a_task_state_without_its_vocab_size_is_a_task_error():
 
     with pytest.raises(LMTaskError, match="'vocab_size'"):
         CausalLMTask.from_state({"kind": KIND})
+
+
+def test_a_one_dimensional_attention_mask_is_a_task_error():
+    task = CausalLMTask(vocab_size=V, pad_id=0)
+    with pytest.raises(LMTaskError, match="attention_mask"):
+        task.split({"input_ids": torch.tensor([[1, 2, 3, 0]]), "attention_mask": torch.tensor([1, 1, 1, 0])})

@@ -257,6 +257,8 @@ class CausalLMTask:
             return
         if not isinstance(attention_mask, torch.Tensor):
             raise LMTaskError(f"attention_mask must be a tensor, got {type(attention_mask).__name__}")
+        if attention_mask.ndim != 2:  # checked before the shift slices a second axis
+            raise LMTaskError(f"attention_mask {tuple(attention_mask.shape)} does not fit the batch's tokens")
         padded = attention_mask == 0
         if shift:
             padded = padded[:, 1:]

@@ -413,7 +413,10 @@ class TaskAdapter:
 
         n_valid = int(valid.sum())
         if n_valid == 0:
-            zero = output.sum() * 0.0
+            # A graph-connected exact zero: output.sum() * 0.0 is NaN when an
+            # output is +-inf (a -inf class mask), which would poison the
+            # evaluated loss sum through a batch that adds no weight.
+            zero = output.reshape(-1)[:0].sum()
             return zero + float("nan"), zero, 0.0
         if n_valid == valid.numel():
             # Nothing masked: the loss sees the batch exactly as without a task.
@@ -556,7 +559,10 @@ class _CategoricalAdapter(TaskAdapter):
 
         n_valid = int(valid.sum())
         if n_valid == 0:
-            zero = output.sum() * 0.0
+            # A graph-connected exact zero: output.sum() * 0.0 is NaN when an
+            # output is +-inf (a -inf class mask), which would poison the
+            # evaluated loss sum through a batch that adds no weight.
+            zero = output.reshape(-1)[:0].sum()
             return zero + float("nan"), zero, 0.0
         if n_valid == valid.numel():
             return _loss_terms(loss_fn, output, target)

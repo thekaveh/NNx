@@ -1230,3 +1230,17 @@ def test_a_recipe_travels_in_a_run_bundle_and_a_callback_operation_does_not(tmp_
         with pytest.raises(BundleError, match=r"topology transform 0 \('lora' version 7\) has a version"):
             export_bundle(run.id, tmp_path / "future")
     assert not (tmp_path / "future").exists()
+
+
+def test_numpy_integer_counts_are_plain_ints_in_a_recipe():
+    """A grid over np.arange gives NumPy integers: they are the same recipe
+    (and run id) as the Python ints."""
+    import numpy as np
+
+    from nnx.transforms import TransformRecipe, lora, low_rank
+
+    numpy = [lora("layers.0", r=np.int64(4)), low_rank("layers.1", rank=np.int64(2))]
+    plain = [lora("layers.0", r=4), low_rank("layers.1", rank=2)]
+    TransformRecipe(numpy)  # validates (it refused np.int64 before)
+    assert [op.state() for op in numpy] == [op.state() for op in plain]
+    assert type(numpy[0].config["r"]) is int

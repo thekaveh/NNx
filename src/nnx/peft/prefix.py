@@ -46,6 +46,7 @@ from typing import Any, Optional, Union, cast
 import torch
 from torch import nn
 
+from .._validation import require_count
 from ..nn.net.transformer_layers import (
     MultiHeadCausalAttention,
     apply_rotary,
@@ -112,14 +113,24 @@ class PrefixTuner(nn.Module):
         super().__init__()
         if not isinstance(model, TransformerNN):
             raise TypeError(f"PrefixTuner requires a TransformerNN, got {type(model).__name__}")
-        if n_prefix <= 0:
-            raise ValueError(f"n_prefix must be positive, got {n_prefix}")
+        n_prefix = require_count(
+            n_prefix,
+            "n_prefix",
+            owner="PrefixTuner",
+            minimum=1,
+            domain_message=f"n_prefix must be positive, got {n_prefix}",
+        )
 
         total_blocks = len(model.blocks)
         if n_layers is None:
             n_layers = total_blocks
-        if n_layers <= 0:
-            raise ValueError(f"n_layers must be positive, got {n_layers}")
+        n_layers = require_count(
+            n_layers,
+            "n_layers",
+            owner="PrefixTuner",
+            minimum=1,
+            domain_message=f"n_layers must be positive, got {n_layers}",
+        )
         if n_layers > total_blocks:
             raise ValueError(f"n_layers={n_layers} exceeds model depth ({total_blocks} blocks)")
         if any(hasattr(block.attn, "_nnx_prefix_tuner") for block in model.blocks):

@@ -44,7 +44,7 @@ from typing import Any, Union
 import torch
 from torch import nn
 
-from .._validation import require_finite_real
+from .._validation import require_count, require_finite_real
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _resolve_source_to_state_dict
@@ -88,8 +88,8 @@ class LoRALinear(nn.Module):
         super().__init__()
         if not isinstance(base, nn.Linear):
             raise TypeError(f"LoRALinear requires an nn.Linear base, got {type(base).__name__}")
-        if r <= 0:
-            raise ValueError(f"LoRA rank r must be positive, got {r}")
+        # An integer >= 1 (not a bool), checked before the base is frozen.
+        r = require_count(r, "r", owner="LoRA", minimum=1, domain_message=f"LoRA rank r must be positive, got {r}")
         require_finite_real(alpha, "alpha", owner="LoRA", minimum=0.0, exclusive_min=True)
         if not (0.0 <= dropout < 1.0):
             raise ValueError(f"LoRA dropout must be in [0, 1), got {dropout}")

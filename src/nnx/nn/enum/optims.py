@@ -104,6 +104,12 @@ class Optims(Enum):
             strict_param_groups=strict_param_groups,
         )
 
+        # Validated reals (an int 0 included) as the floats torch expects;
+        # the params' state() keeps the value as given (run ids never shift).
+        if isinstance(momentum, tuple):
+            momentum = (float(momentum[0]), float(momentum[1]))
+        else:
+            momentum = float(momentum)
         match self:
             case Optims.SGD:
                 assert isinstance(momentum, float)

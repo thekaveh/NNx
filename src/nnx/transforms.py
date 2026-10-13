@@ -45,6 +45,7 @@ untransformed model, as before).
 from __future__ import annotations
 
 import math
+import numbers
 import weakref
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -158,6 +159,11 @@ class TransformOp:
             raise TypeError(f"targets must be a sequence of module paths, got the string {self.targets!r}")
         object.__setattr__(self, "targets", tuple(self.targets))
         config = dict(self.config)
+        # A NumPy integer count (a grid over np.arange) is the plain int.
+        for key in ("r", "rank"):
+            value = config.get(key)
+            if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+                config[key] = int(value)
         if self.id == LORA:
             # alpha=4 and alpha=4.0 are one recipe, with one run id.
             for key in ("alpha", "dropout"):

@@ -527,3 +527,23 @@ def test_unsupported_or_invalid_requests_never_call_the_model():
         _provider(max_batch=1).decide(Boolean("late goal"), [TEXT, TEXT])
     assert provider.model_calls == 0 and provider.model.seen == [] and provider.tokenizer.calls == []
     assert provider.decide(Boolean("late goal"), []) == [] and provider.model_calls == 0
+
+
+def test_check_refuses_a_bad_request_without_calling_the_model():
+    """check() makes every pre-model refusal, so a decision job refuses an
+    empty text with InvalidJob before any call (it used to count as a
+    failed, sent call)."""
+    from nnx.decisions import DecisionJob, InvalidJob
+
+    model = OverlapNLI()
+    provider = _provider(model=model)
+    question = Choice("Topic?", (SPORT, ECON))
+    forwards = []
+    real_forward = model.forward
+    model.forward = lambda *args, **kwargs: forwards.append(1) or real_forward(*args, **kwargs)
+    with pytest.raises(InvalidDecisionRequest):
+        provider.check(question, ["", TEXT])
+    with pytest.raises(InvalidJob):
+        DecisionJob.ask(question, id="t").run(provider, state=["", TEXT])
+    assert forwards == []
+    provider.check(question, [TEXT])  # a valid request passes

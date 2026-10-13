@@ -91,8 +91,11 @@ class Schedulers(Enum):
                 base_lr = float(getattr(optimizer, "_nnx_base_lr", optimizer.defaults.get("lr", group_lrs[0])))
                 if params.max_lr is None:
                     max_lr: Any = group_lrs if len(group_lrs) > 1 else group_lrs[0]
-                elif len(group_lrs) > 1 and base_lr > 0:
-                    max_lr = [params.max_lr * lr / base_lr for lr in group_lrs]
+                elif base_lr > 0:
+                    # Also for one group: a Trainer's strict G.* x0.1 group
+                    # peaks at 0.1 * max_lr whether or not a sibling exists.
+                    scaled = [params.max_lr * lr / base_lr for lr in group_lrs]
+                    max_lr = scaled if len(scaled) > 1 else scaled[0]
                 else:
                     max_lr = params.max_lr
                 total_steps = budget(params.total_steps, "total_steps")

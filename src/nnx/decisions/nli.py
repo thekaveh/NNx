@@ -295,18 +295,32 @@ class NLIProvider:
             return [self.boolean_template.format(question.prompt)]
         raise UnsupportedCapability(f"an NLI provider answers choice and boolean questions, not {question.kind!r}")
 
-    def decide(self, question: Question, inputs: Any) -> list[DecisionResult]:
-        """Answer ``question`` for every text in ``inputs``."""
+    def check(self, question: Question, inputs: Any) -> None:
+        """Every check :meth:`decide` makes before calling the model — the
+        question, the texts (non-empty strings), the capabilities and the
+        tokenizer-only length check of each pair — so a caller (a decision
+        job, the benchmark) can refuse a request without spending a call."""
+        self._checked(question, inputs)
+
+    def _checked(self, question: Question, inputs: Any) -> tuple[list[str], list[str], list[str], list[bool]]:
+        """``(texts, premises, pair hypotheses, truncated)`` once the request
+        passes every pre-model check; no model is called."""
         if not isinstance(question, (Choice, Boolean, Score)):
             raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
         texts = _texts(inputs)
         self.capabilities().check(question, modality="text", batch_size=len(texts))
         hypotheses = self.hypotheses(question)
-        if not texts:
-            return []
         premises = [text for text in texts for _ in hypotheses]
         pair_hypotheses = hypotheses * len(texts)
-        truncated = self._truncation_report(premises, pair_hypotheses)
+        truncated = self._truncation_report(premises, pair_hypotheses) if texts else []
+        return texts, premises, pair_hypotheses, truncated
+
+    def decide(self, question: Question, inputs: Any) -> list[DecisionResult]:
+        """Answer ``question`` for every text in ``inputs``."""
+        texts, premises, pair_hypotheses, truncated = self._checked(question, inputs)
+        if not texts:
+            return []
+        hypotheses = self.hypotheses(question)
         logits = self._pair_logits(premises, pair_hypotheses)
         per_input = len(hypotheses)
         record = self.record()

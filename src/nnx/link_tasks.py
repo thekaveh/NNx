@@ -560,6 +560,11 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
         raise LinkTaskError(f"{p.shape[0]} predictions for {y.shape[0]} targets")
     if y.shape[0] == 0:
         return {"bce" if p.ndim == 1 else "nll": MetricValue(None, "no candidates")}
+    if from_logits and np.isnan(p).any():
+        raise LinkTaskError("logits must not be NaN")
+    if from_logits and p.ndim == 2 and not np.isfinite(p).all():
+        # The max-shifted log-softmax of an infinite row is inf - inf.
+        raise LinkTaskError("categorical logits must be finite")
     if not from_logits and not ((p >= 0.0) & (p <= 1.0)).all():  # NaN fails both
         raise LinkTaskError(
             "probabilities must lie in [0, 1]; pass logits (LinkPrediction.logits) with from_logits=True"

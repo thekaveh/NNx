@@ -239,3 +239,71 @@ def test_a_numpy_integer_setting_keeps_the_python_int_run_identity():
     plain = NNOptimParams(name=Optims.SGD, max_lr=1, momentum=0.9, weight_decay=0)
     numpy = NNOptimParams(name=Optims.SGD, max_lr=np.int64(1), momentum=0.9, weight_decay=np.int64(0))
     assert numpy.state() == plain.state()
+
+
+@pytest.mark.parametrize(
+    ("name", "momentum"),
+    [("SGD", 0), ("SGD_NESTEROV", 1), ("ADAM", (0, 0)), ("ADAMW", (0, 0))],
+)
+def test_an_integer_momentum_builds_its_optimizer(name, momentum):
+    """What construction and is_valid() accept, train() builds."""
+    import torch
+
+    from nnx import NNOptimParams, Optims
+    from nnx.optimizers import build_optimizer
+
+    params = NNOptimParams(name=getattr(Optims, name), max_lr=0.1, momentum=momentum, weight_decay=0)
+    build_optimizer(torch.nn.Linear(2, 2), params)
+
+
+def test_a_validation_record_with_only_extra_values_survives_idps_csv(tmp_path):
+    """A custom eval step may report only extra values: the reloaded
+    history keeps that record (concepts §6.2: val_edp, extra included)."""
+    import pandas as pd
+
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
+    from nnx.nn.params.nn_run import _read_idps_csv
+
+    idp = NNIterationDataPoint(
+        lr=0.1,
+        iter_idx=0,
+        epoch_idx=0,
+        batch_idx=0,
+        train_edp=NNEvaluationDataPoint(loss=1.0),
+        val_edp=NNEvaluationDataPoint(extra={"bleu": 0.5}),
+    )
+    path = tmp_path / "idps.csv"
+    pd.json_normalize(data=[idp.state()]).to_csv(path)
+    (loaded,) = _read_idps_csv(str(path))
+    assert loaded.val_edp is not None and loaded.val_edp.extra == {"bleu": 0.5}
+
+
+def test_tie_embeddings_must_be_a_bool():
+    from nnx import NNTransformerParams
+
+    with pytest.raises(ValueError, match="tie_embeddings"):
+        NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+            tie_embeddings="false",
+        )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{"schedulers": None}, {"optims": {"a": "not-params"}}, {"schedulers": {"main": "cosine"}}],
+    ids=["schedulers-none", "optims-entry", "schedulers-entry"],
+)
+def test_trainer_params_containers_are_checked_at_construction(bad):
+    from nnx.trainer import NNTrainerParams
+
+    fields = {"optims": _TRAINER_OPTIMS, **bad}
+    with pytest.raises(ValueError, match="NNTrainerParams"):
+        NNTrainerParams(n_epochs=1, **fields)

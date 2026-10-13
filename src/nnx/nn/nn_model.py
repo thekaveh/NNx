@@ -939,7 +939,7 @@ def _loss_terms(
         # Native mean CE/NLL returns NaN when every target is ignored (or has
         # zero class weight). Preserve that display value for the finite-loss
         # guard, but contribute a differentiable zero to a larger valid cycle.
-        return loss, logits.sum() * 0.0, 0.0
+        return loss, logits.reshape(-1)[:0].sum(), 0.0  # exact zero, even for +-inf logits
     return loss, loss * normalization_weight, normalization_weight
 
 
@@ -2992,6 +2992,18 @@ class NNModel(_HubMixinBase):
         so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
         before any file or directory is written."""
         self._require_portable("save_pretrained")
+        # A quantized tensor subclass (torchao int8 weights) has no plain
+        # storage for safetensors: refuse before the directory exists.
+        quantized = sorted(
+            name
+            for name, tensor in self.net.state_dict().items()
+            if isinstance(tensor, torch.Tensor) and type(tensor) not in (torch.Tensor, torch.nn.Parameter)
+        )
+        if quantized:
+            raise ValueError(
+                f"save_pretrained refused before writing anything: {quantized[:3]} hold quantized tensor "
+                "subclasses, which a safetensors artifact cannot store; save the float model instead"
+            )
         transforms = tuple(self._topology_transforms)
         if not transforms or all(_replayable(t) for t in transforms):
             # The artifact rebuilds the descriptor plus its recorded recipe:

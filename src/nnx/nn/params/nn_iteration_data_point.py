@@ -108,12 +108,13 @@ class NNIterationDataPoint:
             edp_state["metrics"] = _collect(prefix, "metrics")
             return edp_state
 
-        # A validation record is present when any of its scalars is — an
-        # all-masked task record (FEAT-002) has no loss but still has its
-        # kind, count and status.
+        # A validation record is present when any of its scalars, metrics or
+        # custom extra values is — an all-masked task record (FEAT-002) has
+        # no loss but still has its kind, count and status, and a custom
+        # eval step may report only extra values.
         def _optional_edp(prefix: str) -> Optional[NNEvaluationDataPoint]:
             edp_state = _edp_state(prefix)
-            if any(edp_state[name] is not None for name in _EDP_SCALARS) or edp_state["metrics"]:
+            if any(edp_state[name] is not None for name in _EDP_SCALARS) or edp_state["metrics"] or edp_state["extra"]:
                 return NNEvaluationDataPoint.from_state(edp_state)
             return None
 
