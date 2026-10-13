@@ -784,8 +784,9 @@ class NNCheckpoint:
         loads as before). Raises :class:`ResumePointError` naming the reason:
         a listed file missing or a manifest naming another checkpoint
         (*torn*), files of different generations (*mixed*), or a file whose
-        SHA-256 differs (*digest mismatch*). No file is unpickled to decide
-        and no checkpoint data is written (only the checkpoint's lock file
+        SHA-256 differs (*digest mismatch*). Only the matching training-state
+        sidecar is read, with ``torch.load(weights_only=True)``, to compare its
+        generation; no checkpoint data is written (only the checkpoint's lock file
         is taken, created when missing): a point whose writer stopped between
         publishing the checkpoint and its live manifest is recognized by its
         staged manifest — every digest matching — and that manifest is

@@ -288,8 +288,9 @@ def test_unreadable_provenance_never_breaks_loading_or_resuming(tmp_path):
         load_provenance(run.id)
     with pytest.warns(RuntimeWarning, match="unreadable provenance ignored"):
         assert NNRun.load(run.id).provenance is None
-    with pytest.warns(RuntimeWarning, match="its attempt is not linked"):
+    with pytest.warns(RuntimeWarning, match="its attempt is not linked") as linked:
         child = _model().train(params=_params(1, resume_from_run_id=run.id), provenance=PLAN)
+    assert [w.filename for w in linked if "not linked" in str(w.message)] == [__file__]  # the caller's train()
     assert child.provenance.attempt.parent["attempt_id"] is None
     assert child.provenance.attempt.parent["generation"] is not None  # the checkpoint is still linked
 
@@ -305,9 +306,29 @@ def test_a_failed_completion_write_keeps_the_trained_run(monkeypatch):
         real(path, value)
 
     monkeypatch.setattr(provenance, "_write_json", flaky)
-    with pytest.warns(RuntimeWarning, match="could not be recorded as completed"):
+    with pytest.warns(RuntimeWarning, match="could not be recorded as completed") as caught:
         run = _model().train(params=_params(1, data_id="flaky"), provenance=PLAN)
     assert run.idps and load_provenance(run.id).attempt.status == "running"
+    assert [w.filename for w in caught if "recorded as completed" in str(w.message)] == [__file__]
+
+
+def test_a_failed_completion_write_keeps_the_trained_run_under_an_error_filter(monkeypatch):
+    import warnings
+
+    from nnx import provenance
+
+    real = provenance._write_json
+
+    def flaky(path, value):
+        if value.get("status") == "completed":
+            raise OSError("disk full")
+        real(path, value)
+
+    monkeypatch.setattr(provenance, "_write_json", flaky)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # -W error: the warning must not lose the saved run
+        run = _model().train(params=_params(1, data_id="flaky-error"), provenance=PLAN)
+    assert run.idps
 
 
 def test_checkpoint_summaries_never_load_the_weights():

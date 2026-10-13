@@ -155,9 +155,9 @@ class SplitMetrics:
     ``loss`` / ``error`` / classification fields, the declared ``metrics``
     and the ``extra_metrics`` as ``extra/<name>``, skipping any that were
     not recorded (a non-finite value is kept). A declared metric named like
-    a classification field (``f1``, ``accuracy``, ...) holds that name — the
-    value a monitor on it compares, and the one the logging callbacks write
-    last; the record's own field stays on ``run.idps``. A whole-epoch training
+    a classification field (``f1``, ``accuracy``, ...) appears as
+    ``metrics/<name>`` beside the record's own field, as the loggers write
+    it; a monitor on that name compares the declared value. A whole-epoch training
     summary carries the declared metrics but not the extra metrics, which
     the loop computes per batch (``run.idps`` has them).
     """

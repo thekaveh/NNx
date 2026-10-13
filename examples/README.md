@@ -458,7 +458,7 @@ Notes for section 2.7:
 - Immutable `append` / `prepend`: a duplicated temperature equals one combined stage. A zero-temperature stage is refused anywhere but last.
 - A versioned `state()` / `from_state()` round trip serializes a custom stage through a registered `LogitsStageCodec`.
 - Seeded `generate(logits_pipeline=...)` on a tiny local-tokenizer transformer matches the explicit processor list on the cached and uncached paths.
-- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `ordered_logits_pipeline_workflow()`, `-k ordered_logits_pipeline`). It is not in the extras-free end-to-end list, since step 4 needs the `lm` extra.
+- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `ordered_logits_pipeline_workflow()`, `-k ordered_logits_pipeline`). It is not in the end-to-end list, since step 4 needs the `lm` extra.
 
 **`11_tinystories_lm.py`**
 
@@ -493,7 +493,7 @@ Notes for section 2.8:
 
 | Example | What it demonstrates |
 |---|---|
-| `19_prune_synthetic_classifier.py` | Magnitude prune a small synthetic-data classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then briefly fine-tune to recover. Demonstrates `nnx.prune.magnitude_prune`. |
+| `19_prune_synthetic_classifier.py` | Magnitude prune a small synthetic-data classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then fine-tune and re-prune, which recovers part of the drop at 50% sparsity. Demonstrates `nnx.prune.magnitude_prune`. |
 | `20_low_rank_surgery_ffn.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. |
 
 Notes for section 2.10:

@@ -455,10 +455,9 @@ def test_an_unbaked_pruned_runtime_module_trains_keeps_its_mask_and_resumes():
     assert float((module[0].weight == 0).float().mean()) == pytest.approx(0.5)
 
 
-def test_predict_and_to_onnx_hand_torch_writable_arrays(tmp_path, monkeypatch):
+def _writable_spy(monkeypatch):
     # Torch warns about a read-only array once per process, so assert on the
     # conversion itself rather than on that warning.
-    pytest.importorskip("onnx")
     seen = []
     from_numpy = torch.from_numpy
 
@@ -467,11 +466,25 @@ def test_predict_and_to_onnx_hand_torch_writable_arrays(tmp_path, monkeypatch):
         return from_numpy(array)
 
     monkeypatch.setattr(torch, "from_numpy", spy)
-    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
     X = np.random.default_rng(0).standard_normal((3, 4)).astype(np.float32)
     X.flags.writeable = False  # what pandas' .to_numpy() returns
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    return seen, model, X
+
+
+def test_predict_hands_torch_a_writable_array(monkeypatch):
+    seen, model, X = _writable_spy(monkeypatch)
     model.predict(X)
+    assert seen and all(seen)
+
+
+def test_onnx_exports_hand_torch_a_writable_array(tmp_path, monkeypatch):
+    pytest.importorskip("onnx")
+    from nnx.viz import netron_export
+
+    seen, model, X = _writable_spy(monkeypatch)
     model.to_onnx(str(tmp_path / "model.onnx"), X)
+    netron_export(model, str(tmp_path / "netron.onnx"), X)
     assert len(seen) >= 2 and all(seen)
 
 

@@ -1414,3 +1414,17 @@ def test_api_reference_renders_members_from_undocumented_nnx_bases():
     ):
         assert f"##### `{path}`" in text
     assert "##### `nnx.nn.generative_nn_model.GenerativeNNModel.train`" not in text  # NNModel documents it
+    assert "##### `nnx.nn.generative_nn_model.GenerativeNNModel.save_pretrained`" not in text  # nor the Hub mixin's
+
+
+def test_api_reference_ignores_the_hub_stub_without_huggingface_hub():
+    from scripts.docs.build_api_reference import _class_members
+
+    class _HubMixinBase:  # the stub installed without the hub extra
+        _optional_stub = True
+
+        def push_to_hub(self, *args, **kwargs): ...
+
+    _HubMixinBase.__module__ = "nnx.nn.nn_model"
+    Model = type("Model", (_HubMixinBase,), {"__module__": "nnx.nn.nn_model", "train": lambda self: None})
+    assert [name for name, _ in _class_members(Model)] == ["train"]

@@ -585,3 +585,32 @@ def test_an_async_only_injection_is_refused_before_a_synchronous_job_calls(built
     with pytest.raises(InvalidJob, match="only an async client"):
         DecisionJob.ask(SPAM, id="q").run(provider, state=["x"])
     assert client.calls == [] and built == []
+
+
+def test_an_async_only_injection_is_refused_before_a_synchronous_job_calls_inside_an_event_loop(built):
+    # A notebook cell runs inside an event loop; the job is still synchronous.
+    from nnx.decisions import InvalidJob
+
+    client = AsyncRecorder()
+    provider = JevProvider(async_client=client)
+
+    async def cell():
+        with pytest.raises(InvalidJob, match="only an async client"):
+            DecisionJob.ask(SPAM, id="q").run(provider, state=["x"])
+
+    asyncio.run(cell())
+    assert client.calls == [] and built == []
+
+
+def test_a_benchmark_inside_an_event_loop_spends_no_budget_on_an_async_only_provider(built):
+    from nnx.decisions.benchmark import Budget, Sample, collect
+
+    client = AsyncRecorder()
+    samples = [Sample(f"s{i}", SPAM, f"text {i}", label=True) for i in range(2)]
+
+    async def cell():
+        return collect(JevProvider(async_client=client), samples, provider_id="jev", budget=Budget(max_calls=5))
+
+    collection = asyncio.run(cell())
+    assert collection.calls == 0 and {record.status for record in collection.records} == {"unsupported"}
+    assert client.calls == []

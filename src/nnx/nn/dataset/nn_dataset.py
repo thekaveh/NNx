@@ -117,14 +117,16 @@ class NNDataset(NNDatasetBase):
         # Fail fast on the no-transform PIL case: torchvision datasets
         # yield PIL Images without `transform`, and everything downstream
         # (input_dim inference, batching) needs tensors.
-        sample = full_train_dataset[0][0]
-        if self.eval_transform is not None:
-            sample = self.eval_transform(sample)  # what the model sees at evaluation
-        if not hasattr(sample, "shape"):
-            raise ValueError(
-                f"{self.ds_class.__name__} samples have no .shape (got {type(sample).__name__}) — "
-                "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
-            )
+        raw = full_train_dataset[0][0]
+        # What the model sees at evaluation and in training: both must be tensors.
+        for transform in (self.eval_transform, self.train_transform):
+            sample = raw if transform is None else transform(raw)
+            if not hasattr(sample, "shape"):
+                raise ValueError(
+                    f"{self.ds_class.__name__} samples have no .shape (got {type(sample).__name__}) — "
+                    "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
+                )
+        sample = raw if self.eval_transform is None else self.eval_transform(raw)
 
         # `None` → one batch holding the complete split; an explicit
         # positive size is kept verbatim (an `is None` test, not

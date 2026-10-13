@@ -126,3 +126,16 @@ def test_nn_dataset_rejects_shapeless_samples(tmp_path):
 
     with pytest.raises(ValueError, match="ToTensor"):
         NNDataset(ds_class=_Shapeless, root_dir=str(tmp_path), download=False)
+
+
+def test_a_train_transform_that_yields_no_tensor_is_refused_at_construction(tmp_path):
+    import pytest
+
+    class _ToList:
+        def __call__(self, x):
+            return x.tolist()  # no .shape: the first training batch could not collate
+
+    with pytest.raises(ValueError, match="no .shape"):
+        NNDataset(
+            ds_class=_TinyVision, root_dir=str(tmp_path), download=False, train_transform=_ToList(), eval_transform=None
+        )

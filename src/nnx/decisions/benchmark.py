@@ -61,6 +61,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 
+from .providers import _synchronous
 from .schema import (
     PROBABILITY_TOLERANCE,
     Boolean,
@@ -595,6 +596,7 @@ def _records(
     ]
 
 
+@_synchronous
 def collect(
     provider: Any,
     samples: Sequence[Sample],

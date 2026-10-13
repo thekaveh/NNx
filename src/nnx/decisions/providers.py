@@ -3,8 +3,10 @@ fixed-head NNx adapter."""
 
 from __future__ import annotations
 
+import functools
 import numbers
 from collections.abc import Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Union, runtime_checkable
 
@@ -20,6 +22,24 @@ from .schema import (
     UnsupportedCapability,
     validate_response,
 )
+
+# Set while a synchronous entry point (DecisionJob.run, benchmark.collect)
+# runs, so a provider's check() can refuse what only its async path serves
+# before a call is counted, even inside an event loop (a notebook cell).
+_SYNC_CALLER: ContextVar[bool] = ContextVar("nnx_decisions_sync_caller", default=False)
+
+
+def _synchronous(function: Any) -> Any:
+    @functools.wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _SYNC_CALLER.set(True)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _SYNC_CALLER.reset(token)
+
+    return wrapper
+
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel

@@ -108,7 +108,7 @@ class NNSchedulerParams:
             )
 
     def __str__(self) -> str:
-        if self.kind is None:
+        if self.kind is None or self.kind == Schedulers.REDUCE_LR_ON_PLATEAU:
             return (
                 f"[plateau, patience={self.patience}, cooldown={self.cooldown}, "
                 f"factor={self.factor:1.0e}, threshold={self.threshold:1.0e}, "

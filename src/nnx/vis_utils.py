@@ -166,7 +166,7 @@ class VisUtils:
             xaxis=dict(
                 title=dict(text=x_axis_label, font=dict(size=label_size)),
                 tickmode="array",
-                tickvals=list(range(0, len(x), x_ticks_inc)),
+                tickvals=list(x)[::x_ticks_inc],
             ),
         )
 

@@ -95,8 +95,9 @@ Params dataclasses with **tagged-union shape** expose a `.builder()` classmethod
 
 `NNSchedulerParams.builder()` has five variant methods:
 `reduce_on_plateau`, `step`, `cosine_annealing`, `one_cycle` and
-`linear_warmup_decay`. Each sets `kind` plus the right variant-specific
-knobs and leaves the rest at the dataclass defaults. State() and
+`linear_warmup_decay`. Each sets the variant's knobs and leaves the rest at
+the dataclass defaults. Each also sets `kind`, except `reduce_on_plateau`,
+which leaves it `None` so legacy run ids stay unchanged. State() and
 from_state() round-trip unchanged, and the direct-kwarg ctor still works.
 
 ```python
@@ -1582,7 +1583,7 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 
 The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Six primitives ship today: `summary`, `weight_histogram`, `activation_map`, `attribute`, `gradient_flow`, and `netron_export`.
 
-`nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install thekaveh-nnx[viz]` pulls in `torchinfo`).
+`nnx.viz.summary(model, input_size=...)` returns a `torchinfo.ModelStatistics` — print it for the Keras-style parameter table; access `.total_params` / `.trainable_params` / `.total_mult_adds` for programmatic regression assertions. Accepts an `NNModel` (unwrapped to `.net`) or any `torch.nn.Module`. Requires the optional `viz` extra (`pip install "thekaveh-nnx[viz]"` pulls in `torchinfo`).
 
 `nnx.viz.weight_histogram(model)` walks `model.named_parameters()` and emits one Plotly `Histogram` trace per tensor in a grid subplot. Useful for spotting dead layers, NaN / Inf weights, or saturation patterns at a glance.
 
@@ -1590,11 +1591,11 @@ The companion `nnx.viz` subpackage covers **model-internals** viz — the model 
 
 `nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)`. The figure renders the attribution as a Plotly heatmap. A 4-D input shows its first sample, mean-pooled over channels; a 3-D input shows its first sample; a 2-D input shows one row per sample.
 
-Captum is lazy-imported at the call site, so `summary` and `netron_export` keep working without it; the missing-dep path raises a clear `ImportError`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Requires the `viz` extra (`pip install thekaveh-nnx[viz]` pulls in `captum` alongside `torchinfo`).
+Captum is lazy-imported at the call site, so `summary` and `netron_export` keep working without it; the missing-dep path raises a clear `ImportError`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Requires the `viz` extra (`pip install "thekaveh-nnx[viz]"` pulls in `captum` alongside `torchinfo`).
 
 `nnx.viz.gradient_flow(model)` is the diagnostic for vanishing / exploding gradients during training. Call after `loss.backward()` and before `optimizer.zero_grad()`; returns a Plotly bar chart of per-trainable-parameter L2 gradient norms. Frozen parameters (`requires_grad=False`) and parameters that weren't reached by the forward pass (gradient is `None`) are skipped. Raises `ValueError` with a helpful message if no parameter has a gradient — the usual cause is forgetting `loss.backward()`.
 
-`nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/); the export needs the `onnx` extra. Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install thekaveh-nnx[viz-interactive]`).
+`nnx.viz.netron_export(model, "model.onnx", example_input)` exports the underlying network via `torch.onnx.export` so the artifact can be opened in [Netron](https://netron.app/); the export needs the `onnx` extra. Passing `launch=True` additionally calls `netron.start(path)` to open the browser viewer; that path requires the `viz-interactive` extra (`pip install "thekaveh-nnx[viz-interactive]"`).
 
 ```python
 import torch
@@ -2096,14 +2097,16 @@ Downstream of the LM path, four follow-ons compose on top of it:
 
 Four Tier-2 subpackages are large enough to warrant a dedicated section but small enough that the canonical write-up lives elsewhere. This catalog is the pointer index; open the linked page for the full walkthrough.
 
-**`nnx.quantize`** provides PTQ INT8 weight-only (`quantize_int8(model)`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`), both built on `torchao`. Opt-in via `pip install thekaveh-nnx[quantize]`.
+**`nnx.quantize`** provides PTQ INT8 weight-only (`quantize_int8(model)`) and QAT 8da4w (`qat_train_step_factory` + `QATLifecycleCallback`), both built on `torchao`. Opt-in via `pip install "thekaveh-nnx[quantize]"`.
 
 - The PTQ path is one call, with no calibration data and no retraining. It returns an instance of the same class it was given, with only `net` replaced by the quantized deep copy. A `GenerativeNNModel` keeps its tokenizer and `generate`; user subclasses keep their overrides and attributes.
 - The QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit.
 - A converted `LAST` checkpoint records its `qat_config` and `groupsize`. The ordinary `NNModel.from_checkpoint()` path therefore reconstructs quantized inference without consumer-side prepare/convert calls. Legacy converted checkpoints without that recipe fail with a targeted migration error.
 - See [API §12](api.md#12-quantization-nnxquantize) for the full surface, and `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
 
-**`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. With `bake=False` the masks stay. `NNModel.train` refuses a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization: its checkpoints could not be reloaded. Remove them first (`torch.nn.utils.prune.remove`), or train the net as `NNModel(module=...)`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
+**`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
+
+With `bake=False` the masks stay. `NNModel.train` refuses a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization, because its checkpoints could not be reloaded. Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations`. Alternatively, train the net as `NNModel(module=...)`.
 
 **`nnx.surgery`** provides `widen` / `deepen`, `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 
@@ -3063,8 +3066,9 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 ```
 
 - **The manifest.** Edges are canonicalised and de-duplicated before they
-  are split, so a duplicate, or in an undirected split a reverse, can never
-  sit in two splits (a directed split keeps `u→v` and `v→u` apart). An
+  are split. So a duplicate can never sit in two splits, and in an
+  undirected split neither can a reverse (a directed split keeps `u→v` and
+  `v→u` apart). An
   explicit `LinkSplit` refuses non-canonical, repeated or cross-split edges
   and barred self-loops. It records directedness, the self-loop policy, the
   seed and the topology policy. `replay(edge_index)` re-derives it with a
@@ -3203,9 +3207,9 @@ deliberately narrow and **guarantees no speedup**:
   the fit ends. Optimizers own `model.net`'s parameters. Checkpoints hold its
   keys (never `_orig_mod.`). A resume builds a fresh wrapper.
 - **Eager paths.** Hub and ONNX export, `summary`, weight tying and every
-  `predict` / `evaluate` / `generate` after the fit are eager. A `predict` /
-  `evaluate` / `generate` that a callback runs during the fit goes through
-  the wrapper.
+  `predict` / `evaluate` after the fit are eager, and so is `generate` at any
+  time. A `predict` / `evaluate` that a callback runs during the fit goes
+  through the wrapper.
 - **Failure policy.** `CompileSpec(on_failure="error")` (default) raises
   `CompileFailed` when a compiled forward fails to compile. With
   `fullgraph=True`, a graph break is such a failure. `on_failure="eager"`

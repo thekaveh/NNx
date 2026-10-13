@@ -1676,3 +1676,65 @@ def test_a_failed_attempt_record_never_replaces_the_training_error(monkeypatch):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         recorder.fail(IndexError("the training error"))  # neither raises nor replaces it
+
+
+def test_an_explicit_plateau_scheduler_prints_its_plateau_settings():
+    from nnx import NNSchedulerParams, Schedulers
+
+    text = str(
+        NNSchedulerParams(
+            kind=Schedulers.REDUCE_LR_ON_PLATEAU, min_lr=1e-5, factor=0.5, patience=7, cooldown=0, threshold=1e-4
+        )
+    )
+    assert "patience=7" in text and "cooldown=" in text and "threshold=" in text
+
+
+def test_multi_line_plot_ticks_follow_the_x_values():
+    pytest.importorskip("plotly")
+    from nnx.vis_utils import VisUtils
+
+    fig = VisUtils.multi_line_plot(
+        [10, 20, 30, 40],
+        [[[1, 2, 3, 4], [2, 3, 4, 5]]],
+        "t",
+        (["g"], ["train", "val"]),
+        "epoch",
+        "loss",
+        x_ticks_inc=2,
+        renderer=None,
+    )
+    assert tuple(fig.layout.xaxis.tickvals) == (10, 30)
+
+
+def test_born_again_does_not_guess_a_head_from_registration_order(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams, born_again_train
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    class Gated(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.body = torch.nn.Linear(3, 8)
+            self.head = torch.nn.Linear(8, 2)
+            self.gate = torch.nn.Linear(8, 1)  # registered last, never the output
+
+        def forward(self, x):
+            return self.head(torch.relu(self.body(x)))
+
+    model = NNModel(module=Gated(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    runs = born_again_train(model, train_params=_one_epoch(), generations=2)
+    assert len(runs) == 2
+
+
+def test_a_legacy_spectral_norm_is_reported_as_a_parametrization_not_a_prune_mask(tmp_path, monkeypatch):
+    import torch
+
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_classifier()
+    torch.nn.utils.spectral_norm(model.net.layers[0])
+    with pytest.raises(ValueError, match="layers.0.weight are reparameterized") as caught:
+        model.train(params=_one_epoch())
+    assert "remove_spectral_norm" in str(caught.value) and "pruning" not in str(caught.value)

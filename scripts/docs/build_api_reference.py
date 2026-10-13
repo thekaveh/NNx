@@ -114,10 +114,14 @@ def _class_members(value: type, documented: frozenset[type] = frozenset()) -> li
     # Public members an undocumented nnx base contributes (JsonArtifact.save,
     # _Counted.coverage) are part of the class's API, so they render too; a
     # base with its own catalog entry (NNModel, Question) documents them there.
-    owners = [
-        value,
-        *(base for base in value.__mro__[1:] if base.__module__.split(".")[0] == "nnx" and base not in documented),
-    ]
+    # The walk stops at the first documented base; an optional-extra stub
+    # (no huggingface_hub) never renders, so the output is the same either way.
+    owners = [value]
+    for base in value.__mro__[1:]:
+        if base in documented:
+            break
+        if base.__module__.split(".")[0] == "nnx" and not base.__dict__.get("_optional_stub", False):
+            owners.append(base)
     seen: set[str] = set()
     for owner in owners:
         for name, descriptor in owner.__dict__.items():

@@ -77,6 +77,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Se
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union, cast
 
+from .providers import _synchronous
 from .schema import (
     Boolean,
     BooleanResult,
@@ -484,6 +485,7 @@ class DecisionJob:
 
     # ---------- running (the effect boundaries) ----------
 
+    @_synchronous
     def run(self, provider: Any, *, state: Any, limits: Optional[Limits] = None) -> JobResult:
         """Run the job synchronously with ``provider`` (borrowed, never
         closed) over ``state``."""

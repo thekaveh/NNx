@@ -6921,9 +6921,9 @@ record exists. ``values`` maps metric names to floats: the recorded
 ``loss`` / ``error`` / classification fields, the declared ``metrics``
 and the ``extra_metrics`` as ``extra/<name>``, skipping any that were
 not recorded (a non-finite value is kept). A declared metric named like
-a classification field (``f1``, ``accuracy``, ...) holds that name — the
-value a monitor on it compares, and the one the logging callbacks write
-last; the record's own field stays on ``run.idps``. A whole-epoch training
+a classification field (``f1``, ``accuracy``, ...) appears as
+``metrics/<name>`` beside the record's own field, as the loggers write
+it; a monitor on that name compares the declared value. A whole-epoch training
 summary carries the declared metrics but not the extra metrics, which
 the loop computes per batch (``run.idps`` has them).
 ```
@@ -10557,7 +10557,7 @@ The manifest stamping this checkpoint's resume point — ``generation``, ``check
 nnx.nn.params.nn_checkpoint.NNCheckpoint.verify(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). No file is unpickled to decide and no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
+Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). Only the matching training-state sidecar is read, with ``torch.load(weights_only=True)``, to compare its generation; no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_training_state`
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -146,15 +147,22 @@ def test_representative_examples_run_end_to_end(name, tmp_path):
     # does not, so an example that needs them must set them itself.
     env.pop("KMP_DUPLICATE_LIB_OK", None)
     env.pop("OMP_NUM_THREADS", None)
-    subprocess.run(
+    done = subprocess.run(
         [sys.executable, str(ROOT / "examples" / name)],
         cwd=tmp_path,
         env=env,
-        check=True,
         capture_output=True,
         text=True,
         timeout=90,
     )
+    if done.returncode != 0:
+        # A missing optional extra (graph / vision) skips, as the import tests do.
+        missing = re.search(r"ModuleNotFoundError: No module named '([^']+)'", done.stderr)
+        if missing is not None:
+            _skip_if_optional_extra_missing(ImportError(missing.group(0), name=missing.group(1)), name)
+        if "thekaveh-nnx[" in done.stderr:
+            pytest.skip(f"{name} needs an optional extra")
+        raise AssertionError(f"{name} exited {done.returncode}:\n{done.stderr[-4000:]}")
 
 
 BOUNDED_EXAMPLE_HELPERS = [

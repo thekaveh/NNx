@@ -116,6 +116,8 @@ except ImportError:  # pragma: no cover — gated by optional dep
         raises a clear ImportError pointing at the ``thekaveh-nnx[hub]`` extra.
         """
 
+        _optional_stub = True  # the API reference renders the real mixin's methods only
+
         def _hub_unavailable(self) -> NNModel:
             raise ImportError("HuggingFace Hub integration requires the `hub` extra: `pip install thekaveh-nnx[hub]`.")
 
@@ -2728,7 +2730,9 @@ class NNModel(_HubMixinBase):
         reparameterized = sorted(
             key[: -len("_orig")]
             for key in actual_keys - expected_keys
-            if key.endswith("_orig") and key[: -len("_orig")] in expected_keys
+            if key.endswith("_orig")
+            and key[: -len("_orig")] in expected_keys
+            and f"{key[: -len('_orig')]}_mask" in actual_keys  # a legacy spectral_norm has _u / _v instead
         )
         if reparameterized:
             raise ValueError(
@@ -2748,13 +2752,15 @@ class NNModel(_HubMixinBase):
             key
             for key in expected_keys - actual_keys
             if any(other.startswith(_parametrized_prefix(key)) for other in actual_keys)
-            or {f"{key}_g", f"{key}_v"} <= actual_keys
+            or {f"{key}_g", f"{key}_v"} <= actual_keys  # legacy weight_norm
+            or {f"{key}_orig", f"{key}_u"} <= actual_keys  # legacy spectral_norm
         )
         if parametrized:
             raise ValueError(
                 f"{', '.join(parametrized[:5])} are reparameterized (a parametrization such as weight_norm or "
-                "spectral_norm), so no checkpoint could reload them; remove the parametrization before training, "
-                "or train the net as NNModel(module=...)"
+                "spectral_norm), so no checkpoint could reload them; remove it before training "
+                "(torch.nn.utils.parametrize.remove_parametrizations, or remove_weight_norm / remove_spectral_norm "
+                "for the legacy hooks), or train the net as NNModel(module=...)"
             )
 
     def to_onnx(
@@ -3227,7 +3233,9 @@ class NNModel(_HubMixinBase):
         # raw dicts are dropped knowingly. Anything else is a caller
         # error (a typo'd knob would otherwise vanish silently).
         # The mixin injects only absent keys, so another value came from the
-        # caller and would be dropped silently: refuse it.
+        # caller and would be dropped silently: refuse it (here by type, and
+        # once config.json is read, by value).
+        passed: dict[str, Any] = {}
         for key, injected in (
             ("net_params", Mapping),
             ("params", Mapping),
@@ -3235,6 +3243,8 @@ class NNModel(_HubMixinBase):
             ("transforms", list),
         ):
             value = model_kwargs.pop(key, None)
+            if value is not None:
+                passed[key] = value
             if value is not None and not isinstance(value, injected):
                 raise TypeError(
                     f"from_pretrained got {key}={type(value).__name__}: the model is rebuilt from the repo's "
@@ -3280,6 +3290,12 @@ class NNModel(_HubMixinBase):
 
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
+        overridden = sorted(key for key, value in passed.items() if value != config.get(key))
+        if overridden:
+            raise TypeError(
+                f"from_pretrained got {', '.join(overridden)} that differ from the repo's config.json: the model is "
+                "rebuilt from config.json, so they cannot be overridden here"
+            )
         # We accept either form for back-compat with any future config
         # writer: nested under {"net_params": ..., "params": ...} (what
         # _save_pretrained writes today) or flat at the top level. The

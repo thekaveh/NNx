@@ -19,9 +19,9 @@ Pipeline:
      an iterative prune→tune schedule would use `bake=False` masks.
 
 Magnitude pruning sets the smallest-magnitude weight entries to zero
-based on their L1 norm. At 50% sparsity on a small classifier this is
-typically nondestructive; the tune→re-prune step recovers most of any
-drop while keeping the final network genuinely 50% sparse.
+based on their L1 norm. At 50% sparsity this small classifier loses a
+few points of accuracy; the tune→re-prune step recovers part of the drop
+while keeping the final network genuinely 50% sparse.
 
 Run:
     pip install thekaveh-nnx
