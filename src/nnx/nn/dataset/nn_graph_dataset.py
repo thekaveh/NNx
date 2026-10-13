@@ -84,7 +84,7 @@ class NNGraphDataset(NNDatasetBase):
     size (the complete split is always one batch).
 
     An empty ``val_mask`` / ``test_mask`` is an *absent* split in both
-    sampler modes (FIX-019): that loader is ``None`` — the optional-loader
+    sampler modes: that loader is ``None`` — the optional-loader
     contract the tabular / preference wrappers already follow, which
     ``NNModel.train`` / ``Trainer.train`` honour by skipping validation —
     its resolved size is ``0`` (derived from absence, never an accepted

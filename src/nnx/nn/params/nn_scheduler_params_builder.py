@@ -72,7 +72,7 @@ class NNSchedulerParamsBuilder:
         `from_params(params).build()` equals `params`, with the same
         `state()` (key order and omitted defaults included). A variant
         call afterwards replaces the whole configuration, as usual,
-        except the clock (FEAT-014), which it keeps.
+        except the clock, which it keeps.
 
         Raises:
             TypeError: if `params` is not exactly an `NNSchedulerParams`.
@@ -94,7 +94,7 @@ class NNSchedulerParamsBuilder:
             self._fields["clock"] = clock
 
     def clock(self, clock: str) -> NNSchedulerParamsBuilder:
-        """What one scheduler step counts (FEAT-014): ``"epoch"`` (the
+        """What one scheduler step counts: ``"epoch"`` (the
         default) or ``"optimizer_update"`` — once per committed update of
         the scheduler's optimizer, with horizons counted in updates. Call
         before or after the variant method; a variant call keeps the clock

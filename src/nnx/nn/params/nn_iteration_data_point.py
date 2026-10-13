@@ -19,7 +19,7 @@ class NNIterationDataPoint:
     epoch_idx and take the row with val_edp set for per-epoch validation
     metrics.
 
-    **Epoch summary (FEAT-003).** A run that declares metrics or a monitor
+    **Epoch summary.** A run that declares metrics or a monitor
     also records, on the same last idp of each epoch, `train_summary` —
     the whole-epoch training record (loss and error averaged with every
     batch's own denominator, declared metrics over the full sample) — and
@@ -27,7 +27,7 @@ class NNIterationDataPoint:
     value, status and whether the epoch improved). Both are omitted from
     `state()` otherwise, so legacy history is unchanged.
 
-    **Update counter (FEAT-004).** Objective runs also record
+    **Update counter.** Objective runs also record
     `update_count` — the committed optimizer updates so far — distinct from
     the microbatch counter `iter_idx` and the epoch `epoch_idx`; omitted
     otherwise.

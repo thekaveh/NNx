@@ -200,7 +200,7 @@ no other NNModel functionality is affected.
 property nnx.nn.nn_model.NNModel.task_adapter
 ```
 
-The adapter for ``params.task`` (FEAT-002), or ``None`` for a legacy classification model. Custom steps can call ``task_adapter.record(output, target, loss=...)`` to write the same task record the default step writes.
+The adapter for ``params.task``, or ``None`` for a legacy classification model. Custom steps can call ``task_adapter.record(output, target, loss=...)`` to write the same task record the default step writes.
 
 ##### `nnx.nn.nn_model.NNModel.resolved_precision`
 
@@ -208,7 +208,7 @@ The adapter for ``params.task`` (FEAT-002), or ``None`` for a legacy classificat
 property nnx.nn.nn_model.NNModel.resolved_precision
 ```
 
-The precision this model runs in on its current device (FEAT-028): ``params.precision`` resolved against ``device`` — re- resolved, never read from saved metadata, whenever the device or the policy changes (a loaded model resolves on its destination device).
+The precision this model runs in on its current device: ``params.precision`` resolved against ``device`` — re- resolved, never read from saved metadata, whenever the device or the policy changes (a loaded model resolves on its destination device).
 
 ##### `nnx.nn.nn_model.NNModel.to_onnx`
 
@@ -241,7 +241,7 @@ Args:
 
 Returns the path written. Network is put in eval mode for tracing.
 A network that declares ``onnx_export_unsupported`` (a graph
-classifier, FEAT-026) is refused before anything is written.
+classifier) is refused before anything is written.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
@@ -266,7 +266,7 @@ QAT checkpoints replay their persisted torchao recipe before state
 loading; unsupported recipes fail explicitly rather than constructing
 a model with the wrong topology.
 
-FEAT-006: a registered :class:`~nnx.models.ModelSpec` is rebuilt
+A registered :class:`~nnx.models.ModelSpec` is rebuilt
 through its factory — an unregistered one raises
 :class:`~nnx.models.MissingModelFactoryError`, and a rebuilt topology
 that differs from the saved weights raises ``ValueError``, both
@@ -274,7 +274,7 @@ before any weight is loaded. A runtime-only module
 (``reconstructible=False``) needs ``module=`` — a module of the same
 topology, into which the weights are loaded.
 
-FEAT-028: the precision policy is re-resolved on the destination
+The precision policy is re-resolved on the destination
 device (the constructor resolves it) — never read from the
 checkpoint's recorded precision — so a policy that device cannot
 run fails here; ``precision=`` replaces the saved policy (and the
@@ -292,7 +292,7 @@ Hub save (``huggingface_hub.PyTorchModelHubMixin.save_pretrained``).
 **Details**
 
 ```text
-FEAT-006: a runtime-only module has no factory to rebuild it from,
+A runtime-only module has no factory to rebuild it from,
 so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
 before any file or directory is written.
 ```
@@ -338,7 +338,7 @@ any torch consumer without nnx installed, and by
 Companion to the NNCheckpoint format, which carries the params +
 idp wrapper alongside the weights; ``export_state_dict`` strips
 all of that and leaves just the weights. It records no
-transformation recipe (FEAT-016, ``nnx.transforms``): it cannot
+transformation recipe (``nnx.transforms``): it cannot
 rebuild a recipe's topology alone — materialize the recipe on a
 fresh model before loading it, or keep a checkpoint or
 ``save_pretrained`` artifact, which carry the recipe.
@@ -369,13 +369,13 @@ Args:
         (model, net, train) configs run as distinct experiments
         without altering modeled params. ``None`` (the default)
         preserves existing run.id hashes exactly.
-    components: Extra checkpointable components (FEAT-005,
-        :class:`~nnx.StatefulComponent`) whose state is saved with
+    components: Extra checkpointable components
+        (:class:`~nnx.StatefulComponent`) whose state is saved with
         every checkpoint and restored on a stateful warm resume.
         Callbacks and step functions that implement the protocol
         (``EarlyStopping``, the JEPA step) are registered
         automatically; names must be unique.
-    objective: Optional objective (FEAT-004, ``nnx.objectives``) —
+    objective: Optional objective (``nnx.objectives``) —
         a callable returning loss terms with explicit denominators.
         NNx's shared update engine then owns backward,
         accumulation (``accumulate_grad_batches``, exact for uneven
@@ -384,20 +384,20 @@ Args:
         per committed update. Mutually exclusive with
         ``train_step_fn``.
     provenance: Optional :class:`~nnx.provenance.ExperimentManifest`
-        (FEAT-019) — the declared intent. The fit records it
+        — the declared intent. The fit records it
         (``runs/<id>/provenance.json``, with its fingerprint) and a
         fresh attempt (``attempt.json``: parent attempt and
         checkpoint generation on resume; final status and last
         committed checkpoint). Never part of the run id.
-    history: Optional :class:`~nnx.history.HistoryJournal`
-        (FEAT-036): keep only its ``retention`` most recent records
+    history: Optional :class:`~nnx.history.HistoryJournal`:
+        keep only its ``retention`` most recent records
         in memory (``ctx.idps``, the returned ``NNRun.idps``) and
         append every record once to ``runs/<id>/history/`` instead
         of rewriting ``idps.csv`` each epoch. ``None`` (the default)
         keeps the eager in-memory list and CSV. Never part of the
         run id.
-    compile: Optional :class:`~nnx.compilation.CompileSpec`
-        (FEAT-029): run the built-in step's FP32 forward (and the
+    compile: Optional :class:`~nnx.compilation.CompileSpec`:
+        run the built-in step's FP32 forward (and the
         fit's validation) through ``torch.compile``. The wrapper is
         built per call beside ``model.net``, never assigned to it, so
         checkpoints, export and optimizers see the eager module.
@@ -407,7 +407,7 @@ Args:
         ``NNRun.compile`` records the request and what took effect.
         ``None`` (the default) trains eagerly. Never part of the run
         id.
-    distributed: Optional :class:`nnx.distributed.DDP` (FEAT-030):
+    distributed: Optional :class:`nnx.distributed.DDP`:
         train data-parallel over the process group ``torchrun``
         started (``nnx.distributed.init_process_group()``), with
         ``nnx.distributed.train_loader`` / ``validation_loader``
@@ -452,7 +452,7 @@ Aggregate predictions across all batches in `loader` and compute a single NNEval
 `extra_metrics` ({name -> callable(y_true, y_pred) -> float}) are
 called once on the aggregate truth / decoded predictions.
 
-`metrics` (FEAT-003) are declared :class:`~nnx.MetricSpec`s,
+`metrics` are declared :class:`~nnx.MetricSpec`s,
 accumulated over every valid sample of the loader from the input
 each declares (decoded labels, probabilities or continuous outputs)
 and reported in the record's ``metrics`` under each spec's name. A
@@ -502,7 +502,7 @@ in ``.eval()`` mode.
 nnx.nn.nn_model.NNModel.iter_predict(self, X: 'Iterable[Any]', spec: 'Optional[ProbabilitySpec]' = None, *, rich: 'bool' = False) -> 'PredictionStream'
 ```
 
-Stream predictions one loader batch at a time (FEAT-020).
+Stream predictions one loader batch at a time.
 
 **Details**
 
@@ -541,7 +541,7 @@ Probability-aware prediction declared by an explicit ``spec``.
 **Details**
 
 ```text
-``spec`` may be omitted for a model with a task (FEAT-002): the task
+``spec`` may be omitted for a model with a task: the task
 supplies it — softmax over axis 1 for ``categorical``, sigmoid
 decoded at the task's ``threshold`` for ``multilabel`` — and a
 ``regression`` task returns its continuous values with
@@ -637,7 +637,7 @@ This is the body that `NNModel.train()` runs when no custom
   - gradient accumulation (zero_grad at cycle start, step at cycle
     end). A trailing partial cycle is stepped at the epoch boundary;
     gradients use each loss's effective normalization weight.
-  - the run's precision (FEAT-028): autocast around the forward only,
+  - the run's precision: autocast around the forward only,
     the backward outside it; fp16 unscales before grad clip and steps
     through the scaler, scaler-free bf16 checks its gradients are
     finite before clipping
@@ -657,7 +657,7 @@ forward/backward dance.
 class nnx.nn.nn_model.EvalStepContext(model: 'NNModel', val_loader: 'Iterable[Any]', extra_metrics: 'Optional[Mapping[str, Callable]]', epoch_idx: 'int', metrics: 'tuple[MetricSpec, ...]' = ()) -> 'None'
 ```
 
-Frozen bundle of state passed into a validation-step function (#86).
+Frozen bundle of state passed into a validation-step function.
 
 **Details**
 
@@ -750,8 +750,8 @@ Args:
         Power-user path for custom logit processors (e.g.,
         logit-bias for forbidden tokens). When ``None`` (the
         default), behavior is unchanged.
-    logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`
-        (FEAT-037): its stages run exactly in declared order,
+    logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`:
+        its stages run exactly in declared order,
         compiled once per call into fresh processors; like
         ``logits_chain`` it replaces the inline kwargs. Passing
         both ``logits_chain`` and ``logits_pipeline`` raises
@@ -825,17 +825,17 @@ Args:
         update — including which optimizers to step, in what order, and
         with what loss(es). There is no supervised fallback: pass it or
         ``objective``.
-    objective: an objective (FEAT-004, ``nnx.objectives``) in place of
+    objective: an objective (``nnx.objectives``) in place of
         ``trainer_step_fn``: the shared update engine accumulates its
         loss terms over each window (the optimizers'
         ``accumulate_grad_batches``, which must agree), clips each
         optimizer's parameters with its own ``grad_clip_norm`` and
         steps every named optimizer once per committed update,
         announcing each to ``Callback.on_optimizer_update``.
-    provenance: an optional ``nnx.provenance.ExperimentManifest``
-        (FEAT-019): the declared intent, recorded with a fresh
+    provenance: an optional ``nnx.provenance.ExperimentManifest``:
+        the declared intent, recorded with a fresh
         attempt exactly as ``NNModel.train`` records it.
-    history: an optional ``nnx.history.HistoryJournal`` (FEAT-036):
+    history: an optional ``nnx.history.HistoryJournal``:
         a bounded in-memory window and an append journal instead of
         the eager list and ``idps.csv``, exactly as in
         ``NNModel.train``.
@@ -848,7 +848,7 @@ Args:
         (model, net, train) configs run as distinct experiments
         without altering modeled params. ``None`` (the default)
         preserves existing run.id hashes exactly.
-    components: extra checkpointable components (FEAT-005);
+    components: extra checkpointable components;
         callbacks and a step function that implement
         :class:`~nnx.StatefulComponent` register automatically.
 
@@ -1104,7 +1104,7 @@ different data get distinct run directories. None at default.
 nnx.trainer.params_builder.NNTrainerParamsBuilder.metrics(self, *specs: 'MetricSpec') -> 'NNTrainerParamsBuilder'
 ```
 
-Declare named, registered metrics (FEAT-003) — computed over the whole validation set by ``evaluate()`` and reported under each spec's name. Replaces any earlier declaration.
+Declare named, registered metrics — computed over the whole validation set by ``evaluate()`` and reported under each spec's name. Replaces any earlier declaration.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.monitor`
 
@@ -1112,7 +1112,7 @@ Declare named, registered metrics (FEAT-003) — computed over the whole validat
 nnx.trainer.params_builder.NNTrainerParamsBuilder.monitor(self, spec: 'MonitorSpec') -> 'NNTrainerParamsBuilder'
 ```
 
-What BEST selection and plateau schedulers track (FEAT-003).
+What BEST selection and plateau schedulers track.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.resume_from`
 
@@ -1120,7 +1120,7 @@ What BEST selection and plateau schedulers track (FEAT-003).
 nnx.trainer.params_builder.NNTrainerParamsBuilder.resume_from(self, run_id: 'str', checkpoint: 'str' = 'last', mode: 'str' = 'auto') -> 'NNTrainerParamsBuilder'
 ```
 
-Warm-resume from ``run_id``'s ``checkpoint`` (FEAT-005): the model, every named optimizer and scheduler, the RNG and the registered components (callbacks such as ``EarlyStopping``) continue where that run stopped. ``mode`` is ``"auto"`` (stateful when the checkpoint has training state, else weights-only), ``"stateful"`` (fail unless it has) or ``"weights_only"``. Serialized only as parent lineage, so the resumed run gets its own id.
+Warm-resume from ``run_id``'s ``checkpoint``: the model, every named optimizer and scheduler, the RNG and the registered components (callbacks such as ``EarlyStopping``) continue where that run stopped. ``mode`` is ``"auto"`` (stateful when the checkpoint has training state, else weights-only), ``"stateful"`` (fail unless it has) or ``"weights_only"``. Serialized only as parent lineage, so the resumed run gets its own id.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.overwrite_existing`
 
@@ -1288,7 +1288,7 @@ Attributes:
         index (``input_id``) for seed rows of a graph loader.
     spec: the :class:`ProbabilitySpec` that produced the result, or
         ``None`` for a continuous result (``NNModel.predict_proba``
-        on a regression task, FEAT-002).
+        on a regression task).
 ```
 
 ##### `nnx.prediction.PredictionResult.kind`
@@ -1500,8 +1500,8 @@ Decode a serialized optimizer config into the right variant.
 ```text
 A ``factory`` entry is the discriminator for
 :class:`NNOptimFactoryParams`; anything else is a built-in
-:class:`NNOptimParams` (every config written before factories
-existed). Decoding never resolves or runs a factory.
+:class:`NNOptimParams` (every config without a ``factory``
+entry). Decoding never resolves or runs a factory.
 ```
 
 
@@ -1599,7 +1599,7 @@ Validation, masking, loss units, decoding and metrics for one :class:`TaskSpec` 
 nnx.tasks.TaskAdapter.check_model(self, *, net: 'Any', loss: 'Losses', output_dim: 'Optional[int]') -> 'None'
 ```
 
-Reject a model configuration this task cannot drive — before any net is built or loader is iterated. ``net`` is a ``Nets`` member or a registered / runtime descriptor (FEAT-006), whose output width is unknown until the first batch (``output_dim=None``).
+Reject a model configuration this task cannot drive — before any net is built or loader is iterated. ``net`` is a ``Nets`` member or a registered / runtime descriptor, whose output width is unknown until the first batch (``output_dim=None``).
 
 ##### `nnx.tasks.TaskAdapter.check_loss_fn`
 
@@ -1647,7 +1647,7 @@ Decoded predictions for raw ``predict()`` logits (numpy).
 nnx.tasks.TaskAdapter.accumulator(self, *, keep_arrays: 'bool' = False, bounded: 'bool' = False) -> 'TaskMetricAccumulator'
 ```
 
-A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it. ``bounded=True`` (FEAT-020) keeps only counts and sums, so memory does not grow with the number of samples; it cannot keep arrays.
+A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it. ``bounded=True`` keeps only counts and sums, so memory does not grow with the number of samples; it cannot keep arrays.
 
 ##### `nnx.tasks.TaskAdapter.record`
 
@@ -1848,7 +1848,7 @@ Every component's versioned state, for the training-state sidecar.
 nnx.components.ComponentRegistry.fresh_plan(self) -> '_Plan'
 ```
 
-A plan that restores nothing: every component keeps its fresh state (weights-only resumes, checkpoints written before FEAT-005).
+A plan that restores nothing: every component keeps its fresh state (weights-only resumes, checkpoints without component state).
 
 ##### `nnx.components.ComponentRegistry.plan`
 
@@ -1894,16 +1894,16 @@ Attributes:
         training state, or ``resume_mode="weights_only"`` was asked).
     source_run_id / source_checkpoint: where the resume came from.
     source_epoch: the epoch of that checkpoint when the session resumed
-        from it (FEAT-036's lineage reads it); ``None`` for a fresh run
-        and for status recorded before it existed.
+        from it (the history journal's lineage reads it); ``None`` for a
+        fresh run and for status recorded without it.
     restored_components: names of the components whose state was
         restored, in registration order.
     fresh_components: registered components that kept their fresh
         state (optional components absent from the checkpoint, or every
         component on a weights-only resume).
     source_generation / source_checkpoint_id: the resume point's
-        generation ordinal and checkpoint id from its manifest (#394);
-        ``None`` for a checkpoint written before manifests existed.
+        generation ordinal and checkpoint id from its manifest;
+        ``None`` for a checkpoint without a manifest.
 ```
 
 ##### `nnx.components.ResumeStatus.state`
@@ -2145,7 +2145,7 @@ Applies one :class:`MonitorSpec` epoch by epoch: returns each epoch's :class:`Mo
 
 ```text
 The run's tracker is also an optional checkpointable component
-(``nnx.monitor``, FEAT-005): a stateful warm resume continues from the
+(``nnx.monitor``): a stateful warm resume continues from the
 source run's best, so BEST keeps agreeing with a restored
 ``EarlyStopping`` and plateau scheduler after the split — the resumed
 run writes BEST only on an epoch that beats it, and none when no
@@ -2218,7 +2218,7 @@ prediction input as NumPy arrays (sample axis first); ``result``
 returns the metric over everything seen, or ``None`` if nothing was,
 without changing the accumulation.
 
-Optional, for bounded streaming (FEAT-020, ``nnx.streaming``):
+Optional, for bounded streaming (``nnx.streaming``):
 ``merge(other)`` adds another accumulator's state in place, keeping
 nothing of ``other`` that a later update could change, and returns
 ``None``; ``stores_scores = True`` marks an accumulator that keeps every
@@ -2328,7 +2328,7 @@ What an objective sees for one microbatch.
 **Details**
 
 ```text
-``precision`` is the run's resolved precision (FEAT-028; ``None`` when
+``precision`` is the run's resolved precision (``None`` when
 called outside a run). The objective runs under its autocast, so a
 reduced run's forward outputs are float16 / bfloat16:
 :meth:`full_precision` returns them as float32 for the loss's
@@ -3000,8 +3000,8 @@ head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
 one :class:`Boolean`: ``question``, the one it was trained for. Its
 single probability is bound to no prompt, so any other Boolean (another
 digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
-advances. Probabilities come from the model's ``predict_proba``
-(FEAT-001), which evaluates in eval mode and restores every submodule's
+advances. Probabilities come from the model's ``predict_proba``,
+which evaluates in eval mode and restores every submodule's
 training mode; they are computed in float64 from the returned logits,
 so half-precision models meet the ``1e-6`` tolerance.
 
@@ -4782,7 +4782,7 @@ nnx.provenance.ExperimentManifest.fingerprint(self) -> 'str'
 nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None, preprocessing: 'Any' = None) -> 'ExperimentManifest'
 ```
 
-A manifest from an existing model's declarations: its task and label order (FEAT-002), its model descriptor and built-in net params (FEAT-006), its recorded transformation recipe when it has one (FEAT-016), and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
+A manifest from an existing model's declarations: its task and label order, its model descriptor and built-in net params, its recorded transformation recipe when it has one, and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer``, recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
 
 
 #### `nnx.provenance.IdentityRef`
@@ -4877,7 +4877,7 @@ Canonical UTF-8 JSON of a JSON-like ``value``: sorted keys, arrays in order, com
 class nnx.provenance.Attempt(attempt_id: 'str', fingerprint: 'str', run_id: 'str', status: 'str', started_at: 'str', finished_at: 'Optional[str]' = None, parent: 'Optional[Mapping[str, Any]]' = None, last_committed: 'Optional[Mapping[str, Any]]' = None, error: 'Optional[Mapping[str, Any]]' = None, compile: 'Optional[Mapping[str, Any]]' = None) -> 'None'
 ```
 
-One execution of a plan: a fresh ``attempt_id`` per ``train()`` call, the plan's ``fingerprint`` and ``run_id``, its ``status`` (``running`` / ``completed`` / ``failed`` / ``cancelled``), the ``parent`` it resumed from (run, attempt, checkpoint tag and generation), the ``last_committed`` checkpoint (tag, epoch, generation) and, when it did not complete, the ``error`` (type and message). ``compile`` is the fit's compile record (FEAT-029) — requested and effective — when ``train(compile=...)`` was used; it is absent from ``state()`` otherwise.
+One execution of a plan: a fresh ``attempt_id`` per ``train()`` call, the plan's ``fingerprint`` and ``run_id``, its ``status`` (``running`` / ``completed`` / ``failed`` / ``cancelled``), the ``parent`` it resumed from (run, attempt, checkpoint tag and generation), the ``last_committed`` checkpoint (tag, epoch, generation) and, when it did not complete, the ``error`` (type and message). ``compile`` is the fit's compile record — requested and effective — when ``train(compile=...)`` was used; it is absent from ``state()`` otherwise.
 
 ##### `nnx.provenance.Attempt.state`
 
@@ -6987,7 +6987,7 @@ No public description is currently available.
 nnx.streaming.streaming_eval_step(ctx: 'EvalStepContext') -> 'NNEvaluationDataPoint'
 ```
 
-An ``eval_step_fn`` for ``NNModel.train`` that builds the default validation record from counts and sums (FEAT-020).
+An ``eval_step_fn`` for ``NNModel.train`` that builds the default validation record from counts and sums.
 
 **Details**
 
@@ -7567,7 +7567,7 @@ One attempt's committed evaluation of one metric.
 ```text
 Attributes:
     run_id: the run that produced it.
-    attempt_id: the attempt within that run (FEAT-019), when known.
+    attempt_id: the attempt within that run, when known.
     metric: what ``value`` measures.
     value: the value (``None`` when the attempt has none; NaN and
         infinities are kept and counted as non-finite).
@@ -7926,7 +7926,7 @@ Args:
         with runs descended the same way from the same configuration
         (an unknown lineage pools with nothing).
 
-Runs should be trained with ``provenance=`` (FEAT-019): the status and
+Runs should be trained with ``provenance=``: the status and
 attempt id come from the run's attempt record (``"unknown"`` without
 one) and the data and split identities from its manifest. A run's
 history is committed by its LAST checkpoint, so without an attempt
@@ -8848,7 +8848,7 @@ No public description is currently available.
 nnx.nn.params.nn_params.NNParams.activation_for(self, layer_idx: 'int') -> 'Activations'
 ```
 
-The activation for hidden layer ``layer_idx`` — the per-layer entry when `activations` is set, else the net-wide scalar (#85).
+The activation for hidden layer ``layer_idx`` — the per-layer entry when `activations` is set, else the net-wide scalar.
 
 ##### `nnx.nn.params.nn_params.NNParams.dropout_for`
 
@@ -8856,7 +8856,7 @@ The activation for hidden layer ``layer_idx`` — the per-layer entry when `acti
 nnx.nn.params.nn_params.NNParams.dropout_for(self, layer_idx: 'int') -> 'float'
 ```
 
-The dropout prob for hidden layer ``layer_idx`` — per-layer entry when `dropout_probs` is set, else the net-wide scalar (#85).
+The dropout prob for hidden layer ``layer_idx`` — per-layer entry when `dropout_probs` is set, else the net-wide scalar.
 
 ##### `nnx.nn.params.nn_params.NNParams.state`
 
@@ -8918,7 +8918,7 @@ No public description is currently available.
 property nnx.nn.params.nn_model_params.NNModelParams.builtin
 ```
 
-Whether the net is a built-in ``Nets`` member (FEAT-006).
+Whether the net is a built-in ``Nets`` member.
 
 ##### `nnx.nn.params.nn_model_params.NNModelParams.state`
 
@@ -8969,7 +8969,7 @@ computed over the full sample of each epoch — on the validation set by
 reported in the records' `metrics` under each spec's name. `monitor`
 (:class:`~nnx.MonitorSpec`) names the split and metric that BEST
 selection and a `ReduceLROnPlateau` scheduler track, with one shared
-improvement rule (FEAT-003). Both are serialized only when set, so a
+improvement rule. Both are serialized only when set, so a
 configuration without them keeps its `state()` and run id.
 ```
 
@@ -9374,7 +9374,7 @@ Return a builder pre-loaded with every field of `params`.
 `from_params(params).build()` equals `params`, with the same
 `state()` (key order and omitted defaults included). A variant
 call afterwards replaces the whole configuration, as usual,
-except the clock (FEAT-014), which it keeps.
+except the clock, which it keeps.
 
 Raises:
     TypeError: if `params` is not exactly an `NNSchedulerParams`.
@@ -9388,7 +9388,7 @@ Raises:
 nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.clock(self, clock: 'str') -> 'NNSchedulerParamsBuilder'
 ```
 
-What one scheduler step counts (FEAT-014): ``"epoch"`` (the default) or ``"optimizer_update"`` — once per committed update of the scheduler's optimizer, with horizons counted in updates. Call before or after the variant method; a variant call keeps the clock (a loaded one too).
+What one scheduler step counts: ``"epoch"`` (the default) or ``"optimizer_update"`` — once per committed update of the scheduler's optimizer, with horizons counted in updates. Call before or after the variant method; a variant call keeps the clock (a loaded one too).
 
 ##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.reduce_on_plateau`
 
@@ -9698,7 +9698,7 @@ Always a plain ``int``: every count that feeds the conv arithmetic
 ``padding``, ``pool_size``, ``conv_channels``) is validated at
 construction as a non-boolean integer — NumPy integers accepted and
 normalized — so a fractional or boolean knob raises ``ValueError``
-naming the field before any shape helper or layer runs (FIX-021).
+naming the field before any shape helper or layer runs.
 ```
 
 ##### `nnx.nn.params.nn_conv_params.NNConvParams.spatial_sizes`
@@ -10035,7 +10035,7 @@ No public description is currently available.
 nnx.nn.params.nn_run.NNRun.load(id: 'str', root: 'Optional[str]' = None) -> 'NNRun'
 ```
 
-Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with a history journal (FEAT-036), the journal's committed tail: the last ``retention`` records, from the chunks that hold them. Either way records past the LAST checkpoint's epoch are left out.
+Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with a history journal, the journal's committed tail: the last ``retention`` records, from the chunks that hold them. Either way records past the LAST checkpoint's epoch are left out.
 
 ##### `nnx.nn.params.nn_run.NNRun.all`
 
@@ -10094,7 +10094,7 @@ recipes before loading ``net_state``.
 property nnx.nn.params.nn_checkpoint.NNCheckpoint.reconstructible
 ```
 
-Whether a model can be rebuilt from this checkpoint alone (FEAT-006): ``False`` for a runtime-only module, whose weights need the module again (``NNModel.from_checkpoint(ckpt, module=...)``).
+Whether a model can be rebuilt from this checkpoint alone: ``False`` for a runtime-only module, whose weights need the module again (``NNModel.from_checkpoint(ckpt, module=...)``).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.to_file`
 
@@ -10125,7 +10125,7 @@ Args:
           ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
           arbitrary-code-execution on load. Requires the
           ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
-          module (``reconstructible=False``, FEAT-006) is rejected
+          module (``reconstructible=False``) is rejected
           with ``MissingModelFactoryError`` before anything is
           written.
 
@@ -10147,7 +10147,7 @@ Save the checkpoint to disk atomically.
 **Details**
 
 ```text
-Every save is a resume point (#394): a manifest
+Every save is a resume point: a manifest
 (``<tag>.pt.manifest.json``, written last) stamps it with the tag's
 generation ordinal, the checkpoint id and the SHA-256 of each file it
 consists of, so a resume refuses a torn, mixed or corrupted point
@@ -10158,7 +10158,7 @@ complete. ``counters`` (the run's logical position: ``global_step``,
 ``committed_updates``, ``planned_n_epochs``) rides in the training
 state.
 
-``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
+``components`` is the ``ComponentRegistry.collect()``
 mapping of every registered component's versioned state; it lives
 in the same generation sidecar as the optimizer state, so a model
 and component state from different generations are never paired.
@@ -10184,7 +10184,7 @@ between replacements leaves the previous generation resumable.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.resume_point(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-The manifest stamping this checkpoint's resume point (#394) — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint written before manifests existed. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — :meth:`verify` checks both and returns the one that matches.
+The manifest stamping this checkpoint's resume point — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint without a manifest. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — :meth:`verify` checks both and returns the one that matches.
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.verify`
 
@@ -10233,7 +10233,7 @@ the run directory does not exist; the run ID is still validated.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.load_optimizer_state(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Load the optimizer state sidecar for a checkpoint. Returns None when no sidecar exists (e.g., checkpoints written before resume support was added).
+Load the optimizer state sidecar for a checkpoint. Returns None when no sidecar exists (e.g., checkpoints written without resume support).
 
 **Details**
 
@@ -10330,7 +10330,7 @@ the same epoch have `val_edp=None`. When reading idps.csv, group by
 epoch_idx and take the row with val_edp set for per-epoch validation
 metrics.
 
-**Epoch summary (FEAT-003).** A run that declares metrics or a monitor
+**Epoch summary.** A run that declares metrics or a monitor
 also records, on the same last idp of each epoch, `train_summary` —
 the whole-epoch training record (loss and error averaged with every
 batch's own denominator, declared metrics over the full sample) — and
@@ -10338,7 +10338,7 @@ batch's own denominator, declared metrics over the full sample) — and
 value, status and whether the epoch improved). Both are omitted from
 `state()` otherwise, so legacy history is unchanged.
 
-**Update counter (FEAT-004).** Objective runs also record
+**Update counter.** Objective runs also record
 `update_count` — the committed optimizer updates so far — distinct from
 the microbatch counter `iter_idx` and the epoch `epoch_idx`; omitted
 otherwise.
@@ -10405,7 +10405,7 @@ floats. Populated when NNTrainParams.extra_metrics or evaluate(extra_metrics=)
 is set; empty by default (and omitted from state() when empty so that
 pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
 
-**Task records (FEAT-002).** A model with a ``TaskSpec`` writes records
+**Task records.** A model with a ``TaskSpec`` writes records
 that also carry the task `kind` (``"categorical"`` / ``"multilabel"`` /
 ``"regression"``), the `count` of valid (unmasked) targets they
 summarize, a `status` (``"ok"``, or ``"empty"`` when every target was
@@ -11348,7 +11348,7 @@ instantiated — zero never disables a split; ``val_proportion=0.0`` does
 placeholder ``1``).
 
 ``transform`` is handed to both torchvision factories and applies to
-every split. Split transforms (FEAT-018): ``train_transform`` and
+every split. Split transforms: ``train_transform`` and
 ``eval_transform`` add a per-split input transform on top of it — e.g. a
 random augmentation for training and a fixed resize for validation and
 test. Each split then becomes a ``nnx.preprocessing.SplitView`` over
@@ -11391,7 +11391,7 @@ rejected with the ``batch_sizes[i] (split)`` slot named before
 size (the complete split is always one batch).
 
 An empty ``val_mask`` / ``test_mask`` is an *absent* split in both
-sampler modes (FIX-019): that loader is ``None`` — the optional-loader
+sampler modes: that loader is ``None`` — the optional-loader
 contract the tabular / preference wrappers already follow, which
 ``NNModel.train`` / ``Trainer.train`` honour by skipping validation —
 its resolved size is ``0`` (derived from absence, never an accepted
@@ -11448,7 +11448,7 @@ split, so a rejection leaves the DataFrame and the global RNG untouched
 overflows ``feature_dtype`` can only be detected after the split, once
 the training statistics exist).
 
-Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
+Explicit membership: ``split=`` takes a ``SplitManifest``
 (``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
 matched to the plan by the sample ids in the ``id_col`` column (required;
 never inferred from the index), so reordered rows keep their split; a
@@ -11464,7 +11464,7 @@ at their defaults; the train loader still shuffles, and validation /
 test follow the manifest's order. ``state()`` gains ``split`` (the
 manifest digest) only then.
 
-Train-only standardization (FEAT-018): ``standardize=True`` fits a
+Train-only standardization: ``standardize=True`` fits a
 ``nnx.preprocessing.Standardizer`` on the training split's rows of the
 feature columns only — after the split, so validation and test values
 never reach the statistics — and applies those frozen statistics to
@@ -11929,7 +11929,7 @@ Base class for training callbacks. Override any subset of the hooks.
 
 ```text
 ``distributed`` declares the callback's rank behaviour under
-``train(distributed=DDP())`` (FEAT-030): ``"all"`` — run on every rank
+``train(distributed=DDP())``: ``"all"`` — run on every rank
 (it must not write files: records and decisions are identical on every
 rank); ``"writer"`` — run on the writer rank only (it may write; it must
 not change control flow such as ``ctx.should_stop``); ``"unsupported"``
@@ -11976,7 +11976,7 @@ No public description is currently available.
 nnx.nn.callbacks.Callback.on_optimizer_update(self, ctx: '_CallbackContext', event: 'Any') -> 'None'
 ```
 
-Called once per committed optimizer update of an objective run (FEAT-004) — never per microbatch, for an all-masked window or a skipped step. ``event`` is a detached ``nnx.objectives.UpdateEvent`` (optimizer name, its update index, epoch / batch, microbatches, loss values); ``ctx.update_count`` is the run's committed-update count.
+Called once per committed optimizer update of an objective run — never per microbatch, for an all-masked window or a skipped step. ``event`` is a detached ``nnx.objectives.UpdateEvent`` (optimizer name, its update index, epoch / batch, microbatches, loss values); ``ctx.update_count`` is the run's committed-update count.
 
 ##### `nnx.nn.callbacks.Callback.checkpoint_transforms`
 
@@ -12032,7 +12032,7 @@ Args:
           rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
           explicit ``monitor``.
 
-          **Named monitors (FEAT-003).** ``monitor`` may instead be a
+          **Named monitors.** ``monitor`` may instead be a
           :class:`~nnx.MonitorSpec` — a split and metric (``loss``,
           ``error`` or a metric declared in ``NNTrainParams.metrics``)
           with its own direction, ``min_delta`` and missing / non-finite
@@ -12043,8 +12043,8 @@ Args:
           so all three agree. ``mode`` and ``min_delta`` must then stay
           at their defaults (set them on the spec).
 
-    name: component name under which the patience state is checkpointed
-          (FEAT-005). By default ``"early_stopping"``, numbered
+    name: component name under which the patience state is checkpointed.
+          By default ``"early_stopping"``, numbered
           (``early_stopping.2`` …) in callback order when a run has
           several; an explicit name must be unique within the run.
 
@@ -12130,13 +12130,13 @@ Logs the current LR each epoch. History exposed at `.history`.
 ```text
 `.history` keeps one entry per epoch (the primary optimizer's LR at the
 epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
-scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
+scheduler also records `.update_history`: ``(update index, LR
 after that update's scheduler step)`` for the primary optimizer, a
 separate trace of the steps NNx takes — empty on the epoch clock and
 under ``Trainer``'s ``auto_step_schedulers=False``, where the step
 function steps the schedule itself.
 
-In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+In a run with a history journal (``nnx.history``) the log is
 bounded too: it keeps the LRs of the last ``retention`` epochs (the
 journal's bound, applied per epoch), and `.update_history` the updates
 of those epochs. ``bounded=False`` keeps every epoch's LR (one float
@@ -12597,7 +12597,7 @@ submodule name — e.g., ``"layers.0"``, ``"encoder.*"``, ``"*"`` for
 every Linear. Every registration path is considered, including the
 non-first path through a shared container.
 
-**Shared modules (FIX-014):** a Linear inside a container that is
+**Shared modules:** a Linear inside a container that is
 registered under several names has one registration slot; it is
 wrapped once and every path sees the same wrapper. A Linear itself
 registered under more than one name (``m.a = m.b = linear``) cannot be
@@ -13214,7 +13214,7 @@ is the iterator you hand to an optimizer.
 nnx.peft.prompt.PromptTuner.prompt_state_dict(self) -> 'dict'
 ```
 
-Return a state-dict containing only the soft-prompt tensor, keyed for round-trip via :meth:`load_prompt_weights`. Only the tuner-owned ``soft_prompt`` entry qualifies — never anything under ``model.*``, even if a nested base module's name happens to contain the marker (FIX-002).
+Return a state-dict containing only the soft-prompt tensor, keyed for round-trip via :meth:`load_prompt_weights`. Only the tuner-owned ``soft_prompt`` entry qualifies — never anything under ``model.*``, even if a nested base module's name happens to contain the marker.
 
 
 #### `nnx.peft.prompt.save_prompt_weights`
@@ -14027,7 +14027,7 @@ DDPM noise prediction as an objective — see the module docstring.
 **Details**
 
 ```text
-Callable as an objective and a checkpointable component (FEAT-005)
+Callable as an objective and a checkpointable component
 named ``"diffusion.objective"``: its state is the objective spec (the
 schedule's length and fingerprint, the loss term) and the generator's
 state, so a stateful resume draws the timesteps and noise an
@@ -14272,7 +14272,7 @@ Returns:
 Raises:
     ValueError: if ``generations < 1``.
     PrecisionUnsupportedError: if ``generations > 1`` and the model's
-        precision is reduced (FEAT-028): the KD generations run in full
+        precision is reduced: the KD generations run in full
         precision only, so nothing is trained.
 ```
 
@@ -14794,14 +14794,14 @@ The I-JEPA step returned by :func:`jepa_train_step_factory`.
 
 ```text
 Callable as a ``TrainStepFn`` and a checkpointable component
-(FEAT-005) named ``"jepa.target_encoder"``: every checkpoint's
+named ``"jepa.target_encoder"``: every checkpoint's
 training state carries the EMA target encoder's weights, and a stateful
 warm resume restores them, so a run split at an epoch boundary
 continues with the same target encoder an uninterrupted run would
-have. The component is required — resuming from a current stateful
-checkpoint written without it fails before anything is restored, while a
-checkpoint written before component state existed resumes with a fresh
-target copy and a warning.
+have. The component is required — resuming from a stateful checkpoint
+that records component state but not this component fails before
+anything is restored, while a checkpoint with no component state at all
+resumes with a fresh target copy and a warning.
 ```
 
 ##### `nnx.paradigms.jepa.JEPATrainStep.component_spec`
@@ -14849,7 +14849,7 @@ I-JEPA latent prediction as an objective — see the module docstring.
 **Details**
 
 ```text
-Callable as an objective and a checkpointable component (FEAT-005)
+Callable as an objective and a checkpointable component
 named ``"jepa.objective"``: its state is the objective spec (loss term,
 EMA momentum), the predictor's **reference** (its name inside
 ``model.net`` — its weights are saved once, with the net), the EMA
@@ -16175,7 +16175,7 @@ Useful for eyeballing class separability of an intermediate
 checkpoint — pass the BEST checkpoint to see how well-trained the
 decision space ended up. Returns the Plotly Figure.
 
-FEAT-006: a registered module is rebuilt through its factory and
+A registered module is rebuilt through its factory and
 batches are split by its batch adapter (``batch_adapter=`` overrides
 it). A runtime-only checkpoint needs ``module=`` — the weights are
 loaded into it (its identity, state keys and training modes are
@@ -16362,7 +16362,7 @@ Args:
         dict of keyword inputs. Useful when the model takes multiple positional
         arguments or a non-tensor input (graphs, dicts) that `input_size` can't describe.
     batch: A training batch, split into the forward's inputs by the model's batch
-        adapter (FEAT-006: an `NNModel`'s adapter, else the module's `unpack_batch`,
+        adapter (an `NNModel`'s adapter, else the module's `unpack_batch`,
         else one positional input). Mutually exclusive with `input_size` / `input_data`.
     depth: Maximum module-nesting depth to expand in the table.
     col_names: Which torchinfo columns to include. Defaults to the three most

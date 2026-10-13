@@ -101,7 +101,7 @@ class MetricAccumulator(Protocol):
     returns the metric over everything seen, or ``None`` if nothing was,
     without changing the accumulation.
 
-    Optional, for bounded streaming (FEAT-020, ``nnx.streaming``):
+    Optional, for bounded streaming (``nnx.streaming``):
     ``merge(other)`` adds another accumulator's state in place, keeping
     nothing of ``other`` that a later update could change, and returns
     ``None``; ``stores_scores = True`` marks an accumulator that keeps every
@@ -594,7 +594,7 @@ class MonitorTracker:
     epoch's :class:`MonitorRecord` and remembers the best value.
 
     The run's tracker is also an optional checkpointable component
-    (``nnx.monitor``, FEAT-005): a stateful warm resume continues from the
+    (``nnx.monitor``): a stateful warm resume continues from the
     source run's best, so BEST keeps agreeing with a restored
     ``EarlyStopping`` and plateau scheduler after the split — the resumed
     run writes BEST only on an epoch that beats it, and none when no

@@ -81,7 +81,7 @@ def _check_masks(context: torch.Tensor, target: torch.Tensor, n_patches: int) ->
 class JEPAObjective(Objective):
     """I-JEPA latent prediction as an objective — see the module docstring.
 
-    Callable as an objective and a checkpointable component (FEAT-005)
+    Callable as an objective and a checkpointable component
     named ``"jepa.objective"``: its state is the objective spec (loss term,
     EMA momentum), the predictor's **reference** (its name inside
     ``model.net`` — its weights are saved once, with the net), the EMA

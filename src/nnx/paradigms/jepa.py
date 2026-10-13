@@ -462,14 +462,14 @@ class JEPATrainStep:
     """The I-JEPA step returned by :func:`jepa_train_step_factory`.
 
     Callable as a ``TrainStepFn`` and a checkpointable component
-    (FEAT-005) named ``"jepa.target_encoder"``: every checkpoint's
+    named ``"jepa.target_encoder"``: every checkpoint's
     training state carries the EMA target encoder's weights, and a stateful
     warm resume restores them, so a run split at an epoch boundary
     continues with the same target encoder an uninterrupted run would
-    have. The component is required — resuming from a current stateful
-    checkpoint written without it fails before anything is restored, while a
-    checkpoint written before component state existed resumes with a fresh
-    target copy and a warning.
+    have. The component is required — resuming from a stateful checkpoint
+    that records component state but not this component fails before
+    anything is restored, while a checkpoint with no component state at all
+    resumes with a fresh target copy and a warning.
     """
 
     def __init__(self, step: TrainStepFn, target_encoder: nn.Module, ema_momentum: float) -> None:

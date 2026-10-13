@@ -43,7 +43,7 @@ class NNDataset(NNDatasetBase):
     placeholder ``1``).
 
     ``transform`` is handed to both torchvision factories and applies to
-    every split. Split transforms (FEAT-018): ``train_transform`` and
+    every split. Split transforms: ``train_transform`` and
     ``eval_transform`` add a per-split input transform on top of it — e.g. a
     random augmentation for training and a fixed resize for validation and
     test. Each split then becomes a ``nnx.preprocessing.SplitView`` over

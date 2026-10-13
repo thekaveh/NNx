@@ -124,7 +124,7 @@ class NNTabularDataset(NNDatasetBase):
     overflows ``feature_dtype`` can only be detected after the split, once
     the training statistics exist).
 
-    Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
+    Explicit membership: ``split=`` takes a ``SplitManifest``
     (``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
     matched to the plan by the sample ids in the ``id_col`` column (required;
     never inferred from the index), so reordered rows keep their split; a
@@ -140,7 +140,7 @@ class NNTabularDataset(NNDatasetBase):
     test follow the manifest's order. ``state()`` gains ``split`` (the
     manifest digest) only then.
 
-    Train-only standardization (FEAT-018): ``standardize=True`` fits a
+    Train-only standardization: ``standardize=True`` fits a
     ``nnx.preprocessing.Standardizer`` on the training split's rows of the
     feature columns only — after the split, so validation and test values
     never reach the statistics — and applies those frozen statistics to

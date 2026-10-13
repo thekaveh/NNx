@@ -150,8 +150,8 @@ class FixedHeadProvider:
     one :class:`Boolean`: ``question``, the one it was trained for. Its
     single probability is bound to no prompt, so any other Boolean (another
     digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
-    advances. Probabilities come from the model's ``predict_proba``
-    (FEAT-001), which evaluates in eval mode and restores every submodule's
+    advances. Probabilities come from the model's ``predict_proba``,
+    which evaluates in eval mode and restores every submodule's
     training mode; they are computed in float64 from the returned logits,
     so half-precision models meet the ``1e-6`` tolerance.
 

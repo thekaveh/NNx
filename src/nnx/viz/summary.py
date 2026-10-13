@@ -42,7 +42,7 @@ def summary(
             dict of keyword inputs. Useful when the model takes multiple positional
             arguments or a non-tensor input (graphs, dicts) that `input_size` can't describe.
         batch: A training batch, split into the forward's inputs by the model's batch
-            adapter (FEAT-006: an `NNModel`'s adapter, else the module's `unpack_batch`,
+            adapter (an `NNModel`'s adapter, else the module's `unpack_batch`,
             else one positional input). Mutually exclusive with `input_size` / `input_data`.
         depth: Maximum module-nesting depth to expand in the table.
         col_names: Which torchinfo columns to include. Defaults to the three most

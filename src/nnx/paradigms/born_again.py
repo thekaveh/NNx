@@ -76,7 +76,7 @@ def born_again_train(
     Raises:
         ValueError: if ``generations < 1``.
         PrecisionUnsupportedError: if ``generations > 1`` and the model's
-            precision is reduced (FEAT-028): the KD generations run in full
+            precision is reduced: the KD generations run in full
             precision only, so nothing is trained.
     """
     if generations < 1:

@@ -361,7 +361,7 @@ class TaskAdapter:
     def check_model(self, *, net: Any, loss: Losses, output_dim: Optional[int]) -> None:
         """Reject a model configuration this task cannot drive — before
         any net is built or loader is iterated. ``net`` is a ``Nets`` member
-        or a registered / runtime descriptor (FEAT-006), whose output width
+        or a registered / runtime descriptor, whose output width
         is unknown until the first batch (``output_dim=None``)."""
         if net is Nets.TRANSFORMER:
             raise TaskValidationError(
@@ -454,7 +454,7 @@ class TaskAdapter:
     def accumulator(self, *, keep_arrays: bool = False, bounded: bool = False) -> TaskMetricAccumulator:
         """A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True``
         when ``extra_metrics`` will be computed from it. ``bounded=True``
-        (FEAT-020) keeps only counts and sums, so memory does not grow with
+        keeps only counts and sums, so memory does not grow with
         the number of samples; it cannot keep arrays."""
         raise NotImplementedError
 

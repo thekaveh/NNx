@@ -168,7 +168,7 @@ def apply_lora_to(
     every Linear. Every registration path is considered, including the
     non-first path through a shared container.
 
-    **Shared modules (FIX-014):** a Linear inside a container that is
+    **Shared modules:** a Linear inside a container that is
     registered under several names has one registration slot; it is
     wrapped once and every path sees the same wrapper. A Linear itself
     registered under more than one name (``m.a = m.b = linear``) cannot be

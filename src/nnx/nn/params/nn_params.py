@@ -140,7 +140,7 @@ class NNParams:
 
     def activation_for(self, layer_idx: int) -> Activations:
         """The activation for hidden layer ``layer_idx`` — the per-layer entry
-        when `activations` is set, else the net-wide scalar (#85)."""
+        when `activations` is set, else the net-wide scalar."""
         if self.activations is not None:
             return self.activations[layer_idx]
         if self.activation is None:
@@ -149,7 +149,7 @@ class NNParams:
 
     def dropout_for(self, layer_idx: int) -> float:
         """The dropout prob for hidden layer ``layer_idx`` — per-layer entry
-        when `dropout_probs` is set, else the net-wide scalar (#85)."""
+        when `dropout_probs` is set, else the net-wide scalar."""
         if self.dropout_probs is not None:
             return self.dropout_probs[layer_idx]
         return self.dropout_prob

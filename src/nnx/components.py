@@ -145,16 +145,16 @@ class ResumeStatus:
             training state, or ``resume_mode="weights_only"`` was asked).
         source_run_id / source_checkpoint: where the resume came from.
         source_epoch: the epoch of that checkpoint when the session resumed
-            from it (FEAT-036's lineage reads it); ``None`` for a fresh run
-            and for status recorded before it existed.
+            from it (the history journal's lineage reads it); ``None`` for a
+            fresh run and for status recorded without it.
         restored_components: names of the components whose state was
             restored, in registration order.
         fresh_components: registered components that kept their fresh
             state (optional components absent from the checkpoint, or every
             component on a weights-only resume).
         source_generation / source_checkpoint_id: the resume point's
-            generation ordinal and checkpoint id from its manifest (#394);
-            ``None`` for a checkpoint written before manifests existed.
+            generation ordinal and checkpoint id from its manifest;
+            ``None`` for a checkpoint without a manifest.
     """
 
     mode: str = "fresh"
@@ -294,7 +294,7 @@ class ComponentRegistry:
 
     def fresh_plan(self) -> _Plan:
         """A plan that restores nothing: every component keeps its fresh
-        state (weights-only resumes, checkpoints written before FEAT-005)."""
+        state (weights-only resumes, checkpoints without component state)."""
         return _Plan(fresh=list(self._components))
 
     def plan(self, saved: Optional[Mapping[str, Any]]) -> _Plan:

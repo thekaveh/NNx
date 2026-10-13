@@ -1068,7 +1068,7 @@ class NNRun:
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
         """Load a saved run. Its history is ``idps.csv`` read whole — or, for
-        a run with a history journal (FEAT-036), the journal's committed tail:
+        a run with a history journal, the journal's committed tail:
         the last ``retention`` records, from the chunks that hold them. Either
         way records past the LAST checkpoint's epoch are left out."""
         return NNRun._load(id, root)

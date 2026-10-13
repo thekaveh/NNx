@@ -324,17 +324,17 @@ class Trainer:
                 update — including which optimizers to step, in what order, and
                 with what loss(es). There is no supervised fallback: pass it or
                 ``objective``.
-            objective: an objective (FEAT-004, ``nnx.objectives``) in place of
+            objective: an objective (``nnx.objectives``) in place of
                 ``trainer_step_fn``: the shared update engine accumulates its
                 loss terms over each window (the optimizers'
                 ``accumulate_grad_batches``, which must agree), clips each
                 optimizer's parameters with its own ``grad_clip_norm`` and
                 steps every named optimizer once per committed update,
                 announcing each to ``Callback.on_optimizer_update``.
-            provenance: an optional ``nnx.provenance.ExperimentManifest``
-                (FEAT-019): the declared intent, recorded with a fresh
+            provenance: an optional ``nnx.provenance.ExperimentManifest``:
+                the declared intent, recorded with a fresh
                 attempt exactly as ``NNModel.train`` records it.
-            history: an optional ``nnx.history.HistoryJournal`` (FEAT-036):
+            history: an optional ``nnx.history.HistoryJournal``:
                 a bounded in-memory window and an append journal instead of
                 the eager list and ``idps.csv``, exactly as in
                 ``NNModel.train``.
@@ -347,7 +347,7 @@ class Trainer:
                 (model, net, train) configs run as distinct experiments
                 without altering modeled params. ``None`` (the default)
                 preserves existing run.id hashes exactly.
-            components: extra checkpointable components (FEAT-005);
+            components: extra checkpointable components;
                 callbacks and a step function that implement
                 :class:`~nnx.StatefulComponent` register automatically.
 

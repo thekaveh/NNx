@@ -511,8 +511,8 @@ class NNCheckpoint:
 
     @property
     def reconstructible(self) -> bool:
-        """Whether a model can be rebuilt from this checkpoint alone
-        (FEAT-006): ``False`` for a runtime-only module, whose weights need
+        """Whether a model can be rebuilt from this checkpoint alone:
+        ``False`` for a runtime-only module, whose weights need
         the module again (``NNModel.from_checkpoint(ckpt, module=...)``)."""
         return bool(getattr(self.model_params.net, "reconstructible", True))
 
@@ -537,7 +537,7 @@ class NNCheckpoint:
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
                   arbitrary-code-execution on load. Requires the
                   ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
-                  module (``reconstructible=False``, FEAT-006) is rejected
+                  module (``reconstructible=False``) is rejected
                   with ``MissingModelFactoryError`` before anything is
                   written.
 
@@ -644,7 +644,7 @@ class NNCheckpoint:
     ) -> None:
         """Save the checkpoint to disk atomically.
 
-        Every save is a resume point (#394): a manifest
+        Every save is a resume point: a manifest
         (``<tag>.pt.manifest.json``, written last) stamps it with the tag's
         generation ordinal, the checkpoint id and the SHA-256 of each file it
         consists of, so a resume refuses a torn, mixed or corrupted point
@@ -655,7 +655,7 @@ class NNCheckpoint:
         ``committed_updates``, ``planned_n_epochs``) rides in the training
         state.
 
-        ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
+        ``components`` is the ``ComponentRegistry.collect()``
         mapping of every registered component's versioned state; it lives
         in the same generation sidecar as the optimizer state, so a model
         and component state from different generations are never paired.
@@ -766,11 +766,11 @@ class NNCheckpoint:
 
     @staticmethod
     def resume_point(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """The manifest stamping this checkpoint's resume point (#394) —
+        """The manifest stamping this checkpoint's resume point —
         ``generation``, ``checkpoint_id``, ``completed_epoch``,
         ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the
-        ``files`` with their SHA-256 — or ``None`` for a checkpoint written
-        before manifests existed. Read as is: after an interrupted publish
+        ``files`` with their SHA-256 — or ``None`` for a checkpoint without
+        a manifest. Read as is: after an interrupted publish
         the live manifest may name the previous checkpoint while a staged one
         describes the published files — :meth:`verify` checks both and
         returns the one that matches."""
@@ -933,8 +933,8 @@ class NNCheckpoint:
         root: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Load the optimizer state sidecar for a checkpoint. Returns None
-        when no sidecar exists (e.g., checkpoints written before resume
-        support was added).
+        when no sidecar exists (e.g., checkpoints written without resume
+        support).
 
         The sidecar itself is read with ``weights_only=True``. Locating it
         reads the checkpoint through :meth:`load_training_state`, which

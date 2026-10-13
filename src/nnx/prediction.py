@@ -158,7 +158,7 @@ class PredictionResult:
             index (``input_id``) for seed rows of a graph loader.
         spec: the :class:`ProbabilitySpec` that produced the result, or
             ``None`` for a continuous result (``NNModel.predict_proba``
-            on a regression task, FEAT-002).
+            on a regression task).
     """
 
     logits: np.ndarray

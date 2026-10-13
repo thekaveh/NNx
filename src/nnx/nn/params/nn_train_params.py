@@ -94,7 +94,7 @@ class NNTrainParams:
     reported in the records' `metrics` under each spec's name. `monitor`
     (:class:`~nnx.MonitorSpec`) names the split and metric that BEST
     selection and a `ReduceLROnPlateau` scheduler track, with one shared
-    improvement rule (FEAT-003). Both are serialized only when set, so a
+    improvement rule. Both are serialized only when set, so a
     configuration without them keeps its `state()` and run id.
     """
 

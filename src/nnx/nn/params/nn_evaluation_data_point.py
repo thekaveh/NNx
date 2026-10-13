@@ -50,7 +50,7 @@ class NNEvaluationDataPoint:
     is set; empty by default (and omitted from state() when empty so that
     pre-extra runs hash to the same run.id and pre-extra YAML loads cleanly).
 
-    **Task records (FEAT-002).** A model with a ``TaskSpec`` writes records
+    **Task records.** A model with a ``TaskSpec`` writes records
     that also carry the task `kind` (``"categorical"`` / ``"multilabel"`` /
     ``"regression"``), the `count` of valid (unmasked) targets they
     summarize, a `status` (``"ok"``, or ``"empty"`` when every target was

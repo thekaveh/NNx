@@ -305,8 +305,8 @@ def optim_params_from_state(state: Mapping[str, Any]) -> AnyOptimParams:
 
     A ``factory`` entry is the discriminator for
     :class:`NNOptimFactoryParams`; anything else is a built-in
-    :class:`NNOptimParams` (every config written before factories
-    existed). Decoding never resolves or runs a factory.
+    :class:`NNOptimParams` (every config without a ``factory``
+    entry). Decoding never resolves or runs a factory.
     """
     if "factory" in state:
         return NNOptimFactoryParams.from_state(state)

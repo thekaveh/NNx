@@ -254,7 +254,7 @@ class VisUtils:
         checkpoint — pass the BEST checkpoint to see how well-trained the
         decision space ended up. Returns the Plotly Figure.
 
-        FEAT-006: a registered module is rebuilt through its factory and
+        A registered module is rebuilt through its factory and
         batches are split by its batch adapter (``batch_adapter=`` overrides
         it). A runtime-only checkpoint needs ``module=`` — the weights are
         loaded into it (its identity, state keys and training modes are

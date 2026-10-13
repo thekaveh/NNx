@@ -35,7 +35,7 @@ class Callback:
     """Base class for training callbacks. Override any subset of the hooks.
 
     ``distributed`` declares the callback's rank behaviour under
-    ``train(distributed=DDP())`` (FEAT-030): ``"all"`` — run on every rank
+    ``train(distributed=DDP())``: ``"all"`` — run on every rank
     (it must not write files: records and decisions are identical on every
     rank); ``"writer"`` — run on the writer rank only (it may write; it must
     not change control flow such as ``ctx.should_stop``); ``"unsupported"``
@@ -59,7 +59,7 @@ class Callback:
 
     def on_optimizer_update(self, ctx: _CallbackContext, event: Any) -> None:
         """Called once per committed optimizer update of an objective run
-        (FEAT-004) — never per microbatch, for an all-masked window or a
+        — never per microbatch, for an all-masked window or a
         skipped step. ``event`` is a detached ``nnx.objectives.UpdateEvent``
         (optimizer name, its update index, epoch / batch, microbatches,
         loss values); ``ctx.update_count`` is the run's committed-update
@@ -168,7 +168,7 @@ class EarlyStopping(Callback):
               rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
               explicit ``monitor``.
 
-              **Named monitors (FEAT-003).** ``monitor`` may instead be a
+              **Named monitors.** ``monitor`` may instead be a
               :class:`~nnx.MonitorSpec` — a split and metric (``loss``,
               ``error`` or a metric declared in ``NNTrainParams.metrics``)
               with its own direction, ``min_delta`` and missing / non-finite
@@ -179,8 +179,8 @@ class EarlyStopping(Callback):
               so all three agree. ``mode`` and ``min_delta`` must then stay
               at their defaults (set them on the spec).
 
-        name: component name under which the patience state is checkpointed
-              (FEAT-005). By default ``"early_stopping"``, numbered
+        name: component name under which the patience state is checkpointed.
+              By default ``"early_stopping"``, numbered
               (``early_stopping.2`` …) in callback order when a run has
               several; an explicit name must be unique within the run.
 
@@ -535,13 +535,13 @@ class LRMonitor(Callback):
 
     `.history` keeps one entry per epoch (the primary optimizer's LR at the
     epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
-    scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
+    scheduler also records `.update_history`: ``(update index, LR
     after that update's scheduler step)`` for the primary optimizer, a
     separate trace of the steps NNx takes — empty on the epoch clock and
     under ``Trainer``'s ``auto_step_schedulers=False``, where the step
     function steps the schedule itself.
 
-    In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+    In a run with a history journal (``nnx.history``) the log is
     bounded too: it keeps the LRs of the last ``retention`` epochs (the
     journal's bound, applied per epoch), and `.update_history` the updates
     of those epochs. ``bounded=False`` keeps every epoch's LR (one float

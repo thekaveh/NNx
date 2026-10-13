@@ -343,12 +343,11 @@ class ExperimentManifest:
         preprocessing: Any = None,
     ) -> ExperimentManifest:
         """A manifest from an existing model's declarations: its task and
-        label order (FEAT-002), its model descriptor and built-in net params
-        (FEAT-006), its recorded transformation recipe when it has one
-        (FEAT-016), and — when given — the training configuration
+        label order, its model descriptor and built-in net params, its
+        recorded transformation recipe when it has one, and — when given — the training configuration
         (``NNTrainParams.state()`` without ``n_epochs`` and the resume
         lineage, which describe an attempt; loaders are never read) and a
-        fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as
+        fitted ``nnx.preprocessing.Standardizer``, recorded as
         ``config["preprocessing"]``: its schema, frozen statistics and
         fit-membership identity, never recomputed. Builds no model and
         iterates no loader."""
@@ -407,7 +406,7 @@ class Attempt:
     ``parent`` it resumed from (run, attempt, checkpoint tag and
     generation), the ``last_committed`` checkpoint (tag, epoch, generation)
     and, when it did not complete, the ``error`` (type and message).
-    ``compile`` is the fit's compile record (FEAT-029) — requested and
+    ``compile`` is the fit's compile record — requested and
     effective — when ``train(compile=...)`` was used; it is absent from
     ``state()`` otherwise."""
 

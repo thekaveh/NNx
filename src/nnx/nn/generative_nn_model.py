@@ -129,8 +129,8 @@ class GenerativeNNModel(NNModel):
                 Power-user path for custom logit processors (e.g.,
                 logit-bias for forbidden tokens). When ``None`` (the
                 default), behavior is unchanged.
-            logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`
-                (FEAT-037): its stages run exactly in declared order,
+            logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`:
+                its stages run exactly in declared order,
                 compiled once per call into fresh processors; like
                 ``logits_chain`` it replaces the inline kwargs. Passing
                 both ``logits_chain`` and ``logits_pipeline`` raises

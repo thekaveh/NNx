@@ -158,19 +158,19 @@ class NNTrainerParamsBuilder:
         return self
 
     def metrics(self, *specs: MetricSpec) -> NNTrainerParamsBuilder:
-        """Declare named, registered metrics (FEAT-003) — computed over the
+        """Declare named, registered metrics — computed over the
         whole validation set by ``evaluate()`` and reported under each
         spec's name. Replaces any earlier declaration."""
         self._fields["metrics"] = tuple(specs)
         return self
 
     def monitor(self, spec: MonitorSpec) -> NNTrainerParamsBuilder:
-        """What BEST selection and plateau schedulers track (FEAT-003)."""
+        """What BEST selection and plateau schedulers track."""
         self._fields["monitor"] = spec
         return self
 
     def resume_from(self, run_id: str, checkpoint: str = "last", mode: str = "auto") -> NNTrainerParamsBuilder:
-        """Warm-resume from ``run_id``'s ``checkpoint`` (FEAT-005): the model,
+        """Warm-resume from ``run_id``'s ``checkpoint``: the model,
         every named optimizer and scheduler, the RNG and the registered
         components (callbacks such as ``EarlyStopping``) continue where
         that run stopped. ``mode`` is ``"auto"`` (stateful when the

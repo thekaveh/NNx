@@ -149,7 +149,7 @@ class LossTerm:
 class ObjectiveContext:
     """What an objective sees for one microbatch.
 
-    ``precision`` is the run's resolved precision (FEAT-028; ``None`` when
+    ``precision`` is the run's resolved precision (``None`` when
     called outside a run). The objective runs under its autocast, so a
     reduced run's forward outputs are float16 / bfloat16:
     :meth:`full_precision` returns them as float32 for the loss's

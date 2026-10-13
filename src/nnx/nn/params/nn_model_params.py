@@ -86,7 +86,7 @@ class NNModelParams:
 
     @property
     def builtin(self) -> bool:
-        """Whether the net is a built-in ``Nets`` member (FEAT-006)."""
+        """Whether the net is a built-in ``Nets`` member."""
         return isinstance(self.net, Nets)
 
     def state(self) -> dict:

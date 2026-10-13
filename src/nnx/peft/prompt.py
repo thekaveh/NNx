@@ -164,7 +164,7 @@ class PromptTuner(nn.Module):
         keyed for round-trip via :meth:`load_prompt_weights`. Only the
         tuner-owned ``soft_prompt`` entry qualifies — never anything
         under ``model.*``, even if a nested base module's name happens
-        to contain the marker (FIX-002)."""
+        to contain the marker."""
         return {k: v for k, v in self.state_dict().items() if k in self._OWNED_KEYS}
 
 

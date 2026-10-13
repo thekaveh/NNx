@@ -810,7 +810,7 @@ def _same_rows(array: np.ndarray, target: np.ndarray, name: str) -> np.ndarray:
 
 def streaming_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     """An ``eval_step_fn`` for ``NNModel.train`` that builds the default
-    validation record from counts and sums (FEAT-020).
+    validation record from counts and sums.
 
     The record is the one NNx's own ``evaluate()`` returns — the same task
     counts and status, loss (each batch's numerator over the summed loss

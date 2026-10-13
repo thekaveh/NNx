@@ -69,7 +69,7 @@ def _schedule_fingerprint(schedule: NoiseSchedule) -> str:
 class DiffusionObjective(Objective):
     """DDPM noise prediction as an objective — see the module docstring.
 
-    Callable as an objective and a checkpointable component (FEAT-005)
+    Callable as an objective and a checkpointable component
     named ``"diffusion.objective"``: its state is the objective spec (the
     schedule's length and fingerprint, the loss term) and the generator's
     state, so a stateful resume draws the timesteps and noise an

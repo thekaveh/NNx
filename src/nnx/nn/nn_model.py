@@ -804,7 +804,7 @@ TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]
 
 @dataclass(frozen=True, slots=True)
 class EvalStepContext:
-    """Frozen bundle of state passed into a validation-step function (#86).
+    """Frozen bundle of state passed into a validation-step function.
 
     Mirrors :class:`TrainStepContext` for the per-epoch VALIDATION pass: users
     can pass ``eval_step_fn: Callable[[EvalStepContext], NNEvaluationDataPoint]``
@@ -2049,7 +2049,7 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
       - gradient accumulation (zero_grad at cycle start, step at cycle
         end). A trailing partial cycle is stepped at the epoch boundary;
         gradients use each loss's effective normalization weight.
-      - the run's precision (FEAT-028): autocast around the forward only,
+      - the run's precision: autocast around the forward only,
         the backward outside it; fp16 unscales before grad clip and steps
         through the scaler, scaler-free bf16 checks its gradients are
         finite before clipping
@@ -2576,7 +2576,7 @@ class NNModel(_HubMixinBase):
 
     @property
     def task_adapter(self) -> Optional[TaskAdapter]:
-        """The adapter for ``params.task`` (FEAT-002), or ``None`` for a
+        """The adapter for ``params.task``, or ``None`` for a
         legacy classification model. Custom steps can call
         ``task_adapter.record(output, target, loss=...)`` to write the same
         task record the default step writes."""
@@ -2585,8 +2585,8 @@ class NNModel(_HubMixinBase):
 
     @property
     def resolved_precision(self) -> ResolvedPrecision:
-        """The precision this model runs in on its current device
-        (FEAT-028): ``params.precision`` resolved against ``device`` — re-
+        """The precision this model runs in on its current device:
+        ``params.precision`` resolved against ``device`` — re-
         resolved, never read from saved metadata, whenever the device or the
         policy changes (a loaded model resolves on its destination device)."""
         key = _precision_key(self.params, self.device)
@@ -2715,7 +2715,7 @@ class NNModel(_HubMixinBase):
 
         Returns the path written. Network is put in eval mode for tracing.
         A network that declares ``onnx_export_unsupported`` (a graph
-        classifier, FEAT-026) is refused before anything is written.
+        classifier) is refused before anything is written.
         """
         unsupported = getattr(self.net, "onnx_export_unsupported", None)
         if unsupported:
@@ -2851,7 +2851,7 @@ class NNModel(_HubMixinBase):
         loading; unsupported recipes fail explicitly rather than constructing
         a model with the wrong topology.
 
-        FEAT-006: a registered :class:`~nnx.models.ModelSpec` is rebuilt
+        A registered :class:`~nnx.models.ModelSpec` is rebuilt
         through its factory — an unregistered one raises
         :class:`~nnx.models.MissingModelFactoryError`, and a rebuilt topology
         that differs from the saved weights raises ``ValueError``, both
@@ -2859,7 +2859,7 @@ class NNModel(_HubMixinBase):
         (``reconstructible=False``) needs ``module=`` — a module of the same
         topology, into which the weights are loaded.
 
-        FEAT-028: the precision policy is re-resolved on the destination
+        The precision policy is re-resolved on the destination
         device (the constructor resolves it) — never read from the
         checkpoint's recorded precision — so a policy that device cannot
         run fails here; ``precision=`` replaces the saved policy (and the
@@ -2971,7 +2971,7 @@ class NNModel(_HubMixinBase):
     def save_pretrained(self, save_directory, *args: Any, **kwargs: Any) -> Any:
         """Hub save (``huggingface_hub.PyTorchModelHubMixin.save_pretrained``).
 
-        FEAT-006: a runtime-only module has no factory to rebuild it from,
+        A runtime-only module has no factory to rebuild it from,
         so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
         before any file or directory is written."""
         self._require_portable("save_pretrained")
@@ -3233,7 +3233,7 @@ class NNModel(_HubMixinBase):
         Companion to the NNCheckpoint format, which carries the params +
         idp wrapper alongside the weights; ``export_state_dict`` strips
         all of that and leaves just the weights. It records no
-        transformation recipe (FEAT-016, ``nnx.transforms``): it cannot
+        transformation recipe (``nnx.transforms``): it cannot
         rebuild a recipe's topology alone — materialize the recipe on a
         fresh model before loading it, or keep a checkpoint or
         ``save_pretrained`` artifact, which carry the recipe.
@@ -3271,13 +3271,13 @@ class NNModel(_HubMixinBase):
                 (model, net, train) configs run as distinct experiments
                 without altering modeled params. ``None`` (the default)
                 preserves existing run.id hashes exactly.
-            components: Extra checkpointable components (FEAT-005,
-                :class:`~nnx.StatefulComponent`) whose state is saved with
+            components: Extra checkpointable components
+                (:class:`~nnx.StatefulComponent`) whose state is saved with
                 every checkpoint and restored on a stateful warm resume.
                 Callbacks and step functions that implement the protocol
                 (``EarlyStopping``, the JEPA step) are registered
                 automatically; names must be unique.
-            objective: Optional objective (FEAT-004, ``nnx.objectives``) —
+            objective: Optional objective (``nnx.objectives``) —
                 a callable returning loss terms with explicit denominators.
                 NNx's shared update engine then owns backward,
                 accumulation (``accumulate_grad_batches``, exact for uneven
@@ -3286,20 +3286,20 @@ class NNModel(_HubMixinBase):
                 per committed update. Mutually exclusive with
                 ``train_step_fn``.
             provenance: Optional :class:`~nnx.provenance.ExperimentManifest`
-                (FEAT-019) — the declared intent. The fit records it
+                — the declared intent. The fit records it
                 (``runs/<id>/provenance.json``, with its fingerprint) and a
                 fresh attempt (``attempt.json``: parent attempt and
                 checkpoint generation on resume; final status and last
                 committed checkpoint). Never part of the run id.
-            history: Optional :class:`~nnx.history.HistoryJournal`
-                (FEAT-036): keep only its ``retention`` most recent records
+            history: Optional :class:`~nnx.history.HistoryJournal`:
+                keep only its ``retention`` most recent records
                 in memory (``ctx.idps``, the returned ``NNRun.idps``) and
                 append every record once to ``runs/<id>/history/`` instead
                 of rewriting ``idps.csv`` each epoch. ``None`` (the default)
                 keeps the eager in-memory list and CSV. Never part of the
                 run id.
-            compile: Optional :class:`~nnx.compilation.CompileSpec`
-                (FEAT-029): run the built-in step's FP32 forward (and the
+            compile: Optional :class:`~nnx.compilation.CompileSpec`:
+                run the built-in step's FP32 forward (and the
                 fit's validation) through ``torch.compile``. The wrapper is
                 built per call beside ``model.net``, never assigned to it, so
                 checkpoints, export and optimizers see the eager module.
@@ -3309,7 +3309,7 @@ class NNModel(_HubMixinBase):
                 ``NNRun.compile`` records the request and what took effect.
                 ``None`` (the default) trains eagerly. Never part of the run
                 id.
-            distributed: Optional :class:`nnx.distributed.DDP` (FEAT-030):
+            distributed: Optional :class:`nnx.distributed.DDP`:
                 train data-parallel over the process group ``torchrun``
                 started (``nnx.distributed.init_process_group()``), with
                 ``nnx.distributed.train_loader`` / ``validation_loader``
@@ -4272,7 +4272,7 @@ class NNModel(_HubMixinBase):
         `extra_metrics` ({name -> callable(y_true, y_pred) -> float}) are
         called once on the aggregate truth / decoded predictions.
 
-        `metrics` (FEAT-003) are declared :class:`~nnx.MetricSpec`s,
+        `metrics` are declared :class:`~nnx.MetricSpec`s,
         accumulated over every valid sample of the loader from the input
         each declares (decoded labels, probabilities or continuous outputs)
         and reported in the record's ``metrics`` under each spec's name. A
@@ -4329,7 +4329,7 @@ class NNModel(_HubMixinBase):
     def iter_predict(
         self, X: Iterable[Any], spec: Optional[ProbabilitySpec] = None, *, rich: bool = False
     ) -> PredictionStream:
-        """Stream predictions one loader batch at a time (FEAT-020).
+        """Stream predictions one loader batch at a time.
 
         Returns a :class:`~nnx.streaming.PredictionStream` — use it as a
         context manager — over ``X``, a ``DataLoader`` or another iterable of
@@ -4392,7 +4392,7 @@ class NNModel(_HubMixinBase):
     def predict_proba(self, X, spec: Optional[ProbabilitySpec] = None) -> PredictionResult:
         """Probability-aware prediction declared by an explicit ``spec``.
 
-        ``spec`` may be omitted for a model with a task (FEAT-002): the task
+        ``spec`` may be omitted for a model with a task: the task
         supplies it — softmax over axis 1 for ``categorical``, sigmoid
         decoded at the task's ``threshold`` for ``multilabel`` — and a
         ``regression`` task returns its continuous values with

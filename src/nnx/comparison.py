@@ -167,7 +167,7 @@ class Observation:
 
     Attributes:
         run_id: the run that produced it.
-        attempt_id: the attempt within that run (FEAT-019), when known.
+        attempt_id: the attempt within that run, when known.
         metric: what ``value`` measures.
         value: the value (``None`` when the attempt has none; NaN and
             infinities are kept and counted as non-finite).
@@ -1345,7 +1345,7 @@ def observations_from_runs(
             with runs descended the same way from the same configuration
             (an unknown lineage pools with nothing).
 
-    Runs should be trained with ``provenance=`` (FEAT-019): the status and
+    Runs should be trained with ``provenance=``: the status and
     attempt id come from the run's attempt record (``"unknown"`` without
     one) and the data and split identities from its manifest. A run's
     history is committed by its LAST checkpoint, so without an attempt

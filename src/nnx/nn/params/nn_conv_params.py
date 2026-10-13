@@ -124,7 +124,7 @@ class NNConvParams(NNParams):
         ``padding``, ``pool_size``, ``conv_channels``) is validated at
         construction as a non-boolean integer — NumPy integers accepted and
         normalized — so a fractional or boolean knob raises ``ValueError``
-        naming the field before any shape helper or layer runs (FIX-021).
+        naming the field before any shape helper or layer runs.
         """
         return math.isqrt(self.input_dim // self.in_channels)
 
