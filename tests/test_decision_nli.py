@@ -547,3 +547,8 @@ def test_check_refuses_a_bad_request_without_calling_the_model():
         DecisionJob.ask(question, id="t").run(provider, state=["", TEXT])
     assert forwards == []
     provider.check(question, [TEXT])  # a valid request passes
+
+
+def test_an_nli_provider_needs_a_name():
+    with pytest.raises(InvalidDecisionRequest, match="provider name"):
+        _provider(name="")

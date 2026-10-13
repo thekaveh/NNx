@@ -7,8 +7,8 @@ pre-Ampere hardware the swap raises ``RuntimeError`` at construction
 time.
 
 These tests verify the swap mechanics (pattern filter, return count,
-state-dict-keys behavior) on every platform AND verify the
-``RuntimeError`` is the surfaced contract on CPU. The actual
+state-dict-keys behavior) on every platform, the ``RuntimeError`` on a
+CPU-resident weight, and the real swap on CUDA (Ampere+) hardware. The actual
 forward-pass speedup is the property of the torchao kernel; we don't
 re-test torchao's wheel here.
 """
@@ -20,7 +20,8 @@ import torch
 from torch import nn
 
 # importorskip the parent torchao package first (the top-level handle
-# is what ``test_semi_structured_24_skip_on_no_torchao`` reaches for).
+# is what ``test_semi_structured_24_without_torchao_names_the_extra``
+# reaches for).
 # Then importorskip the submodule we monkey-patch — pytest returns the
 # loaded module object directly, which lets us bind a local name without
 # tripping the ruff F811 redefinition check.
@@ -53,15 +54,9 @@ def _has_cuda() -> bool:
 
 def test_semi_structured_24_swaps_linear_with_semisparse():
     """Every matched nn.Linear's ``weight`` should end up as a
-    ``SparseSemiStructuredTensor`` subclass after the swap. On
-    CPU-only test runners the underlying kernel raises ``RuntimeError``
-    at the swap site — we surface that as a clear, actionable error,
-    not a silent pass.
-
-    Skipped under CPU because the swap requires CUDA-resident weights;
-    the swap-mechanics contract (pattern filter + return count) is
-    covered by sibling tests that don't depend on the actual sparse
-    tensor construction succeeding.
+    ``SparseSemiStructuredTensor`` subclass after the swap. Skipped
+    without CUDA: the swap needs CUDA-resident weights (the CPU refusal
+    is its own test below).
     """
     if not _has_cuda():
         pytest.skip("2:4 semi-structured sparsity requires CUDA (Ampere+)")
@@ -206,3 +201,11 @@ def test_semi_structured_24_filter_excludes_non_linear(monkeypatch):
     n = nnx_prune.semi_structured_24(Mixed())
     assert n == 1
     assert seen == [("fc", "Linear")]
+
+
+def test_semi_structured_24_refuses_a_cpu_weight_with_runtime_error():
+    """On a CPU-resident weight the swap raises RuntimeError at the swap
+    site (the documented contract): never a silent pass."""
+    torch.manual_seed(0)
+    with pytest.raises(RuntimeError):
+        nnx_prune.semi_structured_24(_LinearOnly())

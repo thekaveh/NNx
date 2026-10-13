@@ -319,6 +319,7 @@ def test_the_build_backend_pin_matches_the_release_groups():
     one of them would ship a wheel built by an untested backend."""
     pyproject = _PYPROJECT.read_text(encoding="utf-8")
     build_system = re.search(r'requires = \["setuptools==([^"]+)"\]', pyproject)
-    release_group = re.findall(r'"setuptools==([^"]+)"', pyproject)
-    assert build_system is not None
-    assert set(release_group) == {build_system.group(1)}, release_group
+    release_block = re.search(r"^release = \[(.*?)^\]", pyproject, flags=re.M | re.S)
+    assert build_system is not None and release_block is not None
+    # Exactly one exact pin inside the release group, equal to the backend's.
+    assert re.findall(r'"setuptools([^"]*)"', release_block.group(1)) == [f"=={build_system.group(1)}"]

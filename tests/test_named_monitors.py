@@ -704,9 +704,9 @@ def test_a_trainer_binds_a_writer_only_callbacks_monitor(tmp_path, monkeypatch):
 
 
 def test_an_epoch_summary_keeps_each_windows_term_weight():
-    """A KL weight annealed across windows (0 then 1): the epoch loss is the
-    weighted sum per (name, reduction, weight), not the first window's
-    weight applied to every window's numerator."""
+    """A weight annealed across windows: the epoch loss pools each window's
+    weighted numerator over the summed denominators (never the first
+    window's weight for every window, nor a sum of per-window losses)."""
     from types import SimpleNamespace
 
     from nnx.monitors import _TrainEpochSummary
@@ -720,4 +720,13 @@ def test_an_epoch_summary_keeps_each_windows_term_weight():
 
     summary.observe_terms([term(10.0, 5, 0.0)])
     summary.observe_terms([term(2.0, 5, 1.0)])
-    assert summary._terms_loss() == pytest.approx(0.4)
+    assert summary._terms_loss() == pytest.approx(0.2)  # (0*10 + 1*2) / (5 + 5)
+    annealed = _TrainEpochSummary((), None, None)
+    for weight in (1.0, 0.5, 0.25, 0.125):
+        annealed.observe_terms([term(8.0, 4, weight)])
+    # Pooled: (8 + 4 + 2 + 1) / 16, never the sum of the windows' losses.
+    assert annealed._terms_loss() == pytest.approx(0.9375)
+    constant = _TrainEpochSummary((), None, None)
+    for _ in range(4):
+        constant.observe_terms([term(8.0, 4, 1.0)])
+    assert constant._terms_loss() == pytest.approx(2.0)

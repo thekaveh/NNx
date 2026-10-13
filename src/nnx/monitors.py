@@ -852,8 +852,8 @@ class _TrainEpochSummary:
         self._error = _WeightedMean()
         self._pending: Optional[tuple[Optional[float], Optional[float]]] = None
         self._records = 0
-        # Objective runs: {(name, reduction, weight): [reduction, weight, Σ numerator, Σ denominator]}.
-        self._terms: dict[tuple[str, str, float], list[Any]] = {}
+        # Objective runs: {(name, reduction): [reduction, Σ weight·numerator, Σ denominator]}.
+        self._terms: dict[tuple[str, str], list[Any]] = {}
         self._pending_terms = False
 
     def observe(
@@ -873,26 +873,24 @@ class _TrainEpochSummary:
 
     def observe_terms(self, terms: Sequence[Any]) -> None:
         """Called for each objective microbatch with its ``LossTerm``\\ s:
-        normalized terms add their numerators and denominators, summed terms
-        their totals. A term is keyed by its name, reduction and weight: the
-        engine pins those within one window only, so a weight annealed (or a
-        reduction changed) across windows starts its own sum rather than
-        taking the epoch's first."""
+        each term pools its *weighted* numerators (each microbatch's own
+        weight, so a weight annealed across windows counts as it was
+        applied) over its summed denominators; a summed term adds its
+        weighted totals. A term is keyed by its name and reduction."""
         for term in terms:
-            key = (term.name, term.reduction, float(term.weight))
-            entry = self._terms.setdefault(key, [term.reduction, term.weight, 0.0, 0.0])
-            entry[2] += term._numerator_value
+            entry = self._terms.setdefault((term.name, term.reduction), [term.reduction, 0.0, 0.0])
+            entry[1] += float(term.weight) * term._numerator_value
             if term.reduction == "mean":
-                entry[3] += float(term.denominator)
+                entry[2] += float(term.denominator)
         self._pending_terms = True
 
     def _terms_loss(self) -> Optional[float]:
         present = [
-            (weight, numerator if reduction == "sum" else numerator / denominator)
-            for reduction, weight, numerator, denominator in self._terms.values()
+            weighted if reduction == "sum" else weighted / denominator
+            for reduction, weighted, denominator in self._terms.values()
             if reduction == "sum" or denominator
         ]
-        return sum(weight * value for weight, value in present) if present else None
+        return sum(present) if present else None
 
     def add(self, edp: NNEvaluationDataPoint, batch_size: int) -> None:
         fallback = float(edp.count if edp.count is not None else batch_size)
