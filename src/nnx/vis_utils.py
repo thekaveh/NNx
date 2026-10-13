@@ -277,6 +277,13 @@ class VisUtils:
             key: value for key, value in (("module", module), ("batch_adapter", batch_adapter)) if value is not None
         }
         model = cast(Any, NNModel.from_checkpoint(checkpoint=checkpoint, **reload_kwargs))
+        task = getattr(getattr(model, "params", None), "task", None)
+        if task is not None and getattr(task, "kind", None) != "categorical":
+            # Coloured by class: a regression or multilabel target has none
+            # (and failed only after the whole inference and t-SNE ran).
+            raise ValueError(
+                f"two_dim_tsne_checkpoint_logits colours points by class; the checkpoint's task is {task.kind!r}"
+            )
 
         ts = [t for t in range(ds.output_dim)]
         cs = VisUtils.generate_colors(n=ds.output_dim)

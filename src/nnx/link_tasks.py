@@ -7,8 +7,8 @@ every batch against that split before any forward pass.
 
 - :class:`LinkSplit` — a versioned manifest: the node count, canonical
   positive edges per split (``train`` / ``val`` / ``test``; an undirected
-  edge is ``(min, max)``, so a duplicate or a reverse can never sit in two
-  splits), fixed ``val`` / ``test`` negatives, directedness, the self-loop
+  edge is ``(min, max)``, so a duplicate, or in an undirected split a
+  reverse, can never sit in two splits), fixed ``val`` / ``test`` negatives, directedness, the self-loop
   policy, the seed, and — for edge-label tasks — the categories, each
   edge's category and whether labelled edges' **existence** is visible
   context. :func:`split_links` derives one from an ``edge_index`` with a

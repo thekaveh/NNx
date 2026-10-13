@@ -23,7 +23,7 @@ import math
 
 import torch
 
-from .._step_helpers import finalize_step, imperative_step, predicted_labels
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
 from ..nn.nn_model import (
     TrainStepContext,
     TrainStepFn,
@@ -108,6 +108,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Y_b = Y[perm]
 
         Y_hat_logits = m._net_forward((X_mixed,), {})
+        require_row_logits(Y_hat_logits, "mixup")
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         _check_scorable_target(m.loss_fn, Y, paradigm="mixup")  # before the update
@@ -188,6 +189,7 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_b = Y[perm]
 
         Y_hat_logits = m._net_forward((X_cut,), {})
+        require_row_logits(Y_hat_logits, "cutmix")
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         _check_scorable_target(m.loss_fn, Y, paradigm="cutmix")  # before the update

@@ -378,8 +378,9 @@ offline.
       Declare `MonitorSpec("nll")` with `metrics=[MetricSpec("nll")]` to
       elect only epochs with a value.
 
-    A custom `train_step_fn` still works for anything else (diffusion / KD /
-    SimCLR / Mixup / CutMix follow that pattern).
+    A custom `train_step_fn` still works for anything else. The built-in KD /
+    Mixup / CutMix / MoE steps score `(rows, classes)` logits and refuse a
+    sequence model's output.
 
 - **`NNRun` content-addressed persistence** — TRANSFORMER runs hash the
   same way as any other run. The `omit-when-default` invariant on

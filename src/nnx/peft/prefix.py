@@ -145,11 +145,6 @@ class PrefixTuner(nn.Module):
         self.model = model
         self.n_prefix = n_prefix
 
-        # Freeze every parameter of the wrapped TransformerNN — the
-        # prefix tensors are the only trainable bit going forward.
-        for p in self.model.parameters():
-            p.requires_grad = False
-
         # Allocate (n_prefix, n_heads, head_dim) K and V per targeted
         # block. We store them as a ParameterList so they live in
         # state_dict and are visible to `self.parameters()`.
@@ -173,11 +168,24 @@ class PrefixTuner(nn.Module):
             proj = cast(Any, model.blocks[i]).attn.w_qkv
             while isinstance(proj, (LoRALinear, IA3Linear)):
                 proj = proj.base
-            weight = proj.weight
-            return nn.Parameter(torch.empty(n_prefix, n_heads, head_dim, dtype=weight.dtype, device=weight.device))
+            # The first floating tensor gives the placement: a factorized
+            # projection (low_rank: a Sequential) has no `.weight` of its own,
+            # and a converted QAT layer's weight is an integer buffer.
+            floating = [t for t in (*proj.parameters(), *proj.buffers()) if t.is_floating_point()]
+            if not floating:
+                raise TypeError(f"PrefixTuner: block {i}'s w_qkv has no floating weight to place a prefix by")
+            placement = floating[0]
+            return nn.Parameter(
+                torch.empty(n_prefix, n_heads, head_dim, dtype=placement.dtype, device=placement.device)
+            )
 
         self.prefix_keys = nn.ParameterList([_prefix(i) for i in range(n_layers)])
         self.prefix_values = nn.ParameterList([_prefix(i) for i in range(n_layers)])
+        # Freeze every parameter of the wrapped TransformerNN — the prefix
+        # tensors are the only trainable bit going forward. After the
+        # allocation, so a refused construction leaves the model trainable.
+        for p in self.model.parameters():
+            p.requires_grad = False
         # Init with small Gaussian noise — matches the original
         # prefix-tuning paper's "random init" baseline.
         for p in self.prefix_keys:

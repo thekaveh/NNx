@@ -84,6 +84,11 @@ def _feed_digest(digest: Any, value: Any) -> None:
     tensor subclasses (torchao) by their dequantized values, containers
     item by item; other leaves by their text."""
     if isinstance(value, torch.Tensor):
+        if value.is_sparse:  # no contiguous byte view: hash its coalesced indices and values
+            coalesced = value.coalesce()
+            _feed_digest(digest, coalesced.indices())
+            _feed_digest(digest, coalesced.values())
+            return
         if value.is_quantized:
             _feed_digest(digest, value.int_repr())
             if value.qscheme() in (torch.per_tensor_affine, torch.per_tensor_symmetric):

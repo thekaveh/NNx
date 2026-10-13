@@ -1028,6 +1028,11 @@ def _selective(rows: Sequence[_Row], policy: Any, model_id: Optional[str]) -> di
     from ..abstention import AbstentionSchemaError, decide
     from .schema import ChoiceResult
 
+    if not rows:  # an empty slice (no held-out sample): not the policy's fault
+        return {
+            "selective_coverage": MetricValue("selective_coverage", None, 0, "no eligible rows"),
+            "selective_risk": MetricValue("selective_risk", None, 0, "no eligible rows"),
+        }
     eligible = [row for row in rows if not isinstance(row.sample.question, Boolean)]
     accepted = []
     skipped = 0

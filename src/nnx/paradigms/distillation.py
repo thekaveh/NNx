@@ -31,7 +31,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step, predicted_labels, softened_kl
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits, softened_kl
 from ..nn.nn_model import (
     NNModel,
     TrainStepContext,
@@ -119,6 +119,7 @@ def kd_train_step_factory(
         X, Y = _single_input_batch(m, ctx.batch, who="kd_train_step_factory")
 
         student_logits = m._net_forward((X,), {})
+        require_row_logits(student_logits, "distillation")
         with torch.no_grad():
             # Teacher might live on a different device; migrate the
             # input into its frame for the forward pass. Cheap when
@@ -261,6 +262,7 @@ def feature_kd_train_step_factory(
                 handles.append(s_layer.register_forward_hook(_s_hook))
 
             student_logits = m._net_forward((X,), {})
+            require_row_logits(student_logits, "feature distillation")
             with torch.no_grad():
                 # Teacher might live on a different device; migrate the
                 # input into its frame for the forward pass.

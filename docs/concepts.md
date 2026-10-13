@@ -995,7 +995,8 @@ exactly as the default step does.
 An optimizer built with `param_groups` (every multi-optimizer `Trainer`)
 leaves out parameters frozen at build time. Unfreezing one of those later
 trains nothing: build the optimizer without `param_groups`, or include the
-parameter before freezing it.
+parameter before freezing it. Both loops warn once per run about a parameter
+that requires gradients but that no optimizer owns.
 
 Each **committed** optimizer update fires one detached `UpdateEvent` to
 `Callback.on_optimizer_update(ctx, event)`. A microbatch, a masked window or
@@ -3053,7 +3054,8 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 ```
 
 - **The manifest.** Edges are canonicalised and de-duplicated before they
-  are split, so a duplicate or a reverse can never sit in two splits. An
+  are split, so a duplicate, or in an undirected split a reverse, can never
+  sit in two splits (a directed split keeps `u→v` and `v→u` apart). An
   explicit `LinkSplit` refuses non-canonical, repeated or cross-split edges
   and barred self-loops. It records directedness, the self-loop policy, the
   seed and the topology policy. `replay(edge_index)` re-derives it with a

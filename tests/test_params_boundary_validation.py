@@ -920,8 +920,10 @@ def test_a_recipe_refuses_a_linear_its_parent_reads_directly():
 
 
 @pytest.mark.parametrize("paradigm", ["moe", "distillation", "feature distillation"])
-def test_moe_refuses_regression_targets_before_updating(paradigm):
+def test_moe_refuses_regression_targets_before_updating(paradigm, tmp_path, monkeypatch):
     import torch
+
+    monkeypatch.chdir(tmp_path)  # the refusal comes after the run is admitted
 
     from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
     from nnx.paradigms.distillation import feature_kd_train_step_factory, kd_train_step_factory
@@ -1067,8 +1069,10 @@ def test_a_parameter_unfrozen_outside_the_optimizer_is_warned_about(tmp_path, mo
 
 
 @pytest.mark.parametrize("paradigm", ["mixup", "cutmix"])
-def test_mixup_and_cutmix_refuse_regression_targets_before_updating(paradigm):
+def test_mixup_and_cutmix_refuse_regression_targets_before_updating(paradigm, tmp_path, monkeypatch):
     import torch
+
+    monkeypatch.chdir(tmp_path)  # the refusal comes after the run is admitted
 
     from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
     from nnx.paradigms.augmentation import cutmix_train_step_factory, mixup_train_step_factory
@@ -1132,3 +1136,117 @@ def test_benchmarks_digest_torchao_quantized_models():
     qa, qb = quantize_int8(build(0)), quantize_int8(build(1))
     assert _weights_digest(qa.net) != _weights_digest(qb.net)
     assert benchmark_forward(qa.net, torch.randn(2, 4), warmup=0, repeats=1).weights_digest == _weights_digest(qa.net)
+
+
+def test_the_unowned_trainables_warning_reaches_trainer_runs_at_the_callers_line(tmp_path, monkeypatch):
+    import warnings
+
+    import torch
+
+    from nnx import (
+        Activations,
+        Callback,
+        Devices,
+        Losses,
+        Nets,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNParamGroupSpec,
+        Trainer,
+    )
+    from nnx.objectives import supervised_objective
+    from nnx.trainer import NNTrainerParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.freeze("layers.0.*")
+
+    class Unfreeze(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            ctx.model.unfreeze("*")
+
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader([(torch.randn(4, 3), torch.tensor([0, 1, 0, 1]))])
+        .optimizer(
+            "all",
+            NNOptimParams.builder().sgd(max_lr=0.1).param_groups([NNParamGroupSpec(name_pattern="*")]).build(),
+        )
+        .build()
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        Trainer(model).train(params=params, objective=supervised_objective(), callbacks=[Unfreeze()])
+    hits = [w for w in caught if "no optimizer owns them" in str(w.message)]
+    assert hits and hits[0].filename == __file__
+
+
+def test_benchmark_digests_sparse_state():
+    import torch
+
+    from nnx.benchmarking import _weights_digest
+
+    net = torch.nn.Linear(3, 3)
+    net.register_buffer("mask", torch.eye(3).to_sparse())
+    assert len(_weights_digest(net)) == 64
+
+
+def test_a_tiny_fp32_temperature_still_picks_the_argmax():
+    import torch
+
+    from nnx.generation.logits_processors import TemperatureScaling
+    from nnx.generation.sampling import sample_next_token
+
+    scaled = TemperatureScaling(1e-39)(torch.tensor([[1.0, 2.0, 0.5]]), [])
+    assert int(sample_next_token(scaled, generator=torch.Generator().manual_seed(0))) == 1
+
+
+@pytest.mark.parametrize("groupsize", [True, 16.0, 0])
+def test_qat_groupsize_must_be_a_positive_int(groupsize):
+    pytest.importorskip("torchao")
+    from nnx.quantize.qat import QATLifecycleCallback
+
+    with pytest.raises(ValueError, match="groupsize"):
+        QATLifecycleCallback(groupsize=groupsize)
+
+
+def test_paradigm_steps_refuse_sequence_output():
+    import torch
+
+    from nnx._step_helpers import require_row_logits
+
+    with pytest.raises(ValueError, match="mixup step scores"):
+        require_row_logits(torch.zeros(2, 3, 5), "mixup")
+    require_row_logits(torch.zeros(2, 5), "mixup")
+
+
+def test_a_refused_prefix_tuner_leaves_the_model_trainable():
+    import torch
+
+    from nnx import NNTransformerParams, PrefixTuner
+    from nnx.nn.net.transformer_nn import TransformerNN
+
+    net = TransformerNN(
+        NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+        )
+    )
+    converted = torch.nn.Module()  # a converted layer holding only an integer weight buffer
+    converted.register_buffer("weight", torch.zeros(24, 8, dtype=torch.int8))
+    net.blocks[0].attn.w_qkv = converted
+    with pytest.raises(TypeError, match="no floating weight"):
+        PrefixTuner(net, n_prefix=2)
+    assert all(p.requires_grad for p in net.parameters() if p.is_floating_point())

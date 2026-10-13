@@ -178,7 +178,9 @@ def write_gguf(
             quantization is requested that requires ``llama-quantize``.
         ValueError: when an unknown quantization label is passed.
         TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
-            IA3 / prefix tuning): GGUF stores plain weights. Nothing is
+            IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
+            ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
+            low-rank factorized one): GGUF stores plain weights. Nothing is
             written.
     """
     import torch

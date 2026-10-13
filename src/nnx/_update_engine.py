@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import contextlib
 import math
-import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -66,11 +65,12 @@ def warn_unowned_trainables(net: torch.nn.Module, optimizers: Iterable[torch.opt
     fresh = sorted(set(unowned) - warned)
     if fresh:
         warned.update(fresh)
-        warnings.warn(
-            f"parameters {fresh[:5]} require gradients but no optimizer owns them, so they never train: an "
-            "optimizer built with param_groups leaves out parameters frozen at build time",
+        from .nn.callbacks import _warn_at_user_frame  # attributed to the caller's train(), not NNx
+
+        _warn_at_user_frame(
+            f"parameters {fresh[:5]} require gradients but no optimizer owns them, so they never train: "
+            "param_groups left them out (frozen at build time, or unmatched by a strict Trainer's specs)",
             RuntimeWarning,
-            stacklevel=3,
         )
 
 

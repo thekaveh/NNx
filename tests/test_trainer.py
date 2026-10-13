@@ -1736,3 +1736,40 @@ def test_nnmodel_hands_a_resumed_model_back_when_a_begin_hook_raises(hook, mode,
         target.train(params=params(resume_from_run_id=first.id, resume_mode=mode), callbacks=[Boom()])
     assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())
     assert torch.equal(torch.get_rng_state(), rng)
+
+
+def test_nnmodel_rolls_a_resume_back_when_the_first_set_epoch_raises(tmp_path, monkeypatch):
+    """The first epoch's loader set_epoch (and the DDP step check) run inside
+    the rollback guard: nothing has trained yet."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNParams, NNTrainParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def model() -> NNModel:
+        return NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    data = TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,)))
+
+    class Breaking(DataLoader):
+        def set_epoch(self, epoch: int) -> None:
+            raise RuntimeError("set_epoch failed")
+
+    def params(loader, **resume) -> NNTrainParams:
+        return NNTrainParams(
+            n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build(), **resume
+        )
+
+    first = model().train(params=params(DataLoader(data, batch_size=4)))
+    target = model()
+    before = {key: value.clone() for key, value in target.net.state_dict().items()}
+    with pytest.raises(RuntimeError, match="set_epoch failed"):
+        target.train(params=params(Breaking(data, batch_size=4), resume_from_run_id=first.id, resume_mode="stateful"))
+    assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())

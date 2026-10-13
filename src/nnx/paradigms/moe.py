@@ -28,7 +28,7 @@ import math
 
 import torch
 
-from .._step_helpers import finalize_step, imperative_step, predicted_labels
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
 from ..nn.moe import MoELinear
 from ..nn.nn_model import (
     TrainStepContext,
@@ -96,6 +96,7 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         # The supervised forward populates each MoELinear's
         # ``.last_aux_loss`` as a side effect.
         Y_hat_logits = m._net_forward((X,), {})
+        require_row_logits(Y_hat_logits, "moe")
         supervised_loss = m.loss_fn(_loss_input(m.loss_fn, Y_hat_logits), Y)
 
         # Sum the per-layer aux losses across every MoE layer in the

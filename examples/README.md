@@ -373,7 +373,7 @@ Notes for section 2.1:
 
 | Example | What it demonstrates |
 |---|---|
-| `05_custom_train_step_autoencoder.py` | Use `train_step_fn` to replace the supervised step with a reconstruction-loss step (tiny linear autoencoder). |
+| `05_custom_train_step_autoencoder.py` | Use `train_step_fn` to replace the supervised step with a reconstruction-loss step (a tiny 16 → 4 → 16 autoencoder). |
 
 ### 2.3. Fine-tuning
 

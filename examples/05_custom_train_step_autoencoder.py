@@ -1,4 +1,4 @@
-"""Custom train_step_fn — a tiny linear autoencoder.
+"""Custom train_step_fn — a tiny autoencoder (16 → 4 → 16).
 
 Demonstrates the train_step_fn hook on NNModel.train(). The supervised
 forward → loss_fn(net(X), Y) → backward path doesn't fit autoencoders

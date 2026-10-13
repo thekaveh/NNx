@@ -201,7 +201,8 @@ def embed_texts(
             placeholder — the embedding dim isn't known until the
             first forward).
         batch_size: how many texts per forward pass. Default 64.
-        device: target device. ``None`` uses the backbone's device
+        device: the device of the returned tensor (the backbone encodes
+            where it lives and is never moved). ``None`` uses the backbone's device
             (sentence-transformers exposes one; plain Modules don't, in
             which case we fall back to the first parameter's device,
             or CPU when the backbone has no parameters).
@@ -217,6 +218,9 @@ def embed_texts(
     """
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError(f"embed_texts batch_size must be an integer >= 1, got {batch_size!r}")
+    # Encode where the backbone lives (its weights are never moved) and hand
+    # the result over on ``device``.
+    native = _resolve_device(backbone, None)
     device = _resolve_device(backbone, device)
 
     if not texts:
@@ -235,10 +239,10 @@ def embed_texts(
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):
                 chunk = texts[i : i + batch_size]
-                emb = _encode(backbone, chunk, device)
+                emb = _encode(backbone, chunk, native)
                 if normalize:
                     emb = F.normalize(emb, dim=-1)
-                chunks.append(emb.detach())
+                chunks.append(emb.detach().to(device))
     finally:
         _restore_training_modes(training_modes)
     return torch.cat(chunks, dim=0)

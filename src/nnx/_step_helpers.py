@@ -170,6 +170,17 @@ def finalize_step(
     return loss_val
 
 
+def require_row_logits(logits: torch.Tensor, paradigm: str) -> None:
+    """The classification paradigm steps score ``(rows, classes)`` logits;
+    a sequence model's ``(batch, time, vocab)`` output needs the causal-LM
+    task, whose loss and metrics flatten the time axis."""
+    if logits.ndim > 2:
+        raise ValueError(
+            f"the {paradigm} step scores (rows, classes) logits, got shape {tuple(logits.shape)}: train a "
+            "sequence model with nnx.lm_tasks.CausalLMTask"
+        )
+
+
 def predicted_labels(loss_fn: Any, logits: torch.Tensor) -> torch.Tensor:
     """Hard predictions as the default step makes them: a non-negative logit
     for a ``BCEWithLogitsLoss`` head (an argmax over one logit is always 0),

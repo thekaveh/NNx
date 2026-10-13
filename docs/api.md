@@ -15495,7 +15495,8 @@ Args:
         placeholder — the embedding dim isn't known until the
         first forward).
     batch_size: how many texts per forward pass. Default 64.
-    device: target device. ``None`` uses the backbone's device
+    device: the device of the returned tensor (the backbone encodes
+        where it lives and is never moved). ``None`` uses the backbone's device
         (sentence-transformers exposes one; plain Modules don't, in
         which case we fall back to the first parameter's device,
         or CPU when the backbone has no parameters).
@@ -15681,7 +15682,9 @@ Raises:
         quantization is requested that requires ``llama-quantize``.
     ValueError: when an unknown quantization label is passed.
     TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
-        IA3 / prefix tuning): GGUF stores plain weights. Nothing is
+        IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
+        ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
+        low-rank factorized one): GGUF stores plain weights. Nothing is
         written.
 ```
 

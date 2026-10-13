@@ -73,9 +73,12 @@ export_to_faiss(backbone, corpus, "domain.faiss")
 import faiss
 from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS as LCFAISS
+from langchain_core.documents import Document
 idx = faiss.read_index("domain.faiss")
+# Row i of the index is corpus[i]: give LangChain the documents and the map.
+docstore = InMemoryDocstore({str(i): Document(page_content=text) for i, text in enumerate(corpus)})
 vs = LCFAISS(embedding_function=..., index=idx,
-             docstore=InMemoryDocstore({}), index_to_docstore_id={})
+             docstore=docstore, index_to_docstore_id={i: str(i) for i in range(len(corpus))})
 
 # LlamaIndex
 from llama_index.vector_stores.faiss import FaissVectorStore

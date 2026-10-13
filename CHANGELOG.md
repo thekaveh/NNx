@@ -130,6 +130,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - The loops warn when a parameter requires gradients but no optimizer owns it (unfrozen after a `param_groups` optimizer left it out), instead of silently never training it.
     - Mixup / CutMix refuse regression targets before the update; categorical tasks score int32 / int16 targets; GGUF export refuses a factorized projection with a clear `TypeError`.
     - Forward benchmarks digest torchao-quantized and packed-quantized weights exactly; validation messages show integer bounds exactly; a DDP step-count refusal on a resume's first epoch also rolls back.
+    - `PrefixTuner` places prefixes by the projection's first floating tensor (a factorized `w_qkv` works) and refuses before freezing the model; `embed_texts` / `export_to_faiss` return embeddings on the requested `device` without moving the backbone.
+    - QAT refuses a non-int `groupsize` and a run whose `groupsize` divides no `Linear`; a tiny temperature samples the argmax; KD / Mixup / CutMix / MoE refuse a sequence model's output.
+    - The unowned-parameter warning names both causes and points at the caller's `train()`; t-SNE projection refuses a non-categorical checkpoint before inference; benchmark digests cover sparse state; an empty held-out benchmark slice reports "no eligible rows".
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

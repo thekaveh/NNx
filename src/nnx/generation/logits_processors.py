@@ -53,7 +53,15 @@ class TemperatureScaling:
             # A small T overflows half-precision logits to +inf, which the
             # sampler reads as the greedy marker (the first +inf, not the argmax).
             logits = logits.float()
-        return logits / self.temperature
+        scaled = logits / self.temperature
+        if torch.isposinf(scaled).any():
+            # Even fp32 overflows for a tiny T: several +inf would read as
+            # the greedy marker and resolve to the first, not the argmax.
+            # Such a T is greedy in effect, so mark the argmax as T=0 does.
+            out = torch.full_like(logits, float("-inf"))
+            out.scatter_(dim=-1, index=logits.argmax(dim=-1, keepdim=True), value=float("inf"))
+            return out
+        return scaled
 
 
 class TopKFilter:
