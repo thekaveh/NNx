@@ -18,6 +18,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
 RUNNER = "ubuntu-26.04"
+# FEAT-043: the one job that needs hardware no hosted image has (CUDA); it
+# runs only on a registered self-hosted GPU runner, opted in by a variable.
+SELF_HOSTED = {("docs.yml", "gpu-evidence"): ["self-hosted", "linux", "x64", "gpu"]}
 APT_STEP_MINUTES = 5
 
 
@@ -41,7 +44,15 @@ def test_the_workflows_exist():
 def test_every_job_runs_on_the_pinned_image(workflow, job_name, job):
     if "uses" in job:  # a reusable-workflow call runs on the called workflow's image
         return
-    assert job.get("runs-on") == RUNNER, f"{workflow}:{job_name} runs on {job.get('runs-on')!r}"
+    expected = SELF_HOSTED.get((workflow, job_name), RUNNER)
+    assert job.get("runs-on") == expected, f"{workflow}:{job_name} runs on {job.get('runs-on')!r}"
+
+
+def test_the_self_hosted_jobs_exist_and_are_opt_in():
+    jobs = {(workflow, name): job for workflow, name, job in _jobs()}
+    for key in SELF_HOSTED:
+        assert key in jobs, f"{key} is listed as self-hosted but does not exist"
+        assert jobs[key]["if"] == "vars.NNX_GPU_RUNNER == 'true'"  # skipped unless a GPU runner is registered
 
 
 def test_every_apt_step_has_its_own_short_timeout():

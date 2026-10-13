@@ -23,14 +23,14 @@ def registry():
     return fc.load_registry()
 
 
-def _fresh(registry, nodes, **profile):
-    """A current report: the registry's sources and published profile."""
-    expected = registry["evidence_profile"]
+def _fresh(registry, nodes, *, profile_id="cpu", **profile):
+    """A current report: the registry's sources and one published profile."""
+    (expected,) = [entry for entry in registry["evidence_profiles"] if entry["id"] == profile_id]
     full = {
         "os": expected["os"],
         "python": expected["python"],
         "device": expected["device"],
-        "devices": [expected["device"]],
+        "devices": sorted({"cpu", expected["device"]}),
         "torch": "2.13.0",
         "dependencies": list(fc.KNOWN_DEPENDENCIES),
         **profile,
@@ -120,9 +120,13 @@ def test_cuda_amp_and_onnx_runtime_rows_stay_unverified_on_cpu(registry):
     by_features = {" + ".join(s["features"]): s for s in registry["scenarios"]}
     amp = next(s for name, s in by_features.items() if "FP16 automatic mixed precision" in name)
     ort = next(s for name, s in by_features.items() if "ONNX Runtime" in name)
-    assert amp["status"] == ort["status"] == "unverified"
-    report = _fresh(registry, {t: dict(PASSED) for s in registry["scenarios"] for t in s["tests"]})
-    assert fc.judge(amp, report, None)[0] == fc.judge(ort, report, None)[0] == "unverified"
+    # FEAT-043: CUDA AMP is claimed for the cuda evidence profile only
+    assert amp["status"] == "verified" and amp["profile"]["device"] == "cuda" and ort["status"] == "unverified"
+    nodes = {t: dict(PASSED) for s in registry["scenarios"] for t in s["tests"]}
+    report = _fresh(registry, nodes)
+    assert fc.judge(amp, report, None) == ("unverified", "profile not run: needs cuda")
+    assert fc.judge(ort, report, None)[0] == "unverified"
+    assert fc.judge(amp, _fresh(registry, nodes, profile_id="cuda"), None)[0] == "verified"
 
 
 @pytest.mark.parametrize(
@@ -140,7 +144,9 @@ def test_cuda_amp_and_onnx_runtime_rows_stay_unverified_on_cpu(registry):
             "import-only",
         ),
         (lambda r: r["scenarios"][0].update(tests=["no-node-separator"]), "node ids"),
-        (lambda r: r.pop("evidence_profile"), "evidence_profile"),
+        (lambda r: r.pop("evidence_profiles"), "evidence_profiles"),
+        (lambda r: r["evidence_profiles"][1].update(device="cpu"), "unique"),
+        (lambda r: r["evidence_profiles"][0].pop("id"), "names an id"),
     ],
 )
 def test_schema_problems_are_named(registry, mutate, message):
@@ -260,7 +266,7 @@ def test_a_current_report_renders_its_digest_identically_for_site_and_wiki(regis
     report = _fresh(registry, nodes)
     site, wiki = fc.render(registry, report), fc.render(registry, report)
     assert site == wiki and f"`{report['digest'][:16]}`" in site
-    verified = sum(1 for s in registry["scenarios"] if s["status"] == "verified")
+    verified = sum(1 for s in registry["scenarios"] if s["status"] == "verified" and s["profile"]["device"] == "cpu")
     assert site.count("**verified**") == verified
 
 
@@ -358,3 +364,65 @@ def test_a_limitation_must_cite_its_documenting_file(registry):
     assert any("limitation must start" in p for p in fc.validate_registry(broken))
     broken["scenarios"][0]["limitation"] = "docs/jepa.md#resume: the documented boundary"
     assert fc.validate_registry(broken) == []
+
+
+# --- FEAT-043: more than one evidence profile ----------------------------------------------------
+
+
+def _passing(registry, statuses=("verified", "unsupported")):
+    return {
+        node: {"setup": "passed", "call": "passed", "teardown": "passed"}
+        for node in fc.scenario_tests(registry, statuses=statuses)
+    }
+
+
+def _cell(page, sid):
+    (row,) = [line for line in page.splitlines() if line.startswith(f"| {sid} |")]
+    return row
+
+
+def test_a_cuda_report_verifies_the_cuda_rows_beside_the_cpu_report(registry):
+    """FEAT-043: TC-06/TC-10/TC-11 are judged by the cuda profile's report,
+    every other row by the cpu one, and the page names each report."""
+    cpu = _fresh(registry, _passing(registry))
+    cuda = _fresh(registry, _passing(registry), profile_id="cuda")
+    page = fc.render(registry, [cpu, cuda])
+    assert "**Evidence (cpu):**" in page and "**Evidence (cuda):**" in page
+    for sid in ("TC-06", "TC-10", "TC-11"):
+        assert "**verified** — every listed test passed (cuda evidence)" in _cell(page, sid)
+    assert "(cpu evidence)" in _cell(page, "TC-01")
+    only_cpu = fc.render(registry, [cpu])
+    for sid in ("TC-06", "TC-10", "TC-11"):
+        assert "**unverified** — profile not run: needs cuda" in _cell(only_cpu, sid)
+    assert "**Evidence (cuda):**" not in only_cpu
+
+
+def test_a_cuda_row_that_fails_or_skips_on_the_gpu_is_never_verified(registry):
+    nodes = _passing(registry)
+    nodes["tests/test_cuda_evidence.py::test_bf16_trains_without_a_scaler_on_cuda"] = {
+        "setup": "passed",
+        "call": "skipped",
+        "teardown": "passed",
+    }
+    cuda = _fresh(registry, nodes, profile_id="cuda")
+    assert "**failed**" in _cell(fc.render(registry, [_fresh(registry, _passing(registry)), cuda]), "TC-10")
+    assert any(problem.startswith("TC-10:") for problem in fc.gate(registry, cuda))
+
+
+def test_a_report_on_an_unpublished_profile_is_stale(registry):
+    mac = _fresh(registry, _passing(registry), os="darwin")
+    assert "another profile" in fc.staleness(registry, mac)
+    page = fc.render(registry, [mac])
+    assert "**Evidence:** none current (stale: the report ran on another profile than the registry publishes" in page
+
+
+def test_the_gpu_job_feeds_the_published_page_without_blocking_it():
+    """FEAT-043: an opt-in self-hosted GPU job produces the cuda report; the
+    docs build renders both reports when it exists and runs without it."""
+    docs = (ROOT / ".github" / "workflows" / "docs.yml").read_text(encoding="utf-8")
+    jobs = yaml.safe_load(docs)["jobs"]
+    gpu = jobs["gpu-evidence"]
+    assert gpu["if"] == "vars.NNX_GPU_RUNNER == 'true'"
+    assert gpu["runs-on"] == ["self-hosted", "linux", "x64", "gpu"]
+    assert "gpu-evidence" in jobs["build"]["needs"] and "!cancelled()" in jobs["build"]["if"]
+    assert "--report feature-composition-cuda-report.json" in docs

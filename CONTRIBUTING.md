@@ -109,9 +109,35 @@ exact documented limitation). The CI `feature-composition` job fails when a
 verified row fails or loses coverage.
 
 The gate is strict only on the published profile's OS (Linux): there, `--run`
-also fails when an extra in `evidence_profile.dependencies` is not installed,
-so run it after `uv sync --all-extras`. Elsewhere, rows needing a missing extra
-are simply not judged.
+also fails when an extra in the profile's `dependencies` (under
+`evidence_profiles`) is not installed, so run it after `uv sync --all-extras`.
+Elsewhere, rows needing a missing extra are simply not judged.
+
+#### GPU evidence
+
+The registry publishes two evidence profiles: `cpu` (the CI docs job) and
+`cuda`. The CUDA rows (TC-06 FP16 AMP, TC-10 BF16 AMP, TC-11 two-GPU NCCL
+DDP) are verified only by a report from the `cuda` profile; on CPU their tests
+skip and the page shows them *unverified*. To produce that report:
+
+- **GPU runner:** register a self-hosted runner with the labels `self-hosted,
+  linux, x64, gpu` (two CUDA devices for TC-11), and set the repository
+  variable `NNX_GPU_RUNNER` to `true`. The docs workflow's `GPU composition
+  evidence` job then runs the scenarios on it, and the docs build renders the
+  page from both reports.
+- **Manual run** on a Linux machine with Python 3.12 and CUDA:
+
+  ```bash
+  uv sync --frozen --all-extras --python 3.12
+  uv run python scripts/check_feature_composition.py --run --report composition-cuda.json
+  uv run python scripts/check_feature_composition.py --render --report composition.json --report composition-cuda.json
+  ```
+
+  Each `--report` counts for the profile it ran on; a report from a profile the
+  registry does not list, or from other sources, renders *unverified*.
+
+Change `docs/external-contracts.md` and the matrix rows only from executed
+evidence: a CUDA report whose listed tests passed in every phase.
 
 Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixtures (session-wide NNX_TQDM_DISABLE, a per-test env_snapshot cache reset, and a dynamo-dispatch skip guard); otherwise it's intentionally minimal. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
 

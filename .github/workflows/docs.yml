@@ -54,8 +54,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gpu-evidence:
+    # FEAT-043: the cuda evidence profile (CUDA FP16/BF16 AMP, two-GPU NCCL
+    # DDP). Runs only where the repository has registered a self-hosted GPU
+    # runner and set the NNX_GPU_RUNNER variable to "true"; otherwise it is
+    # skipped and the page shows those rows unverified.
+    name: GPU composition evidence
+    if: vars.NNX_GPU_RUNNER == 'true'
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        # astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          enable-cache: false
+          version: "0.13.0"
+      - name: Sync the feature extras from the frozen lock
+        run: uv sync --frozen --all-extras --python "3.12"
+      - name: Run and gate the composition scenarios on CUDA
+        env:
+          NNX_TQDM_DISABLE: "1"
+        run: uv run --frozen python scripts/check_feature_composition.py --run --report feature-composition-cuda-report.json
+      - name: Keep the cuda evidence report
+        if: ${{ !cancelled() }}
+        # actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: feature-composition-cuda-report
+          path: feature-composition-cuda-report.json
+          retention-days: 30
+
   build:
     name: Build documentation
+    # Waits for the GPU evidence when it runs; never blocked by its absence.
+    needs: [gpu-evidence]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-26.04
     # The composition scenarios (torchrun DDP included) run here too.
     timeout-minutes: 30
@@ -83,21 +122,31 @@ jobs:
           version: "0.13.0"
       - name: Sync docs + feature extras from the frozen lock
         run: uv sync --frozen --all-extras --python "3.12"
+      - name: Fetch the GPU job's cuda evidence report (when it ran)
+        if: needs.gpu-evidence.result == 'success'
+        # actions/download-artifact@v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: feature-composition-cuda-report
       - name: Render the feature-composition matrix from a fresh report
         # FEAT-039: the scenarios run here, and the page the site and the
-        # wiki publish is rendered from this one report (same evidence
-        # digest on both); a stale or missing report renders unverified.
+        # wiki publish is rendered from these reports (same evidence
+        # digests on both); a stale or missing report renders unverified.
+        # FEAT-043: the cuda report, when present, judges the cuda rows.
         env:
           NNX_TQDM_DISABLE: "1"
         run: |
           uv run --frozen python scripts/check_feature_composition.py --check --run --report feature-composition-report.json
-          uv run --frozen python scripts/check_feature_composition.py --render --report feature-composition-report.json
+          uv run --frozen python scripts/check_feature_composition.py --render --report feature-composition-report.json --report feature-composition-cuda-report.json
       - name: Keep the evidence report for the wiki job
         # actions/upload-artifact@v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: feature-composition-report
-          path: feature-composition-report.json
+          path: |
+            feature-composition-report.json
+            feature-composition-cuda-report.json
+          if-no-files-found: warn
           retention-days: 30
       - name: Build site (strict)
         run: |
@@ -122,7 +171,7 @@ jobs:
 
   deploy:
     name: Deploy GitHub Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: build
     runs-on: ubuntu-26.04
     permissions:
@@ -139,7 +188,7 @@ jobs:
 
   wiki:
     name: Publish GitHub wiki
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: build
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -175,7 +224,7 @@ jobs:
           name: feature-composition-report
 
       - name: Render the feature-composition matrix from that report
-        run: uv run --frozen --no-sync python scripts/check_feature_composition.py --render --report feature-composition-report.json
+        run: uv run --frozen --no-sync python scripts/check_feature_composition.py --render --report feature-composition-report.json --report feature-composition-cuda-report.json
 
       - name: Build wiki
         run: uv run --frozen --no-sync python -m scripts.docs.build_wiki
