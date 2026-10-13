@@ -174,7 +174,7 @@ The end-to-end flow:
     python3 scripts/release/finalize_changelog.py CHANGELOG.md --released /tmp/released-changelog.md
     ```
 
-    It moves the shipped curated notes under the new version heading in place of the generated list. Entries added on `develop` after the release stay in `[Unreleased]`. An entry changed on both sides is refused, to be fixed by hand. Keep `[Unreleased]` curated: it becomes the release notes.
+    It moves the shipped curated notes under the new version heading in place of the generated list. Entries added on `develop` after the release stay in `[Unreleased]`. A shipped entry edited on `develop` after the release is refused, to be fixed by hand. That includes an item appended to a grouped entry such as "Smaller fixes", so start a new entry for a later change. Keep `[Unreleased]` curated: it becomes the release notes.
 
     Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
 

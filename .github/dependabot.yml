@@ -16,15 +16,18 @@ updates:
     schedule:
       interval: "weekly"
     groups:
-      # The exact-pinned release tools move on their own, so a bump that
-      # needs the ledger (docs/external-contracts.md) updated never holds
-      # back the other dependencies.
-      release-tools:
+      # Tools pinned in the ledger (docs/external-contracts.md) and in
+      # requirements-tools.txt move on their own, so a bump that needs those
+      # files updated by hand never holds back the other dependencies. A
+      # ruff bump also needs the matching pre-commit rev (a joint update).
+      pinned-tools:
         patterns:
           - "setuptools"
           - "wheel"
           - "twine"
           - "pip-audit"
+          - "ruff"
+          - "pyright"
       python-dependencies:
         patterns:
           - "*"

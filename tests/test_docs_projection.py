@@ -330,6 +330,10 @@ def test_external_contract_tool_versions_match_automation_sources():
 
     for tool in ("uv", "pip-audit", "twine"):
         assert f"`{tool}=={requirement_versions[tool]}`" in contracts
+    # The release runs twine and pip-audit from the lock: the ledger and the
+    # contributor tool file name the locked versions.
+    for tool in ("pip-audit", "twine"):
+        assert requirement_versions[tool] == locked_version(tool), tool
     assert f"Pyright `{locked_version('pyright')}`" in contracts
     assert f"Ruff `{locked_version('ruff')}`" in contracts
     assert f"`setuptools=={locked_version('setuptools')}`" in contracts

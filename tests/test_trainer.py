@@ -1588,7 +1588,10 @@ def test_a_schedule_whose_optimizer_waits_an_epoch_steps_without_a_torch_warning
     "lr_scheduler.step() before optimizer.step()" warning."""
     import warnings
 
+    head_lrs: dict[int, float] = {}
+
     def head_waits(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        head_lrs.setdefault(ctx.epoch_idx, ctx.optimizers["head"].param_groups[0]["lr"])
         model = ctx.model
         model.net.train()
         for optimizer in ctx.optimizers.values():
@@ -1605,6 +1608,8 @@ def test_a_schedule_whose_optimizer_waits_an_epoch_steps_without_a_torch_warning
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message=r"Detected call of `lr_scheduler\.step\(\)`")
         Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=head_waits)
+    # The head's StepLR (factor 0.5 per epoch) advanced after epoch 0.
+    assert head_lrs == pytest.approx({0: 0.05, 1: 0.025})
 
 
 def test_a_refused_owner_pair_never_runs_a_writer_only_factory(tmp_path, monkeypatch):

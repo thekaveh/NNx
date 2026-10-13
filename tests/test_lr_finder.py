@@ -386,7 +386,7 @@ def test_suggest_lr_monotonically_increasing_loss():
 def test_lr_finder_early_exits_on_divergence():
     """When `loss_fn` diverges (returns escalating values), the sweep
     stops before exhausting `num_iter`. Verifies the EMA-smoothed
-    divergence guard (`smoothed_loss > diverge_threshold * smoothed_min`)
+    divergence guard (`smoothed_loss - smoothed_min > (diverge_threshold - 1) * |smoothed_min|`)
     at the top of the loop actually fires.
     """
     model, loader = _tiny_model_and_loader()

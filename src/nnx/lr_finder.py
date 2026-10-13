@@ -95,8 +95,9 @@ def lr_finder(
         end_lr: high end of the sweep range. Must be > start_lr.
         num_iter: number of training iterations to run. Must be >= 2.
         diverge_threshold: stop the sweep early when the EMA-smoothed
-            loss exceeds ``diverge_threshold * smoothed_min`` (the
-            minimum EMA-smoothed loss observed so far). Default 4. The
+            loss rises more than ``(diverge_threshold - 1) * |smoothed_min|``
+            above ``smoothed_min`` (the minimum EMA-smoothed loss observed so
+            far; for a positive loss, past ``diverge_threshold * smoothed_min``). Default 4. The
             smoothed check matches fastai's lr_find heuristic — using
             the raw ``min(losses)`` would let a single anomalous low
             first-batch loss pull the threshold too tight and abort

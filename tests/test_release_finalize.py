@@ -238,3 +238,11 @@ def test_no_changelog_section_lists_one_entry_twice():
         # A title ending in ":" is a category label ("Critical:"), repeated by design.
         repeated = [t for t, count in collections.Counter(titles).items() if count > 1 and not t.endswith(":")]
         assert not repeated, (section.splitlines()[0], repeated)
+
+
+def test_a_later_entry_keeps_its_blank_lines_and_fenced_code():
+    synced = _SYNCED.replace(
+        "- A develop-only fix.\n", "- A develop-only fix.\n\n  ```python\n  x = 1\n\n  y = 2\n  ```\n"
+    )
+    unreleased = finalize(synced, _SHIPPED).split("## [0.9.0]", 1)[0]
+    assert "  ```python\n  x = 1\n\n  y = 2\n  ```" in unreleased

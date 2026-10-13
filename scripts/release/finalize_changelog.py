@@ -16,8 +16,9 @@ On ``develop`` the ``[Unreleased]`` notes can hold entries added after the
 release branched. ``--released FILE`` names the changelog the release
 commit shipped (``git show vX.Y.Z:CHANGELOG.md``): only its curated entries
 move under the version heading, and the later ones stay in
-``[Unreleased]``. An entry changed on both sides is refused, to be fixed by
-hand, rather than filed under the wrong version.
+``[Unreleased]`` unchanged. A shipped entry that this branch edited after the
+release (an item appended to a grouped entry, say) is refused, to be fixed
+by hand, rather than filed under the wrong version.
 
 Usage::
 
@@ -67,9 +68,11 @@ def _unreleased(lines: list[str]) -> list[str]:
     return _strip_blank(lines[unreleased + 1 : following])
 
 
-def _entries(lines: list[str]) -> list[tuple[str, str]]:
-    """``(subsection heading, entry text)`` per top-level entry: a line that
-    is not indented, with the indented lines that follow it."""
+def _entries(lines: list[str]) -> list[tuple[str, str, list[str]]]:
+    """``(subsection heading, key, raw lines)`` per top-level entry: a line
+    that is not indented, with the indented (and blank) lines that follow
+    it. The key ignores blank lines; the raw lines keep them, so a fenced
+    block or a second paragraph is emitted unchanged."""
     entries: list[tuple[str, list[str]]] = []
     heading = ""
     for line in lines:
@@ -77,9 +80,13 @@ def _entries(lines: list[str]) -> list[tuple[str, str]]:
             heading = line.rstrip()
         elif line.strip() and not line[0].isspace():
             entries.append((heading, [line]))
-        elif entries and line.strip():
+        elif entries and (line.strip() or line == ""):
             entries[-1][1].append(line)
-    return [(head, "\n".join(body)) for head, body in entries]
+    out = []
+    for head, body in entries:
+        raw = _strip_blank(body)
+        out.append((head, "\n".join(line for line in raw if line.strip()), raw))
+    return out
 
 
 def _split_unreleased(curated: list[str], published: list[str]) -> tuple[list[str], list[str]]:
@@ -87,23 +94,24 @@ def _split_unreleased(curated: list[str], published: list[str]) -> tuple[list[st
     entries the release did not ship, under their subsection headings."""
     if curated == published:
         return published, []
-    shipped = {text for _, text in _entries(published)}
-    present = {text for _, text in _entries(curated)}
+    shipped = {key for _, key, _ in _entries(published)}
+    present = {key for _, key, _ in _entries(curated)}
     edited = sorted(shipped - present)
     if edited:
         raise ValueError(
-            f"{len(edited)} released [Unreleased] entries differ on this branch (first: {edited[0].splitlines()[0]!r}): "
-            "an entry changed after the release — fix the changelog by hand rather than file it under the wrong version"
+            f"{len(edited)} released [Unreleased] entries were edited on this branch after the release (first: "
+            f"{edited[0].splitlines()[0]!r}), e.g. an item appended to a shipped grouped entry: fix the changelog "
+            "by hand (start a new entry for later changes) rather than file it under the wrong version"
         )
     later: list[str] = []
     current = None
-    for heading, text in _entries(curated):
-        if text in shipped:
+    for heading, key, raw in _entries(curated):
+        if key in shipped:
             continue
         if heading and heading != current:
             later += ["", heading, ""] if later else [heading, ""]
             current = heading
-        later.append(text)
+        later.extend(raw)
     return published, later
 
 
