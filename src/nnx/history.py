@@ -336,6 +336,10 @@ class _JournalWriter:
         self._stats = _EpochStats()
         self._published: Optional[str] = None
         self._previous: Optional[str] = None
+        self._committed = self._counters()  # as of the last published manifest
+
+    def _counters(self) -> tuple[int, int, int, str, int, int]:
+        return (self.chunks, self.records, self.index_bytes, self.index_chain, self.epochs, self.epochs_bytes)
 
     def _ensure(self) -> None:
         if not os.path.isdir(self.directory):
@@ -357,13 +361,24 @@ class _JournalWriter:
         self._lines[-1] = _record_line(record)
         self._pending[-1] = record
 
-    def discard_pending(self, count: int) -> None:
-        """Forget up to ``count`` newest unwritten records (FEAT-033). Any
-        already flushed to a chunk stay beyond the published manifest — an
-        uncommitted tail every reader ignores."""
-        keep = max(len(self._pending) - count, 0)
-        del self._pending[keep:]
-        del self._lines[keep:]
+    def discard_epoch(self) -> None:
+        """Forget the epoch in progress (FEAT-033): its unwritten records,
+        and the chunks it already wrote. Those stay on disk beyond the
+        published manifest — an uncommitted tail every reader ignores — and
+        the counters return to the published manifest's, so
+        :meth:`materialize` and the next chunk agree with it. The index's
+        uncommitted lines are cut, so a later append extends the committed
+        chain."""
+        self._pending.clear()
+        self._lines.clear()
+        self._stats = _EpochStats()
+        if self.index_bytes != self._committed[2]:
+            with open(os.path.join(self.directory, _INDEX), "r+b") as handle:
+                handle.truncate(self._committed[2])
+        (self.chunks, self.records, self.index_bytes, self.index_chain, self.epochs, self.epochs_bytes) = (
+            self._committed
+        )
+        self._synced = min(self._synced, self.chunks)
 
     def _flush(self, count: int) -> None:
         self._write_chunk(self._pending[:count], self._lines[:count])
@@ -441,6 +456,7 @@ class _JournalWriter:
         _atomic_write_text(os.path.join(self.directory, _MANIFEST), text)
         _fsync_path(self.directory)  # the rename is durable before LAST, the commit marker
         self._previous, self._published = self._published, text
+        self._committed = self._counters()
 
     def rollback(self) -> None:
         """Republish the manifest of the previous epoch (the current epoch
@@ -729,7 +745,7 @@ class _JournalHistory:
         the writer forgets its unwritten records, and the window is read back
         from the committed journal — the epoch's records may have evicted
         part of it, and keeping a copy would double the memory bound."""
-        self._writer.discard_pending(self._epoch_records)
+        self._writer.discard_epoch()
         self._epoch_records = 0
         self._window.clear()
         if os.path.exists(os.path.join(self.directory, _MANIFEST)):  # nothing committed yet otherwise

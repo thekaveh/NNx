@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 
 import numpy as np
@@ -404,6 +405,21 @@ def test_lr_finder_early_exits_on_divergence():
     # Sweep should have early-exited well before num_iter=100.
     assert len(result.lrs) < 100
     assert len(result.lrs) >= 1
+
+
+def test_lr_finder_stops_at_a_non_finite_loss():
+    """A NaN loss compares False to any threshold: the sweep still stops,
+    and no NaN reaches the recorded losses."""
+    model, loader = _tiny_model_and_loader()
+    counter = {"n": 0}
+
+    def nan_after_three(y_hat: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        counter["n"] += 1
+        return (y_hat * 0).sum() + (1.0 if counter["n"] <= 3 else float("nan"))
+
+    result = lr_finder(model, loader, loss_fn=nan_after_three, start_lr=1e-6, end_lr=1.0, num_iter=50)
+    assert len(result.lrs) == 3 and counter["n"] == 4
+    assert all(math.isfinite(loss) for loss in result.losses)
 
 
 @pytest.mark.parametrize(

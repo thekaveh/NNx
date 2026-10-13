@@ -643,3 +643,22 @@ def test_a_compile_failure_under_the_error_policy_leaves_buffers_as_found():
     with pytest.raises(CompileFailed):
         model.train(params=_params(_ff_batches()), compile=CompileSpec(backend="aot_eager", fullgraph=True))
     assert model.net.calls.item() == 0
+
+
+def test_a_skipped_frame_under_on_failure_error_restores_buffers(monkeypatch):
+    """When dynamo compiles nothing and on_failure="error", CompileFailed
+    leaves the model as the failed call found it — BatchNorm running
+    statistics included — like the other failure path."""
+    import nnx.compilation as compilation
+    from nnx import CompileFailed
+
+    net = torch.nn.Sequential(torch.nn.Linear(4, 3), torch.nn.BatchNorm1d(3))
+    session = _CompileSession(net, CompileSpec(backend="eager", on_failure="error"))
+    monkeypatch.setattr(compilation, "_unique_graphs", lambda: 0)  # no graph compiled ...
+    monkeypatch.setattr(compilation, "_cached_entries", lambda module: 0)  # ... and none cached: skipped
+    before = {name: tensor.clone() for name, tensor in net.state_dict().items()}
+    net.train()
+    with pytest.raises(CompileFailed, match="compiled nothing"):
+        session.forward(torch.randn(8, 4))
+    for name, tensor in net.state_dict().items():
+        assert torch.equal(tensor, before[name]), name

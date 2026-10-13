@@ -228,6 +228,8 @@ def lr_finder(
             y_hat = model(X)
             loss = loss_fn(y_hat, Y)
             loss_val = float(loss.item())
+            if not math.isfinite(loss_val):
+                break  # a NaN / inf loss has diverged (and NaN compares False to any threshold)
 
             smoothed_loss = (
                 loss_val if smoothed_loss is None else ema_alpha * loss_val + (1 - ema_alpha) * smoothed_loss

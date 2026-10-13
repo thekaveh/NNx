@@ -58,9 +58,9 @@ for supervised models, not for huge vocabularies.
 Scope: one node, FP32, the default train and validation steps, one
 optimizer, a fixed topology without batch normalization, map-style datasets. Out: multi-node or elastic
 runs, FSDP / DeepSpeed, mixed precision, ``compile=``, custom steps or
-objectives, history journals, graph neighbour sampling. ``ExperimentPlan.fit``
-and ``nnx.search.search`` train in one process and refuse a group of more
-than one rank.
+objectives, history journals, graph neighbour sampling. ``ExperimentPlan.fit``,
+``nnx.search.search`` and ``Trainer.train`` train in one process and refuse a
+group of more than one rank.
 
 Recipe::
 
@@ -146,13 +146,7 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
     group's timeout instead. Without a process group, or after a successful
     call, it does nothing; after a failed call the group is still
     initialized (``init_process_group()`` returns it as is), so exit."""
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-    ):
-        raise ValueError(f"timeout_seconds must be a finite number > 0, got {timeout_seconds!r}")
+    _check_timeout(timeout_seconds)
     if not dist.is_available() or not dist.is_initialized():
         return
     # A DDP wrapper still reachable only through garbage (an exception's
@@ -173,8 +167,19 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
     dist.destroy_process_group()
 
 
+def _check_timeout(timeout_seconds: object) -> None:
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError(f"timeout_seconds must be a finite number > 0, got {timeout_seconds!r}")
+
+
 def _refuse_multi_rank(entry: str) -> None:
-    """Refuse a single-process entry point (``search()``, ``ExperimentPlan.fit``)
+    """Refuse a single-process entry point (``search()``, ``ExperimentPlan.fit``,
+    ``Trainer.train``)
     inside an initialized process group of more than one rank: every rank
     would otherwise run its own copy against the same working directory."""
     if not dist.is_available() or not dist.is_initialized():
@@ -201,6 +206,7 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds``
     bounds every collective, so a rank that dies cannot hang the others
     forever. With CUDA, each process takes ``cuda:LOCAL_RANK``."""
+    _check_timeout(timeout_seconds)
     if not dist.is_available():
         raise RuntimeError("this torch build has no torch.distributed")
     if dist.is_initialized():
@@ -211,8 +217,6 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
             f"no torchrun environment ({', '.join(missing)} unset): launch with "
             "`torchrun --standalone --nproc_per_node=N script.py`"
         )
-    if timeout_seconds <= 0:
-        raise ValueError(f"timeout_seconds must be > 0, got {timeout_seconds!r}")
     chosen = backend or ("nccl" if torch.cuda.is_available() else "gloo")
     if chosen == "nccl":
         torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))

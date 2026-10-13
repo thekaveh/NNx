@@ -251,12 +251,16 @@ class UpdateEngine:
             if not values:
                 return ()  # every term fully masked: nothing to learn from
             self._assign_gradients()
+            # Only optimizers holding a gradient this window update: a frozen
+            # or unused one has nothing to step (or unscale — GradScaler
+            # refuses to step an optimizer it never checked), so it gets no
+            # event and its update-clock scheduler does not advance.
+            stepping = [name for name, opt in self.optimizers.items() if _holds_gradient(opt)]
+            if not stepping:
+                return ()
             scaled: list[torch.optim.Optimizer] = []
             if self.scaler is not None:
-                # The scaler sees only optimizers holding a gradient this window
-                # (a frozen or unused one has nothing to unscale, and GradScaler
-                # refuses to step an optimizer it never checked).
-                scaled = [opt for opt in self.optimizers.values() if _holds_gradient(opt)]
+                scaled = [self.optimizers[name] for name in stepping]
                 for optimizer in scaled:
                     self.scaler.unscale_(optimizer)
                 if not self._gradients_finite():
@@ -285,11 +289,11 @@ class UpdateEngine:
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
             elif self.scaler is None:
-                for optimizer in self.optimizers.values():
-                    optimizer.step()
+                for name in stepping:
+                    self.optimizers[name].step()
             self.commits += 1
             events = []
-            for name in self.optimizers:
+            for name in stepping:
                 self.update_counts[name] += 1
                 events.append(
                     UpdateEvent(

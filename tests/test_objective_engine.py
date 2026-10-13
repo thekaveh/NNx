@@ -311,6 +311,23 @@ def test_a_scaler_skipped_step_fires_no_success_hook():
         assert torch.equal(value, before[key]), key
 
 
+def test_only_optimizers_holding_a_gradient_update_and_report_it():
+    """An optimizer whose parameters got no gradient this window (frozen or
+    unused) is not stepped, counted or announced — its update-clock
+    scheduler and on_optimizer_update callbacks must not see an update."""
+    model = _linear()
+    weight, bias = model.net.layers[0].weight, model.net.layers[0].bias
+    bias.requires_grad_(False)  # frozen for this window
+    events = []
+    engine = UpdateEngine(
+        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": torch.optim.SGD([bias], lr=0.1)},
+        listeners=[events.append],
+    )
+    _run_window(engine, supervised_objective(), model)
+    assert [event.optimizer for event in events] == ["weight"]
+    assert engine.update_counts == {"weight": 1, "bias": 0} and engine.commits == 1
+
+
 def _nan_objective(ctx):
     term = supervised_objective()(ctx).terms[0]
     return ObjectiveResult((LossTerm("loss", term.numerator * math.nan, term.denominator),))

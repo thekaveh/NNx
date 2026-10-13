@@ -1210,3 +1210,36 @@ def test_the_full_history_lent_to_a_callback_is_read_only_too():
     callback = _EditFull()
     _fit("model", HistoryJournal(retention=3, chunk_size=2), callbacks=[callback], n_epochs=2)
     assert callback.errors == ["TypeError", "TypeError"] and callback.lengths[:2] == [5, 10]
+
+
+def test_a_stopped_epoch_is_absent_from_the_full_history_even_after_its_chunks_were_written(tmp_path, monkeypatch):
+    """FEAT-033: a stop at an update boundary discards the epoch in
+    progress. With chunk_size=2 that epoch has already written chunks
+    before the stop; a "full" callback at on_train_end still sees exactly
+    the committed records — the ones the journal and the run report."""
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, list[tuple[int, int]]] = {}
+
+    class StopInEpochOne(Callback):
+        history_access = "full"
+
+        def on_train_begin(self, ctx) -> None:
+            ctx.update_listeners.append(self.on_update)
+
+        def on_update(self, ctx) -> None:
+            if ctx.committed_updates == 5 + 4:  # 5 updates per epoch: four into epoch 1
+                ctx.stop_at_update = True
+
+        def on_train_end(self, ctx) -> None:
+            seen["full"] = [(idp.epoch_idx, idp.batch_idx) for idp in ctx.idps]
+
+    run = _model().train(
+        params=_params(3, validate=False),
+        callbacks=[StopInEpochOne()],
+        history=HistoryJournal(retention=4, chunk_size=2),
+    )
+    committed = [(idp.epoch_idx, idp.batch_idx) for idp in iter_history(run.id)]
+    assert committed == [(0, b) for b in range(5)]
+    assert seen["full"] == committed
+    # a journal run keeps its retention window in memory
+    assert [(idp.epoch_idx, idp.batch_idx) for idp in NNRun.load(run.id).idps] == committed[-4:]

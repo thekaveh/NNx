@@ -325,6 +325,23 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["errors"]["search"] = None
         except BaseException as error:  # noqa: BLE001
             out["errors"]["search"] = f"{type(error).__name__}: {error}"
+        try:
+            from nnx import NNParamGroupSpec, Optims
+            from nnx.objectives import supervised_objective
+            from nnx.trainer import NNTrainerParams, Trainer
+
+            group = NNParamGroupSpec(name_pattern="*", lr=0.1)
+            optim = NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0, param_groups=[group])
+            trainer_params = NNTrainerParams(
+                n_epochs=1,
+                data_id="trainer-entry",
+                train_loader=torch.utils.data.DataLoader(train_set(), batch_size=4),
+                optims={"all": optim},
+            )
+            out["trainer_run"] = Trainer(model()).train(trainer_params, objective=supervised_objective()).id
+            out["errors"]["trainer"] = None
+        except BaseException as error:  # noqa: BLE001
+            out["errors"]["trainer"] = f"{type(error).__name__}: {error}"
         out["factory_calls"] = len(built)
         out["study_written"] = os.path.exists("study.db")
         out["runs"] = sorted(n for n in os.listdir("runs") if not n.startswith(".")) if os.path.isdir("runs") else []

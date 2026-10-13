@@ -362,6 +362,7 @@ class _CompileSession:
             )
             restart = self._fail(skipped, stage="forward")
             if self.spec.on_failure == "error":
+                snapshot.restore()  # as the other failure path: the model as the failed call found it
                 self.record = replace(self.record, effective="failed", restart=restart)
                 raise CompileFailed(
                     f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}", self.record

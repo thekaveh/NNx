@@ -362,6 +362,11 @@ class Trainer:
                 neither or both of trainer_step_fn and objective are given, or
                 any optim's NNOptimParams.is_valid() returns False.
         """
+        from ..distributed import _refuse_multi_rank
+
+        # The Trainer has no DDP path: under torchrun every rank would train
+        # its own copy into the same run directory.
+        _refuse_multi_rank("Trainer.train()")
         # One owner per optimizer update, decided before anything else.
         _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
         _check_provenance(provenance)
