@@ -204,8 +204,7 @@ def test_missing_candidate(monkeypatch):
     ]
     for record, candidates, message in cases:
         with pytest.raises(TeacherRecordError, match=message):  # the dataset fails first: no optimizer is built
-            data = TeacherDataset([record], _inputs(1), candidates=candidates, schema_digest=SCHEMA)
-            _model().train(_params(data.loader(batch_size=1)), objective=data.objective(alpha=1.0))
+            TeacherDataset([record], _inputs(1), candidates=candidates, schema_digest=SCHEMA)
     with pytest.raises(TeacherRecordError, match="duplicate candidate"):
         _record("s0", (0.5, 0.5), candidates=("cat", "cat"))
     with pytest.raises(TeacherRecordError, match="duplicate sample"):

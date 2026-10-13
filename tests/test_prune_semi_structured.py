@@ -167,19 +167,16 @@ def test_semi_structured_24_no_match_returns_zero(monkeypatch):
     assert sparsify_calls == []
 
 
-def test_semi_structured_24_skip_on_no_torchao():
-    """Sanity check that ``pytest.importorskip('torchao')`` at the top
-    of this module fired iff torchao is unavailable. By the time this
-    test runs, torchao IS available (otherwise the module would have
-    skipped at import time), so we just assert that — proving the guard
-    rides the standard pytest skip path."""
-    # If we got here, torchao imported successfully. The importorskip at
-    # the top of the file is the actual mechanism — this test documents
-    # the contract and would itself be skipped (along with every other
-    # test in the file) on a torchao-less environment.
-    import torchao as _torchao
+def test_semi_structured_24_without_torchao_names_the_extra(monkeypatch):
+    """A missing torchao is an ImportError that leads with the extra to
+    install, not a bare ModuleNotFoundError."""
+    import sys
 
-    assert _torchao is not None
+    from nnx.prune import semi_structured_24
+
+    monkeypatch.setitem(sys.modules, "torchao.sparsity", None)  # import torchao.sparsity raises
+    with pytest.raises(ImportError, match=r"thekaveh-nnx\[quantize\]"):
+        semi_structured_24(nn.Sequential(nn.Linear(8, 8)))
 
 
 def test_semi_structured_24_filter_excludes_non_linear(monkeypatch):

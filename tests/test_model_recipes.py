@@ -31,6 +31,18 @@ def _quiet(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _restore_model_registry():
+    """The model-factory registry is process-global: drop what a test
+    registered, so a rerun (or another test on the worker) starts clean."""
+    from nnx.models import registered_model_factories, unregister_model_factory
+
+    before = set(registered_model_factories())
+    yield
+    for key in set(registered_model_factories()) - before:
+        unregister_model_factory(*key)
+
+
 def _model(seed: int = 0) -> NNModel:
     torch.manual_seed(seed)
     return NNModel(

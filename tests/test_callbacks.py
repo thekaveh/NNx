@@ -152,6 +152,16 @@ def test_early_stopping_max_mode():
     es.on_epoch_end(ctx)
     assert ctx.should_stop
 
+    # A rising value is an improvement in max mode (a falling one is not).
+    rising = EarlyStopping(monitor="val_edp.error", patience=1, mode="max")
+    for epoch, value in enumerate((0.5, 0.6, 0.7)):
+        ctx = _make_ctx(epoch=epoch, val_error=value)
+        rising.on_epoch_end(ctx)
+        assert not ctx.should_stop, epoch
+    ctx = _make_ctx(epoch=3, val_error=0.6)
+    rising.on_epoch_end(ctx)
+    assert ctx.should_stop
+
 
 def test_early_stopping_invalid_mode():
     import pytest

@@ -163,16 +163,17 @@ def test_f2_accumulate_grad_batches_only_steps_at_cycle_end(tmp_path, monkeypatc
 
     model = _model()
 
-    # Use Adam-specific subclass step to count calls — patching all
-    # Optimizer.step would also trigger scheduler.step. Track via the
-    # actual instance after train() builds it. Simpler: inspect run.idps
-    # by ensuring training completed without error AND weights changed
-    # only on cycle boundaries.
-    #
-    # We assert behavior indirectly via state_dict comparison: with N=4 and
-    # 8 batches, optimizer.step runs 2 times. Each step updates weights;
-    # without accumulation the same loop runs 8 steps. So total weight
-    # change magnitude is smaller for the accumulated case under same LR.
+    # Count Adam.step calls: with N=4 and 8 batches the optimizer steps
+    # twice (once per 4-batch cycle), not 8 times.
+    step_count = 0
+    original_step = torch.optim.Adam.step
+
+    def counted_step(optimizer, *args, **kwargs):
+        nonlocal step_count
+        step_count += 1
+        return original_step(optimizer, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.Adam, "step", counted_step)
     initial_w = {k: v.clone() for k, v in model.net.state_dict().items()}
     model.train(
         params=NNTrainParams(
@@ -189,7 +190,8 @@ def test_f2_accumulate_grad_batches_only_steps_at_cycle_end(tmp_path, monkeypatc
         )
     )
 
-    # Sanity: at least *some* weights moved during the 2 optimizer steps.
+    assert step_count == 2
+    # and those two steps moved the weights
     moved = any(not torch.equal(initial_w[k], model.net.state_dict()[k]) for k in initial_w)
     assert moved
 

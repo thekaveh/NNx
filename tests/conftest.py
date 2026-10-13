@@ -26,9 +26,9 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 # Even with KMP_DUPLICATE_LIB_OK, faiss-cpu on macOS segfaults inside
 # its parallel search kernel when torch's libomp got loaded first.
 # Pinning OMP to a single thread sidesteps the buggy parallel path
-# entirely. Tests don't need multi-threaded BLAS / FAISS to be fast;
-# the suite already runs in ~15s single-threaded. Linux CI doesn't hit
-# either problem but is also unaffected by the pin (still fast).
+# entirely. The suite's parallelism comes from pytest-xdist workers, not
+# from threaded BLAS / FAISS inside a test. Linux CI doesn't hit either
+# problem and is unaffected by the pin.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import pytest

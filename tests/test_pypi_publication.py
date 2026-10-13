@@ -290,11 +290,9 @@ def test_pypi_lists_the_current_distribution_name():
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            pytest.skip(
-                f"{dist_name!r} not yet published to PyPI (404 at {url}). "
-                f"This test will start passing once the first release "
-                f"lands via .github/workflows/release.yml."
-            )
+            # Releases exist (0.4.0 onward): a 404 means the distribution
+            # name in pyproject.toml no longer matches the published project.
+            pytest.fail(f"{dist_name!r} is not on PyPI (404 at {url}): has [project] name drifted?")
         raise
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
         pytest.skip(f"network unreachable for PyPI verification: {e}")

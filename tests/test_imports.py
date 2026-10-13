@@ -501,7 +501,7 @@ from nnx.decisions import FixedHeadProvider
 assert "decisions" in nnx.__all__ and nnx.decisions is decisions
 hosted = sorted(
     name for name in sys.modules
-    if name.split(".")[0] in {"openai", "anthropic", "jev", "typesafe", "cohere", "mistralai", "groq"}
+    if name.split(".")[0] in {"openai", "anthropic", "typesafe_sdk", "httpx2", "cohere", "mistralai", "groq"}
     or name.startswith(("google.generativeai", "google.genai"))
 )
 assert hosted == [], hosted
