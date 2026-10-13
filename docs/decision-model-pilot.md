@@ -1,4 +1,4 @@
-# 24. Decision-model pilot
+# 25. Decision-model pilot
 
 *Status: **experimental — no-go**. The mechanics are verified offline; the
 empirical study is **blocked**: its resources are not supplied, and its

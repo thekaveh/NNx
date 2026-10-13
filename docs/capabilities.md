@@ -1,4 +1,4 @@
-# 26. Capability reference
+# 17. Capability reference
 
 This page lists the main capabilities of NNx, grouped by task. Each entry names
 its entry points and links to the guide or example that shows it. It describes

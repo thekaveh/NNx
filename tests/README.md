@@ -1,4 +1,4 @@
-# 21. Test Import Boundaries
+# 22. Test Import Boundaries
 
 ## 1. Public Contract Tests
 

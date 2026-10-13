@@ -1,4 +1,4 @@
-# 18. Examples
+# 19. Examples
 
 Runnable scripts demonstrating common NNx patterns. Each is self-contained — no external data dependencies — and CPU is sufficient, except where a script's mode says otherwise: `decision_model_pilot.py --mode empirical` needs external resources and reports *blocked* (without them, and — since its training runs outside this repository — with them too).
 

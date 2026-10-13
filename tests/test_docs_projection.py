@@ -316,7 +316,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
     assert "repo_name" not in config
     labels = str(config["nav"])
     assert "1. Home" in labels
-    assert "23. License" in labels
+    assert "24. License" in labels
     assert {key: config[key] for key in ("site_name", "site_description", "site_url", "docs_dir", "site_dir")} == {
         "site_name": "NNx",
         "site_description": "Lightweight PyTorch training, evaluation, and visualization toolkit",
@@ -367,20 +367,20 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
                 {"14. Export conformance": "Export-conformance.md"},
                 {"15. Framework comparison": "Framework-comparison.md"},
                 {"16. Architecture": "Architecture.md"},
+                {"17. Capability reference": "Capability-reference.md"},
             ]
         },
         {
             "Project": [
-                {"17. Repository overview": "Repository-Overview.md"},
-                {"18. Examples": "Examples.md"},
-                {"19. Contributing": "Contributing.md"},
-                {"20. Security policy": "Security-Policy.md"},
-                {"21. Test import boundaries": "Test-Import-Boundaries.md"},
-                {"22. Changelog": "Changelog.md"},
-                {"23. License": "License.md"},
-                {"24. Decision-model pilot": "Decision-model-pilot.md"},
-                {"25. Feature composition": "Feature-composition.md"},
-                {"26. Capability reference": "Capability-reference.md"},
+                {"18. Repository overview": "Repository-Overview.md"},
+                {"19. Examples": "Examples.md"},
+                {"20. Contributing": "Contributing.md"},
+                {"21. Security policy": "Security-Policy.md"},
+                {"22. Test import boundaries": "Test-Import-Boundaries.md"},
+                {"23. Changelog": "Changelog.md"},
+                {"24. License": "License.md"},
+                {"25. Decision-model pilot": "Decision-model-pilot.md"},
+                {"26. Feature composition": "Feature-composition.md"},
             ]
         },
     ]
@@ -577,8 +577,8 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
     assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
     assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")
-    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 23. License\n")
-    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 23. License\n")
+    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 24. License\n")
+    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 24. License\n")
     assert "(Concepts)" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "(Concepts.md)" not in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "security/advisories/new" in (wiki / "Security-Policy.md").read_text(encoding="utf-8")
