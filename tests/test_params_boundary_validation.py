@@ -760,6 +760,19 @@ def test_alpha_zero_distillation_trains_a_binary_head(tmp_path, monkeypatch):
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     loader = [(torch.randn(4, 3), torch.randint(0, 2, (4, 1)).float())]
     teacher = _binary_ffn(1)
+    from nnx import Trainer
+    from nnx.objectives import kd_objective
+    from nnx.trainer import NNTrainerParams
+
+    run = Trainer(_binary_ffn()).train(
+        params=NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(loader)
+        .optimizer("all", NNOptimParams.builder().sgd(max_lr=0.1).build())
+        .build(),
+        objective=kd_objective(teacher, alpha=0.0),
+    )
+    assert run.idps and run.idps[-1].train_edp.loss is not None
     for i, step in enumerate(
         (
             kd_train_step_factory(teacher, alpha=0.0),
@@ -791,13 +804,14 @@ def test_born_again_refuses_a_binary_head_before_generation_zero(tmp_path, monke
     assert not os.path.exists("runs")
 
 
-def test_wildcard_peft_refuses_a_transformer_encoder_layer():
+@pytest.mark.parametrize("layer", ["TransformerEncoderLayer", "TransformerDecoderLayer"])
+def test_wildcard_peft_refuses_a_transformer_encoder_layer(layer):
     import torch
 
     from nnx import apply_lora_to
 
-    with pytest.raises(ValueError, match="TransformerEncoderLayer"):
-        apply_lora_to(torch.nn.TransformerEncoderLayer(8, 2, 16, batch_first=True), "linear*", r=2)
+    with pytest.raises(ValueError, match=layer):
+        apply_lora_to(getattr(torch.nn, layer)(8, 2, 16, batch_first=True), "linear*", r=2)
 
 
 @pytest.mark.parametrize("paradigm", ["mixup", "cutmix", "moe"])
@@ -905,24 +919,216 @@ def test_a_recipe_refuses_a_linear_its_parent_reads_directly():
         TransformRecipe((lora("0.linear1", r=2, alpha=4.0),)).validate(model)
 
 
-def test_moe_refuses_regression_targets_before_updating():
+@pytest.mark.parametrize("paradigm", ["moe", "distillation", "feature distillation"])
+def test_moe_refuses_regression_targets_before_updating(paradigm):
     import torch
 
     from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.paradigms.distillation import feature_kd_train_step_factory, kd_train_step_factory
     from nnx.paradigms.moe import moe_train_step_factory
 
-    model = NNModel(
-        net_params=NNParams(input_dim=3, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
-    )
+    def build():
+        return NNModel(
+            net_params=NNParams(
+                input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
+        )
+
+    model = build()
+    step = {
+        "moe": lambda: moe_train_step_factory(),
+        "distillation": lambda: kd_train_step_factory(build(), alpha=0.5),
+        "feature distillation": lambda: feature_kd_train_step_factory(
+            build(), auxiliary_layers={"layers.0": "layers.0"}, alpha=0.5, beta=0.5
+        ),
+    }[paradigm]()
     before = {k: v.clone() for k, v in model.net.state_dict().items()}
-    with pytest.raises(ValueError, match="moe step scores classification only"):
+    with pytest.raises(ValueError, match=f"{paradigm} step scores classification only"):
         model.train(
             params=NNTrainParams(
                 n_epochs=1,
-                train_loader=[(torch.randn(4, 3), torch.randn(4, 1))],
+                train_loader=[(torch.randn(4, 3), torch.randn(4, 2))],
                 optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
             ),
-            train_step_fn=moe_train_step_factory(),
+            train_step_fn=step,
         )
     assert all(torch.equal(v, before[k]) for k, v in model.net.state_dict().items())
+
+
+def test_weighted_accuracy_reads_ignored_and_probability_targets():
+    import torch
+
+    from nnx.paradigms.augmentation import _weighted_acc
+
+    y_hat = torch.tensor([0, 1, 1, 0])
+    ignored = torch.tensor([0, 1, -100, -100])
+    assert _weighted_acc(torch.nn.CrossEntropyLoss(), y_hat, ignored, ignored, 1.0) == pytest.approx(1.0)
+    probabilities = torch.nn.functional.one_hot(torch.tensor([0, 1, 1, 0]), 2).float()
+    assert _weighted_acc(torch.nn.CrossEntropyLoss(), y_hat, probabilities, probabilities, 0.5) == pytest.approx(1.0)
+
+
+def test_kd_and_moe_records_skip_ignored_rows(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.paradigms.distillation import kd_train_step_factory
+    from nnx.paradigms.moe import moe_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def model():
+        net = NNModel(
+            net_params=NNParams(
+                input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+        with torch.no_grad():
+            for layer in net.net.layers:
+                layer.weight.zero_()
+                layer.bias.zero_()
+            net.net.layers[-1].bias[1] = 5.0  # always predicts class 1
+        return net
+
+    loader = [(torch.randn(4, 3), torch.tensor([1, 1, -100, -100]))]
+    for i, step in enumerate((kd_train_step_factory(model(), alpha=0.5), moe_train_step_factory())):
+        run = model().train(
+            params=NNTrainParams(
+                n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=1e-9).build(), data_id=f"r{i}"
+            ),
+            train_step_fn=step,
+        )
+        assert run.idps[0].train_edp.accuracy == pytest.approx(1.0)  # the two scored rows, not 2 of 4
+
+
+def test_the_progress_bar_names_a_loss_fallback():
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    class Bar:
+        text = ""
+
+        def set_postfix_str(self, text):
+            Bar.text = text
+
+    model = NNModel(
+        net_params=NNParams(input_dim=2, output_dim=2, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=0.1)
+    model._update_tqdm_postfix(Bar(), optimizer, None, NNEvaluationDataPoint(loss=1.0), None)
+    assert Bar.text.startswith("train.loss=")
+    model._update_tqdm_postfix(Bar(), optimizer, None, NNEvaluationDataPoint(loss=1.0, error=0.25), None)
+    assert Bar.text.startswith("train.error=")
+
+
+def test_a_parameter_unfrozen_outside_the_optimizer_is_warned_about(tmp_path, monkeypatch):
+    """param_groups leaves out parameters frozen at build time: unfreezing
+    one later trains nothing, so the loop warns instead of staying silent."""
+    import torch
+
+    from nnx import (
+        Activations,
+        Callback,
+        Devices,
+        Losses,
+        Nets,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNParamGroupSpec,
+        NNTrainParams,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.freeze("layers.0.*")
+
+    class Unfreeze(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            ctx.model.unfreeze("*")
+
+    optim = NNOptimParams.builder().sgd(max_lr=0.1).param_groups([NNParamGroupSpec(name_pattern="*")]).build()
+    with pytest.warns(RuntimeWarning, match="no optimizer owns them"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=2, train_loader=[(torch.randn(4, 3), torch.tensor([0, 1, 0, 1]))], optim=optim
+            ),
+            callbacks=[Unfreeze()],
+        )
+
+
+@pytest.mark.parametrize("paradigm", ["mixup", "cutmix"])
+def test_mixup_and_cutmix_refuse_regression_targets_before_updating(paradigm):
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.paradigms.augmentation import cutmix_train_step_factory, mixup_train_step_factory
+
+    model = NNModel(
+        net_params=NNParams(input_dim=12, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    X = torch.randn(4, 3, 2, 2) if paradigm == "cutmix" else torch.randn(4, 12)
+    step = mixup_train_step_factory() if paradigm == "mixup" else cutmix_train_step_factory()
+    with pytest.raises(ValueError, match=f"{paradigm} step scores classification only"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1, train_loader=[(X, torch.randn(4, 1))], optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+            ),
+            train_step_fn=step,
+        )
+    assert all(torch.equal(v, before[k]) for k, v in model.net.state_dict().items())
+
+
+def test_int32_categorical_targets_are_scored(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, TaskSpec
+
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=3, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(3)
+        ),
+    )
+    record = model.evaluate([(torch.randn(4, 3), torch.tensor([0, 1, 2, 1], dtype=torch.int32))])
+    assert record.loss is not None
+
+
+def test_integral_bounds_are_shown_exactly():
+    from nnx.models import ModelSpec
+
+    with pytest.raises(ValueError, match="<= 4294967295"):
+        ModelSpec("a", 1, seed=2**32)
+
+
+def test_benchmarks_digest_torchao_quantized_models():
+    import torch
+
+    pytest.importorskip("torchao")
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+    from nnx.benchmarking import _weights_digest, benchmark_forward
+    from nnx.quantize import quantize_int8
+
+    def build(seed):
+        torch.manual_seed(seed)
+        return NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    qa, qb = quantize_int8(build(0)), quantize_int8(build(1))
+    assert _weights_digest(qa.net) != _weights_digest(qb.net)
+    assert benchmark_forward(qa.net, torch.randn(2, 4), warmup=0, repeats=1).weights_digest == _weights_digest(qa.net)

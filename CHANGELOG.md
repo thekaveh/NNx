@@ -127,6 +127,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - Transform recipes refuse a `Linear` its parent reads directly, as the PEFT helpers do; distillation and MoE steps refuse regression targets before the update.
     - A `ModelCheckpoint` tag shaped like a training-state sidecar is no longer deleted by the next save; `SGD_NESTEROV` needs `momentum > 0` and `NNSchedulerParams.kind` must be a `Schedulers` member, both at construction.
     - `export_bundle` refuses the `best` pointer (export the run by its own id); forward benchmarks digest modules with non-tensor state; benchmark records' `execution` must survive the JSON round trip.
+    - The loops warn when a parameter requires gradients but no optimizer owns it (unfrozen after a `param_groups` optimizer left it out), instead of silently never training it.
+    - Mixup / CutMix refuse regression targets before the update; categorical tasks score int32 / int16 targets; GGUF export refuses a factorized projection with a clear `TypeError`.
+    - Forward benchmarks digest torchao-quantized and packed-quantized weights exactly; validation messages show integer bounds exactly; a DDP step-count refusal on a resume's first epoch also rolls back.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

@@ -149,7 +149,7 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 | Aspect | NNx | fastai | Lightning |
 |---|---|---|---|
 | LR finder | Yes (`nnx.lr_finder`, Smith 2017) | Yes (`Learner.lr_find`) | Yes (`Tuner.lr_find`) |
-| Per-layer gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart) | Hook-based recipes | `grad_norm` utility from `on_before_optimizer_step` |
+| Per-parameter gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart, one bar per parameter tensor) | Hook-based recipes | `grad_norm` utility from `on_before_optimizer_step` |
 | `_repr_html_` for runs in Jupyter | Yes (`NNRun._repr_html_`) | Notebook-native displays | Rich notebook/logging integrations; no `NNRun` equivalent |
 | PEP 561 `py.typed` marker | Yes | Check the installed fastai distribution/version | Yes |
 

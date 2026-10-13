@@ -8,9 +8,11 @@ for each microbatch. This engine owns everything after that:
    gradient buffer (numerators are sums, so buffers add across
    microbatches). A window of one microbatch — the default — needs no
    buffers: its weighted, normalized loss is back-propagated once. Terms
-   with weight ``0`` are never back-propagated, and only parameters that
-   require gradients *now* are differentiated, so freezing or unfreezing
-   parameters between microbatches (gradual unfreezing) just works;
+   with weight ``0`` are never back-propagated, and only optimizer-owned
+   parameters that require gradients *now* are differentiated, so freezing
+   or unfreezing parameters the optimizers hold (gradual unfreezing) just
+   works; an optimizer built with ``param_groups`` leaves out parameters
+   frozen at build time, and unfreezing those later trains nothing;
 2. at the end of an update window (``accumulate_grad_batches`` microbatches,
    or fewer at the epoch's end) each normalized term is divided by its
    window-total denominator, summed terms are left as totals, and the
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -52,6 +55,23 @@ import torch
 
 NONFINITE_POLICIES = ("fail", "skip")
 REDUCTIONS = ("mean", "sum")
+
+
+def warn_unowned_trainables(net: torch.nn.Module, optimizers: Iterable[torch.optim.Optimizer], warned: set) -> None:
+    """Warn once per run about parameters that require gradients but that no
+    optimizer owns (unfrozen after an optimizer built with ``param_groups``
+    left them out): they would silently never train."""
+    owned = {id(p) for optimizer in optimizers for group in optimizer.param_groups for p in group["params"]}
+    unowned = [name for name, p in net.named_parameters() if p.requires_grad and id(p) not in owned]
+    fresh = sorted(set(unowned) - warned)
+    if fresh:
+        warned.update(fresh)
+        warnings.warn(
+            f"parameters {fresh[:5]} require gradients but no optimizer owns them, so they never train: an "
+            "optimizer built with param_groups leaves out parameters frozen at build time",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def check_nonfinite_policy(nonfinite: str) -> str:

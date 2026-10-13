@@ -53,7 +53,7 @@ from .._scheduler_clock import (
     step_scheduler,
     uses_update_clock,
 )
-from .._update_engine import check_scaler_ownership
+from .._update_engine import check_scaler_ownership, warn_unowned_trainables
 from ..components import ComponentRegistry, ResumeStatus
 from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
@@ -724,6 +724,7 @@ class Trainer:
             ctx.run = run
             pre_transform_net_state: Optional[dict[str, Any]] = None
             pre_transform_rng_state: Optional[dict[str, Any]] = None
+            unowned_warned: set[str] = set()
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
@@ -738,6 +739,7 @@ class Trainer:
                     if local_epoch == 0 and rollback is not None:
                         rollback()
                     raise
+                warn_unowned_trainables(self.model.net, optimizers.values(), unowned_warned)
 
                 records.begin_epoch()
                 for clock in clocks.values():

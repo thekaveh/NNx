@@ -68,6 +68,19 @@ def _refuse_adapters(net: torch.nn.Module) -> None:
             f"{' …' if len(adapted) > 5 else ''} carry a PEFT adapter (LoRA / DoRA / IA3 / prefix tuning). "
             "Export the base model, or fold the adapter into plain nn.Linear weights first."
         )
+    # A factorized projection (low_rank: a Sequential of two Linears) has no
+    # single weight for its GGUF slot either.
+    projections = ("w_qkv", "w_o", "w1", "w2", "w3", "lm_head")
+    factorized = [
+        name
+        for name, module in net.named_modules()
+        if name.rpartition(".")[2] in projections and not isinstance(module, torch.nn.Linear)
+    ]
+    if factorized:
+        raise TypeError(
+            f"GGUF export needs plain nn.Linear projections, but {', '.join(factorized[:5])} "
+            "are factorized or wrapped. Export a model with plain projections."
+        )
 
 
 def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:

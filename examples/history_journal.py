@@ -13,7 +13,8 @@ bounded window instead and appends each record once to
      checkpoint, never its history, and writes its own run directory and
      chunk files. The source run is left byte-for-byte unchanged.
   3. **Render the summary.** The notebook view (``_repr_html_``) charts the
-     per-epoch rows the journal wrote; ``NNRun.load`` reads the committed
+     per-epoch rows the journal wrote (the chart needs the ``plots`` extra;
+     without it only the table renders); ``NNRun.load`` reads the committed
      tail only.
   4. **Export CSV.** ``export_history_csv`` writes the legacy ``idps.csv``
      layout; ``lineage=True`` puts the parent's committed prefix before the
@@ -121,7 +122,7 @@ def history_journal_workflow() -> dict:
     summary = {"window": len(parent.idps), "records": whole, "epochs": epochs, "source_unchanged": True}
     print(f"window kept in memory: {summary['window']} of 15 records; idps.csv not written")
     print(f"continuation {child.id[:8]}… resumed from {parent.id[:8]}… (source unchanged)")
-    print(f"summary chart epochs: {epochs}")
+    print(f"per-epoch summary rows: {epochs}")
     print(f"exported {own} own records, {whole} with the parent's committed prefix")
     return summary
 

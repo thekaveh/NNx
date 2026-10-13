@@ -201,6 +201,7 @@ def main():
     assert ckpt is not None
     quant_keys = sorted(k for k in ckpt.net_state if k.endswith(("scales", "zeros")))
     print(f"quantized keys in the saved LAST checkpoint: {quant_keys}")
+    assert quant_keys, "LAST must hold the converted int4 scales/zeros"
 
     reloaded = NNModel.from_checkpoint(ckpt)
     reloaded_acc = _val_accuracy(reloaded, val_loader)

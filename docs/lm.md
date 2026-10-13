@@ -323,8 +323,10 @@ offline.
       again.
     - The vocabulary size (the logits' last axis), the **ignore** id (`-100`)
       and an optional **padding** id.
-    - An optional per-position **loss mask** (never an attention mask).
     - Label **smoothing** for the objective, and its **version**.
+
+    Each batch may also carry an optional per-position **loss mask** (never an
+    attention mask).
 
     Bad shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
     before any forward pass.

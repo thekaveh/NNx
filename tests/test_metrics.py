@@ -1,10 +1,9 @@
 """Direct unit tests for the internal `_resolve_metric` helper.
 
-The helper was extracted to dedupe the val→train, error→loss fallback
-across four call sites (NNModel._step_scheduler / _update_tqdm_postfix
-and Trainer._step_scheduler / _update_tqdm_postfix). Until this file,
-its contract was only exercised indirectly through those call sites,
-which left the "both edps yield no signal" branch (returns None) and
+The helper holds the val→train, error→loss fallback that NNRun's best-metric
+resolution uses (the progress bar and the schedulers now use its
+provenance and scheduler variants). Until this file, its contract was only
+exercised indirectly through its call sites, which left the "both edps yield no signal" branch (returns None) and
 the val/train ordering both untested in isolation.
 """
 

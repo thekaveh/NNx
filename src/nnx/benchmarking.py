@@ -31,7 +31,7 @@ import statistics
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import torch
 
@@ -78,18 +78,52 @@ def _synchronize(device: torch.device) -> None:
         torch.mps.synchronize()
 
 
+def _feed_digest(digest: Any, value: Any) -> None:
+    """Hash ``value``'s content exactly: plain tensors by their bytes,
+    quantized tensors by their integer values and quantization parameters,
+    tensor subclasses (torchao) by their dequantized values, containers
+    item by item; other leaves by their text."""
+    if isinstance(value, torch.Tensor):
+        if value.is_quantized:
+            _feed_digest(digest, value.int_repr())
+            if value.qscheme() in (torch.per_tensor_affine, torch.per_tensor_symmetric):
+                digest.update(repr((value.q_scale(), value.q_zero_point())).encode("utf-8"))
+            else:
+                _feed_digest(digest, value.q_per_channel_scales())
+                _feed_digest(digest, value.q_per_channel_zero_points())
+            return
+        if type(value) not in (torch.Tensor, torch.nn.Parameter):
+            dequantize = getattr(value, "dequantize", None)
+            if callable(dequantize):
+                _feed_digest(digest, dequantize())
+                return
+            flatten = getattr(value, "__tensor_flatten__", None)
+            if callable(flatten):
+                names, _ = cast(tuple[list[str], Any], flatten())
+                for name in names:
+                    _feed_digest(digest, getattr(value, name))
+                return
+        # Raw bytes through a uint8 view: NumPy has no bfloat16, and the
+        # bytes of every other dtype are unchanged by the view.
+        digest.update(value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+        return
+    if isinstance(value, dict):
+        for key in sorted(value, key=str):
+            digest.update(repr(key).encode("utf-8"))
+            _feed_digest(digest, value[key])
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _feed_digest(digest, item)
+        return
+    digest.update(repr(value).encode("utf-8"))
+
+
 def _weights_digest(net: torch.nn.Module) -> str:
     digest = hashlib.sha256()
     for name, value in sorted(net.state_dict().items()):
         digest.update(name.encode("utf-8"))
-        if not isinstance(value, torch.Tensor) or value.is_quantized:
-            # Extra state (a dict) or packed quantized params: hash a text
-            # form rather than fail after every timed call has run.
-            digest.update(repr(value).encode("utf-8"))
-            continue
-        # Raw bytes through a uint8 view: NumPy has no bfloat16, and the
-        # bytes of every other dtype are unchanged by the view.
-        digest.update(value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+        _feed_digest(digest, value)
     return digest.hexdigest()
 
 

@@ -200,8 +200,11 @@ def apply_lora_to(
         match).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty, or if a selected Linear
-            is registered under more than one name (nothing is modified).
+        ValueError: if ``name_patterns`` is empty, if a selected Linear
+            is registered under more than one name, or if its parent reads
+            its weight directly (``nn.MultiheadAttention.out_proj``, a torch
+            Transformer layer's ``linear1`` / ``linear2``); nothing is
+            modified.
 
     **Idempotency note:** if a layer is already a :class:`LoRALinear`,
     its inner ``.base`` is skipped — re-applying ``apply_lora_to``

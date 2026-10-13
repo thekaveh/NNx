@@ -197,7 +197,10 @@ def feature_kd_train_step_factory(
         ValueError: if ``alpha`` or ``beta`` is not in [0, 1], if
             ``temperature`` ≤ 0, or if ``auxiliary_layers`` is empty.
             On the first batch, if any paired teacher/student
-            activation shapes disagree.
+            activation shapes disagree, or if the head has a single logit
+            and ``alpha > 0`` (no class distribution to distill).
+        TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
+            records train through ``TeacherDataset.objective()``).
     """
     if not (0.0 <= alpha <= 1.0):
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")

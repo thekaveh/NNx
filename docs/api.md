@@ -12814,8 +12814,11 @@ Returns:
     match).
 
 Raises:
-    ValueError: if ``name_patterns`` is empty, or if a selected Linear
-        is registered under more than one name (nothing is modified).
+    ValueError: if ``name_patterns`` is empty, if a selected Linear
+        is registered under more than one name, or if its parent reads
+        its weight directly (``nn.MultiheadAttention.out_proj``, a torch
+        Transformer layer's ``linear1`` / ``linear2``); nothing is
+        modified.
 
 **Idempotency note:** if a layer is already a :class:`LoRALinear`,
 its inner ``.base`` is skipped — re-applying ``apply_lora_to``
@@ -13002,7 +13005,9 @@ Returns:
     or every match is already wrapped).
 
 Raises:
-    ValueError: if ``name_patterns`` is empty, or if a selected Linear
+    ValueError: if ``name_patterns`` is empty, if a selected Linear
+        is read directly by its parent (``nn.MultiheadAttention.out_proj``,
+        a torch Transformer layer's ``linear1`` / ``linear2``), or if it
         is registered under more than one name — the whole matched set
         is validated before any wrapper is built, so nothing is
         modified. A Linear inside a shared container is one slot and is
@@ -13120,7 +13125,9 @@ Returns:
     or every match is already wrapped).
 
 Raises:
-    ValueError: if ``name_patterns`` is empty, or if a selected Linear
+    ValueError: if ``name_patterns`` is empty, if a selected Linear
+        is read directly by its parent (``nn.MultiheadAttention.out_proj``,
+        a torch Transformer layer's ``linear1`` / ``linear2``), or if it
         is registered under more than one name — the whole matched set
         is validated before any wrapper is built, so nothing is
         modified. A Linear inside a shared container is one slot and is
@@ -14422,7 +14429,10 @@ Raises:
     ValueError: if ``alpha`` or ``beta`` is not in [0, 1], if
         ``temperature`` ≤ 0, or if ``auxiliary_layers`` is empty.
         On the first batch, if any paired teacher/student
-        activation shapes disagree.
+        activation shapes disagree, or if the head has a single logit
+        and ``alpha > 0`` (no class distribution to distill).
+    TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
+        records train through ``TeacherDataset.objective()``).
 ```
 
 

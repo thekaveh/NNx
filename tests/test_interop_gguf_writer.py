@@ -530,3 +530,16 @@ def test_the_quantization_label_is_judged_before_gguf_is_required(monkeypatch, l
     monkeypatch.setitem(sys.modules, "gguf", None)
     with pytest.raises(error, match=match):
         write_gguf(_tiny_transformer(), None, "out.gguf", quantization=label)  # type: ignore[arg-type]
+
+
+def test_a_factorized_projection_is_refused_with_a_type_error():
+    """A low-rank factorized projection is a Sequential with no weight of
+    its own: refused like an adapter, not an AttributeError mid-export."""
+    from nnx.interop.gguf.tensor_name_map import _refuse_adapters
+    from nnx.surgery import low_rank_factorize
+
+    net = _tiny_transformer()
+    ffn = net.blocks[0].ffn
+    ffn.w1 = low_rank_factorize(ffn.w1, rank=4)
+    with pytest.raises(TypeError, match="plain nn.Linear projections"):
+        _refuse_adapters(net)

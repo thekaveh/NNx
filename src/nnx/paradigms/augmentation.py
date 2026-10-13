@@ -27,6 +27,7 @@ from .._step_helpers import finalize_step, imperative_step, predicted_labels
 from ..nn.nn_model import (
     TrainStepContext,
     TrainStepFn,
+    _check_scorable_target,
     _classification_metric_tensors,
     _loss_input,
     _single_input_batch,
@@ -109,6 +110,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         Y_hat_logits = m._net_forward((X_mixed,), {})
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
+        _check_scorable_target(m.loss_fn, Y, paradigm="mixup")  # before the update
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
         Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
@@ -188,6 +190,7 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_hat_logits = m._net_forward((X_cut,), {})
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
+        _check_scorable_target(m.loss_fn, Y, paradigm="cutmix")  # before the update
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
         Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)

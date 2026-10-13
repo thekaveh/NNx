@@ -987,10 +987,15 @@ objective's non-finite policy. `nonfinite="fail"` (default) raises
 gradients.
 
 A window whose every term is masked takes no update, and a
-`GradScaler`-skipped step is always a quiet skip. Only parameters that
-require gradients when a microbatch runs are differentiated. So freezing or
-unfreezing between epochs (gradual unfreezing) trains exactly as the default
-step does.
+`GradScaler`-skipped step is always a quiet skip. Only optimizer-owned
+parameters that require gradients when a microbatch runs are differentiated.
+So freezing or unfreezing them between epochs (gradual unfreezing) trains
+exactly as the default step does.
+
+An optimizer built with `param_groups` (every multi-optimizer `Trainer`)
+leaves out parameters frozen at build time. Unfreezing one of those later
+trains nothing: build the optimizer without `param_groups`, or include the
+parameter before freezing it.
 
 Each **committed** optimizer update fires one detached `UpdateEvent` to
 `Callback.on_optimizer_update(ctx, event)`. A microbatch, a masked window or
@@ -1518,7 +1523,9 @@ save_lora_weights(model.net, "lora.pt")    # tiny checkpoint, lora_A/B only
 
 The `apply_lora_to` mutation is **idempotent**. A second call against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk).
 
-**Shared modules.** `apply_lora_to`, `apply_dora_to` and `apply_ia3_to` match patterns against *every* registration path, not only the first one `named_modules()` reports. They group paths by registration slot: the `(parent, attribute)` pair a wrapper replaces. A `Linear` inside a container that is itself registered under several names has one slot. It is selected when any of its paths matches, wrapped once and counted once, and every path sees the same wrapper. A `Linear` that its parent reads directly is refused: the `out_proj` of `nn.MultiheadAttention` and the `linear1` / `linear2` of torch's Transformer layers. Select other projections.
+**Shared modules.** `apply_lora_to`, `apply_dora_to` and `apply_ia3_to` match patterns against *every* registration path, not only the first one `named_modules()` reports. They group paths by registration slot: the `(parent, attribute)` pair a wrapper replaces. A `Linear` inside a container that is itself registered under several names has one slot. It is selected when any of its paths matches, wrapped once and counted once, and every path sees the same wrapper.
+
+A `Linear` that its parent reads directly is refused: the `out_proj` of `nn.MultiheadAttention` and the `linear1` / `linear2` of torch's Transformer layers. Select other projections.
 
 A `Linear` may be registered directly under more than one name. Examples are `m.a = m.b = linear`, or a layer that is both the `.base` of an existing wrapper and registered elsewhere. It cannot be wrapped without splitting it into independent layers. So selecting *any* of its names raises a `ValueError` naming every alias.
 
@@ -3061,7 +3068,8 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   **existence** is visible context (`label_existence="visible"`). Their
   categories never are.
 - **Negatives** come from the static complement. A negative is never a
-  positive of any split, a reverse, a duplicate or a barred self-loop. A
+  positive of any split, a reverse (in an undirected split), a duplicate or a
+  barred self-loop. A
   request beyond the complement's capacity fails before sampling.
   Validation and test negatives are fixed in the manifest. An edge-label
   task samples none: a non-edge is never a category (`LinkTask(split)` takes

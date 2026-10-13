@@ -20,7 +20,8 @@ every batch against that split before any forward pass.
   positives. In edge-label mode with ``label_existence="visible"`` every
   labelled edge's existence is context (their categories never are).
 - **Negatives** come from the static complement — never a positive of any
-  split, its reverse, a duplicate or a barred self-loop. A request beyond
+  split, its reverse (in an undirected split), a duplicate or a barred
+  self-loop. A request beyond
   the complement's capacity fails before anything is sampled; ``val`` /
   ``test`` negatives are fixed in the manifest; training negatives are
   re-drawn every pass from ``(seed, pass)``.

@@ -1657,7 +1657,7 @@ def test_an_objective_run_refuses_unstepped_default_schedulers(tmp_path, monkeyp
 
 @pytest.mark.parametrize("hook", ["on_train_begin", "on_epoch_begin"])
 @pytest.mark.parametrize("mode", ["stateful", "weights_only"])
-def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchanged(hook, mode, tmp_path, monkeypatch):
+def test_a_refused_train_or_epoch_begin_after_a_resume_leaves_the_model_unchanged(hook, mode, tmp_path, monkeypatch):
     """The resume loaded the checkpoint into the caller's model before the
     callback refusal (at train or first-epoch begin, either resume mode): it
     is handed back as it was."""
@@ -1675,18 +1675,18 @@ def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchan
     first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
     model = _gan_like_model()
     before = {key: value.clone() for key, value in model.net.state_dict().items()}
+    resumed = _two_optimizer_params(2, run_id=first.id, mode=mode)  # its loader seeds: build it first
+    torch.manual_seed(123)
+    rng = torch.get_rng_state()
     with pytest.raises(ValueError, match="update_listeners"):
-        Trainer(model).train(
-            params=_two_optimizer_params(2, run_id=first.id, mode=mode),
-            trainer_step_fn=_two_step,
-            callbacks=[Listening()],
-        )
+        Trainer(model).train(params=resumed, trainer_step_fn=_two_step, callbacks=[Listening()])
     assert all(torch.equal(value, before[key]) for key, value in model.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng)
 
 
 @pytest.mark.parametrize("hook", ["on_train_begin", "on_epoch_begin"])
 @pytest.mark.parametrize("mode", ["stateful", "weights_only"])
-def test_nnmodel_hands_a_resumed_model_back_when_on_train_begin_raises(hook, mode, tmp_path, monkeypatch):
+def test_nnmodel_hands_a_resumed_model_back_when_a_begin_hook_raises(hook, mode, tmp_path, monkeypatch):
     from torch.utils.data import DataLoader, TensorDataset
 
     from nnx import (

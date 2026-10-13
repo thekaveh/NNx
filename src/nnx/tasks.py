@@ -551,7 +551,8 @@ class _CategoricalAdapter(TaskAdapter):
                     + (f" or ignore_index={ignore}" if ignore is not None else "")
                     + f", got values in [{low}, {high}]"
                 )
-        return flat_output, flat_target, valid
+        # Range-checked class indices: an exact cast, as the loss needs int64 (int32 / int16 fail there).
+        return flat_output, flat_target.long(), valid
 
     def loss_terms(self, loss_fn, output, target, valid):
         # Rows are masked by selection: (M', C) keeps the class axis, so class

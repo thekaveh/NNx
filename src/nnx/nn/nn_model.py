@@ -33,7 +33,7 @@ from .._scheduler_clock import (
     planned_updates,
     uses_update_clock,
 )
-from .._update_engine import gradients_finite, scaler_step
+from .._update_engine import gradients_finite, scaler_step, warn_unowned_trainables
 from ..compilation import CompileSpec, _CompileHolder, _CompileSession
 from ..components import ComponentRegistry, ComponentRestoreError, ResumeStatus
 from ..history import (
@@ -287,7 +287,7 @@ def _session_epochs(params: Any, start_epoch: int, counters: Optional[Mapping[st
         )
     if counters.get("planned_n_epochs") is None or counters.get("global_step") is None:
         raise ValueError(
-            f"{where}: its checkpoint predates resume counters (#394), so its plan and logical step are unknown — "
+            f"{where}: its checkpoint predates resume counters, so its plan and logical step are unknown — "
             "resume it with resume_epochs='additional'"
         )
     saved_plan = counters.get("planned_n_epochs")
@@ -546,7 +546,7 @@ def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping
             raise ComponentRestoreError(problems)
         if len(registry):
             warnings.warn(
-                f"checkpoint predates component state (FEAT-005); {', '.join(registry.names)} start fresh",
+                f"checkpoint predates component state; {', '.join(registry.names)} start fresh",
                 RuntimeWarning,
                 stacklevel=3,
             )
@@ -3983,14 +3983,15 @@ class NNModel(_HubMixinBase):
                 .with_compile(_record_of(compile_session))
             )
             ctx.run = run
+            unowned_warned: set[str] = set()
             for local_epoch in range(session_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
-                _set_loader_epoch(train_loader, idx_epoch)
-                if ddp is not None:
-                    # FEAT-030: unequal step counts fail on every rank, never hang.
-                    ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
                 try:
+                    _set_loader_epoch(train_loader, idx_epoch)
+                    if ddp is not None:
+                        # Unequal step counts fail on every rank, never hang.
+                        ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
                     with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
                         for cb in normalized_callbacks:
                             cb.on_epoch_begin(ctx)
@@ -4000,6 +4001,7 @@ class NNModel(_HubMixinBase):
                     if local_epoch == 0 and previous_net_state is not None and previous_rng_state is not None:
                         _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
                     raise
+                warn_unowned_trainables(self.net, [optimizer], unowned_warned)  # unfrozen but never trained
 
                 records.begin_epoch()
                 accumulation_state = GradientAccumulationState()

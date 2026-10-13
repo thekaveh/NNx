@@ -165,7 +165,9 @@ def apply_dora_to(
         or every match is already wrapped).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty, or if a selected Linear
+        ValueError: if ``name_patterns`` is empty, if a selected Linear
+            is read directly by its parent (``nn.MultiheadAttention.out_proj``,
+            a torch Transformer layer's ``linear1`` / ``linear2``), or if it
             is registered under more than one name — the whole matched set
             is validated before any wrapper is built, so nothing is
             modified. A Linear inside a shared container is one slot and is

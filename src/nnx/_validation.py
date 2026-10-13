@@ -175,10 +175,14 @@ def require_batch_sizes(value: object, *, owner: str) -> tuple[Optional[int], Op
 
 def _domain(minimum, maximum, exclusive_min, exclusive_max) -> str:
     parts = []
+
+    def shown(bound):  # integral bounds exactly (2**32 - 1, not 4.29497e+09)
+        return str(bound) if isinstance(bound, int) and not isinstance(bound, bool) else f"{bound:g}"
+
     if minimum is not None:
-        parts.append(f"{'>' if exclusive_min else '>='} {minimum:g}")
+        parts.append(f"{'>' if exclusive_min else '>='} {shown(minimum)}")
     if maximum is not None:
-        parts.append(f"{'<' if exclusive_max else '<='} {maximum:g}")
+        parts.append(f"{'<' if exclusive_max else '<='} {shown(maximum)}")
     return f" {' and '.join(parts)}" if parts else ""
 
 
