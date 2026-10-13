@@ -401,7 +401,7 @@ def train_contrastive(
         # scales every gradient by 0.0/total_norm == 0, silently zeroing all
         # grads so the backbone never learns. Same footgun NNOptimParams
         # guards against; fail fast here before any training work happens.
-        raise ValueError(f"grad_clip_norm must be positive or None to disable, got {grad_clip_norm}")
+        raise ValueError(f"grad_clip_norm must be positive and finite, or None to disable, got {grad_clip_norm}")
 
     if isinstance(dataset, list):
         dataset = ContrastiveTextDataset(dataset)

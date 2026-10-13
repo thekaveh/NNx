@@ -1052,6 +1052,7 @@ def _run_identity(
     root: Optional[str],
     cache: dict[str, tuple[str, int]],
     known: Optional[tuple[Mapping[str, Any], str]] = None,
+    provenances: Optional[dict[str, Any]] = None,
 ) -> str:
     """:func:`_config_identity` of a saved run, with the identity of every
     run it descends from: a continuation, a fine-tune or a born-again
@@ -1072,8 +1073,11 @@ def _run_identity(
     checkpoint generation (else attempt and start epoch), so only siblings
     of that checkpoint pool; without a record, the lineage is unknown and
     names nothing shared — an unknown lineage never pools. Errors in an
-    ancestor's files are raised, as for the run's own."""
-    return _resolve(run_id, root, cache, (), known)[0]
+    ancestor's files are raised, as for the run's own. ``provenances``
+    holds the provenance records already read in this call, by run id:
+    each run's files are read once, so one observation never mixes two
+    attempts."""
+    return _resolve(run_id, root, cache, (), known, {} if provenances is None else provenances)[0]
 
 
 def _resolve(
@@ -1082,6 +1086,7 @@ def _resolve(
     cache: dict[str, tuple[str, int]],
     path: tuple[str, ...],
     known: Optional[tuple[Mapping[str, Any], str]] = None,
+    provenances: Optional[dict[str, Any]] = None,
 ) -> tuple[str, int]:
     """``(identity, ancestors)``, cached per call: the same answer whatever
     order runs are listed in."""
@@ -1092,16 +1097,23 @@ def _resolve(
     if len(path) > MAX_LINEAGE:
         raise ComparisonError(f"run {path[0]}: a lineage of more than {MAX_LINEAGE} ancestors")
     run_state, run_path = known if known is not None else _read_run_state(run_id, root)
+    provenances = {} if provenances is None else provenances
+
+    def read_provenance(rid: str) -> Any:
+        if rid not in provenances:
+            provenances[rid] = _provenance(rid, root)
+        return provenances[rid]
+
     parent = _parent(run_state)
     lineage, ancestors = None, 0
     if parent is not None:
         parent_id = str(parent["parent_run_id"])
         lineage = {"checkpoint": parent.get("parent_checkpoint"), "mode": _resume_mode(run_path, run_id)}
-        own = _provenance(run_id, root)
+        own = read_provenance(run_id)
         record = _recorded_parent(own)
         recorded, generation = _nonempty(record.get("attempt_id")), _nonempty(record.get("generation"))
         resolvable = _resolvable(parent_id, root)
-        current = _provenance(parent_id, root) if resolvable else None
+        current = read_provenance(parent_id) if resolvable else None
         done = _completed_before(own, current)
         epoch = record.get("epoch")
         epoch = epoch if isinstance(epoch, int) and not isinstance(epoch, bool) else None
@@ -1126,7 +1138,7 @@ def _resolve(
         ):
             # The parent attempt the run started from (a parent without
             # provenance has only its run.yaml to declare).
-            identity, above = _resolve(parent_id, root, cache, (*path, run_id))
+            identity, above = _resolve(parent_id, root, cache, (*path, run_id), None, provenances)
             lineage.update(parent=identity, **_parent_facts(current))
             if needs_epoch:
                 lineage["start_epoch"] = epoch
@@ -1435,8 +1447,8 @@ def observations_from_runs(
                 )
             if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
-        # An NNModel run keeps its training params under "train", a Trainer
-        # run under "trainer" (as the seed and parent lookups read them).
+        # Every run records "train" (a Trainer run copies its data_id there
+        # too); "trainer" is a fallback for a run.yaml without it.
         train = run_state.get("train") or run_state.get("trainer") or {}
         manifest = None if provenance is None else provenance.manifest
         data = None if manifest is None else _identities(manifest.data)
@@ -1454,7 +1466,9 @@ def observations_from_runs(
                 config=(
                     config[run_id]
                     if config is not None
-                    else _run_identity(run_id, root, identities, known=(run_state, run_path))
+                    else _run_identity(
+                        run_id, root, identities, known=(run_state, run_path), provenances={run_id: provenance}
+                    )
                 ),
                 data=data,
                 split_id=None if manifest is None else _identities(manifest.splits),

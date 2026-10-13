@@ -408,3 +408,27 @@ def test_jepa_predictor_accepts_none_predictor_dim():
     the guard must not reject it."""
     pred = JEPAPredictor(embed_dim=16, n_patches=16, predictor_dim=None, n_layers=1, n_heads=2)
     assert pred.predictor_dim == 8
+
+
+def test_an_empty_target_mask_is_refused_as_a_mask_problem(tmp_path, monkeypatch):
+    """The imperative step checks the objective's mask contract: an
+    all-context mask is refused by name, not as a NaN "training diverged"."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = _build_tiny_vit_model()
+    predictor = _build_predictor(model)
+    _attach_predictor_for_optim(model, predictor)
+    step_fn = jepa_train_step_factory(
+        target_encoder=build_target_encoder(model.net),
+        predictor=predictor,
+        mask_fn=lambda n, d: (torch.ones(n, dtype=torch.bool, device=d), torch.zeros(n, dtype=torch.bool, device=d)),
+    )
+    with pytest.raises(ValueError, match="target"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=_image_loader(),
+                optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+            ),
+            train_step_fn=step_fn,
+        )

@@ -746,3 +746,26 @@ def warnings_as_errors():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         yield
+
+
+def test_a_frozen_optimizers_schedule_advances_without_a_torch_warning():
+    """An optimizer frozen in its first window is not stepped, but its
+    schedule advances with the committed window: torch's "scheduler before
+    optimizer" warning would be misleading, so it is not shown."""
+    import warnings
+
+    from nnx._scheduler_clock import step_scheduler
+
+    model = _linear()
+    weight, bias = model.net.layers[0].weight, model.net.layers[0].bias
+    bias.requires_grad_(False)
+    bias_optimizer = torch.optim.SGD([bias], lr=0.1)
+    schedule = torch.optim.lr_scheduler.StepLR(bias_optimizer, step_size=1, gamma=0.5)
+    engine = UpdateEngine(
+        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": bias_optimizer},
+        listeners=[lambda event: step_scheduler(schedule) if event.optimizer == "bias" else None],
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _run_window(engine, supervised_objective(), model)
+    assert bias_optimizer.param_groups[0]["lr"] == pytest.approx(0.05)

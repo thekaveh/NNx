@@ -50,6 +50,7 @@ from .._scheduler_clock import (
     SchedulerClock,
     component_name,
     planned_updates,
+    step_scheduler,
     uses_update_clock,
 )
 from .._update_engine import check_scaler_ownership
@@ -279,7 +280,7 @@ def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int, record: Opti
             if plateau_metric is not None:
                 sched.step(plateau_metric)
         else:
-            sched.step()
+            step_scheduler(sched)
 
 
 def _refuse_update_listeners(ctx: Any) -> None:
@@ -329,7 +330,8 @@ class Trainer:
             params: NNTrainerParams — train_loader + n_epochs + optims dict +
                 (optional) schedulers dict + (optional) val_loader, seed,
                 save_phase_checkpoints, extra_metrics. Schedulers step once
-                per epoch by default; set auto_step_schedulers=False when the
+                per epoch by default (an ``optimizer_update``-clock scheduler
+                after each reported update); set auto_step_schedulers=False when the
                 custom step function owns scheduler timing.
             trainer_step_fn: `Callable[[TrainerStepContext],
                 NNEvaluationDataPoint]`. The function owns the entire per-batch
@@ -371,8 +373,12 @@ class Trainer:
 
         Raises:
             ValueError: when params is None, params.train_loader is None,
-                neither or both of trainer_step_fn and objective are given, or
-                any optim's NNOptimParams.is_valid() returns False.
+                neither or both of trainer_step_fn and objective are given,
+                any optim's NNOptimParams.is_valid() returns False, a
+                trainer_step_fn run sets grad_clip_norm or
+                accumulate_grad_batches, an objective run's optimizers share
+                a parameter, or a callback registers update listeners.
+            RuntimeError: in a process group of more than one rank.
         """
         from ..distributed import _refuse_multi_rank
 
@@ -405,6 +411,20 @@ class Trainer:
                 "supervised step because multi-optim updates are inherently "
                 "scenario-specific."
             )
+        if trainer_step_fn is not None:
+            # A step function owns its updates: TrainerStepContext carries no
+            # clip norm or accumulation, so these knobs would silently do
+            # nothing (finalize_step refuses knobs it cannot apply the same way).
+            ignored = sorted(
+                name
+                for name, opt_params in params.optims.items()
+                if opt_params.grad_clip_norm is not None or opt_params.accumulate_grad_batches != 1
+            )
+            if ignored:
+                raise ValueError(
+                    f"optimizers {ignored} set grad_clip_norm or accumulate_grad_batches, which a trainer_step_fn "
+                    "never applies: clip / accumulate inside the step function, or train with an objective"
+                )
         objective_window = _objective_window(params) if objective is not None else 1
         for name, opt_params in params.optims.items():
             if not opt_params.is_valid():

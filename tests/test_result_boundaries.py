@@ -72,6 +72,7 @@ def test_a_valid_request_builds_the_typed_question():
         ("choice", "Topic?", 5),  # options that are not a sequence
         ("score", "Level?", 3),
         ("choice", "Topic?", None),
+        ("boolean", "Is it?", [("a", "x"), ("b", "y")]),  # a Boolean takes no options
     ],
 )
 def test_a_malformed_request_is_an_err_and_nothing_reaches_a_provider(kind, prompt, options):

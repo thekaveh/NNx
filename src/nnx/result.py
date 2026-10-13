@@ -228,6 +228,10 @@ def validate_decision_request_result(
     elif kind == "score":
         state["levels"] = options
     try:
+        if kind == "boolean" and options is not None:
+            # A Boolean has no options: dropping them would answer a
+            # different question from the one meant.
+            raise InvalidDecisionRequest("a Boolean question takes no options")
         return Ok(question_from_state(state))
     except InvalidDecisionRequest as error:
         return Err(

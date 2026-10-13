@@ -264,8 +264,11 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
     assert moved, "CutMix train step ran but model weights did not change"
 
 
-def _augmented_fit(factory, *, seed, n_epochs=2, data_id="aug", **resume):
+def _augmented_fit(factory, *, seed, n_epochs=2, data_id="aug", factory_seed=0, **resume):
     image = factory is cutmix_train_step_factory
+    loader = _image_loader() if image else _supervised_loader()
+    torch.manual_seed(factory_seed)  # the ambient RNG when the step is built
+    step = factory(alpha=0.4)
     model = _image_model() if image else _supervised_model()
     torch.manual_seed(99)  # the same initial weights for every call
     for parameter in model.net.parameters():
@@ -276,11 +279,11 @@ def _augmented_fit(factory, *, seed, n_epochs=2, data_id="aug", **resume):
             seed=seed,
             data_id=data_id,
             overwrite_existing=True,
-            train_loader=_image_loader() if image else _supervised_loader(),
+            train_loader=loader,
             optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
             **resume,
         ),
-        train_step_fn=factory(alpha=0.4),
+        train_step_fn=step,
     )
     return run, {name: tensor.clone() for name, tensor in model.net.state_dict().items()}
 
@@ -289,24 +292,24 @@ def _augmented_fit(factory, *, seed, n_epochs=2, data_id="aug", **resume):
 def test_augmentation_draws_follow_the_run_seed(factory, tmp_path, monkeypatch):
     """Lambda (and the CutMix box) come from the torch RNG at step time:
     NNTrainParams.seed controls them, so equal seeds train equal weights
-    and different seeds differ."""
+    whatever the RNG state when the step was built, and different seeds
+    differ. (A generator seeded when the factory ran made "again" differ.)"""
     monkeypatch.chdir(tmp_path)
-    _, first = _augmented_fit(factory, seed=1, data_id="a")
-    _, again = _augmented_fit(factory, seed=1, data_id="b")
+    _, first = _augmented_fit(factory, seed=1, data_id="a", factory_seed=0)
+    _, again = _augmented_fit(factory, seed=1, data_id="b", factory_seed=12345)
     _, other = _augmented_fit(factory, seed=2, data_id="c")
     assert all(torch.equal(first[k], again[k]) for k in first)
     assert any(not torch.equal(first[k], other[k]) for k in first)
 
 
-def test_a_resumed_mixup_run_continues_the_uninterrupted_one(tmp_path, monkeypatch):
+@pytest.mark.parametrize("factory", [mixup_train_step_factory, cutmix_train_step_factory])
+def test_a_resumed_augmentation_run_continues_the_uninterrupted_one(factory, tmp_path, monkeypatch):
     """A stateful resume restores the torch RNG, which now carries the
-    lambda stream: 1 + 1 epochs equal 2 epochs."""
+    lambda (and CutMix box) stream: 1 + 1 epochs equal 2 epochs."""
     monkeypatch.chdir(tmp_path)
-    _, whole = _augmented_fit(mixup_train_step_factory, seed=3, data_id="whole")
-    half, _ = _augmented_fit(mixup_train_step_factory, seed=3, n_epochs=1, data_id="split")
-    _, resumed = _augmented_fit(
-        mixup_train_step_factory, seed=3, n_epochs=1, data_id="split", resume_from_run_id=half.id
-    )
+    _, whole = _augmented_fit(factory, seed=3, data_id="whole")
+    half, _ = _augmented_fit(factory, seed=3, n_epochs=1, data_id="split")
+    _, resumed = _augmented_fit(factory, seed=3, n_epochs=1, data_id="split", resume_from_run_id=half.id)
     assert all(torch.equal(whole[k], resumed[k]) for k in whole)
 
 

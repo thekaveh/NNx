@@ -96,8 +96,8 @@ def _attribution_to_figure(attr: torch.Tensor, x: torch.Tensor) -> go.Figure:
     """Render an attribution tensor as a Plotly heatmap.
 
     The tensor is batched like `x`: a 3-D / 4-D one renders its first
-    sample (4-D also averaged over channels), so the result is always a
-    2-D heatmap.
+    sample (4-D also averaged over channels) and a 2-D one a row per
+    sample, so the result is always a 2-D heatmap.
     """
     go = require("plotly.graph_objects", "nnx.viz.attribute")
     a = attr.detach().cpu().float()  # NumPy has no bfloat16
@@ -150,8 +150,9 @@ def attribute(
         A tuple `(attribution_tensor, figure)` where `attribution_tensor` is a
             `torch.Tensor` with the same shape as `x` (per Captum's standard
             return contract for these six methods) and `figure` is a Plotly
-            `Heatmap` visualizing the attribution's first sample: a 4-D
-            input is mean-pooled over channels, a 3-D input is shown as is.
+            `Heatmap` of the attribution: a 4-D input shows its first
+            sample mean-pooled over channels, a 3-D input its first sample,
+            and a 2-D ``(B, D)`` input one row per sample.
 
     Raises:
         ImportError: If `captum` is not installed. Install via

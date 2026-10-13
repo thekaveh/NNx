@@ -796,3 +796,25 @@ def test_saturated_logits_keep_an_exact_categorical_nll():
         assert record.loss == record.metrics["nll"] == pytest.approx(exact, rel=1e-12)
         assert record.metrics["accuracy"] == pytest.approx(1 / 3)
     assert link_metrics(prediction.logits, prediction.targets, from_logits=True)["nll"].value == record.loss
+
+
+def test_split_links_refuses_edge_categories_that_are_not_integers():
+    """split_links checks categories as LinkSplit does, never truncating 1.9 to 1."""
+    edges = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)]
+    with pytest.raises(LinkTaskError, match="category"):
+        split_links(edges, 6, val=0.0, test=0.0, seed=0, edge_labels=[0, 1.9, 1, 0, 1, 0], categories=["a", "b"])
+
+
+@pytest.mark.parametrize("kwargs", [{"decoder": "mlp"}, {"decoder": "mlp", "width": 4, "outputs": 0}])
+def test_link_predictor_refuses_zero_dimensions(kwargs):
+    with pytest.raises(LinkTaskError, match="width|outputs"):
+        LinkPredictor(torch.nn.Identity(), **kwargs)
+
+
+def test_link_metrics_refuses_targets_outside_the_declared_domain():
+    with pytest.raises(LinkTaskError, match="binary targets"):
+        link_metrics([0.2, 0.9], [0, 2])
+    with pytest.raises(LinkTaskError, match="class indices"):
+        link_metrics([[0.5, 0.5], [0.1, 0.9]], [0, 2])
+    with pytest.raises(LinkTaskError, match="class indices"):
+        link_metrics([[0.5, 0.5], [0.1, 0.9]], [0, 0.5])

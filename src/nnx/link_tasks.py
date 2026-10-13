@@ -472,7 +472,11 @@ def split_links(
         if u == v and self_loops == "bar":
             raise LinkTaskError(f"self-loop {(u, v)} with self_loops='bar'")
         edge = _canonical(u, v, directed)
-        label = None if edge_labels is None else int(edge_labels[position])
+        label = (
+            None
+            if edge_labels is None
+            else _count(_integer(edge_labels[position]), f"edge {(u, v)}'s category", minimum=0)
+        )
         if edge in edges and edges[edge] != label:
             raise LinkTaskError(f"edge {edge} appears twice with different categories ({edges[edge]} and {label})")
         edges[edge] = label
@@ -557,6 +561,11 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
     if y.shape[0] == 0:
         return {"bce" if p.ndim == 1 else "nll": MetricValue(None, "no candidates")}
     if p.ndim == 2:
+        # Categorical targets are class indices 0..C-1 (a fraction or an
+        # out-of-range index would index the wrong column or raise).
+        whole = np.issubdtype(y.dtype, np.number) and not np.issubdtype(y.dtype, np.bool_)
+        if not whole or not np.all(np.mod(y, 1) == 0) or y.min() < 0 or y.max() >= p.shape[1]:
+            raise LinkTaskError(f"categorical targets must be class indices 0..{p.shape[1] - 1}")
         rows = np.arange(y.shape[0]), y.astype(np.int64)
         if from_logits:
             shifted = p - p.max(axis=1, keepdims=True)  # the max-shifted log-softmax
@@ -567,6 +576,8 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
             "nll": MetricValue(float(nll.mean())),
             "accuracy": MetricValue(float((p.argmax(axis=1) == y).mean())),
         }
+    if not np.isin(y, (0, 1)).all():
+        raise LinkTaskError("binary targets are 0 / 1")
     if from_logits:
         # -log sigmoid(z) for a positive, -log(1 - sigmoid(z)) = softplus(z) for a negative: exact for any logit.
         bce = float(np.logaddexp(0.0, np.where(y == 1, -p, p)).mean())
@@ -612,6 +623,9 @@ class LinkPredictor(nn.Module):
             raise LinkTaskError(f"decoder must be 'dot' or 'mlp', got {decoder!r}")
         if decoder == "dot" and outputs != 1:
             raise LinkTaskError("a dot decoder gives one logit per candidate; use 'mlp' for categories")
+        outputs = _count(outputs, "outputs", minimum=1)
+        if decoder == "mlp":
+            width = _count(width, "width (the encoder's embedding width, for the mlp decoder)", minimum=1)
         self.encoder = encoder
         self.decoder = decoder
         self.head = nn.Linear(2 * width, outputs) if decoder == "mlp" else None

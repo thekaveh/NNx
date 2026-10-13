@@ -1,11 +1,8 @@
 """Builder for NNTrainerParams — the composite multi-optim configuration.
 
-Composes Plan 1's NNSchedulerParams.builder() + Plan 2's
-NNOptimParams.builder() output via name-keyed dicts. `.optimizer(name,
-params)` and `.scheduler(name, params)` accept pre-built params
-instances — the simplest composition path. (A lambda-Builder
-variant is deferred — composability via the lambda is elegant but
-makes the call-site harder to read; we ship the direct form first.)
+Composes NNSchedulerParams.builder() and NNOptimParams.builder() output
+via name-keyed dicts. `.optimizer(name, params)` and
+`.scheduler(name, params)` accept pre-built params instances.
 
 `.build()` enforces `schedulers.keys() ⊆ optims.keys()` BEFORE
 constructing the dataclass, so the user sees the constraint failure
@@ -40,7 +37,8 @@ class NNTrainerParamsBuilder:
 
     Ownership (see `NNTrainerParams`): the custom ``trainer_step_fn``
     owns every optimizer update; Trainer steps registered schedulers once
-    per epoch unless ``.auto_step_schedulers(False)``.
+    per epoch (an ``optimizer_update``-clock scheduler after each reported
+    update instead) unless ``.auto_step_schedulers(False)``.
 
     `copy()` branches a (possibly partial) builder and `from_params()`
     rebuilds one from an existing `NNTrainerParams`, so a shared base
@@ -129,7 +127,7 @@ class NNTrainerParamsBuilder:
     def optimizer(self, name: str, params: Union[NNOptimParams, NNOptimFactoryParams]) -> NNTrainerParamsBuilder:
         """Register one optimizer under `name`. Each name gets its
         own torch.optim.Optimizer at Trainer.train() time. Use
-        `NNOptimParams.builder()` (Plan 2) to construct a built-in
+        `NNOptimParams.builder()` to construct a built-in
         `params`, or `nnx.NNOptimFactoryParams` for a registered factory."""
         self._optims[name] = params
         return self
@@ -198,7 +196,8 @@ class NNTrainerParamsBuilder:
         return self
 
     def auto_step_schedulers(self, value: bool) -> NNTrainerParamsBuilder:
-        """Choose whether Trainer steps every scheduler after each epoch.
+        """Choose whether Trainer steps every scheduler after each epoch
+        (an ``optimizer_update``-clock scheduler after each reported update).
 
         Disable this when the custom step function owns scheduler timing.
         """

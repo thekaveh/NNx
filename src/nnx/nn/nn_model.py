@@ -4333,7 +4333,9 @@ class NNModel(_HubMixinBase):
         return _evaluate(self, loader, extra_metrics, tuple(metrics), bounded=False, who="evaluate()")
 
     def predict(self, X) -> PredictResult:
-        """Run the network in eval mode and return logits + argmax classes.
+        """Run the network in eval mode and return raw logits and decoded predictions
+        (argmax classes; continuous values for a regression task; 0/1
+        indicators for a bernoulli / BCE output).
 
         Accepts any of:
 
@@ -5022,7 +5024,9 @@ class NNModel(_HubMixinBase):
                 return
             scheduler.step(metric)
         else:
-            scheduler.step()
+            from .._scheduler_clock import step_scheduler
+
+            step_scheduler(scheduler)
 
     def _update_tqdm_postfix(
         self,

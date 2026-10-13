@@ -51,6 +51,16 @@ def refuse_optimizer_name(names: tuple[Any, ...]) -> None:
         )
 
 
+def step_scheduler(scheduler: Any, *args: Any) -> None:
+    """``scheduler.step(*args)`` without torch's "lr_scheduler.step() before
+    optimizer.step()" warning: an optimizer whose parameters got no gradient
+    yet (frozen in its first window) is deliberately not stepped, while its
+    schedule still advances with the committed update or epoch."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r"Detected call of `lr_scheduler\.step\(\)` before")
+        scheduler.step(*args)
+
+
 class _NoUpdateListener:
     """The ``report_update`` of a step context nothing listens to (built
     outside a training loop, or a run without an update clock): a report
@@ -224,7 +234,7 @@ class SchedulerClock:
                 f"optimizer {self.owner!r} committed update {self.count + 1}, beyond its scheduler's budget of "
                 f"{self.horizon} optimizer updates (total_steps); set total_steps to cover every update of the run"
             )
-        self.scheduler.step()
+        step_scheduler(self.scheduler)
         self.trace.append((self.count, float(self.scheduler.optimizer.param_groups[0]["lr"])))
         if not self._period_warned and isinstance(self.scheduler, lr_scheduler.CosineAnnealingLR):
             period = self.scheduler.T_max  # the live period, a restored one included

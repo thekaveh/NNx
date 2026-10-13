@@ -493,8 +493,15 @@ def _write_json(path: str, value: Mapping[str, Any]) -> None:
 
 def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[ProvenanceRecord]:
     """Read a run's provenance files; ``None`` when it has none (absent).
-    Raises ``ValueError`` for an unsupported format or a fingerprint that
-    does not match its manifest."""
+    Raises ``ValueError`` for an unsupported format, a fingerprint that
+    does not match its manifest, or JSON nested too deeply to read."""
+    try:
+        return _load_provenance(run_id, root)
+    except RecursionError as error:  # a corrupt, deeply nested file is malformed input
+        raise ValueError(f"run {run_id}: provenance JSON nested too deeply to read") from error
+
+
+def _load_provenance(run_id: str, root: Optional[str]) -> Optional[ProvenanceRecord]:
     run_path = _run_dir(run_id, root)
     manifest_path = os.path.join(run_path, MANIFEST_FILE)
     if not os.path.isfile(manifest_path):
@@ -702,6 +709,16 @@ def _same(left: Any, right: Any) -> bool:
     return canonical_bytes(left) == canonical_bytes(right)
 
 
+def _key_path(path: str, key: Any) -> str:
+    """The field path of mapping ``key`` under ``path``. A key that could be
+    read as path syntax (``.``, ``[``, ``]``, or empty) is quoted, so
+    ``{"a.b": 1}`` and ``{"a": {"b": 1}}`` never share a path."""
+    text = str(key)
+    if text and not any(mark in text for mark in '.[]"'):
+        return f"{path}.{text}" if path else text
+    return f"{path}[{json.dumps(text)}]"
+
+
 def _flatten(value: Any, path: str, out: dict[str, Any]) -> None:
     if not isinstance(value, (Mapping, list)):
         out[path] = value
@@ -710,7 +727,7 @@ def _flatten(value: Any, path: str, out: dict[str, Any]) -> None:
         if not value:
             out[path] = value
         for key in sorted(value):
-            _flatten(value[key], f"{path}.{key}" if path else key, out)
+            _flatten(value[key], _key_path(path, key), out)
         return
     if not value:
         out[path] = value
@@ -744,7 +761,7 @@ def _fields(state: Mapping[str, Any]) -> dict[str, tuple[Any, bool]]:
             if not value:
                 out[section] = (value, False)
             for name in sorted(value):
-                out[f"{section}.{name}"] = (value[name], True)
+                out[_key_path(section, name)] = (value[name], True)
             continue
         plain: dict[str, Any] = {}
         _flatten(value, section, plain)

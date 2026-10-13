@@ -276,3 +276,24 @@ def test_run_ids_are_validated_before_any_path_is_built():
         provenance.load_provenance("../outside")
     with pytest.raises(ValueError):
         compare("../outside", BASE)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [({"a.b": 1}, {"a": {"b": 1}}), ({"x[0]": 1}, {"x": [1]})],
+    ids=["dotted-key", "bracketed-key"],
+)
+def test_compare_never_equates_manifests_whose_paths_collide(left, right):
+    """A key holding path syntax is quoted, so differently shaped configs
+    never compare as verified equal."""
+    assert not compare(ExperimentManifest(config=left), ExperimentManifest(config=right)).verified_equal
+
+
+def test_a_deeply_nested_provenance_file_is_malformed_input(tmp_path):
+    from nnx.provenance import MANIFEST_FILE, load_provenance
+
+    run = tmp_path / "runs" / ("a" * 32)
+    run.mkdir(parents=True)
+    (run / MANIFEST_FILE).write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nested too deeply"):
+        load_provenance("a" * 32, root=str(tmp_path))

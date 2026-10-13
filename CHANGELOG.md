@@ -45,7 +45,16 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `Trainer.train` builds `writer_only(...)` callbacks before its checks, so their monitors bind.
     - `weight_histogram` and `activation_map` render large grids and validate their grid arguments; `VisUtils.confusion_matrix` refuses labels that are not class indices.
     - `nnx.viz.attribute`'s figure shows the first sample of a 3-D attribution.
-    - `compare_runs` reads a `Trainer` run's `data_id`; a prediction with zero rows accepts an empty `sample_ids` list.
+    - A prediction with zero rows accepts an empty `sample_ids` list.
+    - NumPy scalars in params fields are stored as plain floats, so `run.yaml` serializes them.
+    - A first run save that fails releases its reservation, so a retry is not refused.
+    - `Trainer.train` refuses `grad_clip_norm` / `accumulate_grad_batches` that a `trainer_step_fn` never applies, and an objective run's optimizers that share a parameter.
+    - A schedule whose optimizer was frozen in its first window advances without torch's misleading warning.
+    - `compare()` of provenance manifests never equates a dotted key with a nested one.
+    - A deeply nested `provenance.json` is reported as malformed, not a `RecursionError`.
+    - `split_links` refuses non-integer edge categories; `LinkPredictor` refuses zero `width` / `outputs`; `link_metrics` refuses targets outside the declared domain.
+    - `validate_decision_request_result` refuses options on a Boolean question.
+    - The imperative JEPA step refuses an empty context or target mask by name.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)

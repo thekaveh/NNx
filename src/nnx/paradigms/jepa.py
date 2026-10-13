@@ -404,15 +404,12 @@ def jepa_train_step_factory(
         # Sample the per-step mask. Both masks are 1-D length n_patches.
         n_patches = int(dynamic_net.n_patches)
         context_mask_1d, target_mask_1d = mask_fn(n_patches, m.device)
-        if context_mask_1d.shape != (n_patches,) or target_mask_1d.shape != (n_patches,):
-            raise ValueError(
-                f"mask_fn must return two BoolTensors of shape ({n_patches},); "
-                f"got {tuple(context_mask_1d.shape)} and {tuple(target_mask_1d.shape)}"
-            )
-        if not torch.equal(context_mask_1d, ~target_mask_1d):
-            raise ValueError(
-                "context_mask and target_mask must be complementary (every patch is either context or target)."
-            )
+        # The objective's mask contract: shape, dtype, complementary, and at
+        # least one context and one target patch (an empty target would give
+        # a NaN loss reported as divergence).
+        from .jepa_objective import _check_masks
+
+        _check_masks(context_mask_1d, target_mask_1d, n_patches)
         B = x.shape[0]
         context_mask = _broadcast_mask(context_mask_1d, B)
 

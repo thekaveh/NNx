@@ -1568,3 +1568,15 @@ def test_an_objective_run_refuses_optimizers_sharing_a_parameter(tmp_path, monke
     assert not (tmp_path / "runs").exists() or not [
         p for p in (tmp_path / "runs").iterdir() if not p.name.startswith(".")
     ]
+
+
+@pytest.mark.parametrize("knob", [{"grad_clip_norm": 1.0}, {"accumulate_grad_batches": 2}])
+def test_a_trainer_step_fn_refuses_optimizer_knobs_it_never_applies(knob, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_supervised_loader(n=8),
+        optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0, **knob)},
+    )
+    with pytest.raises(ValueError, match="never applies"):
+        Trainer(model=_supervised_model()).train(params=params, trainer_step_fn=_supervised_step)

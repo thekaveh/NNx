@@ -531,8 +531,8 @@ MANIFEST = ExperimentManifest(data={"train": hash_bytes(b"toy-32")})
 
 
 def test_a_trainer_run_without_provenance_keeps_its_data_id(tmp_path, monkeypatch):
-    """A Trainer run stores its params under "trainer": its data_id is the
-    data identity, as an NNModel run's is."""
+    """A Trainer run's data_id is its data identity, as an NNModel run's is
+    (a contract test: the Trainer records data_id in its "train" section)."""
     from nnx.objectives import supervised_objective
     from nnx.trainer import NNTrainerParams, Trainer
 

@@ -100,7 +100,8 @@ class NNTrainerParams:
     `val_loader` mirror NNTrainParams (`extra_metrics` are
     ``callable(y_true, y_pred)``; Trainer's validation calls them on the
     aggregate). The custom `trainer_step_fn` owns every optimizer update;
-    by default Trainer steps every scheduler once after each epoch — set
+    by default Trainer steps every scheduler once after each epoch (an
+    ``optimizer_update``-clock scheduler after each reported update) — set
     `auto_step_schedulers=False` when the custom step function owns
     scheduler timing too.
 
