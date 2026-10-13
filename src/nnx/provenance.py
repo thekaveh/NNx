@@ -43,7 +43,6 @@ import math
 import numbers
 import os
 import uuid
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -607,10 +606,10 @@ class _AttemptRecorder:
                 # its (content-derived) id is not its attempt.
                 prior = None if bundled else load_provenance(parent_run_id, root)
             except (OSError, ValueError, KeyError, TypeError) as error:  # linkage is optional; the fit is not
-                warnings.warn(
-                    f"parent run {parent_run_id}'s provenance is unreadable ({error}); its attempt is not linked",
-                    RuntimeWarning,
-                    stacklevel=4,
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
+                    f"parent run {parent_run_id}'s provenance is unreadable ({error}); its attempt is not linked"
                 )
                 prior = None
             parent = {
@@ -663,11 +662,12 @@ class _AttemptRecorder:
         try:
             self._finish(status, error)
         except BaseException as record_error:  # never mask the training error
-            warnings.warn(
-                f"could not record the {status} attempt {self.attempt.attempt_id}: {record_error}",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+            from .nn.callbacks import _warn_at_user_frame
+
+            try:  # an error filter (-W error) must not replace the training error either
+                _warn_at_user_frame(f"could not record the {status} attempt {self.attempt.attempt_id}: {record_error}")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # --- comparison ------------------------------------------------------------------------------

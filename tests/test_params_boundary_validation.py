@@ -1627,3 +1627,52 @@ def test_weight_digests_tell_per_channel_axes_apart():
         return module
 
     assert _weights_digest(net(0)) != _weights_digest(net(1))
+
+
+def test_born_again_refuses_a_single_output_runtime_module_before_generation_zero(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams, born_again_train
+
+    monkeypatch.chdir(tmp_path)
+    module = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ReLU(), torch.nn.Linear(4, 1))
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
+    with pytest.raises(ValueError, match="single output"):
+        born_again_train(model, train_params=_one_epoch(), generations=2)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_train_contrastive_accepts_a_numpy_learning_rate():
+    import numpy as np
+
+    from nnx.embeddings import train_contrastive
+
+    with pytest.raises(Exception) as caught:  # object() is no backbone: fails after the lr check
+        train_contrastive(object(), [("a", "b"), ("c", "d")], lr=np.float32(1e-3))
+    assert "lr must be positive" not in str(caught.value)
+
+
+def test_loggers_name_a_declared_metric_that_shadows_a_record_field_apart():
+    from nnx import NNEvaluationDataPoint
+    from nnx.nn.callbacks import _edp_metric_iter
+
+    edp = NNEvaluationDataPoint(loss=1.0, accuracy=0.0, metrics={"accuracy": 0.25, "nll": 0.5})
+    pairs = list(_edp_metric_iter(edp))
+    assert ("accuracy", 0.0) in pairs and ("metrics/accuracy", 0.25) in pairs and ("nll", 0.5) in pairs
+    assert [name for name, _ in pairs].count("accuracy") == 1
+
+
+def test_a_failed_attempt_record_never_replaces_the_training_error(monkeypatch):
+    import warnings
+
+    from nnx.provenance import _AttemptRecorder
+
+    def broken(self, status, error):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(_AttemptRecorder, "_finish", broken)
+    recorder = object.__new__(_AttemptRecorder)
+    recorder.attempt = type("A", (), {"attempt_id": "a1"})()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        recorder.fail(IndexError("the training error"))  # neither raises nor replaces it

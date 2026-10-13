@@ -1401,3 +1401,16 @@ def test_api_reference_summaries_render_sphinx_roles_as_code():
     assert _plain_roles("A :class:`~nnx.models.ModelSpec` spec.") == "A `ModelSpec` spec."
     assert _plain_roles("Of :meth:`NNModel.iter_predict <nnx.NNModel.iter_predict>`.") == "Of `NNModel.iter_predict`."
     assert _plain_roles("See :meth:`nnx.NNModel.train`.") == "See `nnx.NNModel.train`."
+
+
+def test_api_reference_renders_members_from_undocumented_nnx_bases():
+    from scripts.docs.build_api_reference import render
+
+    text = render()
+    for path in (
+        "nnx.abstention.CoverageReport.save",
+        "nnx.abstention.CurvePoint.risk",
+        "nnx.decisions.Question.digest",
+    ):
+        assert f"##### `{path}`" in text
+    assert "##### `nnx.nn.generative_nn_model.GenerativeNNModel.train`" not in text  # NNModel documents it

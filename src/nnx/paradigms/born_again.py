@@ -26,6 +26,8 @@ import copy
 from dataclasses import replace
 from typing import Any
 
+import torch
+
 from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
 from ..nn.params.nn_train_params import NNTrainParams
@@ -125,6 +127,9 @@ def born_again_train(
         # A single-logit head has no class distribution to distill: the KD
         # step would refuse it at generation 1, after generation 0 trained.
         width = getattr(getattr(model.net, "params", None), "output_dim", None)
+        if width is None:  # a registered or runtime module: its last Linear's width
+            linears = [m for m in model.net.modules() if isinstance(m, torch.nn.Linear)]
+            width = linears[-1].out_features if linears else None
         if width == 1 and bound.arguments["alpha"] > 0:
             raise ValueError(
                 "born_again_train distills generations 1+ over class logits, but the head has a single output; "

@@ -66,7 +66,9 @@ def magnitude_prune(
             ``<name>.weight_mask`` instead of ``<name>.weight``. Use
             ``False`` for iterative pruning schedules (e.g., 10% per
             epoch for N epochs) where successive ``magnitude_prune``
-            calls need to compose with the existing mask.
+            calls need to compose with the existing mask. ``NNModel.train``
+            refuses a registered net that still carries the masks: run
+            such a schedule on ``NNModel(module=net)`` or a custom loop.
 
     Returns:
         The number of :class:`nn.Linear` submodules that were pruned.

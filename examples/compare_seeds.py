@@ -100,7 +100,9 @@ def compare_seeds_workflow(base: Path | None = None) -> ComparisonReport:
     # 1. One fixed split, decided by sample id; its digest goes into every run's provenance.
     split = plan_split(ids, strategy="stratified", labels=labels, proportions=(0.6, 0.2, 0.2), seed=7)
     rows = split.resolve(ids)
-    manifest = ExperimentManifest(data={"train": hash_bytes(data.tensors[0].numpy().tobytes())}, splits={"main": split})
+    # The data digest names the whole pool (features and labels); the split says which rows train.
+    pool = data.tensors[0].numpy().tobytes() + data.tensors[1].numpy().tobytes()
+    manifest = ExperimentManifest(data={"pool": hash_bytes(pool)}, splits={"main": split})
     print(f"split {split.digest()[:20]}…: train={len(rows.train)} val={len(rows.validation)} test={len(rows.test)}")
 
     # 2. Three seeds over two configurations, each run fresh and in its own run root.

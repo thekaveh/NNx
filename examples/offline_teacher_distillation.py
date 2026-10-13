@@ -157,7 +157,7 @@ def main() -> None:
     result = offline_teacher_distillation_workflow(n=240, epochs=20)
     print(f"objective: {result['objective']}")
     print(result["report"])
-    print(f"the teacher itself was right on {result['teacher_label_accuracy']:.4f} of the labelled records")
+    print(f"the teacher itself was right on {result['teacher_label_accuracy']:.4f} of the labelled validation records")
 
 
 if __name__ == "__main__":

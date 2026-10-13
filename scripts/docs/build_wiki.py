@@ -890,54 +890,6 @@ def _resolve_repo_target(source: Path, destination: str) -> Path | None:
     return (source.parent / path).resolve()
 
 
-def _rewrite_outside_code_spans(line: str, transform) -> str:
-    spans: list[tuple[int, int]] = []
-    cursor = 0
-    while cursor < len(line):
-        opening = line.find("`", cursor)
-        if opening < 0:
-            break
-        run_end = opening
-        while run_end < len(line) and line[run_end] == "`":
-            run_end += 1
-        width = run_end - opening
-        search = run_end
-        closing_end = -1
-        while search < len(line):
-            closing = line.find("`", search)
-            if closing < 0:
-                break
-            candidate_end = closing
-            while candidate_end < len(line) and line[candidate_end] == "`":
-                candidate_end += 1
-            if candidate_end - closing == width:
-                closing_end = candidate_end
-                break
-            search = candidate_end
-        if closing_end < 0:
-            cursor = run_end
-            continue
-        spans.append((opening, closing_end))
-        cursor = closing_end
-
-    link_spans = [(link.start, link.end) for link in iter_inline_links(line)]
-    link_spans.extend((usage.start, usage.end) for usage in iter_reference_usages(line))
-    spans = [
-        (start, end)
-        for start, end in spans
-        if not any(link_start <= start and end <= link_end for link_start, link_end in link_spans)
-    ]
-    if not spans:
-        return transform(line)
-    chunks: list[str] = []
-    cursor = 0
-    for start, end in spans:
-        chunks.extend((transform(line[cursor:start]), line[start:end]))
-        cursor = end
-    chunks.append(transform(line[cursor:]))
-    return "".join(chunks)
-
-
 def _line_ending(line: str) -> str:
     if line.endswith("\r\n"):
         return "\r\n"

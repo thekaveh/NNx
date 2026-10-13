@@ -519,11 +519,12 @@ def main() -> None:
     model.net.layers[1] = factored
     print(f"Surgically reduced rank: 8 (max was {min(target_linear.in_features, target_linear.out_features)})")
     print(f"Post-surgery params:    {_param_count(model.net):,}")
-    print(f"Post-surgery val acc:    {_val_acc(model.net, val_loader):.3f}  # expect drop before refinement")
+    print(f"Post-surgery val acc:    {_val_acc(model.net, val_loader):.3f}")  # a drop is expected before refinement
 
     print("─── Phase 3: refine to recover accuracy ───")
     # Topology-changing surgery no longer matches net_params, so refine with
-    # a manual loop; to persist the result, call model.export_state_dict().
+    # a manual loop. To persist a reloadable result, apply the surgery through
+    # an nnx.transforms recipe (see recipe_reconstruction_workflow above).
     optimizer = torch.optim.Adam(model.net.parameters(), lr=5e-3)
     loss_fn = torch.nn.CrossEntropyLoss()
     model.net.train()

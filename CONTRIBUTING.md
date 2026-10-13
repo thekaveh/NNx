@@ -194,6 +194,8 @@ The end-to-end flow:
     - It runs the full test matrix and builds the package.
     - It publishes through PyPI trusted publishing, gated by the `pypi` GitHub Environment's approval rule.
     - It verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
+    - It smoke-tests the artifacts once per dependency profile.
+    - It uploads the verified distributions to the draft release, publishes it and verifies its attestation.
 
     Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
 

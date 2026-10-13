@@ -105,18 +105,28 @@ def _locate(path: str) -> Any | None:
     return None
 
 
-def _class_members(value: type) -> list[tuple[str, Any]]:
+def _class_members(value: type, documented: frozenset[type] = frozenset()) -> list[tuple[str, Any]]:
     members: list[tuple[str, Any]] = []
     enum_member_names: set[str] = set()
     if issubclass(value, Enum):
         enum_member_names = set(value.__members__)
         members.extend((name, member) for name, member in value.__members__.items())
-    for name, descriptor in value.__dict__.items():
-        if name.startswith("_") or name in enum_member_names:
-            continue
-        member = getattr(value, name)
-        if callable(member) or isinstance(descriptor, property):
-            members.append((name, descriptor if isinstance(descriptor, property) else member))
+    # Public members an undocumented nnx base contributes (JsonArtifact.save,
+    # _Counted.coverage) are part of the class's API, so they render too; a
+    # base with its own catalog entry (NNModel, Question) documents them there.
+    owners = [
+        value,
+        *(base for base in value.__mro__[1:] if base.__module__.split(".")[0] == "nnx" and base not in documented),
+    ]
+    seen: set[str] = set()
+    for owner in owners:
+        for name, descriptor in owner.__dict__.items():
+            if name.startswith("_") or name in enum_member_names or name in seen:
+                continue
+            seen.add(name)
+            member = getattr(value, name)
+            if callable(member) or isinstance(descriptor, property):
+                members.append((name, descriptor if isinstance(descriptor, property) else member))
     return members
 
 
@@ -159,7 +169,13 @@ def _render_entry(path: str, value: Any, *, heading_level: int = 4) -> list[str]
 
 def render() -> str:
     rendered: list[str] = []
-    for line in CATALOG.read_text(encoding="utf-8").splitlines():
+    lines = CATALOG.read_text(encoding="utf-8").splitlines()
+    documented = frozenset(
+        value
+        for value in (_locate(match.group(1)) for match in map(ENTRY.fullmatch, lines) if match is not None)
+        if inspect.isclass(value)
+    )
+    for line in lines:
         match = ENTRY.fullmatch(line)
         if match is None:
             rendered.append(line)
@@ -173,7 +189,7 @@ def render() -> str:
         if explicit_members is not None:
             members = [(name, getattr(value, name)) for name in explicit_members]
         elif inspect.isclass(value):
-            members = _class_members(value)
+            members = _class_members(value, documented)
         else:
             members = []
         for name, member in members:

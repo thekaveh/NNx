@@ -587,12 +587,15 @@ def _edp_metric_iter(edp):
     an all-masked record emits nothing rather than zeros."""
     if edp is None:
         return
-    for name in ("loss", "error", "accuracy", "f1", "precision", "recall"):
+    fields = ("loss", "error", "accuracy", "f1", "precision", "recall")
+    for name in fields:
         v = getattr(edp, name, None)
         if v is not None:
             yield name, v
     for name, v in (getattr(edp, "metrics", None) or {}).items():
-        yield name, v
+        # A declared metric named like a record field (MetricSpec("accuracy")
+        # on a multilabel task) is another value: never a second same-named tag.
+        yield (f"metrics/{name}" if name in fields else name), v
     for name, v in (getattr(edp, "extra", None) or {}).items():
         yield f"extra/{name}", v
 

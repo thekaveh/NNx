@@ -162,6 +162,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 ### 2.11. Typed decisions (`nnx.decisions`)
 
+@api nnx.decisions.Question
+
 @api nnx.decisions.Option
 
 @api nnx.decisions.Choice

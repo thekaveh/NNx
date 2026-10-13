@@ -816,8 +816,11 @@ model.train(params=params, callbacks=[EarlyStopping(monitor=monitor, patience=5)
 ```
 
 **Metrics.** A `MetricSpec(id, version=1, config={}, name=None)` names a
-*registered* metric and reports it under `name` (the id by default). Each
-registration declares the prediction **input** it receives:
+*registered* metric and reports it under `name` (the id by default). A name
+equal to a task's own metric (`mse`, `subset_accuracy`) replaces that value in
+the record's `metrics`. Loggers report a name equal to a record field
+(`accuracy`, `f1`) as `metrics/<name>`, beside the field. Each registration
+declares the prediction **input** it receives:
 
 | id | input | value over the full sample |
 |---|---|---|
@@ -2100,7 +2103,7 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 - A converted `LAST` checkpoint records its `qat_config` and `groupsize`. The ordinary `NNModel.from_checkpoint()` path therefore reconstructs quantized inference without consumer-side prepare/convert calls. Legacy converted checkpoints without that recipe fail with a targeted migration error.
 - See [API §12](api.md#12-quantization-nnxquantize) for the full surface, and `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
 
-**`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
+**`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. With `bake=False` the masks stay. `NNModel.train` refuses a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization: its checkpoints could not be reloaded. Remove them first (`torch.nn.utils.prune.remove`), or train the net as `NNModel(module=...)`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
 
 **`nnx.surgery`** provides `widen` / `deepen`, `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 
@@ -2609,7 +2612,8 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
       `continuous`);
     - the same task labels and output count (`num_outputs`: classes, or
       outputs along axis 1);
-    - the same decision threshold and the same `ignore_index`.
+    - the same `ignore_index`, and for `bernoulli` semantics the same decision
+      threshold.
 
     Anything else raises `MetricMergeError`, since the sums would describe
     different quantities. A custom accumulator's `merge(other)` adds `other`
@@ -2819,8 +2823,8 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   unit) and records its seed, method and resamples. Its interval describes
   seed variability over these replicates; it is not a significance claim.
 - **Reports.** `table()` gives one plain-JSON row per group, observation,
-  pair and unmatched replicate, and one `comparison` row per comparison with
-  its `n`, mean, standard deviation and interval. `text()` gives a concise view with every run
+  pair and unmatched replicate. It adds one `comparison` row per comparison
+  with its `n`, mean, standard deviation and interval. `text()` gives a concise view with every run
   and attempt id, status, selection rule and signed delta. Input order never
   changes either. `save` writes strict JSON. `load` re-derives the results
   from the stored observations and refuses a file whose results disagree.

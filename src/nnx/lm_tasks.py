@@ -195,9 +195,10 @@ class CausalLMTask:
         (``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
         way (the ids, or the targets when pre-shifted). It is never a loss
         mask, but a position it pads that would still be scored is refused,
-        and so is padding before a real token (left padding): the model never
-        receives the mask. Without one the task cannot see padding, so
-        right-pad the batch."""
+        and so is padding before a real token (left or interior padding): the
+        model never receives the mask. Without one the task cannot detect
+        left padding (``pad_id`` only masks pad targets), so right-pad the
+        batch."""
         if isinstance(batch, Mapping):
             return self._split_mapping(batch)
         if isinstance(batch, torch.Tensor):

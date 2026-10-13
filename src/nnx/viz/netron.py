@@ -26,7 +26,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..utils import _capture_training_modes, _restore_training_modes
+from ..utils import _capture_training_modes, _restore_training_modes, _writable
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -90,10 +90,10 @@ def netron_export(
     if isinstance(example_input, torch.Tensor):
         example_input = (example_input.to(device),)
     elif isinstance(example_input, np.ndarray):
-        example_input = (torch.from_numpy(example_input).to(device),)
+        example_input = (torch.from_numpy(_writable(example_input)).to(device),)
     else:
         example_input = tuple(
-            (e.to(device) if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e)).to(device))
+            (e.to(device) if isinstance(e, torch.Tensor) else torch.from_numpy(_writable(np.asarray(e))).to(device))
             for e in example_input
         )
 

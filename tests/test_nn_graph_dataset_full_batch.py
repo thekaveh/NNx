@@ -555,3 +555,23 @@ def test_an_mlp_on_a_graph_split_batch_scores_only_the_seed_rows():
     )
     _, Y, logits = mlp._fwd_outputs(batch)
     assert logits.shape[0] == Y.shape[0] == 4
+
+
+def test_paradigm_steps_on_a_graph_split_batch_read_only_the_seed_rows():
+    pytest.importorskip("torch_geometric")
+    from torch_geometric.data import Data
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams
+    from nnx.nn.dataset.nn_graph_dataset import _full_batch_loader
+    from nnx.nn.nn_model import _single_input_batch
+
+    data = Data(x=torch.randn(10, 3), edge_index=torch.tensor([[0, 1], [1, 2]]), y=torch.randint(0, 2, (10,)))
+    mask = torch.zeros(10, dtype=torch.bool)
+    mask[:4] = True
+    (batch,) = _full_batch_loader(data, mask)
+    mlp = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    X, Y = _single_input_batch(mlp, batch, who="kd")  # the KD / Mixup / CutMix / MoE steps' reader
+    assert X.shape[0] == Y.shape[0] == 4

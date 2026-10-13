@@ -1973,6 +1973,10 @@ Args:
         and string-keyed mappings).
     name: the key the value is reported under (default: ``id``); a slug,
         unique among a run's metrics, and never ``"loss"`` / ``"error"``.
+        A name equal to a task's own metric (``mse``, ``subset_accuracy``)
+        replaces that value in the record's ``metrics``; loggers report
+        one equal to a record field (``accuracy``, ``f1``) as
+        ``metrics/<name>``.
 
 The spec never holds code, so it round-trips through ``run.yaml`` and
 reloads without the metric being registered. It is resolved against
@@ -2735,6 +2739,47 @@ Fingerprint of ``module``'s state-dict names, shapes and dtypes plus its ``repr`
 
 
 ### 2.11. Typed decisions (`nnx.decisions`)
+
+#### `nnx.decisions.Question`
+
+```python
+class nnx.decisions.Question()
+```
+
+Base of the decision primitives. ``kind`` is the discriminator; `digest` identifies the exact question (kind, prompt, and every option's id and description in order) so a result can never be matched to a reordered or reworded question.
+
+##### `nnx.decisions.Question.state`
+
+```python
+nnx.decisions.Question.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.decisions.Question.digest`
+
+```python
+nnx.decisions.Question.digest(self) -> 'str'
+```
+
+SHA-256 of the canonical question state (computed once; questions are immutable).
+
+##### `nnx.decisions.Question.model_view`
+
+```python
+nnx.decisions.Question.model_view(self) -> 'dict[str, Any]'
+```
+
+What a model may see: the prompt and the option texts in order — never the bookkeeping ids.
+
+##### `nnx.decisions.Question.option_ids`
+
+```python
+property nnx.decisions.Question.option_ids
+```
+
+No public description is currently available.
+
 
 #### `nnx.decisions.Option`
 
@@ -5599,6 +5644,30 @@ nnx.calibration.TemperatureCalibrator.load(path: 'Union[str, os.PathLike[str]]')
 
 No public description is currently available.
 
+##### `nnx.calibration.TemperatureCalibrator.canonical_bytes`
+
+```python
+nnx.calibration.TemperatureCalibrator.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.TemperatureCalibrator.to_json`
+
+```python
+nnx.calibration.TemperatureCalibrator.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.TemperatureCalibrator.save`
+
+```python
+nnx.calibration.TemperatureCalibrator.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write `to_json` to ``path`` atomically.
+
 
 #### `nnx.calibration.CalibratedPrediction`
 
@@ -5702,6 +5771,30 @@ nnx.calibration.CalibrationReport.load(path: 'Union[str, os.PathLike[str]]') -> 
 ```
 
 No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.canonical_bytes`
+
+```python
+nnx.calibration.CalibrationReport.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.to_json`
+
+```python
+nnx.calibration.CalibrationReport.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.calibration.CalibrationReport.save`
+
+```python
+nnx.calibration.CalibrationReport.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write `to_json` to ``path`` atomically.
 
 
 #### `nnx.calibration.CalibrationMetrics`
@@ -5958,6 +6051,30 @@ nnx.abstention.AbstentionPolicy.load(path: 'Any') -> 'AbstentionPolicy'
 
 No public description is currently available.
 
+##### `nnx.abstention.AbstentionPolicy.canonical_bytes`
+
+```python
+nnx.abstention.AbstentionPolicy.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionPolicy.to_json`
+
+```python
+nnx.abstention.AbstentionPolicy.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.AbstentionPolicy.save`
+
+```python
+nnx.abstention.AbstentionPolicy.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write `to_json` to ``path`` atomically.
+
 
 #### `nnx.abstention.AbstentionResult`
 
@@ -6130,6 +6247,46 @@ nnx.abstention.CoverageReport.load(path: 'Any') -> 'CoverageReport'
 
 No public description is currently available.
 
+##### `nnx.abstention.CoverageReport.coverage`
+
+```python
+property nnx.abstention.CoverageReport.coverage
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.risk`
+
+```python
+property nnx.abstention.CoverageReport.risk
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.canonical_bytes`
+
+```python
+nnx.abstention.CoverageReport.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.to_json`
+
+```python
+nnx.abstention.CoverageReport.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CoverageReport.save`
+
+```python
+nnx.abstention.CoverageReport.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write `to_json` to ``path`` atomically.
+
 
 #### `nnx.abstention.CoverageAccumulator`
 
@@ -6264,6 +6421,30 @@ nnx.abstention.ThresholdSelection.load(path: 'Any') -> 'ThresholdSelection'
 
 No public description is currently available.
 
+##### `nnx.abstention.ThresholdSelection.canonical_bytes`
+
+```python
+nnx.abstention.ThresholdSelection.canonical_bytes(self) -> 'bytes'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.ThresholdSelection.to_json`
+
+```python
+nnx.abstention.ThresholdSelection.to_json(self) -> 'str'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.ThresholdSelection.save`
+
+```python
+nnx.abstention.ThresholdSelection.save(self, path: 'Union[str, os.PathLike[str]]') -> 'None'
+```
+
+Write `to_json` to ``path`` atomically.
+
 
 #### `nnx.abstention.risk_coverage_curve`
 
@@ -6315,6 +6496,22 @@ No public description is currently available.
 
 ```python
 nnx.abstention.CurvePoint.state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CurvePoint.coverage`
+
+```python
+property nnx.abstention.CurvePoint.coverage
+```
+
+No public description is currently available.
+
+##### `nnx.abstention.CurvePoint.risk`
+
+```python
+property nnx.abstention.CurvePoint.risk
 ```
 
 No public description is currently available.
@@ -6890,8 +7087,8 @@ Args:
         batches of another width are refused.
 
 Two accumulators merge only when their metrics (id, version, config and
-name), semantics, labels, output count, threshold and ignore index are
-equal. If a
+name), semantics, labels, output count and ignore index are equal, and,
+for bernoulli semantics, the decision threshold. If a
 metric's update raises part-way through a batch, the accumulation no
 longer describes one set of samples and refuses further use.
 ```
@@ -7082,7 +7279,7 @@ A closed or already consumed `PredictionStream` was used again.
 class nnx.streaming.MetricMergeError
 ```
 
-Two `StreamingMetrics` with different declarations were merged: other metrics (id, version or config), other probability semantics, other task labels, another decision threshold or another ignore index.
+Two `StreamingMetrics` with different declarations were merged: other metrics (id, version or config), other probability semantics, other task labels, another ignore index or (bernoulli) another decision threshold.
 
 
 ### 2.24. Run bundles (`nnx.bundles`)
@@ -8107,9 +8304,10 @@ tuple) covers the ids (``"shift_inputs"``) or the targets
 (``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
 way (the ids, or the targets when pre-shifted). It is never a loss
 mask, but a position it pads that would still be scored is refused,
-and so is padding before a real token (left padding): the model never
-receives the mask. Without one the task cannot see padding, so
-right-pad the batch.
+and so is padding before a real token (left or interior padding): the
+model never receives the mask. Without one the task cannot detect
+left padding (``pad_id`` only masks pad targets), so right-pad the
+batch.
 ```
 
 ##### `nnx.lm_tasks.CausalLMTask.valid`
@@ -13565,7 +13763,9 @@ Args:
         ``<name>.weight_mask`` instead of ``<name>.weight``. Use
         ``False`` for iterative pruning schedules (e.g., 10% per
         epoch for N epochs) where successive ``magnitude_prune``
-        calls need to compose with the existing mask.
+        calls need to compose with the existing mask. ``NNModel.train``
+        refuses a registered net that still carries the masks: run
+        such a schedule on ``NNModel(module=net)`` or a custom loop.
 
 Returns:
     The number of :class:`nn.Linear` submodules that were pruned.

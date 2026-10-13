@@ -224,7 +224,7 @@ frozen rows do not change during training while the new rows learn.
 
 ## 8. Recorded recipes: surgery that checkpoints can rebuild
 
-The primitives above edit a module and record nothing, so a model they changed cannot be rebuilt from its descriptor. `NNModel.train` refuses unrecorded low-rank surgery before any run is reserved, and its checkpoints could not be reconstructed anyway. NNx can replay two topology changes: LoRA on explicit `nn.Linear` targets and SVD low-rank replacement. For these, use a **recipe** (`nnx.transforms`):
+The primitives above edit a module and record nothing, so a model they changed cannot be rebuilt from its descriptor. `NNModel.train` refuses unrecorded low-rank surgery before any run is reserved, and its checkpoints could not be reconstructed anyway. It also refuses unbaked prune masks and `weight_norm` / `spectral_norm` parametrizations; remove them first, or train the net as `NNModel(module=...)`. NNx can replay two topology changes: LoRA on explicit `nn.Linear` targets and SVD low-rank replacement. For these, use a **recipe** (`nnx.transforms`):
 
 ```python
 from nnx.optimizers import build_optimizer

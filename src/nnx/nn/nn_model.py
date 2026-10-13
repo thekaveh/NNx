@@ -74,7 +74,7 @@ from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
 from ..tasks import TaskAdapter, _bounded_extra_metrics_error, task_adapter
 from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _snapshot_transforms, _state_shapes
-from ..utils import Utils, _capture_training_modes, _restore_training_modes
+from ..utils import Utils, _capture_training_modes, _restore_training_modes, _writable
 from .enum.checkpoints import Checkpoints, phase_tag
 from .enum.devices import Devices
 from .enum.nets import Nets
@@ -622,11 +622,11 @@ def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransfor
             ) from error
 
 
-def _writable(array: np.ndarray) -> np.ndarray:
-    """A writable array for ``torch.from_numpy``: pandas' read-only
-    ``.to_numpy()`` would otherwise raise torch's undefined-behaviour
-    warning, though NNx never writes to the tensor."""
-    return array if array.flags.writeable else array.copy()
+def _parametrized_prefix(key: str) -> str:
+    """Where a parametrization moves ``key`` (``X.name`` ->
+    ``X.parametrizations.name.original*``; a top-level ``name`` has no ``X.``)."""
+    head, _, name = key.rpartition(".")
+    return f"{head}.parametrizations.{name}.original" if head else f"parametrizations.{name}.original"
 
 
 def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
@@ -1357,7 +1357,14 @@ def _single_input_batch(model: Any, batch: Any, *, who: str) -> tuple[torch.Tens
             f"{len(args)} positional and {len(kwargs)} keyword input(s)"
             f"{' and no target' if target is None else ''} — use a custom train_step_fn for other layouts"
         )
-    return args[0].to(model.device), target.to(model.device)
+    X, Y = args[0], target
+    # A row-wise net (FeedFwdNN) on a graph split batch: only the leading seed
+    # rows belong to the split; the rest are other splits' neighbours.
+    seed_count = getattr(model.net, "seed_count", None)
+    n_seed = seed_count(batch) if callable(seed_count) else None
+    if n_seed is not None:
+        X, Y = X[:n_seed], Y[:n_seed]
+    return X.to(model.device), Y.to(model.device)
 
 
 _GRAPH_NETS = frozenset({Nets.GRAPH_ATT, Nets.GRAPH_CONV, Nets.GRAPH_SAGE})
@@ -1733,10 +1740,13 @@ def _with_attempt(
     except Exception as record_error:  # the fit succeeded and is saved; do not lose it
         from .callbacks import _warn_at_user_frame
 
-        _warn_at_user_frame(
-            f"run {run.id} trained and saved, but its attempt could not be recorded as completed "
-            f"({record_error}); attempt.json still reads 'running'",
-        )
+        try:  # an error filter (-W error) must not lose the saved run either
+            _warn_at_user_frame(
+                f"run {run.id} trained and saved, but its attempt could not be recorded as completed "
+                f"({record_error}); attempt.json still reads 'running'",
+            )
+        except Exception:  # noqa: BLE001
+            pass
     return result.with_provenance(recorder.record)
 
 
@@ -2737,10 +2747,7 @@ class NNModel(_HubMixinBase):
         parametrized = sorted(
             key
             for key in expected_keys - actual_keys
-            if any(
-                other.startswith(f"{key.rsplit('.', 1)[0]}.parametrizations.{key.rsplit('.', 1)[-1]}.original")
-                for other in actual_keys
-            )
+            if any(other.startswith(_parametrized_prefix(key)) for other in actual_keys)
             or {f"{key}_g", f"{key}_v"} <= actual_keys
         )
         if parametrized:
@@ -3219,10 +3226,20 @@ class NNModel(_HubMixinBase):
         # Both are rebuilt from config.json below via from_state — the
         # raw dicts are dropped knowingly. Anything else is a caller
         # error (a typo'd knob would otherwise vanish silently).
-        model_kwargs.pop("net_params", None)
-        model_kwargs.pop("params", None)
-        model_kwargs.pop("tokenizer", None)
-        model_kwargs.pop("transforms", None)
+        # The mixin injects only absent keys, so another value came from the
+        # caller and would be dropped silently: refuse it.
+        for key, injected in (
+            ("net_params", Mapping),
+            ("params", Mapping),
+            ("tokenizer", Mapping),
+            ("transforms", list),
+        ):
+            value = model_kwargs.pop(key, None)
+            if value is not None and not isinstance(value, injected):
+                raise TypeError(
+                    f"from_pretrained got {key}={type(value).__name__}: the model is rebuilt from the repo's "
+                    "config.json, so it cannot be overridden here"
+                )
         # FEAT-006: a runtime-only adapter for a registered module's batches.
         batch_adapter = model_kwargs.pop("batch_adapter", None)
         if (

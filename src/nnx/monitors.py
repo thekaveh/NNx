@@ -191,6 +191,10 @@ class MetricSpec:
             and string-keyed mappings).
         name: the key the value is reported under (default: ``id``); a slug,
             unique among a run's metrics, and never ``"loss"`` / ``"error"``.
+            A name equal to a task's own metric (``mse``, ``subset_accuracy``)
+            replaces that value in the record's ``metrics``; loggers report
+            one equal to a record field (``accuracy``, ``f1``) as
+            ``metrics/<name>``.
 
     The spec never holds code, so it round-trips through ``run.yaml`` and
     reloads without the metric being registered. It is resolved against

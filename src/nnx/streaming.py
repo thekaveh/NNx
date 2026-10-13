@@ -96,7 +96,7 @@ class StreamClosedError(RuntimeError):
 class MetricMergeError(ValueError):
     """Two :class:`StreamingMetrics` with different declarations were merged:
     other metrics (id, version or config), other probability semantics, other
-    task labels, another decision threshold or another ignore index."""
+    task labels, another ignore index or (bernoulli) another decision threshold."""
 
 
 # --- prediction streams ---------------------------------------------------------------------------
@@ -353,8 +353,8 @@ class StreamingMetrics:
             batches of another width are refused.
 
     Two accumulators merge only when their metrics (id, version, config and
-    name), semantics, labels, output count, threshold and ignore index are
-    equal. If a
+    name), semantics, labels, output count and ignore index are equal, and,
+    for bernoulli semantics, the decision threshold. If a
     metric's update raises part-way through a batch, the accumulation no
     longer describes one set of samples and refuses further use.
     """

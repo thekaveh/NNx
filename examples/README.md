@@ -181,7 +181,7 @@ Notes for section 2.1:
 - Real SDK clients answer a `Choice`, a `Boolean` and a `Score` about each text in one `system_one` request per text. Answers are realigned to each question's option order.
 - Each result records the model the service resolved for the requested alias, the request id and token usage. A Choice's or Score's result also records `provider_confidence`: Jev's certainty, not a correctness probability.
 - A rate-limited request surfaces once as `JevRateLimited` with its request id. The SDK's `RetryPolicy` owns retries.
-- The same questions run through the async client.
+- The Choice and Boolean questions run through the async client.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `decision_jev_workflow()`, which skips without the extra, `-k decision_jev`).
 
 **`decision_jobs.py`**

@@ -34,6 +34,7 @@ The two public entry points are:
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Iterable
 from typing import Any, Optional, Union
 
@@ -399,7 +400,7 @@ def train_contrastive(
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     if not math.isfinite(temperature) or temperature <= 0:
         raise ValueError(f"temperature must be positive and finite, got {temperature}")
-    if isinstance(lr, bool) or not isinstance(lr, (int, float)) or not math.isfinite(lr) or lr <= 0:
+    if isinstance(lr, bool) or not isinstance(lr, numbers.Real) or not math.isfinite(lr) or lr <= 0:
         # AdamW accepts lr=0.0: every epoch would run and leave the backbone untouched.
         raise ValueError(f"lr must be positive and finite, got {lr!r}")
     if grad_clip_norm is not None and (not math.isfinite(grad_clip_norm) or grad_clip_norm <= 0):

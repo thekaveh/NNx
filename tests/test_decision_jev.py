@@ -575,3 +575,13 @@ def test_decide_result_returns_aligned_jev_results():
     rows = result.unwrap()
     assert len(rows) == 2 and all(isinstance(row, ChoiceResult) for row in rows)
     assert all([option for option, _ in row.distribution] == list(TOPIC.option_ids) for row in rows)
+
+
+def test_an_async_only_injection_is_refused_before_a_synchronous_job_calls(built):
+    from nnx.decisions import InvalidJob
+
+    client = AsyncRecorder()
+    provider = JevProvider(async_client=client)
+    with pytest.raises(InvalidJob, match="only an async client"):
+        DecisionJob.ask(SPAM, id="q").run(provider, state=["x"])
+    assert client.calls == [] and built == []

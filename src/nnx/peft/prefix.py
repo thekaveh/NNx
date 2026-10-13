@@ -138,8 +138,8 @@ class PrefixTuner(nn.Module):
                 "PrefixTuner: this TransformerNN is already prefix-tuned. A second "
                 "tuner would silently hijack the patched attention forwards (the "
                 "first tuner's parameters would stop receiving gradients while its "
-                "forward injects the new tuner's prefixes). Wrap a fresh model, or "
-                "copy.deepcopy the tuned one first."
+                "forward injects the new tuner's prefixes). Wrap a fresh, untuned "
+                "TransformerNN (deep-copy the model before tuning it to keep both)."
             )
 
         self.model = model

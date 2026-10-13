@@ -501,3 +501,12 @@ def test_a_downloaded_config_cannot_point_the_tokenizer_outside_the_artifact(fil
 
     with pytest.raises(ValueError, match="plain file name"):
         GenerativeNNModel._hub_reconstruction_kwargs({"tokenizer": {"filename": filename}}, tmp_path)
+
+
+@pytest.mark.parametrize("key", ["params", "net_params", "tokenizer"])
+def test_hub_from_pretrained_refuses_an_explicit_override_instead_of_dropping_it(tmp_path, key):
+    m = _tiny_model()
+    m.save_pretrained(str(tmp_path))
+    override = {"params": m.params, "net_params": m.net_params, "tokenizer": object()}[key]
+    with pytest.raises(TypeError, match=f"from_pretrained got {key}="):
+        NNModel.from_pretrained(str(tmp_path), **{key: override})

@@ -455,12 +455,31 @@ def test_an_unbaked_pruned_runtime_module_trains_keeps_its_mask_and_resumes():
     assert float((module[0].weight == 0).float().mean()) == pytest.approx(0.5)
 
 
-def test_predict_on_a_read_only_array_does_not_warn():
-    import warnings
+def test_predict_and_to_onnx_hand_torch_writable_arrays(tmp_path, monkeypatch):
+    # Torch warns about a read-only array once per process, so assert on the
+    # conversion itself rather than on that warning.
+    pytest.importorskip("onnx")
+    seen = []
+    from_numpy = torch.from_numpy
 
+    def spy(array):
+        seen.append(array.flags.writeable)
+        return from_numpy(array)
+
+    monkeypatch.setattr(torch, "from_numpy", spy)
     model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
     X = np.random.default_rng(0).standard_normal((3, 4)).astype(np.float32)
     X.flags.writeable = False  # what pandas' .to_numpy() returns
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        model.predict(X)
+    model.predict(X)
+    model.to_onnx(str(tmp_path / "model.onnx"), X)
+    assert len(seen) >= 2 and all(seen)
+
+
+def test_a_parametrized_runtime_module_trains_and_resumes():
+    # The advice the train-time refusal gives for a registered net.
+    module = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    torch.nn.utils.parametrizations.weight_norm(module[0])
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_loader()))
+    warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
