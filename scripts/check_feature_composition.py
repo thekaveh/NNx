@@ -2,7 +2,7 @@
 
     python scripts/check_feature_composition.py --check
     python scripts/check_feature_composition.py --check --run --report composition.json
-    python scripts/check_feature_composition.py --render --report composition.json
+    python scripts/check_feature_composition.py --render --report composition.json --report composition-cuda.json
 
 ``docs/feature-composition.yaml`` is the expectation: which feature
 combinations are verified, unsupported or unverified, on which profile, by
@@ -22,11 +22,15 @@ torch, devices, installed optional dependencies).
   plugin) and writes ``--report``. It exits 1 when a ``verified`` row
   fails, loses coverage or is only skipped / xfailed, or when an
   ``unsupported`` row's negative test does not pass.
-- ``--render`` writes the page from the registry and ``--report``. Evidence
-  from other sources (another commit's content) or another profile than the
-  registry's ``evidence_profile`` is stale: its cells render
-  ``unverified``, exactly as with no report. Site and wiki render the same
-  report, so they carry the same evidence digest.
+- ``--render`` writes the page from the registry and the ``--report``
+  files (``--report`` repeats: one per evidence profile, e.g. the CPU run and
+  a GPU runner's, FEAT-043). Each report counts for the registry's
+  ``evidence_profiles`` entry with its os, Python and device; each row is
+  judged by the current report whose profile has the row's device. Evidence
+  from other sources (another commit's content) or a profile the registry
+  does not list is stale: those cells render ``unverified``, exactly as with
+  no report. Site and wiki render the same reports, so they carry the same
+  evidence digests.
 
 Never proof: an import, a skip, an xfail, or a setup or teardown failure.
 """
@@ -92,15 +96,28 @@ def validate_registry(registry: Any) -> list[str]:
     if not isinstance(groups, Mapping) or not groups:
         problems.append("groups must be a non-empty mapping of id to title")
         groups = {}
-    profile = registry.get("evidence_profile")
-    if (
-        not isinstance(profile, Mapping)
-        or not {"os", "python", "device"} <= set(profile)
-        or not isinstance(profile.get("dependencies", []), list)
-    ):
-        problems.append(
-            "evidence_profile must name the os, python, device (and a dependencies list) the published evidence runs on"
-        )
+    profiles = registry.get("evidence_profiles")
+    if not isinstance(profiles, list) or not profiles:
+        problems.append("evidence_profiles must list the profiles the published evidence runs on")
+        profiles = []
+    profile_ids: set[str] = set()
+    profile_devices: set[str] = set()
+    for profile in profiles:
+        if (
+            not isinstance(profile, Mapping)
+            or not isinstance(profile.get("id"), str)
+            or not {"os", "python", "device"} <= set(profile)
+            or profile.get("device") not in DEVICES
+            or not isinstance(profile.get("dependencies", []), list)
+        ):
+            problems.append(
+                "each evidence profile names an id, the os, python, device (and a dependencies list) it runs on"
+            )
+            continue
+        if profile["id"] in profile_ids or profile["device"] in profile_devices:
+            problems.append(f"evidence profile {profile['id']!r}: ids and devices must be unique across profiles")
+        profile_ids.add(profile["id"])
+        profile_devices.add(profile["device"])
     scenarios = registry.get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
         return [*problems, "scenarios must be a non-empty list"]
@@ -338,6 +355,16 @@ def node_passed(entry: Mapping[str, Any]) -> bool:
     )
 
 
+def evidence_profile_of(registry: Mapping[str, Any], report: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """The registry's evidence profile ``report`` ran on (same os, Python and
+    device), or ``None``."""
+    ran = report.get("profile", {})
+    for profile in registry.get("evidence_profiles", []):
+        if all(str(ran.get(key)) == str(profile[key]) for key in ("os", "python", "device")):
+            return profile
+    return None
+
+
 def staleness(registry: Mapping[str, Any], report: Optional[Mapping[str, Any]], *, root: Path = ROOT) -> Optional[str]:
     """Why ``report`` cannot be shown as current evidence (``None`` if it can)."""
     if report is None:
@@ -349,11 +376,10 @@ def staleness(registry: Mapping[str, Any], report: Optional[Mapping[str, Any]], 
         return "invalid: the report's digest does not match its content"
     if report.get("source", {}).get("content_digest") != content_digest(registry, root=root):
         return "stale: the report ran on other sources (another commit)"
-    expected = registry["evidence_profile"]
-    profile = report.get("profile", {})
-    mismatch = [key for key in ("os", "python", "device") if str(profile.get(key)) != str(expected[key])]
-    if mismatch:
-        return f"stale: the report ran on another profile ({', '.join(mismatch)} differ)"
+    if evidence_profile_of(registry, report) is None:
+        profile = report.get("profile", {})
+        ran = f"{profile.get('os')} / Python {profile.get('python')} / {profile.get('device')}"
+        return f"stale: the report ran on another profile than the registry publishes ({ran})"
     return None
 
 
@@ -392,12 +418,12 @@ def gate(registry: Mapping[str, Any], report: Mapping[str, Any]) -> list[str]:
     optional dependency) is not judged; the published page shows it
     unverified."""
     problems = []
-    published = registry.get("evidence_profile", {})
-    if report["profile"].get("os") == published.get("os"):
-        # On the publishing profile a lost extra is lost coverage, not a skip.
+    published = evidence_profile_of(registry, report)
+    if published is not None:
+        # On a publishing profile a lost extra is lost coverage, not a skip.
         missing = sorted(set(published.get("dependencies", [])) - set(report["profile"].get("dependencies", [])))
         if missing:
-            problems.append(f"the run lacks the published profile's dependencies {missing}")
+            problems.append(f"the run lacks the published profile's dependencies {missing} ({published['id']})")
     for scenario in registry["scenarios"]:
         if scenario["status"] == "unverified":
             continue
@@ -410,8 +436,42 @@ def gate(registry: Mapping[str, Any], report: Mapping[str, Any]) -> list[str]:
 # --- rendering ----------------------------------------------------------------------------------
 
 
-def render(registry: Mapping[str, Any], report: Optional[Mapping[str, Any]], *, root: Path = ROOT) -> str:
-    stale = staleness(registry, report, root=root)
+def _current_reports(
+    registry: Mapping[str, Any], reports: Sequence[Mapping[str, Any]], *, root: Path
+) -> tuple[dict[str, Mapping[str, Any]], Optional[str]]:
+    """The current reports by evidence-profile device, and why the first
+    report was not current (``None`` when one is, or there is none)."""
+    current: dict[str, Mapping[str, Any]] = {}
+    first_reason: Optional[str] = None if reports else "no evidence report"
+    for report in reports:
+        reason = staleness(registry, report, root=root)
+        if reason is None:
+            profile = evidence_profile_of(registry, report)
+            assert profile is not None
+            current.setdefault(profile["device"], report)
+        elif first_reason is None and not current:
+            first_reason = reason
+    return current, (None if current else first_reason)
+
+
+def _judge_with(scenario: Mapping[str, Any], current: Mapping[str, Mapping[str, Any]], stale: Optional[str]):
+    """``(cell, note)`` from the current report for the row's device, else
+    from any current report (which names the device it lacks)."""
+    report = current.get(scenario["profile"]["device"]) or next(iter(current.values()), None)
+    return judge(scenario, report, None if report is not None else stale)
+
+
+def render(
+    registry: Mapping[str, Any],
+    reports: Optional[Mapping[str, Any] | Sequence[Mapping[str, Any]]],
+    *,
+    root: Path = ROOT,
+) -> str:
+    if reports is None:
+        reports = []
+    elif isinstance(reports, Mapping):
+        reports = [reports]
+    current, stale = _current_reports(registry, reports, root=root)
     lines = [
         "# 25. Feature-composition matrix",
         "",
@@ -426,16 +486,22 @@ def render(registry: Mapping[str, Any], report: Optional[Mapping[str, Any]], *, 
         "cell reads *unverified*.",
         "",
     ]
-    if stale is None and report is not None:
-        lines.append(
-            f"**Evidence:** `{report['digest'][:16]}` — sources `{report['source']['content_digest'][:12]}`"
-            f" (git `{(report['source'].get('git_revision') or 'unknown')[:12]}`), profile "
-            f"{report['profile']['os']} / Python {report['profile']['python']} / torch "
-            f"{report['profile']['torch']} / {report['profile']['device']}."
-        )
+    if current:
+        for profile in registry["evidence_profiles"]:
+            report = current.get(profile["device"])
+            if report is None:
+                continue
+            lines.append(
+                f"**Evidence ({profile['id']}):** `{report['digest'][:16]}` — sources"
+                f" `{report['source']['content_digest'][:12]}`"
+                f" (git `{(report['source'].get('git_revision') or 'unknown')[:12]}`), profile "
+                f"{report['profile']['os']} / Python {report['profile']['python']} / torch "
+                f"{report['profile']['torch']} / {report['profile']['device']}."
+            )
+            lines.append("")
     else:
         lines.append(f"**Evidence:** none current ({stale}).")
-    lines.append("")
+        lines.append("")
     for group_id, title in registry["groups"].items():
         rows = [scenario for scenario in registry["scenarios"] if scenario["group"] == group_id]
         if not rows:
@@ -447,7 +513,10 @@ def render(registry: Mapping[str, Any], report: Optional[Mapping[str, Any]], *, 
             "|---|---|---|---|---|---|",
         ]
         for scenario in rows:
-            cell, note = judge(scenario, report, stale)
+            cell, note = _judge_with(scenario, current, stale)
+            judged_by = current.get(scenario["profile"]["device"])
+            if judged_by is not None and cell != "unverified":
+                note = f"{note} ({evidence_profile_of(registry, judged_by)['id']} evidence)"  # type: ignore[index]
             profile = scenario["profile"]
             deps = ", ".join(profile["dependencies"]) or "core"
             tests = "<br>".join(f"`{test}`" for test in scenario.get("tests", [])) or scenario.get("limitation", "")
@@ -476,7 +545,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--check", action="store_true", help="validate the registry, its references and the page")
     parser.add_argument("--run", action="store_true", help="execute the scenarios and write --report")
     parser.add_argument("--render", action="store_true", help="write docs/feature-composition.md from --report")
-    parser.add_argument("--report", type=Path, help="the evidence report to write (--run) or read")
+    parser.add_argument(
+        "--report",
+        type=Path,
+        action="append",
+        help="the evidence report to write (--run: the first) or read; repeat for one per evidence profile",
+    )
     args = parser.parse_args(argv)
     if not (args.check or args.run or args.render):
         parser.error("pass --check, --run and/or --render")
@@ -493,18 +567,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 failures.append(str(error))
         if PAGE.read_text(encoding="utf-8") != render(registry, None):
             failures.append("docs/feature-composition.md is not the page rendered without evidence: run --render")
-    report: Optional[dict[str, Any]] = None
+    reports: list[dict[str, Any]] = []
     if args.run and not failures:
         report = run(registry)
-        args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        args.report[0].write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         failures += gate(registry, report)
-    elif args.report is not None and args.report.exists():
-        report = json.loads(args.report.read_text(encoding="utf-8"))
-        if args.check:
-            stale = staleness(registry, report)
-            print(f"evidence: {'current' if stale is None else stale}")
+        reports.append(report)
+    elif args.report:
+        for path in args.report:
+            if not path.exists():
+                continue  # an optional profile's report (a GPU runner's) that was not produced
+            report = json.loads(path.read_text(encoding="utf-8"))
+            reports.append(report)
+            if args.check:
+                stale = staleness(registry, report)
+                print(f"evidence {path.name}: {'current' if stale is None else stale}")
     if args.render and not failures:
-        PAGE.write_text(render(registry, report), encoding="utf-8")
+        PAGE.write_text(render(registry, reports), encoding="utf-8")
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
     return 1 if failures else 0

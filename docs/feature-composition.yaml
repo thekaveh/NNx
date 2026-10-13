@@ -17,13 +17,22 @@
 # artifact), rendered into docs/feature-composition.md by
 # scripts/check_feature_composition.py.
 version: 1
-# The profile whose evidence the published page shows (the CI docs job); a
-# run missing one of these dependencies fails rather than losing coverage.
-evidence_profile:
-  os: linux
-  python: "3.12"
-  device: cpu
-  dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk, httpx2, tokenizers, huggingface_hub]
+# The profiles whose evidence the published page shows (FEAT-043): the CI
+# docs job's CPU run, and a GPU runner's CUDA run when the repository has one
+# (CONTRIBUTING, "GPU evidence"). Each row is judged by the current report of
+# the profile with its device; a run missing one of its profile's
+# dependencies fails rather than losing coverage.
+evidence_profiles:
+  - id: cpu
+    os: linux
+    python: "3.12"
+    device: cpu
+    dependencies: [optuna, onnx, onnxscript, onnxruntime, torchao, tensorboard, safetensors, typesafe_sdk, httpx2, tokenizers, huggingface_hub]
+  - id: cuda
+    os: linux
+    python: "3.12"
+    device: cuda
+    dependencies: []
 groups:
   training-controls: Training controls
   checkpoint-resume: Checkpoint and resume
@@ -87,10 +96,11 @@ scenarios:
     features: [FP16 automatic mixed precision, CUDA]
     entry_point: NNModelParams(precision=PrecisionPolicy("fp16"))
     profile: {device: cuda, dtype: fp16, dependencies: [cuda]}
-    expected: Trains through a GradScaler on CUDA.
-    tests: []
-    rationale: The CPU runners cannot execute CUDA AMP and no test trains it on a real GPU; no claim without one.
-    status: unverified
+    expected: Trains through a GradScaler on CUDA, with finite losses and scaler updates.
+    tests:
+      - tests/test_cuda_evidence.py::test_fp16_amp_trains_through_a_grad_scaler_on_cuda
+    rationale: Verified only by a run on the cuda evidence profile (a GPU runner); the CPU runners render it unverified.
+    status: verified
   - id: TC-07
     group: training-controls
     features: [DDP, torch.compile]
@@ -122,6 +132,26 @@ scenarios:
       - tests/test_ddp_adapter.py::test_single_process_entry_points_run_in_a_one_rank_group
     rationale: Executed two-rank negative test (refusal message, no study, factory call or run on any rank) and a one-rank positive control.
     status: unsupported
+  - id: TC-10
+    group: training-controls
+    features: [BF16 automatic mixed precision, CUDA]
+    entry_point: NNModelParams(precision=PrecisionPolicy("bf16"))
+    profile: {device: cuda, dtype: bf16, dependencies: []}
+    expected: Trains on a bf16-capable CUDA device without a GradScaler, with finite losses.
+    tests:
+      - tests/test_cuda_evidence.py::test_bf16_trains_without_a_scaler_on_cuda
+    rationale: Verified only by a run on the cuda evidence profile (a GPU runner); the CPU runners render it unverified.
+    status: verified
+  - id: TC-11
+    group: training-controls
+    features: [DDP, NCCL, two GPUs]
+    entry_point: NNModel.train(distributed=DDP())
+    profile: {device: cuda, dtype: fp32, dependencies: [nccl]}
+    expected: Two GPUs over NCCL equal the single-process reference within FP32 device tolerance.
+    tests:
+      - tests/test_cuda_evidence.py::test_two_gpu_nccl_parity_matches_the_single_process_reference
+    rationale: Needs two CUDA devices; verified only by a run on the cuda evidence profile, never by Gloo on CPU.
+    status: verified
   - id: CR-01
     group: checkpoint-resume
     features: [warm resume, list loader]
