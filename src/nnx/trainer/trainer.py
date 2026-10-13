@@ -282,6 +282,18 @@ def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int, record: Opti
             sched.step()
 
 
+def _refuse_update_listeners(ctx: Any) -> None:
+    """Update-boundary listeners and ``ctx.stop_at_update`` are an
+    NNModel.train feature; under Trainer.train they would silently never
+    fire. Checked after each callback dispatch, so a late registration is
+    refused too."""
+    if ctx.update_listeners or ctx.stop_at_update:
+        raise ValueError(
+            "a callback registered ctx.update_listeners or set ctx.stop_at_update, which Trainer.train does "
+            "not deliver: use Callback.on_optimizer_update, or train with NNModel.train"
+        )
+
+
 class Trainer:
     """Multi-optimizer training orchestrator.
 
@@ -367,6 +379,11 @@ class Trainer:
         # The Trainer has no DDP path: under torchrun every rank would train
         # its own copy into the same run directory.
         _refuse_multi_rank("Trainer.train()")
+        from ..nn.nn_model import _writer_owned_callbacks
+
+        # Without DDP, writer_only() callbacks are built now, so the history
+        # and monitor preflights see (and bind) the real callbacks.
+        callbacks = _writer_owned_callbacks(callbacks)
         # One owner per optimizer update, decided before anything else.
         _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
         _check_provenance(provenance)
@@ -638,13 +655,7 @@ class Trainer:
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
             callback_lifecycle.start()
-            if ctx.update_listeners:
-                # Update-boundary listeners and ctx.stop_at_update are an
-                # NNModel.train feature; here they would silently never fire.
-                raise ValueError(
-                    "a callback registered ctx.update_listeners, which Trainer.train does not deliver (nor "
-                    "ctx.stop_at_update): use Callback.on_optimizer_update, or train with NNModel.train"
-                )
+            _refuse_update_listeners(ctx)
             # FEAT-005: reset hooks have run once; restore the validated
             # component states (all-or-nothing) before the first resumed epoch.
             if component_plan is not None:
@@ -667,6 +678,7 @@ class Trainer:
                 _set_loader_epoch(params.train_loader, idx_epoch)
                 for cb in normalized_callbacks:
                     cb.on_epoch_begin(ctx)
+                _refuse_update_listeners(ctx)
 
                 records.begin_epoch()
                 for clock in clocks.values():
@@ -800,6 +812,7 @@ class Trainer:
                 # ctx.idps: the running list, or the journal's window (the whole
                 # history, read back, for a callback declaring history_access="full").
                 _dispatch_epoch_end(normalized_callbacks, ctx, records)
+                _refuse_update_listeners(ctx)
 
                 # Prepare history (idps.csv, or the journal) before the
                 # checkpoint commit marker so a completed checkpoint can never

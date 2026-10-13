@@ -1521,3 +1521,24 @@ def test_trainer_refuses_update_listeners_it_would_never_call(tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match="update_listeners"):
         Trainer(_gan_like_model()).train(_two_optimizer_params(1), trainer_step_fn=_two_step, callbacks=[Listening()])
+
+
+@pytest.mark.parametrize("hook", ["on_epoch_begin", "on_epoch_end"])
+def test_trainer_refuses_a_late_update_listener_or_stop(hook, tmp_path, monkeypatch):
+    """A listener appended (or stop_at_update set) after training began is
+    refused at the next dispatch, never silently ignored."""
+    from nnx import Callback
+
+    class Late(Callback):
+        pass
+
+    def register(self, ctx) -> None:
+        if hook == "on_epoch_begin":
+            ctx.update_listeners.append(lambda ctx: None)
+        else:
+            ctx.stop_at_update = True
+
+    setattr(Late, hook, register)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="update_listeners or set ctx.stop_at_update"):
+        Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=_two_step, callbacks=[Late()])

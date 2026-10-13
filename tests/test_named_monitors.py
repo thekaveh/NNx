@@ -678,3 +678,26 @@ def test_a_reused_early_stopping_resolves_each_run_from_its_declared_spec():
     stopper = EarlyStopping(monitor=MonitorSpec(metric="score"))
     assert stopper._bind_metrics((MetricSpec("mae", name="score"),)).mode == "min"
     assert stopper._bind_metrics((MetricSpec("accuracy", name="score"),)).mode == "max"
+
+
+def test_a_trainer_binds_a_writer_only_callbacks_monitor(tmp_path, monkeypatch):
+    """Without DDP, writer_only() callbacks are built before the monitor
+    preflight, so a built EarlyStopping is bound to the declared metrics as
+    under NNModel.train (it used to fail with "has no direction")."""
+    from nnx.distributed import writer_only
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader(_batches(X, Y, [5]))
+        .val_loader(_batches(X, Y, [5]))
+        .optimizer("main", NNOptimParams.builder().sgd(max_lr=0.05).build())
+        .metrics(MetricSpec("nll"))
+        .build()
+    )
+    early = writer_only(lambda: EarlyStopping(monitor=MonitorSpec(metric="nll"), patience=5))
+    run = Trainer(_model()).train(params=params, trainer_step_fn=_trainer_step, callbacks=[early])
+    assert len(run.idps) == 2

@@ -320,14 +320,18 @@ def test_every_named_optimizer_counts_a_committed_window():
     bias.requires_grad_(False)  # frozen for this window
     before = bias.detach().clone()
     events = []
+    bias_optimizer = torch.optim.SGD([bias], lr=0.1)
+    bias_steps = []
+    bias_optimizer.register_step_post_hook(lambda optimizer, args, kwargs: bias_steps.append(1))
     engine = UpdateEngine(
-        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": torch.optim.SGD([bias], lr=0.1)},
+        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": bias_optimizer},
         listeners=[events.append],
     )
     _run_window(engine, supervised_objective(), model)
     assert sorted(event.optimizer for event in events) == ["bias", "weight"]
     assert engine.update_counts == {"weight": 1, "bias": 1} and engine.commits == 1
     assert torch.equal(bias.detach(), before)  # counted, not changed
+    assert bias_steps == []  # not stepped: its step hooks never fire
 
 
 def _nan_objective(ctx):

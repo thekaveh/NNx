@@ -290,8 +290,11 @@ class UpdateEngine:
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
             elif self.scaler is None:
+                # As on the scaler path: an optimizer without gradients this
+                # window is not stepped (its hooks and per-call state stay put).
                 for optimizer in self.optimizers.values():
-                    optimizer.step()
+                    if _holds_gradient(optimizer):
+                        optimizer.step()
             self.commits += 1
             events = []
             for name in self.optimizers:
