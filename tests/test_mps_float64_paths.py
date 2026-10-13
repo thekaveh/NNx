@@ -50,4 +50,14 @@ def test_standardizer_fits_an_mps_tensor():
     from nnx.preprocessing import Standardizer
 
     data = torch.randn(10, 3, device="mps")
-    Standardizer.fit(data, rows=range(8))
+    fitted = Standardizer.fit(data, rows=range(8))
+    reference = Standardizer.fit(data.cpu(), rows=range(8))
+    assert list(fitted.mean) == list(reference.mean) and list(fitted.scale) == list(reference.scale)
+
+
+def test_the_diffusion_schedule_fingerprint_is_device_independent():
+    from nnx import NoiseSchedulers
+    from nnx.diffusion.objective import _schedule_fingerprint
+
+    schedule = NoiseSchedulers.LINEAR(10)
+    assert _schedule_fingerprint(schedule.to("mps")) == _schedule_fingerprint(schedule)

@@ -554,7 +554,6 @@ def test_every_public_block_constructor_refuses_float_and_bool_counts(build):
 
 @pytest.mark.parametrize("count", [-1, 2.5, True])
 def test_generate_refuses_a_max_new_tokens_that_is_not_a_count(count):
-    pytest.importorskip("tokenizers")
     from nnx import GenerativeNNModel
 
     with pytest.raises(ValueError, match="max_new_tokens"):
@@ -567,3 +566,83 @@ def test_top_k_filter_refuses_what_its_pipeline_stage_refuses(k):
 
     with pytest.raises(ValueError, match="top_k"):
         TopKFilter(k)
+
+
+def test_numpy_strings_and_bools_in_configs_are_stored_as_plain_values():
+    import numpy as np
+    import yaml
+
+    from nnx.models import ModelSpec
+    from nnx.monitors import MetricSpec
+    from nnx.provenance import ExperimentManifest
+
+    spec = ModelSpec("my.enc", 1, {"act": np.str_("relu"), "on": np.True_})
+    yaml.safe_dump(spec.state())
+    yaml.safe_dump(MetricSpec("acc", config={"k": np.str_("x")}).state())
+    plain = ExperimentManifest(config={"on": True, "s": "x"})
+    assert ExperimentManifest(config={"on": np.True_, "s": np.str_("x")}).fingerprint() == plain.fingerprint()
+
+
+def test_link_categories_refuse_a_bare_string():
+    torch = pytest.importorskip("torch")
+    from nnx.link_tasks import LinkTaskError, split_links
+
+    edges = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]])
+    with pytest.raises(LinkTaskError, match="not the string"):
+        split_links(edges, 4, val=1, test=1, seed=0, edge_labels=[0, 1, 1, 0], categories="ab")
+
+
+@pytest.mark.parametrize("field,value", [("max_prompt_len", True), ("max_response_len", 2.5), ("pad_token_id", -1)])
+def test_preference_dataset_validates_lengths_and_pad_id_before_encoding(field, value):
+    from nnx import NNPreferenceDataset
+
+    class Refuse:
+        def encode(self, text):
+            raise AssertionError("encoded before validating")
+
+    with pytest.raises(ValueError, match=field):
+        NNPreferenceDataset(prompts=["p"], chosen=["c"], rejected=["r"], tokenizer=Refuse(), **{field: value})
+
+
+def test_to_onnx_takes_a_float64_numpy_example(tmp_path):
+    pytest.importorskip("onnx")
+    import numpy as np
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    model.to_onnx(str(tmp_path / "m.onnx"), np.zeros((2, 4)))
+    assert (tmp_path / "m.onnx").exists()
+
+
+def test_checkpoint_to_file_refuses_an_unknown_format_before_creating_a_directory(tmp_path):
+    from nnx import NNCheckpoint
+
+    target = tmp_path / "new" / "sub" / "c.pt"
+    with pytest.raises(ValueError, match="unknown checkpoint format"):
+        NNCheckpoint.to_file(object(), str(target), format="pt")  # type: ignore[arg-type]
+    assert not (tmp_path / "new").exists()
+
+
+def test_validate_response_refuses_a_non_question_as_a_request_error():
+    from nnx.decisions import InvalidDecisionRequest, validate_response
+
+    with pytest.raises(InvalidDecisionRequest, match="not a decision question"):
+        validate_response("x", 0.5)  # type: ignore[arg-type]
+
+
+def test_temperature_scaling_does_not_overflow_half_precision_logits():
+    """fp16 logits / a small T overflowed to several +inf, which the sampler
+    reads as the greedy marker and resolves to the first one, not the argmax."""
+    import torch
+
+    from nnx.generation.logits_processors import TemperatureScaling
+    from nnx.generation.sampling import sample_next_token
+
+    logits = torch.tensor([[8.0, 10.0, -3.0]], dtype=torch.float16)
+    scaled = TemperatureScaling(1e-4)(logits, [])
+    assert torch.isfinite(scaled).all()
+    assert int(sample_next_token(scaled, generator=torch.Generator().manual_seed(0))) == 1

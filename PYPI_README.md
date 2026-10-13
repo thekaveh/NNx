@@ -103,7 +103,7 @@ pip install "thekaveh-nnx[onnx-runtime]"        # ONNX Runtime CPU execution: nn
 pip install "thekaveh-nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ INT8)
 pip install "thekaveh-nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
 pip install "thekaveh-nnx[embeddings]"          # nnx.embeddings: FAISS export + sentence-transformers
-pip install "thekaveh-nnx[lm]"                  # TransformerNN + HF tokenizer + generate()
+pip install "thekaveh-nnx[lm]"                  # HF BPE tokenizer (train_bpe, NNTokenizerParams) + datasets
 pip install "thekaveh-nnx[gguf-write]"          # experimental NNx GGUF writer
 pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export (netron_export also needs [onnx])
 pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)

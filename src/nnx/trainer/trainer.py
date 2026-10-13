@@ -288,10 +288,15 @@ def _refuse_update_listeners(ctx: Any) -> None:
     NNModel.train feature; under Trainer.train they would silently never
     fire. Checked after each callback dispatch, so a late registration is
     refused too."""
-    if ctx.update_listeners or ctx.stop_at_update:
+    if ctx.stop_at_update:
         raise ValueError(
-            "a callback registered ctx.update_listeners or set ctx.stop_at_update, which Trainer.train does "
-            "not deliver: use Callback.on_optimizer_update, or train with NNModel.train"
+            "a callback set ctx.stop_at_update, which Trainer.train does not deliver: Trainer has no "
+            "update-boundary stop; set ctx.should_stop in on_epoch_end, or train with NNModel.train"
+        )
+    if ctx.update_listeners:
+        raise ValueError(
+            "a callback registered ctx.update_listeners, which Trainer.train does not deliver: use "
+            "Callback.on_optimizer_update, or train with NNModel.train"
         )
 
 
@@ -647,7 +652,12 @@ class Trainer:
         ctx.optimizers = optimizers
         ctx.trainer = self
         if engine is not None:
-            engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+
+            def _dispatch_and_refuse(event: Any) -> None:
+                _dispatch_update(normalized_callbacks, ctx, event)
+                _refuse_update_listeners(ctx)  # a stop or listener set at an update is refused there
+
+            engine.listeners.append(_dispatch_and_refuse)
             # After the callbacks, which see the learning rate the update was
             # taken with; each optimizer's clock then steps its schedule.
             engine.listeners.append(

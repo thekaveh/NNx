@@ -167,6 +167,12 @@ def _insert_after_relu_in_sequential(
             f"deepen: Sequential {parent_path or '<root>'!r} is a {type(parent).__name__} with its own "
             "forward, parameters, buffers or hooks, which a rebuilt nn.Sequential would drop"
         )
+    from .widen import _has_hooks
+
+    if _has_hooks(parent._modules[attr]):  # the inserted ReLU(I·y) would act on the hook's output
+        raise ValueError(
+            f"deepen: the ReLU {attr!r} in {parent_path or '<root>'!r} has hooks, which the insertion would change"
+        )
     entries = list(parent._modules.items())
     keys = [key for key, _ in entries]
     if attr not in keys:  # pragma: no cover — get_module resolved it, so this cannot happen

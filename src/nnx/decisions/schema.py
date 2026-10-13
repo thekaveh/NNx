@@ -265,7 +265,8 @@ def _check_distribution(pairs: tuple[tuple[str, float], ...], *, owner: str) -> 
         raise InvalidDecisionResponse(f"{owner} distribution ids must be non-empty strings, got {wrong!r}")
     if len(set(ids)) != len(ids):
         raise InvalidDecisionResponse(f"{owner} distribution repeats ids: {ids}")
-    checked = tuple((option_id, _probability(p, what=f"{owner} p[{option_id!r}]")) for option_id, p in pairs)
+    # str(): a NumPy string id passes isinstance(str) but is not YAML-safe.
+    checked = tuple((str(option_id), _probability(p, what=f"{owner} p[{option_id!r}]")) for option_id, p in pairs)
     total = math.fsum(p for _, p in checked)
     if abs(total - 1.0) > PROBABILITY_TOLERANCE:
         raise InvalidDecisionResponse(
@@ -407,6 +408,8 @@ def validate_response(
     and ``vendor_score`` (a :class:`Score` provider's own number) are kept
     apart from the normalized fields.
     """
+    if not isinstance(question, (Choice, Boolean, Score)):  # before digest(): any object would AttributeError
+        raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
     digest = question.digest()
     if isinstance(question, Boolean):
         if isinstance(response, Mapping):
@@ -424,8 +427,6 @@ def validate_response(
         else:
             p_true = _probability(response, what="p_true")
         return BooleanResult(digest, p_true, provider=provider, raw=raw)
-    if not isinstance(question, (Choice, Score)):
-        raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
 
     expected = question.option_ids
     seen: dict[str, float] = {}

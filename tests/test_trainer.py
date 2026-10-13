@@ -1537,7 +1537,7 @@ def test_trainer_refuses_a_late_update_listener_or_stop(hook, tmp_path, monkeypa
 
     setattr(Late, hook, register)
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(ValueError, match="update_listeners or set ctx.stop_at_update"):
+    with pytest.raises(ValueError, match="update_listeners|stop_at_update"):
         Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=_two_step, callbacks=[Late()])
 
 

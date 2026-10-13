@@ -444,3 +444,28 @@ def test_widen_refuses_a_sequential_with_its_own_forward_or_hooks():
     hooked[1].register_forward_hook(lambda module, args, out: out * 2)
     with pytest.raises(ValueError, match="cannot prove the data flow"):
         widen(hooked, layer_name="0", new_width=12)
+
+
+def test_widen_refuses_a_feed_fwd_subclass_with_its_own_forward_or_a_hooked_layer():
+    params = NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU)
+
+    class Custom(FeedFwdNN):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    with pytest.raises(ValueError, match="FeedFwdNN"):
+        widen(Custom(params), layer_name="layers.0", new_width=12)
+    net = FeedFwdNN(params)
+    net.layers[1].register_forward_pre_hook(lambda module, args: (args[0] * 2,))
+    with pytest.raises(ValueError, match="cannot prove the data flow"):
+        widen(net, layer_name="layers.0", new_width=12)
+
+
+def test_widen_ignores_hooks_after_the_consumer():
+    """Only the target, the modules between it and its consumer and the
+    consumer can transform the widened activations."""
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 6), nn.ReLU(), nn.Linear(6, 2)).eval()
+    model[4].register_forward_hook(lambda module, args, out: out)
+    x = torch.randn(3, 4)
+    widened = widen(model, layer_name="0", new_width=12).eval()
+    torch.testing.assert_close(widened(x), model(x))

@@ -547,19 +547,18 @@ class NNCheckpoint:
         the destination — matching the atomicity guarantee NNRun.save
         offers for YAML/CSV.
         """
+        if format not in ("pickle", "safetensors"):  # before any directory is created
+            raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
         if format == "safetensors":
             self._require_portable()  # before any directory or file is created
         dir_path = os.path.dirname(path)
-        if dir_path and not os.path.exists(dir_path):
-            os.makedirs(dir_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)  # a concurrent writer may create it first
 
         if format == "pickle":
             _atomic_torch_save(self, path)
             return
-        if format == "safetensors":
-            self._to_safetensors_file(path)
-            return
-        raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
+        self._to_safetensors_file(path)
 
     def _require_portable(self) -> None:
         if not self.reconstructible:

@@ -2766,10 +2766,17 @@ class NNModel(_HubMixinBase):
         # the one input the caller meant.
         if isinstance(example_input, (torch.Tensor, np.ndarray)):
             example_input = (example_input,)
-        example_input = tuple(
-            (e.to(self.device) if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e)).to(self.device))
-            for e in example_input
-        )
+        # As predict(): floating inputs take the net's floating dtype (a NumPy
+        # float64 example would otherwise fail against float32 weights).
+        net_dtype = next((param.dtype for param in self.net.parameters() if param.is_floating_point()), None)
+
+        def _example(e: Any) -> torch.Tensor:
+            tensor = e if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e))
+            if net_dtype is not None and tensor.is_floating_point() and tensor.dtype != net_dtype:
+                tensor = tensor.to(net_dtype)
+            return tensor.to(self.device)
+
+        example_input = tuple(_example(e) for e in example_input)
 
         in_names = input_names or [f"input_{i}" for i in range(len(example_input))]
         out_names = output_names or ["output"]

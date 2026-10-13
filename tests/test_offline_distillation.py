@@ -507,3 +507,12 @@ def test_a_number_too_large_for_a_float_is_a_record_error(tmp_path):
         read_teacher_records(path)
     with pytest.raises(TeacherRecordError, match="alpha"):
         _dataset().objective(alpha=10**400)
+
+
+def test_an_fp64_student_scores_in_its_own_dtype():
+    """The dataset casts inputs to the default dtype; an fp64 student crashed
+    (Float vs Double) and its loss was taken in fp32."""
+    model = _model()
+    model.net.double()
+    report = evaluate_offline(model, _dataset())
+    assert report.agreement is not None

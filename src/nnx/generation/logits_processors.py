@@ -49,6 +49,10 @@ class TemperatureScaling:
             argmax = logits.argmax(dim=-1, keepdim=True)
             out.scatter_(dim=-1, index=argmax, value=float("inf"))
             return out
+        if logits.dtype in (torch.float16, torch.bfloat16):
+            # A small T overflows half-precision logits to +inf, which the
+            # sampler reads as the greedy marker (the first +inf, not the argmax).
+            logits = logits.float()
         return logits / self.temperature
 
 

@@ -674,8 +674,10 @@ A validation *task record* can be unavailable: every target masked
 (`status="empty"`), or no error and no loss. Such a record ends the walk
 instead. The epoch has no signal, the plateau step is skipped, and the
 training metrics are never compared in its place. The raw observations are
-retained unchanged in the live history and checkpoint payloads. CSV readback
-keeps mapping NaN cells to `None`.
+retained unchanged in the live history and checkpoint payloads. A CSV cannot
+tell NaN from absent, so CSV readback maps NaN cells to `None`. A NaN `extra`
+or `metrics` value reads back as an absent key, and a record whose values were
+all NaN reads back as no record. A history journal (§4.5) keeps NaN.
 
 `EarlyStopping` is separate and never falls back from validation to training
 metrics. Its default (`monitor=None`) picks one validation field per `train()`
@@ -3006,8 +3008,8 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
     It pools node rows into graph rows: `"mean"` or `"sum"`, graph-local and
     invariant to node order.
 
-- **The recipe.** `graph_classifier_spec(input_dim, num_classes,
-  hidden_dims, encoder="graph_conv" | "graph_sage" | "graph_att", pool=...)`
+- **The recipe.** `graph_classifier_spec(input_dim=..., num_classes=...,
+  hidden_dims=..., encoder="graph_conv" | "graph_sage" | "graph_att", pool=...)`
   is a registered recipe. A reload rebuilds the same encoder, pool and head.
 - **Per-graph normalisation.** With a categorical task, loss and metrics
   are averaged over **labeled graphs**, never batches or nodes. NLLs

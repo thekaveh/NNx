@@ -527,3 +527,10 @@ def test_deepen_walks_back_through_a_norm_to_the_feeding_linear():
     deeper = deepen(model, after_layer_name="2").eval()
     assert len(deeper) == 6
     torch.testing.assert_close(deeper(x), model(x))
+
+
+def test_deepen_refuses_a_hooked_target_relu():
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    model[1].register_forward_hook(lambda module, args, out: out - 1.0)
+    with pytest.raises(ValueError, match="has hooks"):
+        deepen(model, after_layer_name="1")

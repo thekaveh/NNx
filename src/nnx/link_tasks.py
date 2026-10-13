@@ -204,6 +204,8 @@ class LinkSplit:
         if not self.train:
             raise LinkTaskError("a link split needs at least one training edge")
         if self.categories is not None:
+            if isinstance(self.categories, (str, bytes)):  # one name, not a set of its characters
+                raise LinkTaskError(f"categories must be a sequence of names, not the string {self.categories!r}")
             categories = tuple(str(c) for c in self.categories)
             if len(categories) < 2 or len(set(categories)) != len(categories) or not all(categories):
                 raise LinkTaskError(f"categories must be 2+ distinct non-empty names, got {self.categories!r}")
@@ -511,6 +513,8 @@ def split_links(
             )
         drawn = _complement_sample(needed, n, set(unique), directed=directed, self_loops=self_loops == "allow", rng=rng)
         val_negatives, test_negatives = drawn[: per * n_val], drawn[per * n_val :]
+    if isinstance(categories, (str, bytes)):  # one name, not a set of its characters
+        raise LinkTaskError(f"categories must be a sequence of names, not the string {categories!r}")
     return LinkSplit(
         num_nodes=n,
         train=tuple(sorted(train_edges)),

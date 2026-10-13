@@ -172,10 +172,11 @@ clipping.
   next-token objective and evaluation for a `TransformerNN`, reporting token
   NLL, perplexity and accuracy. See
   [Quickstart §3.6](quickstart.md#36-causal-language-models).
-- **Language modeling** (`lm` extra). `TransformerNN` is a decoder-only model
-  with RMSNorm, RoPE, SwiGLU, tied embeddings and a KV cache.
+- **Language modeling.** `TransformerNN` is a decoder-only model with
+  RMSNorm, RoPE, SwiGLU, tied embeddings and a KV cache.
   `GenerativeNNModel.generate()` supports greedy, top-k, top-p and
-  repetition-penalty sampling. See [Language modeling](lm.md).
+  repetition-penalty sampling. The `lm` extra adds the BPE tokenizer. See
+  [Language modeling](lm.md).
 - **KV-cache scope.** A CPU regression test requires cached decoding to be at
   least 1.2× faster than full recomputation for its fixed 256-token workload.
   Results on other hardware and workloads vary. Past `max_seq_len`, the cache

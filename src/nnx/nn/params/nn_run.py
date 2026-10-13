@@ -347,9 +347,11 @@ def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optiona
 
 def _read_idps_csv(csv_path: str, *, exact: bool = True) -> list[NNIterationDataPoint]:
     """Every record of an ``idps.csv``, its floats parsed round-trip, so a
-    loaded run's history equals the trained run's bit for bit (``to_csv``
-    writes each float's shortest round-trip repr; pandas' default parser
-    misreads about one in five by one ULP). ``exact=False`` is that default
+    loaded run's finite values equal the trained run's bit for bit
+    (``to_csv`` writes each float's shortest round-trip repr; pandas'
+    default parser misreads about one in five by one ULP). A NaN cell reads
+    back as absent: ``None``, a dropped ``extra`` / ``metrics`` key, or no
+    record when every value was NaN. ``exact=False`` is that default
     parser."""
     try:
         # "round_trip" is accepted by every supported pandas, though pandas 2.x

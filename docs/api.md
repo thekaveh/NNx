@@ -4960,7 +4960,7 @@ A run's provenance: the declared manifest, its fingerprint and the attempt that 
 nnx.provenance.load_provenance(run_id: 'str', root: 'Optional[str]' = None) -> 'Optional[ProvenanceRecord]'
 ```
 
-Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read.
+Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read; a malformed entry (a missing key, a non-object entry) raises ``KeyError`` or ``TypeError``.
 
 
 #### `nnx.provenance.compare`
@@ -13661,9 +13661,11 @@ Raises:
         module outside the elementwise allowlist) sits between the
         target and its consumer; if the target lives in a container
         other than ``nn.Sequential`` / ``FeedFwdNN.layers`` (module
-        registration order is not data flow); or if the target or
-        its consumer is registered under more than one path (an
-        alias used in several places). Validation runs on the source
+        registration order is not data flow), or in a subclass with
+        its own forward or a container with hooks; if a module on the
+        path from the target to its consumer has hooks; or if the
+        target or its consumer is registered under more than one
+        path (an alias used in several places). Validation runs on the source
         before anything is copied or allocated, so a rejected call
         leaves the model, its module identities and the RNG untouched.
 ```

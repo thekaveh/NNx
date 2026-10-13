@@ -82,9 +82,11 @@ def widen(
             module outside the elementwise allowlist) sits between the
             target and its consumer; if the target lives in a container
             other than ``nn.Sequential`` / ``FeedFwdNN.layers`` (module
-            registration order is not data flow); or if the target or
-            its consumer is registered under more than one path (an
-            alias used in several places). Validation runs on the source
+            registration order is not data flow), or in a subclass with
+            its own forward or a container with hooks; if a module on the
+            path from the target to its consumer has hooks; or if the
+            target or its consumer is registered under more than one
+            path (an alias used in several places). Validation runs on the source
             before anything is copied or allocated, so a rejected call
             leaves the model, its module identities and the RNG untouched.
     """
@@ -233,14 +235,24 @@ def _has_hooks(module: nn.Module) -> bool:
 
 def _refuse_unproven_container(parent: nn.Module, where: str) -> None:
     """A container whose execution order is not its registration order: a
-    subclass with its own forward, or hooks on it or on its children."""
+    subclass with its own forward, or hooks on the container itself."""
     stock = nn.Sequential.forward if isinstance(parent, nn.Sequential) else None
     own_forward = stock is not None and type(parent).forward is not stock
-    hooked = [name for name, child in parent._modules.items() if child is not None and _has_hooks(child)]
-    if own_forward or _has_hooks(parent) or hooked:
+    if own_forward or _has_hooks(parent):
         raise ValueError(
             f"widen() cannot prove the data flow of {where!r} ({type(parent).__name__}): a container with its "
-            f"own forward or hooks (hooked children: {hooked}) may transform between a layer and its consumer"
+            "own forward or hooks may transform between a layer and its consumer"
+        )
+
+
+def _refuse_hooked_path(parent: nn.Module, keys: list[str], where: str) -> None:
+    """Hooks on the target, the modules between it and its consumer, or the
+    consumer could transform the widened activations: refuse them."""
+    hooked = [key for key in keys if (child := parent._modules[key]) is not None and _has_hooks(child)]
+    if hooked:
+        raise ValueError(
+            f"widen() cannot prove the data flow of {where!r}: hooked modules on the path from the layer to its "
+            f"consumer ({hooked}) may transform between them"
         )
 
 
@@ -292,6 +304,8 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
                 f"no downstream nn.Linear found after {layer_name!r} — widen() needs a directly-connected "
                 "Linear to rescale."
             )
+        consumer_key = consumer_name.rpartition(".")[2]
+        _refuse_hooked_path(parent, keys[keys.index(attr) : keys.index(consumer_key) + 1], parent_path or "<root>")
     elif isinstance(parent, nn.ModuleList) and parent_path:
         owner_path, _, list_attr = parent_path.rpartition(".")
         owner = model if not owner_path else get_module(model, owner_path)
@@ -321,6 +335,7 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
                 f"widen() needs a plain nn.Linear consumer after {layer_name!r}; {parent_path}.{idx + 1} is a "
                 f"{type(parent[idx + 1]).__name__}"
             )
+        _refuse_hooked_path(parent, [str(idx), str(idx + 1)], parent_path)
         consumer_name = f"{parent_path}.{idx + 1}"
     else:
         raise ValueError(

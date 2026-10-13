@@ -127,6 +127,12 @@ class NNPreferenceDataset(NNDatasetBase):
     seed: Optional[int] = field(default=None)
 
     def __post_init__(self):
+        # Counts and the pad id before a single tokenizer call: a bool, float
+        # or negative value was accepted, then failed late (or padded with -1).
+        for name, minimum in (("max_prompt_len", 1), ("max_response_len", 1), ("pad_token_id", 0)):
+            object.__setattr__(
+                self, name, require_count(getattr(self, name), name, owner="NNPreferenceDataset", minimum=minimum)
+            )
         if self.seed is not None:  # the split generator's seed domain
             object.__setattr__(
                 self,

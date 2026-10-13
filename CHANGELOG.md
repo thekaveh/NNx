@@ -108,6 +108,12 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - Task and probability labels given as NumPy strings are stored as plain strings, so the run saves its `run.yaml`.
     - `widen` refuses a container with its own forward or hooks instead of silently changing the model's output.
     - `generate(max_new_tokens=...)`, `TopKFilter`, `Bootstrap` and decision results validate their inputs at construction.
+    - Near-greedy sampling (a small temperature) on half-precision logits picks the argmax instead of the first overflowed token.
+    - Offline distillation scores an fp64 student in its own dtype; `to_onnx` takes a float64 NumPy example.
+    - NumPy strings and bools in model, metric, optimizer-factory and provenance configs are stored as plain values; decision-result ids too.
+    - `deepen` refuses a hooked target ReLU; `widen` looks only at hooks on the path to its consumer.
+    - `Trainer` refuses a `stop_at_update` set in `on_optimizer_update` at that update, with advice that applies.
+    - `NNPreferenceDataset` validates its lengths and pad id before encoding; `NNCheckpoint.to_file` refuses an unknown format before creating a directory; `split_links` refuses a bare-string `categories`.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 
@@ -165,6 +171,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 - **`nnx.search.search()` and `ExperimentPlan.fit()` refuse a multi-rank process group.** Both train in a single process (a plan never passes `distributed=`); launched under `torchrun`, every rank ran its own study or fit into the same working directory. Inside an initialized `torch.distributed` group of world size > 1 they now raise `RuntimeError` before loading or creating a study, calling a factory, seeding or creating a run; a one-rank group behaves as before. Train one model across ranks with `model.train(..., distributed=DDP())` ([#417](https://github.com/thekaveh/NNx/issues/417)).
 
 ## [0.3.0](https://github.com/thekaveh/NNx/compare/v0.2.3...v0.3.0) (2026-10-04)
+
+Not published to PyPI; its changes first ship in 0.4.0.
 
 ### Upgrading from 0.2.3
 

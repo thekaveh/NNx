@@ -478,8 +478,10 @@ loader is `None` (resolved `batch_sizes` entry `0`, `"0"` in `state()`).
 Passing it to `train()` skips validation instead of scoring zero seed rows.
 `NNTabularDataset` and `NNPreferenceDataset` also return a `None` loader
 for an empty split, but keep a placeholder `1` in the resolved
-`batch_sizes` (§2.5). An empty `train_mask` raises at construction. The example below runs
-fully offline and needs no neighbor-sampling backend:
+`batch_sizes` (§2.5).
+
+An empty `train_mask` raises at construction. The example below runs fully
+offline and needs no neighbor-sampling backend:
 
 ```python
 import torch

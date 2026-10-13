@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Union
 
+import numpy as np
+
 from ._config import _canonical_json
 
 if TYPE_CHECKING:
@@ -86,8 +88,12 @@ ATTEMPT_STATUSES = ("running", "completed", "failed", "cancelled")
 def _canonical(value: Any, path: str) -> Any:
     if isinstance(value, IdentityRef):
         return value.state()
-    if value is None or isinstance(value, (bool, str)):
+    if value is None or isinstance(value, bool):
         return value
+    if isinstance(value, str):
+        return str(value)  # a NumPy string is a str subclass, not JSON / YAML-safe as such
+    if isinstance(value, np.bool_):
+        return bool(value)
     if isinstance(value, numbers.Integral):
         return int(value)
     if isinstance(value, numbers.Real):
@@ -100,7 +106,7 @@ def _canonical(value: Any, path: str) -> Any:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{path}: mapping keys must be strings, got {key!r}")
-            out[key] = _canonical(item, f"{path}.{key}")
+            out[str(key)] = _canonical(item, f"{path}.{key}")
         return out
     if isinstance(value, (list, tuple)):
         return [_canonical(item, f"{path}[{index}]") for index, item in enumerate(value)]
@@ -498,7 +504,9 @@ def _write_json(path: str, value: Mapping[str, Any]) -> None:
 def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[ProvenanceRecord]:
     """Read a run's provenance files; ``None`` when it has none (absent).
     Raises ``ValueError`` for an unsupported format, a fingerprint that
-    does not match its manifest, or JSON nested too deeply to read."""
+    does not match its manifest, or JSON nested too deeply to read; a
+    malformed entry (a missing key, a non-object entry) raises ``KeyError``
+    or ``TypeError``."""
     try:
         return _load_provenance(run_id, root)
     except RecursionError as error:  # a corrupt, deeply nested file is malformed input

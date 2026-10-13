@@ -68,6 +68,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from .._step_helpers import full_precision
 from ..components import ComponentSpec
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
 
@@ -474,7 +475,11 @@ def _teacher_batch(batch: Any, schema_digest: str, candidates: tuple[str, ...], 
 
 
 def _log_probabilities(model: Any, batch: TeacherBatch, ctx: Optional[ObjectiveContext], who: str) -> torch.Tensor:
-    logits = model._net_forward((batch.inputs.to(model.device),), {})
+    inputs = batch.inputs
+    net_dtype = next((p.dtype for p in model.net.parameters() if p.is_floating_point()), None)
+    if net_dtype is not None and inputs.is_floating_point() and inputs.dtype != net_dtype:
+        inputs = inputs.to(net_dtype)  # an fp64 student reads its own dtype, as predict() does
+    logits = model._net_forward((inputs.to(model.device),), {})
     if ctx is not None:
         logits = ctx.full_precision(logits)
     rows, classes = batch.teacher.shape
@@ -483,7 +488,7 @@ def _log_probabilities(model: Any, batch: TeacherBatch, ctx: Optional[ObjectiveC
             f"{who}: the student gives outputs of shape {tuple(logits.shape)} for {rows} rows and {classes} "
             "candidates; its head must score each candidate in the dataset's order"
         )
-    return F.log_softmax(logits.float(), dim=-1)
+    return F.log_softmax(full_precision(logits), dim=-1)  # fp16 / bf16 widened, fp64 kept
 
 
 def _kl_rows(q: torch.Tensor, log_p: torch.Tensor) -> torch.Tensor:

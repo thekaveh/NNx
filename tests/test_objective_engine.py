@@ -920,3 +920,42 @@ def test_a_window_dropped_for_non_finite_gradients_is_left_out_of_the_epoch_loss
         objective=InfGradFirst(),
     )
     assert run.idps[-1].train_summary.loss == pytest.approx(expected)
+
+
+def test_trainer_refuses_a_stop_requested_at_an_update(tmp_path, monkeypatch):
+    """stop_at_update set in on_optimizer_update was ignored for the whole
+    epoch, then refused with advice to use the hook already in use."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    class StopAtUpdate(Callback):
+        def on_optimizer_update(self, ctx, event):
+            ctx.stop_at_update = True
+
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader([(X[:1], Y[:1]), (X[1:2], Y[1:2]), (X[2:], Y[2:])])
+        .optimizer(
+            "weight",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1, momentum=0.0)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.weight")])
+            .build(),
+        )
+        .optimizer(
+            "bias",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1, momentum=0.0)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.bias")])
+            .build(),
+        )
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    model = _linear()
+    before = model.net.layers[0].weight.detach().clone()
+    with pytest.raises(ValueError, match="should_stop in on_epoch_end"):
+        Trainer(model).train(params=params, objective=supervised_objective(), callbacks=[StopAtUpdate()])
+    # Refused at the first update: one window stepped, not the whole epoch.
+    assert not torch.equal(model.net.layers[0].weight, before)

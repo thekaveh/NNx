@@ -342,6 +342,8 @@ def main() -> None:
 
     # --- 1. Corpus ---
     corpus = _load_corpus(use_hf=use_hf, n_lines=args.n_lines)
+    # The data actually loaded (a failed download falls back to the inline corpus).
+    source = "fallback" if corpus == list(_FALLBACK_CORPUS) else "hf"
     print(f"[tinystories] corpus: {len(corpus)} lines")
 
     # --- 2. BPE tokenizer ---
@@ -404,7 +406,7 @@ def main() -> None:
         val_loader=val_loader,
         # The data flags change the data, not the configuration: name them so
         # each source gets its own run id (not a FileExistsError).
-        data_id=f"tinystories-{'hf' if args.use_hf else 'fallback'}-{args.n_lines}-b{args.batch_size}",
+        data_id=f"tinystories-{source}-{args.n_lines}-b{args.batch_size}",
     )
     run = model.train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
     final = run.idps[-1].val_edp
