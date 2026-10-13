@@ -85,7 +85,7 @@ uv run pytest -k "graph"               # name filter
 uv run pytest -n logical --dist loadgroup --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
-Tests live under `tests/`. The `conftest.py` holds a few shared fixtures and hygiene guards (a session-wide `NNX_TQDM_DISABLE`, a per-test `env_snapshot` cache reset, a dynamo-dispatch skip guard); otherwise it is intentionally minimal. Add a shared fixture there when boilerplate repeats across several tests, not preemptively.
+Tests live under `tests/`. The `conftest.py` holds a few shared fixtures and hygiene guards. They include a session-wide `NNX_TQDM_DISABLE`, a per-test `env_snapshot` cache reset and a dynamo-dispatch skip guard. Otherwise it is intentionally minimal. Add a shared fixture there when boilerplate repeats across several tests, not preemptively.
 
 ### 5.1. Feature combinations
 
@@ -157,7 +157,7 @@ The end-to-end flow:
 
 1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Before 1.0, `feat:` and `fix:` both trigger a patch bump (`0.X.Y`; `bump-patch-for-minor-pre-major` in `release-please-config.json`). A minor bump (`0.X.0`) needs a `Release-As: 0.X.0` footer on a commit.
 
-   The Release PR carries only release-please's own commit; nothing else pushes to it, because the `main` ruleset holds a PR for an approving review when its latest push comes from a bot — even a verified one. Each release PR therefore needs one approval.
+   The Release PR carries only release-please's own commit. Nothing else pushes to it, because the `main` ruleset holds a PR for review when a bot made its latest push. That holds even for a verified commit, so each release PR needs one approval.
 
    release-please bumps the version in three places, so the lock and the API-reference check stay consistent:
 

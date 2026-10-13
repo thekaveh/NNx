@@ -112,7 +112,7 @@ A *named* `nn.Sequential` is built from an `OrderedDict`, at the root or nested 
 - The two new modules are registered as `_nnx_deepen_linear_N` / `_nnx_deepen_relu_N` right after the site. `N` increments until both keys are unused, so repeated deepening never collides.
 - A module registered in several slots keeps every slot pointing at one copied object.
 
-A purely numeric container keeps its positional contract (`deeper[2]` is the new Linear, `deeper[3]` the new ReLU): it is rebuilt by position, so the modules after the site shift by two (`"2"` becomes `"4"`). In a named container, retained keys (numeric ones included) are not renumbered, and every surgery primitive addresses a registered key exactly. So there a later `widen(deeper, layer_name="1")` targets the module named `"1"` even when it no longer sits at position 1.
+A purely numeric container keeps its positional contract: `deeper[2]` is the new Linear and `deeper[3]` the new ReLU. It is rebuilt by position, so the modules after the site shift by two (`"2"` becomes `"4"`). In a named container, retained keys (numeric ones included) are not renumbered, and every surgery primitive addresses a registered key exactly. So there a later `widen(deeper, layer_name="1")` targets the module named `"1"` even when it no longer sits at position 1.
 
 On a `FeedFwdNN`, `deeper.params.hidden_dims` gains the matching entry. Any `activations` / `dropout_probs` overrides stay aligned (dropout `0.0` at the new site).
 

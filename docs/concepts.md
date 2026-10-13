@@ -5,13 +5,13 @@ This document explains the design decisions behind NNx: the architecture and the
 - Tier-1 (§7–§11): `finetune`, `peft`, `diffusion`, `paradigms`, `trainer`.
 - Tier-2 (§12, §15–§16): `quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`.
 - The inference branch: `decisions` (§17).
-- Evaluation and experiment tooling (§18–§29): calibration, abstention, experiment plans, streaming prediction, run bundles, multi-seed comparison, ranking, graph and link tasks, `Result` values, compilation and benchmarks, and budgeted search.
+- Evaluation and experiment tooling (§18–§29). It covers calibration, abstention, experiment plans, streaming prediction and run bundles. It also covers multi-seed comparison, ranking, graph and link tasks, `Result` values, compilation and benchmarks, and budgeted search.
 
 Sections are ordered from most fundamental to most specialized. Read top-to-bottom on a first pass; jump by anchor for reference.
 
 ## 1. Architecture
 
-NNx's public surface, internal orchestration, callback bus, and on-disk persistence are summarized in the architecture diagram (also embedded in the main README and on the [Architecture](architecture.md) page):
+The architecture diagram summarizes NNx's public surface, internal orchestration, callback bus and on-disk persistence. The main README and the [Architecture](architecture.md) page embed it too:
 
 ![NNx architecture](assets/architecture.png)
 
@@ -183,7 +183,7 @@ NNx never infers updates around an opaque step, and it warns when an epoch repor
 
 A one-cycle / warmup-decay schedule stops the run with an error at the first committed update past its `total_steps`. That update is never scheduled, and no checkpoint is written after it. This applies to a default budget too. So a loader that yields more batches than its `len()` reports needs an explicit `total_steps`; an `IterableDataset` read by several workers can do this.
 
-A cosine schedule warns once when it passes its `T_max`, since its rate then climbs back up. It does not warn when that is the period the run chose: an explicit `T_max`, or a subclass's own. (Torch lets a schedule run past it on purpose.) A stateful resume keeps the checkpoint's `T_max`, so set it in the run that starts the schedule.
+A cosine schedule warns once when it passes its `T_max`, since its rate then climbs back up. It does not warn when that is the period the run chose: an explicit `T_max`, or a subclass's own. Torch lets a schedule run past it on purpose. A stateful resume keeps the checkpoint's `T_max`, so set it in the run that starts the schedule.
 
 The warm-up multiplier keeps its `(step + 1) / warmup_steps` form. With a base LR of 0.12, `warmup_steps=3` and `total_steps=8`, the first four updates train at 0.04, 0.08, 0.12, 0.12.
 
@@ -614,8 +614,10 @@ Every such update increments the callback context's `committed_updates`. It
 also calls each function in `ctx.update_listeners`; a callback appends one in
 `on_train_begin`. Setting `ctx.stop_at_update = True` from a listener stops
 training right after that batch. Set in `on_epoch_end`, it stops at that epoch
-boundary. This is an `NNModel.train` feature: `Trainer.train` refuses a
-callback that registers an update listener (use `on_optimizer_update` there).
+boundary.
+
+This is an `NNModel.train` feature. `Trainer.train` refuses a callback that
+registers an update listener; use `on_optimizer_update` there.
 
 On an epoch's last batch, the epoch completes and commits as usual. Inside an
 epoch, the epoch in progress is **discarded, never committed**. LAST, its
@@ -1806,7 +1808,11 @@ A component may also define `check_component_state(state, *, version)`, returnin
 
 Each component's state is written into the same sidecar generation as the checkpoint. A model and component state from different generations are therefore never combined. On resume:
 
-1. Every saved component is validated against the registered ones **before anything is mutated**. One `ComponentRestoreError` reports all of these together: a missing required component, an unknown required component in the checkpoint, a saved schema version newer than the component's, and every `check_component_state` problem.
+1. Every saved component is validated against the registered ones **before anything is mutated**. One `ComponentRestoreError` reports all of these problems together:
+    - a missing required component;
+    - an unknown required component in the checkpoint;
+    - a saved schema version newer than the component's;
+    - every `check_component_state` problem.
 2. Reset hooks (`Callback.on_train_begin`) run once.
 3. The saved states are loaded transactionally. If any load fails, every component already restored returns to its pre-call state, the model and RNG streams are restored, and the original error propagates. A rollback that itself fails (for instance, because a reset hook rewired the network) is reported as a `RuntimeWarning` instead of replacing the original error.
 4. The first resumed epoch runs.
@@ -1846,11 +1852,15 @@ resume:
   `optimizer_update` scheduler keeps its one horizon over the whole plan.
 
 `"planned"` needs a stateful resume from a checkpoint that records its plan.
-NNx refuses these before anything is restored: a weights-only resume, a
-checkpoint written before resume counters, a source that planned a different
-total, or a source that has already finished its plan. `resume_epochs` is
-part of the run id (it changes what trains) and omitted from `state()` at
-its default. A `Trainer` always resumes `"additional"`.
+NNx refuses these cases before anything is restored:
+
+- a weights-only resume;
+- a checkpoint written before resume counters;
+- a source that planned a different total;
+- a source that has already finished its plan.
+
+`resume_epochs` is part of the run id (it changes what trains) and omitted
+from `state()` at its default. A `Trainer` always resumes `"additional"`.
 
 An experiment plan asks for it with
 `resuming(run_id, mode="stateful", epochs="planned")` (§20); `epochs`
@@ -2094,11 +2104,13 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
                 └──► calibrator.report(..., split_id="test") ──► CalibrationReport (before / after, outcome)
 ```
 
-- **Split separation.** Fit on a split that is neither the training split
-  (the model already fits it) nor the final test split (the report needs it
-  untouched). `fit_temperature` rejects a `split_id` equal to
-  `train_split_id` or `test_split_id`. `report` rejects the calibration or
-  training split as held-out data. Different ids do not prove the rows are
+- **Split separation.** Fit on a split that is not the training split, which
+  the model already fits. It must not be the final test split either: the
+  report needs that one untouched.
+
+  `fit_temperature` rejects a `split_id` equal to `train_split_id` or
+  `test_split_id`. `report` rejects the calibration or training split as
+  held-out data. Different ids do not prove the rows are
   disjoint, because arrays and loaders carry no such guarantee. The
   calibrator therefore records `split["disjointness"] == "unverified"` with
   that note.
@@ -2130,10 +2142,13 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
   `sample_ids=` names an array's rows (default `0..N-1`) and must equal a
   prediction's own.
 - **Calibrated output.** `transform` returns a `CalibratedPrediction` with
-  these separate fields: the raw `logits`, raw `probabilities` (float64
-  softmax, identical to a temperature-1 calibrator),
-  `calibrated_probabilities`, `decoded` (the raw argmax), the ordered
-  `labels`, `sample_ids` and the `calibrator_id` (the calibrator's digest).
+  these separate fields:
+    - the raw `logits` and raw `probabilities` (float64 softmax, identical
+      to a temperature-1 calibrator);
+    - `calibrated_probabilities` and `decoded` (the raw argmax);
+    - the ordered `labels`, the `sample_ids` and the `calibrator_id` (the
+      calibrator's digest).
+
   The model, `predict()` and the run are never touched.
 - **Metrics.** The module provides four metrics:
   - `negative_log_likelihood`: mean `-log p[target]`. The default floor
@@ -2342,8 +2357,8 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
   temporary model and runs one forward pass in eval mode under
   `torch.no_grad()`.
   - With a target and the default training step, it reports the loss that
-    step would compute on the batch: train mode (dropout, batch statistics),
-    no gradient.
+    step would compute on the batch. It runs in train mode (dropout, batch
+    statistics) with no gradient.
   - A plan with its own `train_step_fn` or objective gets `loss=None`, since
     a probe cannot know that loss. So does an all-masked task batch, which
     the default step records no loss for. `output_shape` is always the
@@ -2457,9 +2472,9 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
   `predict_proba()`'s sample ids. The graph seed-row slicing is the same.
   So is the categorical, multilabel (the task's threshold) and continuous
   decoding.
-- **Batch types and edge cases.** With a `ProbabilitySpec`, or `rich=True`
-  for a model with a task, each batch is the `PredictionResult`
-  `predict_proba()` would build for it. An empty loader yields no batches,
+- **Batch types and edge cases.** Each batch is the `PredictionResult` that
+  `predict_proba()` would build for it. That holds with a `ProbabilitySpec`,
+  or with `rich=True` for a model with a task. An empty loader yields no batches,
   where the eager calls raise. Over a shuffling `DataLoader`, the first batch
   whose sample ids are iteration positions warns, as `predict_proba()` does.
   Graph seed rows carry global node indices and never warn.
@@ -2662,7 +2677,7 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   readable NNx manifest.
 - **Three formats, three readers.** Pickle checkpoints, safetensors
   checkpoints / Hub distributions and run bundles each have their own
-  reader, and none opens another's files (see [Hub integration
+  reader. None opens another's files (see [Hub integration
   §3](hub.md#3-three-artifact-formats-and-their-trust-boundaries) and
   `SECURITY.md`).
 
@@ -2798,9 +2813,9 @@ child recorded, or else by the attempt and start epoch. Only siblings of
 that checkpoint pool. Without a record, the lineage is unknown and pools
 with nothing.
 
-**Lineage limits.** Along the parents it follows, a cycle, more than 64
-ancestors or an ancestor's unreadable files are refused, whatever order the
-runs are listed in. Lineages are recorded only for runs trained with
+**Lineage limits.** Along the parents it follows, NNx refuses a cycle, more
+than 64 ancestors or an ancestor's unreadable files. The order in which the
+runs are listed does not matter. Lineages are recorded only for runs trained with
 `provenance=`. `born_again_train` takes none, so its generations are unknown
 lineages. To compare them across seeds, train each generation with
 `NNModel.train(params=NNTrainParams(..., parent_run_id=...), provenance=...)`.
@@ -2817,7 +2832,7 @@ separate page: [`docs/comparison.md`](comparison.md). See
 ## 24. Query-grouped ranking (`nnx.ranking`)
 
 A ranking model is judged per **query**: its candidates are ranked against
-each other, and a metric is an average over queries — never over rows or
+each other. A metric is an average over queries, never over rows or
 batches. `nnx.ranking.RankingTask` declares the task and checks every batch
 before any update:
 
@@ -2840,10 +2855,12 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
 
   Query and candidate ids are integers or strings, kept as host values. A
   candidate's identity therefore survives sorting, device moves and reloads.
-- **Rejected before any update:** mismatched lengths, mixed id types, a
-  candidate listed twice for one query, grades outside the declared range,
-  a mask of the wrong shape or values, a scorer that does not return one
-  score per row.
+- **Rejected before any update:**
+    - mismatched lengths or mixed id types;
+    - a candidate listed twice for one query;
+    - grades outside the declared range;
+    - a mask of the wrong shape or values;
+    - a scorer that does not return one score per row.
 - **The objective** is the pairwise logistic loss over every pair of a
   query's candidates with unequal grades. For relevance `[1, 0]` and scores
   `[2, 0]`, the loss is `log(1 + e^-2) = 0.126928`. Ties contribute nothing,
@@ -2907,16 +2924,19 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
    NNModelParams(net=graph_classifier_spec(...), task=TaskSpec.categorical(n, ignore_index=IGNORE))
 ```
 
-- **The collection** checks every graph once: unique non-negative integer
-  ids, at least one node, one feature width, edges inside the graph, and a
-  target for every graph not flagged `unlabeled`. A flagged graph's target
+- **The collection** checks every graph once. Ids must be unique
+  non-negative integers. Each graph needs at least one node, one feature
+  width and edges inside the graph. Every graph not flagged `unlabeled`
+  needs a target. A flagged graph's target
   is `IGNORE`. The collection never splits itself: split by graph id
   (`subset(ids)`). Correlated graphs leak across splits whatever their ids.
-- **The classifier** validates every batch before the forward pass. It
-  checks that graph ids are present and unique, no graph has zero nodes,
-  `ptr` and the batch vector are consistent, no edge crosses graphs, and
-  each graph has one target. It pools node rows into graph rows: `"mean"` or
-  `"sum"`, graph-local and invariant to node order.
+- **The classifier** validates every batch before the forward pass:
+    - graph ids are present and unique, and no graph has zero nodes;
+    - `ptr` and the batch vector are consistent, and no edge crosses graphs;
+    - each graph has one target.
+
+  It pools node rows into graph rows: `"mean"` or `"sum"`, graph-local and
+  invariant to node order.
 - **The recipe.** `graph_classifier_spec(input_dim, num_classes,
   hidden_dims, encoder="graph_conv" | "graph_sage" | "graph_att", pool=...)`
   is a registered recipe. A reload rebuilds the same encoder, pool and head.
