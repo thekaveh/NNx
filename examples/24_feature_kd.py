@@ -8,7 +8,7 @@ Pipeline:
   3. Train the student via `nnx.paradigms.feature_kd_train_step_factory`
      with one teacher_layer → student_layer auxiliary pair plus the
      usual KL-soft + hard-label terms.
-  4. Compare student val accuracy with vs without the feature-KD term.
+  4. Report the teacher's and the student's val accuracy.
 
 Feature-KD adds an MSE term between named teacher / student
 intermediate activations: L = α * KL_soft * T² + β * MSE(student_act, teacher_act) + (1 - α) * L_hard.

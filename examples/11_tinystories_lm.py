@@ -4,7 +4,8 @@ the TransformerNN path.
 Pipeline:
 
   1. Load TinyStories (or a synthetic fallback corpus for offline runs).
-  2. Train a tiny BPE tokenizer on a 1% subset.
+  2. Hold out 10% of the distinct lines for validation, and train a tiny
+     BPE tokenizer on the training lines.
   3. Build a ~1M-param TransformerNN + NNTokenizerParams (the script
      prints the exact count at startup).
   4. Train via the standard `NNModel.train()` loop with the causal-LM task
@@ -17,8 +18,8 @@ Pipeline:
      produces vaguely-story-like continuations.
 
 Scope explicit: TinyStories-class CPU-friendly demo. A full TinyStories
-epoch on a laptop is hours; this example trains on a 1% subset for a
-sub-30-min CPU run. Production-scale training (multi-GPU, FlashAttention)
+epoch on a laptop is hours; with ``--use-hf`` this example trains on the
+first ``--n-lines`` stories for a sub-30-min CPU run. Production-scale training (multi-GPU, FlashAttention)
 is intentionally out of scope.
 
 Requires the ``lm`` optional extra (for the HuggingFace ``tokenizers``
@@ -125,9 +126,9 @@ def _load_corpus(use_hf: bool, n_lines: int) -> list[str]:
 class _LMDataset(Dataset):
     """Slice a token stream into fixed-length context windows.
 
-    Each sample is ``(x, y)`` where ``y = x.roll(-1)`` — next-token
-    targets. We don't add BOS/EOS framing; the BPE training does that
-    via the special tokens vocab.
+    Each sample is ``(x, y)``: a window of the stream and the same window
+    shifted one token ahead (next-token targets). No BOS/EOS framing is
+    added.
     """
 
     def __init__(self, token_ids: list[int], seq_len: int):
@@ -346,9 +347,15 @@ def main() -> None:
     # --- 2. BPE tokenizer ---
     artifacts_dir = Path("artifacts/tinystories_lm")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # Hold out whole distinct lines, so no validation sentence also appears
+    # in training (the fallback corpus repeats each line 50 times).
+    distinct = list(dict.fromkeys(corpus))
+    held_out = set(distinct[-max(1, len(distinct) // 10) :])
+    train_lines = [line for line in corpus if line not in held_out]
+    val_lines = [line for line in corpus if line in held_out]
     tk = train_bpe(
         files=None,
-        texts=corpus,
+        texts=train_lines,
         vocab_size=args.vocab_size,
         special_tokens=["<unk>", "<pad>", "<bos>", "<eos>"],
     )
@@ -356,17 +363,22 @@ def main() -> None:
     print(f"[tinystories] tokenizer vocab_size={tokenizer.vocab_size}")
 
     # --- 3. Tokenize the corpus into a single id stream ---
-    all_ids: list[int] = []
-    for line in corpus:
-        all_ids.extend(tokenizer.encode(line))
-    print(f"[tinystories] total tokens: {len(all_ids):,}")
+    def _ids(lines: list[str]) -> list[int]:
+        ids: list[int] = []
+        for line in lines:
+            ids.extend(tokenizer.encode(line))
+        return ids
 
-    ds = _LMDataset(token_ids=all_ids, seq_len=args.seq_len)
-    n_val = max(1, len(ds) // 10)
+    train_ids, val_ids = _ids(train_lines), _ids(val_lines)
+    print(f"[tinystories] tokens: {len(train_ids):,} train, {len(val_ids):,} validation")
+
     train_loader = DataLoader(
-        torch.utils.data.Subset(ds, range(n_val, len(ds))), batch_size=args.batch_size, shuffle=True, drop_last=True
+        _LMDataset(token_ids=train_ids, seq_len=args.seq_len),
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
     )
-    val_loader = DataLoader(torch.utils.data.Subset(ds, range(n_val)), batch_size=args.batch_size)
+    val_loader = DataLoader(_LMDataset(token_ids=val_ids, seq_len=args.seq_len), batch_size=args.batch_size)
 
     # --- 4. Model ---
     net_params = NNTransformerParams(

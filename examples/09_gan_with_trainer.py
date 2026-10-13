@@ -9,9 +9,10 @@ the GAN's alternating update pattern without optimizers stepping on
 each other.
 
 Real distribution: a 1D mixture of N(-3, 0.5) and N(3, 0.5). After
-training, G should produce samples concentrated near ±3. The training
-loop prints the average combined loss decreasing as G learns the
-distribution.
+training, G's samples move toward the real modes near ±3; this minimal
+GAN often covers only one of them (mode collapse). The training loop
+prints the combined (D + G) loss per epoch. An adversarial loss need not
+decrease, so read the printed sample statistics, not the loss.
 
 Ownership: ``gan_step`` (the ``trainer_step_fn``) owns every optimizer
 update — it zeroes, back-propagates and steps ``optimizers["D"]`` and

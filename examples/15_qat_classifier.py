@@ -17,9 +17,9 @@ schemes. The flow:
   5. The saved LAST checkpoint holds the CONVERTED (quantized) weights
      — ``NNModel.train`` re-saves it after ``on_train_end`` fires, so
      the on-disk state carries the int4 scales/zeros, not the pre-convert
-     FP32 tensors. Reloading takes a fresh net through the same
-     prepare→convert before ``load_state_dict`` (the quantized state
-     dict has keys a plain FP32 net can't absorb).
+     FP32 tensors. ``NNModel.from_checkpoint`` reloads it: the checkpoint
+     records the ``torchao_qat`` transform, and the loader replays the
+     same prepare→convert before it loads the quantized state dict.
 
 Compared to PTQ (``examples/12_quantize_int8.py``):
 
@@ -199,11 +199,7 @@ def main():
     quant_keys = sorted(k for k in ckpt.net_state if k.endswith(("scales", "zeros")))
     print(f"quantized keys in the saved LAST checkpoint: {quant_keys}")
 
-    reloaded = _make_classifier()
-    quantizer = QATLifecycleCallback(qat_config="8da4w").quantizer
-    quantizer.prepare(reloaded.net)
-    quantizer.convert(reloaded.net)
-    reloaded.net.load_state_dict(ckpt.net_state)
+    reloaded = NNModel.from_checkpoint(ckpt)
     reloaded_acc = _val_accuracy(reloaded, val_loader)
     print(f"reloaded val accuracy: {reloaded_acc * 100:.2f}%  (converted model: {acc * 100:.2f}%)")
     assert reloaded_acc == acc, "reloaded quantized model should match the converted one"

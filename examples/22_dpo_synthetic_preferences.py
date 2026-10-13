@@ -8,8 +8,7 @@ Pipeline:
      "rejected" one doesn't.
   3. Wrap the pretrained model as the frozen reference policy.
   4. Run `dpo_train_step_factory(ref_model=...)` for a handful of epochs.
-  5. Check that the model's log-prob ratio for the preferred sequence
-     vs the rejected sequence has increased.
+  5. Print the chosen-minus-rejected log-prob gap before and after DPO.
 
 Key API notes:
   - `dpo_train_step_factory` expects a frozen `NNModel` (or subclass)
@@ -226,9 +225,8 @@ def main() -> None:
         for p in ref_model.net.parameters():
             p.requires_grad = False
 
-        # pad_token_id: exclude the dataset's right-padding from the
-        # response log-prob sums (NNPreferenceDataset pads with id 0 by
-        # default).
+        # pad_token_id: exclude the dataset's right-padding (id 1 here, set
+        # on the dataset above) from the response log-prob sums.
         dpo_step = dpo_train_step_factory(ref_model=ref_model, beta=0.1, pad_token_id=pref_ds.pad_token_id)
 
         # Snapshot log-probs BEFORE DPO (use a deep-copy so training

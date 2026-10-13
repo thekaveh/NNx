@@ -1,7 +1,7 @@
 """Warm-resume training from a prior run.
 
-Round 1 trains for 3 epochs; round 2 picks up from the LAST checkpoint
-of round 1 and trains another 4 epochs, with Adam momentum / first /
+Round 1 trains for 4 epochs; round 2 picks up from the LAST checkpoint
+of round 1 and trains another 3 epochs, with Adam momentum / first /
 second-moment buffers, scheduler, scaler, epoch progress, and RNG state
 preserved across the boundary. Resume lineage participates in the new run's
 content-addressed identity, so the original run remains intact.
@@ -324,7 +324,7 @@ def amp_resume_compatibility() -> dict:
 
     ``NNModelParams(mixed_precision=True)`` only activates autocast + a
     ``torch.amp.GradScaler("cuda")`` on CUDA — the scaler factory needs
-    PyTorch >= 2.3, NNx's declared floor. Everywhere else the same
+    PyTorch >= 2.3; NNx's declared floor is 2.4. Everywhere else the same
     configuration trains scaler-free: the training-state sidecar records
     ``scaler=None`` and a resume restores nothing for it. On a CUDA host
     the helper additionally fits one epoch with AMP enabled, resumes for

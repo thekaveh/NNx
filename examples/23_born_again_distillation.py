@@ -87,11 +87,9 @@ def main() -> None:
         temperature=4.0,
     )
 
-    # NOTE: every generation shares one params hash, so on disk each
-    # generation's runs/<id>/ overwrites the last — only Gen G-1's
-    # artifacts survive (the returned `runs` list keeps all generations
-    # in memory). Use a fresh working dir per generation if you need
-    # every generation's checkpoints.
+    # Each generation is a distinct run: its params name the previous
+    # generation as parent_run_id, so every generation keeps its own
+    # runs/<id>/ directory and checkpoints.
     print(f"{len(runs)} generation runs returned.")
     for g, run in enumerate(runs):
         val_idps = [idp for idp in run.idps if idp.val_edp is not None]

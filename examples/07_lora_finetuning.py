@@ -9,8 +9,7 @@ Flow:
      full-rank weight; only the new ``lora_A`` and ``lora_B``
      matrices (~r/dim of the original size) train.
   3. Fine-tune on distribution B.
-  4. Verify every base ``weight`` / ``bias`` is BIT-EXACTLY unchanged
-     and LoRA params have moved.
+  4. Verify every base ``weight`` / ``bias`` is BIT-EXACTLY unchanged.
   5. Save a LoRA-only checkpoint and compare its size to a full
      state-dict snapshot.
 

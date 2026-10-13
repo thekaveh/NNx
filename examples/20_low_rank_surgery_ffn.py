@@ -11,8 +11,8 @@ Pipeline:
   4. Compare:
      - Total param count before vs after.
      - Validation accuracy before vs after.
-  5. Briefly fine-tune the surgically modified model and verify accuracy
-     recovers.
+  5. Briefly fine-tune the surgically modified model and print its
+     refined accuracy.
 
 Note: `low_rank_factorize` takes a `nn.Linear` directly and returns a
 `nn.Sequential` of two Linears. The caller is responsible for swapping
@@ -522,8 +522,8 @@ def main() -> None:
     print(f"Post-surgery val acc:    {_val_acc(model.net, val_loader):.3f}  # expect drop before refinement")
 
     print("─── Phase 3: refine to recover accuracy ───")
-    # Topology-changing surgery no longer matches net_params, so use a
-    # manual refinement loop and export_state_dict() for persistence.
+    # Topology-changing surgery no longer matches net_params, so refine with
+    # a manual loop; to persist the result, call model.export_state_dict().
     optimizer = torch.optim.Adam(model.net.parameters(), lr=5e-3)
     loss_fn = torch.nn.CrossEntropyLoss()
     model.net.train()

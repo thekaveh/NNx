@@ -127,6 +127,8 @@ def _scorer(seed: int = 0) -> NNModel:
         net_params=NNParams(
             input_dim=3 * DIM, output_dim=1, hidden_dims=[32], dropout_prob=0.0, activation=Activations.RELU
         ),
+        # The ranking task's objective supplies the training loss;
+        # NNModelParams.loss is recorded with the run but not used by it.
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
     )
 

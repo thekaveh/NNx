@@ -49,6 +49,7 @@ from nnx import (
     NNOptimParams,
     NNParams,
     NNTrainParams,
+    set_seed,
 )
 from nnx.benchmarking import compare_compile, profile_forward
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
@@ -57,7 +58,7 @@ DEVICES = {"cpu": Devices.CPU, "cuda": Devices.CUDA, "mps": Devices.MPS}
 
 
 def _model(device: Devices) -> NNModel:
-    torch.manual_seed(0)
+    # No seeding here: run() seeds once before it builds the model.
     return NNModel(
         net_params=NNParams(
             input_dim=32, output_dim=4, hidden_dims=[128, 128], dropout_prob=0.0, activation=Activations.RELU
@@ -73,6 +74,7 @@ def _data() -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def run(device: str = "cpu", warmup: int = 3, repeats: int = 10, output_dir: str = "profile") -> dict:
+    set_seed(0)
     X, y = _data()
     model = _model(DEVICES[device])
     batches = [(X[i : i + 64], y[i : i + 64]) for i in range(0, len(X), 64)]

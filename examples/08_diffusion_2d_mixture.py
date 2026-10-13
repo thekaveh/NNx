@@ -197,17 +197,19 @@ def main():
     print(f"\nDiffusion noise-prediction loss: {first:.4f} → {last:.4f}")
     print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 
-    # Sample and report the rough mode coverage. With 4 modes evenly
-    # distributed, ~25% of well-trained samples should land near each
-    # mode (within a small radius); pure noise would be ~uniform around
-    # the origin.
+    # Sample and report the rough mode coverage: count the samples within
+    # radius 1 of each mode. With 4 evenly weighted modes, a well-trained
+    # model puts ~25% of its samples near each one; pure noise puts few
+    # samples inside any radius-1 disc.
     n_samples = 256
     samples = sample(model, schedule, shape=(n_samples, 2))
     centers = torch.tensor([[-2, -2], [-2, 2], [2, -2], [2, 2]], dtype=torch.float32)
-    nearest = torch.cdist(samples, centers).argmin(dim=1)
-    print("samples per mode (target ~64 each):")
+    distances = torch.cdist(samples, centers)
+    nearest = distances.argmin(dim=1)
+    close = distances.min(dim=1).values < 1.0
+    print(f"samples within radius 1 of a mode (a trained model: ~{n_samples // 4} each):")
     for i, c in enumerate(centers.tolist()):
-        count = int((nearest == i).sum())
+        count = int(((nearest == i) & close).sum())
         print(f"  near ({int(c[0]):+d}, {int(c[1]):+d}): {count}")
 
 

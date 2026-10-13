@@ -51,9 +51,24 @@ EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.py")) + [
 ]
 
 
+def _skip_if_optional_extra_missing(exc: ImportError, what: str) -> None:
+    """Skip when ``exc`` is a missing optional extra: a third-party module
+    that is not installed, or NNx's own "pip install thekaveh-nnx[...]"
+    error. Re-raise anything else (a broken ``nnx`` import fails, never
+    skips)."""
+    missing = exc.name or getattr(exc.__cause__, "name", None) or ""
+    names_nnx = missing == "nnx" or missing.startswith("nnx.")
+    if names_nnx or (not missing and "thekaveh-nnx[" not in str(exc)):
+        raise exc
+    pytest.skip(f"{what} needs an optional extra: {exc}")
+
+
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda path: path.stem)
 def test_example_imports_without_running_main(example):
-    runpy.run_path(str(example), run_name="__nnx_example_smoke__")
+    try:
+        runpy.run_path(str(example), run_name="__nnx_example_smoke__")
+    except ImportError as exc:
+        _skip_if_optional_extra_missing(exc, example.name)
 
 
 @pytest.mark.parametrize(
@@ -176,8 +191,8 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
     helper's own assertions are the contract under test."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
-    namespace = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")
     try:
+        namespace = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")
         fn = namespace[helper]
         fn()
         if helper in {"dora_zero_row_composition", "manual_attention_lm_example"}:
@@ -187,7 +202,7 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
     except ImportError as exc:
         # Helpers that need an optional extra raise ImportError naming it:
         # an explicit skip in a core-only environment, never a silent pass.
-        pytest.skip(f"{name}:{helper} needs an optional extra: {exc}")
+        _skip_if_optional_extra_missing(exc, f"{name}:{helper}")
 
 
 def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_path):

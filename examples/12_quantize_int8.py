@@ -2,7 +2,7 @@
 
 Flow:
 
-  1. Build a small classifier (FeedFwdNN with three Linear layers).
+  1. Build a small classifier (FeedFwdNN with four Linear layers).
   2. Train on a 3-class Gaussian-mixture toy task.
   3. Snapshot FP32 validation accuracy.
   4. Quantize the trained model via ``nnx.quantize_int8`` — one call,
@@ -63,7 +63,7 @@ from nnx import (
 
 
 def _make_classifier() -> NNModel:
-    """Three hidden layers of width 128. Wide enough that the per-channel
+    """Hidden layers of width 128, 128 and 64. Wide enough that the per-channel
     int8 layout's metadata is dominated by the weight bytes, so the
     quantized state-dict is meaningfully smaller than the FP32 one."""
     return NNModel(
