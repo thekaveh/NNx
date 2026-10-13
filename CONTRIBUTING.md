@@ -111,8 +111,9 @@ in every phase. An unsupported one links an executed negative test (or the
 exact documented limitation). The CI `feature-composition` job fails when a
 verified row fails or loses coverage.
 
-The gate is strict only on the published profile's OS (Linux). There, `--run`
-also fails when an extra in the profile's `dependencies` (under
+The gate is strict only on a published evidence profile: the same OS,
+Python version and device (`cpu` is Linux, Python 3.12). There, `--run` also
+fails when an extra in the profile's `dependencies` (under
 `evidence_profiles`) is not installed. Run it after `uv sync --all-extras`.
 Elsewhere, rows needing a missing extra are simply not judged.
 
