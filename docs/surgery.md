@@ -47,6 +47,8 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 new_net = widen(model.net, layer_name="layers.0", new_width=64)
 
 x = torch.randn(8, model.net.params.input_dim)
+model.net.eval()  # compare in eval mode: dropout would break parity
+new_net.eval()
 with torch.no_grad():
     assert torch.allclose(model.net(x), new_net(x), atol=1e-5)
 

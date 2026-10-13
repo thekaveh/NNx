@@ -105,7 +105,7 @@ pip install "thekaveh-nnx[hub]"                 # safetensors checkpoints + Hugg
 pip install "thekaveh-nnx[embeddings]"          # nnx.embeddings: FAISS export + sentence-transformers
 pip install "thekaveh-nnx[lm]"                  # TransformerNN + HF tokenizer + generate()
 pip install "thekaveh-nnx[gguf-write]"          # experimental NNx GGUF writer
-pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export
+pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export (netron_export also needs [onnx])
 pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)
 pip install "thekaveh-nnx[jev]"                 # nnx.decisions.JevProvider (hosted Jev models)
 pip install "thekaveh-nnx[optuna]"              # nnx.search: budgeted experiment search

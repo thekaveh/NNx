@@ -11,8 +11,9 @@ relabel the GGUF as ``llama`` because the RoPE layouts differ.
 
 Scope: the GGUF is written at F16 (the default). For smaller files use
 the ``llama-quantize`` shell-out recipe from
-``examples/17_export_transformer_to_gguf.py``, then point the Modelfile's
-``FROM`` line at the quantized file.
+``examples/17_export_transformer_to_gguf.py``. Its ``llama-quantize`` must
+come from a llama.cpp revision or patch that supports ``nnx_transformer``.
+Then point the Modelfile's ``FROM`` line at the quantized file.
 
 Requires the ``gguf-write`` optional extra (for
 ``nnx.interop.export_ollama_modelfile``, which wraps

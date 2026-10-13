@@ -17,10 +17,11 @@ A handful of examples depend on optional extras — install them as needed:
 
 ```bash
 pip install "thekaveh-nnx[onnx]"             # 04_onnx_export.py, 12_quantize_int8.py (Phase-5 export)
+pip install "thekaveh-nnx[onnx-runtime]"     # 04_onnx_export.py (executed level)
 pip install "thekaveh-nnx[quantize]"         # 12_quantize_int8.py, 15_qat_classifier.py
 pip install "thekaveh-nnx[onnx-dynamo]"      # 15_qat_classifier.py (Phase-6 dynamo export)
 pip install "thekaveh-nnx[embeddings]"       # 13_train_domain_embedder.py
-pip install "thekaveh-nnx[lm]"               # ordered_logits_pipeline.py, 11_tinystories_lm.py, 17_export_transformer_to_gguf.py, 18_export_ollama_bundle.py, 22_dpo_synthetic_preferences.py
+pip install "thekaveh-nnx[lm]"               # ordered_logits_pipeline.py, 11_tinystories_lm.py, 12_quantize_int8.py (quantized_generative_subtype), 17_export_transformer_to_gguf.py, 18_export_ollama_bundle.py, 22_dpo_synthetic_preferences.py
 pip install "thekaveh-nnx[gguf-write]"       # 17_export_transformer_to_gguf.py, 18_export_ollama_bundle.py
 pip install "thekaveh-nnx[viz]"              # 21_viz_attribute_xai.py
 pip install "thekaveh-nnx[graph]"            # graph_classification_offline.py, graph_optional_splits.py, link_prediction_offline.py, the graph helper in 02_resume_training.py
@@ -195,7 +196,7 @@ Notes for section 2.1:
 
 - The model is a registered candidate scorer (shared encoder, shared scalar head; no new `Nets` member). It scores `(state, question, candidate description)`.
 - `--mode mechanics` (default, offline, CPU) runs the pre-execution manifest and trains on the fit families only. It selects on the select families and scores held-out families once.
-- Mechanics mode also writes replay records with candidate ids and the schema digest, and reloads the checkpoint through the registry. It ends with a stop record when the compute cap is reached (the bounded helper caps it at 48 updates) and a **no-go** report (mechanics evidence only).
+- Mechanics mode also writes replay records with candidate ids and the schema digest, and reloads the checkpoint through the registry. It writes a stop record when the run reaches the compute cap (the bounded helper caps it at 48 updates). It ends with a **no-go** report (mechanics evidence only).
 - `--mode empirical` writes and validates its manifest, checks its resources and writes a **blocked** report. The report names any missing resource; with all present, it says the empirical runs are outside this repository.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `pilot_workflow()`, `-k decision_model_pilot`).
 

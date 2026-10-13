@@ -506,7 +506,7 @@ scenarios:
     features: [custom eval step, non-finite metric]
     entry_point: examples/26_custom_eval_step.py
     profile: {device: cpu, dtype: fp32, dependencies: []}
-    expected: The custom-eval example runs, and its non-finite-metric helper asserts its refusal.
+    expected: The custom-eval example runs, and its non-finite-metric helper asserts the finite-metric fallback.
     tests:
       - tests/test_examples_smoke.py::test_representative_examples_run_end_to_end[26_custom_eval_step.py]
       - tests/test_examples_smoke.py::test_bounded_example_helpers_execute[26_custom_eval_step.py-nonfinite_metric_workflow]

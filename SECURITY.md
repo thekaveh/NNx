@@ -18,11 +18,15 @@ Optimizer and training-state sidecars use `weights_only=True`, but they must sti
 
 To share a run, export it as a **run bundle** (`nnx.bundles.export_bundle`). Export reads your own pickle checkpoint. It writes the checkpoint's weights, training state and calibrators as safetensors plus schema-validated JSON.
 
-The bundle readers (`inspect_bundle`, `validate_bundle`, `reconstruct_bundle`) never unpickle, import code named by the bundle or download anything. Before any tensor is read, they check:
+The bundle readers (`inspect_bundle`, `validate_bundle`, `reconstruct_bundle`) never unpickle, import code named by the bundle or download anything.
+
+`validate_bundle` and `reconstruct_bundle` check the whole bundle before any tensor is read:
 
 - every payload's SHA-256 and size;
 - the generation id;
 - that no payload is missing, unlisted, symlinked or outside the bundle.
+
+`inspect_bundle` checks only the manifest, `state.json` and the calibrator records. It reads no tensor and does not check tensor payloads.
 
 A registered module is rebuilt only from factories the caller supplies.
 

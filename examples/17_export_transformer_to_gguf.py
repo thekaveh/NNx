@@ -2,7 +2,7 @@
 
 This script demonstrates NNx's GGUF container writer:
 
-  1. Build a tiny TransformerNN + BPE tokenizer (or load one off disk).
+  1. Build a tiny TransformerNN + BPE tokenizer.
   2. Call ``nnx.interop.gguf.write_gguf`` to produce ``model.gguf``.
   3. Optionally probe the file with ``gguf.GGUFReader`` to verify.
 
@@ -11,8 +11,9 @@ Ollama, and LM Studio do not implement that architecture; use the artifact for
 inspection or with a runtime explicitly patched for NNx. Do not relabel it as
 ``llama`` because NNx and LLaMA use different RoPE layouts.
 
-For Q4_K_M / Q5_K_M / etc., write F16 here and build the official
-``llama-quantize`` tool from the llama.cpp source repository:
+For Q4_K_M / Q5_K_M / etc., write F16 here, then run ``llama-quantize``.
+Build it from a llama.cpp revision or patch set that supports the
+``nnx_transformer`` architecture (see docs/gguf.md §4):
 
     python examples/17_export_transformer_to_gguf.py
     llama-quantize artifacts/lm_export/model.gguf \\
@@ -85,8 +86,8 @@ def main() -> None:
 
     # --- 4. Pointer at the sub-F16 quantization recipe ---
     print(
-        "\n[gguf] For Q4_K_M / Q5_K_M / Q8_0 quantization, install the\n"
-        "       official llama.cpp `llama-quantize` binary from a source build\n"
+        "\n[gguf] For Q4_K_M / Q5_K_M / Q8_0 quantization, build `llama-quantize`\n"
+        "       from a llama.cpp revision or patch that supports nnx_transformer\n"
         f"       and run: `llama-quantize {gguf_path} {gguf_path.with_suffix('.Q4_K_M.gguf')} Q4_K_M`"
     )
 

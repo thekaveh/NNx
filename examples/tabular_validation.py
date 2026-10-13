@@ -1,7 +1,7 @@
 """Tabular data admission — non-finite features and narrowing overflow.
 
 Demonstrates what ``NNTabularDataset`` refuses to admit, and that a valid
-frame still trains:
+frame is accepted:
 
   1. **Source infinity before an integer / bool cast.** ``±inf`` in a
      selected feature column is rejected in source precision, before the

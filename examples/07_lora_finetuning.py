@@ -16,8 +16,8 @@ Flow:
 The point isn't accuracy comparison — for a toy task, full fine-tuning
 and LoRA fine-tuning land near the same val error. The point is the
 mechanism: only the adapters train, and the base stays bit-exact. On
-this toy net about 38% of the parameters are trainable (560 of 1476),
-and the LoRA file is about 39% of the full state. LoRA saves memory
+this toy net the adapters hold 560 trainable values. That is about 38% of
+the base's 1476 parameters (27.5% of the wrapped net's 2036). The LoRA file is about 39% of the full state. LoRA saves memory
 and storage only when a layer's width is much larger than the rank r.
 
 ``dora_zero_row_composition`` below is a bounded DoRA companion: a wrapped

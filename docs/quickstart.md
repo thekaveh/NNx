@@ -108,7 +108,9 @@ return `float32` outputs, so their schemas are unchanged.
 - `covers`: the NNx surfaces that apply the policy. These are the run's
   training where NNx runs the default step or an objective, and `evaluate()` /
   `predict()` whenever they are called.
-- `not_covered`: the surfaces that never apply it.
+- `not_covered`: the surfaces this run's policy did not reach. These are
+  the NNx surfaces outside this run, plus the surfaces that never apply the
+  policy.
 
 Custom `train_step_fn` / `eval_step_fn` code is outside both lists. A
 training step reads `ctx.precision` and applies it itself. The policy does

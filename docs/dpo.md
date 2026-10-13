@@ -160,12 +160,22 @@ ds = load_dataset("Anthropic/hh-rlhf", split="train[:1000]")
 # except the final assistant reply, so split at the LAST assistant turn
 # and keep the "Assistant:" cue in the prompt.
 marker = "\n\nAssistant:"
+max_prompt_len = 256
+triples = [
+    (row["chosen"].rsplit(marker, 1)[0] + marker,
+     row["chosen"].rsplit(marker, 1)[1],
+     row["rejected"].rsplit(marker, 1)[1])
+    for row in ds
+]
+# NNPreferenceDataset right-truncates prompts, so a long dialogue would
+# lose its final "Assistant:" cue. Drop the prompts that do not fit.
+triples = [t for t in triples if len(tokenizer.encode(t[0])) <= max_prompt_len]
 preferences = NNPreferenceDataset(
-    prompts=[row["chosen"].rsplit(marker, 1)[0] + marker for row in ds],
-    chosen=[row["chosen"].rsplit(marker, 1)[1] for row in ds],
-    rejected=[row["rejected"].rsplit(marker, 1)[1] for row in ds],
+    prompts=[p for p, _, _ in triples],
+    chosen=[c for _, c, _ in triples],
+    rejected=[r for _, _, r in triples],
     tokenizer=tokenizer,
-    max_prompt_len=256,
+    max_prompt_len=max_prompt_len,
     max_response_len=256,
     pad_token_id=1,
 )

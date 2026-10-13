@@ -586,9 +586,10 @@ def my_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     loss = recon_loss + kl
     loss.backward()
     ctx.optimizer.step()
+    loss_val = float(loss.detach())
     return NNEvaluationDataPoint(
-        f1=0, recall=0, accuracy=0, precision=0,
-        loss=float(loss.detach()),
+        loss=loss_val,
+        error=loss_val,  # the loss as "error" keeps BEST tracking meaningful
         extra={"recon": float(recon_loss), "kl": float(kl)},
     )
 
@@ -712,7 +713,7 @@ NNModelParams(net=Nets.FEED_FWD, loss=Losses.BINARY_CROSS_ENTROPY, task=TaskSpec
 NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(3, ignore_index=-100))
 ```
 
-The task's adapter (`model.task_adapter`) then owns four things for the
+The task's adapter (`model.task_adapter`) then owns these concerns for the
 default step, `evaluate()`, `predict()` and `predict_proba()`:
 
 - **Validation.** Each batch's outputs and targets are checked for the
@@ -1055,8 +1056,11 @@ update. Each is clipped with its own `grad_clip_norm`, and all share one
 An explicit `NNModelParams.precision` applies to `Trainer` objectives too.
 It brings autocast around the objective, an FP16 scaler checkpointed with the
 run, and an all-or-nothing window. When any optimizer's unscaled gradients
-overflow, none of them steps. Under FP16 the named optimizers must not share
-a parameter, because the scaler unscales per optimizer. Sharing is refused
+overflow, none of them steps.
+
+In an objective run the named optimizers must not share a parameter. Every
+committed window steps each optimizer, so a shared parameter would update
+twice. Under FP16 the scaler also unscales per optimizer. Sharing is refused
 before any run is reserved.
 
 `Trainer` step functions, by contrast, own every update in full precision.
@@ -1229,6 +1233,7 @@ Registered optimizer factories (§3.1) get the same strictly-owned groups. A spe
 There is **no** `default_trainer_step`. Multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly:
 
 - The `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer).
+- A `trainer_step_fn` run refuses `grad_clip_norm` and an `accumulate_grad_batches` other than 1 on any named optimizer. The Trainer cannot apply them to a step function's updates. Clip or accumulate inside the step function, or pass `objective=` instead.
 - The Trainer owns the epoch loop and steps each registered scheduler once per epoch. On the `optimizer_update` clock (§2.5), it steps a scheduler after each update the step reports with `ctx.report_update(name)`. Each optimizer keeps its own count.
 
 `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update).
@@ -1358,11 +1363,11 @@ from nnx import (
 
 §§10.1–10.3 below cover the four foundational paradigms (KD, SimCLR, Mixup, CutMix). The other paradigms are documented in dedicated pages or under §15 (DPO ties into the LM path):
 
-- **Feature-KD** — extends `kd_train_step_factory` with an MSE term between named teacher/student intermediate activations; full signature in [API §14](api.md).
+- **Feature-KD** — extends `kd_train_step_factory` with an MSE term between named teacher/student intermediate activations; full signature in [API §14](api.md#14-training-paradigms-nnxparadigms).
 - **MoE** — `MoELinear` drop-in for `nn.Linear` + `moe_train_step_factory` (sums per-layer `last_aux_loss` into the main loss as a Switch-style load-balancing penalty); demo in `examples/14_moe_classifier.py`.
 - **I-JEPA** — masked-patch → latent-prediction against an EMA target encoder; full walkthrough in [`docs/jepa.md`](jepa.md).
 - **DPO** — preference-pair fine-tuning against a frozen reference policy; see §15 and [`docs/dpo.md`](dpo.md).
-- **Born-Again** — `born_again_train(...)` iterates self-distillation across G generations; see [API §14](api.md).
+- **Born-Again** — `born_again_train(...)` iterates self-distillation across G generations; see [API §14](api.md#14-training-paradigms-nnxparadigms).
 
 ### 10.1. Knowledge distillation
 
@@ -1428,7 +1433,7 @@ model.train(params=..., train_step_fn=mixup)
 
 ## 11. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 
-Some pretrained models are too large to fine-tune in full. PEFT keeps the original weights frozen and trains a small set of new parameters instead. `nnx.peft` ships six adapters. They range from rank-decomposed residuals (LoRA) down to a single per-output scaling vector (IA3). §§11.1–11.2 walk through LoRA and `AdapterLayer` in detail. The others share the same wrap-and-freeze idiom; see [API §9](api.md) for full signatures.
+Some pretrained models are too large to fine-tune in full. PEFT keeps the original weights frozen and trains a small set of new parameters instead. `nnx.peft` ships six adapters. They range from rank-decomposed residuals (LoRA) down to a single per-output scaling vector (IA3). §§11.1–11.2 walk through LoRA and `AdapterLayer` in detail. The others share the same wrap-and-freeze idiom; see [API §9](api.md#9-parameter-efficient-fine-tuning-nnxpeft) for full signatures.
 
 - **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector. It recomposes the layer's weight as `W = magnitude · V / ||V||_c`, following [Liu et al. (2024)](https://arxiv.org/abs/2402.09353). It adds only `out_features` parameters per wrapped layer. Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices. The `magnitude` parameter rides along via the full `state_dict()` round-trip. Persist a DoRA adapter with the complete `state_dict()`, since the LoRA-only helpers omit `magnitude`.
 - **DoRA precision.** The row normalization runs in FP32 for FP16/BF16 layers (FP64 keeps FP64). The effective weight is cast back to the layer dtype. A row of `V` may be zero or tiny, from pruning, explicit zero init or a zero row in a loaded base. Such a row gives a finite output equal to the base at initialization instead of NaN. Learned nonzero updates stay differentiable.
@@ -1626,8 +1631,9 @@ A train → evaluate → train-more (or train → predict → train-more) loop t
 
 ### 13.3. Reproducible splits: group, time and stratified
 
-`NNTabularDataset` and `NNDataset` split with a seeded `random_split` by
-default. That suits independent rows, but rows of one patient can straddle
+By default, `NNTabularDataset` and `NNDataset` split with `random_split`. It
+uses the dataset's `seed` when one is given, else the global torch RNG. That
+suits independent rows, but rows of one patient can straddle
 train and test, and future rows can leak into training.
 `nnx.data_splits.plan_split` decides membership explicitly and
 returns a `SplitManifest`:
@@ -1704,8 +1710,8 @@ dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="la
   memberships, strategy, parameters, seed and source.
   `ExperimentManifest(splits={"main": plan})` (§4.4) records that digest as a
   verified identity, which stays the same after reload and replay.
-- **Default behaviour.** Without `split=`, datasets call
-  seeded `random_split`. `NNTrainParams.state()` and run ids gain
+- **Default behaviour.** Without `split=`, datasets call `random_split`
+  with the dataset's `seed`, or the global torch RNG when it is `None`. `NNTrainParams.state()` and run ids gain
   nothing, and a dataset's `state()` gains `split` (the digest) only when a
   manifest is used.
 - **Graph edges are excluded.** Plans split samples (rows, images, graph
@@ -2047,9 +2053,9 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 - The PTQ path is one call, with no calibration data and no retraining. It returns an instance of the same class it was given, with only `net` replaced by the quantized deep copy. A `GenerativeNNModel` keeps its tokenizer and `generate`; user subclasses keep their overrides and attributes.
 - The QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit.
 - A converted `LAST` checkpoint records its `qat_config` and `groupsize`. The ordinary `NNModel.from_checkpoint()` path therefore reconstructs quantized inference without consumer-side prepare/convert calls. Legacy converted checkpoints without that recipe fail with a targeted migration error.
-- See [API §12](api.md) for the full surface, and `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
+- See [API §12](api.md#12-quantization-nnxquantize) for the full surface, and `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
 
-**`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
+**`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
 
 **`nnx.surgery`** provides `widen` / `deepen`, `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 

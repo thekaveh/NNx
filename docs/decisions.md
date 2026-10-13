@@ -654,7 +654,7 @@ All are `nnx.decisions.DecisionError`s, and their names are stable:
 | `ProviderFailure` (also a `RuntimeError`) | the backend failing on a valid, supported request |
 | `JevError` and its `JevTimeout`, `JevAuthenticationError`, `JevRateLimited`, `JevMalformedResponse` | a Jev request failing (§6): `__cause__` is the SDK error, `request_id` the service's |
 | `JobError` | the base of the decision-job errors (§7); `outcomes` holds every outcome so far, `completed` the answered ones |
-| `InvalidJob` (also a `ValueError`) | a job that cannot run as described — before any call |
+| `InvalidJob` (also a `ValueError`) | a job that cannot run as described — before any call or, for a continuation's questions or return value, when the continuation runs |
 | `JobFailed` | a provider call failing inside a job (fail-fast): `failed`, `skipped`, `__cause__` |
 | `JobLimitExceeded` | a job's `max_depth` or `max_requests` stopping it before the next call |
 | `JobTimeout` (also a `TimeoutError`) | a job's `timeout` elapsing |
