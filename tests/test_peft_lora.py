@@ -683,7 +683,7 @@ def test_transformer_tuners_inherit_model_mode(tuner_name):
             n_heads=2,
             d_model=16,
             ffn_mult=2,
-            max_seq_len=16,
+            max_seq_len=32,  # room for PromptTuner's default 20 prompt tokens
         )
     ).eval()
     model.blocks[1].train()
