@@ -2992,9 +2992,12 @@ class NNModel(_HubMixinBase):
         so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
         before any file or directory is written."""
         self._require_portable("save_pretrained")
-        if _recipe_transforms(self._topology_transforms):
-            # FEAT-016: an artifact whose recipe cannot rebuild its weights
-            # would fail only when someone loads it.
+        transforms = tuple(self._topology_transforms)
+        if not transforms or all(_replayable(t) for t in transforms):
+            # The artifact rebuilds the descriptor plus its recorded recipe:
+            # one whose topology differs (unrecorded surgery: a LoRA / IA3
+            # wrap, a widen) would fail only when someone loads it. A
+            # train-end transform (QAT) rebuilds its own topology.
             drift = self._topology_drift()
             if drift is not None:
                 raise ValueError(f"save_pretrained refused before writing anything: {drift}")

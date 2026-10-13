@@ -30,7 +30,7 @@ from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
 from ..nn.params.nn_train_params import NNTrainParams
 from ..precision import PrecisionUnsupportedError, resolve_precision
-from .distillation import kd_train_step_factory
+from .distillation import _check_kd_weights, kd_train_step_factory
 
 
 def born_again_train(
@@ -74,7 +74,12 @@ def born_again_train(
         KD run that used generation ``k-1``'s model as teacher.
 
     Raises:
-        ValueError: if ``generations < 1``.
+        ValueError: if ``generations < 1``; if ``generations > 1`` and the
+            optimizer accumulates gradients or ``alpha`` / ``temperature``
+            are out of range. Nothing is trained.
+        TypeError: if ``generations > 1`` and a keyword is not a
+            :func:`kd_train_step_factory` parameter, or the training loader
+            holds stored teacher records.
         PrecisionUnsupportedError: if ``generations > 1`` and the model's
             precision is reduced: the KD generations run in full
             precision only, so nothing is trained.
@@ -105,6 +110,16 @@ def born_again_train(
             f"gradients, but optim.accumulate_grad_batches={train_params.optim.accumulate_grad_batches}; set it to 1"
         )
 
+    if generations > 1:
+        # The KD keywords reach the step factory only at generation 1:
+        # check their names and values now, before generation 0 trains.
+        import inspect
+
+        from . import distillation
+
+        bound = inspect.signature(distillation.kd_train_step_factory).bind(teacher=model, **kd_kwargs)
+        bound.apply_defaults()
+        _check_kd_weights(bound.arguments["alpha"], bound.arguments["temperature"])
     runs: list[NNRun] = []
     teacher: NNModel | None = None
     initial_state = copy.deepcopy(model.net.state_dict())

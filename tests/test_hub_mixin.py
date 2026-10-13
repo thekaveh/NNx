@@ -148,22 +148,16 @@ def test_hub_save_pretrained_overwrite(tmp_path):
 
 
 def test_hub_export_rejects_non_tensor_extra_state_clearly(tmp_path):
-    class ExtraStateNet(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.linear = torch.nn.Linear(4, 2)
+    model = _tiny_model()
 
-        def forward(self, x):
-            return self.linear(x)
-
+    class ExtraStateNet(type(model.net)):  # same topology, plus non-tensor extra state
         def get_extra_state(self):
             return {"labels": ["class-a"]}
 
         def set_extra_state(self, state):
             self.extra_state = state
 
-    model = _tiny_model()
-    model.net = ExtraStateNet()
+    model.net.__class__ = ExtraStateNet
 
     with pytest.raises(TypeError, match="Hugging Face Hub export.*non-tensor state_dict"):
         model.save_pretrained(str(tmp_path))
@@ -440,6 +434,28 @@ def test_save_pretrained_refuses_a_recipe_model_its_recipe_cannot_rebuild(tmp_pa
     parent, _, attr = linears[1].rpartition(".")
     owner = model.net.get_submodule(parent) if parent else model.net
     setattr(owner, attr, low_rank_factorize(model.net.get_submodule(linears[1]), rank=2))  # unrecorded
+    target = tmp_path / "artifact"
+    with pytest.raises(ValueError, match="save_pretrained refused before writing anything"):
+        model.save_pretrained(str(target))
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("surgery", ["lora", "ia3", "widen"])
+def test_save_pretrained_refuses_unrecorded_surgery_without_a_recipe(tmp_path, surgery):
+    """A model with no recipe whose topology no longer matches its params (a
+    LoRA / IA3 wrap, a widen) is refused before anything is written —
+    the artifact would only fail when loaded."""
+    from nnx.peft import apply_ia3_to, apply_lora_to
+    from nnx.surgery import widen
+
+    model = _tiny_model()
+    if surgery == "lora":
+        apply_lora_to(model.net, "*")
+    elif surgery == "ia3":
+        apply_ia3_to(model.net, "*")
+    else:
+        first = next(name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear)
+        model.net = widen(model.net, layer_name=first, new_width=32)
     target = tmp_path / "artifact"
     with pytest.raises(ValueError, match="save_pretrained refused before writing anything"):
         model.save_pretrained(str(target))

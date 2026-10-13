@@ -126,7 +126,9 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
             is validated before any wrapper is built, so nothing is
             modified. A Linear inside a shared container is one slot and is
             wrapped once; tied tensors between distinct modules are outside
-            this check (see :func:`nnx.peft.apply_lora_to`).
+            this check (see :func:`nnx.peft.apply_lora_to`). Also raised,
+            before any change, when a selected Linear is the base of a
+            :class:`DoRALinear` (DoRA reads its base's weight directly).
     """
     # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014).
     from .dora import DoRALinear

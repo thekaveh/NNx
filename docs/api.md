@@ -12364,7 +12364,9 @@ Args:
         entries don't fire once a key has been remapped.
     strict: when True, raise if any source key has no target match
         OR any target key has no source. Default False (fine-tuning
-        commonly partial-loads).
+        commonly partial-loads). Either way a key both sides hold
+        with different shapes raises ``RuntimeError`` before anything
+        is copied.
     prefix: optional prefix to strip from source keys before
         matching. E.g., ``prefix="model."`` turns ``model.layer.0``
         into ``layer.0``. Applied BEFORE ``key_map``.
@@ -12948,7 +12950,9 @@ Raises:
         is validated before any wrapper is built, so nothing is
         modified. A Linear inside a shared container is one slot and is
         wrapped once; tied tensors between distinct modules are outside
-        this check (see :func:`nnx.peft.apply_lora_to`).
+        this check (see :func:`nnx.peft.apply_lora_to`). Also raised,
+        before any change, when a selected Linear is the base of a
+        :class:`DoRALinear` (DoRA reads its base's weight directly).
 ```
 
 
@@ -14278,7 +14282,12 @@ Returns:
     KD run that used generation ``k-1``'s model as teacher.
 
 Raises:
-    ValueError: if ``generations < 1``.
+    ValueError: if ``generations < 1``; if ``generations > 1`` and the
+        optimizer accumulates gradients or ``alpha`` / ``temperature``
+        are out of range. Nothing is trained.
+    TypeError: if ``generations > 1`` and a keyword is not a
+        :func:`kd_train_step_factory` parameter, or the training loader
+        holds stored teacher records.
     PrecisionUnsupportedError: if ``generations > 1`` and the model's
         precision is reduced: the KD generations run in full
         precision only, so nothing is trained.
@@ -15088,9 +15097,10 @@ Raises:
     ValueError: when ``grid_size**2 != n_patches``; when
         ``block_scale`` is not an ordered pair in ``(0, 1)`` or
         ``block_aspect`` not an ordered pair of positive ratios; or
-        when the sampled block covers the whole grid (an empty
-        context). A block is never empty: each side is at least one
-        patch, and a side longer than the grid is clipped to it.
+        for a 1x1 grid (no room for a context). A block is never
+        empty and never the whole grid: each side is at least one
+        patch, a side longer than the grid is clipped to it, and a
+        block that would cover the grid loses one column.
 ```
 
 
@@ -15460,6 +15470,9 @@ Raises:
     ImportError: when ``gguf`` is not installed, or when a
         quantization is requested that requires ``llama-quantize``.
     ValueError: when an unknown quantization label is passed.
+    TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
+        IA3 / prefix tuning): GGUF stores plain weights. Nothing is
+        written.
 ```
 
 

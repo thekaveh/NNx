@@ -320,3 +320,11 @@ def test_born_again_refuses_gradient_accumulation_before_generation_zero(tmp_pat
     born_again_train(
         _make_classifier(), train_params=params, generations=1
     )  # one generation: no KD step, accumulation fine
+
+
+@pytest.mark.parametrize(("kwargs", "error"), [({"alpha": 2.0}, ValueError), ({"temprature": 4.0}, TypeError)])
+def test_born_again_checks_its_kd_keywords_before_generation_zero(tmp_path, monkeypatch, kwargs, error):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(error):
+        born_again_train(_make_classifier(), train_params=_train_params(), generations=2, **kwargs)
+    assert not (tmp_path / "runs").exists()

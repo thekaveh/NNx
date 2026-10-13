@@ -49,6 +49,9 @@ def _import_faiss():
     return faiss
 
 
+_INDEX_TYPES = ("IndexFlatIP", "IndexFlatL2", "IndexHNSWFlat")
+
+
 def _build_index(faiss_mod: Any, dim: int, index_type: str) -> Any:
     """Construct a FAISS index of the requested type and dimension.
 
@@ -134,6 +137,8 @@ def export_to_faiss(
         raise ValueError("corpus is empty — FAISS rejects zero-row adds")
 
     faiss = _import_faiss()
+    if index_type not in _INDEX_TYPES:  # before the corpus is embedded
+        raise ValueError(f"unsupported index_type {index_type!r}. Pass one of {', '.join(map(repr, _INDEX_TYPES))}.")
 
     if normalize is None:
         # Cosine-via-IP is the default reason callers pick IndexFlatIP,

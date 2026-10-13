@@ -10,6 +10,7 @@ canonical composition order).
 
 from __future__ import annotations
 
+import math
 from typing import Protocol
 
 import torch
@@ -37,8 +38,8 @@ class TemperatureScaling:
     """
 
     def __init__(self, temperature: float):
-        if temperature < 0:
-            raise ValueError(f"temperature must be >= 0, got {temperature}")
+        if not math.isfinite(temperature) or temperature < 0:
+            raise ValueError(f"temperature must be a finite number >= 0, got {temperature}")
         self.temperature = temperature
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
@@ -111,8 +112,8 @@ class RepetitionPenalty:
     """
 
     def __init__(self, penalty: float):
-        if penalty < 1.0:
-            raise ValueError(f"repetition_penalty must be >= 1.0, got {penalty}")
+        if not math.isfinite(penalty) or penalty < 1.0:
+            raise ValueError(f"repetition_penalty must be a finite number >= 1.0, got {penalty}")
         self.penalty = penalty
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:

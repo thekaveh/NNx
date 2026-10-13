@@ -29,6 +29,7 @@ that's out of scope here. See ``docs/dpo.md`` for the honest tradeoffs.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import torch
@@ -87,8 +88,8 @@ def dpo_train_step_factory(
     Raises:
         ValueError: if ``beta`` ≤ 0.
     """
-    if beta <= 0:
-        raise ValueError(f"beta must be positive, got {beta}")
+    if not math.isfinite(beta) or beta <= 0:
+        raise ValueError(f"beta must be a finite positive number, got {beta}")
 
     # Freeze the reference and pin to eval mode. The policy's training
     # never touches the reference; this just guards against accidental

@@ -7,6 +7,7 @@ test_generative_nn_model.py (which gates on the `lm` extra).
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from nnx.generation.logits_chain import LogitsChain
@@ -126,3 +127,15 @@ def test_chain_apply_passes_token_history_to_custom_processor():
     assert rec.seen_histories == [history], (
         f"Expected custom processor to receive token_history={history!r}, got {rec.seen_histories!r}"
     )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_decoding_settings_are_refused(value):
+    """NaN compares False to every bound: without an explicit check a NaN
+    penalty made the most-penalized token win every draw."""
+    from nnx.generation.logits_processors import RepetitionPenalty, TemperatureScaling
+
+    with pytest.raises(ValueError, match="finite"):
+        TemperatureScaling(value)
+    with pytest.raises(ValueError, match="finite"):
+        RepetitionPenalty(value)

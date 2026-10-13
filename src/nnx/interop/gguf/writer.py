@@ -177,6 +177,9 @@ def write_gguf(
         ImportError: when ``gguf`` is not installed, or when a
             quantization is requested that requires ``llama-quantize``.
         ValueError: when an unknown quantization label is passed.
+        TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
+            IA3 / prefix tuning): GGUF stores plain weights. Nothing is
+            written.
     """
     import torch
 

@@ -149,9 +149,10 @@ def random_block_mask(
         ValueError: when ``grid_size**2 != n_patches``; when
             ``block_scale`` is not an ordered pair in ``(0, 1)`` or
             ``block_aspect`` not an ordered pair of positive ratios; or
-            when the sampled block covers the whole grid (an empty
-            context). A block is never empty: each side is at least one
-            patch, and a side longer than the grid is clipped to it.
+            for a 1x1 grid (no room for a context). A block is never
+            empty and never the whole grid: each side is at least one
+            patch, a side longer than the grid is clipped to it, and a
+            block that would cover the grid loses one column.
     """
     if grid_size * grid_size != n_patches:
         raise ValueError(f"grid_size**2 ({grid_size**2}) != n_patches ({n_patches})")
@@ -177,10 +178,11 @@ def random_block_mask(
     left = int(torch.randint(0, grid_size - w + 1, (1,), generator=generator).item())
 
     if h * w == n_patches:
-        raise ValueError(
-            f"the sampled {h}x{w} block covers the whole {grid_size}x{grid_size} grid, leaving no context; "
-            "use a larger grid or a smaller block_scale"
-        )
+        # Rounding and clipping can reach the whole grid even for
+        # block_scale < 1: keep one column of context.
+        if grid_size == 1:
+            raise ValueError("a 1x1 patch grid has no room for both a target block and a context")
+        w -= 1
     grid = torch.zeros(grid_size, grid_size, dtype=torch.bool, device=device)
     grid[top : top + h, left : left + w] = True
     target_mask = grid.flatten()  # (n_patches,)

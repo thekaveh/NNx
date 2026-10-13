@@ -214,6 +214,8 @@ def embed_texts(
         A ``(N, D)`` ``torch.Tensor`` on ``device``. Detached from
         any autograd graph.
     """
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError(f"embed_texts batch_size must be an integer >= 1, got {batch_size!r}")
     device = _resolve_device(backbone, device)
 
     if not texts:

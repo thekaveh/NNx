@@ -243,7 +243,8 @@ def _check_update_owner(train_step_fn: Any, objective: Any, *, step_name: str = 
     if paradigm is not None:
         raise ValueError(
             f"objective= got the imperative {paradigm} step, which steps the optimizer itself — the engine would "
-            f"step it again. Pass it as the step function, or use the {paradigm} objective"
+            f"step it again. Pass it as the step function"
+            + (f", or use the {paradigm} objective" if paradigm in ("diffusion", "jepa", "kd") else "")
         )
     if isinstance(train_step_fn, Objective):
         raise ValueError(
