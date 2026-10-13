@@ -37,10 +37,10 @@ Use safetensors when **any** of the following is true:
 - You care about mmap-based zero-copy loads — safetensors files are
   laid out so the underlying tensors can be mapped directly from disk.
 
-Pickle remains the default and is the right choice for local-only
+Pickle remains the default. It is the right choice for local-only
 training runs where the convenience of `torch.save`-ing the full
-dataclass (preserving the `OrderedDict` key order and the
-`NNCheckpoint` identity) outweighs the security trade-off.
+dataclass outweighs the security trade-off. That save preserves the
+`OrderedDict` key order and the `NNCheckpoint` identity.
 
 ### 1.2. Writing a safetensors checkpoint
 
@@ -63,14 +63,15 @@ ckpt.to_file("checkpoint.safetensors", format="safetensors")
 ```
 
 `NNParams`, `NNModelParams`, and `NNIterationDataPoint` are
-JSON-serialized into the safetensors `metadata` dict (the format spec
+JSON-serialized into the safetensors `metadata` dict. The format spec
 limits metadata to `str -> str`, so a JSON wrapper is the cleanest
-fit). The net's tensors are detached and cloned (safetensors refuses tensors
-that share storage), then written through safetensors' standard `save_file`.
+fit. The net's tensors are detached and cloned, because safetensors refuses
+tensors that share storage. They are then written through safetensors'
+standard `save_file`.
 
-Writes are atomic — the file is staged in a hidden temporary file beside
-`<path>`, flushed to disk and `os.replace`-d into place — matching the same KeyboardInterrupt-safety guarantee that
-the pickle path provides.
+Writes are atomic. The file is staged in a hidden temporary file beside
+`<path>`, flushed to disk and `os.replace`-d into place. This matches the
+same KeyboardInterrupt-safety guarantee that the pickle path provides.
 
 ### 1.3. Reading a checkpoint of either format
 
@@ -84,8 +85,8 @@ in by sniffing the first few bytes:
 - safetensors files start with a little-endian u64 header length
   followed by a JSON object — byte 8 is always `{`. (The u64's low
   byte can legitimately be `0x80`, colliding with the pickle PROTO
-  opcode, so the loader positively identifies safetensors via byte 8
-  before the pickle sniff.)
+  opcode. The loader therefore positively identifies safetensors via
+  byte 8 before the pickle sniff.)
 
 The same call works for both:
 
@@ -104,10 +105,10 @@ Use `save_pretrained` / `push_to_hub` / `from_pretrained` for
 this writes (`model.safetensors` + `config.json` + `README.md`) is what
 the Hub expects, and it's what downstream tools probe for.
 
-Keep using `NNCheckpoint` for **local training state**: the
+Keep using `NNCheckpoint` for **local training state**. The
 `runs/<id>/checkpoints/` layout that NNx writes during training carries
-per-epoch IDPs, optimizer state sidecars, and run.id-keyed metadata
-that the Hub layout deliberately strips.
+per-epoch IDPs, optimizer state sidecars, and run.id-keyed metadata.
+The Hub layout deliberately strips these.
 
 ### 2.2. Save a model locally
 
@@ -133,13 +134,15 @@ This writes three files into `./my-model/`:
 - `config.json` — `{"net_params": <state>, "params": <state>}`, using
   the same public `state()` form NNRun hashes for `run.id` grouping. A
   model built from a registered factory (§2.6) has no `net_params`; its
-  `params.net` is the `ModelSpec` descriptor. A model whose topology was
-  changed by a recorded recipe (`nnx.transforms`, see
+  `params.net` is the `ModelSpec` descriptor.
+
+  A recorded recipe (`nnx.transforms`, see
   [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
-  also writes `"transforms"`: the ordered operations, each with its id,
-  version, targets and config. Such a model is saved only while its
-  topology is exactly its base plus that recipe: unrecorded surgery is
-  refused before anything is written, rather than failing at load.
+  can change a model's topology. Such a model also writes `"transforms"`:
+  the ordered operations, each with its id, version, targets and config.
+  It is saved only while its topology is exactly its base plus that recipe.
+  Unrecorded surgery is refused before anything is written, rather than
+  failing at load.
 - `README.md` — auto-generated model card from the mixin.
 
 ### 2.3. Load from a local directory
@@ -149,19 +152,19 @@ from nnx import NNModel
 model = NNModel.from_pretrained("./my-model")
 ```
 
-`from_pretrained` reads `config.json`, rebuilds `NNParams` and
-`NNModelParams` via their public `from_state` constructors, replays any
-recorded `"transforms"` on the fresh base (LoRA wrappers rebuilt, low-rank
-factors allocated in their recorded shape — no SVD), then loads the
-safetensors weights into the freshly-built `self.net`. An unknown
+`from_pretrained` reads `config.json` and rebuilds `NNParams` and
+`NNModelParams` via their public `from_state` constructors. It replays any
+recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
+low-rank factors are allocated in their recorded shape (no SVD). It then
+loads the safetensors weights into the freshly-built `self.net`. An unknown
 operation or version is refused before any tensor is loaded. Bit-exact
 round-trip on tensors; `state()` form identical on the params.
 
-A model saved with extra top-level submodules attached to its net — a JEPA
-predictor registered as `model.net._jepa_predictor` — rebuilds without
-them through `exclude_submodules`; every other key still loads strictly
-(`strict=False` would also accept missing weights), and a name the saved
-weights do not hold is refused. Without it, the error names the extra
+A model can be saved with extra top-level submodules attached to its net,
+such as a JEPA predictor registered as `model.net._jepa_predictor`. It
+rebuilds without them through `exclude_submodules`. Every other key still
+loads strictly (`strict=False` would also accept missing weights). A name
+the saved weights do not hold is refused. Without it, the error names the extra
 submodules and this option:
 
 ```python
@@ -193,18 +196,20 @@ hit the local cache, not the network.
 
 A model built from a registered factory (`ModelSpec`, see
 [Concepts §3.2](concepts.md#32-arbitrary-modules-and-registered-model-factories))
-round-trips through the Hub like a built-in one: `config.json` stores the
-spec (`id`, `version`, `config`, `seed`) instead of `net_params`, and
-`from_pretrained` rebuilds the module through the factory registry — so
+round-trips through the Hub like a built-in one. `config.json` stores the
+spec (`id`, `version`, `config`, `seed`) instead of `net_params`.
+`from_pretrained` rebuilds the module through the factory registry, so
 the same `register_model_factory(...)` must have run in the loading
-process. An unregistered factory raises `MissingModelFactoryError` before
-anything is built, and a factory whose topology no longer matches the
+process.
+
+An unregistered factory raises `MissingModelFactoryError` before
+anything is built. A factory whose topology no longer matches the
 weights raises before they load. Pass `batch_adapter=` to
 `from_pretrained` for a module that needs one.
 
 A runtime-only module (`NNModel(module=...)`, `reconstructible=False`) has
-no factory to rebuild it, so `save_pretrained` / `push_to_hub` reject it
-with `MissingModelFactoryError` before any directory or file is written.
+no factory to rebuild it. `save_pretrained` / `push_to_hub` therefore reject
+it with `MissingModelFactoryError` before any directory or file is written.
 Register a factory and train from a `ModelSpec` to publish it.
 
 ## 3. Three artifact formats and their trust boundaries
@@ -219,26 +224,27 @@ another's files:
 | Run bundle `<dir>/bundle.json` + `g-<generation>/` | `nnx.bundles.export_bundle` | weights, params, epoch record, training state (a `"resume"` bundle) or none (`"inference"`), calibrator records | `inspect_bundle`, `validate_bundle`, `reconstruct_bundle` | Data only: safetensors plus schema-validated JSON, checked against SHA-256 sums before any tensor is read; never unpickles, imports code or downloads. |
 
 - **Export reads your own run.** `export_bundle(run_id, "bundle")` opens the
-  run's pickle checkpoint — the legacy trust boundary, files NNx wrote
-  locally — and publishes it as data. From then on the bundle can travel:
-  `validate_bundle` checks every payload's size and SHA-256, the generation
-  id, and that nothing is missing, unlisted, symlinked or outside the
-  bundle, before any tensor is read.
+  run's pickle checkpoint and publishes it as data. That checkpoint is the
+  legacy trust boundary: files NNx wrote locally. From then on the bundle
+  can travel. Before any tensor is read, `validate_bundle` checks every
+  payload's size and SHA-256 and the generation id. It also checks that
+  nothing is missing, unlisted, symlinked or outside the bundle.
 - **Reconstruction takes caller-supplied registries.** A registered module
-  (`ModelSpec`) is rebuilt only from the factories you pass
-  (`reconstruct_bundle(path, factories={(id, version): factory})`, or the
-  process registry by default); the bundle names none to import. A missing
+  (`ModelSpec`) is rebuilt only from the factories you pass. Pass them as
+  `reconstruct_bundle(path, factories={(id, version): factory})`; the
+  process registry is the default. The bundle names none to import. A missing
   factory or component is reported before any model is allocated.
 - **The formats stay distinguishable.** `NNCheckpoint.from_file` refuses a
-  bundle directory and a bundle's payload files; `from_pretrained` refuses a
-  bundle directory; the bundle readers refuse a pickle checkpoint, a run
-  directory and a Hub distribution (`config.json`), and never fall back to
+  bundle directory and a bundle's payload files. `from_pretrained` refuses a
+  bundle directory. The bundle readers refuse a pickle checkpoint, a run
+  directory and a Hub distribution (`config.json`). They never fall back to
   unpickling or downloading.
-- **What does not fit is refused.** Module extra state that is not a tensor,
-  a custom object in optimizer or component state, a runtime-only module, a
+- **What does not fit is refused.** These fail with a message, with no
+  pickle fallback. They include module extra state that is not a tensor, a
+  custom object in optimizer or component state, and a runtime-only module.
+  So do a
   recorded topology transform NNx cannot replay from data (named by index
-  and id) and an unknown bundle version fail with a message, with no pickle
-  fallback.
+  and id) and an unknown bundle version.
 
 See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
 [`examples/run_bundle.py`](../examples/run_bundle.py).
@@ -250,7 +256,7 @@ See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
   (idps.csv + run.yaml + every per-phase checkpoint), upload the
   `runs/<id>/` directory directly via `huggingface_hub.upload_folder`.
 - **A raw state dict or adapter-only export does not rebuild a recipe.**
-  `export_state_dict()` and `save_lora_weights` write tensors only; the
+  `export_state_dict()` and `save_lora_weights` write tensors only. The
   recipe that produced the topology lives in checkpoints and
   `config.json`. Materialize the recipe before loading such a file.
 - **Optimizer state is not in the Hub config.** `save_pretrained`
@@ -259,6 +265,6 @@ See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
   (§3), which carries the training state as data — for warm-resume
   workflows.
 - **The Hub mixin doesn't rewrite `NNModel`'s constructor.** It still
-  takes `(net_params, params)` keyword args at `__init__` (plus the
-  keyword-only `module=` / `batch_adapter=` for your own modules) — the
+  takes `(net_params, params)` keyword args at `__init__`. It also takes
+  the keyword-only `module=` / `batch_adapter=` for your own modules. The
   mixin is purely additive. Existing code keeps working unchanged.

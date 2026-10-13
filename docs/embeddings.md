@@ -1,6 +1,6 @@
 # 6. Embeddings — Contrastive Trainer + FAISS Export
 
-`nnx.embeddings` is NNx's one RAG-adjacent surface: train a domain-specific text embedder via the existing SimCLR / NT-Xent contrastive machinery, then export the trained model to a FAISS index for downstream retrieval.
+`nnx.embeddings` is NNx's one RAG-adjacent surface. It trains a domain-specific text embedder via the existing SimCLR / NT-Xent contrastive machinery. It then exports the trained model to a FAISS index for downstream retrieval.
 
 NNx does NOT host the RAG stack. Chunking, reranking, prompt orchestration, vector-DB clients — those are inference-time concerns and live in your retriever-framework of choice (LangChain, LlamaIndex, Haystack, raw FAISS). NNx's responsibility ends at the FAISS index on disk.
 
@@ -8,7 +8,7 @@ NNx does NOT host the RAG stack. Chunking, reranking, prompt orchestration, vect
 
 Use `nnx.embeddings` when:
 
-- You have domain-specific text and the off-the-shelf SBERT / OpenAI embedding API is mediocre at retrieving in-domain results — e.g., legal contracts, medical notes, code search, narrow product catalogs.
+- You have domain-specific text, and the off-the-shelf SBERT / OpenAI embedding API is mediocre at retrieving in-domain results. Examples are legal contracts, medical notes, code search and narrow product catalogs.
 - You can produce `(anchor, positive)` pairs cheaply — query/document mining, in-batch positives, paraphrase generation, click logs.
 - You want a portable artifact (a FAISS index file) that any RAG framework can load. NNx doesn't lock you into LangChain / LlamaIndex / Haystack.
 
@@ -182,7 +182,7 @@ export_to_faiss(
 
 Embeds `corpus` and writes a FAISS index file. The corpus order becomes the index's id space — search results return positions into `corpus`.
 
-Default `IndexFlatIP` + auto-normalize = cosine similarity. FAISS doesn't ship a native cosine index; the standard pattern is to normalize embeddings to unit norm and use inner product as the score, which equals cosine on the unit sphere.
+Default `IndexFlatIP` + auto-normalize = cosine similarity. FAISS doesn't ship a native cosine index. The standard pattern is to normalize embeddings to unit norm and use inner product as the score. That score equals cosine on the unit sphere.
 
 For approximate search at scale, switch `index_type="IndexHNSWFlat"`. The wrapper builds with FAISS's standard `M=32` recall/memory trade-off; for finer-grained tuning, build the index manually with `faiss.IndexHNSWFlat(dim, M)` and `index.hnsw.efConstruction = ...`.
 
@@ -207,8 +207,8 @@ Persists the backbone's `state_dict()` to disk for HuggingFace Hub / sentence-tr
 - Not a LangChain / LlamaIndex / Haystack wrapper. Those are downstream retrieval frameworks; pick the one your stack uses.
 - Not a chunker. Document chunking is a preprocessing concern — solve it in the retrieval framework (every major one ships their own).
 - Not a reranker. Cross-encoder rerankers are a separate training problem with their own loss (pointwise / pairwise). The contrastive trainer here is biencoder-only.
-- Not a zero-shot classifier. Scoring a text against candidate labels supplied at inference is `nnx.decisions.NLIProvider` ([Typed decisions §5](decisions.md#5-the-nli-baseline-adapter)), which uses a caller-supplied NLI cross-encoder; it does not extend `embed_texts` or `export_to_faiss`, whose signatures are unchanged, and how well its scores transfer to a task stays empirical.
-- Not a vector-database client. The FAISS index is a file on disk; if you need Pinecone / Weaviate / Milvus / pgvector, embed via `embed_texts` and `INSERT` the vectors yourself.
+- Not a zero-shot classifier. Scoring a text against candidate labels supplied at inference is `nnx.decisions.NLIProvider` ([Typed decisions §5](decisions.md#5-the-nli-baseline-adapter)). It uses a caller-supplied NLI cross-encoder. It does not extend `embed_texts` or `export_to_faiss`, whose signatures are unchanged. How well its scores transfer to a task stays empirical.
+- Not a vector-database client. The FAISS index is a file on disk. If you need Pinecone / Weaviate / Milvus / pgvector, embed via `embed_texts` and `INSERT` the vectors yourself.
 - Not a chunker, query expander, prompt orchestrator, or evaluation harness. NNx's responsibility ends at the FAISS index file.
 
 That deliberate scope-cut is the point. NNx ships the one training-time piece (a domain embedder you fully control) and stays out of the inference-orchestration arms race.
