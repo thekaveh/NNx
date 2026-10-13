@@ -40,7 +40,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..paradigms.contrastive import nt_xent_loss
@@ -307,7 +307,7 @@ def text_contrastive_train_step_factory(*, temperature: float = 0.5) -> TrainSte
             error=loss_val,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="text_contrastive"))  # finalize_step: full precision
 
 
 def train_contrastive(

@@ -30,7 +30,7 @@ import torch
 import torch.nn.functional as F
 
 from .._metrics import classification_edp
-from .._step_helpers import finalize_step, softened_kl
+from .._step_helpers import finalize_step, imperative_step, softened_kl
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -126,7 +126,7 @@ def kd_train_step_factory(
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="kd"))  # finalize_step: full precision
 
 
 def feature_kd_train_step_factory(
@@ -282,4 +282,4 @@ def feature_kd_train_step_factory(
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="feature_kd"))  # finalize_step: full precision

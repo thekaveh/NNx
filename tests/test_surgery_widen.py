@@ -98,6 +98,10 @@ def test_widen_preserves_function_on_feed_fwd_nn():
     assert torch.allclose(orig_out, new_out, atol=1e-5), (
         f"widen on FeedFwdNN broke function-preservation: max diff {(orig_out - new_out).abs().max().item():.2e}"
     )
+    # The owner's params describe the widened topology (as deepen's do):
+    # rebuilding from them accepts the widened state dict.
+    assert widened.params.hidden_dims == [20, 8] and params.hidden_dims == [10, 8]
+    FeedFwdNN(widened.params).load_state_dict(widened.state_dict())
 
 
 def test_widen_is_deterministic_with_seed():

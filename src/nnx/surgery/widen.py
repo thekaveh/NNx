@@ -21,7 +21,8 @@ correctness contract every test for this primitive should check first.
 from __future__ import annotations
 
 import copy
-from typing import Optional, cast
+from dataclasses import replace
+from typing import Any, Optional, cast
 
 import torch
 from torch import nn
@@ -183,6 +184,18 @@ def widen(
     # Independent of the target: the consumer keeps ITS OWN flags/mode.
     copy_param_roles(down_layer, new_down_layer)
     set_module(new_model, down_name, new_down_layer)
+
+    # Keep a FeedFwdNN owner's configuration aligned with its layers, as
+    # deepen does (FIX-006): params.hidden_dims records the new width, so
+    # FeedFwdNN(owner.params) rebuilds the widened topology.
+    owner_path, _, index = layer_name.rpartition(".")
+    owner_path, _, container = owner_path.rpartition(".")
+    owner = new_model if not owner_path else new_model.get_submodule(owner_path)
+    if container == "layers" and isinstance(owner, FeedFwdNN) and index.isdigit():
+        hidden = list(owner.params.hidden_dims or [])
+        if int(index) < len(hidden):
+            hidden[int(index)] = new_width
+            cast(Any, owner).params = replace(owner.params, hidden_dims=hidden)
 
     return new_model
 

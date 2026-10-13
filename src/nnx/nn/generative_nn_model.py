@@ -94,9 +94,10 @@ class GenerativeNNModel(NNModel):
         Args:
             prompt: input text. Encoded via ``self.tokenizer``.
             max_new_tokens: hard cap on new tokens emitted. Generation
-                also stops if the context window (max_seq_len) would be
-                exceeded and the model can't shrink the window further,
-                or if a ``stop`` string is decoded.
+                also stops when a ``stop`` string is decoded. It does not
+                stop on an end-of-sequence token, and a prompt longer than
+                the context window (max_seq_len) slides the window rather
+                than stopping.
             temperature: 0 means greedy (argmax). Higher values produce
                 more diverse output. Routes through TemperatureScaling.
             top_k: keep only the top-k logits. None disables.
@@ -109,7 +110,9 @@ class GenerativeNNModel(NNModel):
                 string doesn't halt generation immediately; a stop
                 string straddling the prompt/continuation boundary is
                 likewise not detected — matching the generated-text-only
-                convention HF uses).
+                convention HF uses). The continuation is decoded without
+                special tokens, so a special token such as ``"<eos>"``
+                never matches a stop string.
             seed: when set, sampling is reproducible — two calls with
                 the same seed + prompt + model produce identical output.
             use_cache: when True (default), uses an incremental KV

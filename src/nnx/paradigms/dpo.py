@@ -34,7 +34,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -171,7 +171,7 @@ def dpo_train_step_factory(
             },
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="dpo"))  # finalize_step: full precision
 
 
 def _unpack_preference_batch(batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

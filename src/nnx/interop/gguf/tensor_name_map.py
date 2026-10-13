@@ -50,6 +50,25 @@ def _weight(module) -> torch.Tensor:
     return w
 
 
+def _refuse_adapters(net: torch.nn.Module) -> None:
+    """GGUF stores plain weights: a PEFT-wrapped projection has no weight of
+    its own, and a prefix tuner's learned prefix has no GGUF slot, so
+    exporting either would fail or silently drop the tuned part."""
+    from nnx.peft import IA3Linear, LoRALinear  # DoRALinear is a LoRALinear
+
+    adapted = [
+        name
+        for name, module in net.named_modules()
+        if isinstance(module, (LoRALinear, IA3Linear)) or hasattr(module, "_nnx_prefix_tuner")
+    ]
+    if adapted:
+        raise TypeError(
+            f"GGUF export needs plain weights, but {', '.join(adapted[:5])}"
+            f"{' …' if len(adapted) > 5 else ''} carry a PEFT adapter (LoRA / DoRA / IA3 / prefix tuning). "
+            "Export the base model, or fold the adapter into plain nn.Linear weights first."
+        )
+
+
 def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
     """Walk a ``TransformerNN`` and return ``{gguf_name: numpy_array}``.
 
@@ -68,6 +87,7 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
         is omitted (llama.cpp re-uses ``token_embd.weight`` for tied
         models).
     """
+    _refuse_adapters(net)
     out: dict[str, np.ndarray] = {}
 
     # Token embedding — always present, always named ``token_embd.weight``.

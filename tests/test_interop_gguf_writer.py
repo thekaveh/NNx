@@ -99,6 +99,25 @@ def test_tensor_name_map_emits_expected_keys():
     assert set(tensors.keys()) == expected, set(tensors.keys()) - expected
 
 
+@pytest.mark.parametrize("adapter", ["lora", "ia3", "prefix"])
+def test_tensor_name_map_refuses_a_peft_adapted_network(adapter):
+    """GGUF stores plain weights: a wrapped projection has no weight of its
+    own (it raised AttributeError), and a prefix tuner's prefix has no GGUF
+    slot (it was silently dropped). Both are refused with a hint."""
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+    from nnx.peft import PrefixTuner, apply_ia3_to, apply_lora_to
+
+    net = _tiny_transformer()
+    if adapter == "lora":
+        apply_lora_to(net, "blocks.*.attn.w_qkv", r=2)
+    elif adapter == "ia3":
+        apply_ia3_to(net, "blocks.*.attn.w_qkv")
+    else:
+        PrefixTuner(net, n_prefix=2)
+    with pytest.raises(TypeError, match="PEFT adapter"):
+        map_tensors(net)
+
+
 def test_tensor_name_map_omits_output_weight_when_tied():
     """tie_embeddings=True (the NNx default) means llama.cpp re-uses
     token_embd.weight — no separate output.weight in the file."""

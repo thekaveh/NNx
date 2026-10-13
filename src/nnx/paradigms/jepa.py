@@ -146,11 +146,19 @@ def random_block_mask(
         A pair of ``BoolTensor``s, both 1-D length ``n_patches``.
 
     Raises:
-        ValueError: when ``grid_size**2 != n_patches``, or when the
-            sampled block would be empty / larger than the grid.
+        ValueError: when ``grid_size**2 != n_patches``; when
+            ``block_scale`` is not an ordered pair in ``(0, 1)`` or
+            ``block_aspect`` not an ordered pair of positive ratios; or
+            when the sampled block covers the whole grid (an empty
+            context). A block is never empty: each side is at least one
+            patch, and a side longer than the grid is clipped to it.
     """
     if grid_size * grid_size != n_patches:
         raise ValueError(f"grid_size**2 ({grid_size**2}) != n_patches ({n_patches})")
+    if not 0.0 < block_scale[0] <= block_scale[1] < 1.0:
+        raise ValueError(f"block_scale must be an ordered (min, max) pair in (0, 1), got {block_scale}")
+    if not 0.0 < block_aspect[0] <= block_aspect[1]:
+        raise ValueError(f"block_aspect must be an ordered (min, max) pair of positive ratios, got {block_aspect}")
 
     # Sample block scale and aspect. ``torch.rand`` accepts a
     # generator directly; ``Tensor.uniform_`` does not, which is why
@@ -168,6 +176,11 @@ def random_block_mask(
     top = int(torch.randint(0, grid_size - h + 1, (1,), generator=generator).item())
     left = int(torch.randint(0, grid_size - w + 1, (1,), generator=generator).item())
 
+    if h * w == n_patches:
+        raise ValueError(
+            f"the sampled {h}x{w} block covers the whole {grid_size}x{grid_size} grid, leaving no context; "
+            "use a larger grid or a smaller block_scale"
+        )
     grid = torch.zeros(grid_size, grid_size, dtype=torch.bool, device=device)
     grid[top : top + h, left : left + w] = True
     target_mask = grid.flatten()  # (n_patches,)

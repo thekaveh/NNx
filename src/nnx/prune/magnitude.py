@@ -72,11 +72,12 @@ def magnitude_prune(
     Raises:
         ValueError: if ``sparsity`` is outside ``[0, 1)``.
 
-    **Idempotency note:** calling ``magnitude_prune`` twice at the
-    same ``sparsity`` is a no-op for the second call — l1_unstructured
-    picks the smallest-magnitude entries, which after the first prune
-    are exactly the already-zeroed positions. The zero count stays the
-    same; nothing is double-pruned.
+    **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
+    twice at the same ``sparsity`` is a no-op for the second call —
+    l1_unstructured picks the smallest-magnitude entries, which after the
+    first prune are exactly the already-zeroed positions. With
+    ``bake=False`` the masks compose: a second call prunes ``sparsity`` of
+    the remaining weights (0.5 twice leaves 0.75 zero).
     """
     if not (0.0 <= sparsity < 1.0):
         raise ValueError(f"magnitude_prune sparsity must be in [0, 1), got {sparsity}")

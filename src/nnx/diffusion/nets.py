@@ -116,7 +116,9 @@ class DiffusionMLP(nn.Module):
             raise ValueError(f"DiffusionMLP expects flattened input dim {self.input_dim}, got {x_flat.shape[1]}")
 
         # Time conditioning: sinusoidal embed → MLP → concat with x.
-        t_emb = sinusoidal_time_embed(t, self.time_embed_dim)
+        # The embedding is computed in float32; run it in the input's dtype
+        # so a float64 / half / bf16 net accepts it.
+        t_emb = sinusoidal_time_embed(t, self.time_embed_dim).to(x_flat.dtype)
         t_emb = self.time_mlp(t_emb)
 
         h = torch.cat([x_flat, t_emb], dim=-1)

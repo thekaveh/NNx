@@ -74,7 +74,13 @@ def semi_structured_24(net: nn.Module, *, layer_pattern: str = "*") -> int:
     """
     # Defer the torchao import so consumers of `nnx.prune.magnitude_prune`
     # don't pay the torchao dep cost just by importing the package.
-    import torchao.sparsity as ao_sparsity
+    try:
+        import torchao.sparsity as ao_sparsity
+    except ImportError as error:
+        raise ImportError(
+            "semi_structured_24 requires torchao. Install with `pip install thekaveh-nnx[quantize]` "
+            "(or `pip install 'torchao>=0.17'` directly)."
+        ) from error
 
     # Two-phase: enumerate the matched-Linear set FIRST so we can
     # return the count and short-circuit when there's nothing to do.

@@ -69,6 +69,7 @@ def select_linear_slots(
     name_patterns: tuple[str, ...],
     *,
     skip_inside: type[nn.Module] | tuple[type[nn.Module], ...],
+    refuse_inside: tuple[type[nn.Module], ...] = (),
     helper: str,
 ) -> list[tuple[nn.Module, str]]:
     """Return the ``(parent, attr)`` slots of the ``nn.Linear`` layers to wrap.
@@ -95,12 +96,21 @@ def select_linear_slots(
             layer_slots.setdefault(id(child), []).append(slot)
         slots[slot][1].append(path)
 
-    selected = [
+    matched = [
         slot
         for slot, (parent, paths) in slots.items()
-        if not isinstance(parent, skip_inside)
-        and any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in name_patterns)
+        if any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in name_patterns)
     ]
+    # A wrapper in ``refuse_inside`` reads its .base as an nn.Linear
+    # (weight / bias) in forward: wrapping that base would break it.
+    foreign = [path for slot in matched if isinstance(slots[slot][0], refuse_inside) for path in slots[slot][1]]
+    if foreign:
+        wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refuse_inside))][0]).__name__
+        raise ValueError(
+            f"{helper}: {_listed(foreign)} are the base of a {wrapper}, which reads its base's weight "
+            "directly; wrapping it would break that layer. Nothing was modified."
+        )
+    selected = [slot for slot in matched if not isinstance(slots[slot][0], skip_inside)]
 
     aliased: dict[int, list[str]] = {}
     for slot in selected:
@@ -125,6 +135,7 @@ def wrap_selected_linears(
     name_patterns: tuple[str, ...],
     *,
     skip_inside: type[nn.Module] | tuple[type[nn.Module], ...],
+    refuse_inside: tuple[type[nn.Module], ...] = (),
     helper: str,
     wrap: Callable[[nn.Linear], nn.Module],
 ) -> int:
@@ -134,7 +145,9 @@ def wrap_selected_linears(
     Building a wrapper already freezes its base, so nothing is constructed
     until the whole matched set has passed :func:`select_linear_slots`.
     """
-    targets = select_linear_slots(module, name_patterns, skip_inside=skip_inside, helper=helper)
+    targets = select_linear_slots(
+        module, name_patterns, skip_inside=skip_inside, refuse_inside=refuse_inside, helper=helper
+    )
     for parent, attr in targets:
         setattr(parent, attr, wrap(getattr(parent, attr)))
     return len(targets)

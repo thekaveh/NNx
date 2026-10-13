@@ -97,6 +97,13 @@ def born_again_train(
             f"born_again_train distills generations 1+ with kd_train_step_factory, which runs in full precision "
             f"only, but this model resolves to {precision.effective}; train it in fp32"
         )
+    # The same step refuses gradient accumulation on its first batch: refuse
+    # it here too, before generation 0 trains.
+    if generations > 1 and train_params.optim.accumulate_grad_batches != 1:
+        raise ValueError(
+            "born_again_train distills generations 1+ with kd_train_step_factory, which does not accumulate "
+            f"gradients, but optim.accumulate_grad_batches={train_params.optim.accumulate_grad_batches}; set it to 1"
+        )
 
     runs: list[NNRun] = []
     teacher: NNModel | None = None

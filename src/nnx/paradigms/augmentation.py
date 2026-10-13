@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -105,7 +105,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
             error=float(1.0 - acc),
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="mixup"))  # finalize_step: full precision
 
 
 def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
@@ -184,4 +184,4 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
             error=float(1.0 - acc),
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="cutmix"))  # finalize_step: full precision

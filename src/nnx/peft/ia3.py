@@ -129,7 +129,18 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
             this check (see :func:`nnx.peft.apply_lora_to`).
     """
     # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014).
-    return wrap_selected_linears(module, name_patterns, skip_inside=IA3Linear, helper="apply_ia3_to", wrap=IA3Linear)
+    from .dora import DoRALinear
+
+    # DoRALinear reads its base's weight in forward, so its .base must stay
+    # an nn.Linear (LoRA and IA3 only call their base, so they compose).
+    return wrap_selected_linears(
+        module,
+        name_patterns,
+        skip_inside=IA3Linear,
+        refuse_inside=(DoRALinear,),
+        helper="apply_ia3_to",
+        wrap=IA3Linear,
+    )
 
 
 def _ia3_keys_only(module: nn.Module, state_dict: Mapping[str, Any]) -> dict:

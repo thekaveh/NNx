@@ -784,3 +784,23 @@ def test_inference_helpers_restore_wrapped_mixed_modes():
     loader = DataLoader(TensorDataset(x, torch.tensor([0, 1, 2, 0, 1])), batch_size=5)
     model.evaluate(loader=loader)
     assert _mode_map(model.net) == before
+
+
+def test_ia3_refuses_to_wrap_a_dora_base_before_any_change():
+    """DoRALinear reads its base's weight in forward: a wildcard IA3 must not
+    wrap that base (DoRA(IA3(...)) used to fail on its first forward).
+    LoRA and IA3 only call their base, so those stacks still compose."""
+    from nnx.peft import apply_dora_to, apply_ia3_to, apply_lora_to
+
+    net = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2))
+    assert apply_dora_to(net, "*") == 2
+    before = [type(module).__name__ for module in net.modules()]
+    with pytest.raises(ValueError, match="DoRALinear, which reads its base's weight"):
+        apply_ia3_to(net, "*")
+    assert [type(module).__name__ for module in net.modules()] == before
+    net(torch.randn(3, 4))  # still runs
+
+    stacked = torch.nn.Sequential(torch.nn.Linear(4, 2))
+    apply_lora_to(stacked, "*")
+    assert apply_ia3_to(stacked, "*") == 1  # IA3 on LoRA's base: LoRA(IA3(Linear))
+    stacked(torch.randn(3, 4))
