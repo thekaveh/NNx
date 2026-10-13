@@ -102,10 +102,14 @@ def deepen(
     Raises:
         KeyError: if ``after_layer_name`` is not a submodule.
         TypeError: if the layer is neither a ReLU-in-Sequential nor a
-            Linear-in-FeedFwdNN-like ModuleList.
-        ValueError: if the activation effective at the insertion site is
-            anything other than ReLU. Sigmoid / tanh / GELU break
-            function-preservation.
+            Linear-in-FeedFwdNN-like ModuleList (a non-ReLU activation in a
+            Sequential is this case).
+        ValueError: if the activation effective at a FeedFwdNN insertion
+            site is anything other than ReLU (sigmoid / tanh / GELU break
+            function-preservation); if the ReLU is not fed by an
+            ``nn.Linear`` through elementwise / norm modules only; or if the
+            Sequential is a subclass or carries its own parameters, buffers
+            or hooks.
     """
     new_model = copy.deepcopy(model)
     target = get_module(new_model, after_layer_name)
@@ -135,7 +139,8 @@ def _insert_after_relu_in_sequential(
 ) -> nn.Module:
     """Splice [Linear(I), ReLU] into a Sequential right after the
     ReLU registered under key ``attr``. The Linear's dim comes from the
-    nearest earlier Linear (walked back through the registered entries).
+    Linear feeding the ReLU, walked back through elementwise and norm
+    modules only.
 
     The container is rebuilt from its ordered ``_modules`` mapping, not
     ``children()`` (which deduplicates a module registered in several

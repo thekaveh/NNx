@@ -47,7 +47,7 @@ from torch import nn
 from .._validation import require_count, require_finite_real
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
-from ._source import _resolve_source_to_state_dict
+from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
 from ._targets import wrap_selected_linears
 
 
@@ -281,10 +281,11 @@ def load_lora_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     (derived from the destination, not from the source's key names), so
     a full checkpoint — or one carrying colliding ``*.base.*`` keys —
     can never overwrite a frozen base tensor. A wrong-shaped owned key
-    still raises the native size-mismatch error.
+    raises a size-mismatch ``RuntimeError`` before anything is copied.
     """
     sd = _resolve_source_to_state_dict(source, "load_lora_weights")
     sd = _lora_keys_only(module, sd)
+    _refuse_shape_mismatch(module, sd, "load_lora_weights")
     result = module.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the module
     # (e.g. loading into an un-adapted model) — subtract them so the

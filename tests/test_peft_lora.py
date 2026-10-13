@@ -548,6 +548,15 @@ def test_load_lora_weights_counts_only_accepted_adapter_tensors():
     assert not torch.all(net.layers[0].base.weight == 0)
     with pytest.raises(RuntimeError, match="size mismatch"):
         load_lora_weights(net, {"layers.0.lora_A": torch.zeros(3, 8)})
+    # A refused load leaves every adapter untouched (torch's strict=False
+    # load copied the matching keys before raising).
+    before = {k: v.clone() for k, v in net.state_dict().items()}
+    with pytest.raises(RuntimeError, match="nothing was loaded"):
+        load_lora_weights(
+            net,
+            {"layers.0.lora_A": torch.full_like(before["layers.0.lora_A"], 7.0), "layers.1.lora_A": torch.zeros(3, 8)},
+        )
+    assert all(torch.equal(v, before[k]) for k, v in net.state_dict().items())
 
     root = LoRALinear(nn.Linear(4, 4), r=2)
     sd = {k: v for k, v in root.state_dict().items()}

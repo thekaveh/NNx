@@ -173,10 +173,14 @@ class DiffusionObjective(Objective):
             raise ValueError("diffusion_objective got an empty batch: there is no noise to predict")
         t, eps = self.draw(x_0)
         schedule = self._schedule_on(x_0.device)
-        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape)
-        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape, x_0.dtype)
+        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape, x_0.dtype)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
         eps_pred = model.net(x_t, t)
+        if eps_pred.shape != eps.shape:  # a broadcast would train on a wrong loss silently
+            raise ValueError(
+                f"the denoiser must predict noise of the input's shape {tuple(eps.shape)}, got {tuple(eps_pred.shape)}"
+            )
         error = full_precision(eps_pred) - full_precision(eps)
         term = LossTerm(_TERM, error.pow(2).sum(), error.numel(), "mean")
         value = term.value

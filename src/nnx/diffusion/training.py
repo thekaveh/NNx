@@ -22,6 +22,8 @@ migrates the schedule once up-front.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -32,12 +34,17 @@ from ..precision import full_precision_only
 from .schedules import NoiseSchedule
 
 
-def _extract(values: torch.Tensor, t: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
+def _extract(
+    values: torch.Tensor, t: torch.Tensor, target_shape: torch.Size, dtype: Optional[torch.dtype] = None
+) -> torch.Tensor:
     """Pull ``values[t]`` and reshape so it broadcasts against a sample
     tensor of shape ``target_shape``. ``values`` is 1D of length T,
     ``t`` is ``(B,)``, output is ``(B, 1, 1, ...)`` matching the rank of
-    target_shape."""
+    target_shape, in ``dtype`` when given (the sample's, so a bf16 / fp16
+    net is not promoted to float32)."""
     out = values.to(t.device)[t]
+    if dtype is not None:
+        out = out.to(dtype)
     while out.dim() < len(target_shape):
         out = out.unsqueeze(-1)
     return out
@@ -82,8 +89,8 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         t = torch.randint(0, schedule.T, (B,), device=m.device)
         eps = torch.randn_like(x_0)
 
-        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape)
-        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape, x_0.dtype)
+        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape, x_0.dtype)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
 
         eps_pred = m.net(x_t, t)

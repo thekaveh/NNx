@@ -801,3 +801,34 @@ def test_a_skipped_nonfinite_window_never_reaches_the_epoch_training_loss(tmp_pa
     )
     summary = run.idps[-1].train_summary
     assert summary is not None and summary.loss is not None and math.isfinite(summary.loss)
+
+
+def test_an_epoch_whose_every_window_is_dropped_has_a_nonfinite_loss(tmp_path, monkeypatch):
+    """Under "skip", an epoch that drops every window has a non-finite
+    whole-epoch loss (the monitor sees "nonfinite" and EarlyStopping counts
+    it), never a missing one that a diverged run trains through."""
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    class AllNaN:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            return _nan_objective(ctx)
+
+    run = _linear().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(X, Y)],
+            optim=_sgd(1),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="all-dropped",
+        ),
+        objective=AllNaN(),
+    )
+    summary = run.idps[-1].train_summary
+    assert summary is not None and summary.loss is not None and math.isnan(summary.loss)
+    assert run.idps[-1].selection.status == "nonfinite"

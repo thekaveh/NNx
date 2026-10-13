@@ -855,6 +855,7 @@ class _TrainEpochSummary:
         # Objective runs: {(name, reduction): [reduction, Σ weight·numerator, Σ denominator]}.
         self._terms: dict[tuple[str, str], list[Any]] = {}
         self._staged: list[tuple[Any, ...]] = []  # the open window's terms
+        self._dropped_windows = 0
         self._pending_terms = False
 
     def observe(
@@ -881,9 +882,11 @@ class _TrainEpochSummary:
         """Observe the window's staged terms, or discard them when the
         engine dropped the window (a non-finite term under ``"skip"``)."""
         staged, self._staged = self._staged, []
-        if not dropped:
-            for terms in staged:
-                self.observe_terms(terms)
+        if dropped:
+            self._dropped_windows += 1
+            return
+        for terms in staged:
+            self.observe_terms(terms)
 
     def observe_terms(self, terms: Sequence[Any]) -> None:
         """Called for each objective microbatch with its ``LossTerm``s:
@@ -931,5 +934,12 @@ class _TrainEpochSummary:
             return None
         from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
-        loss = self._terms_loss() if self._terms else self._loss.result()
+        if self._terms:
+            loss = self._terms_loss()
+        elif self._dropped_windows:
+            # Every window was dropped as non-finite: the epoch's loss is
+            # non-finite (a monitor sees "nonfinite", not "missing").
+            loss = math.nan
+        else:
+            loss = self._loss.result()
         return NNEvaluationDataPoint(loss=loss, error=self._error.result(), metrics=self._metrics.results())

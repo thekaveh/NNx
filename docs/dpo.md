@@ -181,6 +181,11 @@ preferences = NNPreferenceDataset(
 )
 ```
 
+The DPO step joins each padded prompt and response, so
+`max_prompt_len + max_response_len` must not exceed the policy's
+`max_seq_len`. This recipe needs a policy with `max_seq_len >= 512`; the §3
+policy (128) takes lengths such as 64 + 64.
+
 The convention `(prompt, chosen, rejected)` matches the published
 datasets directly — most HF Hub preference corpora ship in this shape
 or one isomorphic to it.

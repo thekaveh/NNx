@@ -1000,9 +1000,10 @@ checkpointed component state (`nnx.update_engine`, §14.1). A stateful resume
 continues them; a `weights_only` resume starts them at zero.
 
 The whole-epoch training loss (§6.4) of an objective run applies the same
-rule to the whole epoch: each term's summed numerators over its summed
-denominators. As with step functions, declared metrics are recorded on
-validation only.
+rule to the whole epoch: each term's summed weighted numerators over its
+summed denominators. A window dropped under `nonfinite="skip"` is left out;
+an epoch that drops every window has a non-finite loss. As with step
+functions, declared metrics are recorded on validation only.
 
 `SupervisedObjective` is the model's `loss_fn` normalized by its own
 denominator (non-ignored targets, class weights; summed for a

@@ -164,6 +164,10 @@ class UpdateEngine:
         window is dropped at commit)."""
         return self._nonfinite_window
 
+    #: Whether the last :meth:`commit` dropped its window under the
+    #: non-finite policy (a non-finite term or non-finite gradients).
+    dropped_nonfinite: bool = False
+
     def autocast(self) -> AbstractContextManager[Any]:
         """The context the objective's forward runs in (mixed precision
         when enabled, a no-op otherwise)."""
@@ -252,11 +256,13 @@ class UpdateEngine:
         event per named optimizer for a committed window (none when the
         window was empty, all-masked, non-finite or skipped by the scaler);
         an optimizer without gradients is not stepped but still counts."""
+        self.dropped_nonfinite = False
         try:
             if not self._microbatches:
                 return ()
             if self._nonfinite_window:
                 self.skipped += 1
+                self.dropped_nonfinite = True
                 return ()
             values, total = self.window_values()
             if not values:
@@ -285,6 +291,7 @@ class UpdateEngine:
                         "to drop such windows"
                     )
                 self.skipped += 1
+                self.dropped_nonfinite = True  # finite terms, non-finite gradients
                 return ()
             for name in self.optimizers:
                 norm = self.clip_norms.get(name)

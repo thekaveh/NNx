@@ -55,7 +55,7 @@ from ..nn.net.transformer_layers import (
 )
 from ..nn.net.transformer_nn import TransformerNN
 from ._mode import inherit_training_mode
-from ._source import _resolve_source_to_state_dict
+from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
 from .ia3 import IA3Linear
 from .lora import LoRALinear
 
@@ -293,6 +293,7 @@ def load_prefix_weights(tuner: PrefixTuner, source: Union[str, Path, dict]) -> i
     # overwrite the frozen base.
     owned = tuner._owned_keys()
     sd = {k: v for k, v in sd.items() if k in owned}
+    _refuse_shape_mismatch(tuner, sd, "load_prefix_weights")
     result = tuner.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the tuner —
     # subtract them so the return value counts tensors that landed.

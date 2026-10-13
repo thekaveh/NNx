@@ -1993,10 +1993,10 @@ def _objective_microbatch(
         # an update.
         epoch_summary.stage_terms(result.terms)
     if close_window:
-        dropped = engine.window_nonfinite
         engine.commit(epoch_idx=epoch_idx, batch_idx=batch_idx)
         if epoch_summary is not None:
-            epoch_summary.close_window(dropped=dropped)
+            # Dropped for a non-finite term or non-finite gradients.
+            epoch_summary.close_window(dropped=engine.dropped_nonfinite)
     record = result.record
     loss = result.loss()
     if record is None:
