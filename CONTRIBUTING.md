@@ -139,6 +139,11 @@ their tests skip and the page shows them *unverified*. To produce that report:
     Each `--report` counts for the profile it ran on; a report from a profile the
     registry does not list, or from other sources, renders *unverified*.
 
+    The render with reports rewrites `docs/feature-composition.md` with
+    their evidence. Do not commit that page: the committed one is rendered
+    without evidence, which `--check` enforces. Restore it with `--render`
+    alone.
+
 Change `docs/external-contracts.md` and the matrix rows only from executed
 evidence: a CUDA report whose listed tests passed in every phase.
 

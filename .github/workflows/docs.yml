@@ -170,6 +170,7 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: build
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     permissions:
       pages: write # Publish the uploaded artifact to GitHub Pages.
       id-token: write # Authenticate the Pages deployment.

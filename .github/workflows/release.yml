@@ -469,6 +469,7 @@ jobs:
     needs: [build-distributions, verify-published]
     if: inputs.tag_name != ''
     runs-on: ubuntu-26.04
+    timeout-minutes: 15 # A stalled gh call never holds contents: write for six hours.
     permissions:
       contents: write # Upload verified artifacts and publish the draft GitHub release.
     steps:

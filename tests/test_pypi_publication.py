@@ -311,3 +311,14 @@ def test_pypi_lists_the_current_distribution_name():
         f"but pyproject [project] name is {dist_name!r}. URL was built "
         f"correctly but PyPI is returning a different project."
     )
+
+
+def test_the_build_backend_pin_matches_the_release_groups():
+    """The release builds without isolation, with the release group's
+    setuptools; CI's isolated builds use [build-system]. One bump of only
+    one of them would ship a wheel built by an untested backend."""
+    pyproject = _PYPROJECT.read_text(encoding="utf-8")
+    build_system = re.search(r'requires = \["setuptools==([^"]+)"\]', pyproject)
+    release_group = re.findall(r'"setuptools==([^"]+)"', pyproject)
+    assert build_system is not None
+    assert set(release_group) == {build_system.group(1)}, release_group
