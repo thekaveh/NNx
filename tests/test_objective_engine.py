@@ -868,3 +868,20 @@ def test_a_finite_microbatch_in_a_dropped_window_is_left_out_of_the_epoch_loss(t
         objective=NaNSecond(),
     )
     assert run.idps[-1].train_summary.loss == pytest.approx(expected)
+
+
+def test_an_objective_whose_every_term_is_detached_is_refused(tmp_path, monkeypatch):
+    """A detached numerator trained nothing, yet the window counted as a
+    committed update (clocks, schedulers, listeners): refuse it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def detached(ctx):
+        term = supervised_objective()(ctx).terms[0]
+        return ObjectiveResult((LossTerm("loss", term.numerator.detach(), term.denominator),))
+
+    with pytest.raises(ValueError, match="carry no gradient"):
+        _linear().train(
+            params=NNTrainParams(n_epochs=1, train_loader=[(X, Y)], optim=_sgd(1), save_phase_checkpoints=False),
+            objective=detached,
+        )

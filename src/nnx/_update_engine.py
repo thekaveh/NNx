@@ -186,6 +186,7 @@ class UpdateEngine:
         single = closes_window and not self._microbatches
         self._microbatches += 1
         live: list[Any] = []
+        detached: list[str] = []  # weighted, unmasked terms no gradient can flow through
         for term in terms:
             value = term._numerator_value  # one host sync per term, cached on the term
             if not math.isfinite(value):
@@ -199,11 +200,21 @@ class UpdateEngine:
             window.numerator += value
             if term.reduction == "mean":
                 window.denominator += float(term.denominator)
-            if term.weight and term.numerator.requires_grad and (term.reduction == "sum" or term.denominator):
-                live.append(term)
+            if term.weight and (term.reduction == "sum" or term.denominator):
+                if term.numerator.requires_grad:
+                    live.append(term)
+                else:
+                    detached.append(term.name)
         if self._nonfinite_window:
             return  # the window is dropped at commit; no gradient work
         active = [j for j, param in enumerate(self._params) if param.requires_grad]
+        if not live and detached and active and torch.is_grad_enabled():
+            # Nothing would train, yet the window would count as a committed
+            # update (clocks, schedulers, listeners): refuse instead.
+            raise ValueError(
+                f"loss term(s) {detached} carry no gradient (numerator.requires_grad is False): a LossTerm's "
+                "numerator must be a differentiable tensor (not detached, not computed under no_grad)"
+            )
         if not live or not active:
             return
         if single:

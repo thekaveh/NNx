@@ -339,7 +339,11 @@ class _CompileSession:
             # dynamo: an eager re-run (from the same RNG and buffers) tells
             # the two apart, and its own error is the one that propagates.
             snapshot.restore()
-            eager_output = self._net(*args, **kwargs)
+            try:
+                eager_output = self._net(*args, **kwargs)
+            except BaseException:
+                snapshot.restore()  # the user's own error: leave the model as the call found it
+                raise
             restart = self._fail(error, stage="forward")
             if self.spec.on_failure == "error":
                 snapshot.restore()  # leave the model as the failed call found it

@@ -3180,8 +3180,8 @@ deliberately narrow and **guarantees no speedup**:
   with, and finishes the run eager.
 - **Eager re-run errors.** A failure the eager re-run hits too is the
   forward's own error (a shape mistake, for example); it propagates
-  unchanged. Under `on_failure="error"`, the model's RNG and buffers are left
-  as the failed call found them.
+  unchanged, and the model's RNG and buffers are left as the failed call
+  found them. Under `on_failure="error"`, a compile failure leaves them so too.
 - **Recompile limit.** Hitting dynamo's recompile limit is a failure, never a
   silent eager fallback (torch >= 2.6 reports it). The limit is per code
   object and process-wide. Each fit therefore gets it afresh, on top of the
