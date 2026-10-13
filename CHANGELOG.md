@@ -13,6 +13,25 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 ### Fixed
 
 - **A DDP fit releases its wrapper when it ends.** After `train(distributed=DDP())`, including one that raised (a non-finite loss, say), the `DistributedDataParallel` wrapper and its hold on the process group are dropped. They no longer live on in an exception's traceback until an arbitrary garbage collection, possibly after the group is destroyed. `nnx.distributed.shutdown()` also collects such garbage before leaving the group ([#478](https://github.com/thekaveh/NNx/issues/478)).
+- **Invalid training settings fail before training starts.** `NNTrainParams` and `NNTrainerParams` refuse a seed outside `[0, 2**32)`, a non-string `data_id` and an unknown `resume_from_checkpoint` tag. A `Checkpoints` member there is stored as its tag string, so it no longer crashes the first `run.yaml` write after an epoch has trained.
+- **Checkpoint reads and writes refuse a path-shaped `type`.** `NNCheckpoint.load(run=..., type="../...")` and the other checkpoint entry points raise `ValueError` instead of reading or writing outside the run directory.
+- **A resumed `linear_warmup_decay` schedule on the epoch clock needs an explicit `warmup_steps`.** Its default (a tenth of each session's epochs) is not in the restored scheduler state, so a resume silently warmed up over a different length.
+- **A regression loss without a task fails with a hint.** The default steps score classification. An MSE model without `NNModelParams(task=TaskSpec.regression(...))` now gets that hint on its first batch, not a scikit-learn metrics error.
+- **Imperative paradigm steps are refused as `objective=` before a run is reserved.** This covers KD, feature KD, Mixup, CutMix, MoE, SimCLR, DPO and text contrastive steps, as diffusion and JEPA already were.
+- **A stopped epoch never reaches a full-history callback.** With a history journal, a stop at an update boundary also discards the epoch's chunks that were already written.
+- **More late failures move earlier.** `born_again_train` refuses gradient accumulation before generation 0. `Trainer.train` refuses a multi-rank process group. `apply_ia3_to` refuses to wrap a DoRA layer's base, and GGUF export refuses PEFT-adapted or prefix-tuned networks with a hint. `decide_result(policy=...)` checks the policy before calling the provider.
+- **Smaller fixes:**
+  - `widen` updates `FeedFwdNN.params.hidden_dims`.
+  - `DiffusionMLP` and `sample()` run in the net's dtype.
+  - bf16 modules work in the benchmark weights digest, `weight_histogram` and `activation_map`.
+  - `VisUtils.classification_report` keeps a named class absent from the data.
+  - `load_provenance` raises `ValueError` for JSON that is not an object.
+  - `lr_finder` stops at a non-finite loss.
+  - `init_process_group` validates `timeout_seconds` like `shutdown()`.
+  - A dynamo-skipped forward under `on_failure="error"` restores the model's buffers.
+  - `random_block_mask` validates its ranges.
+  - Safetensors checkpoints are flushed to disk before the rename.
+  - `nnx.export_conformance` is bound on `nnx`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 
