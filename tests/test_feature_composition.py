@@ -13,6 +13,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+
 from scripts import check_feature_composition as fc
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -422,7 +426,8 @@ def test_the_gpu_job_feeds_the_published_page_without_blocking_it():
     docs = (ROOT / ".github" / "workflows" / "docs.yml").read_text(encoding="utf-8")
     jobs = yaml.safe_load(docs)["jobs"]
     gpu = jobs["gpu-evidence"]
-    assert gpu["if"] == "vars.NNX_GPU_RUNNER == 'true'"
+    assert gpu["if"].startswith("vars.NNX_GPU_RUNNER == 'true' && ")
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in gpu["if"]  # never a fork
     assert gpu["runs-on"] == ["self-hosted", "linux", "x64", "gpu"]
     assert "gpu-evidence" in jobs["build"]["needs"] and "!cancelled()" in jobs["build"]["if"]
     assert "--report feature-composition-cuda-report.json" in docs

@@ -58,9 +58,10 @@ jobs:
     # FEAT-043: the cuda evidence profile (CUDA FP16/BF16 AMP, two-GPU NCCL
     # DDP). Runs only where the repository has registered a self-hosted GPU
     # runner and set the NNX_GPU_RUNNER variable to "true"; otherwise it is
-    # skipped and the page shows those rows unverified.
+    # skipped and the page shows those rows unverified. A pull request from
+    # a fork never runs on the self-hosted machine.
     name: GPU composition evidence
-    if: vars.NNX_GPU_RUNNER == 'true'
+    if: vars.NNX_GPU_RUNNER == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, x64, gpu]
     timeout-minutes: 45
     steps:

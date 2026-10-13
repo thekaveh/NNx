@@ -2,6 +2,10 @@ from pathlib import Path
 
 import pytest
 
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+
 import scripts.docs.build_wiki as build_wiki
 from scripts.docs.build_wiki import rewrite_markdown
 

@@ -232,10 +232,12 @@ def test_trusted_publishing_runs_in_the_top_level_release_workflow():
     assert "uses: ./.github/workflows/release.yml" not in release_please
     assert '-f "release_ref=$RELEASE_REF"' in release_please
     assert '-f "tag_name=$RELEASE_TAG"' in release_please
-    assert workflow.count("inputs.tag_name != ''") == 4, (
-        "release.yml must use the supplied tag_name input to enable tag/version "
+    assert workflow.count("inputs.tag_name != ''") == 5, (
+        "release.yml must use the supplied tag_name input to enable tag/version and tag/commit "
         "validation, PyPI publication, post-publish verification, and GitHub release publication"
     )
+    # The tag must name the release commit before the irreversible upload.
+    assert workflow.index("Assert the tag identifies the release commit") < workflow.index("publish-pypi:")
 
 
 def test_release_publication_has_one_managed_entry_point():

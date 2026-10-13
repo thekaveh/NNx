@@ -62,3 +62,17 @@ def test_every_torchrun_launch_shares_one_worker():
         if "torch.distributed.run" in path.read_text(encoding="utf-8")
     )
     assert launchers == ["test_ci_parallel_suite.py", "test_ddp_adapter.py", "test_examples_smoke.py"], launchers
+
+
+def test_ci_and_release_check_the_lock_against_pyproject():
+    """--frozen syncs never compare uv.lock with pyproject.toml: both gates
+    run `uv lock --check`, and Dependabot updates the two together."""
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    for workflow, job in (("ci.yml", "lint-and-test"), ("release.yml", "test")):
+        steps = yaml.safe_load((root / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))["jobs"][job]
+        assert any(step.get("run") == "uv lock --check" for step in steps["steps"]), workflow
+    dependabot = yaml.safe_load((root / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    ecosystems = {update["package-ecosystem"] for update in dependabot["updates"]}
+    assert "uv" in ecosystems and "pip" not in ecosystems

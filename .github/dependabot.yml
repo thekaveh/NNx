@@ -9,7 +9,9 @@ updates:
         patterns:
           - "*"
     target-branch: develop
-  - package-ecosystem: "pip"
+  # "uv" updates pyproject.toml and uv.lock together ("pip" left the lock
+  # behind, so its pull requests tested the old lock).
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

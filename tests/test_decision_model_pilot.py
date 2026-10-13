@@ -12,6 +12,10 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+if not (ROOT / "examples" / "decision_model_pilot.py").is_file():
+    pytest.skip("needs the repository's examples/ (not shipped in the sdist)", allow_module_level=True)
 pilot = runpy.run_path(str(ROOT / "examples" / "decision_model_pilot.py"), run_name="__nnx_pilot_tests__")
 
 from nnx.decisions import Boolean, Choice, Score, UnsupportedCapability  # noqa: E402

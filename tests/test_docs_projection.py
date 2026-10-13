@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+
 import scripts.docs.build_docs as build_docs
 from scripts.docs.build_api_reference import render as render_api_reference
 from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links

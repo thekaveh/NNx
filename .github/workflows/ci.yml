@@ -72,6 +72,12 @@ jobs:
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
 
+      - name: Check the lock matches pyproject.toml
+        # --frozen syncs never compare the lock with pyproject.toml: a
+        # dependency change without its uv.lock update would otherwise test
+        # the old lock.
+        run: uv lock --check
+
       - name: Lint with ruff
         run: uv run --frozen ruff check src/ tests/ examples/ scripts/
 

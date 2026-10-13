@@ -84,6 +84,12 @@ jobs:
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
 
+      - name: Check the lock matches pyproject.toml
+        # --frozen syncs never compare the lock with pyproject.toml: a
+        # dependency change without its uv.lock update would otherwise test
+        # the old lock.
+        run: uv lock --check
+
       - name: Lint with ruff
         run: uv run --frozen ruff check src/ tests/ examples/ scripts/
 
@@ -146,9 +152,8 @@ jobs:
         # PyPI uploads are permanent (yank-not-delete), so a typo'd tag
         # (v0.2.1 against a 0.2.0 pyproject) must abort BEFORE publish —
         # verify-published would only catch the mismatch after the
-        # irreversible upload. workflow_dispatch dry-runs skip this.
-        # Reusable workflows retain the caller's event name, so Release Please
-        # calls are identified by their required tag_name input.
+        # irreversible upload. The tag_name guard (here and on the publish
+        # jobs) refuses a dispatch with an empty tag.
         if: inputs.tag_name != ''
         run: |
           tag_version="${RELEASE_TAG#v}"
@@ -159,6 +164,24 @@ jobs:
           fi
         env:
           RELEASE_TAG: ${{ inputs.tag_name }}
+
+      - name: Assert the tag identifies the release commit
+        # Before anything is published: a re-dispatch naming a later commit
+        # that still carries the same version would otherwise upload that
+        # commit to PyPI as the tagged release (publish-github-release
+        # checks again, after the irreversible upload).
+        if: inputs.tag_name != ''
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          expected="$(git rev-parse HEAD)"
+          actual="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::tag $RELEASE_TAG resolves to $actual, not the release commit $expected — aborting before publish."
+            exit 1
+          fi
 
       - name: Build reproducible sdist + wheel
         run: |
@@ -332,8 +355,7 @@ jobs:
   verify-published:
     name: Verify the new version is reachable on PyPI
     needs: publish-pypi
-    # Only runs on Release Please publishes, not workflow_dispatch dry runs
-    # (since the dry-run path skips the pypi-publish step).
+    # Runs after every publish (a dispatch with a tag_name).
     if: inputs.tag_name != ''
     runs-on: ubuntu-26.04
     timeout-minutes: 15

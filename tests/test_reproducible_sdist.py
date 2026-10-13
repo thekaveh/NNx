@@ -4,6 +4,12 @@ import hashlib
 import io
 import tarfile
 
+import pytest
+
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+
 from scripts.normalize_sdist import normalize_sdist
 
 
