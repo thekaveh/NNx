@@ -12,6 +12,7 @@ already rely on.
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Any, Union
 
 import torch
@@ -129,13 +130,18 @@ def _run_summary(
     # The dummy is built on the model's own device, passed explicitly:
     # torchinfo's own inference keeps only a CUDA parameter's device and
     # would otherwise move an MPS (or, on a CUDA host, a CPU) model.
-    param = next(model.parameters(), None)
-    if param is not None:
-        dev = param.device
-    elif torch.cuda.is_available():
-        dev = torch.device("cuda")
-    else:
-        dev = torch.device("cpu")
+    # The dummy also takes the model's floating dtype (a .double() model).
+    tensor = next(itertools.chain(model.parameters(), model.buffers()), None)
+    dev = tensor.device if tensor is not None else torch.device("cpu")
+    floating = next(
+        (t.dtype for t in itertools.chain(model.parameters(), model.buffers()) if t.is_floating_point()), None
+    )
+    dtypes = None
+    if floating is not None and input_size is not None:
+        several = (
+            isinstance(input_size, (list, tuple)) and len(input_size) > 0 and isinstance(input_size[0], (list, tuple))
+        )
+        dtypes = [floating] * (len(input_size) if several else 1)
     cpu_rng_state = torch.get_rng_state()
     device_rng_state = None
     if dev.type == "cuda":
@@ -151,6 +157,7 @@ def _run_summary(
             col_names=col_names,
             verbose=0,
             device=dev,
+            dtypes=dtypes,
         )
     finally:
         torch.set_rng_state(cpu_rng_state)

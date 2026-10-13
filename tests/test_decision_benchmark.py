@@ -967,3 +967,14 @@ def test_coinciding_bounds_over_varying_resamples_are_named_as_such():
     interval = bootstrap_interval(samples, records, metric="accuracy", seed=0, resamples=200, level=0.05)
     assert interval.low == interval.high == 0.975  # this seed's draw
     assert interval.degenerate and interval.reason == "the interval bounds coincide"
+
+
+def test_coverage_reasons_count_one_fault_across_samples():
+    samples, records = fixture()
+    wrong = [
+        Record(r.sample_id, r.question_digest, r.provider, r.status, distribution=tuple(reversed(r.distribution)))
+        for r in records
+    ]
+    report = evaluate(samples, wrong, split="test-v1")
+    reasons = dict(report.slices["in_family"].coverage.reasons)
+    assert len(reasons) == 1 and next(iter(reasons.values())) == len(samples)

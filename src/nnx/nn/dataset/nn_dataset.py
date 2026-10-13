@@ -40,8 +40,8 @@ class NNDataset(NNDatasetBase):
     negatives, floats, strings and anything but a 3-tuple are rejected with
     the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
     instantiated — zero never disables a split; ``val_proportion=0.0`` does
-    (``val_loader`` is then ``None`` and the resolved val size is a
-    placeholder ``1``).
+    (``val_loader`` is then ``None``; the resolved val size is a placeholder
+    ``1`` when requested as ``None``, and an explicit size is kept).
 
     ``transform`` is handed to both torchvision factories and applies to
     every split. Split transforms: ``train_transform`` and

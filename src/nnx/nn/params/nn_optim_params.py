@@ -149,8 +149,10 @@ class NNOptimParams:
     transformers, 5.0 for RNNs.
 
     `accumulate_grad_batches` enables gradient accumulation — the effective
-    batch size becomes batch_size * accumulate_grad_batches. The loss is
-    scaled by 1/N so the accumulated gradient is the mean across N batches.
+    batch size becomes batch_size * accumulate_grad_batches. Each update
+    averages the loss over every valid sample in the window (sum of
+    numerators over sum of denominators), so uneven or partial windows give
+    the full-batch gradient.
     Default 1 (back-compat: step every batch).
 
     `param_groups` enables per-layer-group LR / weight_decay overrides — the

@@ -757,3 +757,12 @@ def test_rewrite_markdown_rejects_existing_unmapped_non_markdown_file(tmp_path: 
 
     with pytest.raises(ValueError, match="unmapped local documentation link"):
         rewrite_markdown(source, "[Configuration](pyproject.toml)\n", {})
+
+
+def test_a_bracketed_label_after_an_inline_code_span_is_prose_not_a_definition(tmp_path: Path):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    text = "Use `x` [a]: foo for this.\nSet `k` [note]: see below\n[ref]: page.md\n"
+    rendered = rewrite_markdown(source, text, {source.resolve(): "Page.md"})
+    assert rendered.startswith("Use `x` [a]: foo for this.\nSet `k` [note]: see below\n")
+    assert "[ref]: Page.md" in rendered  # a definition at a line start is still rewritten

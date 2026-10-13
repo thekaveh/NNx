@@ -335,8 +335,9 @@ names the slot (`batch_sizes[0] (train)`) and is raised *before* the dataset
 factory, tokenizer or split runs. Zero never disables a split.
 
 Empty optional splits come from the proportions. With `val_proportion=0.0`
-(tabular / preference: also `test_proportion=0.0`) that loader is `None`. The
-resolved `batch_sizes` carries a placeholder `1` for it.
+(tabular / preference: also `test_proportion=0.0`) that loader is `None`. Its
+resolved `batch_sizes` slot is a placeholder `1` when you requested it as
+`None`; an explicit size is kept.
 `NNGraphDataset(sampler="full")` rejects every explicit size, since the whole
 graph is always one batch.
 

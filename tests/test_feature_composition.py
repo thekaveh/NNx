@@ -433,3 +433,14 @@ def test_the_gpu_job_feeds_the_published_page_without_blocking_it():
     assert gpu["runs-on"] == ["self-hosted", "linux", "x64", "gpu"]
     assert "gpu-evidence" in jobs["build"]["needs"] and "!cancelled()" in jobs["build"]["if"]
     assert "--report feature-composition-cuda-report.json" in docs
+
+
+def test_a_hung_scenario_run_fails_with_its_own_error(registry, tmp_path, monkeypatch):
+    import subprocess
+
+    def hung(*args, **kwargs):
+        raise subprocess.TimeoutExpired("pytest", fc.RUN_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(fc.subprocess, "run", hung)
+    with pytest.raises(RuntimeError, match="did not finish"):
+        fc.run(registry, root=tmp_path)

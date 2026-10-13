@@ -88,9 +88,12 @@ cell reads *unverified*.
 | PK-01 | core install without domain extras + train / predict / save / reload | cpu / fp32 / core | With the vision, graph and plotting stacks hidden, a core install trains, predicts, saves and reloads, and lists only usable names. | **unverified** — no evidence report | `tests/test_core_install.py::test_a_core_install_trains_predicts_saves_and_reloads_without_the_domains`<br>`tests/test_core_install.py::test_a_core_install_lists_only_usable_names_and_pydoc_works` |
 | PK-02 | domain features + missing domain extras | cpu / fp32 / core | A domain name without its extra is refused, naming the extra, before data, model or random state is touched. | **unverified** — no evidence report | `tests/test_core_install.py::test_a_domain_request_names_its_extra`<br>`tests/test_core_install.py::test_plot_features_refuse_before_running_the_model`<br>`tests/test_core_install.py::test_lr_finder_refuses_before_touching_data_model_or_rng` |
 
-Status meanings: *verified* — the listed tests assert the combination and passed;
-*unsupported* — refused, proven by an executed negative test (or an exact documented
-limitation); *unverified* — no executed evidence on the profiles CI runs (for example
-CUDA AMP on a CPU runner), or no current report; *failed* — a listed test did not
-pass or did not run. Contributors: see CONTRIBUTING (scenario IDs to review when a
-boundary changes).
+Status meanings:
+
+- *verified*: the listed tests assert the combination and passed.
+- *unsupported*: refused, proven by an executed negative test (or an exact documented limitation).
+- *unverified*: no executed evidence on the profiles CI runs (for example CUDA AMP on a CPU
+  runner), or no current report.
+- *failed*: a listed test did not pass or did not run.
+
+Contributors: see CONTRIBUTING (scenario IDs to review when a boundary changes).

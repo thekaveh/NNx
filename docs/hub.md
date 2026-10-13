@@ -161,9 +161,11 @@ recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
 low-rank factors are allocated in their recorded shape (no SVD). It then
 loads the safetensors weights into the freshly-built `self.net`. An unknown
 operation or version is refused before any tensor is loaded. Tensors
-round-trip bit-exactly. The params' `state()` round-trips too, except
-`NNModelParams.device`, which is `map_location` (default `"cpu"`), so a model
-saved on a GPU or MPS reloads on the CPU unless you pass `map_location`.
+round-trip bit-exactly.
+
+The params' `state()` round-trips too, except `NNModelParams.device`. It
+takes `map_location` (default `"cpu"`), so a GPU or MPS model reloads on the
+CPU unless you pass one.
 
 A model can be saved with extra top-level submodules attached to its net,
 such as a JEPA predictor registered as `model.net._jepa_predictor`. It

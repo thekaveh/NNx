@@ -211,7 +211,7 @@ Schedulers.COSINE_ANNEALING(opt, params, n_epochs)     # → CosineAnnealingLR
 NoiseSchedulers.LINEAR(T=1000, beta_min=1e-4, beta_max=2e-2)  # → NoiseSchedule
 ```
 
-Adding a new option is a one-place change: extend the enum + the `match` block. No parallel dispatch elsewhere to update.
+Adding a new option extends the enum and its `match` block. Some enums have companions to update too: an `Optims` member joins its optimizer family (`NNOptimParams`) and a builder method; a `Nets` member with its own params class joins the params map and `NNParams.resolve_from_state`.
 
 ### 3.1. Optimizers: AdamW, registered factories and the shared build hook
 
@@ -3206,8 +3206,8 @@ deliberately narrow and **guarantees no speedup**:
   the fit ends. Optimizers own `model.net`'s parameters. Checkpoints hold its
   keys (never `_orig_mod.`). A resume builds a fresh wrapper.
 - **Eager paths.** Hub and ONNX export, `summary`, weight tying and every
-  `predict` / `evaluate` after the fit are eager, and so is `generate` at any
-  time. A `predict` / `evaluate` that a callback runs during the fit goes
+  `predict` / `evaluate` after the fit are eager. `generate` is always eager.
+  A `predict` / `evaluate` that a callback runs during the fit goes
   through the wrapper.
 - **Failure policy.** `CompileSpec(on_failure="error")` (default) raises
   `CompileFailed` when a compiled forward fails to compile. With

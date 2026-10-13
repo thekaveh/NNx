@@ -866,7 +866,7 @@ LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. All methods share 
 
 ## 11. Model surgery (`nnx.surgery`)
 
-Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
+Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh module (`expand_embedding` also returns a frozen-row mask) and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 
 @api nnx.surgery.widen.widen
 
@@ -1044,7 +1044,7 @@ Executable profiles that separate structural validity from numerical parity: `Fe
 
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 
-- **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` and `NNCheckpoint.from_file(..., format="safetensors")` (see §3 `NNCheckpoint`) read and write checkpoints in the safetensors format alongside the default pickle path. Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
+- **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` writes the safetensors format alongside the default pickle path, and `NNCheckpoint.from_file(path)` reads either (detected from the file; see §3 `NNCheckpoint`). Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
 - **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself — see §2.1.
 
 Walkthrough at [HuggingFace Hub](hub.md).

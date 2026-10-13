@@ -108,8 +108,9 @@ class NNTabularDataset(NNDatasetBase):
     strings and anything but a 3-tuple are rejected with the
     ``batch_sizes[i] (split)`` slot named before any tensor conversion or
     split. Zero never disables a split: `val_proportion=0.0` /
-    `test_proportion=0.0` do, and that split's loader is then ``None`` with
-    a placeholder ``1`` in the resolved ``batch_sizes``.
+    `test_proportion=0.0` do, and that split's loader is then ``None``. Its
+    resolved ``batch_sizes`` slot is a placeholder ``1`` when it was
+    requested as ``None``; an explicit size is kept.
 
     Admission: only the selected feature and target columns are inspected.
     NaN in any of them, ``±inf`` in a feature (checked in source precision,

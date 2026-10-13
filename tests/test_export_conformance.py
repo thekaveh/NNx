@@ -160,6 +160,8 @@ def _valid_record(tmp_path):
         (lambda r: r["artifacts"]["files"][0].update(sha256="xyz"), "malformed sha256"),
         (lambda r: r["config"].update(weights_sha256="x"), "weights_sha256 is malformed"),
         (lambda r: r["config"].update(weights_sha256=None), "weights_sha256 is malformed"),
+        (lambda r: r["config"].update(weights_sha256="a" * 63), "weights_sha256 is malformed"),
+        (lambda r: r["config"].update(weights_sha256="A" * 64), "weights_sha256 is malformed"),
         (lambda r: r["tolerances"].update(rtol=float("nan")), "finite"),
         (
             lambda r: (

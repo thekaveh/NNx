@@ -549,12 +549,15 @@ def render(
             )
         lines.append("")
     lines += [
-        "Status meanings: *verified* — the listed tests assert the combination and passed;",
-        "*unsupported* — refused, proven by an executed negative test (or an exact documented",
-        "limitation); *unverified* — no executed evidence on the profiles CI runs (for example",
-        "CUDA AMP on a CPU runner), or no current report; *failed* — a listed test did not",
-        "pass or did not run. Contributors: see CONTRIBUTING (scenario IDs to review when a",
-        "boundary changes).",
+        "Status meanings:",
+        "",
+        "- *verified*: the listed tests assert the combination and passed.",
+        "- *unsupported*: refused, proven by an executed negative test (or an exact documented limitation).",
+        "- *unverified*: no executed evidence on the profiles CI runs (for example CUDA AMP on a CPU",
+        "  runner), or no current report.",
+        "- *failed*: a listed test did not pass or did not run.",
+        "",
+        "Contributors: see CONTRIBUTING (scenario IDs to review when a boundary changes).",
         "",
     ]
     return "\n".join(lines)

@@ -1093,12 +1093,19 @@ def rewrite_markdown(
 
     rendered: list[str] = []
     projected_text = _project_wiki_heading_ids(text) if surface == "wiki" else text
+    at_line_start = True  # a reference definition only starts a line (CommonMark)
     for block in markdown_blocks(projected_text):
         chunk = rewrite_html(block.text) if block.html_processable else block.text
+        starts_line = at_line_start
+        at_line_start = block.text.endswith("\n")
         if block.suppressed:
             rendered.append(chunk)
             continue
-        chunk = _rewrite_reference_definitions(chunk, rewrite_target)
+        if starts_line:
+            chunk = _rewrite_reference_definitions(chunk, rewrite_target)
+        else:  # the rest of a line after an inline code span holds no definition
+            head, newline, tail = chunk.partition("\n")
+            chunk = head + newline + (_rewrite_reference_definitions(tail, rewrite_target) if newline else "")
         rendered.append(replace_inline_links(ATTR_RE.sub("", chunk), replace))
     return "".join(rendered).rstrip() + "\n"
 

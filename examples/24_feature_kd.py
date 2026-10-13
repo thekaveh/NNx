@@ -113,7 +113,7 @@ def main() -> None:
         params=model_params,
     )
     # Its own data_id: the teacher otherwise shares 19_prune_synthetic_classifier.py's
-    # baseline run id (same config, data and seed).
+    # baseline run id (same config, data_id and seed; the run id never sees the data itself).
     teacher_run = teacher.train(params=replace(base_train_params, data_id="feature-kd-teacher"))
     teacher_val_idps = [idp for idp in teacher_run.idps if idp.val_edp is not None]
     teacher_val_acc = 1.0 - teacher_val_idps[-1].val_edp.error

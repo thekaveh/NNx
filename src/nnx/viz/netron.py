@@ -97,6 +97,14 @@ def netron_export(
             for e in example_input
         )
 
+    # As to_onnx / predict: floating inputs take the net's floating dtype
+    # (a NumPy float64 example would otherwise fail against float32 weights).
+    net_dtype = next((p.dtype for p in net.parameters() if p.is_floating_point()), None)
+    if net_dtype is not None:
+        example_input = tuple(
+            e.to(net_dtype) if e.is_floating_point() and e.dtype != net_dtype else e for e in example_input
+        )
+
     in_names = [f"input_{i}" for i in range(len(example_input))]
     out_names = ["output"]
     dynamic_axes = {n: {0: "batch"} for n in in_names + out_names} if dynamic_batch else None

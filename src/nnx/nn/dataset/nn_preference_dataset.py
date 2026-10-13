@@ -108,8 +108,9 @@ class NNPreferenceDataset(NNDatasetBase):
     negatives, floats, strings and anything but a 3-tuple are rejected with
     the ``batch_sizes[i] (split)`` slot named before ``tokenizer.encode``
     is called. Zero never disables a split: `val_proportion=0.0` /
-    `test_proportion=0.0` do (that loader is then ``None`` with a
-    placeholder ``1`` in the resolved ``batch_sizes``).
+    `test_proportion=0.0` do (that loader is then ``None``; its resolved
+    ``batch_sizes`` slot is a placeholder ``1`` when requested as ``None``,
+    and an explicit size is kept).
     """
 
     prompts: list[str]

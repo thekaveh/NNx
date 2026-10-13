@@ -179,7 +179,7 @@ Surgery preserves trainability and modes. Two primitives rebuild an *existing* L
 
 Each replacement module also takes the train/eval mode of the module it replaces, so a mixed root/child configuration survives unchanged.
 
-`widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm`, which a rebuilt plain module would drop silently. Remove it first: `torch.nn.utils.parametrize.remove_parametrizations` for the parametrization form, `remove_weight_norm` / `remove_spectral_norm` for the legacy hooks.
+`widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm` or an unbaked prune mask, which a rebuilt plain module would drop silently. Remove it first: `torch.nn.utils.parametrize.remove_parametrizations` for the parametrization form, `remove_weight_norm` / `remove_spectral_norm` for the legacy hooks, `torch.nn.utils.prune.remove` for a mask.
 
 Build the optimizer *after* surgery. A frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`. If you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules: trainable, and in the mode of the container they join. Existing layers keep their own modes. `expand_embedding` gives the new table the source table's `requires_grad` flag and mode.
 

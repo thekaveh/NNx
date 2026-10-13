@@ -130,3 +130,10 @@ def test_netron_export_launch_true_without_netron_raises(tmp_path, tiny_feedfwd,
     with pytest.raises(ImportError, match=r"viz-interactive"):
         netron_export(tiny_feedfwd, str(out), torch.randn(1, 4), launch=True)
     assert not out.exists()
+
+
+def test_netron_export_casts_a_numpy_float64_example_to_the_net_dtype(tmp_path):
+    import numpy as np
+
+    path = netron_export(nn.Linear(3, 2), str(tmp_path / "linear.onnx"), np.random.default_rng(0).random((4, 3)))
+    assert os.path.exists(path)

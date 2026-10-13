@@ -70,3 +70,20 @@ def test_summary_input_size_does_not_advance_global_rng():
     state = torch.get_rng_state()
     summary(m, input_size=(1, 4))
     assert torch.equal(torch.get_rng_state(), state)
+
+
+def test_a_summary_by_input_size_never_moves_a_cpu_model_on_a_cuda_host(monkeypatch):
+    # torchinfo's own inference would pick CUDA for a CPU model; the dummy goes to the model's device.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    model = _tiny()
+    summary(model, input_size=(2, 4))
+    assert all(p.device.type == "cpu" for p in model.net.parameters())
+
+
+def test_a_summary_by_input_size_builds_a_double_dummy_for_a_double_model():
+    import torch
+
+    net = torch.nn.Sequential(torch.nn.Linear(3, 4)).double()
+    assert summary(net, input_size=(2, 3)) is not None

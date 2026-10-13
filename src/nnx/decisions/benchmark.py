@@ -560,9 +560,7 @@ def _answer(sample: Sample, result: Any, provider_id: str) -> dict[str, Any]:
     distribution into the question's option order."""
     digest = getattr(result, "question_digest", None)
     if digest != sample.digest:
-        raise InvalidDecisionResponse(
-            f"sample {sample.id!r}: the result answers question {digest!r}, not {sample.digest!r}"
-        )
+        raise InvalidDecisionResponse(f"the result answers question {digest!r}, not the sample's {sample.digest!r}")
     if isinstance(sample.question, Boolean):
         checked: Any = validate_response(sample.question, getattr(result, "p_true", None), provider=provider_id)
         return {"p_true": float(checked.p_true)}
@@ -993,10 +991,10 @@ def _row(sample: Sample, record: Record) -> _Row:
     labels = _labels(sample.question)
     if isinstance(sample.question, Boolean):
         if record.p_true is None:
-            raise BenchmarkError(f"record {record.sample_id!r} answers a Boolean without p_true")
+            raise BenchmarkError("the record answers a Boolean without p_true")
         return _Row(sample, labels, (record.p_true, 1.0 - record.p_true))
     if record.distribution is None or tuple(k for k, _ in record.distribution) != labels:
-        raise BenchmarkError(f"record {record.sample_id!r}'s distribution does not follow its question's options")
+        raise BenchmarkError("the record's distribution does not follow its question's options")
     return _Row(sample, labels, tuple(p for _, p in record.distribution))
 
 

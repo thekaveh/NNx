@@ -967,7 +967,7 @@ class NNCheckpoint:
           LOW byte can legitimately be ``0x80`` (any header length
           ≡ 128 mod 256), which would collide with the pickle PROTO
           opcode — so safetensors is positively identified by byte 8
-          BEFORE the ``\x80`` pickle check. The ZIP magic is checked
+          BEFORE the ``\\x80`` pickle check. The ZIP magic is checked
           first of all (a ZIP's byte 8 is the compression method, never
           ``{``; a torch-LEGACY pickle has the fixed magic byte ``0xf9``
           at offset 8, and a protocol ≥ 4 bare pickle has a frame-length

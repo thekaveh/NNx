@@ -9445,8 +9445,10 @@ None = no clipping (back-compat default). Typical values: 1.0 for
 transformers, 5.0 for RNNs.
 
 `accumulate_grad_batches` enables gradient accumulation — the effective
-batch size becomes batch_size * accumulate_grad_batches. The loss is
-scaled by 1/N so the accumulated gradient is the mean across N batches.
+batch size becomes batch_size * accumulate_grad_batches. Each update
+averages the loss over every valid sample in the window (sum of
+numerators over sum of denominators), so uneven or partial windows give
+the full-batch gradient.
 Default 1 (back-compat: step every batch).
 
 `param_groups` enables per-layer-group LR / weight_decay overrides — the
@@ -10680,7 +10682,7 @@ Dispatch is by magic bytes:
   LOW byte can legitimately be ``0x80`` (any header length
   ≡ 128 mod 256), which would collide with the pickle PROTO
   opcode — so safetensors is positively identified by byte 8
-  BEFORE the ```` pickle check. The ZIP magic is checked
+  BEFORE the ``\x80`` pickle check. The ZIP magic is checked
   first of all (a ZIP's byte 8 is the compression method, never
   ``{``; a torch-LEGACY pickle has the fixed magic byte ``0xf9``
   at offset 8, and a protocol ≥ 4 bare pickle has a frame-length
@@ -11777,8 +11779,8 @@ batch); NumPy integers are normalized to ``int``. Zero, ``False``,
 negatives, floats, strings and anything but a 3-tuple are rejected with
 the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
 instantiated — zero never disables a split; ``val_proportion=0.0`` does
-(``val_loader`` is then ``None`` and the resolved val size is a
-placeholder ``1``).
+(``val_loader`` is then ``None``; the resolved val size is a placeholder
+``1`` when requested as ``None``, and an explicit size is kept).
 
 ``transform`` is handed to both torchvision factories and applies to
 every split. Split transforms: ``train_transform`` and
@@ -11865,8 +11867,9 @@ integers are normalized to ``int``. Zero, ``False``, negatives, floats,
 strings and anything but a 3-tuple are rejected with the
 ``batch_sizes[i] (split)`` slot named before any tensor conversion or
 split. Zero never disables a split: `val_proportion=0.0` /
-`test_proportion=0.0` do, and that split's loader is then ``None`` with
-a placeholder ``1`` in the resolved ``batch_sizes``.
+`test_proportion=0.0` do, and that split's loader is then ``None``. Its
+resolved ``batch_sizes`` slot is a placeholder ``1`` when it was
+requested as ``None``; an explicit size is kept.
 
 Admission: only the selected feature and target columns are inspected.
 NaN in any of them, ``±inf`` in a feature (checked in source precision,
@@ -11947,8 +11950,9 @@ batch); NumPy integers are normalized to ``int``. Zero, ``False``,
 negatives, floats, strings and anything but a 3-tuple are rejected with
 the ``batch_sizes[i] (split)`` slot named before ``tokenizer.encode``
 is called. Zero never disables a split: `val_proportion=0.0` /
-`test_proportion=0.0` do (that loader is then ``None`` with a
-placeholder ``1`` in the resolved ``batch_sizes``).
+`test_proportion=0.0` do (that loader is then ``None``; its resolved
+``batch_sizes`` slot is a placeholder ``1`` when requested as ``None``,
+and an explicit size is kept).
 ```
 
 
@@ -13893,7 +13897,7 @@ training after this call.
 
 ## 11. Model surgery (`nnx.surgery`)
 
-Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
+Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh module (`expand_embedding` also returns a frozen-row mask) and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 
 #### `nnx.surgery.widen.widen`
 
@@ -16155,7 +16159,7 @@ A malformed conformance record, or artifacts that do not match it.
 
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 
-- **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` and `NNCheckpoint.from_file(..., format="safetensors")` (see §3 `NNCheckpoint`) read and write checkpoints in the safetensors format alongside the default pickle path. Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
+- **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` writes the safetensors format alongside the default pickle path, and `NNCheckpoint.from_file(path)` reads either (detected from the file; see §3 `NNCheckpoint`). Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
 - **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself — see §2.1.
 
 Walkthrough at [HuggingFace Hub](hub.md).

@@ -2025,3 +2025,22 @@ def test_a_custom_step_may_train_an_unbaked_pruned_registered_net(tmp_path, monk
     magnitude_prune(model.net, 0.5, bake=False)
     run = model.train(params=_one_epoch(), train_step_fn=lambda ctx: default_train_step(ctx))
     assert run.idps
+
+
+def test_surgery_refuses_an_unbaked_prune_mask_and_spares_lookalike_parameter_names():
+    import torch
+
+    from nnx.surgery import expand_embedding, low_rank_factorize
+
+    pruned = torch.nn.Linear(4, 4)
+    torch.nn.utils.prune.l1_unstructured(pruned, "weight", amount=0.5)
+    with pytest.raises(ValueError, match="unbaked prune mask"):
+        low_rank_factorize(pruned, rank=2)  # the stale weight and the mask would be dropped
+    table = torch.nn.Embedding(4, 2)
+    torch.nn.utils.prune.l1_unstructured(table, "weight", amount=0.5)
+    with pytest.raises(ValueError, match="unbaked prune mask"):
+        expand_embedding(table, new_num_embeddings=8)
+    lookalike = torch.nn.Linear(4, 4)  # weight_norm-like names, but no hook
+    lookalike.register_parameter("scale_g", torch.nn.Parameter(torch.ones(1)))
+    lookalike.register_parameter("scale_v", torch.nn.Parameter(torch.ones(1)))
+    low_rank_factorize(lookalike, rank=2)

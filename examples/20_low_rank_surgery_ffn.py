@@ -30,9 +30,8 @@ creating the optimizer.
 ``widen`` primitive: it shows eval-mode parity through a direct Linear and
 through an elementwise activation, the rejection of a width-dependent
 Softmax boundary (source left untouched), and the honest reconstruction
-path — widen ``model.net``, rebuild the *immutable params* with
-``dataclasses.replace`` so the new width and every per-layer override stay
-aligned, load the widened state into a fresh correctly-described
+path — widen ``model.net``, adopt the ``params`` that ``widen`` returns
+(the new width, every per-layer override kept), load the widened state into a fresh correctly-described
 ``NNModel``, train with a new optimizer, and reload BEST.
 
 ``deepen_override_workflow`` below is the ``deepen`` companion: starting
