@@ -24,6 +24,7 @@ The diagram has eight layers, top-to-bottom:
 5. **Training-loop internals** (emerald) — the epoch × batch dispatch and the inline NaN guard + grad-clip in `default_train_step`. They also include `_step_scheduler` and `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). `_step_scheduler` is the Schedulers enum dispatch: once per epoch, or once per committed optimizer update on the `optimizer_update` clock (§2.5).
 
     Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`). Only paradigm, diffusion and embeddings step-fn factories invoke it — not the supervised loop, which has its own inline NaN+clip path.
+
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
 8. **Persistence** (violet) — `NNRun` writes `run.yaml + idps.csv + metadata.yaml` and `NNCheckpoint` writes `*.pt + *.opt.pt` into `runs/<id>/`.
@@ -50,15 +51,16 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 New fields added to an existing params class **must omit themselves from `state()` when at their default**. Otherwise every existing `run.id` (md5 of `state()`) shifts and on-disk runs become unfindable. Every params class follows the pattern. Regression tests pin it per field:
 
 - `mixed_precision` / `precision` / `kind` / `trainer`: `tests/test_params_round_trip.py`.
-- `param_groups`: `tests/test_finetune_param_groups.py` and `tests/test_pass2_ou_series.py`.
-- `seed` / `save_phase_checkpoints`: `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`.
+- `param_groups`: `tests/test_finetune_param_groups.py`.
+- `seed`: `tests/test_trainer_params.py` and `tests/test_pass2_v_series.py`.
+- `save_phase_checkpoints`: `tests/test_trainer_params.py` and `tests/test_pass2_ou_series.py`.
 - `schedulers`: `tests/test_trainer_params.py`.
 
 ### 2.3. Finite numeric domains
 
 Every public real-valued hyperparameter is validated in `__post_init__` (or the direct constructor). It is checked as a *finite real number* first and against its domain second. NaN and ±infinity are rejected, and so are booleans and numeric strings, which are never coerced. The `ValueError` names the field and its accepted domain, and it is raised before any optimizer, run directory or RoPE table exists. The inventory:
 
-- `NNOptimParams.max_lr` and `weight_decay` ≥ 0 (zero is meaningful: frozen updates / no decay). `grad_clip_norm` > 0 when set (`None` disables). SGD `momentum` ≥ 0, Adam betas in `[0, 1)`.
+- `NNOptimParams.max_lr` and `weight_decay` ≥ 0 (zero is meaningful: frozen updates / no decay). `eps` > 0. `grad_clip_norm` > 0 when set (`None` disables). SGD `momentum` ≥ 0, Adam betas in `[0, 1)`.
 - `NNParamGroupSpec.lr` / `lr_multiplier` > 0 (freeze a group with `nnx.finetune.freeze`, not `lr=0`) and group `weight_decay` ≥ 0. The *resolved* per-group learning rate must also be finite before the optimizer is built.
 - `NNSchedulerParams.min_lr` / `threshold` ≥ 0, `factor` > 0, optional `max_lr` > 0.
 - `NNTransformerParams.rope_base` > 0 (also enforced by a direct `RoPE(base=...)`).
@@ -134,7 +136,7 @@ opt = (
 
 Three more Builders follow the same pattern:
 
-- **`NNTransformerParams.builder()`** — LM-path config. Six fluent methods (`vocab`, `layers`, `ffn`, `context`, `dropout`, `tied_embeddings`) hide the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`) the transformer net doesn't read. `.layers(n, heads, d_model)` enforces `d_model % heads == 0` at call-time. Full walkthrough in [`docs/lm.md`](lm.md).
+- **`NNTransformerParams.builder()`** — LM-path config. Six fluent methods (`vocab`, `layers`, `ffn`, `context`, `dropout`, `tied_embeddings`) hide the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`) the transformer net doesn't read. `.layers(n=..., heads=..., d_model=...)` (keyword-only) enforces `d_model % heads == 0` at call-time. Full walkthrough in [`docs/lm.md`](lm.md).
 - **`NNTrainerParams.builder()`** — composite, wraps the optimizer and scheduler Builders. `.optimizer(name, NNOptimParams)` + `.scheduler(name, NNSchedulerParams)` register entries under user-chosen names. `.build()` enforces `schedulers.keys() ⊆ optims.keys()` with an actionable error. Used for the GAN-recipe pattern in §8.
 - **`LogitsChain.builder()`** — LM-decoding power-user surface. Chain `.repetition_penalty(p)` / `.top_k(k)` / `.top_p(p)` / `.temperature(t)` / `.custom(processor)` in any order. `.build()` sorts the standard processors into NNx's canonical order and appends custom processors after them. The order is `RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling`, with temperature deliberately last (see [`docs/lm.md` §5](lm.md)). Pass the result via `GenerativeNNModel.generate(logits_chain=...)`. Full walkthrough in [`docs/lm.md`](lm.md).
 
@@ -168,7 +170,7 @@ Setter semantics are the same on a branch. Setters mutate and return the same bu
 - `"epoch"` is the default. It steps once per completed epoch and is omitted from `state()`, so every existing run id is unchanged.
 - `"optimizer_update"` steps once per **committed** update of the scheduler's optimizer. It never steps per microbatch, per all-masked window or per skipped AMP step. In the builder, call `.clock("optimizer_update")` before or after the variant; a variant call keeps the clock, and so does a loaded builder.
 
-On the update clock, `step_size`, `T_max`, `total_steps` and `warmup_steps` count updates. For example, two epochs of five microbatches with `accumulate_grad_batches=2` commit 2 + 2 + 1 updates per epoch, six steps in all.
+On the update clock, `step_size`, `T_max`, `total_steps` and `warmup_steps` count updates. For example, two epochs of five microbatches with `accumulate_grad_batches=2` form windows of 2 + 2 + 1 microbatches. That is three updates per epoch, six in all.
 
 Updates come from an explicit source:
 
@@ -191,7 +193,7 @@ A plateau scheduler reads a monitored metric at the epoch boundary and refuses t
 
 **Checkpointing.** Each update-clock scheduler is checkpointed as a required component (`nnx.scheduler_clock`, or `nnx.scheduler_clock.<name>` per Trainer optimizer). The component holds its clock, owner and budget, beside the scheduler's own state and position. A stateful resume restores them before anything steps, which reproduces the uninterrupted run's LR sequence.
 
-The resume refuses a mismatched clock or budget, or a budget the resumed updates would pass. It also refuses a checkpoint without component state, whose scheduler position counts epochs. Runnable walkthrough: [`examples/scheduler_clocks.py`](https://github.com/thekaveh/NNx/blob/main/examples/scheduler_clocks.py).
+The resume refuses a mismatched clock or budget, or a budget the resumed updates would pass. A default budget does not resume: see the shared horizon in §14.2. It also refuses a checkpoint without component state, whose scheduler position counts epochs. Runnable walkthrough: [`examples/scheduler_clocks.py`](https://github.com/thekaveh/NNx/blob/main/examples/scheduler_clocks.py).
 
 ## 3. Enums-as-factories
 
@@ -237,6 +239,7 @@ The factory lifecycle:
     The groups are exactly what a built-in optimizer would receive: every parameter in one group when `param_groups` is `None`. Otherwise they are the `NNParamGroupSpec` buckets, with frozen parameters dropped and the Trainer's strict ownership applied.
 
     The factory must return a `torch.optim.Optimizer` holding exactly those parameters. A missing, duplicated or foreign parameter, or any other return type, raises before the first epoch. Construction happens before the run is reserved, so keep factories side-effect-free constructors. A factory may be called for a run that is then refused, for example an existing run without `overwrite_existing`.
+
 3. **Persist** — `run.yaml` stores only the spec (`factory: {id, version, config}`), never the callable. A lambda or other callable passed as the factory or inside `config` is rejected at construction. The `factory` entry is also how `NNRun.load` tells a registered variant from a built-in `NNOptimParams`. Built-in configurations serialize exactly as before, so their run ids are unchanged.
 
 **Metadata reload vs state resume.** Reloading a run's *metadata* needs nothing registered and runs no factory code. This covers `NNRun.load(id)`, `str(run)` and the notebook view. The optimizer is shown by its `id@vN`, never with fabricated `name` / `momentum` fields.
@@ -1249,7 +1252,8 @@ The resumed run's epochs continue from the saved epoch. Each named optimizer is 
 - each optimizer's type, registered-factory identity (§3.1) and parameter topology;
 - each scheduler's type;
 - a plateau scheduler's improvement rule (direction, threshold mode and threshold — §6.4);
-- a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs (updates, on the `optimizer_update` clock).
+- a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs (updates, on the `optimizer_update` clock);
+- an epoch-clock warmup-decay schedule's explicit `warmup_steps` (§14.2).
 
 A mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update.
 
@@ -1531,7 +1535,7 @@ The companion `nnx.viz` subpackage covers **model-internals** viz — the model 
 
 `nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule and runs `model(x)` under `torch.no_grad()`. It returns a Plotly heatmap. For 4D conv activations `(N, C, H, W)` that is a grid of per-channel heatmaps; for 2D dense activations, a single `(N, F)` heatmap. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
 
-`nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)`. The figure renders the first sample's attribution as a Plotly heatmap: a 4-D input is mean-pooled over channels first, and a 3-D input is shown as is.
+`nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)`. The figure renders the first sample's attribution as a Plotly heatmap. A 4-D input is mean-pooled over channels first; a 3-D input is shown as is.
 
 Captum is lazy-imported at the call site, so `summary` and `netron_export` keep working without it; the missing-dep path raises a clear `ImportError`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Requires the `viz` extra (`pip install thekaveh-nnx[viz]` pulls in `captum` alongside `torchinfo`).
 
@@ -1636,32 +1640,32 @@ dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="la
   identity. A positional-only manifest (one with no identity) raises on
   replay.
 - **Strategies.**
-  - `group`: every group lands in exactly one split. Groups are visited in a
-    seeded order and each goes to the active split furthest below its row
-    target. An active split that ends up empty takes the smallest group from
-    the split holding the most groups, and fewer groups than active splits
-    raise. Row counts approximate `proportions`.
-  - `chronological`: `cutoffs=(validation_start, test_start)`. Train is
-    `t < validation_start`, validation `validation_start <= t < test_start`,
-    test `t >= test_start`. A timestamp on a cutoff starts the later split, so
-    tied rows never separate.
-  - `chronological` gaps: `gap` excludes the rows with
-    `cutoff - gap <= t < cutoff`. They are recorded in `excluded`, are in no
-    loader, and are never admitted or counted; a NaN or an extra label there
-    is ignored. A sample-id plan's excluded rows may also be absent from
-    the replayed source.
-  - `chronological` times: numbers, dates, or naive or tz-aware
-    datetimes (`numpy.datetime64` included), one kind per plan, with a
-    `timedelta` gap (whole days for dates). Either cutoff may be `None`.
-  - `stratified`: per class, ids are ranked by seed and cut by the largest
-    remainder. The rounding is carried across classes, so the totals follow
-    `proportions`. Every class reaches every active split. That one-row
-    minimum is applied after the carry. So it can add a small class's rows to
-    validation / test but never skews other classes.
-  - `stratified` small classes: a class with fewer rows than active splits
-    raises `SplitError` (`insufficient="raise"`, the default). With
-    `insufficient="train"` it stays in training only, which is recorded in
-    the parameters.
+    - `group`: every group lands in exactly one split. Groups are visited in a
+      seeded order and each goes to the active split furthest below its row
+      target. An active split that ends up empty takes the smallest group from
+      the split holding the most groups, and fewer groups than active splits
+      raise. Row counts approximate `proportions`.
+    - `chronological`: `cutoffs=(validation_start, test_start)`. Train is
+      `t < validation_start`, validation `validation_start <= t < test_start`,
+      test `t >= test_start`. A timestamp on a cutoff starts the later split, so
+      tied rows never separate.
+    - `chronological` gaps: `gap` excludes the rows with
+      `cutoff - gap <= t < cutoff`. They are recorded in `excluded`, are in no
+      loader, and are never admitted or counted; a NaN or an extra label there
+      is ignored. A sample-id plan's excluded rows may also be absent from
+      the replayed source.
+    - `chronological` times: numbers, dates, or naive or tz-aware
+      datetimes (`numpy.datetime64` included), one kind per plan, with a
+      `timedelta` gap (whole days for dates). Either cutoff may be `None`.
+    - `stratified`: per class, ids are ranked by seed and cut by the largest
+      remainder. The rounding is carried across classes, so the totals follow
+      `proportions`. Every class reaches every active split. That one-row
+      minimum is applied after the carry. So it can add a small class's rows to
+      validation / test but never skews other classes.
+    - `stratified` small classes: a class with fewer rows than active splits
+      raises `SplitError` (`insufficient="raise"`, the default). With
+      `insufficient="train"` it stays in training only, which is recorded in
+      the parameters.
 - **Seeds, never global RNG.** Seeded order is the SHA-256 of the seed and
   the id, stable across processes and library versions. `plan_split` reads
   and advances no torch, NumPy or Python RNG, and `seed=None` draws a seed
@@ -1829,6 +1833,8 @@ Sidecars written before component state existed still load. The model, optimizer
 - `"stateful"` requires the training state. It fails before restoring anything when the checkpoint is weights-only (a `ModelCheckpoint` file, for example).
 - `"weights_only"` loads only the model weights and starts the optimizer, scheduler and every component fresh. Epoch numbering continues after the checkpoint's epoch, and a one-cycle schedule needs no shared horizon.
 
+Any other resume of a one-cycle or warmup-decay schedule needs one *shared horizon*. That is an explicit `total_steps` covering the original and the resumed epochs (updates, on the `optimizer_update` clock). A warmup-decay schedule on the epoch clock also needs an explicit `warmup_steps`, unless the resume uses `resume_epochs="planned"`. Its default is a tenth of each session's `n_epochs`. Both are checked before the checkpoint is read.
+
 The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names. `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ### 14.3. Exact resume to the planned horizon
@@ -1975,7 +1981,7 @@ the forward pass. It declares:
 - the alignment: `"shift_inputs"` shifts token ids once; `"pre_shifted"`
   takes aligned `(inputs, targets)`;
 - the vocabulary, the ignore id and an optional padding id;
-- an optional loss mask, objective-only label smoothing and a version.
+- objective-only label smoothing and a version. A loss mask, when used, comes with each batch.
 
 ```text
 batch ──split()──► inputs, targets, loss_mask ──valid()──► one set of valid positions
@@ -2031,12 +2037,12 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 - `widen` / `deepen` are function-preserving Net2Net edits (Chen/Goodfellow/Shlens, ICLR 2016) on validated topologies.
 - `widen` infers the consumer only inside `nn.Sequential` / `FeedFwdNN.layers` through elementwise ops. It rejects Softmax/LayerNorm/BatchNorm boundaries, other containers and aliased modules up front.
 - `deepen` is ReLU-only and validates the effective per-layer activation at the insertion site. It keeps a `FeedFwdNN`'s immutable `params` (hidden dims, activation and dropout overrides) aligned with the deeper `layers`.
-- Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
+- Every primitive returns a fresh module and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 - Some primitives replace existing Linear weights: `widen`'s target and downstream layers, and `low_rank_factorize`'s two factors. The replacements keep the replaced tensors' `requires_grad` flags and the replaced modules' train/eval modes. Frozen content therefore stays frozen through surgery.
 
 **`nnx.embeddings`** is the one RAG-adjacent surface NNx ships. `train_contrastive` reuses the existing NT-Xent machinery for domain-specific text embedders. `export_to_faiss` writes the trained model's outputs to a FAISS index (Flat / HNSW). Any retrieval framework (LangChain / LlamaIndex / Haystack / raw FAISS) can consume that index. The chunker, reranker, and vector-DB client are deliberately out of scope. See [`docs/embeddings.md`](embeddings.md) for the full when-to-use guide; `examples/13_train_domain_embedder.py` is the runnable demo.
 
-`nnx.generation` (LogitsProcessor chain) is documented inline in §15, since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` owns experimental NNx-tagged GGUF and Ollama bundle generation. Safetensors belongs to `NNCheckpoint`, embeddings export, and Hub integration. See [`docs/gguf.md`](gguf.md) and [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.
+`nnx.generation` (LogitsProcessor chain) is documented in §2.4 and [`docs/lm.md`](lm.md), since its raison d'être is `GenerativeNNModel.generate(...)`. `nnx.interop` owns experimental NNx-tagged GGUF and Ollama bundle generation. Safetensors belongs to `NNCheckpoint`, embeddings export, and Hub integration. See [`docs/gguf.md`](gguf.md) and [`docs/hub.md`](hub.md). `nnx.viz` is in §12 above.
 
 ## 17. Typed decisions (`nnx.decisions`)
 
@@ -2114,6 +2120,7 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
   disjoint, because arrays and loaders carry no such guarantee. The
   calibrator therefore records `split["disjointness"] == "unverified"` with
   that note.
+
 - **Fitting.** The fit takes categorical `(N, C)` logits, `C >= 2`, integer
   targets in range, and one label per class. Non-finite logits are rejected,
   never masked. The NLL of `softmax(logits / T)` is minimized in float64 on
@@ -2150,16 +2157,17 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
       calibrator's digest).
 
   The model, `predict()` and the run are never touched.
+
 - **Metrics.** The module provides four metrics:
-  - `negative_log_likelihood`: mean `-log p[target]`. The default floor
-    `epsilon=1e-12` matches the named `nll` metric of §6.4. `epsilon=None`
-    is exact, so a zero true-class probability gives `+inf`.
-  - `brier_score`: the mean over rows of the class-summed squared error, so
-    the range is `[0, 2]`. It matches the named `brier` metric.
-  - `reliability_bins`: equal-width `[lo, hi)` top-1 confidence bins, the
-    last closed at 1. A value on an inner edge goes in the upper bin. Empty
-    bins are kept with count 0 and no means.
-  - `expected_calibration_error`.
+    - `negative_log_likelihood`: mean `-log p[target]`. The default floor
+      `epsilon=1e-12` matches the named `nll` metric of §6.4. `epsilon=None`
+      is exact, so a zero true-class probability gives `+inf`.
+    - `brier_score`: the mean over rows of the class-summed squared error, so
+      the range is `[0, 2]`. It matches the named `brier` metric.
+    - `reliability_bins`: equal-width `[lo, hi)` top-1 confidence bins, the
+      last closed at 1. A value on an inner edge goes in the upper bin. Empty
+      bins are kept with count 0 and no means.
+    - `expected_calibration_error`.
 - **Reports.** `calibrator.report(logits, targets, split_id="test", ...)`
   puts held-out NLL, Brier, ECE and bins before and after calibration side by
   side. `outcome` is `"improved"` only when neither NLL nor Brier got worse
@@ -2222,20 +2230,20 @@ test probabilities ──► policy.apply(...) ──► AbstentionResult (accep
   together with that calibrator's id (§18). It also records the label order,
   the model id and the tuning split id. It is JSON (`nnx.abstention/1`),
   and loading rejects a threshold outside `[0, 1]`.
-  - `apply` accepts a `CalibratedPrediction` (the policy's field picks the
-    raw or calibrated view), a categorical `PredictionResult`, or arrays
-    with `labels=` / `model_id=`.
-  - Another label order, model, field or calibrator raises
-    `AbstentionSchemaError` before any probability is read.
-  - For a prediction, the predicted class is its own `decoded` argmax of the
-    raw logits (never a rounding tie in the probabilities). It must be a
-    class of maximal probability in every row, else `AbstentionError`. A
-    calibration override (§18) travels, as `calibration_override`, with the
-    result and with a `ThresholdSelection` tuned on the calibrated view.
-  - `decide(choice_result, policy, model_id=...)` applies a policy to a
-    typed decision (§17). It returns the provider's result unchanged inside
-    a `SelectiveDecision`. Abstention is a success, and the distribution and
-    its raw field are kept.
+    - `apply` accepts a `CalibratedPrediction` (the policy's field picks the
+      raw or calibrated view), a categorical `PredictionResult`, or arrays
+      with `labels=` / `model_id=`.
+    - Another label order, model, field or calibrator raises
+      `AbstentionSchemaError` before any probability is read.
+    - For a prediction, the predicted class is its own `decoded` argmax of the
+      raw logits (never a rounding tie in the probabilities). It must be a
+      class of maximal probability in every row, else `AbstentionError`. A
+      calibration override (§18) travels, as `calibration_override`, with the
+      result and with a `ThresholdSelection` tuned on the calibrated view.
+    - `decide(choice_result, policy, model_id=...)` applies a policy to a
+      typed decision (§17). It returns the provider's result unchanged inside
+      a `SelectiveDecision`. Abstention is a success, and the distribution and
+      its raw field are kept.
 - **Two denominators.** `CoverageReport` gives `coverage = accepted /
   total` over **every** row, and selective `risk = incorrect / accepted`
   over the **accepted** rows only. With nothing accepted, risk is
@@ -2309,42 +2317,42 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
   `with_callbacks`, `with_callback_factories`, `with_step_fns`,
   `with_objective`, `with_components`, `with_provenance`,
   `with_batch_adapter` (a registered module's inputs) and `resuming`.
-  - A method keeps what it is not given. `with_data(train)` keeps the
-    validation source and identity (pass `val=None` or `identity=...` to
-    change them), and `with_metrics(monitor=m)` keeps the metrics. The
-    plan's seed overrides the training parameters' `seed`.
-  - The parameter objects are immutable and shared between branches.
-  - Collections are copied into tuples and read-only mappings, so a sibling
-    or a later edit to the caller's own dict cannot reach another plan.
+    - A method keeps what it is not given. `with_data(train)` keeps the
+      validation source and identity (pass `val=None` or `identity=...` to
+      change them), and `with_metrics(monitor=m)` keeps the metrics. The
+      plan's seed overrides the training parameters' `seed`.
+    - The parameter objects are immutable and shared between branches.
+    - Collections are copied into tuples and read-only mappings, so a sibling
+      or a later edit to the caller's own dict cannot reach another plan.
 - **Validate: pure.** `validate()` returns every problem as a field-path
   `Diagnostic`: `model`, `net`, `model.net`, `train`, `data.train`,
   `data.val`, `data.identity`, `seed`, `callbacks[i]`,
   `callback_factories[i]`, `objective`, `resume.*`,
   `train.overwrite_existing`, `train.metrics[i]` and `train.monitor`.
-  - It reports conflicts statically, such as a resume alongside
-    `train.parent_run_id`, or a validation monitor with no validation data.
-  - It checks, with no model built, the task against the loss and output
-    width, and that a `ModelSpec` is registered. It also checks that data
-    and callback factories take no arguments, and that components implement
-    `StatefulComponent`.
-  - It checks a borrowed callback's declared monitor (for example
-    `EarlyStopping(monitor=...)`) as `NNModel.train` would, on a copy so the
-    callback is never bound. It also checks that the model can provide
-    every declared metric's input, using the model's parameters alone (loss,
-    task, output width).
-  - It never iterates a loader, calls a factory, builds a model, reads
-    weights or writes a directory.
-  - A data source must be re-iterable batches. It reports a one-shot
-    iterator, a mapping (which iterates its keys), a map-style `Dataset` and
-    a bare tensor or array. The last two yield single samples; wrap them in
-    a `DataLoader`.
-  - What factories return is checked the same way when a fit starts, before
-    a model is built, a factory-made callback's monitor included. A problem
-    there raises `PlanError`.
-  - `raise_for_errors()` raises `PlanError` listing them all. `fit()` calls
-    it first, right after the multi-rank check below. An invalid `attempt`
-    id is listed with the rest. `probe()` checks the model, network and seed
-    it needs.
+    - It reports conflicts statically, such as a resume alongside
+      `train.parent_run_id`, or a validation monitor with no validation data.
+    - It checks, with no model built, the task against the loss and output
+      width, and that a `ModelSpec` is registered. It also checks that data
+      and callback factories take no arguments, and that components implement
+      `StatefulComponent`.
+    - It checks a borrowed callback's declared monitor (for example
+      `EarlyStopping(monitor=...)`) as `NNModel.train` would, on a copy so the
+      callback is never bound. It also checks that the model can provide
+      every declared metric's input, using the model's parameters alone (loss,
+      task, output width).
+    - It never iterates a loader, calls a factory, builds a model, reads
+      weights or writes a directory.
+    - A data source must be re-iterable batches. It reports a one-shot
+      iterator, a mapping (which iterates its keys), a map-style `Dataset` and
+      a bare tensor or array. The last two yield single samples; wrap them in
+      a `DataLoader`.
+    - What factories return is checked the same way when a fit starts, before
+      a model is built, a factory-made callback's monitor included. A problem
+      there raises `PlanError`.
+    - `raise_for_errors()` raises `PlanError` listing them all. `fit()` calls
+      it first, right after the multi-rank check below. An invalid `attempt`
+      id is listed with the rest. `probe()` checks the model, network and seed
+      it needs.
 - **One process.** `fit()` trains in this process; it never passes
   `distributed=`. Inside a `torch.distributed` process group of more than
   one rank (a `torchrun` launch), it raises `RuntimeError`. It raises before
@@ -2355,72 +2363,73 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
   ([Architecture §3](architecture.md#3-single-node-data-parallelism-nnxdistributed)).
 - **Probe: effectful, restored.** `probe(example_batch)` seeds, builds a
   temporary model and runs one forward pass in eval mode under
-  `torch.no_grad()`.
-  - With a target and the default training step, it reports the loss that
-    step would compute on the batch. It runs in train mode (dropout, batch
-    statistics) with no gradient.
-  - A plan with its own `train_step_fn` or objective gets `loss=None`, since
-    a probe cannot know that loss. So does an all-masked task batch, which
-    the default step records no loss for. `output_shape` is always the
-    network's raw output in eval mode, as `predict()` sees it.
-  - A bare tensor or a 1-tuple is inputs only, read as `predict()` reads a
-    loader batch.
-  - Afterwards, succeeding or failing, it restores the Python / NumPy /
-    torch RNG streams, the cuDNN `deterministic` / `benchmark` flags, the
-    deterministic-algorithms setting, `PYTHONHASHSEED` and
-    `CUBLAS_WORKSPACE_CONFIG`.
-  - It touches no callback, factory or loader, and writes nothing.
-  - A CPU model's probe seeds no CUDA stream, so on a GPU host nothing waits
-    for CUDA's first use either. A CUDA model's probe starts CUDA first when
-    it is not yet in use, running any seed queued for its first use. Its
-    streams are then restored like the others.
-  - A registered factory's module is built as `NNModel` builds it, saving
-    and restoring every RNG stream around the factory call. On a GPU host
-    that initializes CUDA even for a CPU model, though its streams are
-    restored.
+  `torch.no_grad()`. A second, train-mode pass gives the loss (below).
+    - With a target and the default training step, it reports the loss that
+      step would compute on the batch. It runs in train mode (dropout, batch
+      statistics) with no gradient.
+    - A plan with its own `train_step_fn` or objective gets `loss=None`, since
+      a probe cannot know that loss. So does an all-masked task batch, which
+      the default step records no loss for. `output_shape` is always the
+      network's raw output in eval mode, as `predict()` sees it.
+    - A bare tensor or a 1-tuple is inputs only, read as `predict()` reads a
+      loader batch.
+    - Afterwards, succeeding or failing, it restores the Python / NumPy /
+      torch RNG streams, the cuDNN `deterministic` / `benchmark` flags, the
+      deterministic-algorithms setting, `PYTHONHASHSEED` and
+      `CUBLAS_WORKSPACE_CONFIG`.
+    - It touches no callback, factory or loader, and writes nothing.
+    - A CPU model's probe seeds no CUDA stream, so on a GPU host nothing waits
+      for CUDA's first use either. A CUDA model's probe starts CUDA first when
+      it is not yet in use, running any seed queued for its first use. Its
+      streams are then restored like the others.
+    - A registered factory's module is built as `NNModel` builds it, saving
+      and restoring every RNG stream around the factory call. On a GPU host
+      that initializes CUDA even for a CPU model, though its streams are
+      restored.
 - **Fit: the imperative loop.** `fit()` takes the steps an equally seeded
   script would:
-  1. validate;
-  2. `set_seed(seed)`, which governs the initial weights (a built-in net
-     draws them from the ambient RNG);
-  3. call each data and callback factory once;
-  4. build `NNModel(net, model)`;
-  5. call `model.train(...)` with the plan's seed, data, data identity
-     (`NNTrainParams.data_id`) and resume.
+    1. validate;
+    2. `set_seed(seed)`, which governs the initial weights (a built-in net
+       draws them from the ambient RNG);
+    3. call each data and callback factory once;
+    4. build `NNModel(net, model)`;
+    5. call `model.train(...)` with the plan's seed, data, data identity
+       (`NNTrainParams.data_id`) and resume.
 
   So it matches `set_seed(s); NNModel(...).train(NNTrainParams(seed=s, ...))`
   on weights, history and callback order. `NNModel.train` returns an
   `NNRun` as usual, and plans add no field to any params class.
+
 - **Attempts.** Every fit is a distinct attempt. Its id (random unless
   `fit(attempt="...")` names it) is folded into the run's `salt` as
   `"plan-attempt:<id>"`.
-  - Repeated fits of one plan get distinct run ids and directories.
-  - A plan never sets `overwrite_existing`, and `validate()` rejects it, so
-    reusing an attempt id for the same configuration raises
-    `FileExistsError`.
-  - `resuming(run_id, checkpoint="last", mode=None, epochs=None)`
-    warm-restarts into a new run that records the source as `parent_run_id`.
-    It leaves the parent's artifacts untouched.
-  - `mode` and `epochs` set the fit's `resume_mode` and `resume_epochs`
-    (§14.3); when omitted, the training parameters' own values apply.
-    `validate()` checks both as `NNTrainParams` does. It reports a
-    `"planned"` horizon with a `"weights_only"` mode or with no run to
-    resume, on the field the caller set.
-  - A plan stopped after epoch 1 of 4 and resumed with
-    `resuming(first.run.id, mode="stateful", epochs="planned")` trains epochs
-    2–3. It equals the uninterrupted plan bit for bit.
+    - Repeated fits of one plan get distinct run ids and directories.
+    - A plan never sets `overwrite_existing`, and `validate()` rejects it, so
+      reusing an attempt id for the same configuration raises
+      `FileExistsError`.
+    - `resuming(run_id, checkpoint="last", mode=None, epochs=None)`
+      warm-restarts into a new run that records the source as `parent_run_id`.
+      It leaves the parent's artifacts untouched.
+    - `mode` and `epochs` set the fit's `resume_mode` and `resume_epochs`
+      (§14.3); when omitted, the training parameters' own values apply.
+      `validate()` checks both as `NNTrainParams` does. It reports a
+      `"planned"` horizon with a `"weights_only"` mode or with no run to
+      resume, on the field the caller set.
+    - A plan of epochs 0–3 stopped after epoch 1 (zero-based) and resumed with
+      `resuming(first.run.id, mode="stateful", epochs="planned")` trains epochs
+      2–3. It equals the uninterrupted plan bit for bit.
 - **Metrics.** `FitResult.metrics["train"]` and `["val"]` are
   `SplitMetrics(split, available, epoch, source, values, reason)`, read from
   the run's final epoch. No loader is iterated a second time.
-  - A train-only plan reports `val` as unavailable, with the reason. It
-    invents no validation.
-  - `source` is `"epoch"` for validation or a declared training summary, and
-    `"last_batch"` otherwise.
-  - `values` keys are the names the callbacks log: `loss`, `error`, the
-    classification fields, declared metrics, and `extra/<name>` for extra
-    metrics. A non-finite value (a diverged loss) is kept, not dropped.
-  - A whole-epoch training summary carries declared metrics but not extra
-    metrics, which the loop computes per batch (`run.idps` has them).
+    - A train-only plan reports `val` as unavailable, with the reason. It
+      invents no validation.
+    - `source` is `"epoch"` for validation or a declared training summary, and
+      `"last_batch"` otherwise.
+    - `values` keys are the names the callbacks log: `loss`, `error`, the
+      classification fields, declared metrics, and `extra/<name>` for extra
+      metrics. A non-finite value (a diverged loss) is kept, not dropped.
+    - A whole-epoch training summary carries declared metrics but not extra
+      metrics, which the loop computes per batch (`run.idps` has them).
 
 **Ownership.** Everything that is not an immutable parameter object is
 **borrowed**: shared by every branch and every fit, never copied or reset by
@@ -2472,6 +2481,7 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
   `predict_proba()`'s sample ids. The graph seed-row slicing is the same.
   So is the categorical, multilabel (the task's threshold) and continuous
   decoding.
+
 - **Batch types and edge cases.** Each batch is the `PredictionResult` that
   `predict_proba()` would build for it. That holds with a `ProbabilitySpec`,
   or with `rich=True` for a model with a task. An empty loader yields no batches,
@@ -2500,40 +2510,41 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
 - **Mergeable metrics.** `StreamingMetrics(metrics, semantics, labels=...,
   threshold=...)`, or `StreamingMetrics.for_task(metrics, task)`, accumulates
   declared `MetricSpec`s:
-  - `update(target, probabilities=..., labels=..., values=..., valid=...)`
-    takes a batch's inputs. `update_logits(target, logits)` derives them
-    from raw outputs as `evaluate()` does.
-  - Masked entries are not scored. They are `valid=False`, a NaN target
-    (including a one-hot / soft row holding a NaN), or a categorical target
-    equal to the task's `ignore_index`. This is the standalone accumulator's
-    own rule. `evaluate()` records, and `streaming_eval_step` with them, mask
-    what the task masks. Without a task, they mask the loss's `ignore_index`.
-  - The built-ins keep sufficient statistics: sums and counts for
-    `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
-    `f1`. `f1` gives the same values as scikit-learn with `zero_division=0`.
-    Memory is bounded by the number of classes, never by N.
-  - A registered metric is bounded when its accumulator implements `merge()`
-    and does not declare `stores_scores = True`.
-  - `merge(other)` returns a new accumulation over both inputs' samples,
-    whatever the order. It copies its inputs, so later updates to either
-    never reach it. Merging an empty accumulation changes nothing.
-  - `finalize()` returns a read-only `MetricSnapshot(count, values,
-    unavailable)`. It is repeatable and never changes the accumulation. An
-    empty or fully masked stream finalizes to `count=0` with every metric
-    unavailable.
+    - `update(target, probabilities=..., labels=..., values=..., valid=...)`
+      takes a batch's inputs. `update_logits(target, logits)` derives them
+      from raw outputs as `evaluate()` does.
+    - Masked entries are not scored. They are `valid=False`, a NaN target
+      (including a one-hot / soft row holding a NaN), or a categorical target
+      equal to the task's `ignore_index`. This is the standalone accumulator's
+      own rule. `evaluate()` records, and `streaming_eval_step` with them, mask
+      what the task masks. Without a task, they mask the loss's `ignore_index`.
+    - The built-ins keep sufficient statistics: sums and counts for
+      `accuracy`, `nll`, `brier`, `mae` and `mse`, and confusion counts for
+      `f1`. `f1` gives the same values as scikit-learn with `zero_division=0`.
+      Memory is bounded by the number of classes, never by N.
+    - A registered metric is bounded when its accumulator implements `merge()`
+      and does not declare `stores_scores = True`.
+    - `merge(other)` returns a new accumulation over both inputs' samples,
+      whatever the order. It copies its inputs, so later updates to either
+      never reach it. Merging an empty accumulation changes nothing.
+    - `finalize()` returns a read-only `MetricSnapshot(count, values,
+      unavailable)`. It is repeatable and never changes the accumulation. An
+      empty or fully masked stream finalizes to `count=0` with every metric
+      unavailable.
 - **Merge schemas.** Two accumulations merge only when they declare all of
   the following:
-  - the same metrics (names, ids, versions and configs);
-  - the same probability semantics (`categorical`, `bernoulli` or
-    `continuous`);
-  - the same task labels and output count (`num_outputs`: classes, or
-    outputs along axis 1);
-  - the same decision threshold and the same `ignore_index`.
+    - the same metrics (names, ids, versions and configs);
+    - the same probability semantics (`categorical`, `bernoulli` or
+      `continuous`);
+    - the same task labels and output count (`num_outputs`: classes, or
+      outputs along axis 1);
+    - the same decision threshold and the same `ignore_index`.
 
   Anything else raises `MetricMergeError`, since the sums would describe
   different quantities. A custom accumulator's `merge(other)` adds `other`
   in place and returns `None`. It keeps nothing of `other` that a later
   update could change.
+
 - **Stored scores.** A rank metric such as AUROC depends on the order of
   every score and is never additive. A registered metric whose accumulator
   has no `merge()`, or declares `stores_scores = True`, is refused in bounded
@@ -2542,12 +2553,12 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
 - **Bounded validation and loss denominators.** `streaming_eval_step` is an
   opt-in `eval_step_fn` that builds the validation record `evaluate()` builds,
   from counts and sums:
-  - the same task kind, count and status, with masked targets not counted;
-  - the same loss: each batch's loss numerator is summed and divided by the
-    summed loss denominators (valid targets, or class weights). It is never a
-    mean of batch means, and a `sum`-reduction loss stays a total;
-  - the same classification or task metrics, and the declared metrics that
-    monitors and BEST selection read.
+    - the same task kind, count and status, with masked targets not counted;
+    - the same loss: each batch's loss numerator is summed and divided by the
+      summed loss denominators (valid targets, or class weights). It is never a
+      mean of batch means, and a `sum`-reduction loss stays a total;
+    - the same classification or task metrics, and the declared metrics that
+      monitors and BEST selection read.
 
   `EvalStepContext.metrics` carries the run's declared metrics to the step.
   The step refuses `extra_metrics` (callables on the full arrays) and a
@@ -2604,30 +2615,31 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   references.
 - **Refused at export.** Export refuses the following, with no pickle
   fallback:
-  - module extra state that is not a tensor;
-  - a custom object in optimizer or component state;
-  - a runtime-only module;
-  - a recorded topology transform NNx cannot replay from data. That is
-    anything but an `nnx.transforms` recipe operation or a torchao QAT
-    conversion; the error names its index and id.
+    - module extra state that is not a tensor;
+    - a custom object in optimizer or component state;
+    - a runtime-only module;
+    - a recorded topology transform NNx cannot replay from data. That is
+      anything but an `nnx.transforms` recipe operation or a torchao QAT
+      conversion; the error names its index and id.
 - **Inspect.** `inspect_bundle` summarizes a bundle from the manifest and
   `state.json`. The summary is a `BundleInfo`: capability, source run and
   checkpoint, epoch, model, components, calibrators.
 - **Validate.** `validate_bundle` checks every payload before any tensor is
   read:
-  - size and SHA-256. The size is checked before a file is read, and no file
-    is opened through a symlink or as a FIFO or device;
-  - one generation id throughout;
-  - nothing missing, unlisted, symlinked or outside the bundle;
-  - strict JSON without duplicate keys or runaway nesting;
-  - calibrator labels matching the task's;
-  - safetensors headers holding exactly the tensors `state.json` references.
+    - size and SHA-256. The size is checked before a file is read, and no file
+      is opened through a symlink or as a FIFO or device;
+    - one generation id throughout;
+    - nothing missing, unlisted, symlinked or outside the bundle;
+    - strict JSON without duplicate keys or runaway nesting;
+    - calibrator labels matching the task's;
+    - safetensors headers holding exactly the tensors `state.json` references.
 
   Only then is a calibrator's fingerprint `model_id` checked, against the
   weights hashed straight from the payload; no tensor is built. An export
   runs the same checks on its staged generation before publishing it.
   Neither inspection nor validation unpickles, calls a model factory or
   downloads, even beside a legacy `last.pt`.
+
 - **Reconstruct.** `reconstruct_bundle(path, factories=..., components=...)`
   validates, then rebuilds the model. A registered module is built from the
   caller-supplied `factories` (`{(id, version): factory}`; the process
@@ -2843,18 +2855,19 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
 ```
 
 - **Declared.** The task declares:
-  - the cutoffs `k`;
-  - integer relevance grades `0..max_relevance`;
-  - the `relevance_threshold` (a candidate is relevant at or above it);
-  - the objective's `weighting` (`"query"`: each query weighs the same;
-    `"pair"`: each pair does);
-  - whether candidate sets are `"sampled"` or `"exhaustive"`;
-  - the evaluation buffer limit `max_buffered`;
-  - an optional `group_size` (every query must have exactly that many
-    candidates) and a `version`.
+    - the cutoffs `k`;
+    - integer relevance grades `0..max_relevance`;
+    - the `relevance_threshold` (a candidate is relevant at or above it);
+    - the objective's `weighting` (`"query"`: each query weighs the same;
+      `"pair"`: each pair does);
+    - whether candidate sets are `"sampled"` or `"exhaustive"`;
+    - the evaluation buffer limit `max_buffered`;
+    - an optional `group_size` (every query must have exactly that many
+      candidates) and a `version`.
 
   Query and candidate ids are integers or strings, kept as host values. A
   candidate's identity therefore survives sorting, device moves and reloads.
+
 - **Rejected before any update:**
     - mismatched lengths or mixed id types;
     - a candidate listed twice for one query;
@@ -2937,6 +2950,7 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
 
   It pools node rows into graph rows: `"mean"` or `"sum"`, graph-local and
   invariant to node order.
+
 - **The recipe.** `graph_classifier_spec(input_dim, num_classes,
   hidden_dims, encoder="graph_conv" | "graph_sage" | "graph_att", pool=...)`
   is a registered recipe. A reload rebuilds the same encoder, pool and head.
@@ -3003,11 +3017,11 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   negatives' seed is checkpointed, and a resumed loader with another seed is
   refused before any update.
 - **Checks.** These fail before any update:
-  - a message edge outside the training topology (a held-out positive is
-    named);
-  - a candidate outside its split, or with the wrong target or id;
-  - a barred self-loop;
-  - a training negative that is a fixed validation / test negative.
+    - a message edge outside the training topology (a held-out positive is
+      named);
+    - a candidate outside its split, or with the wrong target or id;
+    - a barred self-loop;
+    - a training negative that is a fixed validation / test negative.
 - **Batch roles.** Batches are bound to their role. The objective trains on
   `train` batches only. The training evaluator reads the `val` split, every
   candidate exactly once. Score `test` after training with
@@ -3213,8 +3227,8 @@ validate (space, budget, monitor = plan's val monitor, factories, stored identit
   last completed epoch (`ctx.stop_at_update`, §6.1). There is no LAST
   before a first completed epoch.
 - **Outcomes** (`TrialOutcome`) keep the parameters, state and terminal
-  reason, the resources used, the best monitor value, the pruning
-  observations and the attempt / run / checkpoint links. `SearchResult.best`
+  reason, the resources used and the best monitor value. They also keep the
+  pruning observations and the attempt / run / checkpoint links. `SearchResult.best`
   is the completed trial with the best finite value.
 - **Cancellation** (`KeyboardInterrupt`) runs the fit's callback cleanup,
   releases its run lease, records the trial as failed and propagates.

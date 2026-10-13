@@ -517,6 +517,46 @@ def validate_repository_docs() -> None:
         raise ValueError(f"tracked files in ignored documentation paths: {', '.join(sorted(tracked_ignored))}")
     sources = [page.source for page in _pages() if page.source.suffix == ".md" or page.source.name == "LICENSE"]
     validate_repository_sources(ROOT, sources, tracked)
+    for source in sources:
+        if source.suffix == ".md":
+            validate_list_markup(source, source.read_text(encoding="utf-8"))
+
+
+_LIST_ITEM = re.compile(r"^( *)(?:[-*+]|\d+[.)]) +\S")
+_FENCE = re.compile(r"^\s*(?:```|~~~)")
+
+
+def validate_list_markup(source: Path, text: str) -> None:
+    """Refuse list markup that GitHub renders as a list but the site's
+    Python-Markdown does not: a list started directly under a paragraph line
+    (it joins the paragraph) and a nested item indented two or three spaces
+    (it flattens into its parent list)."""
+    problems: list[str] = []
+    block_start: int | None = None
+    fenced = False
+    lines = text.splitlines()
+    for number, line in enumerate(lines, start=1):
+        if _FENCE.match(line):
+            fenced, block_start = not fenced, None
+            continue
+        if fenced:
+            continue
+        if not line.strip():
+            block_start = None
+            continue
+        if block_start is None:
+            block_start = number
+        item = _LIST_ITEM.match(line)
+        if item is None:
+            continue
+        first = lines[block_start - 1]
+        if number > block_start and not _LIST_ITEM.match(first) and not first.lstrip().startswith(("#", "|", "<", ">")):
+            problems.append(f"{source}:{number}: a list item directly under a paragraph line needs a blank line before it")
+            block_start = number
+        if len(item.group(1)) in (2, 3):
+            problems.append(f"{source}:{number}: indent a nested list item four spaces")
+    if problems:
+        raise ValueError("list markup the site renders differently from GitHub:\n" + "\n".join(problems))
 
 
 class _EmbeddedCssParser(HTMLParser):

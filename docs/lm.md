@@ -308,63 +308,65 @@ offline.
 
 - **The causal-LM task (`nnx.lm_tasks.CausalLMTask`)** — the built-in
   next-token path. It declares these settings:
-  - The **alignment**: `"shift_inputs"` takes batches of token ids, shifted
-    once; `"pre_shifted"` takes `(inputs, targets)` windows, never shifted
-    again.
-  - The vocabulary size (the logits' last axis), the **ignore** id (`-100`)
-    and an optional **padding** id.
-  - An optional per-position **loss mask** (never an attention mask).
-  - Label **smoothing** for the objective, and its **version**.
+    - The **alignment**: `"shift_inputs"` takes batches of token ids, shifted
+      once; `"pre_shifted"` takes `(inputs, targets)` windows, never shifted
+      again.
+    - The vocabulary size (the logits' last axis), the **ignore** id (`-100`)
+      and an optional **padding** id.
+    - An optional per-position **loss mask** (never an attention mask).
+    - Label **smoothing** for the objective, and its **version**.
 
   Bad shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
   before any forward pass.
-  - The ignore id, the padding id and the loss mask select **one set of
-    valid positions**. The objective's denominator, the NLL and the token
-    accuracy all use that set.
-  - `task.objective()` is an objective that sums the cross-entropy over
-    valid positions, with the valid count as its denominator. Gradient
-    accumulation therefore normalizes by the window's **valid tokens**, not
-    by the batch count. An all-masked microbatch contributes nothing. An
-    all-masked window takes no optimizer or scaler step, and its gradients
-    are cleared.
-  - Schedulers still advance once per epoch on the default epoch clock (or
-    once per committed update on the `optimizer_update` clock). A plateau scheduler skips an
-    epoch whose validation record is unavailable. Such an epoch is never
-    elected BEST in place of a training loss.
-  - `task.eval_step()` reports the epoch's **unsmoothed** NLL as the
-    record's `loss` and `metrics["nll"]`. This NLL is the total valid-token
-    NLL over the valid-token count, independent of batching and padding.
-    It also reports
-    `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
-    clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
-    reported unavailable. No classification field is fabricated, and
-    `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
-    validation NLL.
-  - The task configuration (and an optional declared tokenizer identity)
-    is checkpointed component state `"lm.causal_task"`. It is stored with
-    the valid tokens the run's objective scored. The count starts from 0
-    for each fresh run, and a window the engine then skips is still
-    counted. A resume with another configuration is refused before the
-    first resumed update.
-  - Batches for `"shift_inputs"`: token ids; `(ids, loss_mask)` with a
-    **boolean** mask (an integer second part is refused: it could be
-    targets); or a mapping `{"input_ids", "labels"?, "loss_mask"?}`. The
-    mapping's HuggingFace-style `labels` (unshifted, `-100` where not
-    scored) shift with the ids.
-  - Batches for `"pre_shifted"`: `(inputs, targets[, loss_mask])` or
-    `{"inputs", "targets", "loss_mask"?}`.
-  - A mapping's `attention_mask` is never a loss mask. However, a padded
-    position it marks that would still be scored is refused (declare
-    `pad_id`, use `labels=-100` or a `loss_mask`). `extra_metrics` do not
-    apply to the task and are refused. Half-precision logits are widened to
-    float32 for the reported NLL.
-  - A run with no monitor elects BEST from the validation NLL. An epoch
-    whose validation is unavailable never replaces an earlier BEST. An
-    unavailable first epoch, though, stands in until one has a value.
-    Declare `MonitorSpec("nll")` to elect only epochs with a value.
+
+    - The ignore id, the padding id and the loss mask select **one set of
+      valid positions**. The objective's denominator, the NLL and the token
+      accuracy all use that set.
+    - `task.objective()` is an objective that sums the cross-entropy over
+      valid positions, with the valid count as its denominator. Gradient
+      accumulation therefore normalizes by the window's **valid tokens**, not
+      by the batch count. An all-masked microbatch contributes nothing. An
+      all-masked window takes no optimizer or scaler step, and its gradients
+      are cleared.
+    - Schedulers still advance once per epoch on the default epoch clock (or
+      once per committed update on the `optimizer_update` clock). A plateau scheduler skips an
+      epoch whose validation record is unavailable. Such an epoch is never
+      elected BEST in place of a training loss.
+    - `task.eval_step()` reports the epoch's **unsmoothed** NLL as the
+      record's `loss` and `metrics["nll"]`. This NLL is the total valid-token
+      NLL over the valid-token count, independent of batching and padding.
+      It also reports
+      `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
+      clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
+      reported unavailable. No classification field is fabricated, and
+      `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
+      validation NLL.
+    - The task configuration (and an optional declared tokenizer identity)
+      is checkpointed component state `"lm.causal_task"`. It is stored with
+      the valid tokens the run's objective scored. The count starts from 0
+      for each fresh run, and a window the engine then skips is still
+      counted. A resume with another configuration is refused before the
+      first resumed update.
+    - Batches for `"shift_inputs"`: token ids; `(ids, loss_mask)` with a
+      **boolean** mask (an integer second part is refused: it could be
+      targets); or a mapping `{"input_ids", "labels"?, "loss_mask"?}`. The
+      mapping's HuggingFace-style `labels` (unshifted, `-100` where not
+      scored) shift with the ids.
+    - Batches for `"pre_shifted"`: `(inputs, targets[, loss_mask])` or
+      `{"inputs", "targets", "loss_mask"?}`.
+    - A mapping's `attention_mask` is never a loss mask. However, a padded
+      position it marks that would still be scored is refused (declare
+      `pad_id`, use `labels=-100` or a `loss_mask`). `extra_metrics` do not
+      apply to the task and are refused. Half-precision logits are widened to
+      float32 for the reported NLL.
+    - A run with no monitor elects BEST from the validation NLL. An epoch
+      whose validation is unavailable never replaces an earlier BEST. An
+      unavailable first epoch, though, stands in until one has a value.
+      Declare `MonitorSpec("nll")` to elect only epochs with a value.
 
   A custom `train_step_fn` still works for anything else (diffusion / KD /
   SimCLR / Mixup / CutMix follow that pattern).
+
 - **`NNRun` content-addressed persistence** — TRANSFORMER runs hash the
   same way as any other run. The `omit-when-default` invariant on
   `NNTransformerParams` is what keeps existing TRANSFORMER `run.id`
@@ -384,6 +386,7 @@ offline.
   Injecting a dropout-bearing adapter into an `eval()` model therefore keeps
   `generate()` deterministic. Modes are runtime state and never
   serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+
 - **Callbacks** — `EarlyStopping`, `ModelCheckpoint`,
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
   `train_loss` for an LM is the standard signal. Perplexity is
@@ -404,6 +407,7 @@ offline.
   built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
   bf16 autocast are the lanes exercised by the test suite; other
   backend/dtype combinations are not claimed until run on that hardware.
+
 - **RMSNorm precision** — every `RMSNorm` computes the mean of squares in
   at least FP32. This covers each block's `norm1` / `norm2` and the final
   `norm_out`. FP16/BF16 inputs are promoted to FP32, and FP32 and FP64 keep
@@ -428,6 +432,7 @@ offline.
   rounding. `from_checkpoint` rebuilds the net in the default dtype. Call
   `.double()` and reload the FP64 `net_state` to restore a double model
   exactly.
+
 - **KV cache** — `TransformerBlock` exposes a `use_cache` kwarg whose
   off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
   defaults `use_cache=True`. It runs a single prefill pass through
@@ -452,10 +457,10 @@ The decoder-only LM path covers:
   test requiring at least a 1.2× speedup over full recomputation.
 - CPU-friendly TinyStories-class training (sub-30-min runs).
 - Integrations built on the LM path:
-  - `Prefix-Tuner` / `Prompt-Tuner` PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
-  - `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)).
-  - Experimental NNx-tagged GGUF export for inspection or patched runtimes (see
-    [`docs/gguf.md`](gguf.md)).
+    - `Prefix-Tuner` / `Prompt-Tuner` PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+    - `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)).
+    - Experimental NNx-tagged GGUF export for inspection or patched runtimes (see
+      [`docs/gguf.md`](gguf.md)).
 
 Out of scope:
 

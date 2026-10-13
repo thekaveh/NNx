@@ -183,8 +183,9 @@ a signal to lock onto. The other classification fields stay zero.
 ### 4.5. Sharp edges
 
 * **`NNModelParams.mixed_precision=True`** is rejected by the
-  factory's `finalize_step` call when it resolves to FP16 on CUDA, as in
-  every paradigm step factory. Off CUDA the legacy flag falls back to full
+  `NNModel.train` with `PrecisionUnsupportedError` when it resolves to FP16
+  on CUDA, before any step runs, because the JEPA step is full-precision
+  only. Off CUDA the legacy flag falls back to full
   precision.
   AMP requires per-loss scaler bookkeeping that JEPA's custom step
   doesn't implement.
@@ -235,6 +236,7 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   classification fields. Masks are checked before any forward pass. They
   must be complementary `BoolTensor[n_patches]` with at least one context
   and one target patch.
+
 * **Update.** The shared engine owns backward, accumulation, mixed
   precision, clipping and the optimizer step, with the objective's
   non-finite policy (`nonfinite="fail"` or `"skip"`).
@@ -247,20 +249,22 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   steps and continues across a stateful resume. A `Trainer` with separate
   encoder and predictor optimizers still advances it once per committed
   update.
+
 * **Ownership, checked before any run is reserved.** These rules apply:
-  - The predictor must be a submodule of `model.net` whose trainable
-    parameters the run's optimizers own exactly once.
-  - The target encoder must stay outside `model.net`, share none of its
-    parameters and be owned by no optimizer.
-  - Every target parameter needs a same-named, same-shaped online one.
-  - Callbacks that change the net's topology (`checkpoint_transforms`,
-    e.g. QAT) are refused. The imperative step passed as `objective=` is
-    refused too.
+    - The predictor must be a submodule of `model.net` whose trainable
+      parameters the run's optimizers own exactly once.
+    - The target encoder must stay outside `model.net`, share none of its
+      parameters and be owned by no optimizer.
+    - Every target parameter needs a same-named, same-shaped online one.
+    - Callbacks that change the net's topology (`checkpoint_transforms`,
+      e.g. QAT) are refused. The imperative step passed as `objective=` is
+      refused too.
 
   A callback that renames the net's parameters without declaring it is not
   detected. An example is `torch.nn.utils.prune`, which turns `weight` into
   `weight_orig`. `update_ema` then raises a `KeyError` naming the parameter
   at the next committed update.
+
 * **Checkpoints and resume.** `JEPAObjective` is a checkpointable
   component named `jepa.objective`. It holds the spec (loss, momentum),
   the predictor's **reference**, the EMA target's weights and the EMA

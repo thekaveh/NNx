@@ -69,7 +69,7 @@ is no checkpoint, and it is marked unproduced.
 | Mode | Runs | Produces | Verdict |
 |---|---|---|---|
 | `mechanics` (default, CI) | Offline, CPU, no downloads: synthetic keyword-described task families exercise the whole recipe | manifest, checkpoint (reloaded through the registry), replay records, trial record (split, template, model revision, question digests), stop record when capped, report | always **no-go**: synthetic families measure plumbing, not quality |
-| `empirical` | Writes and validates its own manifest, then checks resources: encoder weights, the NLI and GLiClass baselines, the task-family data (local paths named by environment variables; nothing is downloaded) | the manifest and a **blocked** report naming the missing resources — or, with all present, saying the empirical runs happen outside this repository | **blocked** |
+| `empirical` | Writes and validates its own manifest, then checks its resources. These are the encoder weights, the NLI and GLiClass baselines and the task-family data, at local paths named by environment variables. Nothing is downloaded. | the manifest and a **blocked** report naming the missing resources — or, with all present, saying the empirical runs happen outside this repository | **blocked** |
 
 ## 5. Completion and promotion
 

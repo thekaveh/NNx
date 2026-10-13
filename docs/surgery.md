@@ -8,7 +8,7 @@ The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Modul
 
 Only `drop_layer` is purely chain-preserving. It changes the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality. See the table in §1 for the per-primitive breakdown.
 
-This is the unique compositional payoff of pairing surgery primitives with a training loop in the same toolkit. Every primitive returns a fresh `nn.Module` instance, and that instance is a drop-in target for `NNModel.train()`.
+This is the unique compositional payoff of pairing surgery primitives with a training loop in the same toolkit. Every primitive returns a fresh module, and that module is a drop-in target for `NNModel.train()`. `expand_embedding` returns the new `nn.Embedding` with a mask of the original rows.
 
 ## 1. The five primitives at a glance
 
@@ -171,7 +171,7 @@ Surgery preserves trainability and modes. Two primitives rebuild an *existing* L
 
 - The target's weight flag and bias flag are carried independently.
 - The downstream layer keeps its own flags, never the target's.
-- Both factors inherit the source weight's flag, while only `up.bias` inherits the source bias's flag.
+- Both factors inherit the source weight's flag, while only the second factor's bias (`1.bias` in the returned `nn.Sequential`) inherits the source bias's flag.
 
 Each replacement module also takes the train/eval mode of the module it replaces, so a mixed root/child configuration survives unchanged.
 
@@ -180,13 +180,16 @@ Build the optimizer *after* surgery. A frozen layer stays frozen through widenin
 These flags and modes live on the returned object only. `state_dict()` carries neither, so they are not a cross-process freeze policy.
 
 
-`expand_embedding` returns a `frozen_mask` of bool shape `(new_num_embeddings,)` — `True` for rows that came from the original embedding, `False` for new rows. The mask is a hand-off to the caller's training step:
+`expand_embedding` returns a `frozen_mask` of bool shape `(new_num_embeddings,)` — `True` for rows that came from the original embedding, `False` for new rows. The mask is a hand-off to the caller's training step.
+
+The example uses a custom module `net` with an `embed` attribute; no built-in net has one. As in §2, a fresh `NNModel` wraps the changed module, so its runs and checkpoints describe the expanded topology:
 
 ```python
-from nnx import NNParamGroupSpec, expand_embedding
+from nnx import NNModel, NNParamGroupSpec, expand_embedding
 
-new_emb, frozen_mask = expand_embedding(model.net.embed, new_num_embeddings=20_000, init="copy_mean")
-model.net.embed = new_emb  # reattach — expand_embedding returns a NEW module
+new_emb, frozen_mask = expand_embedding(net.embed, new_num_embeddings=20_000, init="copy_mean")
+net.embed = new_emb  # reattach — expand_embedding returns a NEW module
+model = NNModel(module=net, params=model_params)  # a fresh model over the expanded net
 
 # Register a gradient hook ONCE before training: hooks fire during
 # backward(), i.e. before optimizer.step(), so frozen rows receive
@@ -247,12 +250,14 @@ check_optimizer(model, optimizer)
     - an unknown operation or version.
 
     They also reject any optimizer passed in `optimizers=` that already holds a target's parameters. The error instructs you to build the optimizer after the recipe.
+
 - **What `validate` checks.** `validate` checks exactly what `materialize` would (the fresh base for `"fresh"`). In place, it also refuses a model that already differs from its descriptor plus its recorded recipe, since no checkpoint could rebuild it. This includes unrecorded surgery anywhere, such as an added, resized or bias-changed layer.
 - **Optimizer check.** `check_optimizer(model, optimizer)` refuses an optimizer that is stale for the current topology, whenever it was built. A stale optimizer holds either of these:
     - parameters a low-rank operation replaced (or the parameters of the model a `"fresh"` materialization started from);
     - a LoRA target's frozen base weights but none of its adapter, so it would never train.
 
     It accepts an optimizer built afterwards over the trainable parameters. This covers every one, a subset, parameters outside `model.net` (a learnable loss temperature, say), or BitFit-style over unfrozen base tensors.
+
 - **What carries the recipe.** The recorded operations travel with every run checkpoint (LAST, BEST, the phase tags and `ModelCheckpoint` snapshots). They also travel with `NNCheckpoint.to_file` in both formats, `save_pretrained`, and run bundles. `nnx.bundles.export_bundle` refuses any other recorded transform (a callback's own train-end operation, say), naming its index and id, because a bundle is rebuilt from data alone.
 - **Reconstruction.** `NNModel.from_checkpoint` and `from_pretrained` build a fresh base and replay the operations. The replay puts LoRA wrappers around the fresh layers and allocates low-rank factors in their recorded two-Linear shape. Only then do they load the saved tensors. SVD is never rerun, and the ordered keys, shapes, trainability and predictions match the saved model. An unknown operation or version, or malformed recorded options, is refused before any tensor is loaded, naming the transform's index.
 - **Training.** A recipe model trains through `NNModel.train` / `Trainer.train`, custom `train_step_fn` included.

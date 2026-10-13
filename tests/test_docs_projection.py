@@ -281,6 +281,25 @@ def test_repository_docs_have_no_placeholder_markers_or_tracked_ignored_files():
     build_docs.validate_repository_docs()
 
 
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("A paragraph line.\n- an item that joins it\n", "blank line"),
+        ("- **Parent.**\n  - a child the site flattens\n", "four spaces"),
+    ],
+)
+def test_list_markup_the_site_renders_differently_is_refused(tmp_path: Path, text: str, problem: str):
+    with pytest.raises(ValueError, match=problem):
+        build_docs.validate_list_markup(tmp_path / "page.md", text)
+
+
+def test_list_markup_the_site_renders_like_github_is_accepted(tmp_path: Path):
+    build_docs.validate_list_markup(
+        tmp_path / "page.md",
+        "A paragraph.\n\n- an item\n  continued\n- **Parent.**\n    - a child\n\n```\nnot\n- a list\n```\n",
+    )
+
+
 def test_external_contract_tool_versions_match_automation_sources():
     contracts = (build_docs.ROOT / "docs" / "external-contracts.md").read_text(encoding="utf-8")
     requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")

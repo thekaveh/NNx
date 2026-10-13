@@ -225,6 +225,7 @@ and experimental context.
   fraction of pairs where the chosen reward exceeds the rejected reward
   (range 0–1, higher is better). Track the reward margin alongside
   accuracy; accuracy alone can hide collapsing reward magnitudes.
+
 - **Generation** — after training, `policy.generate(prompt=..., ...)`
   produces text from the tuned policy with the standard sampling
   knobs (top-k, top-p, repetition penalty, seed).

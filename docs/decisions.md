@@ -281,6 +281,7 @@ topic[0].raw                    # {"provider": "jev", "model": "jev-1.13.0", "re
     A field the service did not report is absent. Clients, headers and
     credentials are never recorded, and `record()` (the benchmark identity)
     holds none either.
+
 - **Retries.** The SDK's `RetryPolicy` owns retries. Pass `retry=` when the
   provider builds its client, or configure the client you inject. The
   adapter sends each request once and adds no retry loop, nor does a
@@ -298,6 +299,7 @@ topic[0].raw                    # {"provider": "jev", "model": "jev-1.13.0", "re
 
     Crossing a decision job or the benchmark keeps the type and request id
     (`JobFailed.__cause__`, a record's `reason`).
+
 - **Cost.** Every text is its own request, so one provider call over `n`
   texts sends `n` requests. A benchmark's `Budget.max_calls` and a job's
   `Limits.max_requests` count provider calls, not requests. Set `max_batch`
@@ -380,6 +382,7 @@ result.calls                                           # provider calls made
 
     A continuation's questions are checked when the continuation runs,
     before they are sent.
+
 - **Dependent questions.** A `then` continuation runs **once**, after its
   prerequisite succeeded. It maps the answer explicitly into the follow-up
   `state`; it never feeds a sibling question. `Limits.max_depth` bounds
@@ -516,6 +519,7 @@ print(report.text())
 
     Records for no sample are the report's `extra` count. The CSV carries
     every count, so they add up to each slice's samples.
+
 - **Capabilities.** A provider may declare that it cannot serve a request.
   For instance, `FixedHeadProvider` declares so outside its label space (or
   its `option_map`), or when asked a Boolean other than its own. It declares
@@ -553,6 +557,7 @@ print(report.text())
     definitions of the named `nll` / `brier` metrics. One difference: the
     replay NLL is exact by default, where the named `nll` floors
     probabilities at `1e-12`. A Boolean is the options `("true", "false")`.
+
 - **Resources** (`Resources`) say how cost was obtained: warmup, hardware,
   timing boundary, concurrency, batch count and seconds. They also say
   whether the numbers were `measured` (hardware required) or `supplied`.
@@ -580,7 +585,7 @@ print(report.text())
       and slicing).
 - **Duplicates.** `collect` refuses duplicate sample ids before any call.
 
-It is not a leaderboard: no paid remote run is a default, and it never
+It is not a leaderboard. No paid remote run is a default, and it never
 tunes a threshold or a prompt on test outcomes.
 [`examples/decision_benchmark_offline.py`](../examples/decision_benchmark_offline.py)
 collects once and replays with sockets disabled.
@@ -704,6 +709,7 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
     returned as an `Err`. That is a policy that is not an
     `AbstentionPolicy`, or one for a `Boolean` question, other labels or
     another `model_id`.
+
 - **Codes follow the type.** The codes follow the exception type, not
   whether a retry would help. A refused credential is a
   `"provider_failure"` too, so branch on the `cause` when that matters. A
@@ -728,8 +734,9 @@ See [Concepts §27](concepts.md#27-errors-as-values-nnxresult) and
 ## 11. Consumers
 
 Decision features share this digest, the `kind` discriminators and
-`validate_response` rather than defining their own; `nnx.decisions` depends
-on none of them. The consumers are:
+`validate_response` rather than defining their own. The schema and provider
+core of `nnx.decisions` depends on none of them, although the package
+re-exports the jobs, NLI and JEV features. The consumers are:
 
 - decision jobs (§7);
 - the provider benchmark (§8);

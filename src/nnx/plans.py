@@ -969,8 +969,8 @@ class ExperimentPlan:
 
     def probe(self, example_batch: Any) -> ProbeResult:
         """Build a temporary model and run one forward pass on
-        ``example_batch`` under ``torch.no_grad()`` in eval mode, plus the
-        loss when the batch has a target (``None`` for an all-masked task
+        ``example_batch`` under ``torch.no_grad()`` in eval mode, plus a
+        train-mode pass for the loss when the batch has a target (``None`` for an all-masked task
         batch, which the default step records no loss for either).
 
         Effectful but restored: the plan's seed is applied first, and

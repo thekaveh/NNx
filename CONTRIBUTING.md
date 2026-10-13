@@ -161,21 +161,22 @@ The end-to-end flow:
 
    release-please bumps the version in three places, so the lock and the API-reference check stay consistent:
 
-   - `pyproject.toml`, through its Python updater.
-   - The lines marked `x-release-please-version`: the `__version__` fallback in `src/nnx/__init__.py`, the `nnx.__version__` line of `docs/api.md` and the version line of `README.md` / `PYPI_README.md`.
-   - The package's version in `uv.lock`, through a toml updater.
+    - `pyproject.toml`, through its Python updater.
+    - The lines marked `x-release-please-version`: the `__version__` fallback in `src/nnx/__init__.py`, the `nnx.__version__` line of `docs/api.md` and the version line of `README.md` / `PYPI_README.md`.
+    - The package's version in `uv.lock`, through a toml updater.
 
    The workflow then dispatches the required checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`).
 
    The post-release sync of `main` into `develop` runs `python3 scripts/release/finalize_changelog.py CHANGELOG.md`. It moves the curated notes under the new version heading in place of the generated list. It leaves `[Unreleased]` empty. Keep `[Unreleased]` curated: it becomes the release notes.
 
    Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
+
 2. A maintainer reviews and merges the Release PR when ready to ship. Release Please explicitly dispatches the required CI and security checks for its managed branch. It then creates the tag and draft release. It dispatches the top-level `release.yml` workflow with the immutable release commit and tag.
 3. `release.yml` runs these steps:
-   - It verifies the Release Please commit belongs to `main`.
-   - It runs the full test matrix and builds the package.
-   - It publishes through PyPI trusted publishing, gated by the `pypi` GitHub Environment's approval rule.
-   - It verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
+    - It verifies the Release Please commit belongs to `main`.
+    - It runs the full test matrix and builds the package.
+    - It publishes through PyPI trusted publishing, gated by the `pypi` GitHub Environment's approval rule.
+    - It verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
 
    Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
 

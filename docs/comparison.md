@@ -190,6 +190,7 @@ no superiority claim.
 ## 4. When to use what
 
 **Use NNx when** any combination of these matters:
+
 - You need graph neural networks alongside LM / diffusion / PEFT in the same project.
 - Reproducibility via `run.id` content-addressing has organizational value.
 - You want model-surgery primitives (Net2Net, low-rank).

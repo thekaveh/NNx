@@ -6572,7 +6572,7 @@ bounded.
 nnx.plans.ExperimentPlan.probe(self, example_batch: 'Any') -> 'ProbeResult'
 ```
 
-Build a temporary model and run one forward pass on ``example_batch`` under ``torch.no_grad()`` in eval mode, plus the loss when the batch has a target (``None`` for an all-masked task batch, which the default step records no loss for either).
+Build a temporary model and run one forward pass on ``example_batch`` under ``torch.no_grad()`` in eval mode, plus a train-mode pass for the loss when the batch has a target (``None`` for an all-masked task batch, which the default step records no loss for either).
 
 **Details**
 
@@ -14287,9 +14287,9 @@ Raises:
     ValueError: if ``generations < 1``; if ``generations > 1`` and the
         optimizer accumulates gradients or ``alpha`` / ``temperature``
         are out of range. Nothing is trained.
-    TypeError: if ``generations > 1`` and a keyword is not a
-        :func:`kd_train_step_factory` parameter, or the training loader
-        holds stored teacher records.
+    TypeError: if the training loader holds stored teacher records
+        (for any ``generations``), or if ``generations > 1`` and a
+        keyword is not a :func:`kd_train_step_factory` parameter.
     PrecisionUnsupportedError: if ``generations > 1`` and the model's
         precision is reduced: the KD generations run in full
         precision only, so nothing is trained.
@@ -16134,7 +16134,7 @@ instead of `nnx.vis_utils.VisUtils.confusion_matrix(...)`.
 nnx.vis_utils.confusion_matrix(Y_true, Y_pred, class_names=None, title: 'str' = 'Confusion matrix', normalize: 'bool' = False)
 ```
 
-Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays of integer class labels. If `class_names` is provided, axis labels use the named classes; otherwise integer indices.
+Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays of integer class labels. If `class_names` is provided, axis labels use the named classes, and every label must be a class index ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise integer indices.
 
 ##### `nnx.vis_utils.classification_report`
 
@@ -16250,7 +16250,8 @@ Returns:
     A Plotly `Figure` containing one or more `Heatmap` traces.
 
 Raises:
-    ValueError: If `layer_name` doesn't resolve to a submodule of `model`.
+    ValueError: If `layer_name` doesn't resolve to a submodule of `model`,
+        or if `max_channels` or `cols` is not a positive integer.
     RuntimeError: If the forward hook on `layer_name` never fires
         (the layer is not reached by this input's forward path).
 ```
@@ -16285,12 +16286,12 @@ Returns:
     A tuple `(attribution_tensor, figure)` where `attribution_tensor` is a
         `torch.Tensor` with the same shape as `x` (per Captum's standard
         return contract for these six methods) and `figure` is a Plotly
-        `Heatmap` visualizing the attribution. Image-shaped inputs (3-D /
-        4-D) are mean-pooled over channels before rendering.
+        `Heatmap` visualizing the attribution's first sample: a 4-D
+        input is mean-pooled over channels, a 3-D input is shown as is.
 
 Raises:
     ImportError: If `captum` is not installed. Install via
-        `pip install thekaveh-nnx[viz]` or `pip install captum>=0.7.0`.
+        `pip install thekaveh-nnx[viz]` or `pip install "captum>=0.7.0"`.
     ValueError: If `method` is not one of the supported keys.
 ```
 
@@ -16432,7 +16433,8 @@ Returns:
     Empty parameter tensors are skipped from the grid.
 
 Raises:
-    ValueError: If `model` has no named parameters (nothing to plot).
+    ValueError: If `model` has no named parameters (nothing to plot),
+        or if `bins` or `cols` is not a positive integer.
 ```
 
 
