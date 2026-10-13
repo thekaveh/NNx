@@ -1,4 +1,4 @@
-"""Streaming prediction and mergeable metrics (FEAT-020).
+"""Streaming prediction and mergeable metrics.
 
 ``NNModel.predict()`` returns only after the whole loader has run.
 ``NNModel.iter_predict(loader)`` streams the same predictions one loader

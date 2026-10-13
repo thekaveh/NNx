@@ -16,7 +16,7 @@ labels, the dark-knowledge effect is small or inconsistent.
 Distillation's real benefit shows up on harder real-data tasks with
 class confusion, noisy labels, or extreme student capacity gaps.
 
-**Objective mode (FEAT-004).** ``kd_objective(teacher, ...)`` describes the
+**Objective mode.** ``kd_objective(teacher, ...)`` describes the
 same loss as loss terms with explicit denominators and hands the update to
 NNx's shared update engine, so distillation also gets gradient accumulation
 (exact for uneven microbatches and short windows), mixed precision and

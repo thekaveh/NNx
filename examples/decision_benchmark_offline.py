@@ -1,5 +1,5 @@
 """A reproducible decision-provider benchmark, collected once and replayed
-offline (FEAT-021).
+offline.
 
 ``nnx.decisions.benchmark`` scores providers on identical samples. This
 example:

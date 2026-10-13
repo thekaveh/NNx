@@ -1,5 +1,4 @@
-"""Multi-seed summaries and a paired comparison of two configurations
-(FEAT-032).
+"""Multi-seed summaries and a paired comparison of two configurations.
 
 One seed is one draw. ``nnx.comparison`` reports repeated runs as a
 population: count, mean and the sample standard deviation per

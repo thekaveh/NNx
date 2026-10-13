@@ -7,16 +7,18 @@ Flow:
   2. Wrap every :class:`nn.Linear` in the trained net with
      :class:`LoRALinear`. The wrap freezes each base layer's
      full-rank weight; only the new ``lora_A`` and ``lora_B``
-     matrices (~r/dim of the original size) train.
+     matrices (``r * (in + out)`` values per layer) train.
   3. Fine-tune on distribution B.
   4. Verify every base ``weight`` / ``bias`` is BIT-EXACTLY unchanged.
   5. Save a LoRA-only checkpoint and compare its size to a full
      state-dict snapshot.
 
 The point isn't accuracy comparison — for a toy task, full fine-tuning
-and LoRA fine-tuning land near the same val error. The point is
-demonstrating PEFT's storage and update efficiency: a few hundred new
-parameters per layer instead of tens of thousands.
+and LoRA fine-tuning land near the same val error. The point is the
+mechanism: only the adapters train, and the base stays bit-exact. On
+this toy net about 38% of the parameters are trainable (560 of 1476),
+and the LoRA file is about 39% of the full state. LoRA saves memory
+and storage only when a layer's width is much larger than the rank r.
 
 ``dora_zero_row_composition`` below is a bounded DoRA companion: a wrapped
 layer with mixed zero / nonzero base rows feeding a following projection,

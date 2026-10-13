@@ -1,5 +1,4 @@
-"""Tabular data admission — non-finite features and narrowing overflow
-(FIX-023).
+"""Tabular data admission — non-finite features and narrowing overflow.
 
 Demonstrates what ``NNTabularDataset`` refuses to admit, and that a valid
 frame still trains:
@@ -17,9 +16,10 @@ frame still trains:
      a floating ``target_dtype`` target.
   3. **Only modelled columns are inspected.** An unrelated column full of
      ``inf`` / ``NaN`` does not block construction.
-  4. **A valid frame still trains.** One classification step yields a
-     finite loss equal to a hand-computed cross-entropy reference, and a
-     regression dataset keeps ``(N, 1)`` targets for a one-output model.
+  4. **A valid frame is accepted.** One forward pass gives a
+     classification loss that matches cross-entropy computed by hand from
+     the logits. No optimizer step is taken. A regression dataset keeps
+     ``(N, 1)`` targets for a one-output model.
 
 A rejected construction leaves the caller's DataFrame and the global split
 RNG untouched. Fully offline, CPU only.
@@ -102,7 +102,8 @@ def tabular_validation_workflow() -> dict:
     )
     ds = NNTabularDataset(df=frame, feature_cols=["a", "b"], target_col="y", val_proportion=0.0, test_proportion=0.0)
 
-    # 4. A valid dataset drives a finite classification step matching a reference.
+    # 4. A valid dataset gives a classification loss that matches cross-entropy
+    # computed by hand (one forward pass; no optimizer step).
     model = NNModel(
         net_params=NNParams(
             input_dim=ds.input_dim,

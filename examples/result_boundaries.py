@@ -1,4 +1,4 @@
-"""An opt-in Result at two fallible boundaries, next to try/except (FEAT-025).
+"""An opt-in Result at two fallible boundaries, next to try/except.
 
 ``nnx.result`` adds ``Ok`` / ``Err`` and three boundary wrappers; every
 existing exception API is unchanged. This example writes each flow both

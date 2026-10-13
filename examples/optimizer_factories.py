@@ -1,4 +1,4 @@
-"""Registered optimizer factories and AdamW (FEAT-013).
+"""Registered optimizer factories and AdamW.
 
 Demonstrates how a run uses an optimizer NNx does not ship, without
 disguising it as a built-in name:

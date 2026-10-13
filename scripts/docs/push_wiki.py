@@ -4,14 +4,29 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
+_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
+
+
+def _redact(text: str) -> str:
+    """Replace every URL, which can carry a token, with a placeholder."""
+    return _URL.sub("<remote>", text)
+
 
 def _run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, check=True, text=True, capture_output=True)
+    try:
+        return subprocess.run(args, cwd=cwd, check=True, text=True, capture_output=True)
+    except subprocess.CalledProcessError as error:
+        command = [_redact(arg) for arg in args]
+        print(f"command failed ({error.returncode}): {' '.join(command)}")
+        if error.stderr:
+            print(_redact(error.stderr).rstrip())
+        raise subprocess.CalledProcessError(error.returncode, command) from None
 
 
 def push(source: Path, repository: str) -> None:

@@ -1,4 +1,4 @@
-"""Single-node data-parallel training under torchrun (FEAT-030).
+"""Single-node data-parallel training under torchrun.
 
 Launch two processes on one machine (CPU ranks talk over Gloo; with CUDA,
 one GPU per process over NCCL)::

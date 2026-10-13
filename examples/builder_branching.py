@@ -1,4 +1,4 @@
-"""Branching mutable params builders with copy() and from_params() (FEAT-041).
+"""Branching mutable params builders with copy() and from_params().
 
 The four params builders are mutable and reusable. Two methods let a run
 share its setup instead of retyping it per variant:

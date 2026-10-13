@@ -1,4 +1,4 @@
-"""Leakage-aware link prediction on a static graph (FEAT-027).
+"""Leakage-aware link prediction on a static graph.
 
 Node masks cannot hold out edges; a held-out edge left in the graph the
 model passes messages over is a leaked answer. This script splits edges,

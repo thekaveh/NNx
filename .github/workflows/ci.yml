@@ -56,14 +56,8 @@ jobs:
           version: "0.13.0"
 
       - name: Sync package from the frozen lock
-        # Every optional-dep extra is installed so the tests that gate on
-        # `pytest.importorskip(...)` for {hub, viz, viz-interactive,
-        # quantize, tensorboard, wandb, onnx, onnx-dynamo, onnx-runtime,
-        # embeddings, lm, gguf-write} actually exercise the code path in CI instead
-        # of silently skipping. Without this, a broken import in a new
-        # sub-project would ship to PyPI undetected. Keep this list in
-        # sync with pyproject.toml [project.optional-dependencies] and
-        # with release.yml's install line.
+        # --all-extras installs every optional extra, so tests that gate on
+        # `pytest.importorskip(...)` run their code path instead of skipping.
         run: |
           uv sync --frozen --all-extras --python "$PYTHON_VERSION"
         env:

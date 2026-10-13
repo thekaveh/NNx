@@ -21,7 +21,7 @@ registered scheduler once per epoch, unless
 ``NNTrainerParams(auto_step_schedulers=False)`` (builder:
 ``.auto_step_schedulers(False)``) hands scheduler timing to the step too —
 including an ``optimizer_update``-clock schedule, which then never steps on
-the updates the step reports (``manual_scheduler_ownership`` below, FEAT-014).
+the updates the step reports (``manual_scheduler_ownership`` below).
 
 This is a *teaching* GAN — small, CPU-fast, intentionally minimal —
 not a production setup. Spectral norm, EMA, R1 regularization, larger
@@ -35,7 +35,7 @@ demonstration of that contract (two minibatches, temporary ``runs/``).
 
 Every checkpoint carries both optimizers, both schedulers, the RNG and each
 registered component (here an ``EarlyStopping``), so a two-optimizer run
-warm-resumes where it stopped (FEAT-005):
+warm-resumes where it stopped:
 ``NNTrainerParams.builder().resume_from(run_id)``. ``two_optimizer_resume``
 below splits a run 1+1 epochs across a fresh "process" and checks it ends
 exactly where the continuous run does, with the step function still owning

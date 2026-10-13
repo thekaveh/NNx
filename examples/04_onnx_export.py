@@ -8,7 +8,7 @@ executes it:
 Run:
     python examples/04_onnx_export.py
 
-``conformance(model, path, X)`` labels every result (FEAT-038):
+``conformance(model, path, X)`` labels every result:
 ``checker-only`` when only ``onnx.checker`` ran — the file is well formed,
 and **nothing is claimed about what a runtime computes** — or ``executed``
 when ONNX Runtime ran the graph on CPU and its outputs were compared with
@@ -18,7 +18,7 @@ hashes, versions, input cases) live in ``nnx.export_conformance`` and
 ``scripts/check_export_conformance.py``.
 
 ``registered_module_variant()`` (also run by ``main``) exports a model built
-from a registered factory (FEAT-006, ``nnx.models``) — any tensor-output
+from a registered factory (``nnx.models``) — any tensor-output
 ``nn.Module`` exports the same way. It and ``conformance`` are executed by
 ``tests/test_examples_smoke.py`` as bounded helpers.
 """

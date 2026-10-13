@@ -3,20 +3,17 @@ classification val pass for paradigms it can't score.
 
 Without a task, ``NNModel.train`` computes argmax + sklearn
 classification metrics in BOTH its default train step and its built-in val
-pass. Plain regression and multilabel problems no longer need custom
+pass. Plain regression and multilabel problems do not need custom
 steps: declare ``NNModelParams(task=TaskSpec.regression(...))`` (or
 ``.multilabel``) and the default step, ``evaluate()`` and ``predict()``
 score continuous values with MSE / MAE — see
-``examples/regression_task.py``. Paradigms no task adapter covers (LM
-perplexity, DPO margins, a bespoke regression schedule like the one below)
-still use the pair:
+``examples/regression_task.py``. Paradigms no task adapter covers (DPO
+margins, a bespoke regression schedule like the one below) still use the
+pair:
 
   1. A custom ``train_step_fn`` (:class:`TrainStepContext` in, batch EDP
      out) — here the standard MSE forward/backward with MAE riding in
-     ``extra``. Before ``eval_step_fn`` existed this was the END of the
-     story: the built-in val pass still ran classification metrics, so
-     the only workaround was training with ``val_loader=None`` and
-     losing validation entirely.
+     ``extra``.
   2. A custom ``eval_step_fn`` (:class:`EvalStepContext` in — frozen
      bundle of ``model``, ``val_loader``, ``extra_metrics``,
      ``epoch_idx`` — one :class:`NNEvaluationDataPoint` out). It runs

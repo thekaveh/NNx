@@ -1,4 +1,4 @@
-"""Train-only preprocessing and split transforms, offline (FEAT-018).
+"""Train-only preprocessing and split transforms, offline.
 
 Statistics fitted on every row leak held-out values into training. This
 example fits on the training membership only and serves the model with the

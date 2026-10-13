@@ -85,7 +85,7 @@ Each table gives a short summary per example. The notes after a table list each 
 | `scheduler_clocks.py` | Scheduler clocks: per-update and per-epoch stepping with gradient accumulation, non-finite skips and a resumed one-cycle schedule. Offline, CPU, temporary working directory. |
 | `search_offline.py` | Budgeted experiment search with Optuna over an `ExperimentPlan`, with pruning and a stored study. Requires the `optuna` extra. |
 | `split_replay.py` | Reproducible splits: `plan_split` manifests that are saved, reloaded and replayed, for grouped and time-ordered fixtures. Offline, CPU. |
-| `tabular_validation.py` | Tabular data admission: `NNTabularDataset` rejects values that a dtype cast would corrupt, then trains on a valid frame. Offline, CPU. |
+| `tabular_validation.py` | Tabular data admission: `NNTabularDataset` rejects values that a dtype cast would corrupt, then computes a loss on a valid frame. Offline, CPU. |
 | `03_custom_metrics.py` | Plug a custom `metric_fn(Y, Y_hat)` into `NNTrainParams.extra_metrics`; inspect `idp.train_edp.extra` and `idp.val_edp.extra`. A bounded helper adds named metrics and a monitor. |
 | `04_onnx_export.py` | Export a trained model to ONNX and label what was shown: `checker-only` or `executed`. The recorded, tested profiles are `scripts/check_export_conformance.py` ([Export conformance](../docs/export-conformance.md)). |
 | `25_conv_classifier.py` | LeNet-style conv classifier via `NNConvParams` + `Nets.CONV`, with a checkpoint round-trip through `resolve_from_state`. Synthetic stripes/checkerboard imagery — no download. |
@@ -195,7 +195,7 @@ Notes for section 2.1:
 
 - The model is a registered candidate scorer (shared encoder, shared scalar head; no new `Nets` member). It scores `(state, question, candidate description)`.
 - `--mode mechanics` (default, offline, CPU) runs the pre-execution manifest and trains on the fit families only. It selects on the select families and scores held-out families once.
-- Mechanics mode also writes replay records with candidate ids and the schema digest, and reloads the checkpoint through the registry. It ends with a compute-cap stop record and a **no-go** report (mechanics evidence only).
+- Mechanics mode also writes replay records with candidate ids and the schema digest, and reloads the checkpoint through the registry. It ends with a stop record when the compute cap is reached (the bounded helper caps it at 48 updates) and a **no-go** report (mechanics evidence only).
 - `--mode empirical` writes and validates its manifest, checks its resources and writes a **blocked** report. The report names any missing resource; with all present, it says the empirical runs are outside this repository.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `pilot_workflow()`, `-k decision_model_pilot`).
 

@@ -8,8 +8,8 @@ Pipeline:
      BPE tokenizer on the training lines.
   3. Build a ~1M-param TransformerNN + NNTokenizerParams (the script
      prints the exact count at startup).
-  4. Train via the standard `NNModel.train()` loop with the causal-LM task
-     (FEAT-034): `CausalLMTask(alignment="pre_shifted")` supplies the
+  4. Train via the standard `NNModel.train()` loop with the causal-LM task:
+     `CausalLMTask(alignment="pre_shifted")` supplies the
      objective — cross-entropy over valid tokens, normalized by the
      window's valid-token count — and the validation step, which reports
      unsmoothed token NLL, perplexity (`exp(NLL)`) and token accuracy. No

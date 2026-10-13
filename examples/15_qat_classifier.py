@@ -4,7 +4,7 @@ convert to int4 weights / int8 dynamic activations at the end.
 QAT trades one training run for accuracy recovery on aggressive low-bit
 schemes. The flow:
 
-  1. Build a small classifier (FeedFwdNN with three Linear layers).
+  1. Build a small classifier (FeedFwdNN with four Linear layers, hidden 128, 128, 64).
   2. Wire up ``QATLifecycleCallback`` + ``qat_train_step_factory`` —
      ``on_train_begin`` swaps every Linear for a fake-quantized variant,
      so the network learns under int4/int8 rounding noise.

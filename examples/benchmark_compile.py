@@ -1,4 +1,4 @@
-"""Opt-in torch.compile, measured: compile cost, warmed speed, a profile (FEAT-029).
+"""Opt-in torch.compile, measured: compile cost, warmed speed, a profile.
 
 Compilation is opt-in and **no speedup is guaranteed** — on a tiny model the
 compiled forward is often slower than eager. This example measures instead

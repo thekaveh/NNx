@@ -1,4 +1,4 @@
-"""Bounded training history with an append journal (FEAT-036).
+"""Bounded training history with an append journal.
 
 By default ``train()`` keeps every per-batch record in memory and rewrites
 ``runs/<id>/idps.csv`` each epoch. ``history=HistoryJournal(...)`` keeps a

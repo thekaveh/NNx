@@ -1,4 +1,4 @@
-"""Query-grouped ranking evaluation with stable candidate IDs (FEAT-035).
+"""Query-grouped ranking evaluation with stable candidate IDs.
 
 A retrieval system answers a query in two steps: an index proposes a
 **candidate set** (here FAISS, by inner product over document vectors), and

@@ -23,7 +23,7 @@ training set (requires ``torchvision``) — the loss will still
 decrease, but don't expect linear-probe accuracy on the order
 of the I-JEPA paper.
 
-**Objective mode (FEAT-040).** ``jepa_objective(target, predictor,
+**Objective mode.** ``jepa_objective(target, predictor,
 mask_fn)`` describes the same latent-prediction loss as an objective: NNx's
 shared update engine then owns backward, gradient accumulation (exact for
 uneven microbatches and target masks), clipping and the optimizer step, and

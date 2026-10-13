@@ -50,7 +50,7 @@ right after the site, dotted-path consumers (``get_submodule``,
 a raw ``state_dict`` round-trips into an equivalently deepened fresh model.
 
 ``recipe_reconstruction_workflow`` below records the topology change
-instead (FEAT-016, ``nnx.transforms``): a ``TransformRecipe`` of LoRA on one
+instead (``nnx.transforms``): a ``TransformRecipe`` of LoRA on one
 Linear then a rank-4 SVD factorization of another is validated (an
 optimizer built *before* it is refused with a rebuild instruction),
 materialized, trained a few steps with an optimizer built *after* it, and

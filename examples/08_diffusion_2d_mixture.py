@@ -18,7 +18,7 @@ intentionally minimal so the train/sample plumbing is visible. For
 image-space diffusion, swap `DiffusionMLP` for a U-Net of your choice;
 the schedule / train step / sampler are architecture-agnostic.
 
-**Objective mode (FEAT-040).** ``diffusion_objective(schedule)`` describes
+**Objective mode.** ``diffusion_objective(schedule)`` describes
 the same noise-prediction loss as an objective: NNx's shared update engine
 then owns backward, gradient accumulation (exact for uneven microbatches),
 clipping and the optimizer step, and the timesteps and noise come from the

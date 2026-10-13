@@ -1,4 +1,4 @@
-"""Budgeted experiment search with Optuna, offline (FEAT-033).
+"""Budgeted experiment search with Optuna, offline.
 
 A three-trial study over the learning rate of a small classifier:
 

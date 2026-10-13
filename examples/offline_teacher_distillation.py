@@ -1,4 +1,4 @@
-"""Distill a student from stored teacher distributions, offline (FEAT-022).
+"""Distill a student from stored teacher distributions, offline.
 
 ``examples/10_knowledge_distillation.py`` runs a **live** teacher every step
 and softens its **logits** at a temperature. Here the teacher is gone: what

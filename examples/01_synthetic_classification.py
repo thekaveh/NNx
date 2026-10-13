@@ -15,7 +15,7 @@ training and evaluation, while ``predict().logits`` stays raw. The helper
 trains briefly, reloads BEST and checks the reported loss against an
 explicit log-softmax/NLL reference.
 
-``precision_workflow`` (FEAT-028) trains the same classifier under an
+``precision_workflow`` trains the same classifier under an
 explicit ``PrecisionPolicy``: ``"fp32"`` (the default, bounded and CPU-only)
 or ``"bf16"`` — gated: it runs only where :func:`nnx.precision_support`
 reports bf16 verified or supported on the device (CPU qualifies; on a CUDA

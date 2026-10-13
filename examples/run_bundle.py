@@ -1,4 +1,4 @@
-"""Portable, data-only run bundles (FEAT-015).
+"""Portable, data-only run bundles.
 
 A run's checkpoints are pickles, safe to read only when you produced them.
 ``nnx.bundles`` publishes one run checkpoint — weights, training state and

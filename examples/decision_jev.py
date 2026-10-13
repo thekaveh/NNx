@@ -1,4 +1,4 @@
-"""Typed decisions on Jev models through the TypeSafe SDK (FEAT-010).
+"""Typed decisions on Jev models through the TypeSafe SDK.
 
 ``nnx.decisions.JevProvider`` sends NNx's typed questions to a Jev model with
 one ``system_one`` call per text — every question about that text in the same

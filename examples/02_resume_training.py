@@ -32,7 +32,7 @@ rides along in the training-state sidecar. ``amp_resume_compatibility``
 below fits and resumes with AMP requested on CPU (no scaler is built or
 saved) and, only on a CUDA host, with AMP actually enabled.
 
-Component state resumes too (FEAT-005): callbacks such as ``EarlyStopping``
+Component state resumes too: callbacks such as ``EarlyStopping``
 save their patience with every checkpoint and get it back on a stateful
 resume *after* ``on_train_begin`` resets them, so a split run stops at the
 same epoch an uninterrupted one would. The returned run's
@@ -41,7 +41,7 @@ stateful or weights-only and which components were restored;
 ``resume_mode="weights_only"`` warm-starts from the weights alone.
 ``callback_continuation`` below demonstrates both.
 
-Provenance is opt-in (FEAT-019): ``train(..., provenance=manifest)`` records
+Provenance is opt-in: ``train(..., provenance=manifest)`` records
 the declared experiment intent (``runs/<id>/provenance.json`` with its
 fingerprint) and a fresh attempt per fit (``attempt.json``). A resume is a
 new attempt of the same plan: it keeps the fingerprint, links the parent
@@ -519,8 +519,9 @@ def main():
     print(f"\nRound 1 done. run.id = {run_a.id}, {len(run_a.idps)} iterations")
 
     # Round 2: build a NEW model (random weights) and resume from round 1's LAST.
-    # Re-seeding is harmless but not required for continuity: loading the
-    # training-state bundle restores the RNG after model construction.
+    # Re-seeding is required: _make_model_and_loader draws the data from the
+    # global RNG, so seed 7 regenerates round 1's rows. Loading the
+    # training-state bundle then restores the RNG after model construction.
     set_seed(7)
     model_b, loader2 = _make_model_and_loader()
     run_b = model_b.train(
