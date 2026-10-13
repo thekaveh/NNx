@@ -25,7 +25,7 @@ jobs:
     # release-please pushes its release branch and opens or updates a PR.
     permissions:
       actions: write # Dispatch required checks for the managed release PR.
-      contents: write # Commit to the managed release branch (through the API) and tag it.
+      contents: write # Push the managed release branch and tag.
       pull-requests: write # Open or update the managed release PR.
     steps:
       - name: Release Please
@@ -36,51 +36,20 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Checkout repository for release lock refresh
-        if: steps.release.outputs.prs_created == 'true'
-        # actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install uv for release lock refresh
-        if: steps.release.outputs.prs_created == 'true'
-        # astral-sh/setup-uv@v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
-        with:
-          enable-cache: false
-          version: "0.12.3"
-
       - name: Dispatch required checks for managed release PRs
+        # FIX-033: release-please's own commit is the only one on a release
+        # PR (it bumps uv.lock's version through extra-files too), so no bot
+        # push asks the ruleset for an extra approval. Its GITHUB_TOKEN events
+        # trigger no workflow, so the required checks are dispatched here.
         if: steps.release.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh auth setup-git
           gh pr list --repo "$GITHUB_REPOSITORY" --state open --author app/github-actions \
             --json headRefName --jq '.[].headRefName | select(startswith("release-please--"))' |
           while IFS= read -r branch; do
             [ -n "$branch" ] || continue
-            git fetch origin "$branch"
-            git checkout --detach "origin/$branch"
-            uv lock
-            # FIX-029: the curated [Unreleased] notes replace release-please's
-            # generated list under the version heading (docs/api.md's version
-            # line is bumped by release-please itself through extra-files).
-            python3 scripts/release/finalize_changelog.py CHANGELOG.md
-            if ! git diff --quiet -- uv.lock CHANGELOG.md; then
-              # FIX-033: committed through the API, so GitHub signs it
-              # (verified, like release-please's own commit) instead of a
-              # pushed commit the ruleset reads as an unattributed change. The
-              # branch is fast-forwarded from the head checked out above.
-              python3 scripts/release/api_commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" \
-                --parent "$(git rev-parse HEAD)" \
-                --message "chore: refresh release lockfile and finalize the release notes" \
-                uv.lock CHANGELOG.md
-            fi
-            git checkout -- uv.lock CHANGELOG.md  # a clean tree for the next release branch
             gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
           done
@@ -96,7 +65,8 @@ jobs:
 
       - name: Publish the curated release notes
         # FIX-029: release-please drafts the release from its generated
-        # commit list; the curated CHANGELOG section replaces it.
+        # commit list; the curated [Unreleased] notes replace it (folded under
+        # the version heading as the post-release sync does, FIX-033).
         if: steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

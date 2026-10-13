@@ -27,6 +27,11 @@
         {
           "type": "generic",
           "path": "PYPI_README.md"
+        },
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='thekaveh-nnx')].version"
         }
       ]
     }
