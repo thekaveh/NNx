@@ -1,6 +1,6 @@
 # 4. Model surgery — `nnx.surgery`
 
-The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Module` and return a fresh module with a structural change applied. Four are **function-preserving** in some sense — `widen` and `deepen` unconditionally preserve the forward output (before any training step); `low_rank_factorize` is function-preserving at max rank and approximate below; `expand_embedding` preserves the forward output on original token IDs. Only `drop_layer` is purely chain-preserving — it changes the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality. See the table in §1 for the per-primitive breakdown.
+The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Module` and return a fresh module with a structural change applied. Four are **function-preserving** in some sense — `widen` and `deepen` preserve the forward output (before any training step) within their supported sites (§5); `low_rank_factorize` is function-preserving at max rank and approximate below; `expand_embedding` preserves the forward output on original token IDs. Only `drop_layer` is purely chain-preserving — it changes the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality. See the table in §1 for the per-primitive breakdown.
 
 This is the unique compositional payoff of pairing surgery primitives with a training loop in the same toolkit: every primitive returns a fresh `nn.Module` instance, and that instance is a drop-in target for `NNModel.train()`.
 
@@ -117,14 +117,7 @@ The breakeven rank below which factoring saves parameters is `k* = (out·in) / (
 
 ## 4. The function-preservation contract
 
-Every test in `tests/test_surgery_*.py` for a function-preserving primitive has, as its first assertion:
-
-```python
-assert torch.allclose(orig(x), surged(x), atol=1e-5), (
-    f"surgery broke function-preservation: max diff "
-    f"{(orig(x) - surged(x)).abs().max().item():.2e}"
-)
-```
+Every test in `tests/test_surgery_*.py` for a function-preserving primitive compares the surged module's output with the original's on the same input, with `atol=1e-5` (and `rtol=1e-5` where it uses `torch.testing.assert_close`).
 
 If a future change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) ever produces a `max diff` that exceeds `1e-5`, the surgery is broken — **do not relax the tolerance**. The whole point of these primitives is that the post-surgery model is *immediately* a good starting point for training; an accuracy cliff at step 0 defeats the construction.
 
@@ -174,8 +167,8 @@ from dataclasses import replace
 model.train(params=replace(train_params, optim=optim))  # default supervised step works as-is
 ```
 
-(Verified: with the reattach + hook + decay-free group, frozen-row
-drift is exactly 0.0 over training while the new rows learn.)
+With the reattach, the hook and the decay-free group together, the
+frozen rows do not change during training while the new rows learn.
 
 `nnx.finetune.freeze` covers the simpler case of freezing entire parameter tensors via fnmatch globs; the `frozen_mask` covers the row-level case that `freeze` can't reach.
 

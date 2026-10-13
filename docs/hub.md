@@ -65,11 +65,11 @@ ckpt.to_file("checkpoint.safetensors", format="safetensors")
 `NNParams`, `NNModelParams`, and `NNIterationDataPoint` are
 JSON-serialized into the safetensors `metadata` dict (the format spec
 limits metadata to `str -> str`, so a JSON wrapper is the cleanest
-fit). The net's tensors are detached and made contiguous, then written
-through safetensors' standard `save_file`.
+fit). The net's tensors are detached and cloned (safetensors refuses tensors
+that share storage), then written through safetensors' standard `save_file`.
 
-Writes are atomic — the file is staged at `<path>.tmp` and `os.replace`-d
-into place — matching the same KeyboardInterrupt-safety guarantee that
+Writes are atomic — the file is staged in a hidden temporary file beside
+`<path>`, flushed to disk and `os.replace`-d into place — matching the same KeyboardInterrupt-safety guarantee that
 the pickle path provides.
 
 ### 1.3. Reading a checkpoint of either format

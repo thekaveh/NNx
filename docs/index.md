@@ -80,6 +80,7 @@ The [Capability reference](capabilities.md) describes each item with its entry p
 - [Embeddings + FAISS](embeddings.md) — contrastive training + RAG-ready export.
 - [HuggingFace Hub](hub.md) — safetensors + Hub publish/load.
 - [Experimental GGUF export](gguf.md) — container inspection, quantization notes, and runtime limits.
+- [Typed decisions](decisions.md) — provider-neutral `Choice` / `Boolean` / `Score` questions, decision jobs and the benchmark.
 - [Comparison vs Lightning / HF / fastai / Composer](comparison.md) — scope-explicit decision matrix for picking the right PyTorch training toolkit.
 - [Architecture](architecture.md) — package relationships plus exact callback and durable-commit ordering.
 - [External dependency contracts](external-contracts.md) — frozen integrations, release publication, and intentionally gated external checks.
@@ -87,7 +88,9 @@ The [Capability reference](capabilities.md) describes each item with its entry p
 ### 2.4. Look things up
 
 - [Capability reference](capabilities.md) — the main capabilities with their entry points, grouped by task.
-- [API Reference](api.md) — auto-generated from docstrings (sections 1–20).
+- [API Reference](api.md) — auto-generated from docstrings.
+- [Export conformance](export-conformance.md) — what an ONNX export record proves, profile by profile.
+- [Feature composition](feature-composition.md) — which feature combinations are verified, refused or unverified.
 - [Examples catalog](../examples/README.md) — annotated index of the runnable scripts under `examples/`.
 - [CONTRIBUTING](../CONTRIBUTING.md) — editable install, dev toolchain, PR workflow.
 - [Security policy](../SECURITY.md) — supported versions and private reporting instructions.

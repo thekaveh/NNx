@@ -45,7 +45,7 @@ python -m pytest "tests/test_examples_smoke.py::test_representative_examples_run
 
 ## 2. Catalog
 
-Ordered from foundational to most specialized. Each numbered prefix on the filename matches the order below.
+Grouped by topic, from foundational to most specialized. The numbered prefixes record the order in which the examples were added, not their place below.
 
 ### 2.1. Core training loop
 

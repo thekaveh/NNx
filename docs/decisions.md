@@ -638,17 +638,10 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
 
 Decision features share this digest, the `kind` discriminators and
 `validate_response` rather than defining their own; `nnx.decisions` depends
-on none of them. Decision jobs (§7, from
-[#245](https://github.com/thekaveh/NNx/issues/245)) were the first consumer to
-land, followed by the provider benchmark (§8, from
-[#243](https://github.com/thekaveh/NNx/issues/243)) and offline
-teacher-distribution datasets (§9, from
-[#244](https://github.com/thekaveh/NNx/issues/244)). The local
-label-conditioned baseline ([#234](https://github.com/thekaveh/NNx/issues/234))
-is `NLIProvider` (§5), the Jev SDK adapter
-([#220](https://github.com/thekaveh/NNx/issues/220)) is `JevProvider` (§6),
-and the optional `Result` at fallible boundaries
-([#263](https://github.com/thekaveh/NNx/issues/263)) is `nnx.result` (§10.1).
+on none of them. They are decision jobs (§7), the provider benchmark (§8),
+offline teacher-distribution datasets (§9), the local label-conditioned
+baseline `NLIProvider` (§5), the Jev SDK adapter `JevProvider` (§6) and the
+optional `Result` at fallible boundaries, `nnx.result` (§10.1).
 
 ## 12. What this does not do
 

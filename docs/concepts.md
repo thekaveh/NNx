@@ -13,8 +13,8 @@ The diagram has eight layers, top-to-bottom:
 1. **User code + PyTorch** (slate) — the consumer surface.
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** (orange bus) — the training-loop extension hooks.
-4. **Specialization subpackages** (amber) — `nnx.diffusion`, `nnx.paradigms`, `nnx.quantize`, and `nnx.embeddings` provide hook-compatible factories, with shared finalization in `nnx._step_helpers`. Model transforms (`nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.surgery`), exchange formats (`nnx.interop`), inference utilities (`nnx.generation`), and diagnostics (`nnx.viz`) compose around the loop without claiming a hook relationship.
-5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch; once per epoch, or once per committed optimizer update on the `optimizer_update` clock — see §3), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm / diffusion step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
+4. **Specialization subpackages** (amber) — `nnx.diffusion`, `nnx.paradigms`, `nnx.quantize`, and `nnx.embeddings` provide hook-compatible factories; the diffusion, paradigm and embeddings steps share their finalization in `nnx._step_helpers`. Model transforms (`nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.surgery`), exchange formats (`nnx.interop`), inference utilities (`nnx.generation`), and diagnostics (`nnx.viz`) compose around the loop without claiming a hook relationship.
+5. **Training-loop internals** (emerald) — the epoch × batch dispatch, the inline NaN guard + grad-clip in `default_train_step`, `_step_scheduler` (Schedulers enum dispatch; once per epoch, or once per committed optimizer update on the `optimizer_update` clock — see §3), `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`) and is invoked only from paradigm, diffusion and embeddings step-fn factories — not from the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
 8. **Persistence** (violet) — `NNRun` writes `run.yaml + idps.csv + metadata.yaml` and `NNCheckpoint` writes `*.pt + *.opt.pt` into `runs/<id>/`.
@@ -732,7 +732,7 @@ microbatches, term values) to `Callback.on_optimizer_update(ctx, event)`;
 `ctx.update_count` and each record's `update_count` carry the run's
 committed-update counter, distinct from the microbatch counter `iter_idx` and
 the epoch. The counters are checkpointed component state (`nnx.update_engine`,
-§14.2): a stateful resume continues them, a `weights_only` resume starts them
+§14.1): a stateful resume continues them, a `weights_only` resume starts them
 at zero. The whole-epoch training loss (§6.4) of an objective run applies the
 same rule to the whole epoch — each term's summed numerators over its summed
 denominators — and, as with step functions, declared metrics are recorded on
@@ -1233,17 +1233,19 @@ result.figure.show()
 
 ### 13.2. Non-destructive contract for inference and inspection helpers
 
-`lr_finder` isn't the only helper that snapshots and restores caller state. Eleven NNx call sites share the same non-destructive contract: ten put the underlying `nn.Module` into `eval()` mode for the duration of the call, while `lr_finder` forces `train()` for its sweep. All eleven restore each module's original mode rather than flattening a mixed-mode tree to the root flag. Restoration runs inside `try/finally`, so the contract holds even when the body raises mid-call:
+`lr_finder` isn't the only helper that snapshots and restores caller state. These NNx call sites share the same non-destructive contract. `lr_finder` forces `train()` for its sweep; the others put the underlying `nn.Module` into `eval()` mode for the duration of the call:
 
 - `nnx.lr_finder`
-- `NNModel.predict`, `NNModel.predict_proba`, `NNModel.evaluate`
+- `NNModel.predict`, `NNModel.predict_proba`, `NNModel.iter_predict`, `NNModel.evaluate`
 - `GenerativeNNModel.generate`
 - `nnx.diffusion.sample`
 - `nnx.embeddings.embed_texts`
-- `nnx.viz.activation_map`, `nnx.viz.netron_export`, `nnx.viz.attribute`
-- `NNModel.to_onnx` (joined in the post-PR-#50 pass — the last holdout)
+- `nnx.viz.activation_map`, `nnx.viz.netron_export`, `nnx.viz.attribute`, `nnx.viz.summary(batch=...)`
+- `NNModel.to_onnx`
 
-This means a common train → evaluate → train-more (or train → predict → train-more) loop no longer strands the model in `.eval()` mode after the helper returns — Dropout and BatchNorm pick up exactly where they left off on the next training step. Before the post-PR-#40 maintenance pass, `predict` / `evaluate` / `generate` / `sample` / `embed_texts` leaked `.eval()` state, silently disabling Dropout masking and BatchNorm running-stats updates on the next training step unless the caller remembered to call `model.net.train()` themselves.
+Each restores every module's original mode rather than flattening a mixed-mode tree to the root flag. Restoration runs inside `try/finally`, so the contract holds even when the body raises mid-call.
+
+A train → evaluate → train-more (or train → predict → train-more) loop therefore never strands the model in `.eval()` mode after the helper returns. Dropout and BatchNorm pick up exactly where they left off on the next training step.
 
 ### 13.3. Reproducible splits: group, time and stratified
 
@@ -1439,7 +1441,7 @@ model.train(params=..., callbacks=[EarlyStopping()], components=[running_mean])
 3. the saved states are loaded transactionally — if any load fails, every component already restored returns to its pre-call state, the model and RNG streams are restored, and the original error propagates (a rollback that itself fails, for instance because a reset hook rewired the network, is reported as a `RuntimeWarning` instead of replacing it);
 4. the first resumed epoch runs.
 
-Built-in components are `EarlyStopping` (`early_stopping`, optional) and the step returned by `jepa_train_step_factory` (`jepa.target_encoder`, required). State must be `torch.load(weights_only=True)`-safe: tensors, numbers, strings, booleans, `None` and containers of those. Sidecars written before component state existed still load: the model, optimizer, scheduler, scaler, epoch and RNG resume as before, and every component starts fresh with a warning.
+Built-in components include `EarlyStopping` (`early_stopping`, optional), the step returned by `jepa_train_step_factory` (`jepa.target_encoder`, required) and the update engine's counters (`nnx.update_engine`); `nnx.components` documents the component protocol. State must be `torch.load(weights_only=True)`-safe: tensors, numbers, strings, booleans, `None` and containers of those. Sidecars written before component state existed still load: the model, optimizer, scheduler, scaler, epoch and RNG resume as before, and every component starts fresh with a warning.
 
 ### 14.2. Resume modes and status
 
@@ -1540,10 +1542,11 @@ alongside `NNModel` rather than replacing it:
   add the LM-specific shape knobs (`vocab_size`, `n_layers`, `d_model`,
   `max_seq_len`, `ffn_mult`, `rope_base`, `tie_embeddings`, `attn_dropout`,
   `resid_dropout`). Every optional field omits itself from `state()` at
-  default — the same broken-three-times invariant covered in §2.2.
+  default, the invariant covered in §2.2.
 - **`GenerativeNNModel`** — a thin subclass of `NNModel` adding
   `generate(prompt, *, max_new_tokens, temperature, top_k, top_p,
-  repetition_penalty, stop, seed, use_cache, logits_chain)`. The
+  repetition_penalty, stop, seed, use_cache, logits_chain, on_token,
+  logits_pipeline)`. The
   generation loop runs the prompt through `TransformerNN.forward_with_cache`
   for a single prefill step, then incrementally decodes token-by-token using
   the returned KV-cache. The fixed 256-token CPU regression test requires at
@@ -1580,7 +1583,7 @@ padding. Reported NLL and perplexity are unsmoothed; an all-masked
 validation epoch is unavailable rather than zero; no classification field is
 fabricated. The task's configuration is checkpointed component state
 (`"lm.causal_task"`), so a resume with another configuration is refused
-before the first resumed update. See [`docs/lm.md` §6](lm.md).
+before the first resumed update. See [`docs/lm.md` §6](lm.md#6-how-it-composes-with-the-rest-of-nnx).
 
 Downstream of the LM path, four follow-ons compose on top of it:
 
@@ -1636,7 +1639,7 @@ Job.collect({"a": Job.ask(q1, id="a"), "b": Job.ask(q2, id="b").then(follow)}).m
    └── JobResult(value=f({...}), outcomes={id: answered | failed | skipped | cancelled}, calls)
 ```
 
-Independent questions over one state share calls (`ceil(count / cap)`, `cap` from the provider's `max_questions` and `Limits.max_questions`). A `then` continuation runs once, after its prerequisite succeeded, with the answer mapped explicitly into follow-up state. Duplicate ids, unsupported questions and an unenforceable token cap are refused before any call. The job is fail-fast: `JobFailed` carries the completed outcomes plus the failed and skipped ids, and has no partial value. Cancellation (`arun(cancel=event)`) stops scheduling and reports requests already sent as `sent`, never as rolled back. `map`'s identity and composition laws hold only for a deterministic provider that answers each question the same whatever it is batched with. The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §7](decisions.md) and [`examples/decision_jobs.py`](../examples/decision_jobs.py).
+Independent questions over one state share calls (`ceil(count / cap)`, `cap` from the provider's `max_questions` and `Limits.max_questions`). A `then` continuation runs once, after its prerequisite succeeded, with the answer mapped explicitly into follow-up state. Duplicate ids, unsupported questions and an unenforceable token cap are refused before any call. The job is fail-fast: `JobFailed` carries the completed outcomes plus the failed and skipped ids, and has no partial value. Cancellation (`arun(cancel=event)`) stops scheduling and reports requests already sent as `sent`, never as rolled back. `map`'s identity and composition laws hold only for a deterministic provider that answers each question the same whatever it is batched with. The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §7](decisions.md#7-decision-jobs-batching-and-chaining) and [`examples/decision_jobs.py`](../examples/decision_jobs.py).
 
 ## 18. Fitted calibration (`nnx.calibration`)
 
@@ -2288,7 +2291,7 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   files are refused, whatever order the runs are listed in. Lineages are
   recorded only for runs trained with `provenance=`: `born_again_train`
   takes none, so its generations are unknown lineages; train each
-  generation with `NNModel.train(..., parent_run_id=..., provenance=...)`
+  generation with `NNModel.train(params=NNTrainParams(..., parent_run_id=...), provenance=...)`
   to compare them across seeds. The replicate key is
   `seed=<seed>`, plus `init_seed=<ModelSpec seed>` when that differs, and
   unknown for a run without a training seed. The text view counts attempts
@@ -2465,7 +2468,7 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   `link_metrics(prediction.logits, prediction.targets, from_logits=True)`).
   The default train / evaluate / predict paths refuse link batches (they
   cannot check them), as do node-level nets and the graph-pooling adapter
-  (§21).
+  (§25).
 - **Shapes and metrics.** Binary candidates give one logit each, `(K,)`;
   edge-label candidates `(K, categories)`; `predict()` keeps ids, pairs,
   logits, probabilities and targets aligned, in candidate order (float64).

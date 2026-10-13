@@ -96,7 +96,7 @@ ContrastiveTextDataset(pairs: list[tuple[str, str]])
 
 Wraps `(anchor, positive)` string pairs as a `torch.utils.data.Dataset`. Each `__getitem__` returns a 2-tuple of strings; pair with `pair_collate` (see §4.2) if you build your own `DataLoader` instead of going through `train_contrastive`.
 
-Raises `ValueError` on empty input or non-string entries — NT-Xent needs at least one pair to form a batch.
+Raises `ValueError` on empty input or non-string entries. One pair is enough for inference; `train_contrastive` needs at least two, because NT-Xent needs a negative in each batch.
 
 ### 4.2. `pair_collate`
 

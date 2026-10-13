@@ -47,7 +47,7 @@ Each row: what NNx ships today, the credible competitor on that axis, and the sc
 | Aspect | NNx | Lightning |
 |---|---|---|
 | Loop abstraction | `NNModel.train(params, train_step_fn=...)` — functional injection hook | `LightningModule.training_step(self, batch, batch_idx)` — class method override |
-| Callback bus | `Callback.on_{train,epoch}_{begin,end}` — 4 hooks | `Callback.on_*` — ~30 hooks |
+| Callback bus | `Callback.on_{train,epoch}_{begin,end}` and `on_optimizer_update` — 5 hooks | `Callback.on_*` — ~30 hooks |
 | Auto-resume | Content-addressed: `resume_from_run_id=run.id` + `resume_from_checkpoint="last"` | `Trainer.fit(..., ckpt_path=path_or_last)` restores full training state |
 | Custom step | `train_step_fn=...` kwarg | Subclass override |
 
@@ -152,7 +152,6 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 | `_repr_html_` for runs in Jupyter | Yes (`NNRun._repr_html_`) | Notebook-native displays | Rich notebook/logging integrations; no `NNRun` equivalent |
 | PEP 561 `py.typed` marker | Yes | Check the installed fastai distribution/version | Yes |
 
-NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's notebook ergonomics.
 
 ### 3.11. Label-conditioned (zero-shot) decisions
 

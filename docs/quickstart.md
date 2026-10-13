@@ -117,6 +117,8 @@ model is touched; a weights-only warm start (`resume_mode="weights_only"`)
 may switch:
 
 ```python
+from nnx import Checkpoints, NNCheckpoint
+
 bf16 = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16"))
 first = NNModel(net_params=net_params, params=bf16).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
 print(first.precision.record()["effective"])   # "bf16"
@@ -739,7 +741,7 @@ A weights-only checkpoint (a `ModelCheckpoint` snapshot) exports an
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. Link prediction with negative sampling is built in (§3.9). See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
 
-The same hook underpins the four specialization-paradigm pointers below.
+The sections below point to the specialization paradigms built on these hooks (`train_step_fn`, `objective=`, `eval_step_fn=`) and on `distributed=`.
 
 ### 3.1. Fine-tuning (transfer learning)
 
@@ -775,7 +777,7 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 
 ### 3.6. Causal language models
 
-`nnx.lm_tasks.CausalLMTask(vocab_size=..., alignment="shift_inputs" | "pre_shifted", ignore_id=-100, pad_id=None, smoothing=0.0)` is the built-in next-token path for a `TransformerNN`: pass `objective=task.objective()` and `eval_step_fn=task.eval_step()` to `train()`. The ignore id, padding id and an optional loss mask pick the valid tokens; the objective divides by the window's valid-token count (so accumulation is token-weighted), and validation reports the unsmoothed token NLL as its loss with `perplexity = exp(NLL)` and token accuracy — no placeholder classification metrics. See [`docs/lm.md` §6](lm.md) and [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py).
+`nnx.lm_tasks.CausalLMTask(vocab_size=..., alignment="shift_inputs" | "pre_shifted", ignore_id=-100, pad_id=None, smoothing=0.0)` is the built-in next-token path for a `TransformerNN`: pass `objective=task.objective()` and `eval_step_fn=task.eval_step()` to `train()`. The ignore id, padding id and an optional loss mask pick the valid tokens; the objective divides by the window's valid-token count (so accumulation is token-weighted), and validation reports the unsmoothed token NLL as its loss with `perplexity = exp(NLL)` and token accuracy — no placeholder classification metrics. See [`docs/lm.md` §6](lm.md#6-how-it-composes-with-the-rest-of-nnx) and [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py).
 
 
 ### 3.7. Ranking and retrieval evaluation

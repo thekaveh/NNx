@@ -109,6 +109,7 @@ pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_hist
 pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)
 pip install "thekaveh-nnx[jev]"                 # nnx.decisions.JevProvider (hosted Jev models)
 pip install "thekaveh-nnx[optuna]"              # nnx.search: budgeted experiment search
+pip install "thekaveh-nnx[notebook]"            # IPython clear_output for legacy function callbacks in notebooks
 pip install "thekaveh-nnx[docs]"                # local documentation build toolchain
 ```
 
@@ -308,7 +309,7 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 **Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories that share one step-finalization helper. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; the diffusion, paradigm and embeddings steps share one step-finalization helper. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
 3. The **training-loop internals** run the per-batch step hook inside the data loop and save checkpoints once per completed epoch. Each scheduler steps once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm and diffusion step factories also apply a NaN guard and gradient clipping.
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.

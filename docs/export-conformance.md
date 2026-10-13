@@ -136,4 +136,4 @@ in four steps:
    artifact.
 
 `uv.lock` resolves with `--all-extras`. The CPU profiles are not run on the
-`floor-deps` lane (torch 2.4.1, core only).
+`floor-deps` lane (torch 2.4.1, core plus the `domains` extra).

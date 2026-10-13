@@ -715,9 +715,10 @@ Autoregressive decode from ``prompt``.
 Args:
     prompt: input text. Encoded via ``self.tokenizer``.
     max_new_tokens: hard cap on new tokens emitted. Generation
-        also stops if the context window (max_seq_len) would be
-        exceeded and the model can't shrink the window further,
-        or if a ``stop`` string is decoded.
+        also stops when a ``stop`` string is decoded. It does not
+        stop on an end-of-sequence token, and a prompt longer than
+        the context window (max_seq_len) slides the window rather
+        than stopping.
     temperature: 0 means greedy (argmax). Higher values produce
         more diverse output. Routes through TemperatureScaling.
     top_k: keep only the top-k logits. None disables.
@@ -730,7 +731,9 @@ Args:
         string doesn't halt generation immediately; a stop
         string straddling the prompt/continuation boundary is
         likewise not detected — matching the generated-text-only
-        convention HF uses).
+        convention HF uses). The continuation is decoded without
+        special tokens, so a special token such as ``"<eos>"``
+        never matches a stop string.
     seed: when set, sampling is reproducible — two calls with
         the same seed + prompt + model produce identical output.
     use_cache: when True (default), uses an incremental KV
@@ -3725,7 +3728,7 @@ No public description is currently available.
 nnx.decisions.benchmark.BenchmarkReport.csv_rows(self) -> 'list[dict[str, Any]]'
 ```
 
-One row per slice and metric: value, unit, denominator, the unavailable reason, every coverage count of the slice (samples, eligible, failed, unsupported, missing, duplicate, mismatched, invalid — they add up to the slice's samples) and the report's ``extra`` records. A non-finite value is written as in the JSON.
+One row per slice and metric: value, unit, denominator, the unavailable reason, an available value's note, every coverage count of the slice (samples, eligible, failed, unsupported, missing, duplicate, mismatched, invalid — they add up to the slice's samples) and the report's ``extra`` records. A non-finite value is written as in the JSON.
 
 ##### `nnx.decisions.benchmark.BenchmarkReport.to_csv`
 
@@ -3797,10 +3800,10 @@ No public description is currently available.
 #### `nnx.decisions.benchmark.MetricValue`
 
 ```python
-class nnx.decisions.benchmark.MetricValue(name: 'str', value: 'Optional[float]', denominator: 'int', reason: 'Optional[str]' = None) -> 'None'
+class nnx.decisions.benchmark.MetricValue(name: 'str', value: 'Optional[float]', denominator: 'int', reason: 'Optional[str]' = None, note: 'Optional[str]' = None) -> 'None'
 ```
 
-A metric's ``value`` over ``denominator`` rows, or ``None`` with the ``reason`` it is unavailable.
+A metric's ``value`` over ``denominator`` rows, or ``None`` with the ``reason`` it is unavailable. ``note`` qualifies an available value (rows it does not count, say).
 
 ##### `nnx.decisions.benchmark.MetricValue.unit`
 
@@ -4142,7 +4145,9 @@ becomes ``"invalid_decision_response"``, any other ``ProviderFailure``
 (an outage, a timeout, a refused credential) ``"provider_failure"``, and
 ``UnsupportedCapability`` ``"unsupported"``; the first two keep the
 error's ``request_id`` in ``context``. The codes follow the exception
-type, not whether a retry would help. Anything else propagates.
+type, not whether a retry would help. Anything else propagates. A
+``policy`` that does not fit the question (a ``Boolean``, other labels,
+another ``model_id``) raises before the provider is called.
 ```
 
 
@@ -7623,7 +7628,7 @@ No public description is currently available.
 nnx.comparison.summarize(observations: 'Iterable[Observation]') -> 'Summary'
 ```
 
-Group ``observations`` into poolable groups (same metric, split, selection rule, configuration, data and split identity) and summarize each; see :class:`GroupSummary`. Duplicate attempts are refused. A known identity never pools with an unknown one.
+Group ``observations`` into poolable groups (same metric, split, selection rule, configuration, data and split identity) and summarize each; see :class:`GroupSummary`. Duplicate attempts are refused: an attempt gives one observation per metric, so the same attempt observed on two splits or under two selection rules belongs in two summaries. A known identity never pools with an unknown one.
 
 
 #### `nnx.comparison.Summary`
@@ -10124,10 +10129,11 @@ Args:
           with ``MissingModelFactoryError`` before anything is
           written.
 
-Both formats write to ``<path>.tmp`` first and rename into place
-so a KeyboardInterrupt during the underlying save can never leave
-a half-written checkpoint at the destination — matching the
-atomicity guarantee NNRun.save offers for YAML/CSV.
+Both formats write to a hidden temporary file beside ``path``
+(``.<name>.<random>``), flush it to disk and rename it into place,
+so an interrupted save can never leave a half-written checkpoint at
+the destination — matching the atomicity guarantee NNRun.save
+offers for YAML/CSV.
 ```
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
@@ -10232,10 +10238,10 @@ Load the optimizer state sidecar for a checkpoint. Returns None when no sidecar 
 **Details**
 
 ```text
-Loaded with ``weights_only=True`` — the optimizer state-dict
-contains only tensors and standard scalar/dict/list types, so the
-strict loader works AND it removes the arbitrary-code-execution
-risk that the main NNCheckpoint.from_file documents.
+The sidecar itself is read with ``weights_only=True``. Locating it
+reads the checkpoint through :meth:`load_training_state`, which
+loads a pickle-format checkpoint with ``NNCheckpoint.from_file``:
+trust the run directory as you would for ``from_file``.
 ```
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.from_file`
@@ -13268,9 +13274,9 @@ Bottleneck residual block: ``y = x + up(act(down(x)))``.
 
 ```text
 ``up.weight`` and ``up.bias`` are zero-initialized so at step 0
-the layer's output equals its input exactly. Gradient flow
-through ``up`` and ``down`` is unblocked from the first step;
-only the magnitude of the residual starts at zero.
+the layer's output equals its input exactly. ``up`` receives a
+gradient from the first step; ``down`` receives none until ``up``
+moves away from zero (its gradient flows through ``up.weight``).
 
 Args:
     dim: input and output feature dimension. The adapter is
@@ -13369,11 +13375,12 @@ Returns:
 Raises:
     ValueError: if ``sparsity`` is outside ``[0, 1)``.
 
-**Idempotency note:** calling ``magnitude_prune`` twice at the
-same ``sparsity`` is a no-op for the second call — l1_unstructured
-picks the smallest-magnitude entries, which after the first prune
-are exactly the already-zeroed positions. The zero count stays the
-same; nothing is double-pruned.
+**Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
+twice at the same ``sparsity`` is a no-op for the second call —
+l1_unstructured picks the smallest-magnitude entries, which after the
+first prune are exactly the already-zeroed positions. With
+``bake=False`` the masks compose: a second call prunes ``sparsity`` of
+the remaining weights (0.5 twice leaves 0.75 zero).
 ```
 
 
@@ -15070,8 +15077,12 @@ Returns:
     A pair of ``BoolTensor``s, both 1-D length ``n_patches``.
 
 Raises:
-    ValueError: when ``grid_size**2 != n_patches``, or when the
-        sampled block would be empty / larger than the grid.
+    ValueError: when ``grid_size**2 != n_patches``; when
+        ``block_scale`` is not an ordered pair in ``(0, 1)`` or
+        ``block_aspect`` not an ordered pair of positive ratios; or
+        when the sampled block covers the whole grid (an empty
+        context). A block is never empty: each side is at least one
+        patch, and a side longer than the grid is clipped to it.
 ```
 
 

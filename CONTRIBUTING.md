@@ -60,14 +60,14 @@ Useful env vars:
 
 1. **Open an issue first** for non-trivial changes — saves churn if the design is off. Tiny fixes can go straight to PR.
 2. **Branch from `develop`.** Name branches descriptively (`fix/...`, `feat/...`, `docs/...`, `refactor/...`).
-3. **Write tests.** Every PR that changes behavior should land with a focused test that fails on `main` and passes on the branch. The existing `tests/test_*_series.py` files (organized by audit pass) are good models.
+3. **Write tests.** Every PR that changes behavior should land with a focused test that fails before the change and passes after it. The existing `tests/test_*_series.py` files (organized by audit pass) are good models.
 4. **Keep PRs small.** One coherent change per PR is much easier to review than a sweeping mix.
 
 ## 3. What we care about
 
 - **Strict back-compat for the existing notebook consumer.** Don't rename, remove, or restructure public APIs without a migration path. Preserve existing `runs/<id>/` artifacts; on-disk evolution requires a versioned, backward-compatible reader. New fields on params dataclasses must omit themselves from `.state()` when set to their defaults (preserves `run.id` hashes). See the omit-when-default regression tests in `tests/test_params_round_trip.py` (search for `test_nn_*_state_omits_*_when_*`) for the canonical pattern.
 - **State / from_state round-trip.** Every params dataclass with a `state()` method must round-trip cleanly through `from_state(state())`. The contract is enforced by `tests/test_params_round_trip.py`.
-- **Tests run on CPU and finish fast.** Keep new tests under a few seconds; use small TensorDataset fixtures from `tests/conftest.py`.
+- **Tests run on CPU and finish fast.** Keep new tests under a few seconds; build small `TensorDataset`s inline in the test.
 - **One-line update to `CHANGELOG.md` under `[Unreleased]`** for any user-visible change.
 
 ## 4. Style
@@ -146,7 +146,7 @@ Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixt
 - Push to your fork and open a PR against `develop`.
 - Fill in the PR template (Summary / Test plan).
 - Wait for CI to go green (lint + format + tests + mkdocs on Python 3.10 through 3.14).
-- Address review comments by pushing new commits — we squash on merge.
+- Address review comments by pushing new commits; pull requests merge with a merge commit.
 
 ## 7. Releases
 

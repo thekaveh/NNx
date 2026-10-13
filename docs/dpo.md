@@ -156,10 +156,14 @@ fill from the `datasets` library:
 from datasets import load_dataset
 
 ds = load_dataset("Anthropic/hh-rlhf", split="train[:1000]")
+# HH-RLHF rows are whole dialogues: chosen and rejected share every turn
+# except the final assistant reply, so split at the LAST assistant turn
+# and keep the "Assistant:" cue in the prompt.
+marker = "\n\nAssistant:"
 preferences = NNPreferenceDataset(
-    prompts=[row["chosen"].split("Assistant:", 1)[0] for row in ds],
-    chosen=[row["chosen"].split("Assistant:", 1)[1] for row in ds],
-    rejected=[row["rejected"].split("Assistant:", 1)[1] for row in ds],
+    prompts=[row["chosen"].rsplit(marker, 1)[0] + marker for row in ds],
+    chosen=[row["chosen"].rsplit(marker, 1)[1] for row in ds],
+    rejected=[row["rejected"].rsplit(marker, 1)[1] for row in ds],
     tokenizer=tokenizer,
     max_prompt_len=256,
     max_response_len=256,
@@ -185,8 +189,7 @@ Specifically:
   cache reference log-probs offline or share the reference with the
   policy via LoRA.
 - There's no IPO / cDPO / RPO variant, no offline reference log-prob
-  cache, no PEFT integration (LoRA-DPO is the obvious next step but
-  isn't wired in for v1).
+  cache and no PEFT integration (no LoRA-DPO).
 - Mixed precision and gradient accumulation are explicitly **not**
   supported by the DPO step (the
   [paradigm finalize_step](https://github.com/thekaveh/NNx/blob/main/src/nnx/_step_helpers.py)

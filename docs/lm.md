@@ -244,9 +244,8 @@ TopKFilter → TopPFilter → TemperatureScaling`) regardless of call
 order; custom processors added via `.custom(proc)` append after the
 canonical group in the order they were added.
 
-When `logits_chain=None` (the default), `generate()` constructs the
-chain from the kwargs exactly as it did before — the new path is
-purely opt-in.
+When `logits_chain=None` (the default), `generate()` builds the chain
+from the `temperature`, `top_k`, `top_p` and `repetition_penalty` kwargs.
 
 ### 5.1. Ordered pipelines: `OrderedLogitsPipeline`
 
