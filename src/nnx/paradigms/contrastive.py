@@ -14,6 +14,8 @@ via a paired-view :class:`Dataset` whose ``__getitem__`` returns
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -46,8 +48,8 @@ def nt_xent_loss(
     """
     if z1.shape != z2.shape:
         raise ValueError(f"z1 / z2 shape mismatch: {z1.shape} vs {z2.shape}")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
     if z1.shape[0] < 2:
         # With a single pair there are no negatives: after the diagonal
         # mask each row has exactly one finite logit (its positive), so
@@ -117,8 +119,8 @@ def simclr_train_step_factory(*, temperature: float = 0.5) -> TrainStepFn:
     Raises:
         ValueError: if ``temperature`` <= 0.
     """
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model

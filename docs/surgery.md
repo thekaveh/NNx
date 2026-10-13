@@ -148,6 +148,7 @@ A change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) can produce
 - `widen` raises a `ValueError` naming the boundary *before* anything is allocated. It does so for width-dependent ops, other containers (registration order is not data flow), missing consumers, and aliases (modules registered under more than one path). The source model, its module identities and the RNG are untouched.
 - With dropout configured, the `widen` parity promise is for eval mode. A stochastic training forward is not identical by construction.
 - `deepen` rejects any activation other than ReLU with an explicit `ValueError`. The identity-Linear trick only function-preserves through ReLU. For sigmoid / tanh / GELU networks, structurally similar insertions silently produce a drifted forward output.
+- `deepen` rebuilds an `nn.Sequential` as a plain `nn.Sequential` of the same children. It therefore refuses a subclass with its own `forward`, and a container with its own parameters, buffers or hooks. These would be dropped.
 - On a `FeedFwdNN`, the `deepen` check reads the activation actually applied at the insertion site — `params.activation_for(i)`. So a per-layer override wins over the scalar default in both directions.
 - On a `FeedFwdNN`, `deepen` returns a network with updated immutable `params`:
     - One more `hidden_dims` entry at the site.
@@ -174,7 +175,7 @@ Surgery preserves trainability and modes. Two primitives rebuild an *existing* L
 
 Each replacement module also takes the train/eval mode of the module it replaces, so a mixed root/child configuration survives unchanged.
 
-Build the optimizer *after* surgery. A frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`. If you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules: trainable, and in the mode of the container they join. Existing layers keep their own modes.
+Build the optimizer *after* surgery. A frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`. If you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules: trainable, and in the mode of the container they join. Existing layers keep their own modes. `expand_embedding` gives the new table the source table's `requires_grad` flag and mode.
 
 These flags and modes live on the returned object only. `state_dict()` carries neither, so they are not a cross-process freeze policy.
 

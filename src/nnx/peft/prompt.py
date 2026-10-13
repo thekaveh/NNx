@@ -77,6 +77,11 @@ class PromptTuner(nn.Module):
             raise TypeError(f"PromptTuner requires a TransformerNN, got {type(model).__name__}")
         if n_prompt_tokens <= 0:
             raise ValueError(f"n_prompt_tokens must be positive, got {n_prompt_tokens}")
+        if n_prompt_tokens >= model.params.max_seq_len:
+            raise ValueError(
+                f"n_prompt_tokens={n_prompt_tokens} leaves no room for input tokens "
+                f"(the model's max_seq_len is {model.params.max_seq_len})"
+            )
 
         self.model = model
         self.n_prompt_tokens = n_prompt_tokens

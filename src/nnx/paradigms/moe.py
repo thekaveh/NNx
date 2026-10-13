@@ -24,6 +24,8 @@ as the KD / SimCLR / Mixup / CutMix paradigm factories.
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from .._metrics import classification_edp
@@ -63,8 +65,8 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
     Raises:
         ValueError: if ``aux_loss_weight < 0``.
     """
-    if aux_loss_weight < 0:
-        raise ValueError(f"aux_loss_weight must be non-negative, got {aux_loss_weight}")
+    if not math.isfinite(aux_loss_weight) or aux_loss_weight < 0:
+        raise ValueError(f"aux_loss_weight must be non-negative and finite, got {aux_loss_weight}")
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model

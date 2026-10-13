@@ -481,3 +481,27 @@ def test_deepen_keeps_each_existing_childs_mode():
         "Dropout4": True,
         "Linear5": False,
     }
+
+
+def test_deepen_refuses_a_sequential_it_cannot_rebuild_faithfully():
+    """A Sequential subclass (own forward) or a container with hooks would
+    lose them in the rebuilt plain nn.Sequential: refused, never a changed
+    forward."""
+
+    class Doubled(nn.Sequential):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    with pytest.raises(ValueError, match="Doubled"):
+        deepen(Doubled(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2)), after_layer_name="1")
+    hooked = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    hooked.register_forward_hook(lambda module, args, out: out * 2)
+    with pytest.raises(ValueError, match="hooks"):
+        deepen(hooked, after_layer_name="1")
+
+
+def test_deepen_a_feedfwd_net_in_eval_mode_keeps_eval_mode():
+    net = _ffn().eval()
+    deeper = deepen(net, after_layer_name="layers.0")
+    assert not deeper.layers.training
+    assert not any(layer.training for layer in deeper.layers)

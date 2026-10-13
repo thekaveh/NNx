@@ -264,29 +264,50 @@ def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):
     assert moved, "CutMix train step ran but model weights did not change"
 
 
+def _augmented_fit(factory, *, seed, n_epochs=2, data_id="aug", **resume):
+    image = factory is cutmix_train_step_factory
+    model = _image_model() if image else _supervised_model()
+    torch.manual_seed(99)  # the same initial weights for every call
+    for parameter in model.net.parameters():
+        torch.nn.init.normal_(parameter, std=0.1)
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=n_epochs,
+            seed=seed,
+            data_id=data_id,
+            overwrite_existing=True,
+            train_loader=_image_loader() if image else _supervised_loader(),
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            **resume,
+        ),
+        train_step_fn=factory(alpha=0.4),
+    )
+    return run, {name: tensor.clone() for name, tensor in model.net.state_dict().items()}
+
+
 @pytest.mark.parametrize("factory", [mixup_train_step_factory, cutmix_train_step_factory])
-def test_augmentation_lambda_draws_respect_set_seed(factory):
-    """The mixup/cutmix λ stream must be controlled by set_seed:
-    pre-fix both factories used np.random.default_rng() (OS-entropy
-    self-seeded), so identically-seeded runs mixed batches differently,
-    contradicting train()'s reproducibility contract. The factories now
-    derive their numpy seed from the torch RNG."""
-    import numpy as np
+def test_augmentation_draws_follow_the_run_seed(factory, tmp_path, monkeypatch):
+    """Lambda (and the CutMix box) come from the torch RNG at step time:
+    NNTrainParams.seed controls them, so equal seeds train equal weights
+    and different seeds differ."""
+    monkeypatch.chdir(tmp_path)
+    _, first = _augmented_fit(factory, seed=1, data_id="a")
+    _, again = _augmented_fit(factory, seed=1, data_id="b")
+    _, other = _augmented_fit(factory, seed=2, data_id="c")
+    assert all(torch.equal(first[k], again[k]) for k in first)
+    assert any(not torch.equal(first[k], other[k]) for k in first)
 
-    def _draws(seed: int) -> list[float]:
-        set_seed(seed)
-        factory_rng_probe = factory(alpha=0.4)
-        # Reach the factory's rng through the closure to sample its
-        # stream without running a full train step.
-        rng = next(
-            cell.cell_contents
-            for cell in factory_rng_probe.__closure__
-            if isinstance(cell.cell_contents, np.random.Generator)
-        )
-        return [float(rng.beta(0.4, 0.4)) for _ in range(5)]
 
-    assert _draws(123) == _draws(123)
-    assert _draws(123) != _draws(456)
+def test_a_resumed_mixup_run_continues_the_uninterrupted_one(tmp_path, monkeypatch):
+    """A stateful resume restores the torch RNG, which now carries the
+    lambda stream: 1 + 1 epochs equal 2 epochs."""
+    monkeypatch.chdir(tmp_path)
+    _, whole = _augmented_fit(mixup_train_step_factory, seed=3, data_id="whole")
+    half, _ = _augmented_fit(mixup_train_step_factory, seed=3, n_epochs=1, data_id="split")
+    _, resumed = _augmented_fit(
+        mixup_train_step_factory, seed=3, n_epochs=1, data_id="split", resume_from_run_id=half.id
+    )
+    assert all(torch.equal(whole[k], resumed[k]) for k in whole)
 
 
 @pytest.mark.parametrize("family", ["mixup", "cutmix"])

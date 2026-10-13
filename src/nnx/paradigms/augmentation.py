@@ -19,7 +19,8 @@ Requires 4D ``(B, C, H, W)`` image tensors; raises on lower-rank input.
 
 from __future__ import annotations
 
-import numpy as np
+import math
+
 import torch
 
 from .._step_helpers import finalize_step, imperative_step
@@ -67,13 +68,13 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
     Raises:
         ValueError: if ``alpha`` <= 0.
     """
-    if alpha <= 0:
-        raise ValueError(f"alpha must be positive, got {alpha}")
-    # Seed from the torch RNG so set_seed(...) controls the lambda draws
-    # (and CutMix boxes): a bare default_rng() self-seeds from OS entropy
-    # and ignores the run's reproducibility contract. Drawing the seed
-    # through torch also keeps two factories' streams distinct.
-    rng = np.random.default_rng(int(torch.randint(0, 2**31 - 1, (1,)).item()))
+    if not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError(f"alpha must be positive and finite, got {alpha}")
+    # Lambda (and the CutMix box) come from torch's global RNG at step time,
+    # like the batch permutation: NNTrainParams.seed controls them, and a
+    # stateful resume restores that stream, so a split run continues the
+    # uninterrupted one.
+    beta = torch.distributions.Beta(torch.tensor(float(alpha)), torch.tensor(float(alpha)))
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -83,7 +84,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         X, Y = _unpack_supervised(ctx)
         B = X.shape[0]
 
-        lam = float(rng.beta(alpha, alpha))
+        lam = float(beta.sample())
         perm = torch.randperm(B, device=m.device)
         X_mixed = lam * X + (1.0 - lam) * X[perm]
         Y_a = Y
@@ -125,13 +126,13 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
     Raises:
         ValueError: if ``alpha`` <= 0.
     """
-    if alpha <= 0:
-        raise ValueError(f"alpha must be positive, got {alpha}")
-    # Seed from the torch RNG so set_seed(...) controls the lambda draws
-    # (and CutMix boxes): a bare default_rng() self-seeds from OS entropy
-    # and ignores the run's reproducibility contract. Drawing the seed
-    # through torch also keeps two factories' streams distinct.
-    rng = np.random.default_rng(int(torch.randint(0, 2**31 - 1, (1,)).item()))
+    if not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError(f"alpha must be positive and finite, got {alpha}")
+    # Lambda (and the CutMix box) come from torch's global RNG at step time,
+    # like the batch permutation: NNTrainParams.seed controls them, and a
+    # stateful resume restores that stream, so a split run continues the
+    # uninterrupted one.
+    beta = torch.distributions.Beta(torch.tensor(float(alpha)), torch.tensor(float(alpha)))
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -146,14 +147,14 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
             )
         B, _, H, W = X.shape
 
-        lam = float(rng.beta(alpha, alpha))
+        lam = float(beta.sample())
         # Box dimensions: side lengths scale with √(1−λ) so the area
         # ratio is (1−λ). cx, cy are the box center, sampled uniformly.
         cut_ratio = (1.0 - lam) ** 0.5
         cut_w = int(W * cut_ratio)
         cut_h = int(H * cut_ratio)
-        cx = int(rng.integers(0, W))
-        cy = int(rng.integers(0, H))
+        cx = int(torch.randint(0, W, (1,)).item())
+        cy = int(torch.randint(0, H, (1,)).item())
         x1 = max(cx - cut_w // 2, 0)
         x2 = min(cx + cut_w // 2, W)
         y1 = max(cy - cut_h // 2, 0)

@@ -29,6 +29,8 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from ._utils import copy_param_roles
+
 InitStrategy = Literal["zeros", "copy_mean"]
 
 
@@ -101,6 +103,8 @@ def expand_embedding(
             # vector — broadcast into every new row.
             row_mean = emb.weight.data.mean(dim=0, keepdim=True)  # (1, dim)
             new_emb.weight[old_num:].copy_(row_mean.expand(new_num_embeddings - old_num, dim))
+    # A frozen source stays frozen; the mode carries over too.
+    copy_param_roles(emb, new_emb)
 
     # Frozen mask: True for rows that came from the original embedding.
     frozen_mask = torch.zeros(new_num_embeddings, dtype=torch.bool, device=emb.weight.device)

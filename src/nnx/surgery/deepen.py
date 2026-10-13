@@ -148,6 +148,20 @@ def _insert_after_relu_in_sequential(
     keeps the original's training mode (FIX-018).
     """
     parent = cast(nn.Sequential, new_model if not parent_path else new_model.get_submodule(parent_path))
+    # The rebuild is a plain nn.Sequential of the same children: anything
+    # else the container carries (a subclass's forward, its own parameters
+    # or buffers, hooks) would be dropped and the forward would change.
+    hooks = (
+        parent._forward_hooks,
+        parent._forward_pre_hooks,
+        parent._backward_hooks,
+        parent._backward_pre_hooks,
+    )
+    if type(parent) is not nn.Sequential or parent._parameters or parent._buffers or any(hooks):
+        raise ValueError(
+            f"deepen: Sequential {parent_path or '<root>'!r} is a {type(parent).__name__} with its own "
+            "forward, parameters, buffers or hooks, which a rebuilt nn.Sequential would drop"
+        )
     entries = list(parent._modules.items())
     keys = [key for key, _ in entries]
     if attr not in keys:  # pragma: no cover — get_module resolved it, so this cannot happen
@@ -263,6 +277,10 @@ def _insert_after_linear_in_module_list(
     children = list(parent)
     new_children = children[: idx + 1] + [new_linear] + children[idx + 1 :]
     new_module_list = nn.ModuleList(new_children)
+    # The list and the new layer take the parent's mode, as in the
+    # Sequential path; existing children keep their own.
+    new_module_list.training = parent.training
+    new_linear.train(parent.training)
     set_module(new_model, parent_path, new_module_list)
 
     # Keep the owner's immutable configuration aligned with its layers

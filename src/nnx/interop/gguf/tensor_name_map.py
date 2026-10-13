@@ -35,10 +35,11 @@ if TYPE_CHECKING:
 
 
 def _to_numpy(t: torch.Tensor) -> np.ndarray:
-    """Detach + cpu + contiguous + numpy. GGUFWriter accepts numpy
+    """Detach + cpu + contiguous + float32 numpy. GGUFWriter accepts numpy
     arrays; tensors with grad / non-CPU storage / non-contiguous strides
-    silently break that path."""
-    return t.detach().cpu().contiguous().numpy()
+    silently break that path, and numpy has no bfloat16. Upcasting to
+    float32 is exact for fp16 / bf16 weights."""
+    return t.detach().cpu().float().contiguous().numpy()
 
 
 def _weight(module) -> torch.Tensor:

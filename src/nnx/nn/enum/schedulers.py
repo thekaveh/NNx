@@ -8,7 +8,7 @@ carries variant-specific config like T_max, step_size, max_lr).
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from torch.optim import Optimizer, lr_scheduler
 
@@ -80,7 +80,16 @@ class Schedulers(Enum):
                     eta_min=params.min_lr,
                 )
             case Schedulers.ONE_CYCLE:
-                max_lr = params.max_lr if params.max_lr is not None else optimizer.param_groups[0]["lr"]
+                # One peak per param group: each group's own LR, or an
+                # explicit max_lr scaled by the group's LR relative to the
+                # first (a one-group optimizer gets exactly that max_lr).
+                group_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+                if params.max_lr is None:
+                    max_lr: Any = group_lrs if len(group_lrs) > 1 else group_lrs[0]
+                elif len(group_lrs) > 1 and group_lrs[0] > 0:
+                    max_lr = [params.max_lr * lr / group_lrs[0] for lr in group_lrs]
+                else:
+                    max_lr = params.max_lr
                 total_steps = budget(params.total_steps, "total_steps")
                 _reject_short_total_steps(total_steps, horizon, updates=updates)
                 return lr_scheduler.OneCycleLR(

@@ -197,3 +197,9 @@ def test_prompt_state_dict_excludes_nested_name_collisions(tmp_path):
     assert load_prompt_weights(tuner, source) == 1
     for k, v in tuner.state_dict().items():
         assert torch.equal(v, before[k]), k
+
+
+def test_prompt_tuner_refuses_a_prompt_that_fills_the_context():
+    model = _tiny_transformer()
+    with pytest.raises(ValueError, match="max_seq_len"):
+        PromptTuner(model, n_prompt_tokens=model.params.max_seq_len)

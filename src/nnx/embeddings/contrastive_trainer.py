@@ -33,6 +33,7 @@ The two public entry points are:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from typing import Any, Optional, Union
 
@@ -270,8 +271,8 @@ def text_contrastive_train_step_factory(*, temperature: float = 0.5) -> TrainSte
     Raises:
         ValueError: at factory-build time if ``temperature`` ≤ 0.
     """
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -392,9 +393,9 @@ def train_contrastive(
         # itself raises on B < 2 as the backstop; rejecting here gives
         # the error before any training work happens).
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
-    if grad_clip_norm is not None and grad_clip_norm <= 0:
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    if grad_clip_norm is not None and (not math.isfinite(grad_clip_norm) or grad_clip_norm <= 0):
         # `None` disables clipping; a non-positive norm would otherwise slip
         # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
         # scales every gradient by 0.0/total_norm == 0, silently zeroing all

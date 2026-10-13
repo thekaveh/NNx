@@ -26,6 +26,8 @@ stays one.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -41,8 +43,8 @@ def _check_kd_weights(alpha: float, temperature: float) -> None:
     :func:`kd_train_step_factory` and ``nnx.objectives.KDObjective``."""
     if not (0.0 <= alpha <= 1.0):
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
 
 
 def _freeze_teacher(teacher: NNModel) -> None:
@@ -185,8 +187,8 @@ def feature_kd_train_step_factory(
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
     if not (0.0 <= beta <= 1.0):
         raise ValueError(f"beta must be in [0, 1], got {beta}")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
     if not auxiliary_layers:
         raise ValueError(
             "auxiliary_layers must be a non-empty mapping of teacher_layer_name -> student_layer_name; got empty dict"

@@ -492,3 +492,17 @@ def test_write_gguf_creates_parent_directories(tmp_path):
     out = write_gguf(net, tokenizer, nested)
     assert nested.exists()
     assert out == str(nested)
+
+
+def test_tensor_name_map_upcasts_bf16_weights_to_float32():
+    """numpy has no bfloat16: a bf16-resident net maps to exact float32
+    arrays instead of raising in .numpy()."""
+    import numpy as np
+    import torch
+
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+
+    net = _tiny_transformer().to(torch.bfloat16)
+    tensors = map_tensors(net)
+    assert all(arr.dtype == np.float32 for arr in tensors.values())
+    assert np.array_equal(tensors["token_embd.weight"], net.tok_embed.weight.detach().float().numpy())
