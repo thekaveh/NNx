@@ -67,3 +67,10 @@ docs/superpowers/
 # Same family: CLAUDE.md is a working artifact for Claude Code sessions
 # that doesn't belong in the public repo.
 CLAUDE.md
+
+# Evidence reports written by the CONTRIBUTING / CI gate commands (machine-specific)
+/composition*.json
+/feature-composition*-report.json
+/missing.json
+/conformance/
+/frozen-requirements.txt
