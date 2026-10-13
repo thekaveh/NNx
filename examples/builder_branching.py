@@ -91,7 +91,12 @@ def builder_branching_workflow() -> None:
     assert NNOptimParamsBuilder.from_params(adamw).build() == adamw
     assert NNOptimParamsBuilder.from_params(adamw).accumulate_grad(2).build().accumulate_grad_batches == 2
 
-    # 2. Named Trainer branches: one shared base, two sibling runs.
+    # 2. Named Trainer branches: one shared base, two sibling runs. A
+    #    trainer_step_fn owns its updates and applies no clipping, so these
+    #    branches drop the base's grad_clip (Trainer refuses a knob it
+    #    would silently ignore).
+    adamw = NNOptimParamsBuilder.from_params(adamw).grad_clip(None).build()
+    sgd = NNOptimParamsBuilder.from_params(sgd).grad_clip(None).build()
     set_seed(0)
     loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,))), batch_size=8)
     base = NNTrainerParams.builder().n_epochs(1).train_loader(loader).optimizer("head", adamw)

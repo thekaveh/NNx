@@ -230,7 +230,7 @@ class NNOptimParamsBuilder:
 
     # ---------- optional modifiers (chain after variant) ----------
 
-    def grad_clip(self, norm: float) -> NNOptimParamsBuilder:
+    def grad_clip(self, norm: Optional[float]) -> NNOptimParamsBuilder:
         """Global-L2 gradient-norm clipping. None = no clipping (the
         dataclass default; this method is the opt-in path).
         """
