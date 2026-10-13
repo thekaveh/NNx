@@ -33,7 +33,7 @@ is no new `Nets` member, and the fixed-head `predict` is unchanged.
   decisions are refused.
 - The trained scorer answers as a `DecisionProvider`. Its predictions go
   through `nnx.decisions.benchmark.collect` into replay records
-  ([Typed decisions §8](decisions.md)). The records carry the pilot's
+  ([Typed decisions §8](decisions.md#8-benchmarking-providers)). The records carry the pilot's
   candidate ids, the question (schema) digest, the template id and the model
   revision.
 
@@ -82,7 +82,7 @@ Promotion out of *experimental* needs the manifest's predeclared trade-off met
 on the empirical study. That covers quality, calibration, latency and memory,
 label paraphrase and permutation, and unseen-family results. Negatives are
 included, and all go through replay records. Until then the capability tables
-keep the pilot experimental ([Framework comparison §3.11](comparison.md)).
+keep the pilot experimental ([Framework comparison §3.11](comparison.md#311-label-conditioned-zero-shot-decisions)).
 
 ## 6. Current result
 

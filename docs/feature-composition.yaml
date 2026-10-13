@@ -437,9 +437,9 @@ scenarios:
   - id: DR-07
     group: decisions-results
     features: [decision-model pilot, empirical claims]
-    entry_point: examples/decision_model_pilot.py --empirical
+    entry_point: examples/decision_model_pilot.py --mode empirical
     profile: {device: cpu, dtype: fp32, dependencies: []}
-    expected: The empirical mode reports blocked (no licensed held-out corpus) even with every resource present; no empirical claim is made.
+    expected: The empirical mode reports blocked even with every resource present (the empirical training and baseline runs are not part of this repository); no empirical claim is made.
     tests:
       - tests/test_decision_model_pilot.py::test_the_empirical_mode_with_every_resource_present_still_reports_blocked
     rationale: Executed negative test of the documented no-go (docs/decision-model-pilot.md).

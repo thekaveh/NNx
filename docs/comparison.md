@@ -3,7 +3,7 @@
 An evidence-oriented, scope-explicit comparison of NNx against nearby PyTorch
 training and specialization toolkits. Comparing your own runs (repeated
 seeds, paired configurations) is `nnx.comparison`, described in
-[`docs/concepts.md` §23](concepts.md). Competitor behavior was last checked
+[`docs/concepts.md` §23](concepts.md#23-multi-seed-summaries-and-paired-comparisons-nnxcomparison). Competitor behavior was last checked
 against official documentation on **2026-08-08**. Follow the linked sources
 before making a version-sensitive platform decision.
 

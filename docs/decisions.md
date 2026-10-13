@@ -356,7 +356,7 @@ result.calls                                           # provider calls made
 
 | Builder | Value |
 |---|---|
-| `Job.ask(question, id=..., policy=None, model_id=None)` | the provider's results, one per input row; with an abstention `policy` ([concepts §19](concepts.md)), the selective decisions |
+| `Job.ask(question, id=..., policy=None, model_id=None)` | the provider's results, one per input row; with an abstention `policy` ([concepts §19](concepts.md#19-abstention-and-risk-coverage-nnxabstention)), the selective decisions |
 | `Job.collect({key: job, ...})` | a mapping of each key to its job's value, in the given key order |
 | `job.map(fn)` | `fn(value)`: a pure function, no provider call |
 | `job.then(fn)` | `fn(value)` returns `Follow(next_job, state=...)`; the value is the next job's |
