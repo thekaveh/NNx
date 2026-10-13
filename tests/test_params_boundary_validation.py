@@ -315,8 +315,8 @@ def test_enum_fields_refuse_plain_strings():
     from nnx import NNOptimParams, NNParams
 
     with pytest.raises(TypeError, match="activation"):
-        NNParams(input_dim=2, output_dim=2, hidden_dims=[2], activation="relu")
+        NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0.0, activation="relu")
     with pytest.raises(TypeError, match="activations"):
-        NNParams(input_dim=2, output_dim=2, hidden_dims=[2], activations=["relu"])
+        NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0.0, activations=["relu"])
     with pytest.raises(TypeError, match="NNOptimParams.name"):
         NNOptimParams(name="adam", max_lr=0.1, momentum=(0.9, 0.999), weight_decay=0.0)
