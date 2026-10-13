@@ -150,6 +150,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - An explicit `train_step_fn=default_train_step` (what `qat_train_step_factory` returns) records the declared training metrics and supports a training-split monitor; under DDP a batch one rank cannot score stops every rank instead of hanging the others; `VisUtils.confusion_matrix` without names labels the classes present; calling a `Standardizer` on a DataFrame checks its columns; `activation_map` reads a layer that returns a mapping; a bootstrap interval whose bounds meet while resamples vary says so.
     - `ExperimentPlan` also reports an update-clock scheduler budget over a training loader without a length (a factory's loader when `fit()` calls it); `TeacherDataset` takes read-only and reversed NumPy inputs.
     - `predict` / `predict_proba` take a full-graph loader list (`NNGraphDataset(sampler="full")`) as `evaluate` and `iter_predict` do; `dpo_train_step_factory` refuses a bool or non-numeric `beta`; `NNPreferenceDataset` reports the tokenizer's full length (added tokens included) as its `input_dim` / `output_dim`.
+    - `RankingTask.eval_step()` scores an MPS model (its scores widen to float64 on the CPU).
+    - An explicit `default_train_step` also gets the checkpoint-reconstructibility guard and a search's `updates_per_trial` cap, as the implicit default step does.
+    - `widen`, `low_rank_factorize` and `expand_embedding` refuse a `weight_norm` / `spectral_norm` parametrized module instead of silently dropping the parametrization and unfreezing its weight.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 

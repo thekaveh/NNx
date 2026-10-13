@@ -492,6 +492,8 @@ Accepts any of:
 - ``DataLoader`` — iterates the loader, runs predictions per batch,
   concatenates and returns the full result. Y labels in the batch
   (if present) are ignored.
+- a list or tuple of graph batches (``NNGraphDataset(sampler="full")``'s
+  loaders) — read like a loader, graph seed rows only.
 
 Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
 that unpacks like the original 2-tuple. For probabilities, decoded
@@ -524,8 +526,8 @@ item is a :class:`~nnx.streaming.PredictionBatch` of ``logits``,
 for a model with a task), a :class:`~nnx.prediction.PredictionResult`
 as :meth:`predict_proba` builds it. The batches follow loader order,
 and concatenated they are exactly the eager result for the same
-``DataLoader`` (the eager calls read other iterables as one in-memory
-input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
+``DataLoader`` (the eager calls read other iterables, except a list of
+graph batches, as one in-memory input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
 sample ids, graph seed-row slicing included.
 
 Each batch runs in eval mode under ``no_grad``, and every submodule's
@@ -3986,7 +3988,7 @@ Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows o
 class nnx.decisions.benchmark.Interval(metric: 'str', estimate: 'Optional[float]', low: 'Optional[float]', high: 'Optional[float]', level: 'float', seed: 'int', resamples: 'int', units: 'int', degenerate: 'bool', unit: 'str' = 'group', method: 'str' = 'percentile bootstrap, grouping units resampled with replacement', reason: 'Optional[str]' = None) -> 'None'
 ```
 
-A percentile bootstrap interval of one metric, resampling the declared grouping units (``unit="group"``) with ``seed``. ``degenerate`` flags an interval of no width: fewer than two units, every resample giving the same value, or bounds that coincide (``low == high``) while the resamples still vary.
+A percentile bootstrap interval of one metric, resampling the declared grouping units (``unit="group"``) with ``seed``. ``degenerate`` flags an interval that carries no spread information: fewer than two units, every resample giving the same value, bounds that coincide (``low == high``) while the resamples still vary, or a non-finite bound.
 
 ##### `nnx.decisions.benchmark.Interval.state`
 
@@ -13938,7 +13940,8 @@ Raises:
     KeyError: if ``layer_name`` is not a submodule of ``model``.
     TypeError: if the named submodule is not :class:`nn.Linear`.
     ValueError: if ``new_width`` is not an integer strictly greater
-        than the current ``out_features``; if no downstream Linear exists; if
+        than the current ``out_features``; if the target or a module on
+        its path carries a parametrization (``weight_norm``); if no downstream Linear exists; if
         a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
         module outside the elementwise allowlist) sits between the
         target and its consumer; if the target lives in a container
@@ -14076,7 +14079,8 @@ Returns:
 
 Raises:
     TypeError: if ``linear`` is not :class:`nn.Linear`.
-    ValueError: if ``rank`` is out of range, or ``method`` unknown.
+    ValueError: if ``rank`` is out of range, ``method`` unknown, or
+        ``linear`` carries a parametrization (``weight_norm``).
 ```
 
 
@@ -14111,7 +14115,7 @@ Returns:
 Raises:
     TypeError: if ``emb`` is not :class:`nn.Embedding`.
     ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
-        or if ``init`` is unknown.
+        if ``init`` is unknown, or if ``emb`` carries a parametrization.
 ```
 
 
@@ -16595,8 +16599,10 @@ visualization — weight histograms, activation maps, gradient flow,
 Netron export); the two subpackages are deliberately independent and
 do not share code.
 
-Every method is a `@staticmethod` returning either a `plotly.graph_objects.Figure`
-(for plots) or a `pandas.DataFrame` (for tables). The class itself
+Every plotting method is a `@staticmethod` returning either a
+`plotly.graph_objects.Figure` (for plots) or a `pandas.DataFrame` (for
+tables); the helpers `generate_colors` (a color list) and
+`get_scatter_plot_vm` (a scatter view-model) feed them. The class itself
 carries layout constants (`TITLE_SIZE`, `LABEL_SIZE`, `FIG_SIZE`,
 `MARGIN_SIZE`) shared across methods, plus an opt-in `RENDERER`
 override for environments where Plotly's default renderer doesn't
@@ -16613,7 +16619,7 @@ instead of `nnx.vis_utils.VisUtils.confusion_matrix(...)`.
 nnx.vis_utils.confusion_matrix(Y_true, Y_pred, class_names=None, title: 'str' = 'Confusion matrix', normalize: 'bool' = False)
 ```
 
-Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays of integer class labels. If `class_names` is provided, axis labels use the named classes, and every label must be a class index ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise integer indices.
+Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays of integer class labels. If `class_names` is provided, axis labels use the named classes, and every label must be a class index ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise the labels present, in sorted order.
 
 ##### `nnx.vis_utils.classification_report`
 

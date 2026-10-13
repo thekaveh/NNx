@@ -14,7 +14,7 @@ This is the unique compositional payoff of pairing surgery primitives with a tra
 
 | Primitive | Op | Function-preserving? | Returns |
 |---|---|---|---|
-| `widen(model, *, layer_name, new_width)` | Net2WiderNet — grow `out_features`, rescale the consumer's incoming columns | yes — for a Linear inside `nn.Sequential` or `FeedFwdNN.layers` whose path to the next Linear holds only elementwise ops (activations, `Dropout`, `Identity`). Parity is in eval mode when dropout > 0. Softmax / LayerNorm / BatchNorm boundaries, other containers and aliased modules are rejected. | fresh `nn.Module` |
+| `widen(model, *, layer_name, new_width, rng_seed=0)` | Net2WiderNet — grow `out_features`, rescale the consumer's incoming columns | yes — for a Linear inside `nn.Sequential` or `FeedFwdNN.layers` whose path to the next Linear holds only elementwise ops (activations, `Dropout`, `Identity`). Parity is in eval mode when dropout > 0. Softmax / LayerNorm / BatchNorm boundaries, other containers and aliased modules are rejected. | fresh `nn.Module` |
 | `deepen(model, *, after_layer_name)` | Net2DeeperNet — identity-init Linear after a ReLU | yes (ReLU only) | fresh `nn.Module` |
 | `drop_layer(model, *, layer_name, importance=None)` | Replace named layer with `nn.Identity` | no — chain-preserving only | fresh `nn.Module` |
 | `low_rank_factorize(linear, *, rank, method='svd')` | SVD truncation: Linear → `Sequential(Linear, Linear)` | yes at max rank, approximate below | fresh `nn.Sequential` |
@@ -53,18 +53,14 @@ with torch.no_grad():
     assert torch.allclose(model.net(x), new_net(x), atol=1e-5)
 
 # 3. Rewire NNModel around the wider net: build a NEW, correctly
-#    described model and load the surged state_dict. Rebuild the
-#    immutable params with `dataclasses.replace` so the new width and
-#    every per-layer `activations` / `dropout_probs` override stay
-#    aligned (a hand-built NNParams from scalar fields would silently
-#    drop those overrides). Never assign the widened net beneath the
-#    old `net_params`: ordinary checkpoint reconstruction reads the
-#    descriptor, and a stale one no longer describes the network.
-from dataclasses import replace
-
-new_params = replace(model.net.params, hidden_dims=[64, *model.net.params.hidden_dims[1:]])
+#    described model and load the surged state_dict. On a FeedFwdNN,
+#    `widen` already returns aligned params (the new width, every
+#    per-layer override kept), so adopt them. Never assign the widened
+#    net beneath the old `net_params`: ordinary checkpoint
+#    reconstruction reads the descriptor, and a stale one no longer
+#    describes the network.
 refined = NNModel(
-    net_params=new_params,
+    net_params=new_net.params,
     params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
 )
 refined.net.load_state_dict(new_net.state_dict())
@@ -81,7 +77,7 @@ refined.train(params=NNTrainParams(
 # The refined run is saved under runs/<new-id>/ via NNRun + NNCheckpoint as usual.
 ```
 
-The same template works for `widen` and `deepen`: only the surgery line and the `NNParams` you rebuild around it change. A low-rank factorization cannot be described by `NNParams`, so record it as a recipe (§8). `expand_embedding` needs a module with an embedding (§7). `drop_layer` on a `FeedFwdNN` leaves its layer keys and `params.hidden_dims` as they were, so `NNParams` cannot describe the result either.
+The same template works for `widen` and `deepen`: only the surgery line changes, and both return aligned `params` on a `FeedFwdNN`. A low-rank factorization cannot be described by `NNParams`, so record it as a recipe (§8). `expand_embedding` needs a module with an embedding (§7). `drop_layer` on a `FeedFwdNN` leaves its layer keys and `params.hidden_dims` as they were, so `NNParams` cannot describe the result either.
 
 ## 3. Parameter-count tables
 
@@ -161,7 +157,8 @@ A change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) can produce
     - One more `hidden_dims` entry at the site.
     - A ReLU inserted into an explicit `activations` list.
     - The new identity site's dropout set to `0.0`, while every existing site keeps its own probability. A nonzero scalar dropout is materialized into a per-layer list rather than switched off.
-- Adopt `deeper.params` as the `net_params` of a *fresh* `NNModel` when you rebuild for refinement. An outer model still holding the old descriptor cannot reconstruct the deeper checkpoint.
+- On a `FeedFwdNN`, `widen` likewise returns `params` whose `hidden_dims` record the new width, with every per-layer override kept.
+- Adopt `deeper.params` (or the widened net's `params`) as the `net_params` of a *fresh* `NNModel` when you rebuild for refinement. An outer model still holding the old descriptor cannot reconstruct the deeper checkpoint.
 - `drop_layer` is never function-preserving, with one degenerate exception. The exception is a dropped layer that was already the identity on its inputs (e.g. a ReLU fed strictly positive activations). The function is chain-preserving: dotted-name lookup, downstream shapes, and the forward pass still work.
 - `low_rank_factorize` at `rank < min(out, in)` is an *approximation*. The Frobenius error of the truncation is bounded by the L2 norm of the discarded singular values (Eckart-Young). That bound is asserted as a regression test in `tests/test_surgery_low_rank.py`.
 - `expand_embedding` preserves the original rows exactly, so any token ID `< old_num` is unchanged. But it introduces new rows that *must* be initialized. Pick `init="zeros"` for a safe default, or `init="copy_mean"` when you want the new rows to warm-start near the existing manifold.
@@ -181,6 +178,8 @@ Surgery preserves trainability and modes. Two primitives rebuild an *existing* L
 - Both factors inherit the source weight's flag, while only the second factor's bias (`1.bias` in the returned `nn.Sequential`) inherits the source bias's flag.
 
 Each replacement module also takes the train/eval mode of the module it replaces, so a mixed root/child configuration survives unchanged.
+
+`widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm` parametrization, which a rebuilt plain module would drop silently. Remove it first with `torch.nn.utils.parametrize.remove_parametrizations`.
 
 Build the optimizer *after* surgery. A frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`. If you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules: trainable, and in the mode of the container they join. Existing layers keep their own modes. `expand_embedding` gives the new table the source table's `requires_grad` flag and mode.
 

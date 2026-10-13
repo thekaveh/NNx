@@ -3531,7 +3531,7 @@ class NNModel(_HubMixinBase):
             callbacks = _writer_owned_callbacks(callbacks)
         _check_provenance(provenance)
         _check_history(history, callbacks)
-        if train_step_fn is None or _recipe_transforms(self._topology_transforms):
+        if train_step_fn in (None, default_train_step) or _recipe_transforms(self._topology_transforms):
             # NNx owns the update (default step or objective), or the model
             # carries a recipe (FEAT-016): the run's checkpoints must be
             # reconstructible from the params and recorded recipe.
@@ -4514,6 +4514,8 @@ class NNModel(_HubMixinBase):
         - ``DataLoader`` — iterates the loader, runs predictions per batch,
           concatenates and returns the full result. Y labels in the batch
           (if present) are ignored.
+        - a list or tuple of graph batches (``NNGraphDataset(sampler="full")``'s
+          loaders) — read like a loader, graph seed rows only.
 
         Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
         that unpacks like the original 2-tuple. For probabilities, decoded
@@ -4557,8 +4559,8 @@ class NNModel(_HubMixinBase):
         for a model with a task), a :class:`~nnx.prediction.PredictionResult`
         as :meth:`predict_proba` builds it. The batches follow loader order,
         and concatenated they are exactly the eager result for the same
-        ``DataLoader`` (the eager calls read other iterables as one in-memory
-        input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
+        ``DataLoader`` (the eager calls read other iterables, except a list of
+        graph batches, as one in-memory input): ``predict(X)``'s logits and classes and ``predict_proba(X)``'s
         sample ids, graph seed-row slicing included.
 
         Each batch runs in eval mode under ``no_grad``, and every submodule's

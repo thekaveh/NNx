@@ -786,3 +786,15 @@ def test_only_blocks_worth_it_are_recomputed_in_backward(monkeypatch):
     assert calls and min(calls) >= 1
     assert float(every.detach()) == pytest.approx(float(small.detach()), rel=1e-12)
     assert torch.allclose(every_grad, small_grad, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+def test_ranking_validation_scores_an_mps_model():
+    # MPS has no float64: the scores widen on the CPU.
+    task = RankingTask(k=(1,), max_relevance=2)
+    model = NNModel(
+        net_params=NNParams(input_dim=D, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.MPS, loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    record = task.eval_step()(_Ctx(model, _loader(_data(3, seed=1), batch_size=5)))
+    assert record.metrics

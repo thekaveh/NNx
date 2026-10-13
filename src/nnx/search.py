@@ -421,7 +421,10 @@ def _check_plan(plan: Any, monitor: Any, budget: Optional[SearchBudget] = None) 
             "each trial builds fresh callbacks: pass them as factories (with_callback_factories), not borrowed "
             "instances (with_callbacks)"
         )
-    if budget is not None and budget.updates_per_trial is not None and plan.train_step_fn is not None:
+    from .nn.nn_model import default_train_step
+
+    custom_step = plan.train_step_fn not in (None, default_train_step)  # the default step reports its updates
+    if budget is not None and budget.updates_per_trial is not None and custom_step:
         raise ValueError(
             "SearchBudget.updates_per_trial counts the updates NNx commits: a plan with its own train_step_fn may "
             "not report them (ctx.report_update()); use an objective, the default step, or no update cap"

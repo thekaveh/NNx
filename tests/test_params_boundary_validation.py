@@ -1915,3 +1915,78 @@ def test_dpo_refuses_a_beta_that_is_not_a_real_number(beta):
     ref = NNModel(module=torch.nn.Linear(2, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
     with pytest.raises(ValueError, match="beta"):
         dpo_train_step_factory(ref, beta=beta)
+
+
+def test_the_reconstructibility_guard_applies_to_an_explicit_default_step(tmp_path, monkeypatch):
+    from nnx.nn.nn_model import default_train_step
+    from nnx.prune import magnitude_prune
+
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_classifier()
+    magnitude_prune(model.net, 0.5, bake=False)
+    with pytest.raises(ValueError, match="pruning reparameterization"):
+        model.train(params=_one_epoch(), train_step_fn=default_train_step)
+
+
+@pytest.mark.parametrize("kind", ["weight_norm", "spectral_norm"])
+def test_surgery_refuses_a_parametrized_module_it_would_strip(kind):
+    import torch
+
+    from nnx.surgery import expand_embedding, low_rank_factorize, widen
+
+    def parametrized(module):
+        return getattr(torch.nn.utils.parametrizations, kind)(module)
+
+    with pytest.raises(ValueError, match="parametrization"):
+        low_rank_factorize(parametrized(torch.nn.Linear(4, 4)), rank=2)
+    net = torch.nn.Sequential(parametrized(torch.nn.Linear(2, 4)), torch.nn.ReLU(), torch.nn.Linear(4, 2))
+    with pytest.raises(ValueError, match="parametrization"):
+        widen(net, layer_name="0", new_width=8)
+    consumer = torch.nn.Sequential(torch.nn.Linear(2, 4), torch.nn.ReLU(), parametrized(torch.nn.Linear(4, 2)))
+    with pytest.raises(ValueError, match="parametrization"):
+        widen(consumer, layer_name="0", new_width=8)
+    with pytest.raises(ValueError, match="parametrization"):
+        expand_embedding(parametrized(torch.nn.Embedding(4, 2)), new_num_embeddings=8)
+
+
+def test_the_rank_that_cannot_score_its_batch_raises_its_own_reason():
+    import torch
+
+    from nnx.nn.nn_model import _agreed_scorable_target
+
+    class _BothRanks:
+        def gather(self, value):
+            return [value, False]
+
+    with pytest.raises(ValueError, match="default steps score classification"):
+        _agreed_scorable_target(_BothRanks(), torch.nn.MSELoss(), torch.tensor([0.5, 1.0]))
+
+
+def test_activation_map_reads_the_first_tensor_of_a_mapping_and_refuses_one_without():
+    import torch
+
+    pytest.importorskip("plotly")
+    from nnx.viz import activation_map
+
+    class Keyed(torch.nn.Module):
+        def __init__(self, out):
+            super().__init__()
+            self.out = out
+
+        def forward(self, x):
+            return self.out(x)
+
+    class Net(torch.nn.Module):
+        def __init__(self, out):
+            super().__init__()
+            self.keyed = Keyed(out)
+
+        def forward(self, x):
+            self.keyed(x)
+            return x
+
+    x = torch.arange(6.0).reshape(2, 3)
+    fig = activation_map(Net(lambda v: {"meta": 1, "first": v * 2, "second": v * 3}), x, "keyed")
+    assert [list(row) for row in fig.data[0].z] == (x * 2).tolist()
+    with pytest.raises(ValueError, match="without a tensor"):
+        activation_map(Net(lambda v: {"meta": 1}), x, "keyed")

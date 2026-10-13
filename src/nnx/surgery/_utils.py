@@ -9,6 +9,8 @@ attribute / index segments (e.g., ``"layers.0"``) because
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from torch import nn
 
 
@@ -100,3 +102,15 @@ def copy_param_roles(src: nn.Module, dst: nn.Module) -> None:
         if name in src_flags:
             p.requires_grad_(src_flags[name])
     dst.train(src.training)
+
+
+def refuse_parametrized(module: nn.Module, what: str) -> None:
+    """A ``torch.nn.utils.parametrize`` parametrization (``weight_norm``,
+    ``spectral_norm``) would be dropped silently, its frozen flags with it."""
+    from torch.nn.utils import parametrize
+
+    if parametrize.is_parametrized(module):
+        raise ValueError(
+            f"{what} carries a parametrization ({sorted(cast(Any, module).parametrizations)}); a surgery primitive would "
+            "drop it silently. Remove it first (torch.nn.utils.parametrize.remove_parametrizations)"
+        )

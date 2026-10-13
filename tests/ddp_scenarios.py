@@ -197,6 +197,28 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         from torch.nn.parallel import DistributedDataParallel
 
         out["live_ddp"] = sum(isinstance(item, DistributedDataParallel) for item in gc.get_objects())
+    elif name == "unscorable":
+        # A task-free MSE model: one rank's batch holds a fractional target (unscorable as a class).
+        from torch.utils.data import TensorDataset
+
+        targets = torch.tensor([[0.0], [1.0], [1.0], [0.5]])
+        data = TensorDataset(torch.randn(4, FEATURES, generator=torch.Generator().manual_seed(3)), targets)
+        torch.manual_seed(0)
+        regression = NNModel(
+            net_params=NNParams(
+                input_dim=FEATURES, output_dim=1, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=_device(), loss=Losses.MEAN_SQUARED_ERROR),
+        )
+        try:
+            regression.train(
+                params=params(nnx_dist.train_loader(data, batch_size=2, shuffle=False), accumulate=1),
+                distributed=nnx_dist.DDP(),
+            )
+            out["error"] = None
+        except BaseException as error:  # noqa: BLE001 - recorded for the test
+            out["error"] = type(error).__name__
+            out["message"] = str(error)
     elif name == "preflight":
         out["errors"] = {}
         attempts = {

@@ -394,6 +394,7 @@ def test_bootstrap_groups():
     tied[3] = Record("s3", AB.digest(), "stub", "answered", distribution=(("a", 0.3), ("b", 0.7)))
     constant = bootstrap_interval(same, tied, metric="accuracy", seed=0, resamples=50)
     assert constant.degenerate and constant.low == constant.high == 1.0
+    assert constant.reason == "every resample gave the same value"
 
 
 # --- AC7: exports and comparison -----------------------------------------------------------------------------

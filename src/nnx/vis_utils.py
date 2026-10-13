@@ -8,8 +8,10 @@ visualization — weight histograms, activation maps, gradient flow,
 Netron export); the two subpackages are deliberately independent and
 do not share code.
 
-Every method is a `@staticmethod` returning either a `plotly.graph_objects.Figure`
-(for plots) or a `pandas.DataFrame` (for tables). The class itself
+Every plotting method is a `@staticmethod` returning either a
+`plotly.graph_objects.Figure` (for plots) or a `pandas.DataFrame` (for
+tables); the helpers `generate_colors` (a color list) and
+`get_scatter_plot_vm` (a scatter view-model) feed them. The class itself
 carries layout constants (`TITLE_SIZE`, `LABEL_SIZE`, `FIG_SIZE`,
 `MARGIN_SIZE`) shared across methods, plus an opt-in `RENDERER`
 override for environments where Plotly's default renderer doesn't
@@ -368,7 +370,7 @@ class VisUtils:
         of integer class labels. If `class_names` is provided, axis labels use
         the named classes, and every label must be a class index
         ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise
-        integer indices."""
+        the labels present, in sorted order."""
         go = require("plotly.graph_objects", "nnx.vis_utils.VisUtils")
         from sklearn.metrics import confusion_matrix as _sk_cm
 

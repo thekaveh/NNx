@@ -2112,7 +2112,7 @@ With `bake=False` the masks stay. `NNModel.train` refuses a built-in or register
 
 - `widen` / `deepen` are function-preserving Net2Net edits (Chen/Goodfellow/Shlens, ICLR 2016) on validated topologies.
 - `widen` infers the consumer only inside `nn.Sequential` / `FeedFwdNN.layers` through elementwise ops. It rejects Softmax/LayerNorm/BatchNorm boundaries, other containers and aliased modules up front.
-- `deepen` is ReLU-only and validates the effective per-layer activation at the insertion site. It keeps a `FeedFwdNN`'s immutable `params` (hidden dims, activation and dropout overrides) aligned with the deeper `layers`.
+- `deepen` is ReLU-only and validates the effective per-layer activation at the insertion site. It keeps a `FeedFwdNN`'s immutable `params` (hidden dims, activation and dropout overrides) aligned with the deeper `layers`, as `widen` does with the wider ones.
 - Every primitive returns a fresh module and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 - Some primitives replace existing Linear weights: `widen`'s target and downstream layers, and `low_rank_factorize`'s two factors. The replacements keep the replaced tensors' `requires_grad` flags and the replaced modules' train/eval modes. Frozen content therefore stays frozen through surgery.
 

@@ -31,7 +31,7 @@ from torch import nn
 from torch.nn.utils import skip_init
 
 from .._validation import require_count
-from ._utils import copy_param_roles
+from ._utils import copy_param_roles, refuse_parametrized
 
 _SUPPORTED_METHODS = ("svd",)
 
@@ -62,10 +62,12 @@ def low_rank_factorize(
 
     Raises:
         TypeError: if ``linear`` is not :class:`nn.Linear`.
-        ValueError: if ``rank`` is out of range, or ``method`` unknown.
+        ValueError: if ``rank`` is out of range, ``method`` unknown, or
+            ``linear`` carries a parametrization (``weight_norm``).
     """
     if not isinstance(linear, nn.Linear):
         raise TypeError(f"low_rank_factorize requires an nn.Linear, got {type(linear).__name__}")
+    refuse_parametrized(linear, "low_rank_factorize's Linear")
     if method not in _SUPPORTED_METHODS:
         raise ValueError(f"unsupported method {method!r}; supported: {_SUPPORTED_METHODS}")
 

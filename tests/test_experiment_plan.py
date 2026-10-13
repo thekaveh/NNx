@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import os
 from typing import Any
 
 import numpy as np
@@ -811,3 +812,55 @@ def test_validate_accepts_an_update_clock_budget_nnx_plans_itself(owner):
     if owner == "objective":
         plan = plan.with_objective(supervised_objective())
     assert "train.scheduler" not in plan.validate().paths
+
+
+def _one_cycle_on_updates():
+    from nnx import NNSchedulerParams, Schedulers
+
+    return NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+
+
+def test_a_data_factory_defers_the_update_budget_check_to_fit(tmp_path, monkeypatch):
+    from torch.utils.data import IterableDataset
+
+    from nnx.plans import PlanError
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Stream(IterableDataset):
+        def __iter__(self):
+            yield torch.randn(4), torch.tensor(0)
+
+    plan = (
+        ExperimentPlan()
+        .with_net(NET)
+        .with_model(MODEL)
+        .with_train(NNTrainParams(n_epochs=2, scheduler=_one_cycle_on_updates()))
+        .with_data(lambda: DataLoader(_Stream(), batch_size=2))
+    )
+    assert "train.scheduler" not in plan.validate().paths  # the factory's loader is unknown until fit()
+    with pytest.raises(PlanError, match="with a length"):
+        plan.fit()
+    assert not os.path.isdir("runs") or not any(entry for entry in os.listdir("runs") if not entry.startswith("."))
+
+
+def test_an_explicit_default_step_plan_validates_like_the_default_step():
+    from nnx import MetricSpec, MonitorSpec
+    from nnx.nn.nn_model import default_train_step
+
+    train = NNTrainParams(
+        n_epochs=2,
+        scheduler=_one_cycle_on_updates(),
+        metrics=[MetricSpec("accuracy")],
+        monitor=MonitorSpec(metric="accuracy", split="train"),
+    )
+    report = _plan().with_train(train).with_step_fns(train_step_fn=default_train_step).validate()
+    assert "train.scheduler" not in report.paths and "train.monitor" not in report.paths

@@ -1228,9 +1228,10 @@ def _sample_set(samples: Sequence[Sample]) -> str:
 class Interval:
     """A percentile bootstrap interval of one metric, resampling the
     declared grouping units (``unit="group"``) with ``seed``. ``degenerate``
-    flags an interval of no width: fewer than two units, every resample
-    giving the same value, or bounds that coincide (``low == high``) while
-    the resamples still vary."""
+    flags an interval that carries no spread information: fewer than two
+    units, every resample giving the same value, bounds that coincide
+    (``low == high``) while the resamples still vary, or a non-finite
+    bound."""
 
     metric: str
     estimate: Optional[float]

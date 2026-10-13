@@ -31,7 +31,7 @@ from torch.nn.utils import skip_init
 from .._validation import require_count
 from ..nn.enum.activations import Activations
 from ..nn.net.feed_fwd_nn import FeedFwdNN
-from ._utils import copy_param_roles, get_module, set_module
+from ._utils import copy_param_roles, get_module, refuse_parametrized, set_module
 
 
 def widen(
@@ -78,7 +78,8 @@ def widen(
         KeyError: if ``layer_name`` is not a submodule of ``model``.
         TypeError: if the named submodule is not :class:`nn.Linear`.
         ValueError: if ``new_width`` is not an integer strictly greater
-            than the current ``out_features``; if no downstream Linear exists; if
+            than the current ``out_features``; if the target or a module on
+            its path carries a parametrization (``weight_norm``); if no downstream Linear exists; if
             a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
             module outside the elementwise allowlist) sits between the
             target and its consumer; if the target lives in a container
@@ -94,6 +95,7 @@ def widen(
     source_layer = get_module(model, layer_name)
     if not isinstance(source_layer, nn.Linear):
         raise TypeError(f"widen target {layer_name!r} is {type(source_layer).__name__}, expected nn.Linear")
+    refuse_parametrized(source_layer, f"widen target {layer_name!r}")
     cur = source_layer.out_features
     new_width = require_count(new_width, "new_width", owner="widen", minimum=1)
     if new_width <= cur:
@@ -250,6 +252,10 @@ def _refuse_unproven_container(parent: nn.Module, where: str) -> None:
 def _refuse_hooked_path(parent: nn.Module, keys: list[str], where: str) -> None:
     """Hooks on the target, the modules between it and its consumer, or the
     consumer could transform the widened activations: refuse them."""
+    for key in keys:
+        child = parent._modules[key]
+        if child is not None:
+            refuse_parametrized(child, f"widen(): {where!r} path module {key!r}")
     hooked = [key for key in keys if (child := parent._modules[key]) is not None and _has_hooks(child)]
     if hooked:
         raise ValueError(

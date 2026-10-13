@@ -445,3 +445,13 @@ def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
     assert "timed out after 30 s" in message and "rank stacks:" in message
     assert "_parked_for_diagnostics" in message  # the parked rank's own frame
     assert message.count("joined the group: parked") == 2  # each rank's last phase
+
+
+def test_a_batch_one_rank_cannot_score_stops_every_rank(tmp_path):
+    out = tmp_path / "unscorable"
+    launch("unscorable", out)
+    errors = results(out)
+    assert [rank["error"] for rank in errors] == ["ValueError", "ValueError"]
+    messages = [rank["message"] for rank in errors]
+    assert any("default steps score classification" in message for message in messages)  # the refusing rank
+    assert any("cannot score their batch's targets" in message for message in messages)  # the other rank

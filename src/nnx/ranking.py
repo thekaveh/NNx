@@ -612,7 +612,9 @@ class RankingEval:
                         raise RankingError(
                             f"the evaluation stream exceeds max_buffered={self.task.max_buffered} candidate rows"
                         )
-                    scores = self.task.scores(model, features, len(query_ids)).detach().double().cpu().tolist()
+                    scores = (
+                        self.task.scores(model, features, len(query_ids)).detach().cpu().double().tolist()
+                    )  # MPS has no float64
                     for i, (query, candidate) in enumerate(zip(query_ids, candidate_ids, strict=True)):
                         if mask is not None and not bool(mask[i]):
                             continue

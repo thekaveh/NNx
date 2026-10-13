@@ -30,7 +30,7 @@ from torch import nn
 from torch.nn.utils import skip_init
 
 from .._validation import require_count
-from ._utils import copy_param_roles
+from ._utils import copy_param_roles, refuse_parametrized
 
 InitStrategy = Literal["zeros", "copy_mean"]
 
@@ -63,10 +63,11 @@ def expand_embedding(
     Raises:
         TypeError: if ``emb`` is not :class:`nn.Embedding`.
         ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
-            or if ``init`` is unknown.
+            if ``init`` is unknown, or if ``emb`` carries a parametrization.
     """
     if not isinstance(emb, nn.Embedding):
         raise TypeError(f"expand_embedding requires an nn.Embedding, got {type(emb).__name__}")
+    refuse_parametrized(emb, "expand_embedding's Embedding")
     old_num = emb.num_embeddings
     new_num_embeddings = require_count(new_num_embeddings, "new_num_embeddings", owner="expand_embedding", minimum=1)
     if new_num_embeddings <= old_num:

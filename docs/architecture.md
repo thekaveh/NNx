@@ -161,7 +161,8 @@ checkpoint; `resume_mode="weights_only"` starts fresh from its weights.
 The writer rank alone verifies the resume point (its files' SHA-256). It
 shares the manifest or the refusal, so the other ranks never hash it. A torn,
 mixed or corrupted point is refused on every rank with the same reason.
-Resume, component restore and epoch-end callback failures are agreed too.
+Resume, component restore and epoch-end callback failures are agreed too,
+and so are each default step's loss finiteness and target checks.
 Anything else failing on one rank only ends through the process group's
 timeout and `torchrun` stopping the other ranks.
 

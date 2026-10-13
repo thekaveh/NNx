@@ -550,3 +550,12 @@ def test_categorical_choices_that_compare_equal_are_refused(choices):
     a trial would report a value it did not run with."""
     with pytest.raises(ValueError, match="distinct"):
         CategoricalParam(name="c", choices=choices)
+
+
+def test_an_update_cap_binds_with_the_default_step_passed_explicitly():
+    from nnx.nn.nn_model import default_train_step
+
+    base = plan(n_epochs=2, batch_size=4, accumulate=3).with_step_fns(train_step_fn=default_train_step)
+    result = run(base, budget=SearchBudget(trials=1, updates_per_trial=2))
+    (outcome,) = result.outcomes
+    assert outcome.updates == 2 and outcome.reason == "update_cap"
