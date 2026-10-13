@@ -285,7 +285,7 @@ def decide_result(
             raise TypeError(
                 "decide_result(policy=...): an abstention policy applies to a Choice or Score, not a Boolean"
             )
-        policy._check(tuple(question.option_ids), model_id, "probabilities", None)
+        policy._check(tuple(question.option_ids), cast(str, model_id), "probabilities", None)
     context = {"question": question.digest(), "provider": type(provider).__name__}
     try:
         results = tuple(provider.decide(question, inputs))

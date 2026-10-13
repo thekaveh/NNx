@@ -40,7 +40,10 @@ def _is_probability(value: object) -> bool:
     """A real number in [0, 1] — not a bool (``True`` would otherwise pass
     as 1.0 and hash as a different run), a string or NaN."""
     return (
-        isinstance(value, numbers.Real) and not isinstance(value, bool) and math.isfinite(value) and 0.0 <= value <= 1.0
+        isinstance(value, numbers.Real)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0.0 <= float(value) <= 1.0
     )
 
 

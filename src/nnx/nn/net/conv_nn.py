@@ -15,6 +15,9 @@ v1 scope: LeNet-style only; no ResNet/skip connections.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -23,6 +26,13 @@ from ..params.nn_conv_params import NNConvParams
 
 
 class ConvNN(nn.Module):
+    _params: NNConvParams
+    _side: int
+    _in_channels: int
+    _pool_size: int
+    _conv_activation: Optional[Callable[[torch.Tensor], torch.Tensor]]
+    _hidden: tuple[tuple[Callable[[torch.Tensor], torch.Tensor], float], ...]
+
     def __init__(self, params: NNConvParams):
         super().__init__()
 

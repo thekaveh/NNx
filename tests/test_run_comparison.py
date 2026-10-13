@@ -1240,7 +1240,9 @@ def test_round_four_reader_edges(tmp_path, monkeypatch):
         yaml.safe_dump({**state, "train": [1]}, handle)
     with pytest.raises(ComparisonError, match="'train' is not a mapping"):
         observations_from_runs(ids[:1], metric=LOSS)
-    for bad, match in (([1], "not a mapping"), ({"epoch": "x"}, "not an epoch")):
+    # A list is refused while the attempt record is read; a mapping with a
+    # bad epoch when comparison reads it.
+    for bad, match in (([1], "must be a JSON object"), ({"epoch": "x"}, "not an epoch")):
         attempt = os.path.join("runs", ids[1], "attempt.json")
         record = json.loads(open(attempt).read())
         record["last_committed"] = bad

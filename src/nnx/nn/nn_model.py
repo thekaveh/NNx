@@ -2997,11 +2997,29 @@ class NNModel(_HubMixinBase):
             # The artifact rebuilds the descriptor plus its recorded recipe:
             # one whose topology differs (unrecorded surgery: a LoRA / IA3
             # wrap, a widen) would fail only when someone loads it. A
-            # train-end transform (QAT) rebuilds its own topology.
-            drift = self._topology_drift()
+            # train-end transform (QAT) rebuilds its own topology. A wholly
+            # new top-level submodule (a JEPA predictor) is not drift: loading
+            # names exclude_submodules for it.
+            drift = None if not transforms and self._only_attached_submodules() else self._topology_drift()
             if drift is not None:
                 raise ValueError(f"save_pretrained refused before writing anything: {drift}")
         return super().save_pretrained(save_directory, *args, **kwargs)
+
+    def _only_attached_submodules(self) -> bool:
+        """The live state is the base exactly, plus tensors under top-level
+        submodules the base does not have (attached auxiliaries)."""
+        base = self._base_state()
+        if base is None:
+            return False
+        live = {name: tuple(tensor.shape) for name, tensor in self.net.state_dict().items() if torch.is_tensor(tensor)}
+        extra = set(live) - set(base)
+        base_tops = {name.split(".", 1)[0] for name in base}
+        return (
+            bool(extra)
+            and set(base) <= set(live)
+            and all(name.split(".", 1)[0] not in base_tops for name in extra)
+            and all(shape is None or live[name] == tuple(shape) for name, shape in base.items())
+        )
 
     def _require_portable(self, operation: str) -> None:
         net = self.params.net
