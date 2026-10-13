@@ -1244,3 +1244,13 @@ def test_numpy_integer_counts_are_plain_ints_in_a_recipe():
     TransformRecipe(numpy)  # validates (it refused np.int64 before)
     assert [op.state() for op in numpy] == [op.state() for op in plain]
     assert type(numpy[0].config["r"]) is int
+
+
+def test_numpy_lora_hyperparameters_are_plain_floats():
+    import numpy as np
+
+    from nnx.transforms import TransformRecipe, lora
+
+    numpy = [lora("layers.0", r=4, alpha=np.int64(8), dropout=np.float32(0.25))]
+    TransformRecipe(numpy)
+    assert numpy[0].state() == lora("layers.0", r=4, alpha=8.0, dropout=0.25).state()

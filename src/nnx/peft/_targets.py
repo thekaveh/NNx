@@ -110,7 +110,23 @@ def select_linear_slots(
             f"{helper}: {_listed(foreign)} are the base of a {wrapper}, which reads its base's weight "
             "directly; wrapping it would break that layer. Nothing was modified."
         )
-    selected = [slot for slot in matched if not isinstance(slots[slot][0], skip_inside)]
+
+    def inside_skip(path: str) -> bool:
+        """Whether a ``skip_inside`` wrapper sits anywhere in the chain of
+        ``.base`` wrappers above this Linear (a LoRA over an IA3 over the
+        Linear is already adapted, not only its immediate parent)."""
+        while path == "base" or path.endswith(".base"):
+            path = path[: -len("base")].rstrip(".")
+            owner = module.get_submodule(path) if path else module
+            if isinstance(owner, skip_inside):
+                return True
+        return False
+
+    selected = [
+        slot
+        for slot in matched
+        if not isinstance(slots[slot][0], skip_inside) and not any(inside_skip(path) for path in slots[slot][1])
+    ]
 
     aliased: dict[int, list[str]] = {}
     for slot in selected:

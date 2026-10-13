@@ -218,6 +218,9 @@ class NLIProvider:
             raise InvalidDecisionRequest(f"model must be a torch.nn.Module, got {type(self.model).__name__}")
         if not callable(self.tokenizer):
             raise InvalidDecisionRequest(f"tokenizer must be callable, got {type(self.tokenizer).__name__}")
+        from .providers import _check_name
+
+        _check_name(self.name)
         n_labels, names = _label_space(self.model)
         self.entailment_id = _class_id(self.entailment_id, "entailment_id", n_labels, names)
         self.contradiction_id = _class_id(self.contradiction_id, "contradiction_id", n_labels, names)

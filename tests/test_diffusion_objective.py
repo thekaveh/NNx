@@ -463,3 +463,32 @@ def test_noise_of_another_dtype_is_named():
     )
     with pytest.raises(ValueError, match="typed like x_0"):
         double(ctx)
+
+
+def test_the_imperative_step_splits_batches_through_the_models_adapter():
+    """diffusion_train_step_factory reads its one input as the objective
+    does: the model's adapter (it failed on dict batches before)."""
+    from nnx import NNModelParams as Params
+    from nnx.diffusion import diffusion_train_step_factory
+    from nnx.models import KeywordInputs, PositionalInputs
+
+    set_seed(0)
+    keyword = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=KeywordInputs(["x"], target=None),
+    )
+    run = keyword.train(
+        _params([{"x": _points(4)}, {"x": _points(3, seed=2)}]), train_step_fn=diffusion_train_step_factory(SCHEDULE)
+    )
+    assert all(idp.train_edp.loss is not None for idp in run.idps)
+
+    two = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=PositionalInputs(2),
+    )
+    with pytest.raises(ValueError, match="exactly one input"):
+        two.train(
+            _params([(_points(2), _points(2), torch.zeros(2))]), train_step_fn=diffusion_train_step_factory(SCHEDULE)
+        )

@@ -804,3 +804,18 @@ def test_ia3_refuses_to_wrap_a_dora_base_before_any_change():
     apply_lora_to(stacked, "*")
     assert apply_ia3_to(stacked, "*") == 1  # IA3 on LoRA's base: LoRA(IA3(Linear))
     stacked(torch.randn(3, 4))
+
+
+def test_reapplying_an_adapter_in_a_mixed_stack_is_a_no_op():
+    """LoRA, then IA3, then LoRA again: the Linear already carries a LoRA
+    further up its wrapper chain, so the third call wraps nothing."""
+    from torch import nn
+
+    from nnx import apply_ia3_to, apply_lora_to
+
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    apply_lora_to(model, "*")
+    apply_ia3_to(model, "*")
+    before = repr(model)
+    apply_lora_to(model, "*")
+    assert repr(model) == before

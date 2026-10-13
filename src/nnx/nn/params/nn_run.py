@@ -119,7 +119,7 @@ def _net_rows(net: Optional[NNParams], descriptor: object) -> list[tuple[str, st
             ("dropout", str(net.dropout_prob)),
             ("activation", str(net.activation)),
         ]
-    return [(key, html.escape(value)) for key, value in _descriptor_fields(descriptor)]
+    return list(_descriptor_fields(descriptor))  # escaped with every row
 
 
 def _descriptor_fields(descriptor: object) -> list[tuple[str, str]]:
@@ -740,7 +740,7 @@ class NNRun:
         """HTML table of the canonical run config (subset of state())."""
         rows = [
             ("run.id", self.id),
-            ("net", html.escape(str(self.model.net))),
+            ("net", str(self.model.net)),
             ("device", str(self.model.device)),
             ("loss", str(self.model.loss)),
             *([("task", str(self.model.task))] if self.model.task is not None else []),
@@ -749,9 +749,11 @@ class NNRun:
             ("optim", f"{_optim_label(self.train.optim)} (max_lr={self.train.optim.max_lr})"),
             *self._monitoring_rows(),
         ]
+        # Every value is escaped: a registered factory's config or a
+        # descriptor is user data, never markup.
         rows_html = "".join(
-            f'<tr><td style="padding:2px 8px;font-weight:600;">{k}</td>'
-            f'<td style="padding:2px 8px;font-family:monospace;">{v}</td></tr>'
+            f'<tr><td style="padding:2px 8px;font-weight:600;">{html.escape(k)}</td>'
+            f'<td style="padding:2px 8px;font-family:monospace;">{html.escape(v)}</td></tr>'
             for k, v in rows
         )
         return f'<table style="border-collapse:collapse;border:1px solid #ddd;margin-bottom:8px;">{rows_html}</table>'

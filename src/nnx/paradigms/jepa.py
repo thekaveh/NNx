@@ -350,11 +350,10 @@ def jepa_train_step_factory(
             again on call and pins to ``eval()`` mode.
         predictor: a :class:`JEPAPredictor` (or any module with the
             same ``forward(context_embeds, context_positions,
-            target_positions)`` contract). The predictor's parameters
-            are *not* frozen — the optimizer's ``param_groups`` need
-            to include them; the simplest path is to register the
-            predictor as a submodule of ``model.net`` (the ViTNN)
-            before constructing the optimizer.
+            target_positions)`` contract). It must be a submodule of
+            ``model.net`` (the ViTNN), registered before training:
+            ``NNModel.train`` builds the optimizer from ``model.net``, and
+            checkpoints and gradient clipping cover only ``model.net``.
         mask_fn: callable ``(n_patches, device) -> (context_mask,
             target_mask)`` where both are 1-D ``BoolTensor[n_patches]``.
             Sampled freshly **once per step** and shared across the
@@ -367,7 +366,9 @@ def jepa_train_step_factory(
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
-        ValueError: when ``ema_momentum`` is outside ``[0, 1)``.
+        ValueError: when ``ema_momentum`` is outside ``[0, 1)``; at the
+            first step, when the predictor is not a submodule of
+            ``model.net`` (it would never be updated).
     """
     if not (0.0 <= ema_momentum < 1.0):
         raise ValueError(f"ema_momentum must be in [0, 1), got {ema_momentum}")
@@ -382,13 +383,14 @@ def jepa_train_step_factory(
         m = ctx.model
         m.net.train()
         predictor.train()
+        # The optimizer, checkpoints and clipping cover model.net only: a
+        # predictor outside it would get gradients and never be updated.
+        if not any(module is predictor for module in m.net.modules()):
+            raise ValueError(
+                "jepa_train_step_factory: the predictor is not a submodule of model.net, so the optimizer never "
+                "updates it; register it on the net (e.g. model.net.predictor = predictor) before training"
+            )
         m.net.zero_grad()
-        # The predictor may live outside `model.net` (its params added to the
-        # optimizer directly, per the docstring's alternate path) — then
-        # `m.net.zero_grad()` above does not reach it. Zero it explicitly so
-        # its gradients don't accumulate across steps. No-op when it is a
-        # submodule of `model.net` (the recommended path).
-        predictor.zero_grad()
 
         # The one input, as the JEPA objective reads it (the model's batch
         # adapter, else unpack_batch, else (X, Y) / a tensor). Y is ignored.

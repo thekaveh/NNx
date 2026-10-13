@@ -252,3 +252,23 @@ def test_empty_batches_answer_nothing_without_calling_the_model_and_raw_is_owned
     first, *_ = provider.decide(question, X)
     assert first.raw.base is None  # a copy, not a view keeping the whole batch alive
     assert question.digest() is question.digest()  # computed once per question
+
+
+@pytest.mark.parametrize("bad", [{"max_batch": 0}, {"max_batch": True}, {"ordinal": "no"}, {"name": ""}])
+def test_a_fixed_head_provider_is_configured_at_construction(bad):
+    """A bad setting fails at construction as a decision error, not at the
+    first call (where jobs reported it as a provider failure)."""
+    with pytest.raises(InvalidDecisionRequest):
+        FixedHeadProvider(_classifier(3), labels=("cat", "dog", "fox"), **bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{"primitives": "choice"}, {"primitives": {"chioce"}}, {"labels": "ab"}, {"inference": "yes"}, {"max_batch": 0}],
+)
+def test_capabilities_refuse_malformed_declarations(bad):
+    from nnx.decisions import Capabilities
+
+    fields = {"primitives": {"choice"}, "modalities": {"text"}, **bad}
+    with pytest.raises(InvalidDecisionRequest):
+        Capabilities(**fields)

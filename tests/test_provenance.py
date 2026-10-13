@@ -297,3 +297,10 @@ def test_a_deeply_nested_provenance_file_is_malformed_input(tmp_path):
     (run / MANIFEST_FILE).write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
     with pytest.raises(ValueError, match="nested too deeply"):
         load_provenance("a" * 32, root=str(tmp_path))
+
+
+def test_for_model_refuses_a_train_entry_twice():
+    """train= beside config={"train": ...} was dropped silently."""
+    with pytest.raises(ValueError, match="'train' entry"):
+        model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+        ExperimentManifest.for_model(model, train=NNTrainParams(n_epochs=1), config={"train": "v1"})

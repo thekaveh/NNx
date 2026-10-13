@@ -511,3 +511,15 @@ def test_a_fully_masked_batch_with_infinite_outputs_adds_an_exact_zero(spec, tar
     assert weight == 0.0 and float(numerator) == 0.0
     numerator.backward()
     assert torch.isfinite(output.grad).all()
+
+
+def test_the_default_loss_terms_of_an_all_ignored_batch_are_an_exact_zero():
+    """Without a task, an all-ignored CE batch with a -inf logit contributes
+    an exact, graph-connected zero (logits.sum() * 0.0 was NaN)."""
+    from nnx.nn.nn_model import _loss_terms
+
+    logits = torch.tensor([[0.0, 1.0, -float("inf")]], requires_grad=True)
+    _, numerator, weight = _loss_terms(torch.nn.CrossEntropyLoss(ignore_index=-100), logits, torch.tensor([-100]))
+    assert weight == 0.0 and float(numerator) == 0.0
+    numerator.backward()
+    assert torch.isfinite(logits.grad).all()

@@ -13479,14 +13479,15 @@ shell wildcards. Only :class:`nn.Linear` submodules are eligible
 wildcard pattern).
 
 **Note on weights:** ``torchao.sparsity.sparsify_`` does NOT enforce
-the 2:4 mask before the swap. Callers are expected to either
-(a) magnitude-prune the weight to a valid 2:4 pattern beforehand
-(via :func:`magnitude_prune` or a custom mask), or
-(b) accept whatever 2:4 approximation
-:func:`torch.sparse.to_sparse_semi_structured` picks (which keeps
-the top-2-by-absolute-value entries per 4-group). For training
-workflows, the standard recipe is to pre-mask, then train the
-surviving entries.
+the 2:4 mask before the swap, and the conversion encodes each group
+of 4 by the *positions* of its nonzeros, not by magnitude: extra
+nonzeros are dropped by position. Prune the weight to a valid 2:4
+pattern first (a custom 2:4 mask; :func:`magnitude_prune` alone gives
+no per-group structure).
+
+**Inference only:** torchao replaces each matched weight with a
+``requires_grad=False`` parameter, so the matched Linears stop
+training after this call.
 ```
 
 
@@ -14819,11 +14820,10 @@ Args:
         again on call and pins to ``eval()`` mode.
     predictor: a :class:`JEPAPredictor` (or any module with the
         same ``forward(context_embeds, context_positions,
-        target_positions)`` contract). The predictor's parameters
-        are *not* frozen — the optimizer's ``param_groups`` need
-        to include them; the simplest path is to register the
-        predictor as a submodule of ``model.net`` (the ViTNN)
-        before constructing the optimizer.
+        target_positions)`` contract). It must be a submodule of
+        ``model.net`` (the ViTNN), registered before training:
+        ``NNModel.train`` builds the optimizer from ``model.net``, and
+        checkpoints and gradient clipping cover only ``model.net``.
     mask_fn: callable ``(n_patches, device) -> (context_mask,
         target_mask)`` where both are 1-D ``BoolTensor[n_patches]``.
         Sampled freshly **once per step** and shared across the
@@ -14836,7 +14836,9 @@ Returns:
     A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
 Raises:
-    ValueError: when ``ema_momentum`` is outside ``[0, 1)``.
+    ValueError: when ``ema_momentum`` is outside ``[0, 1)``; at the
+        first step, when the predictor is not a submodule of
+        ``model.net`` (it would never be updated).
 ```
 
 
@@ -15194,7 +15196,8 @@ Returns:
         (prompt_ids, chosen_ids, rejected_ids)
 
     — typically from :class:`nnx.NNPreferenceDataset`. All three
-    tensors must already be padded / right-aligned by the dataset.
+    tensors must be right-padded (content left-aligned) to fixed
+    lengths, as ``NNPreferenceDataset`` yields them.
 
 Raises:
     ValueError: if ``beta`` ≤ 0.

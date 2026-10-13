@@ -1033,3 +1033,25 @@ def test_round_eight_unknown_training_state_versions_and_numpy_strings(bundle):
     assert _decode(json.loads(json.dumps(encoded)), {}) == {"label": "cat"}
     with pytest.raises(BundleError, match="bytes_"):
         _encode({"raw": np.bytes_(b"x")}, {}, "state")
+
+
+def test_a_recipe_bundle_resumes():
+    """A LoRA recipe is replayed on the rebuilt model, so the run's training
+    state fits: a "resume" bundle of a recipe run resumes (only a train-end
+    conversion such as QAT is refused)."""
+    from nnx.transforms import TransformRecipe, lora
+
+    model = TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(_classifier())
+    run = _train(model, "lora-bundle")
+    export_bundle(run.id, "recipe-bundle")
+    rebuilt = reconstruct_bundle("recipe-bundle")
+    assert rebuilt.info.capability == "resume"
+    resumed = rebuilt.resume(
+        NNTrainParams(
+            n_epochs=1,
+            data_id="lora-bundle",
+            train_loader=_batches(),
+            optim=NNOptimParams.builder().adam(max_lr=0.01).build(),
+        )
+    )
+    assert resumed.resume_status.mode == "stateful"

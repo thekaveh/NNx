@@ -70,7 +70,7 @@ from nnx import (
 
 
 def _make_classifier() -> NNModel:
-    """Three hidden layers of width 128. Each width is a multiple of the
+    """Three hidden layers (128, 128, 64). Each width is a multiple of the
     int4 weight quantizer's default groupsize (32) so the 8da4w recipe
     applies cleanly without padding."""
     return NNModel(
@@ -147,6 +147,9 @@ def main():
     run = model.train(
         params=NNTrainParams(
             n_epochs=6,
+            # The QAT callback is not part of the run id: without its own
+            # data_id this run would share 12_quantize_int8.py's id.
+            data_id="qat-8da4w",
             train_loader=train_loader,
             val_loader=val_loader,
             optim=NNOptimParams(

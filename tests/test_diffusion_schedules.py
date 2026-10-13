@@ -94,14 +94,14 @@ def test_invalid_T_raises():
     with pytest.raises(ValueError, match="T >= 1"):
         NoiseSchedulers.COSINE(T=-5)
     for bad in (10.5, True):  # a fractional step count, a bool read as one step
-        with pytest.raises(ValueError, match="T"):
+        with pytest.raises(ValueError, match="requires T to be an integer"):
             NoiseSchedulers.LINEAR(T=bad)
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0.0])
 def test_cosine_offset_must_be_finite_and_positive(bad):
     """s=nan / inf built an all-NaN schedule without raising."""
-    with pytest.raises(ValueError, match="s"):
+    with pytest.raises(ValueError, match="COSINE requires s "):
         NoiseSchedulers.COSINE(T=10, s=bad)
 
 

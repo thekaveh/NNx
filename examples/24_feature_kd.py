@@ -32,6 +32,8 @@ Run:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -110,7 +112,9 @@ def main() -> None:
         ),
         params=model_params,
     )
-    teacher_run = teacher.train(params=base_train_params)
+    # Its own data_id: the teacher otherwise shares 19_prune_synthetic_classifier.py's
+    # baseline run id (same config, data and seed).
+    teacher_run = teacher.train(params=replace(base_train_params, data_id="feature-kd-teacher"))
     teacher_val_idps = [idp for idp in teacher_run.idps if idp.val_edp is not None]
     teacher_val_acc = 1.0 - teacher_val_idps[-1].val_edp.error
     print(f"Teacher val accuracy: {teacher_val_acc:.3f}")

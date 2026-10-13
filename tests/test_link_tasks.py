@@ -835,5 +835,10 @@ def test_link_metrics_refuses_logits_it_cannot_score():
         link_metrics([[float("nan"), 1.0], [0.1, 0.9]], [0, 1], from_logits=True)
     with pytest.raises(LinkTaskError, match="finite"):
         link_metrics([[float("inf"), 1.0], [0.1, 0.9]], [0, 1], from_logits=True)
+    with pytest.raises(LinkTaskError, match="finite"):
+        link_metrics([[-float("inf"), -float("inf")], [0.1, 0.9]], [0, 1], from_logits=True)
+    # A -inf category mask in a row with a finite maximum scores exactly.
+    masked = link_metrics([[2.0, -float("inf"), 0.5], [0.1, 0.3, -float("inf")]], [0, 1], from_logits=True)
+    assert masked["nll"].value == pytest.approx(0.39978, abs=1e-5)
     # Binary logits stay exact at any confidence, infinite ones included.
     assert link_metrics([float("inf"), -float("inf")], [1, 0], from_logits=True)["bce"].value == 0.0

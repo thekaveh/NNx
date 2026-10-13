@@ -165,10 +165,13 @@ class TransformOp:
             if isinstance(value, numbers.Integral) and not isinstance(value, bool):
                 config[key] = int(value)
         if self.id == LORA:
-            # alpha=4 and alpha=4.0 are one recipe, with one run id.
+            # alpha=4 and alpha=4.0 are one recipe, with one run id; a NumPy
+            # real (a grid value) is the plain float.
             for key in ("alpha", "dropout"):
-                if type(config.get(key)) is int and _finite(config[key]):
-                    config[key] = float(config[key])
+                value = config.get(key)
+                if isinstance(value, numbers.Real) and not isinstance(value, bool) and type(value) is not float:
+                    if _finite(value):  # a huge int stays as given, for the validator to refuse
+                        config[key] = float(value)
         object.__setattr__(self, "config", _FrozenConfig(config))
 
     def state(self) -> dict[str, Any]:

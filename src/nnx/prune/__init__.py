@@ -10,9 +10,10 @@ submodules without touching the surrounding training loop:
     quantize / compress on disk dramatically better.
   - **2:4 semi-structured** — :func:`semi_structured_24`. Swaps each
     matched :class:`nn.Linear`'s ``weight`` with a 2:4 structured-sparse
-    tensor via ``torchao.sparsity``. **Real wall-clock speedup** on
-    Ampere+ GPUs (~1.1× inference, ~1.3× training per torchao's ViT/SAM
-    benchmarks); CPU and pre-Ampere hardware raise ``RuntimeError``.
+    tensor via ``torchao.sparsity``, for inference: the matched weights
+    are frozen. **Real wall-clock speedup** on Ampere+ GPUs (~1.1×
+    inference per torchao's ViT/SAM benchmarks); CPU and pre-Ampere
+    hardware raise ``RuntimeError``.
 
 The two functions share the same pattern-filter convention as
 :func:`nnx.peft.apply_lora_to` and :func:`nnx.finetune.freeze` —

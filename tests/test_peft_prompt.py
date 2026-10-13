@@ -214,8 +214,10 @@ def test_peft_sizes_must_be_integers_checked_before_freezing(bad):
     from nnx import apply_lora_to
 
     model = nn.Sequential(nn.Linear(4, 4))
-    with pytest.raises(ValueError, match="r"):
+    with pytest.raises(ValueError, match="requires r to be an integer"):
         apply_lora_to(model, "*", r=bad)
     assert all(p.requires_grad for p in model.parameters())
-    with pytest.raises(ValueError, match="n_prompt_tokens"):
-        PromptTuner(_tiny_transformer(), n_prompt_tokens=bad)
+    base = _tiny_transformer()
+    with pytest.raises(ValueError, match="requires n_prompt_tokens to be an integer"):
+        PromptTuner(base, n_prompt_tokens=bad)
+    assert all(p.requires_grad for p in base.parameters())

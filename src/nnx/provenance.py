@@ -378,7 +378,9 @@ class ExperimentManifest:
             # plan: a resume of the same plan keeps its fingerprint.
             for key in _ATTEMPT_ONLY_TRAIN_KEYS:
                 train_state.pop(key, None)
-            merged.setdefault("train", train_state)
+            if "train" in merged:  # as for preprocessing: never drop one of the two silently
+                raise ValueError("config already has a 'train' entry; pass the training configuration once")
+            merged["train"] = train_state
         if preprocessing is not None:
             from .preprocessing import Standardizer
 

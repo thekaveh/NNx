@@ -234,11 +234,17 @@ class ReconstructedBundle:
                 "submodules; to continue training, resume the original run (resume_from_run_id) on a model with "
                 "them attached"
             )
-        if self._checkpoint.transforms:
-            recipes = ", ".join(transform.name for transform in self._checkpoint.transforms)
+        from .transforms import _replayable
+
+        # A recorded recipe (LoRA, low-rank) is replayed on the rebuilt
+        # model, so its training state fits; a train-end conversion (QAT)
+        # changed the topology after the state was written.
+        converted = [transform.name for transform in self._checkpoint.transforms if not _replayable(transform)]
+        if converted:
             raise BundleCapabilityError(
-                f"the run bundle {self.info.path!r} holds a transformed topology ({recipes}): the rebuilt model "
-                "serves inference, but cannot take the pre-transform training state; resume the original run"
+                f"the run bundle {self.info.path!r} holds a transformed topology ({', '.join(converted)}): the "
+                "rebuilt model serves inference, but cannot take the pre-transform training state; resume the "
+                "original run"
             )
         if params.resume_from_run_id is not None or params.parent_run_id is not None:
             raise ValueError(

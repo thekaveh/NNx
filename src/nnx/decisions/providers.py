@@ -29,6 +29,18 @@ __all__ = ["Capabilities", "DecisionProvider", "FixedHeadProvider"]
 Question = Union[Choice, Boolean, Score]
 
 
+def _check_max_batch(max_batch: Any) -> None:
+    if max_batch is not None and (
+        isinstance(max_batch, bool) or not isinstance(max_batch, numbers.Integral) or max_batch < 1
+    ):
+        raise InvalidDecisionRequest(f"max_batch must be a positive integer or None, got {max_batch!r}")
+
+
+def _check_name(name: Any) -> None:
+    if not isinstance(name, str) or not name:
+        raise InvalidDecisionRequest(f"a provider name must be a non-empty string, got {name!r}")
+
+
 @dataclass(frozen=True)
 class Capabilities:
     """What a provider declares it can do. :meth:`check` rejects anything
@@ -59,15 +71,23 @@ class Capabilities:
     export: bool = False
 
     def __post_init__(self) -> None:
+        # A string is one value, not a set of its characters.
+        for name in ("primitives", "modalities", "labels"):
+            if isinstance(getattr(self, name), (str, bytes)):
+                raise InvalidDecisionRequest(
+                    f"Capabilities.{name} must be a collection, not the string {getattr(self, name)!r}"
+                )
         object.__setattr__(self, "primitives", frozenset(self.primitives))
         object.__setattr__(self, "modalities", frozenset(self.modalities))
+        unknown = sorted(self.primitives - {"choice", "boolean", "score"})
+        if unknown:
+            raise InvalidDecisionRequest(f"unknown primitives {unknown}: a provider answers choice, boolean or score")
         if self.labels is not None:
             object.__setattr__(self, "labels", tuple(self.labels))
-        max_batch = self.max_batch
-        if max_batch is not None and (
-            isinstance(max_batch, bool) or not isinstance(max_batch, numbers.Integral) or max_batch < 1
-        ):
-            raise ValueError(f"max_batch must be a positive integer or None, got {max_batch!r}")
+        for name in ("dynamic_labels", "inference", "training", "export"):
+            if not isinstance(getattr(self, name), bool):
+                raise InvalidDecisionRequest(f"Capabilities.{name} must be a bool, got {getattr(self, name)!r}")
+        _check_max_batch(self.max_batch)
 
     def check(
         self,
@@ -190,6 +210,11 @@ class FixedHeadProvider:
     def __post_init__(self) -> None:
         import torch
 
+        # Configuration fails here, as a decision error, not at the first call.
+        _check_max_batch(self.max_batch)
+        if not isinstance(self.ordinal, bool):
+            raise InvalidDecisionRequest(f"ordinal must be a bool, got {self.ordinal!r}")
+        _check_name(self.name)
         adapter = getattr(self.model, "task_adapter", None)
         spec = getattr(adapter, "spec", None)
         kind = getattr(spec, "kind", None)

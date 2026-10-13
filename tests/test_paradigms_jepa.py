@@ -432,3 +432,26 @@ def test_an_empty_target_mask_is_refused_as_a_mask_problem(tmp_path, monkeypatch
             ),
             train_step_fn=step_fn,
         )
+
+
+def test_a_predictor_outside_the_net_is_refused(tmp_path, monkeypatch):
+    """NNModel.train builds the optimizer from model.net: an unregistered
+    predictor got gradients but was never updated (no error)."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = _build_tiny_vit_model()
+    predictor = _build_predictor(model)  # deliberately not attached
+    step_fn = jepa_train_step_factory(
+        target_encoder=build_target_encoder(model.net),
+        predictor=predictor,
+        mask_fn=_fixed_mask_fn(model_n_patches=model.net.n_patches, model_grid=32 // 8),
+    )
+    with pytest.raises(ValueError, match="not a submodule of model.net"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=_image_loader(),
+                optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+            ),
+            train_step_fn=step_fn,
+        )

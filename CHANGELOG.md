@@ -72,6 +72,14 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `link_metrics` refuses NaN logits and non-finite categorical logits; a 1-D `attention_mask` is an `LMTaskError`.
     - An objective run's whole-epoch training loss keeps each window's term weight and reduction (an annealed weight used the epoch's first).
     - `CategoricalParam` refuses choices that compare equal (`True`, `1`, `1.0`), which optuna would collapse.
+    - `NNParams.activation(s)` and `NNOptimParams.name` must be enum members (a string failed far from where it was set).
+    - `link_metrics` scores a `-inf` category mask in a row with a finite maximum again.
+    - A LoRA / low-rank recipe bundle resumes; only a train-end conversion (QAT) is refused.
+    - LoRA `alpha` / `dropout` accept NumPy reals; `ExperimentManifest.for_model` refuses `train=` beside `config["train"]`.
+    - A run's notebook table escapes every value.
+    - Decision providers and `Capabilities` check their settings at construction (`max_batch`, `ordinal`, `name`, primitives).
+    - The imperative JEPA step refuses a predictor outside `model.net` (it was never updated).
+    - Re-applying an adapter in a mixed LoRA / IA3 stack wraps nothing again.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)

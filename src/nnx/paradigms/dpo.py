@@ -83,7 +83,8 @@ def dpo_train_step_factory(
             (prompt_ids, chosen_ids, rejected_ids)
 
         — typically from :class:`nnx.NNPreferenceDataset`. All three
-        tensors must already be padded / right-aligned by the dataset.
+        tensors must be right-padded (content left-aligned) to fixed
+        lengths, as ``NNPreferenceDataset`` yields them.
 
     Raises:
         ValueError: if ``beta`` ≤ 0.
