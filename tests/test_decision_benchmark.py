@@ -910,3 +910,13 @@ def test_round_four_edges(tmp_path):
         read_records(lines)
     infinite = [Record("s0", AB.digest(), "stub", "answered", distribution=(("a", 0.0), ("b", 1.0))), *records[1:]]
     assert "nll: Infinity" in evaluate(samples, infinite, split="x").text()
+
+
+def test_an_available_value_carries_a_note_not_an_unavailable_reason():
+    """``reason`` is only for an unavailable value; a note on an available
+    one (rows the policy does not fit, say) is exported on its own."""
+    from nnx.decisions.benchmark import MetricValue
+
+    noted = MetricValue("selective_coverage", 1.0, 1, note="1 eligible row(s) the policy does not fit are not counted")
+    assert noted.state()["reason"] is None and noted.state()["note"].startswith("1 eligible")
+    assert "note" not in MetricValue("selective_coverage", 1.0, 1).state()  # earlier reports keep their shape

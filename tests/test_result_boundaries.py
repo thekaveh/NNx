@@ -163,6 +163,31 @@ def test_abstention_is_a_success_with_probabilities_and_reasons():
             decide_result(Spy(), TOPIC, ["x"], policy=policy, model_id=model_id)  # type: ignore[arg-type]
 
 
+def test_a_policy_that_does_not_fit_is_refused_before_the_provider_is_called():
+    """Each input may be a billed request: a policy for other labels or
+    another model, or one applied to a Boolean, is refused first."""
+    from nnx.abstention import AbstentionSchemaError
+
+    policy = AbstentionPolicy(
+        "max_probability",
+        0.8,
+        labels=("t-sport", "t-econ"),
+        model_id="m",
+        tuning_split_id="v",
+        input_field="probabilities",
+    )
+    other_labels = Choice("Topic?", (("t-art", "art"), ("t-econ", "the economy")))
+    for question, model_id, error in (
+        (other_labels, "m", AbstentionSchemaError),
+        (TOPIC, "another-model", AbstentionSchemaError),
+        (Boolean("Spam?"), "m", TypeError),
+    ):
+        provider = Spy()
+        with pytest.raises(error):
+            decide_result(provider, question, ["x"], policy=policy, model_id=model_id)
+        assert provider.calls == 0
+
+
 # ---------------- inspect_bundle_result ----------------
 
 

@@ -37,10 +37,13 @@ metrics — replayed from saved records, with no provider and no network.
   it ``None``.
 
 Metrics are defined per row over each question's own options, so samples
-with different label spaces share one report: NLL and Brier are the named
-``nll`` / ``brier`` metrics' terms (``nnx.calibration``), a Boolean is the
-two options ``("true", "false")`` and the top-1 prediction is the first
-option of maximal probability.
+with different label spaces share one report: NLL and Brier follow the
+definitions of the named ``nll`` / ``brier`` metrics (``nnx.calibration``),
+a Boolean is the two options ``("true", "false")`` and the top-1 prediction
+is the first option of maximal probability. One difference: the replay NLL
+is exact by default (``epsilon=None``: ``inf`` when a true option has
+probability 0), where the named ``nll`` metric floors probabilities at
+``1e-12``; pass ``epsilon`` to floor them here too.
 """
 
 from __future__ import annotations
@@ -735,24 +738,29 @@ def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optio
 @dataclass(frozen=True)
 class MetricValue:
     """A metric's ``value`` over ``denominator`` rows, or ``None`` with the
-    ``reason`` it is unavailable."""
+    ``reason`` it is unavailable. ``note`` qualifies an available value
+    (rows it does not count, say)."""
 
     name: str
     value: Optional[float]
     denominator: int
     reason: Optional[str] = None
+    note: Optional[str] = None
 
     @property
     def unit(self) -> str:
         return UNITS[self.name]
 
     def state(self) -> dict[str, Any]:
-        return {
+        state = {
             "value": _json_number(self.value),
             "denominator": self.denominator,
             "reason": self.reason,
             "unit": self.unit,
         }
+        if self.note is not None:  # emitted only when set: earlier reports keep their shape
+            state["note"] = self.note
+        return state
 
 
 def _json_number(value: Optional[float]) -> Any:
@@ -1028,7 +1036,7 @@ def _selective(rows: Sequence[_Row], policy: Any, model_id: Optional[str]) -> di
             "selective_risk": MetricValue("selective_risk", None, 0, reason),
         }
     note = f"{skipped} eligible row(s) the policy does not fit are not counted" if skipped else None
-    coverage = MetricValue("selective_coverage", len(accepted) / applied, applied, note)
+    coverage = MetricValue("selective_coverage", len(accepted) / applied, applied, note=note)
     if not accepted:
         return {
             "selective_coverage": coverage,
@@ -1332,7 +1340,7 @@ class BenchmarkReport:
 
     def csv_rows(self) -> list[dict[str, Any]]:
         """One row per slice and metric: value, unit, denominator, the
-        unavailable reason, every coverage count of the slice (samples,
+        unavailable reason, an available value's note, every coverage count of the slice (samples,
         eligible, failed, unsupported, missing, duplicate, mismatched,
         invalid — they add up to the slice's samples) and the report's
         ``extra`` records. A non-finite value is written as in the JSON."""
@@ -1349,6 +1357,7 @@ class BenchmarkReport:
                         "unit": value.unit,
                         "denominator": value.denominator,
                         "unavailable": value.reason or "",
+                        "note": value.note or "",
                         "samples": coverage.samples,
                         "eligible": coverage.eligible,
                         "failed": coverage.failed,
@@ -1364,7 +1373,8 @@ class BenchmarkReport:
 
     def to_csv(self) -> str:
         buffer = io.StringIO()
-        fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "samples", "eligible", "failed"]
+        fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "note", "samples", "eligible"]
+        fields += ["failed"]
         fields += ["unsupported", "missing", "duplicate", "mismatched", "invalid", "extra"]
         writer = csv.DictWriter(buffer, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
@@ -1386,7 +1396,10 @@ class BenchmarkReport:
                 if value.value is None:
                     lines.append(f"    {metric}: unavailable ({value.reason}; n={value.denominator}) [{value.unit}]")
                 else:
-                    lines.append(f"    {metric}: {_csv_number(value.value)} (n={value.denominator}) [{value.unit}]")
+                    note = f"; {value.note}" if value.note else ""
+                    lines.append(
+                        f"    {metric}: {_csv_number(value.value)} (n={value.denominator}{note}) [{value.unit}]"
+                    )
         resources = {k: v for k, v in self.resources.state().items() if v is not None}
         lines.append(f"resources: {resources or 'not measured'}")
         return "\n".join(lines) + "\n"

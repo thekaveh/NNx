@@ -259,7 +259,9 @@ def decide_result(
     (an outage, a timeout, a refused credential) ``"provider_failure"``, and
     ``UnsupportedCapability`` ``"unsupported"``; the first two keep the
     error's ``request_id`` in ``context``. The codes follow the exception
-    type, not whether a retry would help. Anything else propagates.
+    type, not whether a retry would help. Anything else propagates. A
+    ``policy`` that does not fit the question (a ``Boolean``, other labels,
+    another ``model_id``) raises before the provider is called.
     """
     from .decisions.schema import InvalidDecisionResponse, ProviderFailure, UnsupportedCapability
 
@@ -267,6 +269,15 @@ def decide_result(
         raise TypeError(
             f"decide_result(policy=...) needs the model_id (a str) the policy was tuned for, got {model_id!r}"
         )
+    if policy is not None:
+        # The checks abstention.decide makes on each answer, made before the
+        # provider is called (each input may be a billed request), as
+        # DecisionJob.ask does.
+        from .decisions.schema import Boolean
+
+        if isinstance(question, Boolean):
+            raise TypeError("decide_result(policy=...): an abstention policy applies to a Choice or Score, not a Boolean")
+        policy._check(tuple(question.option_ids), model_id, "probabilities", None)
     context = {"question": question.digest(), "provider": type(provider).__name__}
     try:
         results = tuple(provider.decide(question, inputs))

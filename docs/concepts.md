@@ -2220,7 +2220,9 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   evaluation split, the checkpoint-selection rule, the configuration and
   the data and split identity. Anything else is stratified: one group per
   combination, with the differing fields named, and `Summary.pooled()`
-  refuses. A known identity never pools with an unknown one.
+  refuses. A known identity never pools with an unknown one. Each attempt
+  gives one observation per metric: to compare one attempt's splits or
+  selection rules, summarize each split or rule separately.
 - **Statistics.** `n` counts completed attempts with a finite value; the
   standard deviation uses `n - 1` (unavailable for `n = 1`; mean and
   deviation both unavailable for `n = 0`). Failed and non-finite attempts

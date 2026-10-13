@@ -474,7 +474,9 @@ class Summary:
 def summarize(observations: Iterable[Observation]) -> Summary:
     """Group ``observations`` into poolable groups (same metric, split,
     selection rule, configuration, data and split identity) and summarize
-    each; see :class:`GroupSummary`. Duplicate attempts are refused. A
+    each; see :class:`GroupSummary`. Duplicate attempts are refused: an
+    attempt gives one observation per metric, so the same attempt observed
+    on two splits or under two selection rules belongs in two summaries. A
     known identity never pools with an unknown one."""
     items = _checked(observations)
     if not items:
