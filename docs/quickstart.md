@@ -448,7 +448,10 @@ when reloaded. A custom loss module or `train_step_fn` receives the raw logits.
 
 BEST checkpoints, `runs/best` and `ReduceLROnPlateau` all track the first
 *finite* value in a fixed order (lower is better). The order is validation
-error → validation loss → training error → training loss.
+error → validation loss → training error → training loss. The training values
+come from the epoch's last batch record; declare a named monitor
+([Concepts §6.4](concepts.md#64-named-metrics-and-monitors)) to select on a
+whole-epoch training summary instead.
 
 A custom `eval_step_fn` may report `error=nan` with a finite `loss`. It
 therefore still drives scheduling and BEST through its loss. The rejection is

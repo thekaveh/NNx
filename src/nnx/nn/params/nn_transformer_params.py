@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from ..._validation import require_count, require_finite_real
 from ..enum.activations import Activations
-from .nn_params import NNParams, _per_layer_from_state
+from .nn_params import NNParams, _is_probability, _per_layer_from_state
 
 if TYPE_CHECKING:
     from .nn_transformer_params_builder import NNTransformerParamsBuilder
@@ -88,8 +88,8 @@ class NNTransformerParams(NNParams):
         # training=True, far from the config's origin).
         for name in ("attn_dropout", "resid_dropout"):
             value = getattr(self, name)
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value}")
+            if not _is_probability(value):  # a real number in [0, 1], as NNParams.dropout_prob
+                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value!r}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
         # RoPE rotates pairs of head channels, so the head width must be

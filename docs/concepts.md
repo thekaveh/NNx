@@ -351,7 +351,7 @@ Overwriting a run (`overwrite_existing=True`) deletes its artifacts and reuses i
 
 When no eligible run remains, `runs/best` is absent. Readers should treat a missing pointer as "no winner yet", not as an error. Runs that select BEST with a named monitor (§6.4) are never candidates: their ranking is not comparable with other runs'. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save. Election reads other runs without taking their locks.
 
-Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by the first **finite** value. The order is validation error → validation loss → training error → training loss.
+Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by the first **finite** value. The order is validation error → validation loss → training error → training loss. The training values come from the epoch's last batch record; declare a monitor (§6.4) to select on a whole-epoch training summary instead.
 
 NaN and ±inf are never used as a comparison baseline. A non-finite validation error falls through to that same epoch's finite validation loss before training data is consulted. A checkpoint with no finite signal at all scores as unavailable (`+inf`), so it is replaced by the next finite candidate.
 

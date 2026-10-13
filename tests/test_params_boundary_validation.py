@@ -125,3 +125,31 @@ def test_dropout_probabilities_must_be_real_numbers(bad):
     with pytest.raises(ValueError, match="dropout_probs"):
         NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, dropout_probs=[bad])
     assert NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0).dropout_prob == 0  # ints still pass
+
+
+@pytest.mark.parametrize("field", ["attn_dropout", "resid_dropout"])
+@pytest.mark.parametrize("bad", [True, "0.1", float("nan")])
+def test_transformer_dropout_probabilities_must_be_real_numbers(field, bad):
+    from nnx import NNTransformerParams
+
+    with pytest.raises(ValueError, match=field):
+        NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+            **{field: bad},
+        )
+
+
+def test_a_lineage_tag_must_be_yaml_storable():
+    import pathlib
+
+    from nnx import NNTrainParams
+
+    with pytest.raises(ValueError, match="resume_from_checkpoint"):
+        NNTrainParams(n_epochs=1, parent_run_id="a" * 32, resume_from_checkpoint=pathlib.Path("x"))

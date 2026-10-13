@@ -39,6 +39,8 @@ def _checkpoint_tag(value: object, owner: str, *, resuming: bool) -> Any:
     if isinstance(value, Checkpoints):
         return value.value
     if not resuming:
+        if value is not None and not isinstance(value, str):  # run.yaml stores a tag string or null
+            raise ValueError(f"{owner}.resume_from_checkpoint must be a tag string, got {value!r}")
         return value
     if isinstance(value, str) and (
         value in {c.value for c in Checkpoints} or re.fullmatch(rf"{_MODEL_CHECKPOINT_TAG}_e[0-9]+", value)
