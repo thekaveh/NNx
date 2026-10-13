@@ -69,6 +69,10 @@ class GenerativeNNModel(NNModel):
         if not isinstance(tokenizer_config, Mapping) or not isinstance(tokenizer_config.get("filename"), str):
             return {}
         filename = cast(str, tokenizer_config["filename"])
+        # The config comes with a downloaded artifact: a plain file name only,
+        # so it cannot point outside the artifact's directory.
+        if not filename or filename in (".", "..") or Path(filename).name != filename or "\\" in filename:
+            raise ValueError(f"the artifact's tokenizer filename must be a plain file name, got {filename!r}")
         return {"tokenizer": NNTokenizerParams.from_state({"path": str(Path(config_directory) / filename)})}
 
     # ---------- generate ----------

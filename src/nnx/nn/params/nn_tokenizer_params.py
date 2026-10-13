@@ -75,8 +75,12 @@ class NNTokenizerParams:
         if parent:
             os.makedirs(parent, exist_ok=True)
         tmp = path + ".tmp"
-        cast(Any, tokenizer).save(tmp)
-        os.replace(tmp, path)
+        try:
+            cast(Any, tokenizer).save(tmp)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):  # a failed save leaves nothing behind
+                os.remove(tmp)
         return NNTokenizerParams(path=path, tokenizer=tokenizer)
 
     @staticmethod

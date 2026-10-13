@@ -73,10 +73,15 @@ def test_resume_checkpoint_normalizes_to_its_tag_and_rejects_unknown_tags(owner)
     assert as_enum.resume_from_checkpoint == "best"
     assert as_enum.state() == as_text.state()
     assert "best" in yaml.safe_dump(as_enum.state())
-    assert cls(n_epochs=1, resume_from_checkpoint="custom_e3").resume_from_checkpoint == "custom_e3"
-    for bad in ("LAST", "../best", "custom", 3):
+    resume = "a" * 32
+    assert cls(n_epochs=1, resume_from_run_id=resume, resume_from_checkpoint="custom_e3").resume_from_checkpoint == (
+        "custom_e3"
+    )
+    for bad in ("LAST", "../best", "custom", 3, None):
         with pytest.raises(ValueError, match="resume_from_checkpoint"):
-            cls(n_epochs=1, resume_from_checkpoint=bad)
+            cls(n_epochs=1, resume_from_run_id=resume, resume_from_checkpoint=bad)
+    # Lineage only (no resume reads it): kept as given, so saved runs still load.
+    assert cls(n_epochs=1, resume_from_checkpoint="custom").resume_from_checkpoint == "custom"
 
 
 @pytest.mark.parametrize("owner", ["NNTrainParams", "NNTrainerParams"])
@@ -111,3 +116,12 @@ def _trainer_params(cls):
         param_groups=[NNParamGroupSpec(name_pattern="*", lr=1e-3)],
     )
     return functools.partial(cls, optims={"all": optim})
+
+
+@pytest.mark.parametrize("bad", [True, "0.1", float("nan")])
+def test_dropout_probabilities_must_be_real_numbers(bad):
+    with pytest.raises(ValueError, match="dropout_prob"):
+        NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=bad)
+    with pytest.raises(ValueError, match="dropout_probs"):
+        NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, dropout_probs=[bad])
+    assert NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0).dropout_prob == 0  # ints still pass

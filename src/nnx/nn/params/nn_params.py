@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import math
+import numbers
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -32,6 +34,14 @@ class _ImmutableList(list):
 
     def __reduce_ex__(self, _protocol):
         return (_ImmutableList, (list(self),))
+
+
+def _is_probability(value: object) -> bool:
+    """A real number in [0, 1] — not a bool (``True`` would otherwise pass
+    as 1.0 and hash as a different run), a string or NaN."""
+    return (
+        isinstance(value, numbers.Real) and not isinstance(value, bool) and math.isfinite(value) and 0.0 <= value <= 1.0
+    )
 
 
 def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Optional[list[float]]]:
@@ -108,8 +118,8 @@ class NNParams:
             object.__setattr__(
                 self, "n_heads", require_count(self.n_heads, "n_heads", owner=owner, minimum=0, exclusive_min=True)
             )
-        if not 0.0 <= self.dropout_prob <= 1.0:
-            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob}")
+        if not _is_probability(self.dropout_prob):
+            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob!r}")
 
         # Per-layer overrides (#85): length must equal the number of hidden
         # layers; dropout entries must be valid probabilities.
@@ -124,7 +134,7 @@ class NNParams:
                     f"NNParams.dropout_probs must have one entry per hidden layer "
                     f"({n_hidden}), got {len(self.dropout_probs)}"
                 )
-            if not all(0.0 <= q <= 1.0 for q in self.dropout_probs):
+            if not all(_is_probability(q) for q in self.dropout_probs):
                 raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
 
         if self.activations is not None:

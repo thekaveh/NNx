@@ -178,7 +178,11 @@ class NNTrainerParams:
         if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
             raise ValueError(f"NNTrainerParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
         object.__setattr__(
-            self, "resume_from_checkpoint", _checkpoint_tag(self.resume_from_checkpoint, "NNTrainerParams")
+            self,
+            "resume_from_checkpoint",
+            _checkpoint_tag(
+                self.resume_from_checkpoint, "NNTrainerParams", resuming=self.resume_from_run_id is not None
+            ),
         )
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")

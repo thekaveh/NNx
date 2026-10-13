@@ -51,14 +51,25 @@ class ConvNN(nn.Module):
                 for in_dim, out_dim in zip(fc_dims, fc_dims[1:], strict=False)
             ]
         )
-        # Everything the forward reads from the params, resolved once: the
+
+    @property
+    def params(self) -> NNConvParams:
+        return self._params
+
+    @params.setter
+    def params(self, params: NNConvParams) -> None:
+        # Everything the forward reads from the params, resolved whenever
+        # they are set (model surgery replaces them, as for FeedFwdNN): the
         # forward touches neither the params object nor the Activations enum,
-        # which torch.compile cannot trace on older torch (FEAT-029).
-        self._side = params.image_side()
-        self._in_channels = params.in_channels
-        self._pool_size = params.pool_size
-        self._conv_activation = params.activation() if params.activation is not None else None
-        self._hidden = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(len(self.fcs) - 1))
+        # which torch.compile cannot trace on older torch. Plain attributes:
+        # nothing is registered as a module or saved.
+        self.__dict__["_params"] = params
+        self.__dict__["_side"] = params.image_side()
+        self.__dict__["_in_channels"] = params.in_channels
+        self.__dict__["_pool_size"] = params.pool_size
+        self.__dict__["_conv_activation"] = params.activation() if params.activation is not None else None
+        n_hidden = len(params.hidden_dims) if params.hidden_dims is not None else 0
+        self.__dict__["_hidden"] = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(n_hidden))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         X = X.view(X.size(0), self._in_channels, self._side, self._side)

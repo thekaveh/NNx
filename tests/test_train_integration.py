@@ -996,6 +996,25 @@ def test_warmup_decay_resume_on_the_epoch_clock_requires_explicit_warmup_steps(t
     assert "warmup_steps" not in str(other.value)
 
 
+def test_a_planned_warmup_decay_resume_keeps_the_default_warmup():
+    """A planned resume passes the whole plan's n_epochs, so the default
+    warm-up equals the original session's: no explicit warmup_steps needed."""
+    from nnx.nn.nn_model import _check_resume_horizon
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.LINEAR_WARMUP_DECAY,
+        total_steps=40,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+    )
+    _check_resume_horizon(scheduler, n_epochs=20, start_epoch=10, planned=True)
+    with pytest.raises(ValueError, match="requires scheduler.warmup_steps"):
+        _check_resume_horizon(scheduler, n_epochs=10, start_epoch=10)
+
+
 def test_finite_horizon_resume_rejects_insufficient_explicit_horizon(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     train_loader, _ = _make_tiny_loaders()

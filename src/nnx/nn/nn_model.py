@@ -220,7 +220,12 @@ def _resume_checkpoint_type(value: Any) -> Any:
 
 
 def _check_resume_horizon(
-    scheduler_params: Any, *, n_epochs: int, start_epoch: Optional[int] = None, owner: str = ""
+    scheduler_params: Any,
+    *,
+    n_epochs: int,
+    start_epoch: Optional[int] = None,
+    owner: str = "",
+    planned: bool = False,
 ) -> None:
     """A resumed one-cycle / warmup-decay schedule needs one explicit
     horizon covering the original and resumed epochs (checked before the
@@ -237,8 +242,11 @@ def _check_resume_horizon(
     # On the epoch clock the default warm-up is a tenth of *this* session's
     # n_epochs, and it lives in the LambdaLR closure, not in the restored
     # scheduler state: a resume would silently warm up over another length.
+    # A planned resume (resume_epochs="planned") passes the whole plan's
+    # n_epochs, so the default warm-up is the original session's.
     if (
         str(kind) == "linear_warmup_decay"
+        and not planned
         and not uses_update_clock(scheduler_params)
         and getattr(scheduler_params, "warmup_steps", None) is None
     ):
@@ -3600,7 +3608,7 @@ class NNModel(_HubMixinBase):
         # A weights-only resume starts a fresh schedule and needs no shared horizon.
         stateful_resume = params.resume_from_run_id is not None and params.resume_mode != "weights_only"
         if stateful_resume:
-            _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs)
+            _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs, planned=params.resume_epochs == "planned")
         # FEAT-014: an optimizer_update clock steps on committed updates; its
         # default horizon is the planned updates when NNx owns the windows
         # (the default step or an objective) and the loader has a length.
@@ -3714,7 +3722,12 @@ class NNModel(_HubMixinBase):
                                     if owns_windows
                                     else None
                                 )
-                        _check_resume_horizon(params.scheduler, n_epochs=session_epochs, start_epoch=start_epoch)
+                        _check_resume_horizon(
+                            params.scheduler,
+                            n_epochs=session_epochs,
+                            start_epoch=start_epoch,
+                            planned=params.resume_epochs == "planned",
+                        )
                         # Worker capability is decided BEFORE any state is restored:
                         # ordinary training accepts any re-iterable batch source (a
                         # list, NNGraphDataset's one-element full-batch list, ...),

@@ -475,3 +475,13 @@ def test_hub_loading_re_resolves_the_precision_policy_on_the_destination_device(
     # ... unless the caller replaces the policy.
     replaced = NNModel.from_pretrained(str(tmp_path), map_location="cpu", precision=PrecisionPolicy("fp32"))
     assert replaced.resolved_precision.effective == "fp32"
+
+
+@pytest.mark.parametrize(
+    "filename", ["../tokenizer.json", "/abs/tokenizer.json", "sub/tokenizer.json", "a\\\\b.json", "..", ""]
+)
+def test_a_downloaded_config_cannot_point_the_tokenizer_outside_the_artifact(filename, tmp_path):
+    from nnx.nn.generative_nn_model import GenerativeNNModel
+
+    with pytest.raises(ValueError, match="plain file name"):
+        GenerativeNNModel._hub_reconstruction_kwargs({"tokenizer": {"filename": filename}}, tmp_path)

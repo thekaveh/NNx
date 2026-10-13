@@ -437,3 +437,26 @@ def test_deepen_named_container_then_widen_by_numeric_key():
     wider = widen(deep, layer_name="1", new_width=6).eval()
     assert wider.get_submodule("1").out_features == 6 and wider.get_submodule("head").in_features == 6
     torch.testing.assert_close(wider(x), mixed(x), rtol=1e-5, atol=1e-5)
+
+
+def test_deepen_on_a_conv_net_head_updates_its_cached_forward_state():
+    """ConvNN resolves its per-layer activations from its params when they
+    are set, as FeedFwdNN does, so deepen's new params reach the forward."""
+    from nnx import Activations, NNConvParams
+    from nnx.nn.net.conv_nn import ConvNN
+
+    torch.manual_seed(0)
+    params = NNConvParams(
+        input_dim=64,
+        output_dim=3,
+        hidden_dims=[16],
+        conv_channels=[4],
+        kernel_size=3,
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+    )
+    net = ConvNN(params).eval()
+    x = torch.randn(2, 64)
+    deeper = deepen(net, after_layer_name="fcs.0").eval()
+    assert deeper.params.hidden_dims == [16, 16] and len(deeper._hidden) == 2
+    torch.testing.assert_close(deeper(x), net(x), atol=1e-5, rtol=1e-5)
