@@ -872,7 +872,7 @@ class _TrainEpochSummary:
         self._pending = (loss_weight, error_weight)
 
     def observe_terms(self, terms: Sequence[Any]) -> None:
-        """Called for each objective microbatch with its ``LossTerm``\\ s:
+        """Called for each objective microbatch with its ``LossTerm``s:
         each term pools its *weighted* numerators (each microbatch's own
         weight, so a weight annealed across windows counts as it was
         applied) over its summed denominators; a summed term adds its

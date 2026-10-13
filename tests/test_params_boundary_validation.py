@@ -320,3 +320,34 @@ def test_enum_fields_refuse_plain_strings():
         NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0.0, activations=["relu"])
     with pytest.raises(TypeError, match="NNOptimParams.name"):
         NNOptimParams(name="adam", max_lr=0.1, momentum=(0.9, 0.999), weight_decay=0.0)
+
+
+def test_a_warmup_longer_than_its_schedule_is_refused():
+    from nnx import NNSchedulerParams, Schedulers
+
+    with pytest.raises(ValueError, match="warmup_steps <= total_steps"):
+        NNSchedulerParams(
+            kind=Schedulers.LINEAR_WARMUP_DECAY,
+            min_lr=0.0,
+            factor=0.5,
+            patience=0,
+            cooldown=0,
+            threshold=0.0,
+            warmup_steps=10,
+            total_steps=5,
+        )
+
+
+@pytest.mark.parametrize(("name", "momentum"), [("ADAM", 0.9), ("SGD", (0.9, 0.999))])
+def test_a_momentum_of_the_wrong_shape_fails_with_a_reason_when_built(name, momentum):
+    """Constructible by design (ExperimentPlan.validate reports it); a
+    direct build_optimizer names the problem instead of a bare assert."""
+    import torch
+
+    from nnx import NNOptimParams, Optims
+    from nnx.optimizers import build_optimizer
+
+    params = NNOptimParams(name=getattr(Optims, name), max_lr=0.1, momentum=momentum, weight_decay=0.0)
+    assert not params.is_valid()
+    with pytest.raises(ValueError, match="pair|one real momentum"):
+        build_optimizer(torch.nn.Linear(2, 2), params)

@@ -13,7 +13,7 @@ runs objectives in full precision)::
 
     model.train(params=NNTrainParams(...), objective=kd_objective(teacher, alpha=0.5, temperature=4.0))
 
-For each microbatch an objective returns :class:`LossTerm`\\ s: a
+For each microbatch an objective returns :class:`LossTerm`s: a
 differentiable **numerator** (a sum over the term's samples) and either an
 explicit **denominator** (``reduction="mean"``: the number — or total
 weight — of samples the numerator sums over) or none (``reduction="sum"``).

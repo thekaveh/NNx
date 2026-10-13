@@ -150,8 +150,11 @@ def train_bpe(
             corpora.
         texts: in-memory list of training strings — useful for unit
             tests and the examples without writing a temp file.
-        special_tokens: e.g. ``["<pad>", "<bos>", "<eos>"]``. Included
-            in the vocab and not split during tokenization.
+        special_tokens: e.g. ``["<unk>", "<pad>", "<bos>", "<eos>"]`` (the
+            default). Included in the vocab and not split during
+            tokenization. ``"<unk>"`` is the model's unknown token: it is
+            appended when missing, so an unseen character encodes instead
+            of raising.
         min_frequency: minimum pair frequency to merge — higher values
             give smaller, more conservative vocabs.
 
@@ -164,10 +167,13 @@ def train_bpe(
 
     tk = Tokenizer(BPE(unk_token="<unk>"))  # type: ignore[union-attr]
     tk.pre_tokenizer = Whitespace()  # type: ignore[union-attr]
+    specials = ["<unk>", "<pad>", "<bos>", "<eos>"] if special_tokens is None else list(special_tokens)
+    if "<unk>" not in specials:
+        specials.append("<unk>")  # after the caller's tokens, so their ids are kept
     trainer = BpeTrainer(  # type: ignore[union-attr]
         vocab_size=vocab_size,
         min_frequency=min_frequency,
-        special_tokens=list(special_tokens or ["<unk>", "<pad>", "<bos>", "<eos>"]),
+        special_tokens=specials,
     )
 
     if files is not None:

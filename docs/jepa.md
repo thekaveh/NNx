@@ -19,7 +19,7 @@ small ViT for a few epochs on 32x32 images" — not a SOTA reproduction.
 | `nnx.build_target_encoder(source)` | Deep-copy `source`, freeze every param (`requires_grad=False`), pin to `eval()`. The factory function freezes again defensively. |
 | `nnx.update_ema(source, target, momentum)` | In-place EMA update: `target ← momentum · target + (1 - momentum) · source`. Name-keyed against the target's params so a source with extra submodules (the typical "predictor under model.net" idiom) is fine. |
 | `nnx.random_block_mask(*, n_patches, grid_size, …)` | Sample one rectangular block as the prediction target. All arguments are keyword-only. Returns `(context_mask, target_mask)` 1-D BoolTensors. |
-| `nnx.jepa_train_step_factory(target_encoder, predictor, mask_fn, *, ema_momentum=0.996)` | Returns a `TrainStepFn` for `NNModel.train(..., train_step_fn=...)`. |
+| `nnx.jepa_train_step_factory(target_encoder, predictor, mask_fn, *, ema_momentum=0.996)` | Returns a `TrainStepFn` for `NNModel.train(..., train_step_fn=...)`. The predictor must be a submodule of `model.net`; the first step refuses it otherwise. |
 | `nnx.jepa_objective(target_encoder, predictor, mask_fn, *, ema_momentum=0.996, nonfinite="fail")` | The same loss as an objective (`JEPAObjective`, §5) for `NNModel.train(..., objective=...)` / `Trainer.train(..., objective=...)`. The shared update engine owns the update, and the EMA target advances once per committed update. |
 
 **Precision.** The `ViTNN` RMSNorms, like those in the `ViTBlock`s that
@@ -166,9 +166,8 @@ otherwise the encoder will raise.
 ### 4.3. EMA update is name-keyed, not positional
 
 `update_ema` walks `target.named_parameters()` and looks each name
-up on the source. The canonical idiom composes the predictor as a
-submodule of `model.net`, so a single optimizer picks up both encoder
-and predictor params. The predictor's params then appear on
+up on the source. The predictor must be a submodule of `model.net`,
+so a single optimizer picks up both encoder and predictor params. The predictor's params then appear on
 `source.named_parameters()` but not on the target, and the EMA
 correctly leaves them alone. Mismatches the other direction
 (target param missing on source) raise — that's a real bug.

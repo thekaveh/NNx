@@ -1046,7 +1046,7 @@ class LinkTask:
         return LinkEval(self)
 
     def metric_specs(self) -> list[Any]:
-        """``MetricSpec``\\ s for ``MonitorSpec("auroc")`` / ``("ap")``
+        """``MetricSpec``s for ``MonitorSpec("auroc")`` / ``("ap")``
         (binary) — a one-class set leaves them unavailable, so it never
         wins BEST."""
         from .monitors import MetricSpec

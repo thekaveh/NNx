@@ -96,6 +96,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.monitors.MetricSpec
 
+@api nnx.monitors.MetricDefinition
+
 @api nnx.monitors.MonitorSpec
 
 @api nnx.monitors.MonitorRecord
@@ -618,6 +620,8 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.graph_tasks.check_graph_batch
 
+@api nnx.graph_tasks.is_graph_collection_batch
+
 @api nnx.graph_tasks.GraphTaskError
 
 ### 2.26. Link and edge prediction (`nnx.link_tasks`)
@@ -631,6 +635,14 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 @api nnx.link_tasks.LinkPredictor
 
 @api nnx.link_tasks.link_predictor_spec
+
+@api nnx.link_tasks.LinkObjective
+
+@api nnx.link_tasks.LinkEval
+
+@api nnx.link_tasks.MetricValue
+
+@api nnx.link_tasks.is_link_batch
 
 @api nnx.link_tasks.link_metrics
 
@@ -957,6 +969,8 @@ Walkthrough at [DPO](dpo.md).
 End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "thekaveh-nnx[embeddings]"`.
 
 @api nnx.embeddings.contrastive_trainer.ContrastiveTextDataset
+
+@api nnx.embeddings.contrastive_trainer.pair_collate
 
 @api nnx.embeddings.contrastive_trainer.train_contrastive
 

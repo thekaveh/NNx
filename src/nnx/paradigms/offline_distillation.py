@@ -25,7 +25,7 @@ records directly, offline:
   naming an unknown or duplicate one, another schema digest, a repeated
   sample id or a sample with no input is refused when the dataset is built
   — before any optimizer exists. :meth:`TeacherDataset.loader` yields
-  :class:`TeacherBatch`\\ es.
+  :class:`TeacherBatch`es.
 - :class:`OfflineDistillationObjective` (:meth:`TeacherDataset.objective`)
   — an objective for NNx's shared update engine: ``alpha ·
   KL(teacher ‖ student) + (1 − alpha) · CE(student, label)``, both at
@@ -297,7 +297,7 @@ class TeacherBatch:
 
 
 class TeacherDataset(torch.utils.data.Dataset):
-    """:class:`TeacherRecord`\\ s joined to the student's ``inputs`` (a
+    """:class:`TeacherRecord`s joined to the student's ``inputs`` (a
     mapping from sample id to its input tensor) and aligned to the student's
     output order ``candidates`` (see the module docstring).
 
@@ -402,7 +402,7 @@ class TeacherDataset(torch.utils.data.Dataset):
         )
 
     def loader(self, batch_size: int, *, shuffle: bool = False, seed: Optional[int] = None) -> DataLoader:
-        """A ``DataLoader`` of :class:`TeacherBatch`\\ es; ``shuffle`` draws
+        """A ``DataLoader`` of :class:`TeacherBatch`es; ``shuffle`` draws
         its order from ``seed`` (a generator a stateful resume restores)."""
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
             raise TeacherRecordError(f"batch_size must be a positive integer, got {batch_size!r}")
@@ -723,7 +723,7 @@ def evaluate_offline(
 
 class OfflineDistillationEval:
     """An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a
-    validation loader of :class:`TeacherBatch`\\ es: its ``metrics`` are
+    validation loader of :class:`TeacherBatch`es: its ``metrics`` are
     ``teacher_kl``, ``teacher_agreement`` and — with labelled records —
     ``label_accuracy`` and ``label_nll``.
 

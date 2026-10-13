@@ -104,6 +104,12 @@ class Optims(Enum):
             strict_param_groups=strict_param_groups,
         )
 
+        # The momentum shape matches the family (is_valid() refuses a
+        # mismatch in train(); a direct build gets the reason here).
+        adam = self in (Optims.ADAM, Optims.ADAMW, Optims.ADAM_AMSGRAD)
+        if adam != isinstance(momentum, tuple):
+            expected = "a (beta1, beta2) pair" if adam else "one real momentum"
+            raise ValueError(f"{self} requires {expected}, got {momentum!r}")
         # Validated reals (an int 0 included) as the floats torch expects;
         # the params' state() keeps the value as given (run ids never shift).
         if isinstance(momentum, tuple):

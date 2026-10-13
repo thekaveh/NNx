@@ -22,7 +22,7 @@ first trained model, see the [README](../README.md#2-install) and the
 - **Metrics and monitors.** `NNTrainParams.extra_metrics` accepts any
   `callable(y_true, y_pred) -> float`. Declared metrics (`MetricSpec`) and one
   named monitor (`MonitorSpec`) drive BEST selection, plateau scheduling and
-  early stopping together.
+  an `EarlyStopping` given the same monitor.
 - **Objectives.** `LossTerm`s with explicit denominators run over one shared
   update engine, which gives accumulation, clipping and the precision policy to
   `NNModel` and `Trainer` alike. Built-in objectives: `supervised_objective`,

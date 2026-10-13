@@ -301,9 +301,9 @@ def main():
     print(f"first-step loss: {first_loss:.4f}")
     print(f"last-step  loss: {last_loss:.4f}")
     print(f"steps run      : {len(losses)}")
-    # Quick sanity check — on synthetic noise the loss is small from the
-    # start (the predictor learns a near-zero mapping); the assertion is
-    # for the verify-the-plumbing demo to flag if something goes wrong.
+    # The latent MSE starts near 1 (the targets are unit-RMS, RMSNorm-ed
+    # encoder outputs) and decreases; the assertion only guards against a
+    # non-finite loss in this verify-the-plumbing demo.
     assert all(torch.isfinite(torch.tensor(lo)).item() for lo in losses), "non-finite loss"
 
 

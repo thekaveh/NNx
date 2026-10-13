@@ -2039,6 +2039,15 @@ nnx.monitors.MetricSpec.from_state(state: 'Mapping[str, Any]') -> 'MetricSpec'
 No public description is currently available.
 
 
+#### `nnx.monitors.MetricDefinition`
+
+```python
+class nnx.monitors.MetricDefinition(id: 'str', version: 'int', input: 'str', mode: 'str', factory: 'Callable[[Mapping[str, Any]], MetricAccumulator]', check_config: 'Optional[Callable[[Mapping[str, Any]], None]]' = None) -> 'None'
+```
+
+A registered metric: what it receives and how it is computed.
+
+
 #### `nnx.monitors.MonitorSpec`
 
 ```python
@@ -4952,7 +4961,7 @@ Read a run's provenance files; ``None`` when it has none (absent). Raises ``Valu
 nnx.provenance.compare(left: 'Any', right: 'Any', *, root: 'Optional[str]' = None) -> 'ProvenanceComparison'
 ```
 
-Compare two plans field by field — manifests, provenance records, ``NNRun``\ s or run ids (their provenance files are read; no model is loaded, no loader iterated, no file hashed).
+Compare two plans field by field — manifests, provenance records, ``NNRun``s or run ids (their provenance files are read; no model is loaded, no loader iterated, no file hashed).
 
 
 #### `nnx.provenance.ProvenanceComparison`
@@ -8247,7 +8256,7 @@ No public description is currently available.
 nnx.ranking.RankingTask.metric_specs(self) -> 'list[Any]'
 ```
 
-``MetricSpec``\ s declaring this task's metrics — registered ids ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a ``MonitorSpec`` can select on them. `eval_step` computes them; a declaration under another name finds no value.
+``MetricSpec``s declaring this task's metrics — registered ids ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a ``MonitorSpec`` can select on them. `eval_step` computes them; a declaration under another name finds no value.
 
 ##### `nnx.ranking.RankingTask.split`
 
@@ -8574,6 +8583,15 @@ nnx.graph_tasks.check_graph_batch(batch: 'Any') -> 'tuple[torch.Tensor, torch.Te
 ``(x, edge_index, batch_vector, ptr)`` of a graph-collection batch, checked: graph ids (unique), at least one node per graph, ``ptr`` and the batch vector consistent, and no edge across graphs. An edge-label (link) batch is refused: pooling it would score candidate edges as graphs.
 
 
+#### `nnx.graph_tasks.is_graph_collection_batch`
+
+```python
+nnx.graph_tasks.is_graph_collection_batch(batch: 'Any') -> 'bool'
+```
+
+Whether ``batch`` is a batch of whole graphs (it carries graph ids).
+
+
 #### `nnx.graph_tasks.GraphTaskError`
 
 ```python
@@ -8769,7 +8787,7 @@ No public description is currently available.
 nnx.link_tasks.LinkTask.metric_specs(self) -> 'list[Any]'
 ```
 
-``MetricSpec``\ s for ``MonitorSpec("auroc")`` / ``("ap")`` (binary) — a one-class set leaves them unavailable, so it never wins BEST.
+``MetricSpec``s for ``MonitorSpec("auroc")`` / ``("ap")`` (binary) — a one-class set leaves them unavailable, so it never wins BEST.
 
 ##### `nnx.link_tasks.LinkTask.predict`
 
@@ -8832,6 +8850,74 @@ nnx.link_tasks.link_predictor_spec(*, input_dim: 'int', hidden_dims: 'Sequence[i
 ```
 
 The registered recipe of a `LinkPredictor` (pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module).
+
+
+#### `nnx.link_tasks.LinkObjective`
+
+```python
+class nnx.link_tasks.LinkObjective(task: 'LinkTask', *, nonfinite: 'str' = 'fail') -> 'None'
+```
+
+The task's training objective: binary cross-entropy (or categorical cross-entropy) summed over a batch's candidates, over the candidate count, after `LinkTask.check_batch`. Checkpointed as component ``"link.task"`` with the manifest (topology policy, candidate ids, fixed negatives).
+
+##### `nnx.link_tasks.LinkObjective.component_spec`
+
+```python
+nnx.link_tasks.LinkObjective.component_spec(self) -> 'ComponentSpec'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkObjective.component_state`
+
+```python
+nnx.link_tasks.LinkObjective.component_state(self) -> 'dict[str, Any]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkObjective.check_component_state`
+
+```python
+nnx.link_tasks.LinkObjective.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+No public description is currently available.
+
+##### `nnx.link_tasks.LinkObjective.load_component_state`
+
+```python
+nnx.link_tasks.LinkObjective.load_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'None'
+```
+
+The manifest is configuration (checked, not restored). The training negatives' seed is restored and must match the resumed loader's. The passes need no state: the training loop announces each epoch to the task's loader (``set_epoch``), so a resumed run draws what the uninterrupted one would have — through any wrapper that forwards ``set_epoch``.
+
+
+#### `nnx.link_tasks.LinkEval`
+
+```python
+class nnx.link_tasks.LinkEval(task: 'LinkTask') -> 'None'
+```
+
+The task's ``eval_step_fn``: every validation candidate materialised (at most ``max_candidates``), then exact metrics over the whole set — never per-batch averages — from the float64 logits, never rounded probabilities (`link_metrics` with ``from_logits=True``). The record (``kind="link"``) counts the candidates; its ``loss`` is the BCE (or NLL).
+
+
+#### `nnx.link_tasks.MetricValue`
+
+```python
+class nnx.link_tasks.MetricValue(value: 'Optional[float]', reason: 'Optional[str]' = None) -> 'None'
+```
+
+A metric's value, or ``None`` with the reason it is unavailable.
+
+
+#### `nnx.link_tasks.is_link_batch`
+
+```python
+nnx.link_tasks.is_link_batch(batch: 'Any') -> 'bool'
+```
+
+Whether ``batch`` asks about candidate edges (it has ``edge_label_index``).
 
 
 #### `nnx.link_tasks.link_metrics`
@@ -9956,8 +10042,11 @@ Args:
         corpora.
     texts: in-memory list of training strings — useful for unit
         tests and the examples without writing a temp file.
-    special_tokens: e.g. ``["<pad>", "<bos>", "<eos>"]``. Included
-        in the vocab and not split during tokenization.
+    special_tokens: e.g. ``["<unk>", "<pad>", "<bos>", "<eos>"]`` (the
+        default). Included in the vocab and not split during
+        tokenization. ``"<unk>"`` is the model's unknown token: it is
+        appended when missing, so an unseen character encodes instead
+        of raising.
     min_frequency: minimum pair frequency to merge — higher values
         give smaller, more conservative vocabs.
 
@@ -10242,7 +10331,7 @@ The manifest stamping this checkpoint's resume point — ``generation``, ``check
 nnx.nn.params.nn_checkpoint.NNCheckpoint.verify(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). No file is unpickled to decide and nothing is written: a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
+Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). No file is unpickled to decide and no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_training_state`
 
@@ -11551,7 +11640,7 @@ Wrap parallel lists of (prompt, chosen, rejected) strings as DPO loaders.
 ```text
 Tokenizes every triple through ``tokenizer.encode`` once at
 construction, pads/truncates to fixed lengths, then splits into
-train / val / test ``DataLoader``\ s with the same shape as the
+train / val / test ``DataLoader``s with the same shape as the
 rest of :class:`NNDatasetBase` (so callbacks and the standard
 training loop work unchanged).
 
@@ -14384,7 +14473,7 @@ No public description is currently available.
 class nnx.paradigms.offline_distillation.TeacherDataset(records: 'Iterable[TeacherRecord]', inputs: 'Mapping[str, Any]', *, candidates: 'Sequence[str]', schema_digest: 'str') -> 'None'
 ```
 
-`TeacherRecord`\ s joined to the student's ``inputs`` (a mapping from sample id to its input tensor) and aligned to the student's output order ``candidates`` (see the module docstring).
+`TeacherRecord`s joined to the student's ``inputs`` (a mapping from sample id to its input tensor) and aligned to the student's output order ``candidates`` (see the module docstring).
 
 **Details**
 
@@ -14430,7 +14519,7 @@ No public description is currently available.
 nnx.paradigms.offline_distillation.TeacherDataset.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'DataLoader'
 ```
 
-A ``DataLoader`` of `TeacherBatch`\ es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores).
+A ``DataLoader`` of `TeacherBatch`es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores).
 
 ##### `nnx.paradigms.offline_distillation.TeacherDataset.objective`
 
@@ -14522,7 +14611,7 @@ Nothing to restore: the checked identity is the whole state.
 class nnx.paradigms.offline_distillation.OfflineDistillationEval(*, schema_digest: 'str', candidates: 'Sequence[str]') -> 'None'
 ```
 
-An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a validation loader of `TeacherBatch`\ es: its ``metrics`` are ``teacher_kl``, ``teacher_agreement`` and — with labelled records — ``label_accuracy`` and ``label_nll``.
+An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a validation loader of `TeacherBatch`es: its ``metrics`` are ``teacher_kl``, ``teacher_agreement`` and — with labelled records — ``label_accuracy`` and ``label_nll``.
 
 **Details**
 
@@ -15245,6 +15334,15 @@ Raises:
     ValueError: if ``pairs`` is empty or any entry isn't a 2-tuple
         of strings.
 ```
+
+
+#### `nnx.embeddings.contrastive_trainer.pair_collate`
+
+```python
+nnx.embeddings.contrastive_trainer.pair_collate(batch: 'Iterable[tuple[str, str]]') -> 'tuple[list[str], list[str]]'
+```
+
+Collate a batch of ``(anchor, positive)`` string tuples into two parallel lists ``(anchors, positives)``. Pair this with `ContrastiveTextDataset` when building your own `DataLoader`.
 
 
 #### `nnx.embeddings.contrastive_trainer.train_contrastive`

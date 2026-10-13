@@ -175,8 +175,8 @@ tested torch / torchvision / Python combinations and which of them carry real
 CUDA evidence. Two examples exercise the policy:
 
 - [`examples/01_synthetic_classification.py`](https://github.com/thekaveh/NNx/blob/main/examples/01_synthetic_classification.py)'s
-  `precision_workflow()` (also `--precision bf16`) runs a bounded CPU FP32
-  workflow. It also runs a BF16 one gated on `precision_support`.
+  `precision_workflow(mode)` runs one bounded CPU workflow: FP32 by default,
+  or BF16 (`--precision bf16`) where `precision_support` allows it.
 - [`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
   `amp_resume_compatibility()` runs the CPU no-scaler cycle everywhere. It
   runs the enabled-AMP cycle only on a CUDA host.

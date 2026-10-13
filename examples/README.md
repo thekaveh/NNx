@@ -9,7 +9,7 @@ pip install thekaveh-nnx                # core (covers every example not listed 
 python examples/01_synthetic_classification.py
 ```
 
-**Re-running an example.** Run ids are content-addressed: the same configuration gets the same id. So a training example that saves under `runs/` in the working directory raises `FileExistsError` when re-run there. Delete `runs/`, or run each example in a fresh directory.
+**Re-running an example.** Run ids are content-addressed: the same configuration gets the same id. So most training examples that save under `runs/` in the working directory raise `FileExistsError` when re-run there (a few overwrite on purpose). Delete `runs/`, or run each example in a fresh directory.
 
 The examples track the current source. If one needs a feature that your PyPI release does not have, install the source as shown in the [README](../README.md#2-install).
 

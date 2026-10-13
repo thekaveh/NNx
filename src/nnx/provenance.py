@@ -787,7 +787,7 @@ def _manifest_of(value: Any, root: Optional[str]) -> Optional[ExperimentManifest
 
 def compare(left: Any, right: Any, *, root: Optional[str] = None) -> ProvenanceComparison:
     """Compare two plans field by field — manifests, provenance records,
-    ``NNRun``\\ s or run ids (their provenance files are read; no model is
+    ``NNRun``s or run ids (their provenance files are read; no model is
     loaded, no loader iterated, no file hashed)."""
     left_manifest, right_manifest = _manifest_of(left, root), _manifest_of(right, root)
     if left_manifest is None or right_manifest is None:

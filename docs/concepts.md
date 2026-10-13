@@ -550,7 +550,7 @@ Out of scope: concurrent writers to one run, mid-epoch recovery (an epoch is the
 
 ## 5. Callbacks
 
-`Callback` has four hooks (`on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`) each receiving a `_CallbackContext`:
+`Callback` has five hooks, each receiving a `_CallbackContext`: `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`, plus `on_optimizer_update` in objective runs (§6.5):
 
 ```python
 ctx.model         # NNModel
@@ -1943,8 +1943,9 @@ The manifest is staged before the checkpoint is published and made live
 right after. A Ctrl-C in that window is held until the point is complete; a
 second Ctrl-C stops at once. A writer that dies inside the window leaves a
 point whose staged manifest matches every file. Verification then reads that
-staged manifest rather than refusing the point. Verification never writes;
-the run's next save makes the manifest live.
+staged manifest rather than refusing the point. Verification writes no
+checkpoint data; it only takes the checkpoint's `<tag>.pt.lock` file, which
+it creates when missing. The run's next save makes the manifest live.
 
 A resume verifies the point first with `NNCheckpoint.verify(run, type)`. It
 refuses with `ResumePointError` a point that is:
@@ -1957,7 +1958,8 @@ refuses with `ResumePointError` a point that is:
 written before manifests loads as before. Stopping (`should_stop`, an
 interrupt) leaves the last committed point intact.
 
-**Identity and lineage.** A resume never writes to its source. The resumed
+**Identity and lineage.** A resume writes no data to its source; like
+verification, it takes the source checkpoint's lock file. The resumed
 session's run id hashes its parent (`parent_run_id`, `parent_checkpoint`).
 `run.resume_status` records the source run, checkpoint, epoch,
 `source_generation` and `source_checkpoint_id`. It is stored in
@@ -1978,7 +1980,7 @@ training scheduler through `ctx.scheduler`. It is read-only, and it is
 
 ## 15. Generative language modeling (`TransformerNN` + `GenerativeNNModel`)
 
-The decoder-only LM path adds three abstractions that sit alongside `NNModel`
+The decoder-only LM path adds four abstractions that sit alongside `NNModel`
 rather than replacing it:
 
 - **`TransformerNN`** — a small decoder-only transformer (`RMSNorm` pre-norm,
@@ -2713,9 +2715,10 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   without reading anything from disk.
 - **Resume refusals.** These raise `BundleCapabilityError` before anything
   changes: an `"inference"` bundle, a `Trainer` run's bundle (named
-  optimizers), or a transformed topology (a converted QAT checkpoint).
-  `resume` continues `NNModel.train` runs from an untransformed model. The
-  refused models still rebuild for inference like any other.
+  optimizers), or a topology converted at train end (a QAT checkpoint). A
+  recorded `nnx.transforms` recipe (LoRA, low-rank) is replayed on the
+  rebuilt model, so its bundle resumes. The refused models still rebuild
+  for inference like any other.
 - **Publication.** A new generation directory is written first, and
   `bundle.json` is replaced atomically. An export interrupted at any point
   therefore leaves the previous bundle usable. The replaced generation stays

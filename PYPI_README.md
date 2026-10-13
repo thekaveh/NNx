@@ -241,9 +241,10 @@ NNTrainParams(
 # Available on idp.train_edp.extra / idp.val_edp.extra and survives NNRun.load.
 
 # Declared metrics (labels / probabilities / continuous inputs, full-sample values)
-# and one monitor for BEST, ReduceLROnPlateau and EarlyStopping:
+# and one monitor for BEST, ReduceLROnPlateau and an EarlyStopping given it:
 monitor = MonitorSpec(metric="nll", min_delta=0.01)
 NNTrainParams(..., metrics=[MetricSpec("nll"), MetricSpec("brier")], monitor=monitor)
+# ... model.train(params, callbacks=[EarlyStopping(monitor=monitor, patience=5)])
 ```
 
 See [Concepts §6.4](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#64-named-metrics-and-monitors): custom metrics register with `nnx.register_metric`, training records carry a whole-epoch `train_summary` and the epoch's monitor `selection`, and named-monitor runs never claim `runs/best`.

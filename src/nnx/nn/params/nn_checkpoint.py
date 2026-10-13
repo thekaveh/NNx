@@ -784,7 +784,8 @@ class NNCheckpoint:
         a listed file missing or a manifest naming another checkpoint
         (*torn*), files of different generations (*mixed*), or a file whose
         SHA-256 differs (*digest mismatch*). No file is unpickled to decide
-        and nothing is written: a point whose writer stopped between
+        and no checkpoint data is written (only the checkpoint's lock file
+        is taken, created when missing): a point whose writer stopped between
         publishing the checkpoint and its live manifest is recognized by its
         staged manifest — every digest matching — and that manifest is
         returned (the writer's next save makes it live)."""

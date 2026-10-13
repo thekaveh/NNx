@@ -95,6 +95,12 @@ class NNSchedulerParams:
                         domain_message=f"NNSchedulerParams requires {name} > 0 when set, got {value}",
                     ),
                 )
+        # A warm-up longer than the schedule never reaches max_lr and never
+        # decays (the remaining total_steps - warmup_steps is negative).
+        if self.warmup_steps is not None and self.total_steps is not None and self.warmup_steps > self.total_steps:
+            raise ValueError(
+                f"NNSchedulerParams requires warmup_steps <= total_steps, got {self.warmup_steps} > {self.total_steps}"
+            )
 
     def __str__(self) -> str:
         if self.kind is None:

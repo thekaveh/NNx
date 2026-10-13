@@ -329,7 +329,7 @@ class RankingTask:
         return [f"{metric}_at_{k}" for k in self.k for metric in ("mrr", "recall", "ndcg")]
 
     def metric_specs(self) -> list[Any]:
-        """``MetricSpec``\\ s declaring this task's metrics — registered ids
+        """``MetricSpec``s declaring this task's metrics — registered ids
         ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with
         ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a
         ``MonitorSpec`` can select on them. :meth:`eval_step` computes them;

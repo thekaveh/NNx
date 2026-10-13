@@ -3,7 +3,7 @@
 Ask a typed question, get labelled probabilities back — from any provider
 that declares it can answer:
 
-- **Questions** — :class:`Choice` (pick one of 2+ :class:`Option`\\ s),
+- **Questions** — :class:`Choice` (pick one of 2+ :class:`Option`s),
   :class:`Boolean` (yes / no) and :class:`Score` (2+ ordered levels). An
   option's ``id`` is bookkeeping; its ``description`` is the model-facing
   text (:meth:`Question.model_view` never shows ids). ``digest()`` hashes
@@ -28,7 +28,7 @@ that declares it can answer:
   scores candidates supplied at inference with a caller-supplied NLI model;
   :class:`JevProvider` (the ``jev`` extra) answers on Jev models
   through the TypeSafe SDK, mapping its failures to typed
-  :class:`JevError`\\ s.
+  :class:`JevError`s.
 - **Jobs** — :class:`DecisionJob`: an immutable, deferred
   description of decision work (``ask`` / ``collect`` / ``map`` / ``then``)
   whose ``run`` / ``arun`` batch independent questions into the fewest
@@ -36,7 +36,7 @@ that declares it can answer:
   :class:`Limits`.
 - **Errors** — :class:`UnsupportedCapability`,
   :class:`InvalidDecisionRequest`, :class:`InvalidDecisionResponse` and
-  :class:`ProviderFailure`, all :class:`DecisionError`\\ s.
+  :class:`ProviderFailure`, all :class:`DecisionError`s.
 
 Importing this package starts no provider or model backend and needs no
 hosted-SDK extra; inference only — nothing here trains, exports or executes

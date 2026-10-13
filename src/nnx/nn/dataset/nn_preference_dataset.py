@@ -5,7 +5,7 @@ Each example is a ``(prompt, chosen, rejected)`` triple where the
 ``prompt``. The dataset encodes all three through an
 :class:`NNTokenizerParams`, optionally truncates/pads to fixed
 lengths, and yields ``(prompt_ids, chosen_ids, rejected_ids)`` as
-``torch.LongTensor``\\ s — the shape expected by
+``torch.LongTensor``s — the shape expected by
 :func:`nnx.paradigms.dpo.dpo_train_step_factory`.
 
 For DPO experimentation, plug a published HF Hub preference dataset
@@ -86,7 +86,7 @@ class NNPreferenceDataset(NNDatasetBase):
 
     Tokenizes every triple through ``tokenizer.encode`` once at
     construction, pads/truncates to fixed lengths, then splits into
-    train / val / test ``DataLoader``\\ s with the same shape as the
+    train / val / test ``DataLoader``s with the same shape as the
     rest of :class:`NNDatasetBase` (so callbacks and the standard
     training loop work unchanged).
 
