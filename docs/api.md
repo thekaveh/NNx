@@ -471,7 +471,7 @@ nothing to average).
 nnx.nn.nn_model.NNModel.predict(self, X) -> 'PredictResult'
 ```
 
-Run the network in eval mode and return logits + argmax classes.
+Run the network in eval mode and return raw logits and decoded predictions (argmax classes; continuous values for a regression task; 0/1 indicators for a bernoulli / BCE output).
 
 **Details**
 
@@ -820,7 +820,8 @@ Args:
     params: NNTrainerParams — train_loader + n_epochs + optims dict +
         (optional) schedulers dict + (optional) val_loader, seed,
         save_phase_checkpoints, extra_metrics. Schedulers step once
-        per epoch by default; set auto_step_schedulers=False when the
+        per epoch by default (an ``optimizer_update``-clock scheduler
+        after each reported update); set auto_step_schedulers=False when the
         custom step function owns scheduler timing.
     trainer_step_fn: `Callable[[TrainerStepContext],
         NNEvaluationDataPoint]`. The function owns the entire per-batch
@@ -862,8 +863,12 @@ Returns:
 
 Raises:
     ValueError: when params is None, params.train_loader is None,
-        neither or both of trainer_step_fn and objective are given, or
-        any optim's NNOptimParams.is_valid() returns False.
+        neither or both of trainer_step_fn and objective are given,
+        any optim's NNOptimParams.is_valid() returns False, a
+        trainer_step_fn run sets grad_clip_norm or
+        accumulate_grad_batches, an objective run's optimizers share
+        a parameter, or a callback registers update listeners.
+    RuntimeError: in a process group of more than one rank.
 ```
 
 
@@ -925,7 +930,8 @@ the optims they want to customize.
 `val_loader` mirror NNTrainParams (`extra_metrics` are
 ``callable(y_true, y_pred)``; Trainer's validation calls them on the
 aggregate). The custom `trainer_step_fn` owns every optimizer update;
-by default Trainer steps every scheduler once after each epoch — set
+by default Trainer steps every scheduler once after each epoch (an
+``optimizer_update``-clock scheduler after each reported update) — set
 `auto_step_schedulers=False` when the custom step function owns
 scheduler timing too.
 
@@ -998,7 +1004,8 @@ optims). Schedulers, seed, loaders, etc. are all chained optionals.
 
 Ownership (see `NNTrainerParams`): the custom ``trainer_step_fn``
 owns every optimizer update; Trainer steps registered schedulers once
-per epoch unless ``.auto_step_schedulers(False)``.
+per epoch (an ``optimizer_update``-clock scheduler after each reported
+update instead) unless ``.auto_step_schedulers(False)``.
 
 `copy()` branches a (possibly partial) builder and `from_params()`
 rebuilds one from an existing `NNTrainerParams`, so a shared base
@@ -1066,7 +1073,7 @@ Number of training epochs. Required.
 nnx.trainer.params_builder.NNTrainerParamsBuilder.optimizer(self, name: 'str', params: 'Union[NNOptimParams, NNOptimFactoryParams]') -> 'NNTrainerParamsBuilder'
 ```
 
-Register one optimizer under `name`. Each name gets its own torch.optim.Optimizer at Trainer.train() time. Use `NNOptimParams.builder()` (Plan 2) to construct a built-in `params`, or `nnx.NNOptimFactoryParams` for a registered factory.
+Register one optimizer under `name`. Each name gets its own torch.optim.Optimizer at Trainer.train() time. Use `NNOptimParams.builder()` to construct a built-in `params`, or `nnx.NNOptimFactoryParams` for a registered factory.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.scheduler`
 
@@ -1146,7 +1153,7 @@ Whether to write phase checkpoints (FIRST / Q1 / Q2 / Q3 / LAST / BEST). Default
 nnx.trainer.params_builder.NNTrainerParamsBuilder.auto_step_schedulers(self, value: 'bool') -> 'NNTrainerParamsBuilder'
 ```
 
-Choose whether Trainer steps every scheduler after each epoch.
+Choose whether Trainer steps every scheduler after each epoch (an ``optimizer_update``-clock scheduler after each reported update).
 
 **Details**
 
@@ -4913,7 +4920,7 @@ A run's provenance: the declared manifest, its fingerprint and the attempt that 
 nnx.provenance.load_provenance(run_id: 'str', root: 'Optional[str]' = None) -> 'Optional[ProvenanceRecord]'
 ```
 
-Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format or a fingerprint that does not match its manifest.
+Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read.
 
 
 #### `nnx.provenance.compare`
@@ -9197,7 +9204,7 @@ torch.optim.SGD with `nesterov=True`. Same momentum shape as `sgd()`.
 ##### `nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.grad_clip`
 
 ```python
-nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.grad_clip(self, norm: 'float') -> 'NNOptimParamsBuilder'
+nnx.nn.params.nn_optim_params_builder.NNOptimParamsBuilder.grad_clip(self, norm: 'Optional[float]') -> 'NNOptimParamsBuilder'
 ```
 
 Global-L2 gradient-norm clipping. None = no clipping (the dataclass default; this method is the opt-in path).
@@ -16286,8 +16293,9 @@ Returns:
     A tuple `(attribution_tensor, figure)` where `attribution_tensor` is a
         `torch.Tensor` with the same shape as `x` (per Captum's standard
         return contract for these six methods) and `figure` is a Plotly
-        `Heatmap` visualizing the attribution's first sample: a 4-D
-        input is mean-pooled over channels, a 3-D input is shown as is.
+        `Heatmap` of the attribution: a 4-D input shows its first
+        sample mean-pooled over channels, a 3-D input its first sample,
+        and a 2-D ``(B, D)`` input one row per sample.
 
 Raises:
     ImportError: If `captum` is not installed. Install via
