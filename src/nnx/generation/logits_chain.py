@@ -131,7 +131,7 @@ class LogitsChainBuilder:
                 a banned or arbitrary token).
         """
         greedy = self._standard.get(TemperatureScaling)
-        if self._custom and greedy is not None and greedy.temperature == 0:
+        if self._custom and isinstance(greedy, TemperatureScaling) and greedy.temperature == 0:
             raise ValueError(
                 "custom processors run after temperature(0.0), whose greedy argmax markers they would corrupt; "
                 "use OrderedLogitsPipeline with the custom stage before greedy"
