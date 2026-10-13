@@ -66,13 +66,11 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        # actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install uv
-        # astral-sh/setup-uv@v10.2.0
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: false
           version: "0.13.0"
@@ -84,8 +82,7 @@ jobs:
         run: uv run --frozen python scripts/check_feature_composition.py --run --report feature-composition-cuda-report.json
       - name: Keep the cuda evidence report
         if: ${{ !cancelled() }}
-        # actions/upload-artifact@v7.0.2
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: feature-composition-cuda-report
           path: feature-composition-cuda-report.json
@@ -101,14 +98,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        # actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python
-        # actions/setup-python@v7.0.0
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install diagram rendering runtime
@@ -116,8 +111,7 @@ jobs:
         timeout-minutes: 5
         run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install --yes libcairo2
       - name: Install docs + feature extras
-        # astral-sh/setup-uv@v10.2.0
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: false
           version: "0.13.0"
@@ -127,8 +121,10 @@ jobs:
         # A failed GPU run's report is fetched too, so its failing rows
         # render *failed* rather than *unverified*.
         if: needs.gpu-evidence.result == 'success' || needs.gpu-evidence.result == 'failure'
-        # actions/download-artifact@v8.0.2
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        # A failed GPU job may have uploaded nothing: a missing report renders
+        # the cuda rows unverified, it never blocks the docs build.
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: feature-composition-cuda-report
       - name: Render the feature-composition matrix from a fresh report
@@ -142,8 +138,7 @@ jobs:
           uv run --frozen python scripts/check_feature_composition.py --check --run --report feature-composition-report.json
           uv run --frozen python scripts/check_feature_composition.py --render --report feature-composition-report.json --report feature-composition-cuda-report.json
       - name: Keep the evidence report for the wiki job
-        # actions/upload-artifact@v7.0.2
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: feature-composition-report
           path: |
@@ -162,13 +157,11 @@ jobs:
 
       - name: Configure Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        # actions/configure-pages@v6.0.0
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        # actions/upload-pages-artifact@v5.0.0
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
@@ -186,8 +179,7 @@ jobs:
     steps:
       - id: deployment
         name: Deploy Pages
-        # actions/deploy-pages@v5.0.1
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   wiki:
     name: Publish GitHub wiki
@@ -199,20 +191,17 @@ jobs:
       contents: write # Push the generated wiki through GITHUB_TOKEN.
     steps:
       - name: Checkout
-        # actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python
-        # actions/setup-python@v7.0.0
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        # astral-sh/setup-uv@v10.2.0
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: false
           version: "0.13.0"
@@ -221,8 +210,7 @@ jobs:
         run: uv sync --frozen --only-group docs-publish --no-install-project --no-build --python "3.12"
 
       - name: Fetch the build job's evidence report
-        # actions/download-artifact@v8.0.2
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: feature-composition-report
 
