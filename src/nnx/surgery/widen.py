@@ -292,6 +292,13 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
                 f"of FeedFwdNN hidden layer {idx} (between {layer_name!r} and {parent_path}.{idx + 1!r}): "
                 "it is width-dependent, so duplicating units changes its output."
             )
+        if not isinstance(parent[idx + 1], nn.Linear):
+            # An adapted or factorized layer (a LoRA wrapper, a low-rank
+            # Sequential) cannot be rescaled: refuse before anything is copied.
+            raise ValueError(
+                f"widen() needs a plain nn.Linear consumer after {layer_name!r}; {parent_path}.{idx + 1} is a "
+                f"{type(parent[idx + 1]).__name__}"
+            )
         consumer_name = f"{parent_path}.{idx + 1}"
     else:
         raise ValueError(

@@ -30,6 +30,9 @@ class _FrozenMetrics(Mapping[str, float]):
     def __hash__(self) -> int:
         return hash(self._items)
 
+    def __repr__(self) -> str:
+        return repr(dict(self._items))
+
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Mapping) and dict(self.items()) == dict(other.items())
 

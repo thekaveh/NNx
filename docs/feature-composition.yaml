@@ -95,7 +95,7 @@ scenarios:
     group: training-controls
     features: [FP16 automatic mixed precision, CUDA]
     entry_point: NNModelParams(precision=PrecisionPolicy("fp16"))
-    profile: {device: cuda, dtype: fp16, dependencies: [cuda]}
+    profile: {device: cuda, dtype: fp16, dependencies: []}
     expected: Trains through a GradScaler on CUDA, with finite losses and scaler updates.
     tests:
       - tests/test_cuda_evidence.py::test_fp16_amp_trains_through_a_grad_scaler_on_cuda

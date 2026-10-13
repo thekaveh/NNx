@@ -1,7 +1,7 @@
 """Diffusion (DDPM-style) training and sampling.
 
-Public surface (all reachable via ``nnx.diffusion.<name>``; the first
-five are also re-exported at top-level ``nnx``):
+Public surface (all reachable via ``nnx.diffusion.<name>``; all but
+:func:`sinusoidal_time_embed` are also re-exported at top-level ``nnx``):
 
   - :class:`NoiseSchedulers` — enum-as-factory for LINEAR and COSINE
     variance schedules.

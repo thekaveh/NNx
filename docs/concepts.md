@@ -25,7 +25,7 @@ The diagram has eight layers, top-to-bottom:
 
     Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`). Only paradigm, diffusion and embeddings step-fn factories invoke it — not the supervised loop, which has its own inline NaN+clip path.
 
-6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
+6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`, plus `on_optimizer_update` in objective runs (§5).
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
 8. **Persistence** (violet) — `NNRun` writes `run.yaml + idps.csv + metadata.yaml` and `NNCheckpoint` writes `*.pt + *.opt.pt` into `runs/<id>/`.
 
@@ -1249,7 +1249,9 @@ There is **no** `default_trainer_step`. Multi-optim updates are inherently scena
 - A `trainer_step_fn` run refuses `grad_clip_norm` and an `accumulate_grad_batches` other than 1 on any named optimizer. The Trainer cannot apply them to a step function's updates. Clip or accumulate inside the step function, or pass `objective=` instead.
 - The Trainer owns the epoch loop and steps each registered scheduler once per epoch. On the `optimizer_update` clock (§2.5), it steps a scheduler after each update the step reports with `ctx.report_update(name)`. Each optimizer keeps its own count.
 
-`auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update). An objective run has no step function to take the timing over, so it refuses `auto_step_schedulers=False`, which would leave even the default plateau schedulers unstepped.
+`auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update).
+
+An objective run has no step function to take the timing over, so it refuses `auto_step_schedulers=False`, which would leave even the default plateau schedulers unstepped.
 
 Trainer-level `extra_metrics` are `callable(y_true, y_pred)`. The built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively, pass `objective=` (§6.5) instead of a step function. The shared update engine then steps every named optimizer that holds gradients once per committed update.
 
@@ -1357,7 +1359,7 @@ See [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob
 
 ## 10. Training paradigms
 
-All paradigms live in `nnx.paradigms` as `TrainStepFn` factories. They cover Hinton-style knowledge distillation, FitNets-style feature distillation and SimCLR contrastive learning. They also cover Mixup and CutMix batch augmentation, sparse top-k Mixture-of-Experts, I-JEPA self-supervised pretraining, DPO preference fine-tuning, and Born-Again iterated self-distillation. Each plugs into `NNModel.train(train_step_fn=...)`:
+Most paradigms live in `nnx.paradigms` as `TrainStepFn` factories; `born_again_train` runs its generations itself, `nt_xent_loss` is a bare loss, and offline distillation (§10.1) is an objective. They cover Hinton-style knowledge distillation, FitNets-style feature distillation and SimCLR contrastive learning. They also cover Mixup and CutMix batch augmentation, sparse top-k Mixture-of-Experts, I-JEPA self-supervised pretraining, DPO preference fine-tuning, and Born-Again iterated self-distillation. Each factory plugs into `NNModel.train(train_step_fn=...)`:
 
 ```python
 from nnx import (
@@ -1943,9 +1945,11 @@ The manifest is staged before the checkpoint is published and made live
 right after. A Ctrl-C in that window is held until the point is complete; a
 second Ctrl-C stops at once. A writer that dies inside the window leaves a
 point whose staged manifest matches every file. Verification then reads that
-staged manifest rather than refusing the point. Verification writes no
-checkpoint data; it only takes the checkpoint's `<tag>.pt.lock` file, which
-it creates when missing. The run's next save makes the manifest live.
+staged manifest rather than refusing the point. The run's next save makes
+the manifest live.
+
+Verification writes no checkpoint data. It only takes the checkpoint's
+`<tag>.pt.lock` file, which it creates when missing.
 
 A resume verifies the point first with `NNCheckpoint.verify(run, type)`. It
 refuses with `ResumePointError` a point that is:
@@ -2449,7 +2453,8 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
       `FileExistsError`.
     - `resuming(run_id, checkpoint="last", mode=None, epochs=None)`
       warm-restarts into a new run that records the source as `parent_run_id`.
-      It leaves the parent's artifacts untouched.
+      It leaves the parent's artifacts untouched. `without_resume()` drops a
+      branched plan's resume.
     - `mode` and `epochs` set the fit's `resume_mode` and `resume_epochs`
       (§14.3); when omitted, the training parameters' own values apply.
       `validate()` checks both as `NNTrainParams` does. It reports a
@@ -3034,7 +3039,9 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   local generator (never the global RNG) and refuses a mismatch.
 - **Topology.** `message_edge_index()` is the only message graph, for every
   split. It holds the training edges, plus their reverses when undirected.
-  Evaluation topology is therefore fixed to the training edges.
+  An edge-label split with `label_existence="visible"` also holds every
+  labelled (validation and test) edge. Otherwise evaluation topology is fixed
+  to the training edges.
 - **Edge-label splits.** An edge-label split (`categories=`, one category
   per edge, in declared order) declares whether labelled edges'
   **existence** is visible context (`label_existence="visible"`). Their
@@ -3189,9 +3196,10 @@ deliberately narrow and **guarantees no speedup**:
   is therefore never replayed.
 - **Recorded.** `CompileRecord` holds the request and what took effect. The
   request is the backend, `mode` / `fullgraph` / `dynamic`, the policy and
-  the torch version. The effect is one of: `compiled` (with `capture`
-  `full` or `partial` and the `graph_breaks` count), `eager` with the
-  `restart` (phase, epoch, batch, error), or `failed`.
+  the torch version. The effect is one of: `pending` (no compiled forward
+  has run yet), `compiled` (with `capture` `full` or `partial` and the
+  `graph_breaks` count), `eager` with the `restart` (phase, epoch, batch,
+  error), or `failed`.
 - **Where the record lives.** The same record is on `NNRun.compile`, in
   `metadata.yaml` and in each stateful checkpoint's training state. With a
   provenance manifest, it is also in `attempt.json`. It is never in the run

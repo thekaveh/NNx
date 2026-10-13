@@ -223,7 +223,7 @@ class NNSchedulerParamsBuilder:
         cooldown: int,
         threshold: float,
     ) -> NNSchedulerParamsBuilder:
-        """Linear warm-up to `max_lr` over `warmup_steps`, linear decay
+        """Linear warm-up to the optimizer's LR over `warmup_steps`, linear decay
         to 0 over the remaining `total_steps - warmup_steps`. Used by
         most transformer training recipes.
         """

@@ -1988,9 +1988,15 @@ def _objective_microbatch(
         raise TypeError(f"an objective must return an ObjectiveResult, got {type(result).__name__}")
     engine.accumulate(result.terms, closes_window=close_window)
     if epoch_summary is not None:
-        epoch_summary.observe_terms(result.terms)
+        # Staged per window: a window the engine drops as non-finite
+        # ("skip") never reaches the whole-epoch loss, as it never reaches
+        # an update.
+        epoch_summary.stage_terms(result.terms)
     if close_window:
+        dropped = engine.window_nonfinite
         engine.commit(epoch_idx=epoch_idx, batch_idx=batch_idx)
+        if epoch_summary is not None:
+            epoch_summary.close_window(dropped=dropped)
     record = result.record
     loss = result.loss()
     if record is None:
@@ -4538,11 +4544,16 @@ class NNModel(_HubMixinBase):
                     raise ValueError(f"{caller} loader produced zero batches")
                 return np.concatenate(logits_chunks), np.concatenate(id_chunks)
 
+            # Floating inputs take the net's parameter dtype: NumPy's default
+            # float64 (an ndarray, a DataFrame's .to_numpy()) would otherwise
+            # fail in the first Linear as "Double and Float".
+            net_dtype = next((param.dtype for param in self.net.parameters() if param.is_floating_point()), None)
+
             def _to_tensor(x):
-                if isinstance(x, torch.Tensor):
-                    return x.to(self.device)
-                # Fall through to numpy → tensor for arrays and array-likes.
-                return torch.from_numpy(np.asarray(x)).to(self.device)
+                tensor = x if isinstance(x, torch.Tensor) else torch.from_numpy(np.asarray(x))
+                if net_dtype is not None and tensor.is_floating_point() and tensor.dtype != net_dtype:
+                    tensor = tensor.to(net_dtype)
+                return tensor.to(self.device)
 
             # FEAT-006: a mapping holds a keyword-input module's inputs.
             if isinstance(X, Mapping):

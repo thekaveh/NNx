@@ -93,6 +93,11 @@ class NNPreferenceDataset(NNDatasetBase):
     Each batch yielded is ``(prompt_ids, chosen_ids, rejected_ids)``
     where each entry is ``(B, T_*)`` ``torch.LongTensor``.
 
+    ``pad_token_id`` defaults to ``0``. Under :func:`train_bpe`'s default
+    special tokens, id 0 is ``"<unk>"`` and ``"<pad>"`` is id 1: pass the
+    tokenizer's pad id (``tokenizer.token_to_id("<pad>")``), or the DPO
+    step's padding mask would also hide every real ``<unk>`` token.
+
     ``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
     default for every slot) means *one batch holding the complete split* —
     one DPO step per epoch for the default train loader; pass an explicit

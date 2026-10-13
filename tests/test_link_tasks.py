@@ -842,3 +842,10 @@ def test_link_metrics_refuses_logits_it_cannot_score():
     assert masked["nll"].value == pytest.approx(0.39978, abs=1e-5)
     # Binary logits stay exact at any confidence, infinite ones included.
     assert link_metrics([float("inf"), -float("inf")], [1, 0], from_logits=True)["bce"].value == 0.0
+
+
+def test_a_task_whose_training_negatives_cannot_fit_is_refused_at_construction():
+    edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3), (3, 4), (4, 5)]
+    split = split_links(edges, 6, val=1, test=1, seed=0)
+    with pytest.raises(LinkTaskError, match="training negatives requested"):
+        LinkTask(split, train_negatives=50)

@@ -413,3 +413,17 @@ def test_widen_resolves_effective_feedforward_activation():
     assert torch.allclose(allowed(x), wider(x), atol=1e-5)  # eval-mode parity with dropout configured
     with pytest.raises(ValueError, match="no downstream nn.Linear"):
         widen(allowed, layer_name="layers.2", new_width=5)
+
+
+def test_widen_refuses_an_adapted_feedfwd_consumer_before_copying():
+    from nnx import apply_lora_to
+    from nnx.nn.enum.activations import Activations
+    from nnx.nn.net.feed_fwd_nn import FeedFwdNN
+    from nnx.nn.params.nn_params import NNParams
+
+    net = FeedFwdNN(
+        NNParams(input_dim=4, output_dim=2, hidden_dims=[8, 8], dropout_prob=0.0, activation=Activations.RELU)
+    )
+    apply_lora_to(net, "layers.1")
+    with pytest.raises(ValueError, match="plain nn.Linear consumer"):
+        widen(net, layer_name="layers.0", new_width=10)

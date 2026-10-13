@@ -83,6 +83,13 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `FixedHeadProvider` reports non-finite logits as a `ProviderFailure` (new `nnx.prediction.NonFiniteLogitsError`) and a too-wide Bernoulli head as an `InvalidDecisionRequest`.
     - `NNSchedulerParams` refuses `warmup_steps > total_steps`; `train_bpe` always keeps an `<unk>` token, so unseen characters encode.
     - An optimizer built with a momentum of the wrong shape names the problem instead of a bare `AssertionError`.
+    - A window dropped as non-finite (`nonfinite="skip"`) no longer turns the whole-epoch training loss into NaN.
+    - A warm-up longer than the run's default schedule length is refused when the scheduler is built.
+    - `predict` / `predict_proba` accept NumPy float64 input; evaluation records print their metric values.
+    - `widen` / `deepen` refuse an adapted or factorized neighbour layer before changing anything; GGUF judges the quantization label before requiring `gguf`.
+    - A `resume_epochs="planned"` resume keeps the plan's provenance fingerprint.
+    - Link tasks refuse a message graph with a repeated edge, and training negatives that cannot fit at `LinkTask` construction.
+    - `FixedHeadProvider` checks label strings and refuses a non-2-D categorical output as a request error.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

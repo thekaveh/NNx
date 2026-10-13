@@ -183,8 +183,10 @@ def write_gguf(
     """
     import torch
 
-    gguf = _require_gguf()
+    # The label first: a misspelled or sub-F16 quantization gets its own
+    # message (ValueError / the llama-quantize guidance) even without gguf.
     _validate_quantization(quantization)
+    gguf = _require_gguf()
 
     # Local import — avoids importing torch / numpy at module top so
     # ``import nnx.interop`` is cheap even when the writer isn't used.

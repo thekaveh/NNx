@@ -231,6 +231,10 @@ class FixedHeadProvider:
                 f"labels {tuple(self.labels)} disagree with the model's task labels {tuple(task_labels)}"
             )
         labels = self.labels if self.labels is not None else task_labels
+        if isinstance(labels, (str, bytes)):  # one value, not a set of its characters
+            raise InvalidDecisionRequest(f"labels must be a sequence of strings, not the string {labels!r}")
+        if labels is not None and not all(isinstance(x, str) and x for x in tuple(labels)):
+            raise InvalidDecisionRequest(f"labels must be non-empty strings, got {tuple(labels)!r}")
         width = _head_width(self.model, spec)
         bernoulli = kind == "multilabel" or isinstance(self.model.loss_fn, torch.nn.BCEWithLogitsLoss)
         if bernoulli:
@@ -351,11 +355,15 @@ class FixedHeadProvider:
         except Exception as error:  # the backend failed on a valid, supported request
             raise ProviderFailure(f"{self.name}: the model failed to predict: {error}") from error
         logits = np.asarray(prediction.logits)
+        # Known only once the head ran (its width was unknown at construction):
+        # a misconfigured adapter on either path.
         if kind == "bernoulli" and (logits.ndim != 2 or logits.shape[1] != 1):
-            # Known only once the head ran (its width was unknown at
-            # construction): a misconfigured adapter, as on the categorical path.
             raise InvalidDecisionRequest(
                 f"a Boolean needs a one-output head; this head produced shape {tuple(logits.shape)}"
+            )
+        if logits.ndim != 2:
+            raise InvalidDecisionRequest(
+                f"a categorical head must produce (rows, classes) logits; this head produced shape {tuple(logits.shape)}"
             )
         # Recomputed in float64 so half-precision logits still sum to 1 within 1e-6.
         probabilities = np.asarray(prediction_from_logits(logits.astype(np.float64), spec).probabilities)

@@ -859,6 +859,18 @@ class LinkTask:
         if self.mode == "edge_label" and negatives:
             raise LinkTaskError("an edge-label task samples no negatives: a non-edge is never a category")
         object.__setattr__(self, "train_negatives", negatives)
+        if self.mode == "binary" and negatives:
+            # The training pass draws negatives from the complement: a split
+            # that cannot hold them is refused here, not at the first batch.
+            split = self.split
+            excluded = set(split._all_positives()) | set(split.val_negatives) | set(split.test_negatives)
+            needed = negatives * len(split.positives("train"))
+            capacity = _total_pairs(split.num_nodes, split.directed, split.self_loops == "allow") - len(excluded)
+            if needed > capacity:
+                raise LinkTaskError(
+                    f"{needed} training negatives requested per pass; the complement holds {capacity}: lower "
+                    "train_negatives"
+                )
         object.__setattr__(self, "max_candidates", _count(self.max_candidates, "max_candidates", minimum=1))
         if self.version != 1 or isinstance(self.version, bool):
             raise LinkTaskError(f"this NNx supports link task version 1, got {self.version!r}")
@@ -976,7 +988,9 @@ class LinkTask:
             leaked = sorted((u, v) for u, v in messages - allowed if _canonical(u, v, split.directed) in held_out)
             if leaked:
                 raise LinkTaskError(f"leak: held-out positive(s) {leaked[:5]} are in the message graph")
-            if messages != allowed:
+            if messages != allowed or edge_index.shape[1] != len(allowed):
+                # A repeated message edge is a different aggregation, though
+                # its set of pairs matches.
                 extra, missing = sorted(messages - allowed)[:5], sorted(allowed - messages)[:5]
                 raise LinkTaskError(
                     f"the message graph must be the split's training topology (unexpected {extra}, missing {missing})"

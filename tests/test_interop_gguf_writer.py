@@ -515,3 +515,18 @@ def test_a_huge_integer_float_parameter_is_a_type_error():
 
     with pytest.raises(TypeError, match="requires a finite number"):
         _validate_modelfile_inputs("", None, {"temperature": 10**400})
+
+
+@pytest.mark.parametrize(
+    ("label", "error", "match"), [("F8", ValueError, "F8"), ("Q4_K_M", ImportError, "llama-quantize")]
+)
+def test_the_quantization_label_is_judged_before_gguf_is_required(monkeypatch, label, error, match):
+    """Without gguf installed, a misspelled label is still a ValueError and a
+    sub-F16 one still gets the two-step llama-quantize guidance."""
+    import sys
+
+    from nnx.interop.gguf.writer import write_gguf
+
+    monkeypatch.setitem(sys.modules, "gguf", None)
+    with pytest.raises(error, match=match):
+        write_gguf(_tiny_transformer(), None, "out.gguf", quantization=label)  # type: ignore[arg-type]

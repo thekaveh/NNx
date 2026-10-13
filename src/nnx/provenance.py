@@ -73,7 +73,7 @@ FORMAT = "nnx.provenance/1"
 """Format version, part of every hashed document."""
 
 # NNTrainParams.state() keys that describe one attempt, not the plan.
-_ATTEMPT_ONLY_TRAIN_KEYS = ("n_epochs", "parent_run_id", "parent_checkpoint")
+_ATTEMPT_ONLY_TRAIN_KEYS = ("n_epochs", "resume_epochs", "parent_run_id", "parent_checkpoint")
 
 MANIFEST_FILE = "provenance.json"
 ATTEMPT_FILE = "attempt.json"

@@ -769,3 +769,35 @@ def test_a_frozen_optimizers_schedule_advances_without_a_torch_warning():
         warnings.simplefilter("error")
         _run_window(engine, supervised_objective(), model)
     assert bias_optimizer.param_groups[0]["lr"] == pytest.approx(0.05)
+
+
+def test_a_skipped_nonfinite_window_never_reaches_the_epoch_training_loss(tmp_path, monkeypatch):
+    """nonfinite="skip" drops a window from the update; the whole-epoch
+    training loss drops it too (it was NaN for the whole epoch)."""
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    calls = iter(range(100))
+
+    class SkipSecond:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            result = supervised_objective()(ctx)
+            return _nan_objective(ctx) if next(calls) == 1 else result
+
+    batches = [(X[:1], Y[:1]), (X[1:2], Y[1:2]), (X[2:], Y[2:])]
+    run = _linear().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=batches,
+            optim=_sgd(1),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="skip-summary",
+        ),
+        objective=SkipSecond(),
+    )
+    summary = run.idps[-1].train_summary
+    assert summary is not None and summary.loss is not None and math.isfinite(summary.loss)

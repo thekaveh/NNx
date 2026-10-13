@@ -117,4 +117,4 @@ def test_train_bpe_keeps_an_unknown_token_for_unseen_characters():
 
     tk = train_bpe(texts=["hello world"] * 20, vocab_size=60, special_tokens=["<pad>", "<eos>"])
     assert tk.token_to_id("<pad>") == 0 and tk.token_to_id("<unk>") is not None
-    tk.encode("hello zzq!")  # an unseen character encodes as <unk>
+    assert tk.token_to_id("<unk>") in tk.encode("hello zzq!").ids  # an unseen character encodes as <unk>

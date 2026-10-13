@@ -20,7 +20,8 @@ a declared meaning. This example:
      epoch (the failed attempt stays listed and counted, but has no value
      in the statistics), and the paired deltas ``wide - narrow`` per seed,
      never flipped for a metric to minimize. The bootstrap interval is
-     labelled what it is: seed variability over these three replicates.
+     labelled what it is: seed variability over the complete seed pairs
+     (two here; seed 2's failed attempt has no pair).
   5. **Saves and reloads** the report as strict JSON.
 
 Fully offline, CPU only.

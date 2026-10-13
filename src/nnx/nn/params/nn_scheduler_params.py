@@ -95,8 +95,9 @@ class NNSchedulerParams:
                         domain_message=f"NNSchedulerParams requires {name} > 0 when set, got {value}",
                     ),
                 )
-        # A warm-up longer than the schedule never reaches max_lr and never
-        # decays (the remaining total_steps - warmup_steps is negative).
+        # A warm-up longer than the schedule never reaches the optimizer's LR
+        # and never decays (total_steps - warmup_steps is negative). A
+        # default total_steps is checked when the scheduler is built.
         if self.warmup_steps is not None and self.total_steps is not None and self.warmup_steps > self.total_steps:
             raise ValueError(
                 f"NNSchedulerParams requires warmup_steps <= total_steps, got {self.warmup_steps} > {self.total_steps}"

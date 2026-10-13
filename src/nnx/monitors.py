@@ -854,6 +854,7 @@ class _TrainEpochSummary:
         self._records = 0
         # Objective runs: {(name, reduction): [reduction, Σ weight·numerator, Σ denominator]}.
         self._terms: dict[tuple[str, str], list[Any]] = {}
+        self._staged: list[tuple[Any, ...]] = []  # the open window's terms
         self._pending_terms = False
 
     def observe(
@@ -870,6 +871,19 @@ class _TrainEpochSummary:
         the record's ``count``)."""
         self._metrics.update(target, output, valid)
         self._pending = (loss_weight, error_weight)
+
+    def stage_terms(self, terms: Sequence[Any]) -> None:
+        """Hold one objective microbatch's terms until its window closes."""
+        self._staged.append(tuple(terms))
+        self._pending_terms = True
+
+    def close_window(self, *, dropped: bool) -> None:
+        """Observe the window's staged terms, or discard them when the
+        engine dropped the window (a non-finite term under ``"skip"``)."""
+        staged, self._staged = self._staged, []
+        if not dropped:
+            for terms in staged:
+                self.observe_terms(terms)
 
     def observe_terms(self, terms: Sequence[Any]) -> None:
         """Called for each objective microbatch with its ``LossTerm``s:

@@ -304,3 +304,14 @@ def test_for_model_refuses_a_train_entry_twice():
     with pytest.raises(ValueError, match="'train' entry"):
         model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
         ExperimentManifest.for_model(model, train=NNTrainParams(n_epochs=1), config={"train": "v1"})
+
+
+def test_a_planned_resume_keeps_the_plan_fingerprint():
+    """resume_epochs only says how n_epochs is read on a resume: like
+    n_epochs it describes the attempt, not the plan."""
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    base = ExperimentManifest.for_model(model, train=NNTrainParams(n_epochs=2))
+    planned = ExperimentManifest.for_model(
+        model, train=NNTrainParams(n_epochs=5, resume_from_run_id="a" * 32, resume_epochs="planned")
+    )
+    assert base.fingerprint() == planned.fingerprint()

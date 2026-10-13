@@ -57,6 +57,10 @@ keywords = [
     "ddp", "distributed-training",
     # FEAT-033: nnx.search.
     "hyperparameter-search", "optuna",
+    # Later first-class subsystems: nnx.decisions, nnx.calibration,
+    # nnx.abstention, nnx.ranking, nnx.precision, nnx.export_conformance.
+    "decision-making", "calibration", "abstention", "learning-to-rank",
+    "mixed-precision", "onnx-runtime",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

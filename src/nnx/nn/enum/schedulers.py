@@ -114,6 +114,13 @@ class Schedulers(Enum):
                 default_warmup = max(1, (total_steps if updates else n_epochs) // 10)
                 warmup_steps = params.warmup_steps if params.warmup_steps is not None else default_warmup
                 _reject_short_total_steps(total_steps, horizon, updates=updates)
+                if warmup_steps > total_steps:
+                    # Checked against the resolved budget (a default one
+                    # too): the schedule would never reach the optimizer's
+                    # LR, nor decay.
+                    raise ValueError(
+                        f"warmup_steps ({warmup_steps}) must be <= the schedule's total_steps ({total_steps})"
+                    )
 
                 def _lr_lambda(step: int) -> float:
                     if step < warmup_steps:

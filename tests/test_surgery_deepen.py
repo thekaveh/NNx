@@ -505,3 +505,14 @@ def test_deepen_a_feedfwd_net_in_eval_mode_keeps_eval_mode():
     deeper = deepen(net, after_layer_name="layers.0")
     assert not deeper.layers.training
     assert not any(layer.training for layer in deeper.layers)
+
+
+def test_deepen_refuses_an_adapted_layer_feeding_the_relu():
+    """A LoRA-wrapped Linear(8, 6) before the ReLU: the identity layer was
+    sized from the earlier Linear(4, 8) and the forward broke."""
+    from nnx import apply_lora_to
+
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 6), nn.ReLU(), nn.Linear(6, 2))
+    apply_lora_to(model, "2")
+    with pytest.raises(ValueError, match="not an nn.Linear"):
+        deepen(model, after_layer_name="3")

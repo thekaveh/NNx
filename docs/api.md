@@ -172,7 +172,10 @@ Raises:
         data, model or RNG state is touched.
     ValueError: on invalid arguments (``num_iter < 2``, a non-finite
         ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
-        ``start_lr <= 0``, ``end_lr <= start_lr``).
+        ``start_lr <= 0``, ``end_lr <= start_lr``,
+        ``diverge_threshold <= 1``, ``ema_alpha`` outside ``(0, 1)``), a
+        ``train_loader`` with a live persistent-worker iterator, or a
+        loader that yields no batch.
 ```
 
 
@@ -9573,7 +9576,7 @@ torch.optim.lr_scheduler.OneCycleLR — Smith one-cycle schedule with peak LR `m
 nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.linear_warmup_decay(self, *, warmup_steps: 'int', total_steps: 'int', min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float') -> 'NNSchedulerParamsBuilder'
 ```
 
-Linear warm-up to `max_lr` over `warmup_steps`, linear decay to 0 over the remaining `total_steps - warmup_steps`. Used by most transformer training recipes.
+Linear warm-up to the optimizer's LR over `warmup_steps`, linear decay to 0 over the remaining `total_steps - warmup_steps`. Used by most transformer training recipes.
 
 ##### `nnx.nn.params.nn_scheduler_params_builder.NNSchedulerParamsBuilder.build`
 
@@ -11646,6 +11649,11 @@ training loop work unchanged).
 
 Each batch yielded is ``(prompt_ids, chosen_ids, rejected_ids)``
 where each entry is ``(B, T_*)`` ``torch.LongTensor``.
+
+``pad_token_id`` defaults to ``0``. Under :func:`train_bpe`'s default
+special tokens, id 0 is ``"<unk>"`` and ``"<pad>"`` is id 1: pass the
+tokenizer's pad id (``tokenizer.token_to_id("<pad>")``), or the DPO
+step's padding mask would also hide every real ``<unk>`` token.
 
 ``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
 default for every slot) means *one batch holding the complete split* —

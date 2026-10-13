@@ -223,10 +223,11 @@ alone, with a fresh optimizer, scheduler and components. The returned
 the same way through `NNTrainerParams.builder().resume_from(run_id)`
 ([Concepts §8.4](concepts.md#84-warm-resume)).
 
-Probing for state is side-effect free.
+Probing a run that was never written is side-effect free.
 `NNCheckpoint.load_with_training_state(run=..., type=Checkpoints.LAST)`
-returns `(None, None)` for a run that was never written. It does not create
-the run's directory, so a preflight check never blocks the first fit.
+returns `(None, None)` for it and does not create the run's directory, so a
+preflight check never blocks the first fit. On an existing run, a probe takes
+the checkpoint's lock file, created when missing.
 
 ### 2.4. Loading a finished run
 

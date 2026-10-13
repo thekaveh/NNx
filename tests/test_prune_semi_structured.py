@@ -207,5 +207,5 @@ def test_semi_structured_24_refuses_a_cpu_weight_with_runtime_error():
     """On a CPU-resident weight the swap raises RuntimeError at the swap
     site (the documented contract): never a silent pass."""
     torch.manual_seed(0)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="CUDA"):
         nnx_prune.semi_structured_24(_LinearOnly())

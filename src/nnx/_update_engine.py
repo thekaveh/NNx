@@ -158,6 +158,12 @@ class UpdateEngine:
     def pending_microbatches(self) -> int:
         return self._microbatches
 
+    @property
+    def window_nonfinite(self) -> bool:
+        """Whether the open window saw a non-finite term (``"skip"``: the
+        window is dropped at commit)."""
+        return self._nonfinite_window
+
     def autocast(self) -> AbstractContextManager[Any]:
         """The context the objective's forward runs in (mixed precision
         when enabled, a no-op otherwise)."""

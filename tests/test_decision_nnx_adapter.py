@@ -287,3 +287,23 @@ def test_non_finite_logits_are_a_provider_failure():
     provider = FixedHeadProvider(model, labels=("cat", "dog", "fox"))
     with pytest.raises(ProviderFailure, match="non-finite"):
         provider.decide(_animals("cat", "dog", "fox"), X)
+
+
+def test_fixed_head_labels_and_output_shapes_are_decision_errors():
+    from torch import nn
+
+    with pytest.raises(InvalidDecisionRequest, match="not the string"):
+        FixedHeadProvider(NNModel(module=nn.Linear(2, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY)), labels="ab")
+    bce = NNModel(module=nn.Linear(2, 1), params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
+    with pytest.raises(InvalidDecisionRequest, match="non-empty strings"):
+        FixedHeadProvider(bce, labels=("",), question=Boolean("Is it a cat?"))
+
+    class Seg(nn.Module):
+        def forward(self, x):
+            return x.new_zeros(x.shape[0], 3, 4)  # (N, C, L): class-first but not (rows, classes)
+
+    seg = FixedHeadProvider(
+        NNModel(module=Seg(), params=NNModelParams(loss=Losses.CROSS_ENTROPY)), labels=("cat", "dog", "fox")
+    )
+    with pytest.raises(InvalidDecisionRequest, match="rows, classes"):
+        seg.decide(_animals("cat", "dog", "fox"), X)

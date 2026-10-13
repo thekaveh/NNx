@@ -168,13 +168,24 @@ def _insert_after_relu_in_sequential(
         raise KeyError(f"deepen: no module named {attr!r} in Sequential {parent_path or '<root>'!r}")
     idx = keys.index(attr)
 
-    # Find the nearest Linear registered earlier in the Sequential — its
-    # out_features is the activation's hidden dimension.
+    # The ReLU's width comes from the Linear feeding it, through elementwise
+    # modules only: an adapter, a factorized Sequential or any other
+    # width-changing module in between would size the identity layer wrong.
+    from .widen import _ELEMENTWISE_MODULES
+
     src_linear: Optional[nn.Linear] = None
-    for _, mod in reversed(entries[:idx]):
-        if isinstance(mod, nn.Linear):
-            src_linear = mod
-            break
+    for key, mod in reversed(entries[:idx]):
+        # Width-preserving modules (elementwise ones, and norms: the identity
+        # layer goes after the ReLU, so their statistics are untouched).
+        if isinstance(mod, (*_ELEMENTWISE_MODULES, nn.BatchNorm1d, nn.LayerNorm)):
+            continue
+        if not isinstance(mod, nn.Linear):
+            raise ValueError(
+                f"deepen: the ReLU at position {idx} is fed by {key!r}, a {type(mod).__name__}, not an nn.Linear "
+                "(through elementwise modules only), so its width cannot be read safely"
+            )
+        src_linear = mod
+        break
     if src_linear is None:
         raise ValueError(
             "deepen: could not find an upstream nn.Linear before "

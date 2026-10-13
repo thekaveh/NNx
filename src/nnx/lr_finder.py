@@ -117,7 +117,10 @@ def lr_finder(
             data, model or RNG state is touched.
         ValueError: on invalid arguments (``num_iter < 2``, a non-finite
             ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
-            ``start_lr <= 0``, ``end_lr <= start_lr``).
+            ``start_lr <= 0``, ``end_lr <= start_lr``,
+            ``diverge_threshold <= 1``, ``ema_alpha`` outside ``(0, 1)``), a
+            ``train_loader`` with a live persistent-worker iterator, or a
+            loader that yields no batch.
     """
     # The plot is the finder's output: without the plots extra, fail before
     # any data, model or RNG state is touched (FEAT-031).

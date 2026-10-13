@@ -479,7 +479,10 @@ def provenance_mode() -> dict:
     with open(manifest_path, "rb") as handle:
         parent_manifest = handle.read()
 
-    set_seed(12)
+    # The same seed regenerates the parent's rows, so the child trains on
+    # exactly the data whose digest the plan records (a fresh model; the
+    # resume restores its state).
+    set_seed(11)
     model, loader = _make_model_and_loader()
     child = model.train(params=params(1, loader, resume_from_run_id=parent.id), provenance=plan)
     with open(manifest_path, "rb") as handle:

@@ -351,3 +351,43 @@ def test_a_momentum_of_the_wrong_shape_fails_with_a_reason_when_built(name, mome
     assert not params.is_valid()
     with pytest.raises(ValueError, match="pair|one real momentum"):
         build_optimizer(torch.nn.Linear(2, 2), params)
+
+
+def test_a_warmup_longer_than_the_default_horizon_is_refused_when_built():
+    import torch
+
+    from nnx import NNSchedulerParams, Schedulers
+
+    params = NNSchedulerParams(
+        kind=Schedulers.LINEAR_WARMUP_DECAY,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        warmup_steps=10,
+    )
+    optimizer = torch.optim.SGD(torch.nn.Linear(2, 2).parameters(), lr=0.1)
+    with pytest.raises(ValueError, match="warmup_steps"):
+        Schedulers.LINEAR_WARMUP_DECAY(optimizer, params, n_epochs=3)
+
+
+def test_predict_takes_numpy_float64_input():
+    """NumPy's default float64 failed in the first Linear (Double vs Float)."""
+    import numpy as np
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams
+
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    result = model.predict(np.random.default_rng(0).standard_normal((3, 4)))
+    assert result.logits.shape == (3, 3)
+
+
+def test_evaluation_metrics_print_their_values():
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+
+    text = repr(NNEvaluationDataPoint(loss=1.0, extra={"bleu": 0.5}))
+    assert "{'bleu': 0.5}" in text and "object at 0x" not in text
