@@ -64,13 +64,19 @@ class Rows(torch.utils.data.Dataset):
         return self.X[index], self.y[index]
 
 
+def _device() -> Devices:
+    """CPU (Gloo), or CUDA (NCCL, one device per rank) when the launch sets
+    ``NNX_DDP_DEVICE=cuda`` (FEAT-043's two-GPU parity run)."""
+    return Devices.CUDA if os.environ.get("NNX_DDP_DEVICE") == "cuda" else Devices.CPU
+
+
 def model() -> NNModel:
     torch.manual_seed(0)
     return NNModel(
         net_params=NNParams(
             input_dim=FEATURES, output_dim=CLASSES, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
         ),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        params=NNModelParams(net=Nets.FEED_FWD, device=_device(), loss=Losses.CROSS_ENTROPY),
     )
 
 

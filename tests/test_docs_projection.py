@@ -1313,7 +1313,7 @@ def test_feature_composition_site_and_wiki_render_one_report_with_an_identical_e
         for s in registry["scenarios"]
         for t in s["tests"]
     }
-    expected = registry["evidence_profile"]
+    (expected,) = [profile for profile in registry["evidence_profiles"] if profile["id"] == "cpu"]
     profile = {
         **expected,
         "devices": [expected["device"]],
