@@ -2383,14 +2383,15 @@ def _evaluate_task(
     adapter = model.task_adapter
     assert adapter is not None
     precision = _inference_precision(model)  # before eval(): a failure leaves the modes alone
-    training_modes = _capture_training_modes(model.net)
-    model.net.eval()
     # `bounded=` only when asked: a TaskAdapter subclass written before FEAT-020 keeps working.
+    # Built before eval(), so a refusal here leaves the training modes alone too.
     accumulator = (
         _bounded_task_accumulator(adapter, who)  # extra_metrics were refused above
         if bounded
         else adapter.accumulator(keep_arrays=bool(extra_metrics))
     )
+    training_modes = _capture_training_modes(model.net)
+    model.net.eval()
     loss_numerator = 0.0
     loss_normalization_weight = 0.0
     loss_uses_sum_reduction = False

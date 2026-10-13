@@ -221,9 +221,11 @@ def main() -> None:
     reloaded = NNModel.from_checkpoint(ckpt)
     reloaded.net.eval()
     with torch.no_grad():
-        same = torch.allclose(model.net(X_imgs), reloaded.net(X_imgs))
-    print(f"checkpoint round-trip: net_params={type(ckpt.net_params).__name__}, ")
-    print(f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}")
+        same = torch.equal(model.net(X_imgs), reloaded.net(X_imgs))  # the same weights: bit-exact
+    print(
+        f"checkpoint round-trip: net_params={type(ckpt.net_params).__name__}, "
+        f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}"
+    )
     assert same, "the reloaded checkpoint gave different logits"
 
     # ---- Integer-count schema: NumPy dims normalize, fractional dims fail early.

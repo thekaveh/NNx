@@ -35,6 +35,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .._validation import require_count
+
 
 class MoELinear(nn.Module):
     """Sparse top-k Mixture-of-Experts drop-in for :class:`nn.Linear`.
@@ -106,6 +108,13 @@ class MoELinear(nn.Module):
                 f"top_k ({top_k}) cannot exceed num_experts ({num_experts}) — "
                 "a token cannot be dispatched to more experts than exist."
             )
+        for name, value in (
+            ("in_features", in_features),
+            ("out_features", out_features),
+            ("num_experts", num_experts),
+            ("top_k", top_k),
+        ):  # as NNMoEParams: a float / bool count fails here, not inside torch
+            require_count(value, name, owner="MoELinear", minimum=1)
 
         self.in_features = in_features
         self.out_features = out_features

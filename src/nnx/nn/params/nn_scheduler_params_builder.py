@@ -113,7 +113,8 @@ class NNSchedulerParamsBuilder:
     ) -> NNSchedulerParamsBuilder:
         """ReduceLROnPlateau — the default scheduler.
 
-        Sets the five plateau fields. `kind` is left at None (the
+        Sets the five plateau fields (``factor`` in ``(0, 1)``: it reduces
+        the LR). `kind` is left at None (the
         dataclass default), which preserves the omit-when-default
         state() invariant for callers who used the original pre-enum
         config.

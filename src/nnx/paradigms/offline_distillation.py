@@ -664,13 +664,14 @@ class _Tally:
         top = log_p.argmax(dim=-1)
         self.rows += int(q.shape[0])
         self.agree += int((top == q.argmax(dim=-1)).sum())
-        self.kl += float(_kl_rows(q, log_p).double().sum())
+        # float64 sums on the CPU: MPS has no float64.
+        self.kl += float(_kl_rows(q, log_p).detach().cpu().double().sum())
         mask = batch.labelled.to(log_p.device)
         if bool(mask.any()):
             target = batch.target.to(log_p.device)[mask]
             self.labelled += int(mask.sum())
             self.correct += int((top[mask] == target).sum())
-            self.nll += float(F.nll_loss(log_p[mask].double(), target, reduction="sum"))
+            self.nll += float(F.nll_loss(log_p[mask].detach().cpu().double(), target.cpu(), reduction="sum"))
 
     def report(self, candidates: tuple[str, ...], schema_digest: str) -> DistillationReport:
         if self.rows == 0:

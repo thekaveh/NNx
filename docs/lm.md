@@ -47,10 +47,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from nnx import (
-    Devices, Losses, Nets, NNModelParams, NNOptimParams,
-    NNSchedulerParams, NNTrainParams, NNTransformerParams,
-    NNTokenizerParams, GenerativeNNModel, Optims, set_seed, train_bpe,
+    Devices, Losses, Nets, NNModelParams, NNOptimParams, NNTrainParams,
+    NNTransformerParams, NNTokenizerParams, GenerativeNNModel, set_seed, train_bpe,
 )
+
+set_seed(0)
 
 # 1. Train a tiny BPE tokenizer.
 corpus = ["the quick brown fox", "the lazy dog", "once upon a time"]
@@ -81,8 +82,10 @@ from nnx.lm_tasks import CausalLMTask
 
 ids = [i for text in corpus for i in tk.encode(text).ids]
 windows = torch.tensor([ids[i : i + 5] for i in range(len(ids) - 4)])
-train_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4, shuffle=True)
-val_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4)
+held_out = max(1, len(windows) // 5)  # the last windows validate, never trained on
+train, val = windows[:-held_out], windows[-held_out:]
+train_loader = DataLoader(TensorDataset(train[:, :-1], train[:, 1:]), batch_size=4, shuffle=True)
+val_loader = DataLoader(TensorDataset(val[:, :-1], val[:, 1:]), batch_size=4)
 
 task = CausalLMTask(vocab_size=tokenizer.vocab_size, alignment="pre_shifted")
 run = model.train(
@@ -365,7 +368,8 @@ offline.
     - A run with no monitor elects BEST from the validation NLL. An epoch
       whose validation is unavailable never replaces an earlier BEST. An
       unavailable first epoch, though, stands in until one has a value.
-      Declare `MonitorSpec("nll")` to elect only epochs with a value.
+      Declare `MonitorSpec("nll")` with `metrics=[MetricSpec("nll")]` to
+      elect only epochs with a value.
 
     A custom `train_step_fn` still works for anything else (diffusion / KD /
     SimCLR / Mixup / CutMix follow that pattern).

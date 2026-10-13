@@ -238,6 +238,7 @@ def main() -> None:
         pre_rejected_lp = _avg_seq_logprob(pre_net, rejected_tokens)
 
         # ─── Phase 5: DPO training ───
+        before = {name: p.detach().clone() for name, p in model.net.named_parameters()}
         model.train(
             params=NNTrainParams(
                 n_epochs=3,
@@ -268,10 +269,11 @@ def main() -> None:
         delta = post_gap - pre_gap
 
     frozen_count = sum(not p.requires_grad for p in ref_model.net.parameters())
-    trained_count = sum(p.requires_grad for p in model.net.parameters())
+    trained_count = sum(not torch.equal(p, before[name]) for name, p in model.net.named_parameters())
+    assert trained_count > 0, "DPO changed no policy parameter"
     print(f"DPO training complete on {len(pref_ds.train_loader.dataset)} of 64 synthetic preference triples.")
     print(f"Reference policy: frozen ({frozen_count} param tensors).")
-    print(f"Trained policy:   updated ({trained_count} param tensors).")
+    print(f"Trained policy:   updated ({trained_count} param tensors changed).")
     print(f"Chosen   log-prob — before DPO: {pre_chosen_lp:+.3f},  after DPO: {post_chosen_lp:+.3f}")
     print(f"Rejected log-prob — before DPO: {pre_rejected_lp:+.3f},  after DPO: {post_rejected_lp:+.3f}")
     sign = "+" if delta >= 0 else ""

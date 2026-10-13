@@ -101,6 +101,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `ExperimentManifest(config=None)` reloads with its fingerprint, so the run keeps its provenance.
     - Construction refuses a plateau scheduler `factor >= 1`, `ModelCheckpoint` epochs that can never match, and non-string `NNTrainerParams` optimizer / scheduler names; `lr_finder` refuses a non-integer `num_iter` before the sweep.
     - `netron_export(launch=True)` checks for `netron` before writing the ONNX file.
+    - `low_rank_factorize` (and `low_rank` transform recipes) and offline-distillation scoring work on MPS models.
+    - A refused task evaluation leaves the network's training modes as it found them.
+    - `MoELinear`, `ViTNN` and `ViTBlock` refuse float or bool sizes and dropouts at construction.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

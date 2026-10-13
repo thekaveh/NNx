@@ -54,7 +54,8 @@ class Capabilities:
             ``"text"``).
         dynamic_labels: whether a request may bring any option set; ``False``
             means the options must map exactly onto ``labels``.
-        labels: the fixed label space when ``dynamic_labels`` is ``False``.
+        labels: the fixed label space when ``dynamic_labels`` is ``False``;
+            ``None`` declares none, so option sets are not checked.
         max_batch: the most inputs per call (``None``: unbounded).
         inference / training / export: whether the backend can answer, be
             trained and be exported. A hosted provider declares inference

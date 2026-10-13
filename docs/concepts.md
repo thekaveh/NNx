@@ -64,7 +64,7 @@ Every public real-valued hyperparameter is validated in `__post_init__` (or the 
 
 - `NNOptimParams.max_lr` and `weight_decay` ≥ 0 (zero is meaningful: frozen updates / no decay). `eps` > 0. `grad_clip_norm` > 0 when set (`None` disables). SGD `momentum` ≥ 0, Adam betas in `[0, 1)`.
 - `NNParamGroupSpec.lr` / `lr_multiplier` > 0 (freeze a group with `nnx.finetune.freeze`, not `lr=0`) and group `weight_decay` ≥ 0. The *resolved* per-group learning rate must also be finite before the optimizer is built.
-- `NNSchedulerParams.min_lr` / `threshold` ≥ 0, `factor` > 0, optional `max_lr` > 0.
+- `NNSchedulerParams.min_lr` / `threshold` ≥ 0, `factor` > 0 (and < 1 for a plateau scheduler), optional `max_lr` > 0.
 - `NNTransformerParams.rope_base` > 0 (also enforced by a direct `RoPE(base=...)`).
 - `RMSNorm(eps)` finite and ≥ 0; `EarlyStopping(min_delta)` finite and ≥ 0; LoRA / DoRA `alpha` finite and > 0.
 
@@ -1001,8 +1001,8 @@ checkpointed component state (`nnx.update_engine`, §14.1). A stateful resume
 continues them; a `weights_only` resume starts them at zero.
 
 The whole-epoch training loss (§6.4) of an objective run applies the same
-rule to the whole epoch: each term's summed weighted numerators over its
-summed denominators. A window dropped under `nonfinite="skip"` is left out;
+rule to the whole epoch. Each term's summed weighted numerators are divided
+by its summed denominators. A window dropped under `nonfinite="skip"` is left out;
 an epoch that drops every window has a non-finite loss. As with step
 functions, declared metrics are recorded on validation only.
 
@@ -1626,7 +1626,7 @@ result.figure.show()
 
 `suggested_lr` is the LR at the steepest descent point of the EMA-smoothed loss curve — the Smith (2017) heuristic. Plug it into `NNOptimParams.max_lr` for the real training run.
 
-The sweep stops early when the loss diverges. That happens when the smoothed loss rises more than `(diverge_threshold - 1) × |lowest|` above the lowest smoothed loss so far (`diverge_threshold` defaults to `4.0` and must be above 1). For a positive loss, that is above `diverge_threshold` times the lowest.
+The sweep stops early when the loss diverges. That happens when the smoothed loss rises more than `(diverge_threshold - 1) × |lowest|` above the lowest smoothed loss so far. `diverge_threshold` defaults to `4.0` and must be above 1. For a positive loss, that is above `diverge_threshold` times the lowest.
 
 `lr_finder` needs the `plots` extra (`pip install "thekaveh-nnx[plots]"`), because its result includes a Plotly figure. Without the extra it raises `ImportError` before it touches any data, model or RNG state.
 
@@ -1824,7 +1824,7 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 
 A checkpoint resumes only when its generation-addressed sidecar matches the checkpoint's recorded generation and optimizer topology. For a registered optimizer factory, the sidecar must also match its recorded id, version and config (§3.1).
 
-Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. A checkpoint with no sidecar restores its weights only: epoch numbering continues after its epoch, and the optimizer, scheduler, scaler and RNG state start fresh with a warning. A legacy optimizer-only sidecar also restores the optimizer state. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
+Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. A checkpoint with no sidecar restores its weights only, and epoch numbering continues after its epoch. The optimizer, scheduler, scaler and RNG state start fresh, with a warning. A legacy optimizer-only sidecar also restores the optimizer state. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
 
 ### 14.1. Component state
 

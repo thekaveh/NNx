@@ -79,7 +79,10 @@ def low_rank_factorize(
     # Linears are downcast back to the original dtype before return.
     W = linear.weight.data
     orig_dtype = W.dtype
-    U, S, Vh = torch.linalg.svd(W.to(torch.float64), full_matrices=False)
+    # MPS has no float64: decompose a CPU copy there (copy_ moves the
+    # factors back onto the layer's device).
+    work = W.detach().to("cpu") if W.device.type == "mps" else W
+    U, S, Vh = torch.linalg.svd(work.to(torch.float64), full_matrices=False)
     U_k = U[:, :rank]  # (out, k)
     S_k = S[:rank]  # (k,)
     Vh_k = Vh[:rank, :]  # (k, in)

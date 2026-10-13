@@ -102,7 +102,7 @@ A `DecisionProvider` has two methods: `capabilities()` and
 `capabilities().check(question, modality=..., batch_size=..., label_ids=None)`
 raises `UnsupportedCapability` for anything undeclared. Without dynamic
 labels, that includes a Choice or Score whose ids are not exactly the
-declared `labels`. The same holds for `label_ids`, the provider's own mapping
+declared `labels`. With no `labels` declared, option sets are not checked. The same holds for `label_ids`, the provider's own mapping
 of those ids. Providers call it **before any model call or network I/O**.
 
 ## 4. The fixed-head adapter
@@ -482,7 +482,7 @@ network, nothing fitted.
 ```python
 from nnx.decisions.benchmark import Budget, Sample, collect, evaluate, read_records, write_records
 
-samples = [Sample("pet-0", question, row, "cat", family="pets"), ...]
+samples = [Sample("pet-0", question, row, "sp-cat", family="pets"), ...]
 collection = collect(provider, samples, provider_id="fixed-head-v1", budget=Budget(max_calls=20))
 write_records("records.jsonl", collection.records)           # once, live
 report = evaluate(samples, read_records("records.jsonl"), split="animals-v1")   # any time, offline
@@ -614,7 +614,7 @@ records = [
     for sample, result in answered
 ]
 write_teacher_records("teacher.jsonl", records)
-data = TeacherDataset(records, inputs, candidates=("cat", "dog"), schema_digest=question.digest())
+data = TeacherDataset(records, inputs, candidates=("sp-fox", "sp-cat", "sp-dog"), schema_digest=question.digest())
 student.train(params=..., objective=data.objective(alpha=0.7))
 ```
 

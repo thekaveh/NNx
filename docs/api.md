@@ -2968,7 +2968,8 @@ Attributes:
         ``"text"``).
     dynamic_labels: whether a request may bring any option set; ``False``
         means the options must map exactly onto ``labels``.
-    labels: the fixed label space when ``dynamic_labels`` is ``False``.
+    labels: the fixed label space when ``dynamic_labels`` is ``False``;
+        ``None`` declares none, so option sets are not checked.
     max_batch: the most inputs per call (``None``: unbounded).
     inference / training / export: whether the backend can answer, be
         trained and be exported. A hosted provider declares inference
@@ -9545,7 +9546,8 @@ ReduceLROnPlateau — the default scheduler.
 **Details**
 
 ```text
-Sets the five plateau fields. `kind` is left at None (the
+Sets the five plateau fields (``factor`` in ``(0, 1)``: it reduces
+the LR). `kind` is left at None (the
 dataclass default), which preserves the omit-when-default
 state() invariant for callers who used the original pre-enum
 config.
@@ -16535,8 +16537,11 @@ Returns:
 
 Raises:
     ImportError: When `launch=True` and the `netron` package isn't
-        installed. The ONNX export itself uses `torch.onnx`, which
-        is part of core PyTorch.
+        installed (checked before anything is written). The ONNX
+        export itself uses `torch.onnx`, which is part of core PyTorch.
+    NotImplementedError: When the module declares
+        `onnx_export_unsupported` (graph classifiers, link
+        predictors); nothing is written.
 ```
 
 

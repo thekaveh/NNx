@@ -432,11 +432,27 @@ def test_a_library_warning_from_a_main_without_a_loader_warns_and_never_crashes(
     assert ("probe warning" in done.stderr) == (filters == "default")
 
 
-def test_a_plateau_factor_of_one_or_more_is_refused_at_construction():
+@pytest.mark.parametrize("factor", [1.0, 1.5])
+def test_a_plateau_factor_of_one_or_more_is_refused_at_construction(factor):
     from nnx import NNSchedulerParams
 
     with pytest.raises(ValueError, match="factor < 1 for a plateau"):
-        NNSchedulerParams(min_lr=1e-7, factor=1.5, patience=1, cooldown=0, threshold=1e-3)
+        NNSchedulerParams(min_lr=1e-7, factor=factor, patience=1, cooldown=0, threshold=1e-3)
+
+
+@pytest.mark.parametrize("script", ["check_feature_composition.py", "check_export_conformance.py"])
+def test_gate_scripts_parse_their_arguments_under_python_oo(script):
+    """-OO strips docstrings; the argparse description must not need one."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    path = root / "scripts" / script
+    if not path.exists():
+        pytest.skip("repository scripts are not shipped in the sdist")
+    done = subprocess.run([sys.executable, "-OO", str(path), "--help"], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr
 
 
 @pytest.mark.parametrize("epochs", [["3"], [-1], [2.5], 3, "3"])
@@ -446,3 +462,42 @@ def test_model_checkpoint_epochs_that_never_match_are_refused(epochs):
     with pytest.raises(ValueError, match="epochs"):
         ModelCheckpoint(epochs=epochs)
     assert ModelCheckpoint(epochs=[0, 2]).epochs == {0, 2}
+
+
+def test_public_moe_and_vit_constructors_refuse_float_and_bool_sizes():
+    from nnx import MoELinear, ViTNN
+
+    with pytest.raises(ValueError, match="top_k"):
+        MoELinear(3, 2, num_experts=4, top_k=2.0)
+    with pytest.raises(ValueError, match="top_k"):
+        MoELinear(3, 2, num_experts=4, top_k=True)
+    with pytest.raises(ValueError, match="ffn_mult"):
+        ViTNN(image_size=8, patch_size=4, in_channels=1, d_model=8, n_layers=1, n_heads=2, ffn_mult=1.5)
+    with pytest.raises(ValueError, match="attn_dropout"):
+        ViTNN(image_size=8, patch_size=4, in_channels=1, d_model=8, n_layers=1, n_heads=2, attn_dropout=True)
+
+
+def test_a_refused_task_accumulator_leaves_the_training_modes(monkeypatch):
+    """The accumulator was built after eval(), outside the restoring try."""
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, TaskSpec
+    from nnx.nn import nn_model as nn_model_module
+
+    model = NNModel(
+        net_params=NNParams(input_dim=2, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(2)
+        ),
+    )
+    model.net.train()
+
+    def refuse(adapter, who):
+        raise ValueError("no bounded accumulator")
+
+    monkeypatch.setattr(nn_model_module, "_bounded_task_accumulator", refuse)
+    with pytest.raises(ValueError, match="no bounded accumulator"):
+        nn_model_module._evaluate_task(
+            model, [(torch.randn(2, 2), torch.tensor([0, 1]))], None, None, bounded=True, who="t"
+        )
+    assert model.net.training

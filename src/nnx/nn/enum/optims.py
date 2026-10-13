@@ -73,8 +73,9 @@ class Optims(Enum):
         """Build the underlying torch optimizer.
 
         When ``param_groups`` is None (back-compat default), constructs
-        the optimizer with a single group: every trainable parameter of
-        ``net`` at ``lr=lr_start``, ``weight_decay=weight_decay``.
+        the optimizer with a single group: every parameter of ``net``
+        (frozen ones included; they receive no gradient) at
+        ``lr=lr_start``, ``weight_decay=weight_decay``.
 
         When ``param_groups`` is set to a list of
         :class:`nnx.finetune.NNParamGroupSpec`, dispatches to

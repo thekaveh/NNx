@@ -534,5 +534,8 @@ def test_a_bf16_denoiser_trains_in_its_own_dtype(path):
         if path == "step"
         else {"objective": diffusion_objective(SCHEDULE)}
     )
+    before = [p.detach().clone() for p in model.net.parameters()]
     run = model.train(_params([_points(4).to(torch.bfloat16)]), **how)
     assert all(idp.train_edp.loss is not None and math.isfinite(idp.train_edp.loss) for idp in run.idps)
+    assert all(p.dtype is torch.bfloat16 for p in model.net.parameters())
+    assert any(not torch.equal(p, b) for p, b in zip(model.net.parameters(), before, strict=True))

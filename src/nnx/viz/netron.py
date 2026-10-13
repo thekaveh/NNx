@@ -62,8 +62,11 @@ def netron_export(
 
     Raises:
         ImportError: When `launch=True` and the `netron` package isn't
-            installed. The ONNX export itself uses `torch.onnx`, which
-            is part of core PyTorch.
+            installed (checked before anything is written). The ONNX
+            export itself uses `torch.onnx`, which is part of core PyTorch.
+        NotImplementedError: When the module declares
+            `onnx_export_unsupported` (graph classifiers, link
+            predictors); nothing is written.
     """
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel

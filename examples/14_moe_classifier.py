@@ -176,9 +176,11 @@ def main() -> None:
     model.net.eval()
     reloaded.net.eval()
     with torch.no_grad():
-        same = torch.allclose(model.net(all_X), reloaded.net(all_X))
-    print(f"\ncheckpoint round-trip: net_params={type(ckpt.net_params).__name__}, ")
-    print(f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}")
+        same = torch.equal(model.net(all_X), reloaded.net(all_X))  # the same weights: bit-exact
+    print(
+        f"\ncheckpoint round-trip: net_params={type(ckpt.net_params).__name__}, "
+        f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}"
+    )
     assert same, "the reloaded checkpoint gave different logits"
 
 
