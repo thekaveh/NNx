@@ -1399,4 +1399,5 @@ def test_api_reference_summaries_render_sphinx_roles_as_code():
 
     assert _plain_roles("Result of an :func:`lr_finder` sweep.") == "Result of an `lr_finder` sweep."
     assert _plain_roles("A :class:`~nnx.models.ModelSpec` spec.") == "A `ModelSpec` spec."
+    assert _plain_roles("Of :meth:`NNModel.iter_predict <nnx.NNModel.iter_predict>`.") == "Of `NNModel.iter_predict`."
     assert _plain_roles("See :meth:`nnx.NNModel.train`.") == "See `nnx.NNModel.train`."

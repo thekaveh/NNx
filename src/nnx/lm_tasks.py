@@ -33,7 +33,9 @@ checked before any forward pass.
 - :meth:`CausalLMTask.eval_step` — an ``eval_step_fn``: the epoch's
   **unsmoothed** NLL is the total valid-token negative log likelihood over
   the valid-token count (independent of batching and right padding; the
-  model never receives the attention mask, so left padding is refused), perplexity is
+  model never receives the attention mask, so a mapping batch whose
+  ``attention_mask`` shows left padding is refused; ``pad_id`` alone does not
+  detect left padding, so right-pad the batch), perplexity is
   ``exp(NLL)`` (``+inf`` when it overflows, never a clipped finite value) and
   token accuracy is the top-1 rate. They are the record's ``loss`` and its
   ``metrics`` ``nll`` / ``perplexity`` / ``token_accuracy``; an epoch whose
@@ -192,7 +194,10 @@ class CausalLMTask:
         tuple) covers the ids (``"shift_inputs"``) or the targets
         (``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
         way (the ids, or the targets when pre-shifted). It is never a loss
-        mask, but a position it pads that would still be scored is refused."""
+        mask, but a position it pads that would still be scored is refused,
+        and so is padding before a real token (left padding): the model never
+        receives the mask. Without one the task cannot see padding, so
+        right-pad the batch."""
         if isinstance(batch, Mapping):
             return self._split_mapping(batch)
         if isinstance(batch, torch.Tensor):

@@ -1568,3 +1568,62 @@ def test_weight_digests_tell_shapes_apart():
         return module
 
     assert _weights_digest(net((2, 3))) != _weights_digest(net((3, 2)))
+
+
+@pytest.mark.parametrize("kind", ["legacy_weight_norm", "weight_norm", "spectral_norm"])
+def test_training_refuses_a_parametrized_net_its_checkpoints_cannot_reload(kind, tmp_path, monkeypatch):
+    import torch
+
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_classifier()
+    layer = model.net.layers[0]
+    if kind == "legacy_weight_norm":
+        torch.nn.utils.weight_norm(layer)
+    else:
+        getattr(torch.nn.utils.parametrizations, kind)(layer)
+    with pytest.raises(ValueError, match="layers.0.weight are reparameterized"):
+        model.train(params=_one_epoch())
+
+
+def test_a_mask_value_below_a_normal_temperature_keeps_sampling():
+    import torch
+
+    from nnx.generation.logits_processors import TemperatureScaling
+
+    floor = torch.finfo(torch.float32).min
+    scaled = TemperatureScaling(0.5)(torch.tensor([[5.0, 4.9, floor]]), [])
+    assert torch.isfinite(scaled[0, :2]).all() and scaled[0, 2] == float("-inf")  # not greedy
+
+
+@pytest.mark.parametrize("lr", [0.0, -1e-3, float("nan"), True])
+def test_train_contrastive_refuses_a_learning_rate_that_cannot_train(lr):
+    import torch
+
+    from nnx.embeddings import train_contrastive
+
+    with pytest.raises(ValueError, match="lr must be positive"):
+        train_contrastive(torch.nn.Linear(2, 2), [("a", "b"), ("c", "d")], lr=lr)
+
+
+def test_distillation_refuses_flat_single_logit_heads():
+    import torch
+
+    from nnx._step_helpers import softened_kl
+
+    with pytest.raises(ValueError, match=r"\(rows, classes\) logits"):
+        softened_kl(torch.randn(8), torch.randn(8), 4.0)
+
+
+def test_weight_digests_tell_per_channel_axes_apart():
+    import torch
+
+    from nnx.benchmarking import _weights_digest
+
+    def net(axis):
+        module = torch.nn.Module()
+        values = torch.arange(9, dtype=torch.float32).reshape(3, 3)
+        scales, zero_points = torch.ones(3, dtype=torch.float64), torch.zeros(3, dtype=torch.int64)
+        module.register_buffer("q", torch.quantize_per_channel(values, scales, zero_points, axis, torch.qint8))
+        return module
+
+    assert _weights_digest(net(0)) != _weights_digest(net(1))

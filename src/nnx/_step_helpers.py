@@ -211,6 +211,11 @@ def softened_kl(
             f"distillation needs teacher logits of the student's shape {tuple(student_logits.shape)}, got "
             f"{tuple(teacher_logits.shape)}"
         )
+    if student_logits.ndim != 2:  # a (N,) single-logit head would be softmaxed across the batch's rows
+        raise ValueError(
+            f"distillation needs (rows, classes) logits, got shape {tuple(student_logits.shape)}; a single-logit "
+            "(binary) head has no class distribution to soften"
+        )
     if student_logits.shape[-1] < 2:  # a softmax over one logit is always 1: the soft loss is 0
         raise ValueError(
             "distillation needs at least 2 class logits per row; a single-logit (binary) head has no class "

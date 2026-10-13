@@ -147,7 +147,12 @@ A change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) can produce
     - A target inside an `nn.Sequential` (walking the following siblings).
     - A target inside `FeedFwdNN.layers` (resolving the *effective* `activation_for(i)` / `dropout_for(i)`, not the scalar defaults).
 - Every op between the `widen` target and the next Linear must be elementwise: the built-in activations except Softmax, `Dropout`, `Identity`. Duplicating units through a width-dependent op (Softmax's denominator, LayerNorm / BatchNorm statistics) changes the output.
-- `widen` raises a `ValueError` naming the boundary *before* anything is allocated. It does so for width-dependent ops, other containers (registration order is not data flow), a container subclass with its own forward, hooks on the container or on the path from the layer to its consumer, missing consumers, and aliases (modules registered under more than one path). The source model, its module identities and the RNG are untouched.
+- `widen` raises a `ValueError` naming the boundary *before* anything is allocated. The source model, its module identities and the RNG are untouched. It refuses:
+    - width-dependent ops;
+    - other containers (registration order is not data flow), and a container subclass with its own forward;
+    - hooks on the container, or on the path from the layer to its consumer;
+    - missing consumers;
+    - aliases (modules registered under more than one path).
 - With dropout configured, the `widen` parity promise is for eval mode. A stochastic training forward is not identical by construction.
 - `deepen` rejects any activation other than ReLU: a `ValueError` at a `FeedFwdNN` site, a `TypeError` for a non-ReLU target in an `nn.Sequential`. The ReLU must be fed by an `nn.Linear` through elementwise or norm modules only; any other module in between is refused with a `ValueError`. The identity-Linear trick only function-preserves through ReLU. For sigmoid / tanh / GELU networks, structurally similar insertions silently produce a drifted forward output.
 - `deepen` rebuilds an `nn.Sequential` as a plain `nn.Sequential` of the same children. It therefore refuses a subclass with its own `forward`, and a container with its own parameters, buffers or hooks. These would be dropped. It also refuses a target ReLU with hooks, and a `ModuleList` that is not the `layers` / `fcs` of a stock `FeedFwdNN` / `ConvNN`.
@@ -187,7 +192,7 @@ These flags and modes live on the returned object only. `state_dict()` carries n
 The example uses a custom module `net` with an `embed` attribute; no built-in net has one. As in §2, a fresh `NNModel` wraps the changed module, so its runs and checkpoints describe the expanded topology:
 
 ```python
-from nnx import NNModel, NNParamGroupSpec, expand_embedding
+from nnx import NNModel, NNOptimParams, NNParamGroupSpec, Optims, expand_embedding
 
 new_emb, frozen_mask = expand_embedding(net.embed, new_num_embeddings=20_000, init="copy_mean")
 net.embed = new_emb  # reattach — expand_embedding returns a NEW module

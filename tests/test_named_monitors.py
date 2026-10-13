@@ -732,3 +732,27 @@ def test_an_epoch_summary_keeps_each_windows_term_weight():
     for _ in range(4):
         constant.observe_terms([term(8.0, 4, 1.0)])
     assert constant._terms_loss() == pytest.approx(2.0)
+
+
+def test_an_unfed_monitor_warns_again_on_a_second_run_in_the_same_session(tmp_path, monkeypatch):
+    import warnings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("default")  # Python's own: once per (message, location)
+        for seed in (0, 1):
+            _model().train(
+                params=NNTrainParams(
+                    n_epochs=1,
+                    train_loader=_batches(X, Y, [5]),
+                    val_loader=_batches(X, Y, [5]),
+                    metrics=[MetricSpec("nll")],
+                    monitor=MonitorSpec(metric="nll"),
+                    seed=seed,
+                ),
+                eval_step_fn=lambda ctx: NNEvaluationDataPoint(loss=1.0),
+            )
+    hits = [w for w in caught if "monitor 'val.nll' has no value" in str(w.message)]
+    assert [w.filename for w in hits] == [__file__, __file__]

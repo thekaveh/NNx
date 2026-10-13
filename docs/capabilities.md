@@ -152,8 +152,8 @@ clipping.
   applies torchao INT8 weight-only post-training quantization without
   calibration data and returns the same model class. QAT 8da4w uses
   `qat_train_step_factory` with `QATLifecycleCallback`.
-- **Pruning.** `nnx.prune.magnitude_prune` applies checkpoint-safe
-  unstructured masks; `semi_structured_24` applies 2:4 sparsity through
+- **Pruning.** `nnx.prune.magnitude_prune` applies unstructured masks,
+  baked into checkpoint-safe weights by default; `semi_structured_24` applies 2:4 sparsity through
   torchao.
 - **Model surgery.** `nnx.surgery` provides `widen` and `deepen`
   (function-preserving Net2Net edits on validated topologies), `drop_layer`,

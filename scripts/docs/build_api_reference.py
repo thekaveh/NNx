@@ -126,10 +126,14 @@ _ROLE = re.compile(r":[a-z]+:`(~?)([^`]+)`")
 def _plain_roles(text: str) -> str:
     """Sphinx roles as Markdown code spans: ``:func:`nnx.lr_finder``` reads
     as `nnx.lr_finder` (and ``:class:`~nnx.models.ModelSpec``` as
-    `ModelSpec`) on GitHub, the site and the wiki, which render no roles."""
+    `ModelSpec`) on GitHub, the site and the wiki, which render no roles.
+    An explicit title (``:meth:`title <target>```) keeps only the title."""
 
     def code(match: re.Match[str]) -> str:
         target = match.group(2)
+        titled = re.fullmatch(r"(.*?)\s*<([^>]+)>", target)
+        if titled:
+            return f"`{titled.group(1)}`"
         return f"`{target.rsplit('.', 1)[-1] if match.group(1) else target}`"
 
     return _ROLE.sub(code, text)

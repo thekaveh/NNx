@@ -54,10 +54,14 @@ class TemperatureScaling:
             # sampler reads as the greedy marker (the first +inf, not the argmax).
             logits = logits.float()
         scaled = logits / self.temperature
-        if (torch.isinf(scaled) & torch.isfinite(logits)).any():
+        finite = torch.isfinite(logits)
+        overflowed = (torch.isposinf(scaled) & finite).any()
+        emptied = (finite.any(dim=-1) & ~torch.isfinite(scaled).any(dim=-1)).any()
+        if overflowed or emptied:
             # Even fp32 overflows for a tiny T: several +inf would read as
-            # the greedy marker and resolve to the first, and a row of -inf
-            # samples token 0, not the argmax.
+            # the greedy marker and resolve to the first, and a row left
+            # all -inf samples token 0, not the argmax. (A very negative
+            # logit that underflows to -inf had no probability anyway.)
             # Such a T is greedy in effect, so mark the argmax as T=0 does.
             out = torch.full_like(logits, float("-inf"))
             out.scatter_(dim=-1, index=logits.argmax(dim=-1, keepdim=True), value=float("inf"))

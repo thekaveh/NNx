@@ -140,6 +140,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - A tiny temperature on all-negative logits samples the argmax, not token 0; the QAT "prepared nothing" error names a root `Linear`; the DPO `beta` docstring states the right direction (larger `beta` keeps the policy closer to the reference).
     - `CausalLMTask` refuses an attention mask with padding before a real token (left padding): the model never receives the mask, so the NLL was not independent of padding. Benchmark weight digests include each tensor's dtype and shape (and a per-channel quantization axis).
     - A lazy-layer model's final LAST records the materialized optimizer topology, so a materialized module resumes from `last`; `eval_step_fn` runs with the net in eval mode (modes restored after); `to_onnx` refuses a mapping example with a clear `TypeError`.
+    - `NNModel.train` refuses a registered net whose weights a parametrization replaced (`weight_norm`, `spectral_norm`), since no checkpoint could reload it; distillation refuses a flat `(N,)` single-logit head (it was softmaxed across the batch); `train_contrastive` refuses `lr <= 0`; a very negative mask value no longer makes a normal temperature greedy; `predict` on a read-only (pandas) array no longer warns.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 

@@ -6833,7 +6833,7 @@ Stop the stream and drop its references to the loader's iterator and the model. 
 class nnx.streaming.PredictionBatch(logits: 'np.ndarray', classes: 'np.ndarray', sample_ids: 'np.ndarray') -> 'None'
 ```
 
-One loader batch of `NNModel.iter_predict <nnx.NNModel.iter_predict>`.
+One loader batch of `NNModel.iter_predict`.
 
 **Details**
 
@@ -7920,7 +7920,7 @@ Summarize ``observations`` and run each ``(a, b, pairing)`` comparison (every co
 nnx.comparison.ComparisonReport.table(self) -> 'list[dict[str, Any]]'
 ```
 
-One row per observation, group, pair and unmatched replicate, each with a ``row`` kind; values are plain JSON types.
+One row per observation, group, pair and unmatched replicate, plus one ``comparison`` summary row per comparison (``n``, ``mean``, ``std``, ``bootstrap``, ``interval``), each with a ``row`` kind; values are plain JSON types.
 
 ##### `nnx.comparison.ComparisonReport.text`
 
@@ -8106,7 +8106,10 @@ A loss mask (boolean, or 0/1 except in the ``(ids, loss_mask)``
 tuple) covers the ids (``"shift_inputs"``) or the targets
 (``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
 way (the ids, or the targets when pre-shifted). It is never a loss
-mask, but a position it pads that would still be scored is refused.
+mask, but a position it pads that would still be scored is refused,
+and so is padding before a real token (left padding): the model never
+receives the mask. Without one the task cannot see padding, so
+right-pad the batch.
 ```
 
 ##### `nnx.lm_tasks.CausalLMTask.valid`
@@ -15468,7 +15471,7 @@ Returns:
 
 Raises:
     ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
-        non-positive epochs, non-positive temperature, or a
+        non-positive epochs, non-positive temperature or ``lr``, or a
         non-positive ``grad_clip_norm`` — NT-Xent needs at least one
         negative, so both the dataset and every batch must carry
         >= 2 pairs.

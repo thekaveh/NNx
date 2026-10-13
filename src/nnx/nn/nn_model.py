@@ -622,6 +622,13 @@ def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransfor
             ) from error
 
 
+def _writable(array: np.ndarray) -> np.ndarray:
+    """A writable array for ``torch.from_numpy``: pandas' read-only
+    ``.to_numpy()`` would otherwise raise torch's undefined-behaviour
+    warning, though NNx never writes to the tensor."""
+    return array if array.flags.writeable else array.copy()
+
+
 def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
     """The base layers ``X`` a state holds as LoRA wrappers (``X.base.weight``
     or ``X.lora_A``) and as low-rank factors (``X.0.weight`` and
@@ -2719,10 +2726,28 @@ class NNModel(_HubMixinBase):
                 "e.g. magnitude_prune(bake=False)) that the checkpoints could not rebuild; bake the masks first "
                 "(torch.nn.utils.prune.remove), or train the pruned net as NNModel(module=...)"
             )
-        if _replaced_layers(actual_keys, expected_keys)[1]:
+        low_rank_layers = _replaced_layers(actual_keys, expected_keys)[1]
+        if low_rank_layers:
             raise ValueError(
                 "low-rank surgery topology has no reconstruction recipe; train before surgery, "
                 "or use export_state_dict() for the modified module"
+            )
+        # A parametrization (weight_norm, spectral_norm, register_parametrization)
+        # replaces X.name by X.parametrizations.name.original* or X.name_g / X.name_v.
+        parametrized = sorted(
+            key
+            for key in expected_keys - actual_keys
+            if any(
+                other.startswith(f"{key.rsplit('.', 1)[0]}.parametrizations.{key.rsplit('.', 1)[-1]}.original")
+                for other in actual_keys
+            )
+            or {f"{key}_g", f"{key}_v"} <= actual_keys
+        )
+        if parametrized:
+            raise ValueError(
+                f"{', '.join(parametrized[:5])} are reparameterized (a parametrization such as weight_norm or "
+                "spectral_norm), so no checkpoint could reload them; remove the parametrization before training, "
+                "or train the net as NNModel(module=...)"
             )
 
     def to_onnx(
@@ -2798,7 +2823,7 @@ class NNModel(_HubMixinBase):
         net_dtype = next((param.dtype for param in self.net.parameters() if param.is_floating_point()), None)
 
         def _example(e: Any) -> torch.Tensor:
-            tensor = e if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e))
+            tensor = e if isinstance(e, torch.Tensor) else torch.from_numpy(_writable(np.asarray(e)))
             if net_dtype is not None and tensor.is_floating_point() and tensor.dtype != net_dtype:
                 tensor = tensor.to(net_dtype)
             return tensor.to(self.device)
@@ -4612,7 +4637,7 @@ class NNModel(_HubMixinBase):
             net_dtype = next((param.dtype for param in self.net.parameters() if param.is_floating_point()), None)
 
             def _to_tensor(x):
-                tensor = x if isinstance(x, torch.Tensor) else torch.from_numpy(np.asarray(x))
+                tensor = x if isinstance(x, torch.Tensor) else torch.from_numpy(_writable(np.asarray(x)))
                 if net_dtype is not None and tensor.is_floating_point() and tensor.dtype != net_dtype:
                     tensor = tensor.to(net_dtype)
                 return tensor.to(self.device)

@@ -436,7 +436,31 @@ def test_an_eval_step_fn_runs_in_eval_mode_and_the_modes_come_back():
         return NNEvaluationDataPoint(loss=1.0)
 
     module = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.5), nn.Linear(8, 2))
-    module[1].train()
     model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
     model.train(params=_params(_loader(), val_loader=_loader(1)), eval_step_fn=evaluate)
     assert seen == [False, False]
+    assert all(m.training for m in module.modules())  # the training modes came back
+
+
+def test_an_unbaked_pruned_runtime_module_trains_keeps_its_mask_and_resumes():
+    from nnx.prune import magnitude_prune
+
+    module = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    magnitude_prune(module, 0.5, bake=False)
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_loader()))
+    assert float((module[0].weight == 0).float().mean()) == pytest.approx(0.5)
+    warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
+    assert float((module[0].weight == 0).float().mean()) == pytest.approx(0.5)
+
+
+def test_predict_on_a_read_only_array_does_not_warn():
+    import warnings
+
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    X = np.random.default_rng(0).standard_normal((3, 4)).astype(np.float32)
+    X.flags.writeable = False  # what pandas' .to_numpy() returns
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model.predict(X)

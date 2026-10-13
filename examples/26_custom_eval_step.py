@@ -134,21 +134,18 @@ def regression_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 def regression_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     """Sample-weighted val MSE + MAE over the full val loader.
 
-    Runs under ``torch.no_grad()`` (NNModel.train wraps the call), but we
-    still flip eval mode so dropout/batch-norm behave, and restore train
-    mode after — the next epoch continues training.
+    NNModel.train runs the call under ``torch.no_grad()`` with the net in
+    eval mode (dropout off, batch-norm statistics frozen) and restores every
+    submodule's mode afterwards, so the step only iterates and aggregates.
     """
-    net = ctx.model.net
-    was_training = net.training
-    net.eval()
+    net, device = ctx.model.net, ctx.model.device
     se_sum, ae_sum, n = 0.0, 0.0, 0
     for X, Y in ctx.val_loader:
+        X, Y = X.to(device), Y.to(device)
         pred = net(X)
         se_sum += float(F.mse_loss(pred, Y, reduction="sum"))
         ae_sum += float(F.l1_loss(pred, Y, reduction="sum"))
         n += Y.numel()
-    if was_training:
-        net.train()
     mse, mae = se_sum / n, ae_sum / n
     # The classification fields are meaningless for regression — leave them
     # None and carry the real numbers in loss/error/extra.

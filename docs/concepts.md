@@ -295,7 +295,7 @@ assert wrapped.net is my_encoder                      # never cloned or re-initi
 
 Construction then calls the factory with Python's `random`, NumPy and torch all seeded from `seed`. The ambient RNG states are captured and restored. So the same spec always initializes the same weights and never shifts the caller's random streams. The low-rank-surgery reconstruction guard compares against the layout recorded when the factory built the module, so `train()` never builds it twice.
 
-`NNModel.from_checkpoint`, `NNModel.from_pretrained` and the checkpoint t-SNE rebuild the module through the registry. They compare its parameter names and shapes with the saved weights **before** loading any of them. A factory that now builds another topology fails with `ValueError`. That guard applies to registered modules as it does to built-in nets.
+`NNModel.from_checkpoint`, `NNModel.from_pretrained` and the checkpoint t-SNE rebuild the module through the registry. They compare its parameter names and shapes with the saved weights **before** loading any of them. A factory that now builds another topology fails with `ValueError`. Built-in nets are rebuilt from their own params instead; a mismatch there surfaces as the `RuntimeError` of `load_state_dict`.
 
 **Runtime modules.** `NNModel(module=m, params=NNModelParams(...))` wraps the instance itself: `model.net is m`, and no tensor or RNG state changes. It fills `params.net` with a `RuntimeModule` descriptor. The descriptor holds the class's qualified name (`module="pkg.Class"`) and a `topology` fingerprint of the parameter names, shapes and dtypes and the module's `repr`. So identical architectures share a run id and different ones do not, layer hyperparameters such as dropout rates included.
 
@@ -2059,8 +2059,9 @@ batch ──split()──► inputs, targets, loss_mask ──valid()──► o
 The objective's denominator, the NLL and the token accuracy share the valid
 positions. Accumulation therefore normalizes by valid tokens, an all-masked
 window steps nothing, and epoch NLL is independent of batching and right
-padding. The model never receives the attention mask, so a batch with padding
-before a real token (left padding) is refused.
+padding. The model never receives the attention mask. A mapping batch whose
+`attention_mask` has padding before a real token (left padding) is refused.
+`pad_id` alone does not detect left padding, so right-pad the batch.
 
 Reported NLL and perplexity are unsmoothed. An all-masked validation epoch is
 unavailable rather than zero, and no classification field is fabricated. The
@@ -2818,7 +2819,8 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   unit) and records its seed, method and resamples. Its interval describes
   seed variability over these replicates; it is not a significance claim.
 - **Reports.** `table()` gives one plain-JSON row per group, observation,
-  pair and unmatched replicate. `text()` gives a concise view with every run
+  pair and unmatched replicate, and one `comparison` row per comparison with
+  its `n`, mean, standard deviation and interval. `text()` gives a concise view with every run
   and attempt id, status, selection rule and signed delta. Input order never
   changes either. `save` writes strict JSON. `load` re-derives the results
   from the stored observations and refuses a file whose results disagree.
@@ -2867,7 +2869,7 @@ with:
 - the data and split identities its provenance declares;
 - the checkpoint tag and the resume mode from `metadata.yaml`.
 
-`n_epochs` counts the epochs a run adds. Such a run therefore pools only
+With the default `resume_epochs="additional"`, `n_epochs` counts the epochs a run adds. Under `"planned"` it is the plan's total, and both settings are in the identity. Such a run therefore pools only
 with runs descended the same way from identically configured parents. It
 never pools with fresh runs, with its parent, or with fine-tunes of other
 pretraining. Only recorded facts decide, and an unknown lineage never pools.

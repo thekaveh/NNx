@@ -347,14 +347,16 @@ offline.
     - `task.eval_step()` reports the epoch's **unsmoothed** NLL as the
       record's `loss` and `metrics["nll"]`. This NLL is the total valid-token
       NLL over the valid-token count, independent of batching and right
-      padding. The model never receives the attention mask, so a batch with
-      padding before a real token (left padding) is refused.
-      It also reports
+      padding. It also reports
       `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
       clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
       reported unavailable. No classification field is fabricated, and
       `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
       validation NLL.
+    - The model never receives the attention mask. A mapping batch whose
+      `attention_mask` has padding before a real token (left padding) is
+      refused. `pad_id` alone does not detect left padding, and a batch
+      without an attention mask cannot show it, so right-pad the batch.
     - The task configuration (and an optional declared tokenizer identity)
       is checkpointed component state `"lm.causal_task"`. It is stored with
       the valid tokens the run's objective scored. The count starts from 0

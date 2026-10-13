@@ -786,8 +786,10 @@ class ComparisonReport:
     # ---------- views ----------
 
     def table(self) -> list[dict[str, Any]]:
-        """One row per observation, group, pair and unmatched replicate,
-        each with a ``row`` kind; values are plain JSON types."""
+        """One row per observation, group, pair and unmatched replicate, plus
+        one ``comparison`` summary row per comparison (``n``, ``mean``,
+        ``std``, ``bootstrap``, ``interval``), each with a ``row`` kind;
+        values are plain JSON types."""
         rows: list[dict[str, Any]] = []
         for index, group in enumerate(self.summary.groups):
             stats = {key: value for key, value in group.state().items() if key != "attempts"}

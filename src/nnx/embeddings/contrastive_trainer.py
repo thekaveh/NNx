@@ -383,7 +383,7 @@ def train_contrastive(
 
     Raises:
         ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
-            non-positive epochs, non-positive temperature, or a
+            non-positive epochs, non-positive temperature or ``lr``, or a
             non-positive ``grad_clip_norm`` — NT-Xent needs at least one
             negative, so both the dataset and every batch must carry
             >= 2 pairs.
@@ -399,6 +399,9 @@ def train_contrastive(
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     if not math.isfinite(temperature) or temperature <= 0:
         raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    if isinstance(lr, bool) or not isinstance(lr, (int, float)) or not math.isfinite(lr) or lr <= 0:
+        # AdamW accepts lr=0.0: every epoch would run and leave the backbone untouched.
+        raise ValueError(f"lr must be positive and finite, got {lr!r}")
     if grad_clip_norm is not None and (not math.isfinite(grad_clip_norm) or grad_clip_norm <= 0):
         # `None` disables clipping; a non-positive norm would otherwise slip
         # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
