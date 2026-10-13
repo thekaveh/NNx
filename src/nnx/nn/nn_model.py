@@ -4309,8 +4309,8 @@ class NNModel(_HubMixinBase):
         metric whose input this model cannot provide raises before any
         batch is read.
 
-        Raises ValueError if the loader yields zero batches — previously
-        produced NaN metrics silently from np.mean over an empty list.
+        Raises ValueError if the loader yields zero batches (there would be
+        nothing to average).
         """
         return _evaluate(self, loader, extra_metrics, tuple(metrics), bounded=False, who="evaluate()")
 

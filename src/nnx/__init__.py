@@ -1,9 +1,11 @@
 """nnx — lightweight PyTorch training / eval / visualization toolkit.
 
-The package is organized under `nnx.nn` (model, params, datasets, enums, nets,
-callbacks) and two top-level helpers (`nnx.utils.Utils`, `nnx.vis_utils.VisUtils`).
-The curated re-exports below give a flat surface for the most common imports
-without forbidding the deep paths existing notebook code relies on.
+The core lives under `nnx.nn` (model, params, datasets, enums, nets,
+callbacks); feature subpackages and modules such as `nnx.paradigms`,
+`nnx.peft`, `nnx.calibration` and `nnx.distributed` sit beside it (see
+`__all__`). The curated re-exports below give a flat surface for the most
+common imports without forbidding the deep paths existing notebook code
+relies on.
 """
 
 from __future__ import annotations

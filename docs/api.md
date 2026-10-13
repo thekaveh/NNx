@@ -15,10 +15,12 @@ nnx — lightweight PyTorch training / eval / visualization toolkit.
 **Details**
 
 ```text
-The package is organized under `nnx.nn` (model, params, datasets, enums, nets,
-callbacks) and two top-level helpers (`nnx.utils.Utils`, `nnx.vis_utils.VisUtils`).
-The curated re-exports below give a flat surface for the most common imports
-without forbidding the deep paths existing notebook code relies on.
+The core lives under `nnx.nn` (model, params, datasets, enums, nets,
+callbacks); feature subpackages and modules such as `nnx.paradigms`,
+`nnx.peft`, `nnx.calibration` and `nnx.distributed` sit beside it (see
+`__all__`). The curated re-exports below give a flat surface for the most
+common imports without forbidding the deep paths existing notebook code
+relies on.
 ```
 
 ##### `nnx.__version__`
@@ -459,8 +461,8 @@ and reported in the record's ``metrics`` under each spec's name. A
 metric whose input this model cannot provide raises before any
 batch is read.
 
-Raises ValueError if the loader yields zero batches — previously
-produced NaN metrics silently from np.mean over an empty list.
+Raises ValueError if the loader yields zero batches (there would be
+nothing to average).
 ```
 
 ##### `nnx.nn.nn_model.NNModel.predict`

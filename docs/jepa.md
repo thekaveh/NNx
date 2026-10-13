@@ -183,7 +183,9 @@ a signal to lock onto. The other classification fields stay zero.
 ### 4.5. Sharp edges
 
 * **`NNModelParams.mixed_precision=True`** is rejected by the
-  factory's `finalize_step` call, like every paradigm step factory.
+  factory's `finalize_step` call when it resolves to FP16 on CUDA, like
+  every paradigm step factory (off CUDA the legacy flag falls back to full
+  precision).
   AMP requires per-loss scaler bookkeeping that JEPA's custom step
   doesn't implement.
 * **`NNOptimParams.accumulate_grad_batches != 1`** is also rejected

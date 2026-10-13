@@ -119,9 +119,10 @@ values:
 
 - `"verified"`: CPU FP32 and BF16, by NNx's seeded fixtures within
   `nnx.precision.REFERENCE_TOLERANCES`.
-- `"supported"`.
+- `"supported"`: the hardware is present and the mode resolves, but no
+  NNx reference fixture checks it on that device.
 - `"unverified"`: the hardware is absent here, so nothing is claimed.
-- `"unsupported"`.
+- `"unsupported"`: the device type cannot run the mode.
 
 The scaler's state dictionary and the precision record travel with every
 checkpoint's training-state sidecar. A warm resume therefore continues from
@@ -465,8 +466,8 @@ history as diagnostics.
 loader is `None` (resolved `batch_sizes` entry `0`, `"0"` in `state()`).
 Passing it to `train()` skips validation instead of scoring zero seed rows.
 `NNTabularDataset` and `NNPreferenceDataset` use the same optional-loader
-contract. An empty `train_mask` raises at construction. Fully offline, no neighbor
-sampling backend needed:
+contract. An empty `train_mask` raises at construction. The example below runs
+fully offline and needs no neighbor-sampling backend:
 
 ```python
 import torch
@@ -879,7 +880,7 @@ run = model.train(params=params, distributed=distributed.DDP())  # the same run 
 distributed.shutdown()  # leave together: a bounded barrier, then the group is destroyed
 ```
 
-FP32, the default steps and one optimizer on one node; callbacks declare
+DDP supports FP32, the default steps and one optimizer on one node. Callbacks declare
 their rank behaviour (`Callback.distributed`) and `TensorBoardCallback` /
 `WandbCallback` go through `distributed.writer_only(...)`. See
 [Architecture §3](architecture.md#3-single-node-data-parallelism-nnxdistributed) and

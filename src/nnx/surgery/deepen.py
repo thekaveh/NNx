@@ -194,7 +194,11 @@ def _insert_after_relu_in_sequential(
         rebuilt[relu_key] = new_relu
         rebuilt.update(entries[idx + 1 :])
         new_sequential = nn.Sequential(rebuilt)
-    new_sequential.train(parent.training)
+    # The container and the two new layers take the parent's mode; existing
+    # children keep their own (Module.train() would flatten a mixed tree).
+    new_sequential.training = parent.training
+    new_linear.train(parent.training)
+    new_relu.train(parent.training)
 
     # If the Sequential IS the root model, return the new Sequential
     # directly; otherwise splice it into the original root in place of

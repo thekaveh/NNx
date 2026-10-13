@@ -1,16 +1,19 @@
 # 3. Concepts
 
-This document explains the design decisions behind NNx: the architecture and the foundational patterns every other feature builds on. It also covers the thirteen specialization subpackages and the decoder-only LM path on top:
+This document explains the design decisions behind NNx: the architecture and the foundational patterns every other feature builds on. It then covers the specialization subpackages and the decoder-only LM path on top:
 
-- Tier-1: `finetune`, `peft`, `diffusion`, `paradigms`, `trainer`.
-- Tier-2: `quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`.
+- Tier-1 (§7–§11): `finetune`, `peft`, `diffusion`, `paradigms`, `trainer`.
+- Tier-2 (§12, §15–§16): `quantize`, `prune`, `surgery`, `embeddings`, `interop`, `viz`, `generation`.
 - The inference branch: `decisions` (§17).
+- Evaluation and experiment tooling (§18–§29): calibration, abstention, experiment plans, streaming prediction, run bundles, multi-seed comparison, ranking, graph and link tasks, `Result` values, compilation and benchmarks, and budgeted search.
 
 Sections are ordered from most fundamental to most specialized. Read top-to-bottom on a first pass; jump by anchor for reference.
 
 ## 1. Architecture
 
-NNx's public surface, internal orchestration, callback bus, and on-disk persistence are summarized in the architecture diagram. The same local asset is embedded in the main README.
+NNx's public surface, internal orchestration, callback bus, and on-disk persistence are summarized in the architecture diagram (also embedded in the main README and on the [Architecture](architecture.md) page):
+
+![NNx architecture](assets/architecture.png)
 
 The diagram has eight layers, top-to-bottom:
 
@@ -18,7 +21,7 @@ The diagram has eight layers, top-to-bottom:
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** (orange bus) — the training-loop extension hooks.
 4. **Specialization subpackages** (amber) — `nnx.diffusion`, `nnx.paradigms`, `nnx.quantize`, and `nnx.embeddings` provide hook-compatible factories. The diffusion, paradigm and embeddings steps share their finalization in `nnx._step_helpers`. Other subpackages compose around the loop without claiming a hook relationship. These are the model transforms (`nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.surgery`), exchange formats (`nnx.interop`), inference utilities (`nnx.generation`) and diagnostics (`nnx.viz`).
-5. **Training-loop internals** (emerald) — the epoch × batch dispatch and the inline NaN guard + grad-clip in `default_train_step`. They also include `_step_scheduler` and `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). `_step_scheduler` is the Schedulers enum dispatch: once per epoch, or once per committed optimizer update on the `optimizer_update` clock (§3).
+5. **Training-loop internals** (emerald) — the epoch × batch dispatch and the inline NaN guard + grad-clip in `default_train_step`. They also include `_step_scheduler` and `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). `_step_scheduler` is the Schedulers enum dispatch: once per epoch, or once per committed optimizer update on the `optimizer_update` clock (§2.5).
 
     Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`). Only paradigm, diffusion and embeddings step-fn factories invoke it — not the supervised loop, which has its own inline NaN+clip path.
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`.
@@ -101,36 +104,6 @@ scheduler = NNSchedulerParams.builder().one_cycle(
 ).build()
 ```
 
-**Scheduler clocks.** `NNSchedulerParams.clock` says what one scheduler step counts.
-
-- `"epoch"` is the default. It steps once per completed epoch and is omitted from `state()`, so every existing run id is unchanged.
-- `"optimizer_update"` steps once per **committed** update of the scheduler's optimizer. It never steps per microbatch, per all-masked window or per skipped AMP step. In the builder, call `.clock("optimizer_update")` before or after the variant; a variant call keeps the clock, and so does a loaded builder.
-
-On the update clock, `step_size`, `T_max`, `total_steps` and `warmup_steps` count updates. For example, two epochs of five microbatches with `accumulate_grad_batches=2` commit 2 + 2 + 1 updates per epoch, six steps in all.
-
-Updates come from an explicit source:
-
-- the update engine, for an objective;
-- `default_train_step`, after each optimizer step it takes;
-- `finalize_step`, so every built-in paradigm step;
-- a custom step calling `ctx.report_update()` (`NNModel.train`, no name) or `ctx.report_update(name)` (`Trainer`).
-
-NNx never infers updates around an opaque step, and it warns when an epoch reports none. Whoever calls `optimizer.step()` reports it, and every report counts. `default_train_step` and `finalize_step` report their own steps, so a step function that delegates to them does not report again. `default_train_step` does not report a step the AMP scaler skipped, fused optimizers included.
-
-**Budgets.** NNx may own the windows (the default step, passed explicitly or not, or an objective) while the loader has a length. Then the default horizon is the planned updates, `n_epochs × ceil(batches / accumulate_grad_batches)`. Otherwise the budget (`total_steps`, `T_max` or `step_size`) must be explicit.
-
-A one-cycle / warmup-decay schedule stops the run with an error at the first committed update past its `total_steps`. That update is never scheduled, and no checkpoint is written after it. This applies to a default budget too. So a loader that yields more batches than its `len()` reports needs an explicit `total_steps`; an `IterableDataset` read by several workers can do this.
-
-A cosine schedule warns once when it passes its `T_max`, since its rate then climbs back up. It does not warn when that is the period the run chose: an explicit `T_max`, or a subclass's own. (Torch lets a schedule run past it on purpose.) A stateful resume keeps the checkpoint's `T_max`, so set it in the run that starts the schedule.
-
-The warm-up multiplier keeps its `(step + 1) / warmup_steps` form. With a base LR of 0.12, `warmup_steps=3` and `total_steps=8`, the first four updates train at 0.04, 0.08, 0.12, 0.12.
-
-A plateau scheduler reads a monitored metric at the epoch boundary and refuses the update clock. So does a scheduler without a `last_epoch` position, such as torch's `ChainedScheduler` from a `_build_scheduler` override.
-
-**Checkpointing.** Each update-clock scheduler is checkpointed as a required component (`nnx.scheduler_clock`, or `nnx.scheduler_clock.<name>` per Trainer optimizer). The component holds its clock, owner and budget, beside the scheduler's own state and position. A stateful resume restores them before anything steps, which reproduces the uninterrupted run's LR sequence.
-
-The resume refuses a mismatched clock or budget, or a budget the resumed updates would pass. It also refuses a checkpoint without component state, whose scheduler position counts epochs. Runnable walkthrough: [`examples/scheduler_clocks.py`](https://github.com/thekaveh/NNx/blob/main/examples/scheduler_clocks.py).
-
 `NNOptimParams.builder()` extends the pattern with **five optimizer-variant methods**:
 `adam`, `adam_amsgrad`, `adamw`, `sgd` and `sgd_nesterov`. It adds three optional chained
 modifiers: `grad_clip(norm)`, `accumulate_grad(batches)` and `param_groups(specs)`.
@@ -187,6 +160,38 @@ Ownership follows the built values. Configuration containers are copied one leve
 Setter semantics are the same on a branch. Setters mutate and return the same builder, the last variant wins, and modifiers survive a variant change. `.vocab(size)` still resets `input_dim` / `output_dim`, and a group setter still replaces its whole group. `.context()` resets an omitted `rope_base` and `.dropout()` an omitted rate, so pass a carried value again to keep it.
 
 `from_params` accepts exactly its own params class. A subclass or foreign value raises `TypeError` naming the type, and a field the builder cannot carry raises `ValueError`. An `NNOptimFactoryParams` has no builder; pass it straight to `NNTrainerParamsBuilder.optimizer`. `NNTransformerParamsBuilder.from_params` also carries the inherited `NNParams` fields no setter exposes (`hidden_dims`, `activation(s)`, `dropout_prob(s)`, custom dims). `NNTrainerParamsBuilder` has `data_id(...)` / `overwrite_existing(...)` setters, so sibling branches over different data get distinct run ids. Runnable walkthrough: [`examples/builder_branching.py`](https://github.com/thekaveh/NNx/blob/main/examples/builder_branching.py).
+
+### 2.5. Scheduler clocks
+
+`NNSchedulerParams.clock` says what one scheduler step counts.
+
+- `"epoch"` is the default. It steps once per completed epoch and is omitted from `state()`, so every existing run id is unchanged.
+- `"optimizer_update"` steps once per **committed** update of the scheduler's optimizer. It never steps per microbatch, per all-masked window or per skipped AMP step. In the builder, call `.clock("optimizer_update")` before or after the variant; a variant call keeps the clock, and so does a loaded builder.
+
+On the update clock, `step_size`, `T_max`, `total_steps` and `warmup_steps` count updates. For example, two epochs of five microbatches with `accumulate_grad_batches=2` commit 2 + 2 + 1 updates per epoch, six steps in all.
+
+Updates come from an explicit source:
+
+- the update engine, for an objective;
+- `default_train_step`, after each optimizer step it takes;
+- `finalize_step`, so every built-in paradigm step;
+- a custom step calling `ctx.report_update()` (`NNModel.train`, no name) or `ctx.report_update(name)` (`Trainer`).
+
+NNx never infers updates around an opaque step, and it warns when an epoch reports none. Whoever calls `optimizer.step()` reports it, and every report counts. `default_train_step` and `finalize_step` report their own steps, so a step function that delegates to them does not report again. `default_train_step` does not report a step the AMP scaler skipped, fused optimizers included.
+
+**Budgets.** NNx may own the windows (the default step, passed explicitly or not, or an objective) while the loader has a length. Then the default horizon is the planned updates, `n_epochs × ceil(batches / accumulate_grad_batches)`. Otherwise the budget (`total_steps`, `T_max` or `step_size`) must be explicit.
+
+A one-cycle / warmup-decay schedule stops the run with an error at the first committed update past its `total_steps`. That update is never scheduled, and no checkpoint is written after it. This applies to a default budget too. So a loader that yields more batches than its `len()` reports needs an explicit `total_steps`; an `IterableDataset` read by several workers can do this.
+
+A cosine schedule warns once when it passes its `T_max`, since its rate then climbs back up. It does not warn when that is the period the run chose: an explicit `T_max`, or a subclass's own. (Torch lets a schedule run past it on purpose.) A stateful resume keeps the checkpoint's `T_max`, so set it in the run that starts the schedule.
+
+The warm-up multiplier keeps its `(step + 1) / warmup_steps` form. With a base LR of 0.12, `warmup_steps=3` and `total_steps=8`, the first four updates train at 0.04, 0.08, 0.12, 0.12.
+
+A plateau scheduler reads a monitored metric at the epoch boundary and refuses the update clock. So does a scheduler without a `last_epoch` position, such as torch's `ChainedScheduler` from a `_build_scheduler` override.
+
+**Checkpointing.** Each update-clock scheduler is checkpointed as a required component (`nnx.scheduler_clock`, or `nnx.scheduler_clock.<name>` per Trainer optimizer). The component holds its clock, owner and budget, beside the scheduler's own state and position. A stateful resume restores them before anything steps, which reproduces the uninterrupted run's LR sequence.
+
+The resume refuses a mismatched clock or budget, or a budget the resumed updates would pass. It also refuses a checkpoint without component state, whose scheduler position counts epochs. Runnable walkthrough: [`examples/scheduler_clocks.py`](https://github.com/thekaveh/NNx/blob/main/examples/scheduler_clocks.py).
 
 ## 3. Enums-as-factories
 
@@ -549,9 +554,9 @@ ctx.should_stop   # writable — set True to break out of training
 
 Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need. Objective runs (§6.5) also call `on_optimizer_update(ctx, event)` once per committed optimizer update. Every optimizer's event of a commit fires before any `optimizer_update`-clock scheduler steps.
 
-`EarlyStopping` monitors one of four keys: `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6). `mode` only sets the improvement direction for that key; `"min"` (lower is better) is the natural reading of a loss or error. Accuracy/F1 monitors are not accepted. For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
+`EarlyStopping` monitors one of four keys: `val_edp.error`, `val_edp.loss`, `train_edp.error`, `train_edp.loss` (or the automatic default, see §6). `mode` only sets the improvement direction for that key; `"min"` (lower is better) is the natural reading of a loss or error. Accuracy / F1 string keys are not accepted; a declared `accuracy` metric is monitored through `MonitorSpec` (§6.4). For example: `EarlyStopping(monitor="val_edp.loss", mode="min", patience=5)`.
 
-`LRMonitor.history` keeps one primary-optimizer learning rate per epoch whatever the scheduler's clock. On the `optimizer_update` clock (§3) it also records `LRMonitor.update_history`. This is a separate trace of the steps NNx takes, as `(update index, LR after that update's scheduler step)` pairs. It stays empty under `Trainer`'s `auto_step_schedulers=False`, where the step function steps the schedule.
+`LRMonitor.history` keeps one primary-optimizer learning rate per epoch whatever the scheduler's clock. On the `optimizer_update` clock (§2.5) it also records `LRMonitor.update_history`. This is a separate trace of the steps NNx takes, as `(update index, LR after that update's scheduler step)` pairs. It stays empty under `Trainer`'s `auto_step_schedulers=False`, where the step function steps the schedule.
 
 `EarlyStopping(monitor=MonitorSpec(...))` tracks a named monitor instead. That is a declared metric or loss / error on either split, with the rule BEST and plateau scheduling share (§6.4).
 
@@ -593,9 +598,9 @@ The hook is one optional kwarg on `train()`. The rest of the loop (scheduler, ca
 
 `ctx` carries the relevant knobs: `grad_clip_norm`, `accumulate_grad_batches`, `scaler`, and the run's resolved `precision`. `ctx.precision.autocast()` is the forward context, and `scaler` is set for FP16 only. Honoring these knobs is on you.
 
-An `optimizer_update`-clock scheduler (§3) steps only on the updates your function reports. Call `ctx.report_update()` (no name) after each `optimizer.step()` your function takes itself. `default_train_step` and `finalize_step` report their own steps, so do not report a step you delegate to them. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
+An `optimizer_update`-clock scheduler (§2.5) steps only on the updates your function reports. Call `ctx.report_update()` (no name) after each `optimizer.step()` your function takes itself. `default_train_step` and `finalize_step` report their own steps, so do not report a step you delegate to them. To layer logging on top of the standard supervised step instead of replacing it, call `default_train_step(ctx)` from inside your hook.
 
-Several step-fn factories share an internal helper, `nnx._step_helpers.finalize_step`. They are the paradigm factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory` and `nnx.embeddings.text_contrastive_train_step_factory`. The helper runs the NaN guard before backward and honors `ctx.grad_clip_norm`. It reports each optimizer step with `ctx.report_update()`, so an `optimizer_update`-clock scheduler steps once per batch (§3).
+Several step-fn factories share an internal helper, `nnx._step_helpers.finalize_step`. They are the paradigm factories in `nnx.paradigms` (kd, feature_kd, simclr, mixup, cutmix, moe, jepa, dpo), `nnx.diffusion.diffusion_train_step_factory` and `nnx.embeddings.text_contrastive_train_step_factory`. The helper runs the NaN guard before backward and honors `ctx.grad_clip_norm`. It reports each optimizer step with `ctx.report_update()`, so an `optimizer_update`-clock scheduler steps once per batch (§2.5).
 
 These imperative paradigm steps run in full precision and do not handle reduced precision or gradient accumulation. They are marked full-precision-only, so a run whose precision resolves to FP16 or BF16 refuses them before any run is reserved. `finalize_step` itself raises a clear `ValueError` for a scaler, a reduced `ctx.precision` or accumulation, rather than silently dropping them.
 
@@ -1208,7 +1213,7 @@ Registered optimizer factories (§3.1) get the same strictly-owned groups. A spe
 There is **no** `default_trainer_step`. Multi-optim updates are inherently scenario-specific, and silently running the wrong update is worse than requiring an explicit fn. Ownership is split accordingly:
 
 - The `trainer_step_fn` owns every optimizer update (`zero_grad` / `backward` / `step` per named optimizer).
-- The Trainer owns the epoch loop and steps each registered scheduler once per epoch. On the `optimizer_update` clock (§3), it steps a scheduler after each update the step reports with `ctx.report_update(name)`. Each optimizer keeps its own count.
+- The Trainer owns the epoch loop and steps each registered scheduler once per epoch. On the `optimizer_update` clock (§2.5), it steps a scheduler after each update the step reports with `ctx.report_update(name)`. Each optimizer keeps its own count.
 
 `auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update).
 
@@ -1377,6 +1382,8 @@ print(evaluate_offline(student, held_out).text())               # agreement, imi
 
 See [`examples/offline_teacher_distillation.py`](../examples/offline_teacher_distillation.py) and [Typed decisions §9](decisions.md#9-offline-teacher-distributions).
 
+See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py) for a teacher→student distillation flow on a tabular toy task. SimCLR (§10.2) and Mixup / CutMix (§10.3) follow the same factory-plus-`train_step_fn` pattern.
+
 ### 10.2. SimCLR contrastive
 
 The training dataloader must yield `(view1, view2)` pairs — two augmented views of each source sample. `model.net` forwards each view separately so BatchNorm sees one view at a time:
@@ -1399,8 +1406,6 @@ model.train(params=..., train_step_fn=mixup)
 ```
 
 `λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W.
-
-See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py) for a teacher→student distillation flow on a tabular toy task. The same factory-plus-train_step pattern applies to the other three.
 
 ## 11. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 
@@ -3185,7 +3190,7 @@ validate (space, budget, monitor = plan's val monitor, factories, stored identit
   non-preemptive.
 - **Stopping inside an epoch.** A trial stopped inside an epoch keeps only
   its committed epochs. LAST, its tensors and the history stay those of the
-  last completed epoch (`ctx.stop_at_update`, Concepts §6). There is no LAST
+  last completed epoch (`ctx.stop_at_update`, §6.1). There is no LAST
   before a first completed epoch.
 - **Outcomes** (`TrialOutcome`) keep the parameters, state and terminal
   reason, the resources used, the best monitor value, the pruning

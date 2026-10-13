@@ -131,8 +131,8 @@ grad = DDP average × world_size / W        (an additive loss: × world_size)
 clip → optimizer.step()  — identical parameters on every rank
 ```
 
-so each committed update equals one process training on the union of the
-ranks' batches, unequal valid counts included.
+With this order, each committed update equals one process training on the
+union of the ranks' batches, unequal valid counts included.
 
 **Records and decisions.** Each batch's outputs, targets and loss terms are
 gathered and scored the same way on every rank. Validation gathers each
@@ -141,8 +141,9 @@ rank. Monitors, `EarlyStopping`, BEST and the plateau scheduler decide alike.
 Every rank returns the same `NNRun` (id, records and the writer's
 provenance).
 
-Each step's gather carries the batch's outputs and targets, and validation
-gathers every scored output once: sized for supervised models.
+Each step gathers the batch's outputs and targets, and validation gathers
+every scored output once. That traffic suits supervised models, not models
+with huge outputs such as large-vocabulary logits.
 
 **One writer.** Only the writer rank (`DDP(writer_rank=0)`) holds the run
 lease. It alone writes history, LAST / BEST / phase checkpoints, deferred

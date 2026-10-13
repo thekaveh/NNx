@@ -85,6 +85,8 @@ uv run pytest -k "graph"               # name filter
 uv run pytest -n logical --dist loadgroup --cov=nnx --cov-report=term-missing  # with coverage
 ```
 
+Tests live under `tests/`. The `conftest.py` holds a few shared fixtures and hygiene guards (a session-wide `NNX_TQDM_DISABLE`, a per-test `env_snapshot` cache reset, a dynamo-dispatch skip guard); otherwise it is intentionally minimal. Add a shared fixture there when boilerplate repeats across several tests, not preemptively.
+
 ### 5.1. Feature combinations
 
 `docs/feature-composition.yaml` records which feature **combinations** are
@@ -121,9 +123,9 @@ The registry publishes two evidence profiles: `cpu` (the CI docs job) and
 NCCL DDP. They are verified only by a report from the `cuda` profile. On CPU
 their tests skip and the page shows them *unverified*. To produce that report:
 
-- **GPU runner:** register a self-hosted runner with the labels `self-hosted,
-  linux, x64, gpu` (two CUDA devices for TC-11), and set the repository
-  variable `NNX_GPU_RUNNER` to `true`. The docs workflow's `GPU composition
+- **GPU runner:** register a self-hosted runner labelled `self-hosted, linux,
+  x64, gpu`. TC-11 needs two CUDA devices. Then set the repository variable
+  `NNX_GPU_RUNNER` to `true`. The docs workflow's `GPU composition
   evidence` job then runs the scenarios on it, and the docs build renders the
   page from both reports.
 - **Manual run** on a Linux machine with Python 3.12 and CUDA:
@@ -140,8 +142,6 @@ their tests skip and the page shows them *unverified*. To produce that report:
 Change `docs/external-contracts.md` and the matrix rows only from executed
 evidence: a CUDA report whose listed tests passed in every phase.
 
-Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixtures (session-wide NNX_TQDM_DISABLE, a per-test env_snapshot cache reset, and a dynamo-dispatch skip guard); otherwise it's intentionally minimal. Add shared fixtures there when boilerplate repeats across multiple tests, not preemptively.
-
 ## 6. Submitting a PR
 
 - Push to your fork and open a PR against `develop`.
@@ -155,9 +155,9 @@ NNx uses [release-please](https://github.com/googleapis/release-please-action) f
 
 The end-to-end flow:
 
-1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Pre-1.0, `feat:` triggers a minor bump (`0.X.0`); `fix:` and most other types trigger a patch bump (`0.X.Y`).
+1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Before 1.0, `feat:` and `fix:` both trigger a patch bump (`0.X.Y`; `bump-patch-for-minor-pre-major` in `release-please-config.json`). A minor bump (`0.X.0`) needs a `Release-As: 0.X.0` footer on a commit.
 
-   The Release PR carries only release-please's own commit; nothing else pushes to it. The `main` ruleset holds a PR for an approving review when its latest push comes from a bot. This holds even when that commit is verified.
+   The Release PR carries only release-please's own commit; nothing else pushes to it, because the `main` ruleset holds a PR for an approving review when its latest push comes from a bot — even a verified one. Each release PR therefore needs one approval.
 
    release-please bumps the version in three places, so the lock and the API-reference check stay consistent:
 

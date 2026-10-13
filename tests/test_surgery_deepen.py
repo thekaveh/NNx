@@ -460,3 +460,24 @@ def test_deepen_on_a_conv_net_head_updates_its_cached_forward_state():
     deeper = deepen(net, after_layer_name="fcs.0").eval()
     assert deeper.params.hidden_dims == [16, 16] and len(deeper._hidden) == 2
     torch.testing.assert_close(deeper(x), net(x), atol=1e-5, rtol=1e-5)
+
+
+def test_deepen_keeps_each_existing_childs_mode():
+    """The container and the new layers take the parent's mode; an existing
+    child in another mode (a train-mode Dropout under an eval container)
+    keeps it instead of being flattened."""
+    net = torch.nn.Sequential(
+        torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Dropout(0.1), torch.nn.Linear(4, 2)
+    ).eval()
+    net[2].train()
+    deeper = deepen(net, after_layer_name="1")  # after the ReLU
+    assert deeper.training is False
+    modes = {type(m).__name__ + str(i): m.training for i, m in enumerate(deeper.children())}
+    assert modes == {
+        "Linear0": False,
+        "ReLU1": False,
+        "Linear2": False,
+        "ReLU3": False,
+        "Dropout4": True,
+        "Linear5": False,
+    }

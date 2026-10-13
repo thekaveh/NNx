@@ -9,9 +9,6 @@ NNx ships first-class interop with the HuggingFace ecosystem:
    `push_to_hub` / `from_pretrained` for distributing models via the
    Hub.
 
-A third, Hub-independent format — the **run bundle** (`nnx.bundles`, §3) —
-carries a run checkpoint's training state and calibrators as data too.
-
 Both paths require the `hub` extra:
 
 ```bash
@@ -21,6 +18,10 @@ pip install "thekaveh-nnx[hub]"
 Without it, the rest of NNx keeps working — the integration is gated
 behind import-time guards. Calling any Hub method without the extra
 raises a clear `ImportError` pointing back at this install line.
+
+A third, Hub-independent format — the **run bundle** (`nnx.bundles`, §3) —
+carries a run checkpoint's training state and calibrators as data too. It
+needs no optional dependency.
 
 ## 1. safetensors checkpoints
 

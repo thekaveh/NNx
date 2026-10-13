@@ -327,7 +327,8 @@ offline.
     by the batch count. An all-masked microbatch contributes nothing. An
     all-masked window takes no optimizer or scaler step, and its gradients
     are cleared.
-  - Schedulers still advance once per epoch. A plateau scheduler skips an
+  - Schedulers still advance once per epoch on the default epoch clock (or
+    once per committed update on the `optimizer_update` clock). A plateau scheduler skips an
     epoch whose validation record is unavailable. Such an epoch is never
     elected BEST in place of a training loss.
   - `task.eval_step()` reports the epoch's **unsmoothed** NLL as the
