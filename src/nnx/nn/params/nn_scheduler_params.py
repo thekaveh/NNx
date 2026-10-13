@@ -40,6 +40,8 @@ class NNSchedulerParams:
     clock: SchedulerClockUnit = "epoch"
 
     def __post_init__(self):
+        if self.kind is not None and not isinstance(self.kind, Schedulers):  # a string failed only in state()
+            raise TypeError(f"NNSchedulerParams kind must be a Schedulers member or None, got {self.kind!r}")
         if self.clock not in SCHEDULER_CLOCKS:
             raise ValueError(f"NNSchedulerParams clock must be 'epoch' or 'optimizer_update', got {self.clock!r}")
         if self.clock == "optimizer_update" and self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU):

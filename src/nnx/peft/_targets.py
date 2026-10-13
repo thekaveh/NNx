@@ -33,6 +33,16 @@ _Slot = tuple[int, str]
 _MAX_LISTED_PATHS = 10
 
 
+# Parents that read a child Linear's weight directly (MultiheadAttention's
+# out_proj; the Transformer layers' eval fast path over linear1 / linear2):
+# a wrapped or factorized child breaks them.
+WEIGHT_READING_PARENTS: tuple[type[nn.Module], ...] = (
+    nn.MultiheadAttention,
+    nn.TransformerEncoderLayer,
+    nn.TransformerDecoderLayer,
+)
+
+
 def _registrations(root: nn.Module) -> Iterator[tuple[str, nn.Module, str, nn.Module]]:
     """Yield ``(path, parent, attr, child)`` for every registration path.
 
@@ -124,7 +134,18 @@ def select_linear_slots(
     # (weight / bias) in forward: wrapping that base would break it.
     # torch's MultiheadAttention (out_proj) and Transformer layers' eval fast
     # path (linear1 / linear2) read a child Linear's weight directly as well.
-    refused = (*tuple(refuse_inside), nn.MultiheadAttention, nn.TransformerEncoderLayer, nn.TransformerDecoderLayer)
+    read_directly = [
+        f"{path} (read by its parent {type(slots[slot][0]).__name__})"
+        for slot in matched
+        if isinstance(slots[slot][0], WEIGHT_READING_PARENTS)
+        for path in slots[slot][1]
+    ]
+    if read_directly:
+        raise ValueError(
+            f"{helper}: {', '.join(read_directly)}: a parent that reads its Linear's weight directly would break "
+            "if it were wrapped; select other projections. Nothing was modified."
+        )
+    refused = tuple(refuse_inside)
     foreign = [path for slot in matched if isinstance(slots[slot][0], refused) for path in slots[slot][1]]
     if foreign:
         wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refused))][0]).__name__

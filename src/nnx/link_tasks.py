@@ -33,8 +33,8 @@ every batch against that split before any forward pass.
   candidate outside its split fails before any update. Evaluation
   materialises every candidate (up to ``max_candidates``) for exact
   AUROC / AP, scored from the float64 logits (a probability rounds to 0 or
-  1 for a confident model); a one-class set reports them unavailable with
-  the reason.
+  1 for a confident model). For a one-class set, ``link_metrics`` reports
+  them unavailable with the reason, and the evaluator's record omits them.
   The manifest is checkpointed component state ``"link.task"``: a resume
   with another split fails before the first resumed update.
 - :func:`link_predictor_spec` — a registered recipe

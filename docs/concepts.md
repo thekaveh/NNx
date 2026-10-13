@@ -1014,7 +1014,8 @@ functions, declared metrics are recorded on validation only.
 denominator (non-ignored targets, class weights; summed for a
 `reduction="sum"` loss; a `TaskSpec`'s masked loss when declared).
 
-`KDObjective` splits distillation into two terms. The `"distillation"` term
+`KDObjective` splits distillation into two terms (only `"supervised"` at
+`alpha=0`). The `"distillation"` term
 is the softened KL summed over rows, normalized by their count, with weight
 `alpha`. The `"supervised"` term has weight `1 − alpha`. Together they are
 exactly `alpha · KL_batchmean + (1 − alpha) · L_hard` of the full batch,
@@ -1348,7 +1349,7 @@ timesteps and noise yourself.
 
 `NoiseSchedulers` is an enum-as-factory matching the rest of the library (`Optims`, `Schedulers`, `Nets`). `NoiseSchedulers.LINEAR(T=1000, beta_min=1e-4, beta_max=2e-2)` and `NoiseSchedulers.COSINE(T=1000, s=0.008)` each return a `NoiseSchedule`. That is a frozen dataclass of precomputed tensors (`betas`, `alphas`, `alphas_cumprod`, `sqrt_alphas_cumprod`, `sqrt_one_minus_alphas_cumprod`, `posterior_variance`). Pass the arguments after `T` by keyword.
 
-The factory builds tensors on CPU; the train step and sampler migrate them to `model.device` on first use. There's no `state()` / `from_state()` round-trip. The tensors are recoverable from `(kind, T, beta_min, beta_max | s)`. So on-disk runs reconstruct the schedule from the call arguments rather than serializing the tensors.
+The factory builds tensors on CPU; the train step and sampler migrate them to `model.device` on first use. There's no `state()` / `from_state()` round-trip. The tensors are recoverable from `(kind, T, beta_min, beta_max | s)`. Nothing serializes the schedule: rebuild it with the same arguments. A `diffusion_objective` resume compares `T` and a fingerprint of the betas and refuses a different schedule.
 
 ### 9.2. Denoising network
 
@@ -3095,9 +3096,10 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   candidates give `(K, categories)`. `predict()` keeps ids, pairs, logits,
   probabilities and targets aligned, in candidate order (float64).
 - **Exact metrics.** Evaluation materialises every candidate (up to
-  `max_candidates`) for exact AUROC and AP, never per-batch averages. A
-  one-class set reports them unavailable with the reason, so
-  `MonitorSpec("auroc")` never elects it BEST.
+  `max_candidates`) for exact AUROC and AP, never per-batch averages. For a
+  one-class set, `link_metrics` reports them unavailable with the reason and
+  the evaluator's record omits them, so `MonitorSpec("auroc")` never elects
+  it BEST.
 - **Metrics from logits.** The metrics are computed from the float64
   logits, never from probabilities. For a confident model, a probability
   rounds to exactly 1 beyond a logit of about 16.6 in float32 (36.7 in

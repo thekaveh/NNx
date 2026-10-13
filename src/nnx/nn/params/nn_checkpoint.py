@@ -124,7 +124,9 @@ def _generation_sidecar_paths(checkpoint_path: str) -> list[str]:
     paths = []
     for entry in os.scandir(directory):
         remainder = entry.name[len(prefix) :] if entry.name.startswith(prefix) else ""
-        if entry.is_file() and remainder.endswith(".pt") and remainder != "pt":
+        # Only the generation format (32 hex digits): a ModelCheckpoint tag
+        # such as "last.pt.opt.keep" names a user file, never a sidecar.
+        if entry.is_file() and re.fullmatch(r"[0-9a-f]{32}\.pt", remainder):
             paths.append(entry.path)
     return paths
 

@@ -74,7 +74,7 @@ def tabular_validation_workflow() -> dict:
         for value in (inf, -inf):
             msg = _rejected(pd.DataFrame({"x": [1.0, value], "y": [0, 1]}), feature_cols=["x"], feature_dtype=dtype)
             assert "['x']" in msg and str(dtype) in msg, msg
-        messages[str(dtype)] = msg
+            messages[f"{dtype}:{value}"] = msg  # one entry per rejection
 
     # ...and finite values an integer dtype cannot hold would wrap (300 → 44 in int8).
     msg = _rejected(pd.DataFrame({"x": [1.0, 300.0], "y": [0, 1]}), feature_cols=["x"], feature_dtype=torch.int8)

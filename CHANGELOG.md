@@ -123,6 +123,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - A `FeedFwdNN` on graph split batches scores only the split's seed rows, as the graph nets do.
     - Distillation with `alpha=0` trains a binary head again; `born_again_train` refuses a single-logit head before generation 0; distillation, MoE and Mixup / CutMix records read probability, soft and ignored targets as the default step does.
     - Wildcard PEFT refuses `TransformerEncoderLayer` / `TransformerDecoderLayer` projections; benchmark `Record.execution` must be strict JSON; a registered run's summary shows its factory.
+    - `NNModel.train` also hands a resumed model back when the first `on_epoch_begin` raises; the progress bar names the value it shows (`val.loss`, `train.error`).
+    - Transform recipes refuse a `Linear` its parent reads directly, as the PEFT helpers do; distillation and MoE steps refuse regression targets before the update.
+    - A `ModelCheckpoint` tag shaped like a training-state sidecar is no longer deleted by the next save; `SGD_NESTEROV` needs `momentum > 0` and `NNSchedulerParams.kind` must be a `Schedulers` member, both at construction.
+    - `export_bundle` refuses the `best` pointer (export the run by its own id); forward benchmarks digest modules with non-tensor state; benchmark records' `execution` must survive the JSON round trip.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

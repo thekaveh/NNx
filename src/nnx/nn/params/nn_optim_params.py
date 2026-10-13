@@ -187,6 +187,9 @@ class NNOptimParams:
                 )
         else:
             require_finite_real(self.momentum, "momentum", owner="NNOptimParams", minimum=0.0)
+            if self.name is Optims.SGD_NESTEROV and not self.momentum > 0:
+                # torch refuses Nesterov without momentum, but only when train() builds it.
+                raise ValueError(f"NNOptimParams SGD_NESTEROV requires momentum > 0, got {self.momentum!r}")
         momentum = self.momentum
         object.__setattr__(
             self,

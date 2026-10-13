@@ -1,4 +1,4 @@
-"""Mixture-of-Experts feed-forward params (#88).
+"""Mixture-of-Experts feed-forward params.
 
 ``NNMoEParams`` subclasses ``NNParams`` — the same lift-via-subclassing pattern
 ``NNTransformerParams`` uses. It adds the two MoE routing knobs consumed by

@@ -689,10 +689,13 @@ def test_paradigm_predictions_threshold_a_bce_head():
 
 
 def test_experiment_manifest_keeps_one_shot_labels():
+    import numpy as np
+
     from nnx.provenance import ExperimentManifest
 
     once = ExperimentManifest(labels=(x for x in ["cat", "dog"]))
     assert once.labels == ("cat", "dog")
+    assert all(type(label) is str for label in ExperimentManifest(labels=np.array(["cat", "dog"])).labels)
     assert once.fingerprint() == ExperimentManifest(labels=["cat", "dog"]).fingerprint()
 
 
@@ -795,3 +798,131 @@ def test_wildcard_peft_refuses_a_transformer_encoder_layer():
 
     with pytest.raises(ValueError, match="TransformerEncoderLayer"):
         apply_lora_to(torch.nn.TransformerEncoderLayer(8, 2, 16, batch_first=True), "linear*", r=2)
+
+
+@pytest.mark.parametrize("paradigm", ["mixup", "cutmix", "moe"])
+def test_paradigm_steps_record_bce_accuracy_by_threshold(paradigm, tmp_path, monkeypatch):
+    """A single-logit BCE head with positive logits and all-ones targets is
+    right everywhere; an argmax over one logit would score 0."""
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.paradigms.augmentation import cutmix_train_step_factory, mixup_train_step_factory
+    from nnx.paradigms.moe import moe_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = NNModel(
+        net_params=NNParams(input_dim=12, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY),
+    )
+    with torch.no_grad():
+        for layer in model.net.layers:
+            layer.weight.zero_()
+            layer.bias.fill_(5.0)  # every logit positive whatever the input
+    X = torch.randn(4, 3, 2, 2) if paradigm == "cutmix" else torch.randn(4, 12)
+    step = {
+        "mixup": lambda: mixup_train_step_factory(alpha=0.4),
+        "cutmix": lambda: cutmix_train_step_factory(alpha=1.0),
+        "moe": lambda: moe_train_step_factory(),
+    }[paradigm]()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1, train_loader=[(X, torch.ones(4, 1))], optim=NNOptimParams.builder().sgd(max_lr=1e-6).build()
+        ),
+        train_step_fn=step,
+    )
+    assert run.idps[0].train_edp.accuracy == pytest.approx(1.0)
+
+
+def test_forward_benchmarks_digest_modules_with_non_tensor_state():
+    import torch
+
+    from nnx.benchmarking import _weights_digest
+
+    class WithExtra(torch.nn.Linear):
+        def get_extra_state(self):
+            return {"note": "x"}
+
+        def set_extra_state(self, state):
+            pass
+
+    assert len(_weights_digest(WithExtra(2, 2))) == 64
+
+
+def test_export_bundle_refuses_the_best_pointer(tmp_path):
+    from nnx.bundles import BundleError, export_bundle
+
+    with pytest.raises(BundleError, match="own id"):
+        export_bundle("best", str(tmp_path / "out"))
+
+
+@pytest.mark.parametrize("execution", [{"meta": {1: 2}}, {"t": (1, 2)}, {1: "a"}])
+def test_benchmark_record_execution_must_round_trip(execution):
+    from nnx.decisions.benchmark import BenchmarkError, Record
+
+    with pytest.raises(BenchmarkError, match="execution"):
+        Record("s1", "d", "p", "answered", distribution=(("a", 0.5), ("b", 0.5)), execution=execution)
+
+
+def test_sgd_nesterov_needs_momentum_and_scheduler_kind_needs_the_enum():
+    from nnx import NNOptimParams, NNSchedulerParams, Optims
+
+    with pytest.raises(ValueError, match="SGD_NESTEROV requires momentum"):
+        NNOptimParams(name=Optims.SGD_NESTEROV, max_lr=0.1, weight_decay=0.0, momentum=0.0)
+    with pytest.raises(TypeError, match="Schedulers member"):
+        NNSchedulerParams(min_lr=0.0, factor=0.5, patience=1, cooldown=0, threshold=0.0, kind="step")  # type: ignore[arg-type]
+
+
+def test_a_model_checkpoint_tag_shaped_like_a_sidecar_is_not_deleted(tmp_path):
+    from nnx.nn.params.nn_checkpoint import _generation_sidecar_paths
+
+    ckpt = tmp_path / "last.pt"
+    keep = tmp_path / "last.pt.opt.keep_e1.pt"
+    sidecar = tmp_path / ("last.pt.opt." + "a" * 32 + ".pt")
+    for path in (ckpt, keep, sidecar):
+        path.write_bytes(b"")
+    assert _generation_sidecar_paths(str(ckpt)) == [str(sidecar)]
+
+
+def test_a_recipe_refuses_a_linear_its_parent_reads_directly():
+    """The apply_*_to helpers refuse it; a recorded recipe trained, then
+    failed in eval (the encoder layer's fast path reads the weight)."""
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams
+    from nnx.models import ModelSpec, register_model_factory
+    from nnx.transforms import RecipeError, TransformRecipe, lora
+
+    register_model_factory(
+        "tests.encoder_layer",
+        1,
+        lambda config: torch.nn.Sequential(torch.nn.TransformerEncoderLayer(8, 2, 16, batch_first=True)),
+        replace=True,
+    )
+    model = NNModel(params=NNModelParams(net=ModelSpec("tests.encoder_layer", 1), loss=Losses.MEAN_SQUARED_ERROR))
+    with pytest.raises(RecipeError, match="reads its weight directly"):
+        TransformRecipe((lora("0.linear1", r=2, alpha=4.0),)).validate(model)
+
+
+def test_moe_refuses_regression_targets_before_updating():
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.paradigms.moe import moe_train_step_factory
+
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(ValueError, match="moe step scores classification only"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=[(torch.randn(4, 3), torch.randn(4, 1))],
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            ),
+            train_step_fn=moe_train_step_factory(),
+        )
+    assert all(torch.equal(v, before[k]) for k, v in model.net.state_dict().items())

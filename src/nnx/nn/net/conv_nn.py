@@ -1,4 +1,4 @@
-"""LeNet-style convolutional classifier (#89).
+"""LeNet-style convolutional classifier.
 
 Conv→Pool→…→Flatten→FC for small square images (MNIST/FashionMNIST scale).
 Same interface contract as :class:`FeedFwdNN` (``forward(x)→logits``,

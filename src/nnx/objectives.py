@@ -332,7 +332,8 @@ class KDObjective(Objective):
     ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
     the rows are split into microbatches or targets are ignored. The teacher
     is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
-    and never updated.
+    and never updated. At ``alpha=0`` only the ``"supervised"`` term is
+    returned.
     """
 
     def __init__(self, teacher: NNModel, *, alpha: float = 0.5, temperature: float = 4.0, nonfinite: str = "fail"):

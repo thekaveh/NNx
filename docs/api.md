@@ -2459,7 +2459,8 @@ the student's loss on the labels with its own denominator (weight
 ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
 the rows are split into microbatches or targets are ignored. The teacher
 is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
-and never updated.
+and never updated. At ``alpha=0`` only the ``"supervised"`` term is
+returned.
 ```
 
 
@@ -14363,6 +14364,10 @@ Returns:
 
 Raises:
     ValueError: if ``alpha`` is not in [0, 1], or ``temperature`` ≤ 0.
+        At the first step: a single-logit head with ``alpha > 0`` (no
+        class distribution to distill), or a teacher of another shape.
+    TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
+        records train through ``TeacherDataset.objective()``).
 ```
 
 
@@ -14465,8 +14470,10 @@ Returns:
 
 Raises:
     ValueError: if ``generations < 1``; if ``generations > 1`` and the
-        optimizer accumulates gradients or ``alpha`` / ``temperature``
-        are out of range. Nothing is trained.
+        optimizer accumulates gradients, ``alpha`` / ``temperature``
+        are out of range, or the head has a single output with
+        ``alpha > 0`` (no class distribution to distill). Nothing is
+        trained.
     TypeError: if the training loader holds stored teacher records
         (for any ``generations``), or if ``generations > 1`` and a
         keyword is not a :func:`kd_train_step_factory` parameter.

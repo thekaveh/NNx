@@ -24,7 +24,7 @@ from tqdm import tqdm
 from typing_extensions import Self
 
 from .._confusion import LabelCounts, label_counts, label_kind, record_scores
-from .._metrics import _resolve_metric, _resolve_scheduler_metric, classification_edp
+from .._metrics import _resolve_metric_with_provenance, _resolve_scheduler_metric, classification_edp
 from .._scheduler_clock import (
     HORIZON_KINDS,
     NO_UPDATE_REPORTER,
@@ -991,7 +991,7 @@ def _classification_metric_tensors(
     return target, prediction
 
 
-def _check_scorable_target(loss_fn: torch.nn.Module, target: torch.Tensor) -> None:
+def _check_scorable_target(loss_fn: torch.nn.Module, target: torch.Tensor, paradigm: Optional[str] = None) -> None:
     """Without a task the default steps score classification (accuracy / F1
     of the predictions), which continuous targets of a regression loss
     cannot be: refuse them with the fix. The default training step checks
@@ -1000,6 +1000,10 @@ def _check_scorable_target(loss_fn: torch.nn.Module, target: torch.Tensor) -> No
         loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
     )
     if regression_loss and target.is_floating_point() and not torch.equal(target, target.round()):
+        if paradigm is not None:  # a paradigm step: no task or other step makes it score regression
+            raise ValueError(
+                f"the {paradigm} step scores classification only and cannot score {type(loss_fn).__name__} targets"
+            )
         raise ValueError(
             f"the default steps score classification and cannot score {type(loss_fn).__name__} targets: declare "
             "the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass train_step_fn / objective"
@@ -2536,7 +2540,7 @@ class NNModel(_HubMixinBase):
         module: Optional[torch.nn.Module] = None,
         batch_adapter: Optional[BatchAdapter] = None,
     ):
-        """Build the network from ``params.net`` (FEAT-006):
+        """Build the network from ``params.net``:
 
         - a built-in ``Nets`` member builds from ``net_params`` (the default);
         - a registered :class:`~nnx.models.ModelSpec` builds through its
@@ -3986,9 +3990,16 @@ class NNModel(_HubMixinBase):
                 if ddp is not None:
                     # FEAT-030: unequal step counts fail on every rank, never hang.
                     ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
-                with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
-                    for cb in normalized_callbacks:
-                        cb.on_epoch_begin(ctx)
+                try:
+                    with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
+                        for cb in normalized_callbacks:
+                            cb.on_epoch_begin(ctx)
+                except BaseException:
+                    # Before the first batch nothing has trained: a resume's
+                    # loaded state goes back as it was (every rank, after the agreement).
+                    if local_epoch == 0 and previous_net_state is not None and previous_rng_state is not None:
+                        _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
+                    raise
 
                 records.begin_epoch()
                 accumulation_state = GradientAccumulationState()
@@ -5087,9 +5098,11 @@ class NNModel(_HubMixinBase):
         # .loss for display so the progress bar doesn't crash mid-train on
         # an `f"{None:.4f}"` format error. Same shared fallback resolver
         # used by _step_scheduler above.
-        err = _resolve_metric(val_edp, train_edp)
+        err, key, _ = _resolve_metric_with_provenance(val_edp, train_edp)
         err_str = f"{err:.4f}" if err is not None else "n/a"
-        tqdm_bar.set_postfix_str(f"error={err_str}, lr={lr:.4f}")
+        # Name what is shown: a loss fallback is not an error rate.
+        shown_key = "error" if key is None else key.replace("_edp", "")
+        tqdm_bar.set_postfix_str(f"{shown_key}={err_str}, lr={lr:.4f}")
 
     @staticmethod
     def _normalize_callbacks(

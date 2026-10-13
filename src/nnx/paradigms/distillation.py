@@ -36,6 +36,7 @@ from ..nn.nn_model import (
     NNModel,
     TrainStepContext,
     TrainStepFn,
+    _check_scorable_target,
     _classification_edp_for_loss,
     _loss_input,
     _single_input_batch,
@@ -101,6 +102,10 @@ def kd_train_step_factory(
 
     Raises:
         ValueError: if ``alpha`` is not in [0, 1], or ``temperature`` ≤ 0.
+            At the first step: a single-logit head with ``alpha > 0`` (no
+            class distribution to distill), or a teacher of another shape.
+        TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
+            records train through ``TeacherDataset.objective()``).
     """
     _check_kd_weights(alpha, temperature)
     _freeze_teacher(teacher)
@@ -126,6 +131,9 @@ def kd_train_step_factory(
         soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
         hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
+        _check_scorable_target(
+            m.loss_fn, Y, paradigm="distillation"
+        )  # before the update: a refused batch changes nothing
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
         return _classification_edp_for_loss(
@@ -284,6 +292,7 @@ def feature_kd_train_step_factory(
         soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
         hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
+        _check_scorable_target(m.loss_fn, Y, paradigm="feature distillation")
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")
 
         return _classification_edp_for_loss(

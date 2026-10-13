@@ -1200,6 +1200,8 @@ def export_bundle(
     from .nn.nn_model import _resume_checkpoint_type, _unportable_transform
     from .nn.params.nn_checkpoint import NNCheckpoint
 
+    if run_id == "best":  # a moving alias: a bundle records the run it came from
+        raise BundleError('export a run by its own id, not the "best" pointer (NNRun.load("best").id names it)')
     label = str(_resume_checkpoint_type(checkpoint))
     ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=label, root=root)  # type: ignore[arg-type]
     if ckpt is None:

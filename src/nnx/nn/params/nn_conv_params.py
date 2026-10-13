@@ -1,4 +1,4 @@
-"""Convolutional (LeNet-style) params (#89).
+"""Convolutional (LeNet-style) params.
 
 ``NNConvParams`` subclasses ``NNParams`` — the same lift-via-subclassing
 pattern ``NNTransformerParams``/``NNMoEParams`` use. It adds the conv-stack

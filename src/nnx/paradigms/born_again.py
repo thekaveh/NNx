@@ -75,8 +75,10 @@ def born_again_train(
 
     Raises:
         ValueError: if ``generations < 1``; if ``generations > 1`` and the
-            optimizer accumulates gradients or ``alpha`` / ``temperature``
-            are out of range. Nothing is trained.
+            optimizer accumulates gradients, ``alpha`` / ``temperature``
+            are out of range, or the head has a single output with
+            ``alpha > 0`` (no class distribution to distill). Nothing is
+            trained.
         TypeError: if the training loader holds stored teacher records
             (for any ``generations``), or if ``generations > 1`` and a
             keyword is not a :func:`kd_train_step_factory` parameter.

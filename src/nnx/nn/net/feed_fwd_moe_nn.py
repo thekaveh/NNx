@@ -1,4 +1,4 @@
-"""Mixture-of-Experts feed-forward classifier (#88).
+"""Mixture-of-Experts feed-forward classifier.
 
 Same shape contract as :class:`FeedFwdNN` (flatten → hidden stack → linear
 head, ``unpack_batch``), but every HIDDEN layer is a

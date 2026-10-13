@@ -476,6 +476,17 @@ def _registration_paths(net: nn.Module) -> dict[int, list[str]]:
     return paths
 
 
+def _weight_reading_parents(net: nn.Module) -> dict[str, str]:
+    """Paths whose parent reads the child's weight directly, with that parent's type."""
+    from .peft._targets import WEIGHT_READING_PARENTS, _registrations
+
+    return {
+        path: type(parent).__name__
+        for path, parent, _, _ in _registrations(net)
+        if isinstance(parent, WEIGHT_READING_PARENTS)
+    }
+
+
 def _validate(
     net: nn.Module,
     operations: Sequence[TransformOp],
@@ -493,6 +504,7 @@ def _validate(
     replay on."""
     problems = list(problems)
     paths = _registration_paths(net)
+    weight_readers = _weight_reading_parents(net)
     owners = [(op, path) for op in recorded for path in op.targets]
     for position, op in enumerate(operations):
         index = position if indexed else None
@@ -518,6 +530,10 @@ def _validate(
                 continue
             if type(module) is not nn.Linear:
                 problems.append((index, op.id, path, f"is a {type(module).__name__}; only nn.Linear is supported"))
+                continue
+            if path in weight_readers:  # as the apply_*_to helpers refuse it
+                reason = f"belongs to a {weight_readers[path]}, which reads its weight directly"
+                problems.append((index, op.id, path, reason))
                 continue
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:

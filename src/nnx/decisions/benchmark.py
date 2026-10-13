@@ -416,9 +416,13 @@ class Record:
         if not all(isinstance(key, str) for key in self.execution):
             raise BenchmarkError(f"Record.execution keys must be strings, got {list(self.execution)!r}")
         try:
-            json.dumps(dict(self.execution), allow_nan=False)
+            round_trip = json.loads(json.dumps(dict(self.execution), allow_nan=False))
         except (TypeError, ValueError) as error:
             raise BenchmarkError(f"Record.execution must be strict JSON: {error}") from error
+        if round_trip != dict(self.execution):  # a nested int key or a tuple would change on the round trip
+            raise BenchmarkError(
+                "Record.execution must survive a JSON round trip unchanged (string keys, lists, plain numbers)"
+            )
         object.__setattr__(self, "execution", dict(self.execution))
 
     def state(self) -> dict[str, Any]:

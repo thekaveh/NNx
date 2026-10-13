@@ -1684,8 +1684,9 @@ def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchan
     assert all(torch.equal(value, before[key]) for key, value in model.net.state_dict().items())
 
 
+@pytest.mark.parametrize("hook", ["on_train_begin", "on_epoch_begin"])
 @pytest.mark.parametrize("mode", ["stateful", "weights_only"])
-def test_nnmodel_hands_a_resumed_model_back_when_on_train_begin_raises(mode, tmp_path, monkeypatch):
+def test_nnmodel_hands_a_resumed_model_back_when_on_train_begin_raises(hook, mode, tmp_path, monkeypatch):
     from torch.utils.data import DataLoader, TensorDataset
 
     from nnx import (
@@ -1719,12 +1720,19 @@ def test_nnmodel_hands_a_resumed_model_back_when_on_train_begin_raises(mode, tmp
         )
 
     class Boom(Callback):
-        def on_train_begin(self, ctx) -> None:
-            raise RuntimeError("boom")
+        pass
+
+    def boom(self, ctx) -> None:
+        raise RuntimeError("boom")
+
+    setattr(Boom, hook, boom)
 
     first = model().train(params=params())
     target = model()
     before = {key: value.clone() for key, value in target.net.state_dict().items()}
+    torch.manual_seed(123)
+    rng = torch.get_rng_state()
     with pytest.raises(RuntimeError, match="boom"):
         target.train(params=params(resume_from_run_id=first.id, resume_mode=mode), callbacks=[Boom()])
     assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng)

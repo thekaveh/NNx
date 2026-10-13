@@ -33,6 +33,7 @@ from ..nn.moe import MoELinear
 from ..nn.nn_model import (
     TrainStepContext,
     TrainStepFn,
+    _check_scorable_target,
     _classification_edp_for_loss,
     _loss_input,
     _single_input_batch,
@@ -110,6 +111,7 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
                 aux_loss = aux_loss + module.last_aux_loss
 
         loss = supervised_loss + aux_loss_weight * aux_loss
+        _check_scorable_target(m.loss_fn, Y, paradigm="moe")  # before the update: a refused batch changes nothing
         loss_val = finalize_step(loss, ctx, paradigm="moe")
 
         return _classification_edp_for_loss(
