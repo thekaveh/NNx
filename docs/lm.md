@@ -116,6 +116,8 @@ fields (`hidden_dims`, `activation`, `dropout_prob`) are hidden.
 - `d_model % heads == 0` is required.
 - The head width `d_model / heads` must be even because RoPE rotates channel
   pairs.
+- `vocab_size`, `ffn_mult` and `max_seq_len` are positive integer counts too,
+  with the same rules, checked by the constructor.
 
 ```python
 net_params = (

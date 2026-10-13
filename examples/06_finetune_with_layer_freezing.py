@@ -44,10 +44,9 @@ def _make_loaders(n: int = 256, d: int = 8, n_classes: int = 3):
     """Random-feature / random-label dataset drawn from the CURRENT RNG
     state — the caller seeds via `nnx.set_seed(...)` in `main()` before
     each phase. Two phases use different seeds so the pretrain and
-    fine-tune draw distinct samples — sufficient for showing that loss
-    decreases on the new distribution while the backbone stays frozen
-    and only the head trains. (A class-conditional Gaussian setup would
-    make the demo more informative; kept simple to minimize dependencies.)
+    fine-tune draw distinct samples. The labels are random, so nothing is
+    learnable: the demo shows the mechanics (the backbone stays frozen and
+    only the head trains), not a loss improvement.
     """
     # No torch.manual_seed here — the caller does set_seed(...) in main()
     # (convention: helpers consume the current RNG state; main() owns it).
@@ -132,7 +131,8 @@ def main():
     )
     last_loss = run_b.idps[-1].train_edp.loss
     first_loss = run_b.idps[0].train_edp.loss
-    print(f"\nFine-tune loss: {first_loss:.4f} → {last_loss:.4f}")
+    # First and last minibatch; random labels, so no learning is expected.
+    print(f"\nFine-tune loss (first → last minibatch): {first_loss:.4f} → {last_loss:.4f}")
     print(f"  trained {len(run_b.idps)} iterations on the head only")
 
 

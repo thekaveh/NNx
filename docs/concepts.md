@@ -330,15 +330,20 @@ runs/<id>/
 ├── metadata.yaml     # env snapshot (nnx/torch/python/git) — NOT in hash
 ├── idps.csv          # per-iteration metrics, flushed every epoch
 │                     #   (history/ instead with a HistoryJournal — §4.5)
+├── .history-committed-by-last   # history protocol marker: LAST commits the history
 ├── checkpoints/
 │   ├── first.pt      # NNCheckpoint at epoch 0
-│   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs
+│   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs (every quartile needs n_epochs >= 8)
 │   ├── last.pt       # most recent committed epoch
+│   ├── last.pt.manifest.json        # its SHA-256 manifest (§14.3)
 │   ├── last.pt.opt.<generation>.pt  # immutable matching training state
 │   ├── last.pt.opt.pt    # compatibility copy of the current bundle
 │   ├── best.pt       # lowest-error checkpoint so far
+│   ├── best.pt.manifest.json
 │   └── best.pt.opt.<generation>.pt
 ```
+
+Each checkpoint also has a `<tag>.pt.lock` file, the lock that serializes its writers.
 
 Both `NNModel.train()` and `Trainer.train()` finish with one line such as `Run saved to runs/5c741de80116c9858a7e2a56256cb917 (relative to the working directory)`. It is a *display path*, not artifact provenance. `runs/<id>` is relative to the working directory the run was saved from. No absolute prefix (home directory, worktree, temporary directory or container mount) is printed. So notebook output that captures the line is identical wherever it executes.
 
@@ -1236,7 +1241,7 @@ There is **no** `default_trainer_step`. Multi-optim updates are inherently scena
 - A `trainer_step_fn` run refuses `grad_clip_norm` and an `accumulate_grad_batches` other than 1 on any named optimizer. The Trainer cannot apply them to a step function's updates. Clip or accumulate inside the step function, or pass `objective=` instead.
 - The Trainer owns the epoch loop and steps each registered scheduler once per epoch. On the `optimizer_update` clock (§2.5), it steps a scheduler after each update the step reports with `ctx.report_update(name)`. Each optimizer keeps its own count.
 
-`auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update).
+`auto_step_schedulers=False` (`NNTrainerParams.builder().auto_step_schedulers(False)`) hands scheduler timing to the step function too. Then neither the epoch boundary nor a reported update steps a scheduler, before and after a resume. A schedule's position is exactly the steps the function takes. A later resume with automatic stepping on reattaches an update clock at that position. So keep the function's steps in the clock's unit (one per committed update). An objective run has no step function to take the timing over, so it refuses `auto_step_schedulers=False` when schedulers are set.
 
 Trainer-level `extra_metrics` are `callable(y_true, y_pred)`. The built-in validation calls them on the aggregate, and the step function decides whether to call them on training batches. Alternatively, pass `objective=` (§6.5) instead of a step function. The shared update engine then steps every named optimizer once per committed update.
 
@@ -1609,7 +1614,7 @@ result.figure.show()
 
 `suggested_lr` is the LR at the steepest descent point of the EMA-smoothed loss curve — the Smith (2017) heuristic. Plug it into `NNOptimParams.max_lr` for the real training run.
 
-The sweep stops early when the loss diverges. That happens when the smoothed loss exceeds `diverge_threshold` (default `4.0`, must be above 1) times the lowest smoothed loss so far.
+The sweep stops early when the loss diverges. That happens when the smoothed loss rises more than `(diverge_threshold - 1) × |lowest|` above the lowest smoothed loss so far (`diverge_threshold` defaults to `4.0` and must be above 1). For a positive loss, that is above `diverge_threshold` times the lowest.
 
 `lr_finder` needs the `plots` extra (`pip install "thekaveh-nnx[plots]"`), because its result includes a Plotly figure. Without the extra it raises `ImportError` before it touches any data, model or RNG state.
 

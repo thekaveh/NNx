@@ -81,7 +81,7 @@ refined.train(params=NNTrainParams(
 # The refined run is saved under runs/<new-id>/ via NNRun + NNCheckpoint as usual.
 ```
 
-The same template works for every primitive — only the surgery line and the `NNParams` you rebuild around it change.
+The same template works for `widen` and `deepen`: only the surgery line and the `NNParams` you rebuild around it change. A low-rank factorization cannot be described by `NNParams`, so record it as a recipe (§8). `expand_embedding` needs a module with an embedding (§7). `drop_layer` on a `FeedFwdNN` leaves its layer keys and `params.hidden_dims` as they were, so `NNParams` cannot describe the result either.
 
 ## 3. Parameter-count tables
 

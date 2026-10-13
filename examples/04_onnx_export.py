@@ -2,8 +2,8 @@
 
 Requires ``onnx`` to validate the result; ``onnxruntime`` additionally
 executes it:
-    pip install thekaveh-nnx[onnx]            # checker-only
-    pip install thekaveh-nnx[onnx-runtime]    # executed on CPU
+    pip install "thekaveh-nnx[onnx]"            # checker-only
+    pip install "thekaveh-nnx[onnx-runtime]"    # executed on CPU
 
 Run:
     python examples/04_onnx_export.py

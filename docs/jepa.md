@@ -7,7 +7,7 @@ representation collapse via an EMA target encoder whose weights are
 never touched by the optimizer.
 
 The shipped path is sized for "verify-the-plumbing on a laptop, run a
-ViT-S for a few epochs on 32x32 images" — not a SOTA reproduction.
+small ViT for a few epochs on 32x32 images" — not a SOTA reproduction.
 
 ## 1. Public surface
 

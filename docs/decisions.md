@@ -670,9 +670,11 @@ changes. The same flow both ways:
 # Exceptions
 try:
     question = question_from_state({"kind": "choice", "prompt": prompt, "options": options})
-    results = provider.decide(question, texts)
 except InvalidDecisionRequest as error:
     report("invalid_decision_request", error)
+    raise
+try:
+    results = provider.decide(question, texts)  # a provider's own InvalidDecisionRequest propagates
 except UnsupportedCapability as error:
     report("unsupported", error)
 except InvalidDecisionResponse as error:  # before ProviderFailure: a malformed Jev answer is both

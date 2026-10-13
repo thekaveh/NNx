@@ -2,7 +2,7 @@
 
 Demonstrates:
 
-  1. Building a small ViT-S through ``Nets.VIT`` and :class:`NNViTParams`
+  1. Building a small ViT through ``Nets.VIT`` and :class:`NNViTParams`
      (32x32 inputs, 4x4 patches → 64 tokens per image, 4 layers, 4 heads).
   2. Constructing the EMA target encoder via
      :func:`build_target_encoder` and the predictor via
@@ -19,7 +19,7 @@ hyperparameters that this short demo does not tune. The example
 runs on **synthetic 32x32 noise** by default so it stays a fast
 verify-the-plumbing exercise rather than masquerading as a SOTA
 reproduction. Pass ``--cifar`` to download the real CIFAR-10
-training set (requires ``torchvision``) — the loss will still
+training set (requires ``pip install "thekaveh-nnx[vision]"``) — the loss will still
 decrease, but don't expect linear-probe accuracy on the order
 of the I-JEPA paper.
 
