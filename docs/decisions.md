@@ -223,9 +223,9 @@ provider.decide(Boolean("This review is positive."), texts)
 - **Transfer is empirical.** These are zero-shot scores from a model trained
   for another task, not calibrated probabilities. How well they transfer to
   a decision task stays empirical. Measure it on labelled records, as
-  [`examples/decision_nli.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_nli.py) does: accuracy,
-  macro-F1, categorical NLL and Brier, with the split, revision and settings
-  recorded.
+  [`examples/decision_nli.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_nli.py) does.
+  Report accuracy, macro-F1, categorical NLL and Brier, and record the split,
+  revision and settings.
 
 It does not extend `nnx.embeddings.embed_texts` or the FAISS export, whose
 signatures are unchanged. Those embed texts with a bi-encoder you trained;
@@ -586,7 +586,7 @@ print(report.text())
     - the same split;
     - the same metric identity (metric set, `epsilon`, `n_bins`, policy);
     - the same sample set (a digest of the samples' ids, questions, labels
-      and slicing).
+      and slicing), when both reports record it.
 - **Duplicates.** `collect` refuses duplicate sample ids before any call.
 
 It is not a leaderboard. No paid remote run is a default, and it never

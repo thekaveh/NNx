@@ -30,4 +30,4 @@ The bundle readers (`inspect_bundle`, `validate_bundle`, `reconstruct_bundle`) n
 
 A registered module is rebuilt only from factories the caller supplies.
 
-A bundle is data, but it is still a model. Reconstruction builds the architecture its parameters describe, as `from_pretrained` builds the one `config.json` describes. Read an untrusted bundle's `inspect_bundle(...).model_params` first. Validate where it came from before serving its predictions.
+A bundle is data, but it is still a model. Reconstruction builds the architecture its parameters describe, as `from_pretrained` builds the one `config.json` describes. Read an untrusted bundle's `inspect_bundle(...).model_params` and `.net_params` (a built-in net's dimensions) first. Validate where it came from before serving its predictions.

@@ -16,8 +16,8 @@ of assuming:
      from the **warmed** latency and throughput over ``--repeats`` calls
      after ``--warmup`` untimed ones, with mean / median / stdev.
   4. **Profile.** ``profile_forward`` runs ``torch.profiler`` with a finite
-     wait / warmup / active schedule into ``--output-dir`` — outside any
-     timed region.
+     wait / warmup / active schedule into ``--output-dir`` (by default a
+     temporary directory, removed on exit) — outside any timed region.
 
 Run:
     python examples/benchmark_compile.py --device cpu --warmup 3 --repeats 10
@@ -25,7 +25,8 @@ Run:
 It prints one JSON document with separate ``compile``, ``warmed`` and
 ``profile`` sections. The inductor backend needs a working C++ toolchain
 (on macOS, the system ``libc++`` must be loadable). Registered in
-``tests/test_examples_smoke.py``, which runs exactly that command.
+``tests/test_examples_smoke.py``, which runs that command with
+``--output-dir`` set to a temporary directory.
 """
 
 from __future__ import annotations

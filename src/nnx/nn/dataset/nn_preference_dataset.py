@@ -17,8 +17,9 @@ production-RLHF caveats.
 
 from __future__ import annotations
 
+from collections.abc import Sized
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, cast
 
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -158,7 +159,12 @@ class NNPreferenceDataset(NNDatasetBase):
         # (FIX-022): `None` is the only full-split sentinel.
         requested = require_batch_sizes(self.batch_sizes, owner="NNPreferenceDataset")
 
-        vocab = getattr(self.tokenizer, "vocab_size", None)
+        # len() counts added tokens (a Hugging Face tokenizer's vocab_size does not).
+        vocab = len(cast(Sized, self.tokenizer)) if callable(getattr(type(self.tokenizer), "__len__", None)) else None
+        if vocab is None:
+            vocab = getattr(self.tokenizer, "vocab_size", None)
+        if vocab is None and callable(getattr(self.tokenizer, "get_vocab_size", None)):  # a raw tokenizers.Tokenizer
+            vocab = self.tokenizer.get_vocab_size()  # type: ignore[attr-defined]
         if vocab is not None and self.pad_token_id >= int(vocab):  # the embedding lookup would fail mid-step
             raise ValueError(
                 f"NNPreferenceDataset pad_token_id={self.pad_token_id} is outside the vocabulary ({vocab})"

@@ -121,7 +121,7 @@ Notes for section 2.1:
 - `profile_forward` writes a finite-schedule `torch.profiler` trace to `--output-dir`. Without that option the trace goes to a temporary directory, removed on exit. The script prints separate `compile`, `warmed` and `profile` sections.
 - No speedup is claimed. It covers FP32 built-in nets only; not with DDP or quantization.
 - Run `python examples/benchmark_compile.py --device cpu --warmup 3 --repeats 10`. It needs a working C++ toolchain for inductor.
-- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py`, which runs exactly that command.
+- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py`, which runs that command with `--output-dir` set to a temporary directory.
 
 **`builder_branching.py`**
 
@@ -326,7 +326,7 @@ Notes for section 2.1:
 - A base `ExperimentPlan` has a validation-loss monitor and data as factories. `with_lr(plan, params)` returns a new plan per trial.
 - `nnx.search.search(..., budget=SearchBudget(trials=3))` asks a grid of three learning rates. A `ThresholdPruner` prunes the one whose first validation loss is above 1.0.
 - The best completed trial names its run and BEST checkpoint. Searching the stored SQLite study again asks no new trial.
-- Prints where Optuna (`study.db`) and NNx (`runs/`) artifacts live.
+- Prints where Optuna (`study.db`) and NNx (`runs/`) artifacts live. Without `--output` they go to a temporary directory, removed on exit.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `search_workflow()`, `-k search_offline`).
 
 **`split_replay.py`**

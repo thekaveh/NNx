@@ -160,6 +160,9 @@ class BundleInfo:
         model: the network descriptor (a built-in ``Nets`` name or a
             registered ``ModelSpec``).
         model_params: ``NNModelParams.state()`` of the checkpoint.
+        net_params: the built-in net's params ``state()`` (its dimensions:
+            the architecture reconstruction builds); ``None`` for a
+            registered module, whose architecture its factory builds.
         components: saved component metadata, ``{name: {"version", "required"}}``.
         calibrators: each calibrator's ``{"payload", "id", "labels", "model_id"}``.
         payloads: ``{name: {"sha256", "size"}}`` from the manifest.
@@ -175,6 +178,7 @@ class BundleInfo:
     epoch: int
     model: str
     model_params: Mapping[str, Any]
+    net_params: Optional[Mapping[str, Any]] = None
     components: Mapping[str, Any] = field(default_factory=dict)
     calibrators: tuple[Mapping[str, Any], ...] = ()
     payloads: Mapping[str, Any] = field(default_factory=dict)
@@ -974,6 +978,9 @@ def _info(
         epoch=parts["idp"].epoch_idx,
         model=str(net),
         model_params=_freeze_config(parts["model_params"].state(), "", owner="BundleInfo"),
+        net_params=None
+        if parts["net_params"] is None
+        else _freeze_config(parts["net_params"].state(), "", owner="BundleInfo"),
         components=_freeze_config(components, "", owner="BundleInfo"),
         calibrators=tuple(_freeze_config(summary, "", owner="BundleInfo") for summary in calibrators),
         payloads=_freeze_config(manifest["payloads"], "", owner="BundleInfo"),

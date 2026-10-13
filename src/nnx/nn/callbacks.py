@@ -123,9 +123,12 @@ def _warn_at_user_frame(
     filename, lineno = frame.f_code.co_filename, frame.f_lineno
     module = frame.f_globals.get("__name__")
     registry = frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None
+    # A script's __main__ has no __spec__: passing its globals would make
+    # linecache warn (DeprecationWarning, an error under -W error) before ours.
+    module_globals = frame.f_globals if frame.f_globals.get("__spec__") is not None else None
     try:
         warnings.warn_explicit(
-            message, category, filename, lineno, module=module, registry=registry, module_globals=frame.f_globals
+            message, category, filename, lineno, module=module, registry=registry, module_globals=module_globals
         )
     except (ImportError, ValueError):
         # A REPL / ``-c`` / notebook ``__main__`` has no loader to read its

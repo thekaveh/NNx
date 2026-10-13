@@ -88,7 +88,8 @@ def dpo_train_step_factory(
         lengths, as ``NNPreferenceDataset`` yields them.
 
     Raises:
-        ValueError: if ``beta`` ≤ 0.
+        ValueError: if ``beta`` is not a finite positive number, or if
+            ``pad_token_id`` is not a non-negative integer.
     """
     if not math.isfinite(beta) or beta <= 0:
         raise ValueError(f"beta must be a finite positive number, got {beta}")

@@ -307,3 +307,21 @@ def test_a_split_seed_outside_the_generator_domain_is_refused(bad):
     with pytest.raises(ValueError, match="seed"):
         ModelSpec("some-factory", seed=bad)
     assert NNTabularDataset(**_TABULAR, seed=np.int64(3)).seed == 3
+
+
+def test_a_preference_pad_id_is_checked_against_the_full_tokenizer_length():
+    class _Added:
+        """A Hugging Face-style tokenizer: vocab_size excludes an added [PAD]."""
+
+        vocab_size = 4
+
+        def __len__(self):
+            return 5
+
+        def encode(self, text):
+            return [0, 1]
+
+    kwargs = dict(prompts=["p"] * 10, chosen=["c"] * 10, rejected=["r"] * 10, tokenizer=_Added(), seed=0)
+    NNPreferenceDataset(**kwargs, pad_token_id=4)  # the added pad: inside len(tokenizer)
+    with pytest.raises(ValueError, match="outside the vocabulary"):
+        NNPreferenceDataset(**kwargs, pad_token_id=5)

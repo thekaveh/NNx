@@ -77,8 +77,8 @@ def widen(
     Raises:
         KeyError: if ``layer_name`` is not a submodule of ``model``.
         TypeError: if the named submodule is not :class:`nn.Linear`.
-        ValueError: if ``new_width`` is not strictly greater than the
-            current ``out_features``; if no downstream Linear exists; if
+        ValueError: if ``new_width`` is not an integer strictly greater
+            than the current ``out_features``; if no downstream Linear exists; if
             a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
             module outside the elementwise allowlist) sits between the
             target and its consumer; if the target lives in a container

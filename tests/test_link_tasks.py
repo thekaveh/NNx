@@ -860,3 +860,21 @@ def test_a_repeated_message_edge_is_not_the_training_topology():
     bad.edge_index = torch.cat([batch.edge_index, batch.edge_index[:, :1]], dim=1)
     with pytest.raises(LinkTaskError, match="1 repeated edge"):
         task.check_batch(bad)
+
+
+def test_a_link_predictor_takes_float64_node_features_like_the_graph_classifier():
+    encoder = torch.nn.Linear(3, 4)  # float32 parameters
+    predictor = LinkPredictor(_LinearEncoder(encoder))
+    logits = predictor(
+        torch.randn(5, 3, dtype=torch.float64), torch.tensor([[0, 1], [1, 2]]), torch.tensor([[0, 3], [1, 4]])
+    )
+    assert logits.dtype == torch.float32 and logits.shape == (2,)
+
+
+class _LinearEncoder(torch.nn.Module):
+    def __init__(self, linear):
+        super().__init__()
+        self.linear = linear
+
+    def forward(self, x, edge_index):
+        return self.linear(x)

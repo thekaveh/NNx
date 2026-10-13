@@ -1434,6 +1434,15 @@ exactly those parameters.
 ```
 
 
+#### `nnx.optimizers.OptimizerFactory`
+
+```python
+type alias nnx.optimizers.OptimizerFactory
+```
+
+Public type alias.
+
+
 #### `nnx.optimizers.OptimizerFactorySpec`
 
 ```python
@@ -2596,6 +2605,15 @@ nnx.models.RuntimeModule.from_state(state: 'Mapping[str, Any]') -> 'RuntimeModul
 No public description is currently available.
 
 
+#### `nnx.models.ModelFactory`
+
+```python
+type alias nnx.models.ModelFactory
+```
+
+Public type alias.
+
+
 #### `nnx.models.register_model_factory`
 
 ```python
@@ -2895,6 +2913,15 @@ nnx.decisions.question_from_state(state: 'Mapping[str, Any]') -> 'Union[Choice, 
 ```
 
 Rebuild a question from `Question.state`, by its ``kind``; malformed state raises `InvalidDecisionRequest`.
+
+
+#### `nnx.decisions.DecisionResult`
+
+```python
+type alias nnx.decisions.DecisionResult
+```
+
+Public type alias.
 
 
 #### `nnx.decisions.ChoiceResult`
@@ -4174,6 +4201,15 @@ nnx.result.Err.unwrap(self) -> 'NoReturn'
 ```
 
 Raise `UnwrapError` carrying the error (and chaining it when it is an exception).
+
+
+#### `nnx.result.Result`
+
+```python
+type alias nnx.result.Result
+```
+
+Public type alias.
 
 
 #### `nnx.result.UnwrapError`
@@ -7379,7 +7415,7 @@ checked against the rebuilt weights.
 #### `nnx.bundles.BundleInfo`
 
 ```python
-class nnx.bundles.BundleInfo(path: 'str', version: 'int', generation: 'str', capability: 'str', source_run_id: 'str', source_checkpoint: 'str', epoch: 'int', model: 'str', model_params: 'Mapping[str, Any]', components: 'Mapping[str, Any]' = <factory>, calibrators: 'tuple[Mapping[str, Any], ...]' = (), payloads: 'Mapping[str, Any]' = <factory>, verified: 'bool' = False) -> 'None'
+class nnx.bundles.BundleInfo(path: 'str', version: 'int', generation: 'str', capability: 'str', source_run_id: 'str', source_checkpoint: 'str', epoch: 'int', model: 'str', model_params: 'Mapping[str, Any]', net_params: 'Optional[Mapping[str, Any]]' = None, components: 'Mapping[str, Any]' = <factory>, calibrators: 'tuple[Mapping[str, Any], ...]' = (), payloads: 'Mapping[str, Any]' = <factory>, verified: 'bool' = False) -> 'None'
 ```
 
 A bundle's summary, from `inspect_bundle` (``verified=False``: only the manifest and ``state.json`` were checked) or `validate_bundle` / `reconstruct_bundle` (``verified=True``).
@@ -7398,6 +7434,9 @@ Attributes:
     model: the network descriptor (a built-in ``Nets`` name or a
         registered ``ModelSpec``).
     model_params: ``NNModelParams.state()`` of the checkpoint.
+    net_params: the built-in net's params ``state()`` (its dimensions:
+        the architecture reconstruction builds); ``None`` for a
+        registered module, whose architecture its factory builds.
     components: saved component metadata, ``{name: {"version", "required"}}``.
     calibrators: each calibrator's ``{"payload", "id", "labels", "model_id"}``.
     payloads: ``{name: {"sha256", "size"}}`` from the manifest.
@@ -8839,7 +8878,9 @@ Split the graph's edges with a local generator seeded by ``seed``.
 
 ```text
 Edges are canonicalised and de-duplicated first (an undirected reverse
-is the same edge), so no duplicate or reverse can cross splits.
+is the same edge), so no duplicate, and in an undirected split no
+reverse, can cross splits (a directed split keeps ``u→v`` and ``v→u``
+apart).
 ``val`` / ``test`` are fractions of the edges or exact counts.
 ``negatives`` fixed non-edges per ``val`` / ``test`` positive come from
 the complement of every positive (and barred self-loops); a request
@@ -11151,6 +11192,14 @@ Should be overridden by all subclasses.
     instead of this since the former takes care of running the
     registered hooks while the latter silently ignores them.
 ```
+
+##### `nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN.params`
+
+```python
+property nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN.params
+```
+
+No public description is currently available.
 
 ##### `nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN.unpack_batch`
 
@@ -13888,8 +13937,8 @@ Returns:
 Raises:
     KeyError: if ``layer_name`` is not a submodule of ``model``.
     TypeError: if the named submodule is not :class:`nn.Linear`.
-    ValueError: if ``new_width`` is not strictly greater than the
-        current ``out_features``; if no downstream Linear exists; if
+    ValueError: if ``new_width`` is not an integer strictly greater
+        than the current ``out_features``; if no downstream Linear exists; if
         a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
         module outside the elementwise allowlist) sits between the
         target and its consumer; if the target lives in a container
@@ -14061,7 +14110,7 @@ Returns:
 
 Raises:
     TypeError: if ``emb`` is not :class:`nn.Embedding`.
-    ValueError: if ``new_num_embeddings`` is not strictly greater,
+    ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
         or if ``init`` is unknown.
 ```
 
@@ -15568,7 +15617,8 @@ Returns:
     lengths, as ``NNPreferenceDataset`` yields them.
 
 Raises:
-    ValueError: if ``beta`` ≤ 0.
+    ValueError: if ``beta`` is not a finite positive number, or if
+        ``pad_token_id`` is not a non-negative integer.
 ```
 
 
@@ -16634,6 +16684,184 @@ loaded into it (its identity, state keys and training modes are
 kept) — and fails with ``MissingModelFactoryError`` before any data
 is read otherwise.
 ```
+
+##### `nnx.vis_utils.generate_colors`
+
+```python
+nnx.vis_utils.generate_colors(n)
+```
+
+Return `n` distinct hex-color strings spaced evenly around the HSV hue circle.
+
+**Details**
+
+```text
+Uses 60% saturation and 95% brightness for legend readability. `endpoint=False`
+keeps the first and last hues maximally distinct — the hue circle wraps (0.0 ==
+1.0 == red), so a closed interval would hand the first and last class identical
+colors. Used by every other VisUtils method that draws categorical groups.
+```
+
+##### `nnx.vis_utils.get_scatter_plot_vm`
+
+```python
+nnx.vis_utils.get_scatter_plot_vm(data, title, col_xs, label_xs, col_ys, label_ys, col_ts, labels_ts, colors_ts, uni_ts)
+```
+
+Build the view-model dict consumed by `scatter_plot`.
+
+**Details**
+
+```text
+Splits the input dataframe by the categorical column `col_ts`, attaches
+per-category colors and labels, and precomputes the per-category
+x/y slices so the plotting function stays simple.
+```
+
+
+#### `nnx.vis_utils.VisUtils`
+
+```python
+class nnx.vis_utils.VisUtils()
+```
+
+Plotly-based visualizations for NNx run outputs (the ``plots`` extra: ``pip install "thekaveh-nnx[plots]"``; ``classification_report`` needs no extra).
+
+**Details**
+
+```text
+The static-method facade for run-output visualization. Companion to
+`nnx.viz` (model internals — weight / activation / gradient inspection)
+and `nnx.vis_utils`'s module-level aliases (which re-export the most
+common methods of this class for ergonomic top-level access).
+
+Class attributes are the plotting methods' styling defaults.
+``confusion_matrix`` reads them at each call. ``multi_line_plot``,
+``scatter_plot`` and ``two_dim_tsne_checkpoint_logits`` take them as
+keyword defaults fixed when the class is defined: pass ``renderer=`` /
+``fig_size=`` (and so on) per call to change them there.
+
+- `TITLE_SIZE` / `LABEL_SIZE`: Plotly title and axis-label font sizes.
+- `FIG_SIZE`: default `(width, height)` in pixels.
+- `MARGIN_SIZE`: default margin spec (passed to `Figure.update_layout`).
+- `RENDERER`: Plotly renderer override. `None` lets Plotly auto-detect
+  (notebook / browser / etc.); set to a string like ``"png"`` or
+  ``"browser"`` to pin behavior in non-default environments.
+
+See README §4.6 "Visualization" and `docs/concepts.md`
+for usage examples.
+```
+
+##### `nnx.vis_utils.VisUtils.generate_colors`
+
+```python
+nnx.vis_utils.VisUtils.generate_colors(n)
+```
+
+Return `n` distinct hex-color strings spaced evenly around the HSV hue circle.
+
+**Details**
+
+```text
+Uses 60% saturation and 95% brightness for legend readability. `endpoint=False`
+keeps the first and last hues maximally distinct — the hue circle wraps (0.0 ==
+1.0 == red), so a closed interval would hand the first and last class identical
+colors. Used by every other VisUtils method that draws categorical groups.
+```
+
+##### `nnx.vis_utils.VisUtils.multi_line_plot`
+
+```python
+nnx.vis_utils.VisUtils.multi_line_plot(x, yss, title, yss_legend, x_axis_label, y_axis_label, x_ticks_inc=20, label_size=12, title_size=14, fig_size: 'tuple' = (1000, 600), margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0}, renderer=None)
+```
+
+Render a multi-group line chart and return the Plotly Figure.
+
+**Details**
+
+```text
+Each group in `yss` is drawn with a distinct color; each line within
+a group uses a distinct dash style. `yss_legend` is a (group_labels,
+line_labels) tuple — group_labels name the colored groups (one per
+entry in `yss`), line_labels name the dash styles shared across
+groups. Both legends are added as no-trace markers so the legend
+reads cleanly; data traces carry "group (line)" hover names.
+
+Returns the Figure. If `renderer` is non-None, also calls
+`fig.show(renderer=renderer)` so notebook callers see the chart
+inline; pass `renderer=None` (the default) for headless usage.
+```
+
+##### `nnx.vis_utils.VisUtils.scatter_plot`
+
+```python
+nnx.vis_utils.VisUtils.scatter_plot(vm, renderer=None, fig_size: 'tuple' = (1000, 600), label_size: 'int' = 12, title_size: 'int' = 14, margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0})
+```
+
+Render a colored scatter plot from a view-model dict and return the Plotly Figure.
+
+**Details**
+
+```text
+`vm` is the structure produced by `get_scatter_plot_vm`: title, xs/ys
+column views, plus a `ts` group axis carrying labels + colors per
+category. Honors `renderer` the same way as `multi_line_plot`.
+```
+
+##### `nnx.vis_utils.VisUtils.get_scatter_plot_vm`
+
+```python
+nnx.vis_utils.VisUtils.get_scatter_plot_vm(data, title, col_xs, label_xs, col_ys, label_ys, col_ts, labels_ts, colors_ts, uni_ts)
+```
+
+Build the view-model dict consumed by `scatter_plot`.
+
+**Details**
+
+```text
+Splits the input dataframe by the categorical column `col_ts`, attaches
+per-category colors and labels, and precomputes the per-category
+x/y slices so the plotting function stays simple.
+```
+
+##### `nnx.vis_utils.VisUtils.two_dim_tsne_checkpoint_logits`
+
+```python
+nnx.vis_utils.VisUtils.two_dim_tsne_checkpoint_logits(checkpoint: 'NNCheckpoint', ds: 'NNDataset', n_samples: 'int', random_state: 'int | None' = 0, renderer: 'str | None' = None, fig_size: 'tuple' = (1000, 600), title_size: 'int' = 14, label_size: 'int' = 12, margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0}, *, module: 'Any' = None, batch_adapter: 'Any' = None)
+```
+
+Project the first `n_samples` test logits of `checkpoint` to 2D via t-SNE and render them colored by ground-truth class.
+
+**Details**
+
+```text
+Useful for eyeballing class separability of an intermediate
+checkpoint — pass the BEST checkpoint to see how well-trained the
+decision space ended up. Returns the Plotly Figure.
+
+A registered module is rebuilt through its factory and
+batches are split by its batch adapter (``batch_adapter=`` overrides
+it). A runtime-only checkpoint needs ``module=`` — the weights are
+loaded into it (its identity, state keys and training modes are
+kept) — and fails with ``MissingModelFactoryError`` before any data
+is read otherwise.
+```
+
+##### `nnx.vis_utils.VisUtils.confusion_matrix`
+
+```python
+nnx.vis_utils.VisUtils.confusion_matrix(Y_true, Y_pred, class_names=None, title: 'str' = 'Confusion matrix', normalize: 'bool' = False)
+```
+
+Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays of integer class labels. If `class_names` is provided, axis labels use the named classes, and every label must be a class index ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise integer indices.
+
+##### `nnx.vis_utils.VisUtils.classification_report`
+
+```python
+nnx.vis_utils.VisUtils.classification_report(Y_true, Y_pred, class_names=None) -> 'pd.DataFrame'
+```
+
+Per-class precision / recall / f1 / support as a DataFrame. Use the return value for tabular display (`print(df.to_string())` or notebook auto-display) or to feed back into downstream analysis.
 
 
 ### 19.2. Model-internals viz (`nnx.viz`)

@@ -734,3 +734,32 @@ def test_a_planned_horizon_without_a_run_to_resume_is_refused_at_validation():
     np = pytest.importorskip("numpy")
     odd = _plan().resuming("abc", mode=np.array([1, 2]), epochs=np.array([1, 2]))  # type: ignore[arg-type]
     assert odd.validate().paths == ("resume.mode", "resume.epochs")  # diagnostics, not a crash
+
+
+def test_validate_reports_an_unregistered_optimizer_factory():
+    from nnx.optimizers import NNOptimFactoryParams, OptimizerFactorySpec
+
+    train = NNTrainParams(
+        n_epochs=2, optim=NNOptimFactoryParams(factory=OptimizerFactorySpec(id="acme.lion", version=1), max_lr=0.1)
+    )
+    report = _plan().with_train(train).validate()
+    assert (
+        "train.optim" in report.paths and "acme.lion" in report.diagnostics[report.paths.index("train.optim")].message
+    )
+
+
+def test_validate_reports_an_update_clock_budget_a_custom_step_cannot_plan():
+    from nnx import NNSchedulerParams, Schedulers
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+    train = NNTrainParams(n_epochs=2, scheduler=scheduler)
+    report = _plan().with_train(train).with_step_fns(train_step_fn=lambda ctx: None).validate()
+    assert "train.scheduler" in report.paths

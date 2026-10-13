@@ -62,7 +62,7 @@ def expand_embedding(
 
     Raises:
         TypeError: if ``emb`` is not :class:`nn.Embedding`.
-        ValueError: if ``new_num_embeddings`` is not strictly greater,
+        ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
             or if ``init`` is unknown.
     """
     if not isinstance(emb, nn.Embedding):

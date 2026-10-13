@@ -24,7 +24,7 @@ All primitives accept keyword-only arguments after the first positional and oper
 
 ## 2. End-to-end: widen → refine → save
 
-The canonical surgery workflow has four steps. Load a trained checkpoint, apply a function-preserving edit, hand the surged net to `NNModel.train()` for a brief refinement pass, and save the result.
+The canonical surgery workflow has four steps. Load a trained checkpoint and apply a function-preserving edit. Hand the surged net to `NNModel.train()` for a brief refinement pass. Then save the result.
 
 ```python
 import torch

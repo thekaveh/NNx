@@ -118,11 +118,11 @@ class NNDataset(NNDatasetBase):
         # Fail fast on the no-transform PIL case: torchvision datasets
         # yield PIL Images without `transform`, and everything downstream
         # (input_dim inference, batching) needs tensors.
-        raw = full_train_dataset[0][0]
         # What the model sees at evaluation and in training: both must be
-        # tensors. A random augmentation's draw here must not move the
-        # caller's random streams.
+        # tensors. A random augmentation's draw here (the base transform runs
+        # on indexing) must not move the caller's random streams.
         with _global_rng_kept():
+            raw = full_train_dataset[0][0]
             probes = [
                 raw if transform is None else transform(raw)
                 for transform in (self.eval_transform, self.train_transform)

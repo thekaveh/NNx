@@ -243,6 +243,7 @@ def test_a_registered_module_rebuilds_from_supplied_factories_and_resumes_like_t
 
     info = inspect_bundle("bundle")
     assert info.model == str(spec) and dict(info.components) == {"early_stopping": {"version": 1, "required": False}}
+    assert info.net_params is None  # a registered module: its factory builds the architecture
     with pytest.raises(BundleReconstructionError, match="tests.bundle_encoder"):
         reconstruct_bundle("bundle")  # not registered in this process, and none supplied
     rebuilt = reconstruct_bundle(
@@ -329,3 +330,12 @@ def test_tensor_payloads_are_standard_safetensors():
             assert torch.equal(tensor, tensors[key].contiguous()), key
         round_trip = _load_tensors(reference.save({k: v.contiguous() for k, v in tensors.items()}), "reference")
         assert all(torch.equal(round_trip[key], tensor) for key, tensor in tensors.items())
+
+
+def test_inspecting_a_built_in_bundle_shows_the_architecture_reconstruction_builds():
+    _, batches = _data()
+    run = _classifier().train(params=_params(1, "inspect-dims", batches))
+    export_bundle(run.id, "bundle")
+    info = inspect_bundle("bundle")
+    assert info.net_params is not None and info.net_params["hidden_dims"] == "[8]"
+    assert info.net_params["input_dim"] == 4 and info.net_params["output_dim"] == 3

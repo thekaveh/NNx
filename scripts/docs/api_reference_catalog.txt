@@ -56,6 +56,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.optimizers.build_optimizer
 
+@api nnx.optimizers.OptimizerFactory
+
 @api nnx.optimizers.OptimizerFactorySpec
 
 @api nnx.optimizers.register_optimizer_factory
@@ -140,6 +142,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.models.RuntimeModule
 
+@api nnx.models.ModelFactory
+
 @api nnx.models.register_model_factory
 
 @api nnx.models.unregister_model_factory
@@ -173,6 +177,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.Score
 
 @api nnx.decisions.question_from_state
+
+@api nnx.decisions.DecisionResult
 
 @api nnx.decisions.ChoiceResult
 
@@ -287,6 +293,8 @@ Opt-in; see Concepts §27.
 @api nnx.result.Ok
 
 @api nnx.result.Err
+
+@api nnx.result.Result
 
 @api nnx.result.UnwrapError
 
@@ -1081,7 +1089,9 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 ### 19.1. Run-output viz (`nnx.vis_utils`)
 
-@api nnx.vis_utils members=confusion_matrix,classification_report,multi_line_plot,scatter_plot,two_dim_tsne_checkpoint_logits
+@api nnx.vis_utils members=confusion_matrix,classification_report,multi_line_plot,scatter_plot,two_dim_tsne_checkpoint_logits,generate_colors,get_scatter_plot_vm
+
+@api nnx.vis_utils.VisUtils
 
 ### 19.2. Model-internals viz (`nnx.viz`)
 

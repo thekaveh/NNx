@@ -1782,9 +1782,58 @@ def test_dpo_refuses_a_pad_id_that_masks_nothing(pad):
         lambda: __import__("nnx").surgery.expand_embedding(
             __import__("torch").nn.Embedding(4, 2), new_num_embeddings=8.0
         ),
+        lambda: __import__("nnx").surgery.widen(
+            __import__("torch").nn.Sequential(
+                __import__("torch").nn.Linear(2, 4), __import__("torch").nn.ReLU(), __import__("torch").nn.Linear(4, 2)
+            ),
+            layer_name="0",
+            new_width=8.0,
+        ),
     ],
-    ids=["rank_float", "rank_bool", "embeddings_float"],
+    ids=["rank_float", "rank_bool", "embeddings_float", "widen_float"],
 )
 def test_surgery_sizes_must_be_whole_numbers(call):
-    with pytest.raises(ValueError, match="rank|new_num_embeddings"):
+    with pytest.raises(ValueError, match="rank|new_num_embeddings|new_width"):
         call()
+
+
+def test_a_user_frame_warning_from_a_script_survives_an_error_filter(tmp_path):
+    import subprocess
+    import sys
+
+    script = tmp_path / "train_script.py"  # a script's __main__ has no __spec__
+    script.write_text(
+        "import warnings\n"
+        "from nnx.nn.callbacks import _warn_at_user_frame\n"
+        "warnings.simplefilter('error')\n"
+        "try:\n"
+        "    _warn_at_user_frame('real message')\n"
+        "except RuntimeWarning as caught:\n"
+        "    assert 'real message' in str(caught), caught\n"
+        "else:\n"
+        "    raise AssertionError('no warning')\n",
+        encoding="utf-8",
+    )
+    subprocess.run([sys.executable, str(script)], check=True, capture_output=True, text=True, timeout=120)
+
+
+def test_a_moe_forward_reads_resolved_activations_not_the_params():
+    import torch
+
+    from nnx import Activations
+    from nnx.nn.net.feed_fwd_moe_nn import FeedFwdMoENN
+    from nnx.nn.params.nn_moe_params import NNMoEParams
+
+    params = NNMoEParams(
+        input_dim=3,
+        output_dim=2,
+        hidden_dims=[4, 4],
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+        num_experts=2,
+        top_k=1,
+    )
+    net = FeedFwdMoENN(params)
+    assert len(net._hidden) == 2
+    net.__dict__["_params"] = None  # a forward that touched the params object would fail
+    assert net(torch.randn(5, 3)).shape == (5, 2)

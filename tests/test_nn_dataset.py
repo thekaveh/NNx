@@ -151,3 +151,15 @@ def test_a_random_train_transform_probe_leaves_the_global_stream_alone(tmp_path)
     torch.manual_seed(0)
     NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, seed=1, train_transform=_Jitter())
     assert torch.equal(torch.rand(1), expected)
+
+
+def test_a_random_base_transform_probe_leaves_the_global_stream_alone(tmp_path):
+    class _Jitter:
+        def __call__(self, x):
+            return x + torch.rand(1)
+
+    torch.manual_seed(0)
+    expected = torch.rand(1)
+    torch.manual_seed(0)
+    NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, seed=1, transform=_Jitter())
+    assert torch.equal(torch.rand(1), expected)

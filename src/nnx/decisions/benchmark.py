@@ -23,7 +23,7 @@ metrics — replayed from saved records, with no provider and no network.
 - :func:`evaluate` — **replay**: joins samples and records (never by row
   position) and reports, per slice (in-family, held-out, each family and
   each perturbation), the coverage — eligible, missing, duplicate, extra,
-  mismatched-digest, unsupported and failed counts, with reasons — and
+  mismatched-digest, invalid, unsupported and failed counts, with reasons — and
   accuracy, macro-F1, NLL (exact by default), Brier, reliability bins with
   ECE and, given an abstention policy, selective coverage and risk. A
   metric that cannot be computed is reported unavailable with its reason
@@ -38,7 +38,7 @@ metrics — replayed from saved records, with no provider and no network.
 
 Metrics are defined per row over each question's own options, so samples
 with different label spaces share one report: NLL and Brier follow the
-definitions of the named ``nll`` / ``brier`` metrics (``nnx.calibration``),
+definitions of the named ``nll`` / ``brier`` metrics (``nnx.monitors``),
 a Boolean is the two options ``("true", "false")`` and the top-1 prediction
 is the first option of maximal probability. One difference: the replay NLL
 is exact by default (``epsilon=None``: ``inf`` when a true option has

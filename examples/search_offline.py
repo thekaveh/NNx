@@ -17,7 +17,8 @@ A three-trial study over the learning rate of a small classifier:
 
 Requires the ``optuna`` extra (``pip install "thekaveh-nnx[optuna]"``).
 Optuna's study lives in ``<output>/study.db`` (SQLite); NNx's runs in
-``<output>/runs/``.
+``<output>/runs/``. Without ``--output`` both go to a temporary directory,
+removed on exit; pass ``--output`` to keep them.
 
 Run:
     python examples/search_offline.py [--output search-out]

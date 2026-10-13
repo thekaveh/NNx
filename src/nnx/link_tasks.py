@@ -450,7 +450,9 @@ def split_links(
     """Split the graph's edges with a local generator seeded by ``seed``.
 
     Edges are canonicalised and de-duplicated first (an undirected reverse
-    is the same edge), so no duplicate or reverse can cross splits.
+    is the same edge), so no duplicate, and in an undirected split no
+    reverse, can cross splits (a directed split keeps ``u→v`` and ``v→u``
+    apart).
     ``val`` / ``test`` are fractions of the edges or exact counts.
     ``negatives`` fixed non-edges per ``val`` / ``test`` positive come from
     the complement of every positive (and barred self-loops); a request
@@ -647,6 +649,9 @@ class LinkPredictor(nn.Module):
         self.outputs = outputs
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, edge_label_index: torch.Tensor) -> torch.Tensor:
+        parameter = next(self.parameters(), None)
+        if parameter is not None and x.is_floating_point() and x.dtype != parameter.dtype:
+            x = x.to(parameter.dtype)  # e.g. float64 features from NumPy for a float32 model, as GraphClassifier
         h = self.encoder(x, edge_index)
         hu, hv = h[edge_label_index[0]], h[edge_label_index[1]]
         if self.head is None:

@@ -598,15 +598,22 @@ class ExperimentPlan:
             report("train", f"must be NNTrainParams, got {type(self.train).__name__}")
             return None
         train = self.train
-        from .optimizers import NNOptimFactoryParams
+        from .optimizers import NNOptimFactoryParams, resolve_optimizer_factory
 
         if not isinstance(train.optim, (NNOptimParams, NNOptimFactoryParams)) or not train.optim.is_valid():
             report(
                 "train.optim",
                 f"is not a valid optimizer configuration (NNOptimParams or NNOptimFactoryParams): {train.optim!r}",
             )
+        elif isinstance(train.optim, NNOptimFactoryParams):
+            try:  # a registry lookup, as train() makes before reserving a run
+                resolve_optimizer_factory(train.optim.factory)
+            except (KeyError, ValueError) as exc:
+                report("train.optim", str(exc))
         if not isinstance(train.scheduler, NNSchedulerParams):
             report("train.scheduler", f"must be NNSchedulerParams, got {type(train.scheduler).__name__}")
+        else:
+            self._check_update_budget(train.scheduler, report)
         if train.overwrite_existing:
             report(
                 "train.overwrite_existing",
@@ -918,6 +925,33 @@ class ExperimentPlan:
             and isinstance(self.model.device, Devices)
             and isinstance(self.model.loss, Losses)
         )
+
+    def _check_update_budget(self, scheduler: NNSchedulerParams, report: Callable[[str, str], None]) -> None:
+        """train()'s refusal of an optimizer_update-clock scheduler without
+        its budget when a step function of the plan's own owns the updates:
+        NNx cannot plan them, so the budget must be explicit."""
+        from ._scheduler_clock import uses_update_clock
+        from .nn.enum.schedulers import Schedulers
+        from .nn.nn_model import default_train_step
+
+        if not uses_update_clock(scheduler) or self.train_step_fn is None or self.train_step_fn is default_train_step:
+            return
+        field = (
+            None
+            if scheduler.kind is None
+            else {
+                Schedulers.STEP: "step_size",
+                Schedulers.COSINE_ANNEALING: "T_max",
+                Schedulers.ONE_CYCLE: "total_steps",
+                Schedulers.LINEAR_WARMUP_DECAY: "total_steps",
+            }.get(scheduler.kind)
+        )
+        if field is not None and getattr(scheduler, field) is None:
+            report(
+                "train.scheduler",
+                f"an optimizer_update-clock {scheduler.kind} scheduler needs an explicit {field}: NNx plans the "
+                "updates only when it owns the update windows (the default step or an objective)",
+            )
 
     @property
     def _default_step(self) -> bool:

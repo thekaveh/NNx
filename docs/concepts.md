@@ -1104,8 +1104,8 @@ An objective runs under the run's autocast, so a reduced run's forward
 outputs are float16 / bfloat16. `ObjectiveContext.precision` is the resolved
 precision. `ctx.full_precision(output)` returns an output as float32
 (differentiable). Use it before task preparation, the loss's bookkeeping or a
-record converts the output to NumPy; the built-in objectives (and the default
-step) do.
+record converts the output to NumPy. The built-in objectives (and the default
+step) do so.
 
 `kd_objective`'s frozen teacher runs in its own inference precision (its
 explicit policy, or full precision), never in the student's. That holds even
@@ -1587,7 +1587,7 @@ The companion `nnx.viz` subpackage covers **model-internals** viz — the model 
 
 `nnx.viz.weight_histogram(model)` walks `model.named_parameters()` and emits one Plotly `Histogram` trace per tensor in a grid subplot. Useful for spotting dead layers, NaN / Inf weights, or saturation patterns at a glance.
 
-`nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule and runs `model(x)` under `torch.no_grad()`. It returns a Plotly heatmap. For 4D conv activations `(N, C, H, W)` that is a grid of per-channel heatmaps; for 2D dense activations, a single `(N, F)` heatmap. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
+`nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule and runs `model(x)` under `torch.no_grad()`. It returns a Plotly heatmap. For 4D conv activations `(N, C, H, W)` that is a grid of per-channel heatmaps; for 2D dense activations, a single `(N, F)` heatmap. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.). A typo raises `ValueError` and lists the first available names.
 
 `nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)`. The figure renders the attribution as a Plotly heatmap. A 4-D input shows its first sample, mean-pooled over channels; a 3-D input shows its first sample; a 2-D input shows one row per sample.
 
@@ -2740,8 +2740,8 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   inference and cannot `resume()`.
 - **Untrusted bundles.** Like `from_pretrained` with a `config.json`,
   reconstruction builds the architecture the bundle's parameters describe.
-  Read an untrusted bundle's `inspect_bundle(...).model_params` before
-  reconstructing it.
+  Read an untrusted bundle's `inspect_bundle(...).model_params` and
+  `.net_params` (a built-in net's dimensions) before reconstructing it.
 - **Resume.** `ReconstructedBundle.resume(params, **train_kwargs)` runs
   `model.train` as a stateful resume of the bundle's run. The optimizer,
   scheduler, GradScaler, RNG and component state come from the bundle, held
