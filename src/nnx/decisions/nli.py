@@ -402,7 +402,7 @@ class NLIProvider:
                     encoded = {key: value.to(device) for key, value in dict(encoded).items()}
                     output = self.model(**encoded)
                     logits = getattr(output, "logits", output)
-                    chunks.append(np.asarray(logits.detach().to("cpu", torch.float64)))
+                    chunks.append(np.asarray(logits.detach().cpu().to(torch.float64)))
         except Exception as error:  # the backend failed on a valid, supported request
             raise ProviderFailure(f"{self.name}: the NLI model failed: {error}") from error
         finally:

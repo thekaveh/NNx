@@ -102,8 +102,9 @@ A `DecisionProvider` has two methods: `capabilities()` and
 `capabilities().check(question, modality=..., batch_size=..., label_ids=None)`
 raises `UnsupportedCapability` for anything undeclared. Without dynamic
 labels, that includes a Choice or Score whose ids are not exactly the
-declared `labels`. With no `labels` declared, option sets are not checked. The same holds for `label_ids`, the provider's own mapping
-of those ids. Providers call it **before any model call or network I/O**.
+declared `labels`. The same holds for `label_ids`, the provider's own mapping
+of those ids. With no `labels` declared, option sets are not checked.
+Providers call it **before any model call or network I/O**.
 
 ## 4. The fixed-head adapter
 

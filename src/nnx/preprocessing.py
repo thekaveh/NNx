@@ -134,7 +134,7 @@ def _matrix(data: Any, what: str) -> np.ndarray:
     if isinstance(data, torch.Tensor):
         if data.is_complex():
             raise PreprocessingError(f"{what} must be numeric (bool, int or float), got {data.dtype}")
-        array = data.detach().to("cpu", torch.float64, copy=True).numpy()
+        array = data.detach().cpu().to(torch.float64, copy=True).numpy()  # to the CPU first: MPS has no float64
     else:
         array = np.asarray(data)
         if array.dtype.kind not in "biuf":

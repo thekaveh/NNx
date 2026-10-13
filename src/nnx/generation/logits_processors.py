@@ -11,6 +11,7 @@ canonical composition order).
 from __future__ import annotations
 
 import math
+import numbers
 from typing import Protocol
 
 import torch
@@ -60,9 +61,10 @@ class TopKFilter:
     """
 
     def __init__(self, top_k: int):
-        if top_k <= 0:
-            raise ValueError(f"top_k must be > 0, got {top_k}")
-        self.top_k = top_k
+        # As LogitsStage.top_k: a float, bool or NaN failed mid-decode in torch.topk.
+        if isinstance(top_k, bool) or not isinstance(top_k, numbers.Integral) or top_k < 1:
+            raise ValueError(f"top_k must be an integer > 0, got {top_k!r}")
+        self.top_k = int(top_k)
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
         k = min(self.top_k, logits.size(-1))

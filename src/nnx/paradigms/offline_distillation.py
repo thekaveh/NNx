@@ -708,10 +708,11 @@ def _score(
 
 
 def evaluate_offline(
-    model: NNModel, data: Union[TeacherDataset, Iterable[TeacherBatch]], *, batch_size: int = 256
+    model: NNModel, data: Union[TeacherDataset, DataLoader], *, batch_size: int = 256
 ) -> DistillationReport:
-    """Score ``model`` against a :class:`TeacherDataset` (or a loader of its
-    batches): teacher agreement, imitation loss and labelled quality, each
+    """Score ``model`` against a :class:`TeacherDataset` (or a ``DataLoader``
+    over one, such as :meth:`TeacherDataset.loader`; its ``dataset`` gives
+    the schema and candidates): teacher agreement, imitation loss and labelled quality, each
     with its own denominator (see :class:`DistillationReport`). Runs in eval
     mode under ``no_grad`` and restores the model's modes."""
     if isinstance(data, TeacherDataset):

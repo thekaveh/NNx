@@ -400,7 +400,11 @@ def main() -> None:
     # --- 5. Train: the causal-LM task's objective and validation step ---
     task = lm_task(tokenizer)
     params = replace(
-        build_lm_train_params(args.lr, n_epochs=args.n_epochs, train_loader=train_loader), val_loader=val_loader
+        build_lm_train_params(args.lr, n_epochs=args.n_epochs, train_loader=train_loader),
+        val_loader=val_loader,
+        # The data flags change the data, not the configuration: name them so
+        # each source gets its own run id (not a FileExistsError).
+        data_id=f"tinystories-{'hf' if args.use_hf else 'fallback'}-{args.n_lines}-b{args.batch_size}",
     )
     run = model.train(params=params, objective=task.objective(), eval_step_fn=task.eval_step())
     final = run.idps[-1].val_edp

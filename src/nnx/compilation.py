@@ -282,12 +282,16 @@ class _Snapshot:
         self.cuda = (
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() and torch.cuda.is_initialized() else None
         )
+        # MPS draws (dropout on an MPS net) come from their own generator.
+        self.mps = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
         self.buffers = [(buffer, buffer.detach().clone()) for buffer in net.buffers()]
 
     def restore(self) -> None:
         torch.set_rng_state(self.cpu)
         if self.cuda is not None:
             torch.cuda.set_rng_state_all(self.cuda)
+        if self.mps is not None:
+            torch.mps.set_rng_state(self.mps)
         with torch.no_grad():
             for buffer, saved in self.buffers:
                 buffer.copy_(saved)

@@ -288,6 +288,8 @@ def main():
                 cooldown=1,
                 threshold=1e-3,
             ),
+            # The data flags change the data, not the configuration: each source gets its own run id.
+            data_id=f"{'cifar10-train' if args.cifar else 'synthetic-noise'}-b{args.batch_size}",
         ),
         train_step_fn=step_fn,
         objective=objective,

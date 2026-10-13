@@ -6,8 +6,8 @@ alongside the other self-supervised paradigms. JEPA predicts in
 representation collapse via an EMA target encoder whose weights are
 never touched by the optimizer.
 
-The shipped path is sized for "verify-the-plumbing on a laptop, run a
-small ViT for a few epochs on 32x32 images" — not a SOTA reproduction.
+The shipped path verifies the plumbing on a laptop: a small ViT for a few
+epochs on 32x32 images. It is not a SOTA reproduction.
 
 ## 1. Public surface
 
@@ -228,8 +228,9 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   squared errors between the predicted and target embeddings at the masked
   positions. The sum is normalized by the number of those elements (rows ×
   target patches × embedding width). Microbatches with different target masks
-  therefore combine as `(sum_1 + sum_2) / (count_1 + count_2)`, and
-  uneven microbatches give exactly the full-batch update.
+  therefore combine as `(sum_1 + sum_2) / (count_1 + count_2)`. For the same
+  masks (a fixed `mask_fn`), uneven microbatches give exactly the full-batch
+  update; a random `mask_fn` draws new masks per microbatch.
 
     The record carries the loss and `metrics={"latent_mse": ...}`, with no
     classification fields. Masks are checked before any forward pass. They

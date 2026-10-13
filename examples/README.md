@@ -397,7 +397,7 @@ Notes for section 2.1:
 
 | Example | What it demonstrates |
 |---|---|
-| `06_finetune_with_layer_freezing.py` | Transfer-learning mechanics: pretrain on one random-label draw, export weights, load into a fresh model, `freeze("layers.0.*", "layers.1.*")`, fine-tune only the head on a second draw (nothing is learnable, so this shows the recipe, not a gain). |
+| `06_finetune_with_layer_freezing.py` | Transfer-learning mechanics: pretrain on one random-label draw, export the weights and load them into a fresh model. `freeze("layers.0.*", "layers.1.*")` then fine-tunes only the head on a second draw. Nothing is learnable, so this shows the recipe, not a gain. |
 | `07_lora_finetuning.py` | Parameter-efficient fine-tuning via LoRA: `apply_lora_to(net, "layers.*", r=4, alpha=8)`, fine-tune on a new distribution and verify every base parameter is bit-exactly unchanged. Save a LoRA-only checkpoint and compare its size to the full state-dict. |
 
 Notes for section 2.3:

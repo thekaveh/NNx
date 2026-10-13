@@ -160,7 +160,8 @@ class TaskSpec:
             raise TaskValidationError(f"a {self.kind} TaskSpec needs at least {minimum} label(s), got {len(labels)}")
         if self.num_outputs is not None and len(labels) != self.num_outputs:
             raise TaskValidationError(f"TaskSpec has {len(labels)} label(s) but num_outputs={self.num_outputs}")
-        object.__setattr__(self, "labels", labels)
+        # NumPy strings pass isinstance(str) but are not YAML-safe: store plain str.
+        object.__setattr__(self, "labels", tuple(str(label) for label in labels))
         if self.num_outputs is None:
             object.__setattr__(self, "num_outputs", len(labels))
 
@@ -811,8 +812,10 @@ class _RegressionAccumulator(TaskMetricAccumulator):
         self._sae = 0.0
 
     def update(self, output, target, valid):
-        prediction = output.detach().to(dtype=torch.float64)
-        truth = target.detach().to(dtype=torch.float64)
+        # float64 on the CPU: MPS has no float64.
+        prediction = output.detach().cpu().to(dtype=torch.float64)
+        truth = target.detach().cpu().to(dtype=torch.float64)
+        valid = valid.cpu()
         diff = (prediction - truth)[valid]
         sums = torch.stack([(diff * diff).sum(), diff.abs().sum()]).tolist()  # one device sync
         self._sse += sums[0]

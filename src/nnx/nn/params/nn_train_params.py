@@ -78,9 +78,11 @@ def _validate_monitoring(params: Any, owner: str) -> None:
 class NNTrainParams:
     """Training configuration.
 
-    `seed` pins every RNG that affects training (Python random, NumPy,
-    torch CPU+CUDA, cuDNN) when NNModel.train() runs. None disables
-    seeding (default).
+    `seed` reseeds the global RNG streams (Python random, NumPy, torch
+    CPU+CUDA, cuDNN) when NNModel.train() runs. None disables seeding
+    (default). A loader or sampler with its own `torch.Generator` is not
+    reseeded: rebuild it (or reseed its generator) before each fit for
+    the same shuffle order.
 
     To preserve back-compat with previously-saved runs, `seed` is included
     in state() ONLY when set — so existing runs with no seed continue to

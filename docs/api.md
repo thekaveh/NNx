@@ -9093,9 +9093,11 @@ Training configuration.
 **Details**
 
 ```text
-`seed` pins every RNG that affects training (Python random, NumPy,
-torch CPU+CUDA, cuDNN) when NNModel.train() runs. None disables
-seeding (default).
+`seed` reseeds the global RNG streams (Python random, NumPy, torch
+CPU+CUDA, cuDNN) when NNModel.train() runs. None disables seeding
+(default). A loader or sampler with its own `torch.Generator` is not
+reseeded: rebuild it (or reseed its generator) before each fit for
+the same shuffle order.
 
 To preserve back-compat with previously-saved runs, `seed` is included
 in state() ONLY when set — so existing runs with no seed continue to
@@ -14647,10 +14649,10 @@ denominator.
 #### `nnx.paradigms.offline_distillation.evaluate_offline`
 
 ```python
-nnx.paradigms.offline_distillation.evaluate_offline(model: 'NNModel', data: 'Union[TeacherDataset, Iterable[TeacherBatch]]', *, batch_size: 'int' = 256) -> 'DistillationReport'
+nnx.paradigms.offline_distillation.evaluate_offline(model: 'NNModel', data: 'Union[TeacherDataset, DataLoader]', *, batch_size: 'int' = 256) -> 'DistillationReport'
 ```
 
-Score ``model`` against a `TeacherDataset` (or a loader of its batches): teacher agreement, imitation loss and labelled quality, each with its own denominator (see `DistillationReport`). Runs in eval mode under ``no_grad`` and restores the model's modes.
+Score ``model`` against a `TeacherDataset` (or a ``DataLoader`` over one, such as `TeacherDataset.loader`; its ``dataset`` gives the schema and candidates): teacher agreement, imitation loss and labelled quality, each with its own denominator (see `DistillationReport`). Runs in eval mode under ``no_grad`` and restores the model's modes.
 
 
 #### `nnx.paradigms.offline_distillation.DistillationReport`
@@ -16537,8 +16539,9 @@ Returns:
 
 Raises:
     ImportError: When `launch=True` and the `netron` package isn't
-        installed (checked before anything is written). The ONNX
-        export itself uses `torch.onnx`, which is part of core PyTorch.
+        installed (checked before anything is written). The export
+        itself needs the `onnx` package (the `onnx` extra); without it
+        `torch.onnx` raises its own exporter error.
     NotImplementedError: When the module declares
         `onnx_export_unsupported` (graph classifiers, link
         predictors); nothing is written.

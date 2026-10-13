@@ -227,6 +227,23 @@ def _registered_paths(model: nn.Module, target: nn.Module) -> list[str]:
     return [name for name, mod in model.named_modules(remove_duplicate=False) if mod is target]
 
 
+def _has_hooks(module: nn.Module) -> bool:
+    return any((module._forward_hooks, module._forward_pre_hooks, module._backward_hooks, module._backward_pre_hooks))
+
+
+def _refuse_unproven_container(parent: nn.Module, where: str) -> None:
+    """A container whose execution order is not its registration order: a
+    subclass with its own forward, or hooks on it or on its children."""
+    stock = nn.Sequential.forward if isinstance(parent, nn.Sequential) else None
+    own_forward = stock is not None and type(parent).forward is not stock
+    hooked = [name for name, child in parent._modules.items() if child is not None and _has_hooks(child)]
+    if own_forward or _has_hooks(parent) or hooked:
+        raise ValueError(
+            f"widen() cannot prove the data flow of {where!r} ({type(parent).__name__}): a container with its "
+            f"own forward or hooks (hooked children: {hooked}) may transform between a layer and its consumer"
+        )
+
+
 def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> str:
     """Return the qualified name of the Linear that consumes ``layer``'s
     output, or raise ``ValueError`` when the path cannot be proven to be
@@ -249,6 +266,11 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
     parent = model if not parent_path else get_module(model, parent_path)
     allowed = ", ".join(t.__name__ for t in _ELEMENTWISE_MODULES)
 
+    if isinstance(parent, (nn.Sequential, nn.ModuleList)):
+        # Registration order proves the data flow only for the stock
+        # forward: a subclass's own forward or a hook could transform
+        # between the layer and its consumer (deepen refuses the same).
+        _refuse_unproven_container(parent, parent_path or "<root>")
     if isinstance(parent, nn.Sequential):
         keys = list(parent._modules)
         consumer_name: Optional[str] = None
@@ -273,7 +295,7 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
     elif isinstance(parent, nn.ModuleList) and parent_path:
         owner_path, _, list_attr = parent_path.rpartition(".")
         owner = model if not owner_path else get_module(model, owner_path)
-        if not (isinstance(owner, FeedFwdNN) and list_attr == "layers"):
+        if not (isinstance(owner, FeedFwdNN) and list_attr == "layers") or type(owner).forward is not FeedFwdNN.forward:
             raise ValueError(
                 f"widen() can only infer the consumer of a Linear inside nn.Sequential or FeedFwdNN.layers, "
                 f"where the execution order is proven; {layer_name!r} lives in {type(owner).__name__}.{list_attr} "

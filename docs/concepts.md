@@ -1108,7 +1108,8 @@ from nnx import NNModel, load_pretrained, NNParamGroupSpec, NNOptimParams, Optim
 model = NNModel(net_params=..., params=...)
 
 # 1. Load weights from an external state-dict / .pt file / other nn.Module.
-#    Pass key_map= to rewrite foreign naming (e.g., {"backbone.": "net."}).
+#    Pass key_map= to rewrite foreign prefixes onto model.net's own names
+#    (e.g., {"backbone.": "layers."}).
 result = load_pretrained(model.net, "resnet18.pt", strict=False)
 print(f"loaded {len(result.loaded_keys)}, missing {len(result.missing_keys)}")
 
@@ -1604,6 +1605,12 @@ set_seed(42, strict=True)                    # pins torch / numpy / python / cud
 loader = DataLoader(..., worker_init_fn=dataloader_worker_init_fn)
 NNTrainParams(seed=42, ...)                  # pins again inside train()
 ```
+
+`seed` reseeds the global streams only. A loader or sampler that owns a
+`torch.Generator` (for example the `NeighborLoader`s of
+`NNGraphDataset(seed=...)`) continues from its last state across `train()`
+calls. Rebuild it, or reseed its generator, before each fit for the same
+shuffle order.
 
 `strict=True` opts into `torch.use_deterministic_algorithms(True)`. It is slower and may raise on ops without a deterministic CUDA kernel. But it produces bit-for-bit identical training across runs on the same hardware.
 
@@ -2419,10 +2426,10 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
       network's raw output in eval mode, as `predict()` sees it.
     - A bare tensor or a 1-tuple is inputs only, read as `predict()` reads a
       loader batch.
-    - Afterwards, succeeding or failing, it restores the Python / NumPy /
-      torch RNG streams, the cuDNN `deterministic` / `benchmark` flags, the
-      deterministic-algorithms setting, `PYTHONHASHSEED` and
-      `CUBLAS_WORKSPACE_CONFIG`.
+    - Afterwards, succeeding or failing, it restores the global seed state.
+      That is the Python / NumPy / torch RNG streams, the cuDNN
+      `deterministic` / `benchmark` flags, the deterministic-algorithms
+      setting, `PYTHONHASHSEED` and `CUBLAS_WORKSPACE_CONFIG`.
     - It touches no callback, factory or loader, and writes nothing.
     - A CPU model's probe seeds no CUDA stream, so on a GPU host nothing waits
       for CUDA's first use either. A CUDA model's probe starts CUDA first when
@@ -2721,7 +2728,7 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   `provenance=...`, its attempt links the bundle's run, epoch and generation
   without reading anything from disk.
 - **Resume refusals.** These raise `BundleCapabilityError` before anything
-  changes: an `"inference"` bundle, a `Trainer` run's bundle (named
+  changes. They are an `"inference"` bundle, a `Trainer` run's bundle (named
   optimizers), or a topology converted at train end (a QAT checkpoint). A
   recorded `nnx.transforms` recipe (LoRA, low-rank) is replayed on the
   rebuilt model, so its bundle resumes. The refused models still rebuild

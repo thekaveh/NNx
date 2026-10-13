@@ -81,9 +81,14 @@ from torch.utils.data import TensorDataset
 from nnx.lm_tasks import CausalLMTask
 
 ids = [i for text in corpus for i in tk.encode(text).ids]
-windows = torch.tensor([ids[i : i + 5] for i in range(len(ids) - 4)])
-held_out = max(1, len(windows) // 5)  # the last windows validate, never trained on
-train, val = windows[:-held_out], windows[-held_out:]
+cut = len(ids) - max(6, len(ids) // 5)  # split the token stream first: no shared tokens
+
+
+def windows(stream):
+    return torch.tensor([stream[i : i + 5] for i in range(len(stream) - 4)])
+
+
+train, val = windows(ids[:cut]), windows(ids[cut:])
 train_loader = DataLoader(TensorDataset(train[:, :-1], train[:, 1:]), batch_size=4, shuffle=True)
 val_loader = DataLoader(TensorDataset(val[:, :-1], val[:, 1:]), batch_size=4)
 

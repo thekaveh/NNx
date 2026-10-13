@@ -691,3 +691,13 @@ def test_a_skipped_frame_under_on_failure_error_restores_buffers(monkeypatch):
         session.forward(torch.randn(8, 4))
     for name, tensor in net.state_dict().items():
         assert torch.equal(tensor, before[name]), name
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+def test_the_compile_snapshot_restores_the_mps_generator():
+    from nnx.compilation import _Snapshot
+
+    snapshot = _Snapshot(torch.nn.Linear(2, 2))
+    first = torch.rand(3, device="mps")
+    snapshot.restore()
+    assert torch.equal(torch.rand(3, device="mps"), first)

@@ -394,7 +394,7 @@ class CausalLMTask:
             # Per-token NLL in (at least) float32 — no full-vocabulary float64
             # copy — summed in float64.
             per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
-            nll = float(per_token.double().sum())
+            nll = float(per_token.detach().cpu().double().sum())  # MPS has no float64
             correct = int((detached.argmax(dim=-1) == chosen).sum())
         return ce, nll, correct, n
 

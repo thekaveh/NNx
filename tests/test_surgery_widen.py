@@ -427,3 +427,20 @@ def test_widen_refuses_an_adapted_feedfwd_consumer_before_copying():
     apply_lora_to(net, "layers.1")
     with pytest.raises(ValueError, match="plain nn.Linear consumer"):
         widen(net, layer_name="layers.0", new_width=10)
+
+
+def test_widen_refuses_a_sequential_with_its_own_forward_or_hooks():
+    """Registration order is the data flow only for the stock forward: a
+    subclass that normalizes between children silently broke the parity."""
+    import torch.nn.functional as F
+
+    class Norm(nn.Sequential):
+        def forward(self, x):
+            return self[1](F.layer_norm(self[0](x), (8,)))
+
+    with pytest.raises(ValueError, match="cannot prove the data flow"):
+        widen(Norm(nn.Linear(4, 8), nn.Linear(8, 2)), layer_name="0", new_width=12)
+    hooked = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    hooked[1].register_forward_hook(lambda module, args, out: out * 2)
+    with pytest.raises(ValueError, match="cannot prove the data flow"):
+        widen(hooked, layer_name="0", new_width=12)

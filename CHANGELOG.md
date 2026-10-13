@@ -104,6 +104,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `low_rank_factorize` (and `low_rank` transform recipes) and offline-distillation scoring work on MPS models.
     - A refused task evaluation leaves the network's training modes as it found them.
     - `MoELinear`, `ViTNN` and `ViTBlock` refuse float or bool sizes and dropouts at construction.
+    - Regression tasks, causal-LM training, `Standardizer`, the NLI provider and the diffusion objective work on MPS (no float64 there); the compile snapshot restores the MPS generator.
+    - Task and probability labels given as NumPy strings are stored as plain strings, so the run saves its `run.yaml`.
+    - `widen` refuses a container with its own forward or hooks instead of silently changing the model's output.
+    - `generate(max_new_tokens=...)`, `TopKFilter`, `Bootstrap` and decision results validate their inputs at construction.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

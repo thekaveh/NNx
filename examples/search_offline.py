@@ -125,7 +125,11 @@ def search_workflow(output: str = ".") -> dict:
                 }
                 for o in first.outcomes
             ],
-            "best": {"lr": best.params["lr"], "run": best.run_id, "checkpoint": os.path.relpath(best.checkpoint)},
+            "best": {
+                "lr": best.params["lr"],
+                "run": best.run_id,
+                "checkpoint": os.path.join(output, os.path.relpath(best.checkpoint)),
+            },
             "reopened_asked": again.asked,
             "optuna_storage": os.path.join(output, "study.db"),
             "nnx_runs": os.path.join(output, "runs"),

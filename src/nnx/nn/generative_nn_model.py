@@ -14,6 +14,7 @@ from typing import Any, Optional, cast
 
 import torch
 
+from .._validation import require_count
 from ..generation.logits_chain import LogitsChain
 from ..generation.logits_processors import (
     LogitsProcessor,
@@ -161,6 +162,8 @@ class GenerativeNNModel(NNModel):
         ``nnx.diffusion.sample``, ``nnx.embeddings.embed_texts``,
         ``nnx.viz.activation_map``, and ``nnx.lr_finder``.
         """
+        # A count: a negative value returned the prompt silently, a float failed late in range().
+        max_new_tokens = require_count(max_new_tokens, "max_new_tokens", owner="GenerativeNNModel.generate", minimum=0)
         if logits_chain is not None and logits_pipeline is not None:
             raise ValueError(
                 "pass either logits_chain (a LogitsChain) or logits_pipeline (an OrderedLogitsPipeline), not both"

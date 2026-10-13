@@ -1,8 +1,9 @@
 """Portable, data-only run bundles.
 
-A run checkpoint (``runs/<id>/checkpoints/<tag>.pt``) and its training-state
-sidecar are pickles: reading them runs ``torch.load(weights_only=False)``,
-which is only safe for files you produced. A safetensors checkpoint
+A run checkpoint (``runs/<id>/checkpoints/<tag>.pt``) is a pickle: reading
+it runs ``torch.load(weights_only=False)``, which is only safe for files you
+produced. Its training-state sidecar is read with ``weights_only=True`` but
+belongs with a trusted checkpoint. A safetensors checkpoint
 (``NNCheckpoint.to_file(format="safetensors")``) is data only, but holds one
 weights dict and no training state. A **run bundle** is a directory that
 holds a run checkpoint — its weights, its training state and optional

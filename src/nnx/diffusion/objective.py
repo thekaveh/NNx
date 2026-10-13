@@ -62,7 +62,7 @@ _TERM = "noise_mse"
 def _schedule_fingerprint(schedule: NoiseSchedule) -> str:
     """A stable identity for a schedule's betas (its other tensors derive
     from them)."""
-    betas = schedule.betas.detach().to("cpu", torch.float64).contiguous()
+    betas = schedule.betas.detach().cpu().to(torch.float64).contiguous()
     return hashlib.sha256(betas.numpy().tobytes()).hexdigest()
 
 

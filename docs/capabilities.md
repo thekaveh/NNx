@@ -145,7 +145,8 @@ clipping.
   rates through `NNOptimParams.param_groups`.
 - **Parameter-efficient fine-tuning.** `nnx.peft` provides LoRA, DoRA, IA3,
   prefix tuning, prompt tuning and adapter layers. Each `save_*_weights`
-  function saves only the trainable delta. LoRA starts from the pretrained
+  function saves only the trainable delta (DoRA's `magnitude` needs the full
+  `state_dict()`). LoRA starts from the pretrained
   behavior because its second factor is zero-initialized.
 - **Quantization** (`quantize` extra). `nnx.quantize.quantize_int8(model)`
   applies torchao INT8 weight-only post-training quantization without

@@ -507,18 +507,22 @@ class Bootstrap:
     level: float = 0.95
 
     def __post_init__(self) -> None:
-        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+        # NumPy scalars are accepted and stored as plain numbers (state() stays JSON).
+        if isinstance(self.seed, bool) or not isinstance(self.seed, numbers.Integral) or self.seed < 0:
             raise ComparisonError(f"Bootstrap.seed must be a non-negative integer, got {self.seed!r}")
         if (
             isinstance(self.resamples, bool)
-            or not isinstance(self.resamples, int)
+            or not isinstance(self.resamples, numbers.Integral)
             or not 1 <= self.resamples <= MAX_RESAMPLES
         ):
             raise ComparisonError(
                 f"Bootstrap.resamples must be an integer in [1, {MAX_RESAMPLES}], got {self.resamples!r}"
             )
-        if isinstance(self.level, bool) or not isinstance(self.level, (int, float)) or not 0 < self.level < 1:
+        if isinstance(self.level, bool) or not isinstance(self.level, numbers.Real) or not 0 < self.level < 1:
             raise ComparisonError(f"Bootstrap.level must be in (0, 1), got {self.level!r}")
+        object.__setattr__(self, "seed", int(self.seed))
+        object.__setattr__(self, "resamples", int(self.resamples))
+        object.__setattr__(self, "level", float(self.level))
 
     def state(self) -> dict[str, Any]:
         return {

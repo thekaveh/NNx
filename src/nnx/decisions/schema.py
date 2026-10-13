@@ -260,6 +260,9 @@ def _check_distribution(pairs: tuple[tuple[str, float], ...], *, owner: str) -> 
     if len(pairs) < 2:
         raise InvalidDecisionResponse(f"{owner} needs a distribution over at least 2 ids, got {len(pairs)}")
     ids = [option_id for option_id, _ in pairs]
+    wrong = [option_id for option_id in ids if not isinstance(option_id, str) or not option_id]
+    if wrong:
+        raise InvalidDecisionResponse(f"{owner} distribution ids must be non-empty strings, got {wrong!r}")
     if len(set(ids)) != len(ids):
         raise InvalidDecisionResponse(f"{owner} distribution repeats ids: {ids}")
     checked = tuple((option_id, _probability(p, what=f"{owner} p[{option_id!r}]")) for option_id, p in pairs)
@@ -269,6 +272,21 @@ def _check_distribution(pairs: tuple[tuple[str, float], ...], *, owner: str) -> 
             f"{owner} distribution sums to {total!r}, not 1 within {PROBABILITY_TOLERANCE}; it is never renormalized"
         )
     return checked
+
+
+def _check_vendor_score(vendor_score: Any) -> Optional[float]:
+    """A Score provider's own number: ``None`` or a finite real, as a float."""
+    if vendor_score is None:
+        return None
+    if isinstance(vendor_score, bool) or not isinstance(vendor_score, numbers.Real):
+        raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
+    try:
+        score = float(vendor_score)
+    except OverflowError as error:  # an integer too large for a float
+        raise InvalidDecisionResponse("vendor_score must be a finite number, got one too large for a float") from error
+    if not math.isfinite(score):
+        raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
+    return score
 
 
 @dataclass(frozen=True)
@@ -335,6 +353,7 @@ class ScoreResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "distribution", _check_distribution(tuple(self.distribution), owner="ScoreResult"))
+        object.__setattr__(self, "vendor_score", _check_vendor_score(self.vendor_score))
 
     def probabilities(self) -> dict[str, float]:
         return dict(self.distribution)
@@ -424,16 +443,4 @@ def validate_response(
     ordered = tuple((option_id, seen[option_id]) for option_id in expected)
     if isinstance(question, Choice):
         return ChoiceResult(digest, ordered, provider=provider, raw=raw)
-    score = None
-    if vendor_score is not None:
-        if isinstance(vendor_score, bool) or not isinstance(vendor_score, numbers.Real):
-            raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
-        try:
-            score = float(vendor_score)
-        except OverflowError as error:  # an integer too large for a float
-            raise InvalidDecisionResponse(
-                "vendor_score must be a finite number, got one too large for a float"
-            ) from error
-        if not math.isfinite(score):
-            raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
-    return ScoreResult(digest, ordered, provider=provider, vendor_score=score, raw=raw)
+    return ScoreResult(digest, ordered, provider=provider, vendor_score=vendor_score, raw=raw)

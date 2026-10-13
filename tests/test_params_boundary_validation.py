@@ -501,3 +501,69 @@ def test_a_refused_task_accumulator_leaves_the_training_modes(monkeypatch):
             model, [(torch.randn(2, 2), torch.tensor([0, 1]))], None, None, bounded=True, who="t"
         )
     assert model.net.training
+
+
+def test_numpy_string_labels_are_stored_yaml_safe():
+    """np.str_ passes isinstance(str) but yaml.safe_dump refuses it: a run
+    with DataFrame-derived labels trained, then failed to save run.yaml."""
+    import numpy as np
+    import yaml
+
+    from nnx import TaskSpec
+    from nnx.prediction import ProbabilitySpec
+
+    labels = list(np.array(["cat", "dog"]))
+    for spec in (TaskSpec.categorical(2, labels=labels), ProbabilitySpec(kind="categorical", labels=labels)):
+        assert all(type(label) is str for label in spec.labels)
+        yaml.safe_dump(spec.state())
+
+
+def test_bootstrap_accepts_numpy_scalars_as_plain_numbers():
+    import numpy as np
+
+    from nnx.comparison import Bootstrap
+
+    boot = Bootstrap(seed=np.int64(3), resamples=np.int32(10), level=np.float32(0.9))
+    assert (type(boot.seed), type(boot.resamples), type(boot.level)) == (int, int, float)
+
+
+def test_decision_results_validate_ids_and_vendor_scores_at_construction():
+    from nnx.decisions import ChoiceResult, InvalidDecisionResponse, ScoreResult
+
+    with pytest.raises(InvalidDecisionResponse, match="non-empty strings"):
+        ChoiceResult("d", ((1, 0.5), (2, 0.5)))
+    with pytest.raises(InvalidDecisionResponse, match="vendor_score"):
+        ScoreResult("d", (("a", 0.5), ("b", 0.5)), vendor_score=float("nan"))
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: __import__("nnx").ViTBlock(d_model=8, n_heads=2, ffn_mult=1.5),
+        lambda: __import__("nnx").ViTBlock(d_model=True, n_heads=1),
+        lambda: __import__("nnx").ViTBlock(d_model=8, n_heads=2, resid_dropout=True),
+        lambda: __import__("nnx").MoELinear(3, 2, num_experts=4.0),
+        lambda: __import__("nnx").MoELinear(True, 2, num_experts=4),
+    ],
+    ids=["vit-block-ffn-mult", "vit-block-bool-width", "vit-block-bool-dropout", "moe-float-experts", "moe-bool-in"],
+)
+def test_every_public_block_constructor_refuses_float_and_bool_counts(build):
+    with pytest.raises(ValueError):
+        build()
+
+
+@pytest.mark.parametrize("count", [-1, 2.5, True])
+def test_generate_refuses_a_max_new_tokens_that_is_not_a_count(count):
+    pytest.importorskip("tokenizers")
+    from nnx import GenerativeNNModel
+
+    with pytest.raises(ValueError, match="max_new_tokens"):
+        GenerativeNNModel.generate(object(), "hi", max_new_tokens=count)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("k", [2.5, True, float("nan"), 0])
+def test_top_k_filter_refuses_what_its_pipeline_stage_refuses(k):
+    from nnx.generation.logits_processors import TopKFilter
+
+    with pytest.raises(ValueError, match="top_k"):
+        TopKFilter(k)

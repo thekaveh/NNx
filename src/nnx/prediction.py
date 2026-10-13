@@ -113,7 +113,8 @@ class ProbabilitySpec:
             raise PredictionValidationError(
                 f"a {self.kind} ProbabilitySpec needs at least {minimum} label(s), got {len(labels)}"
             )
-        object.__setattr__(self, "labels", labels)
+        # NumPy strings pass isinstance(str) but are not YAML-safe: store plain str.
+        object.__setattr__(self, "labels", tuple(str(label) for label in labels))
 
     def resolve_class_axis(self, ndim: int) -> int:
         """Return ``class_axis`` as a non-negative axis of an ``ndim``-D
