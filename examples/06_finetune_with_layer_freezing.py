@@ -1,9 +1,11 @@
-"""Transfer learning via layer freezing.
+"""Transfer-learning mechanics via layer freezing.
 
-Trains a small classifier from scratch on synthetic distribution A,
-exports its weights, then loads them into a fresh model with the
-backbone frozen and fine-tunes only the head on distribution B. Shows
-the standard "freeze backbone, train head" recipe.
+Trains a small classifier from scratch on one random-label draw
+("distribution A"), exports its weights, then loads them into a fresh
+model with the backbone frozen and fine-tunes only the head on a second
+draw ("distribution B"). The labels are random, so nothing transfers:
+the example shows the standard "freeze backbone, train head" recipe and
+checks that only the head changes, not a learning gain.
 
 The same pattern works against any external weights — torchvision
 checkpoints, HuggingFace state-dicts, weights from a colleague. The

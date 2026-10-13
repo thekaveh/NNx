@@ -422,7 +422,7 @@ def callback_continuation() -> dict:
         eval_step_fn=eval_step,
         callbacks=[EarlyStopping(monitor="val_edp.error", patience=2)],
     )
-    set_seed(4)
+    set_seed(3)  # the same seed regenerates the parent's rows: a resume continues on its data
     model, loader = _make_model_and_loader()
     stopper = EarlyStopping(monitor="val_edp.error", patience=2)
     resumed = model.train(
