@@ -1,5 +1,5 @@
 """Offline teacher distributions: distill a student from stored, permissioned
-teacher probabilities (FEAT-022).
+teacher probabilities.
 
 ``kd_train_step_factory`` and ``kd_objective`` forward a **live** teacher
 every step and compare temperature-softened **logits** (scaled by ``T²``).
@@ -27,7 +27,7 @@ records directly, offline:
   — before any optimizer exists. :meth:`TeacherDataset.loader` yields
   :class:`TeacherBatch`\\ es.
 - :class:`OfflineDistillationObjective` (:meth:`TeacherDataset.objective`)
-  — an objective for NNx's shared update engine (FEAT-004): ``alpha ·
+  — an objective for NNx's shared update engine: ``alpha ·
   KL(teacher ‖ student) + (1 − alpha) · CE(student, label)``, both at
   temperature 1 — no logits are invented and no ``T²`` is applied. The two
   terms share one mask (every row) and one denominator (the microbatch's

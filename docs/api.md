@@ -10830,6 +10830,14 @@ parameters converted when you call :meth:`to`, etc.
 :vartype training: bool
 ```
 
+##### `nnx.nn.net.conv_nn.ConvNN.params`
+
+```python
+property nnx.nn.net.conv_nn.ConvNN.params
+```
+
+The net's configuration; setting it (as model surgery does) re-resolves the per-layer state the forward reads.
+
 ##### `nnx.nn.net.conv_nn.ConvNN.forward`
 
 ```python

@@ -1,4 +1,4 @@
-"""A reproducible, offline-first decision-provider benchmark (FEAT-021).
+"""A reproducible, offline-first decision-provider benchmark.
 
 Score decision providers (``nnx.decisions``) on **identical samples**, join
 their outputs by sample id and question digest, and report probability
@@ -1035,7 +1035,10 @@ def _selective(rows: Sequence[_Row], policy: Any, model_id: Optional[str]) -> di
             "selective_coverage": MetricValue("selective_coverage", None, 0, reason),
             "selective_risk": MetricValue("selective_risk", None, 0, reason),
         }
-    note = f"{skipped} eligible row(s) the policy does not fit are not counted" if skipped else None
+    booleans = len(rows) - len(eligible)
+    skipped_notes = [f"{skipped} eligible row(s) the policy does not fit"] if skipped else []
+    skipped_notes += [f"{booleans} Boolean row(s)"] if booleans else []
+    note = f"{' and '.join(skipped_notes)} are not counted" if skipped_notes else None
     coverage = MetricValue("selective_coverage", len(accepted) / applied, applied, note=note)
     if not accepted:
         return {

@@ -1,5 +1,5 @@
 """A causal language-model task: declared alignment, masks and valid-token
-normalization (FEAT-034).
+normalization.
 
 A next-token step written by hand flattens ``(B, T, V)`` logits before any
 mask exists, divides by the batch count when it accumulates and returns
@@ -19,7 +19,7 @@ positions** — the objective's denominator, the NLL and the token accuracy
 all use exactly those. Shapes, dtypes, lengths and every non-ignored id are
 checked before any forward pass.
 
-- :meth:`CausalLMTask.objective` — a FEAT-004 objective: one ``"token_ce"``
+- :meth:`CausalLMTask.objective` — an objective: one ``"token_ce"``
   term per microbatch, the (smoothed) cross-entropy **sum** over valid
   positions with the valid count as its denominator, so accumulation
   windows normalize by the window's valid tokens. An all-masked microbatch

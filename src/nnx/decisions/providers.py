@@ -1,5 +1,5 @@
 """Decision providers: declared capabilities, the provider protocol and the
-fixed-head NNx adapter (FEAT-009)."""
+fixed-head NNx adapter."""
 
 from __future__ import annotations
 

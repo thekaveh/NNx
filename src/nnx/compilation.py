@@ -1,4 +1,4 @@
-"""Opt-in ``torch.compile`` for the built-in FP32 training forward (FEAT-029).
+"""Opt-in ``torch.compile`` for the built-in FP32 training forward.
 
 ``model.train(params, compile=CompileSpec())`` compiles the forward pass the
 built-in step runs (and validation inside the fit), and nothing else:

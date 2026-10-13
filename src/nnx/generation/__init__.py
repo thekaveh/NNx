@@ -19,7 +19,7 @@ Public surface:
     matches the :class:`nnx.NNTransformerParamsBuilder` convention.
   * :func:`sample_next_token` — sample one next token given prepared
     logits + an optional torch.Generator for seeded sampling.
-  * :class:`OrderedLogitsPipeline` (FEAT-037) — immutable stages run in
+  * :class:`OrderedLogitsPipeline` — immutable stages run in
     exactly their declared order (``append`` / ``prepend`` return new
     pipelines); pass via ``generate(logits_pipeline=...)``.
   * :class:`LogitsStage` — a validated built-in stage spec

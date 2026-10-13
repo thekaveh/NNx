@@ -1,4 +1,4 @@
-"""Query-grouped ranking and retrieval evaluation (FEAT-035).
+"""Query-grouped ranking and retrieval evaluation.
 
 A scorer ranks the **candidates of each query**; it is judged per query,
 never per batch. :class:`RankingTask` declares the relevance grades, the
@@ -12,8 +12,7 @@ A batch is ``(features, query_ids, candidate_ids, relevance)`` or
 ``features`` to one score per candidate row; ids are integer tensors or
 lists of strings; relevance grades are integers in ``0..max_relevance``.
 
-- :meth:`RankingTask.objective` — the **pairwise logistic** objective
-  (FEAT-004): for each query, every pair of its candidates with unequal
+- :meth:`RankingTask.objective` — the **pairwise logistic** objective: for each query, every pair of its candidates with unequal
   relevance contributes ``log(1 + exp(-(s_hi - s_lo)))``; equal-relevance
   pairs (ties) contribute nothing and a query without such a pair is
   skipped. ``weighting="query"`` averages each query's pairs and then the

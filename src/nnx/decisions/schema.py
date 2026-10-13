@@ -1,5 +1,4 @@
-"""Typed decision questions, validated results and the response validator
-(FEAT-009). See :mod:`nnx.decisions` for the overview."""
+"""Typed decision questions, validated results and the response validator. See :mod:`nnx.decisions` for the overview."""
 
 from __future__ import annotations
 

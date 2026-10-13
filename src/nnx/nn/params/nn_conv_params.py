@@ -24,8 +24,7 @@ v1 targets small SQUARE images: the spatial side is derived as
 ``sqrt(input_dim / in_channels)`` (MNIST: 784/1 → 28), so the base
 ``input_dim`` keeps its meaning and no extra height/width fields are needed.
 
-Every count above is validated as a non-boolean integer at construction
-(FIX-021): Python and NumPy integers are accepted and normalized to plain
+Every count above is validated as a non-boolean integer at construction: Python and NumPy integers are accepted and normalized to plain
 ``int`` before the immutable-list capture, the square-image arithmetic and
 ``state()``; fractional, boolean or string values raise ``ValueError``
 naming the field. ``padding`` is the one count that accepts zero.

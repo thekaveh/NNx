@@ -1,4 +1,4 @@
-"""Typed decisions on Jev models through the TypeSafe Python SDK (FEAT-010).
+"""Typed decisions on Jev models through the TypeSafe Python SDK.
 
 :class:`JevProvider` answers :class:`Choice`, :class:`Boolean` and
 :class:`Score` questions about text with one ``system_one`` call per input,

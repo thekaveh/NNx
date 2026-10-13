@@ -1,4 +1,4 @@
-"""Named metric and monitor contracts (FEAT-003).
+"""Named metric and monitor contracts.
 
 Two declarations make metric-driven decisions explicit and shared.
 

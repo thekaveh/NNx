@@ -1,11 +1,11 @@
-"""Objective-based training over one shared update engine (FEAT-004).
+"""Objective-based training over one shared update engine.
 
 An imperative ``train_step_fn`` owns everything — forward, backward,
 accumulation, mixed precision, clipping and ``optimizer.step`` — so each
 paradigm re-implements (or, through ``finalize_step``, refuses) the update
 mechanics. An **objective** only describes the loss; NNx's shared update
 engine does the rest, for ``NNModel.train`` and ``Trainer.train`` alike
-(both apply an explicit ``NNModelParams.precision``, FEAT-028; ``Trainer``
+(both apply an explicit ``NNModelParams.precision``; ``Trainer``
 never applies the legacy ``mixed_precision`` flag, so without a policy it
 runs objectives in full precision)::
 
@@ -34,7 +34,7 @@ step passed as ``objective=`` (it would step the optimizer itself, then the
 engine again) and an objective passed as ``train_step_fn=`` are refused
 before any run is reserved.
 
-**Paradigm objectives (FEAT-040).** ``nnx.diffusion.diffusion_objective``
+**Paradigm objectives.** ``nnx.diffusion.diffusion_objective``
 (DDPM noise prediction) and ``nnx.paradigms.jepa_objective`` (I-JEPA latent
 prediction) are the objective counterparts of the diffusion and JEPA step
 factories. An objective may also define ``check_run(model, *, optimizers,

@@ -1,4 +1,4 @@
-"""Checkpointable component state (FEAT-005).
+"""Checkpointable component state.
 
 A warm resume already restores the model, optimizer, scheduler, GradScaler
 and RNG state from the training-state sidecar of a checkpoint. Anything

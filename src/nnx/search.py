@@ -1,4 +1,4 @@
-"""Budgeted experiment search through an optional Optuna adapter (FEAT-033).
+"""Budgeted experiment search through an optional Optuna adapter.
 
 ``search(plan, space, apply=..., monitor=..., budget=..., study_name=...)``
 asks an Optuna study for parameter sets one at a time; ``apply(plan,

@@ -1,4 +1,4 @@
-"""I-JEPA latent prediction as an objective (FEAT-040).
+"""I-JEPA latent prediction as an objective.
 
 :func:`~nnx.paradigms.jepa_train_step_factory` is an imperative step: it
 takes a masked mean squared error, hands it to ``finalize_step`` (which

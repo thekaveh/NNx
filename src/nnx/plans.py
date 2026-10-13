@@ -1,4 +1,4 @@
-"""Immutable fluent experiment plans (FEAT-012).
+"""Immutable fluent experiment plans.
 
 An :class:`ExperimentPlan` holds one experiment's configuration — the
 network parameters (``NNParams``), the model parameters (``NNModelParams``),

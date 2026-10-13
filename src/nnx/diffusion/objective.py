@@ -1,4 +1,4 @@
-"""DDPM noise prediction as an objective (FEAT-040).
+"""DDPM noise prediction as an objective.
 
 :func:`diffusion_train_step_factory` is an imperative step: it draws the
 timesteps and noise from the global RNG, takes a mean ``F.mse_loss`` and

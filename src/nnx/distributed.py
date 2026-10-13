@@ -1,4 +1,4 @@
-"""Optional single-node DDP, launched by ``torchrun`` (FEAT-030).
+"""Optional single-node DDP, launched by ``torchrun``.
 
 NNx runs one process per device under PyTorch's own runtime — ``torchrun``
 starts the processes, ``torch.distributed`` connects them and

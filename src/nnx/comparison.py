@@ -1,4 +1,4 @@
-"""Multi-seed experiment summaries and paired comparisons (FEAT-032).
+"""Multi-seed experiment summaries and paired comparisons.
 
 Repeated runs of one configuration (seeds, replicates) and two
 configurations compared over the same replicates — reported **read-only**:
@@ -32,8 +32,8 @@ nothing here builds or loads a model, reads a checkpoint, elects a
   saved as strict JSON (``nnx.comparison/1``) and reloaded with its results
   re-derived and checked. Input order never changes a report.
 - :func:`observations_from_runs` — reads observations from saved runs
-  (``run.yaml``, ``idps.csv`` — or a FEAT-036 history journal's committed
-  records — and the FEAT-019 provenance files, each read once; for a run with a parent, ``metadata.yaml`` and every ancestor's
+  (``run.yaml``, ``idps.csv`` — or a history journal's committed
+  records — and the provenance files, each read once; for a run with a parent, ``metadata.yaml`` and every ancestor's
   ``run.yaml`` and provenance files) without loading a model or a
   checkpoint: the committed epoch is the LAST epoch the attempt record
   names, and a journal is read only up to it.

@@ -1,4 +1,4 @@
-"""Provider-neutral typed decisions (FEAT-009).
+"""Provider-neutral typed decisions.
 
 Ask a typed question, get labelled probabilities back — from any provider
 that declares it can answer:
@@ -24,12 +24,12 @@ that declares it can answer:
   limits, inference / training / export) checked before any model call or
   network I/O, and ``decide(question, inputs)``.
   :class:`FixedHeadProvider` adapts a trained NNx classifier;
-  :class:`NLIProvider` (FEAT-011) is a local label-conditioned baseline that
+  :class:`NLIProvider` is a local label-conditioned baseline that
   scores candidates supplied at inference with a caller-supplied NLI model;
-  :class:`JevProvider` (FEAT-010, the ``jev`` extra) answers on Jev models
+  :class:`JevProvider` (the ``jev`` extra) answers on Jev models
   through the TypeSafe SDK, mapping its failures to typed
   :class:`JevError`\\ s.
-- **Jobs** (FEAT-024) — :class:`DecisionJob`: an immutable, deferred
+- **Jobs** — :class:`DecisionJob`: an immutable, deferred
   description of decision work (``ask`` / ``collect`` / ``map`` / ``then``)
   whose ``run`` / ``arun`` batch independent questions into the fewest
   provider calls and chain dependent ones, fail-fast under explicit

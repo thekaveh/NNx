@@ -54,6 +54,8 @@ class ConvNN(nn.Module):
 
     @property
     def params(self) -> NNConvParams:
+        """The net's configuration; setting it (as model surgery does)
+        re-resolves the per-layer state the forward reads."""
         return self._params
 
     @params.setter

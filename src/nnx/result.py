@@ -1,4 +1,4 @@
-"""An opt-in ``Result`` at fallible boundaries (FEAT-025).
+"""An opt-in ``Result`` at fallible boundaries.
 
 NNx reports failures by raising. This module adds a small alternative for
 the places where a caller would rather branch on a value than wrap a call in
@@ -273,8 +273,14 @@ def decide_result(
         # The checks abstention.decide makes on each answer, made before the
         # provider is called (each input may be a billed request), as
         # DecisionJob.ask does.
+        from .abstention import AbstentionPolicy
         from .decisions.schema import Boolean
 
+        if not isinstance(policy, AbstentionPolicy):
+            raise TypeError(
+                f"decide_result(policy=...) needs an AbstentionPolicy, got {type(policy).__name__} "
+                "(a ThresholdSelection's is selection.require())"
+            )
         if isinstance(question, Boolean):
             raise TypeError(
                 "decide_result(policy=...): an abstention policy applies to a Choice or Score, not a Boolean"

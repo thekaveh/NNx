@@ -1,4 +1,4 @@
-"""Train-fitted preprocessing and split transforms (FEAT-018).
+"""Train-fitted preprocessing and split transforms.
 
 Two pieces keep held-out data out of what a model learns from:
 

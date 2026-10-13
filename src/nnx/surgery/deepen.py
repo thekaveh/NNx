@@ -28,7 +28,7 @@ Two insertion modes are supported:
     container the new modules are registered as
     ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N`` (``N`` increments
     until both keys are unused), and a module registered in several
-    slots keeps every slot (FIX-018).
+    slots keeps every slot.
   - **FeedFwdNN / ModuleList mode**: ``after_layer_name`` points at a
     Linear inside a :class:`nn.ModuleList` whose parent applies an
     activation between consecutive layers (the FeedFwdNN forward
@@ -38,7 +38,7 @@ Two insertion modes are supported:
     *effective at the insertion site* — ``params.activation_for(idx)``,
     so a per-layer override wins over the scalar default — must be
     ReLU. The parent's immutable ``params`` are rebuilt to describe the
-    deeper topology (FIX-006): one more ``hidden_dims`` entry at the
+    deeper topology: one more ``hidden_dims`` entry at the
     site, a ReLU inserted into an explicit ``activations`` list, and
     dropout ``0.0`` at the new identity site with every existing site
     keeping its own probability (a nonzero scalar dropout is

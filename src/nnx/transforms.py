@@ -1,4 +1,4 @@
-"""Replayable model transformation recipes (FEAT-016).
+"""Replayable model transformation recipes.
 
 A :class:`TransformRecipe` is an ordered, immutable list of topology
 operations on explicit ``nn.Linear`` targets of ``model.net``:

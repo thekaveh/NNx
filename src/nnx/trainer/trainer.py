@@ -26,7 +26,7 @@ Saves NNRun + per-tag NNCheckpoint artifacts the same way
 NNModel.train() does, with an extra `trainer` block in run.yaml
 capturing the multi-optim config. Every checkpoint's training-state
 sidecar carries each named optimizer's and scheduler's state, the RNG and
-every registered component (FEAT-005), so
+every registered component, so
 ``NNTrainerParams(resume_from_run_id=...)`` (or
 ``NNTrainerParams.builder().resume_from(...)``) warm-resumes a
 multi-optimizer run where it stopped.

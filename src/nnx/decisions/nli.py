@@ -1,5 +1,5 @@
 """A local label-conditioned baseline: decisions from a caller-supplied
-natural-language-inference (NLI) model (FEAT-011).
+natural-language-inference (NLI) model.
 
 A fixed-head classifier knows only the labels it was trained on. An NLI
 cross-encoder scores whether a *premise* (the input text) entails a

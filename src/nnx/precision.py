@@ -1,4 +1,4 @@
-"""Explicit FP32 / FP16 / BF16 execution policy (FEAT-028).
+"""Explicit FP32 / FP16 / BF16 execution policy.
 
 ``NNModelParams.precision`` takes a :class:`PrecisionPolicy`: the precision
 training, evaluation and prediction run in. A policy is *resolved* against

@@ -1,4 +1,4 @@
-"""OrderedLogitsPipeline — immutable decoding stages run in declared order (FEAT-037).
+"""OrderedLogitsPipeline — immutable decoding stages run in declared order.
 
 :class:`~nnx.generation.LogitsChain` (via its builder) sorts the standard
 processors into NNx's canonical order. An :class:`OrderedLogitsPipeline`

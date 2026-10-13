@@ -1,5 +1,5 @@
 """Deferred decision jobs: batch independent questions, chain dependent
-ones (FEAT-024).
+ones.
 
 A :class:`DecisionJob` is an **immutable description** of decision work —
 building one calls no provider, runs no callback and draws no RNG::

@@ -1,4 +1,4 @@
-"""Executable ONNX export conformance profiles (FEAT-038).
+"""Executable ONNX export conformance profiles.
 
 ``onnx.checker`` proves an exported file is *well formed*; it says nothing
 about what a runtime computes from it. A **profile** fixes everything a

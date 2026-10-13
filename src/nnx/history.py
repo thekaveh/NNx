@@ -1,4 +1,4 @@
-"""Bounded training history with an append journal (FEAT-036).
+"""Bounded training history with an append journal.
 
 By default ``NNModel.train`` and ``Trainer.train`` keep every per-batch
 ``NNIterationDataPoint`` in memory and rewrite ``runs/<id>/idps.csv`` each

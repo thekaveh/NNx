@@ -16,7 +16,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 - **Invalid training settings fail before training starts.** `NNTrainParams` and `NNTrainerParams` refuse a seed outside `[0, 2**32)`, a non-string `data_id` and an unknown `resume_from_checkpoint` tag. A `Checkpoints` member there is stored as its tag string, so it no longer crashes the first `run.yaml` write after an epoch has trained.
 - **Checkpoint reads and writes refuse a path-shaped `type`.** `NNCheckpoint.load(run=..., type="../...")` and the other checkpoint entry points raise `ValueError` instead of reading or writing outside the run directory.
 - **A resumed `linear_warmup_decay` schedule on the epoch clock needs an explicit `warmup_steps`.** Its default (a tenth of each session's epochs) is not in the restored scheduler state, so a resume silently warmed up over a different length.
-- **A regression loss without a task fails with a hint.** The default steps score classification. An MSE model without `NNModelParams(task=TaskSpec.regression(...))` now gets that hint on its first batch, not a scikit-learn metrics error.
+- **Continuous targets under a regression loss without a task fail with a hint.** The default steps score classification. An MSE (or L1 / Smooth-L1 / Huber) model without `NNModelParams(task=TaskSpec.regression(...))` whose targets are not whole numbers now gets that hint before its first update, and from `evaluate()`, not a scikit-learn metrics error.
 - **Imperative paradigm steps are refused as `objective=` before a run is reserved.** This covers KD, feature KD, Mixup, CutMix, MoE, SimCLR, DPO and text contrastive steps, as diffusion and JEPA already were.
 - **A stopped epoch never reaches a full-history callback.** With a history journal, a stop at an update boundary also discards the epoch's chunks that were already written.
 - **More late failures move earlier.** `born_again_train` refuses gradient accumulation before generation 0. `Trainer.train` refuses a multi-rank process group. `apply_ia3_to` refuses to wrap a DoRA layer's base, and GGUF export refuses PEFT-adapted or prefix-tuned networks with a hint. `decide_result(policy=...)` checks the policy before calling the provider.
@@ -32,6 +32,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
   - `random_block_mask` validates its ranges.
   - Safetensors checkpoints are flushed to disk before the rename.
   - `nnx.export_conformance` is bound on `nnx`.
+  - A decision-benchmark metric with a value carries a `note` (rows it does not count) instead of an "unavailable" reason; the CSV gains a `note` column.
+  - `decide_result(policy=...)` refuses a policy that is not an `AbstentionPolicy`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 

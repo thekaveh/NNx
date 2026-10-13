@@ -1,4 +1,4 @@
-"""Bounded forward benchmarks and profiling (FEAT-029).
+"""Bounded forward benchmarks and profiling.
 
 Measure, don't assume: :mod:`nnx.compilation` guarantees no speedup, and
 these helpers show what compilation costs and buys on *your* hardware.

@@ -164,6 +164,24 @@ def test_selective_risk_applies_a_policy_as_given():
     assert none.value is None and none.reason == "no accepted rows" and none.denominator == 0
 
 
+def test_selective_coverage_notes_the_boolean_rows_it_does_not_count():
+    """A Choice / Score policy applies to no Boolean row: those rows leave the
+    coverage denominator, and the value's note says so."""
+    samples, records = fixture()
+    spam = Boolean("Spam?")
+    samples += [Sample("b0", spam, "text b", True), Sample("b1", spam, "text c", False)]
+    records += [
+        Record(sample_id="b0", question_digest=spam.digest(), provider="stub", status="answered", p_true=0.9),
+        Record(sample_id="b1", question_digest=spam.digest(), provider="stub", status="answered", p_true=0.2),
+    ]
+    policy = AbstentionPolicy("max_probability", 0.75, labels=("a", "b"), model_id="stub-v1", tuning_split_id="val")
+    coverage = metric(
+        evaluate(samples, records, split="test-v1", policy=policy, model_id="stub-v1"), "selective_coverage"
+    )
+    assert (coverage.value, coverage.denominator) == (0.5, 4)
+    assert coverage.reason is None and coverage.note == "2 Boolean row(s) are not counted"
+
+
 # --- AC3: resources -----------------------------------------------------------------------------------------
 
 

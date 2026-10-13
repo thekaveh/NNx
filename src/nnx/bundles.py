@@ -1,4 +1,4 @@
-"""Portable, data-only run bundles (FEAT-015).
+"""Portable, data-only run bundles.
 
 A run checkpoint (``runs/<id>/checkpoints/<tag>.pt``) and its training-state
 sidecar are pickles: reading them runs ``torch.load(weights_only=False)``,

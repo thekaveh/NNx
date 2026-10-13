@@ -544,12 +544,15 @@ print(report.text())
       `epsilon=` floors it;
     - Brier, and ECE with reliability bins;
     - given an `nnx.abstention` policy, applied as given, selective coverage
-      and risk.
+      and risk. The policy applies to Choice and Score rows only; Boolean
+      rows (and rows the policy does not fit) are left out of the coverage
+      denominator, and its note says how many.
 
     Each is a `MetricValue` with its denominator, or unavailable with the
-    reason. NLL and Brier are the named
-  `nll` / `brier` metrics' terms; a Boolean is the options `("true",
-  "false")`.
+    reason; a note qualifies an available value. NLL and Brier follow the
+    definitions of the named `nll` / `brier` metrics, except that the replay
+    NLL is exact by default where the named `nll` floors probabilities at
+    `1e-12`. A Boolean is the options `("true", "false")`.
 - **Resources** (`Resources`) say how cost was obtained: warmup, hardware,
   timing boundary, concurrency, batch count and seconds. They also say
   whether the numbers were `measured` (hardware required) or `supplied`.
@@ -566,7 +569,8 @@ print(report.text())
   tuples of them and JSON-able values. An input with no stable digest needs
   `id=`.
 - **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
-  eligible, failure and `extra` counts and unavailable states. A non-finite
+  eligible, failure and `extra` counts, unavailable states and notes (the
+  CSV's `note` column). A non-finite
   value is `"Infinity"` in the JSON and the CSV.
 - **Comparison.** `compare_reports` gives `b - a` per slice and metric only
   for reports that share all of these:
@@ -695,7 +699,10 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
       credential, a rate limit) becomes `"provider_failure"`;
     - `UnsupportedCapability` becomes `"unsupported"`.
 
-    The first two keep the error's `request_id` in the context.
+    The first two keep the error's `request_id` in the context. A
+    `policy` that does not fit (not an `AbstentionPolicy`, a `Boolean`
+    question, other labels or another `model_id`) raises before the
+    provider is called; it is not returned as an `Err`.
 - **Codes follow the type.** The codes follow the exception type, not
   whether a retry would help. A refused credential is a
   `"provider_failure"` too, so branch on the `cause` when that matters. A

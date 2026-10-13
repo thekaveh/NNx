@@ -1,4 +1,4 @@
-"""Arbitrary modules and registered model factories (FEAT-006).
+"""Arbitrary modules and registered model factories.
 
 ``NNModel`` builds its network from one of three **descriptors**, stored in
 ``NNModelParams.net``:

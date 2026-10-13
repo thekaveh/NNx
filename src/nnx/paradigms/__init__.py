@@ -23,13 +23,13 @@ Public surface — re-exported from the top-level ``nnx`` package:
     :func:`random_block_mask` + :class:`JEPAPredictor` — I-JEPA
     self-supervised learning in latent space.
   - :func:`jepa_objective` / :class:`JEPAObjective` — I-JEPA as an
-    objective (FEAT-040): the shared update engine owns the update and the
+    objective: the shared update engine owns the update and the
     EMA target advances once per committed update.
   - :func:`dpo_train_step_factory` — Direct Preference Optimization
     (Rafailov et al., 2023): chosen-vs-rejected log-ratio objective
     against a frozen reference policy.
 
-Offline teacher distributions (FEAT-022) — exported from ``nnx.paradigms``
+Offline teacher distributions — exported from ``nnx.paradigms``
 (``nnx.paradigms.offline_distillation``), not the top-level package:
 :class:`TeacherRecord` / :class:`TeacherDataset` distill a student from
 stored, permissioned teacher probabilities, trained by

@@ -1,4 +1,4 @@
-"""Leakage-aware link and edge prediction on a static homogeneous graph (FEAT-027).
+"""Leakage-aware link and edge prediction on a static homogeneous graph.
 
 Node masks cannot hold out edges: a held-out edge left in the message graph
 is a leaked answer. This module splits **edges**, keeps the graph the model

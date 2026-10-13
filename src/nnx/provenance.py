@@ -1,4 +1,4 @@
-"""Versioned experiment provenance manifests (FEAT-019).
+"""Versioned experiment provenance manifests.
 
 A run has four distinct identities, and this module adds the two that were
 missing:
