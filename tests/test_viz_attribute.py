@@ -7,7 +7,8 @@ Five contracts:
   return contract for the gradient-family methods).
 - Saliency works through the same call site (no baseline required).
 - Missing-captum path raises a clear ImportError pointing the user at
-  `pip install 'captum>=0.7.0'` (quoted, so a shell never reads `>` as a redirect).
+  `pip install thekaveh-nnx[viz]` first, then the quoted fallback
+  `pip install 'captum>=0.7.0'` (a shell never reads `>` as a redirect).
 - All six supported method strings are individually callable end-to-end
   (parametrized to lock the public method list down).
 """
@@ -92,7 +93,7 @@ def test_attribute_missing_captum_raises_importerror(tiny_model, tiny_input, mon
     # without uninstalling the package from the test environment.
     monkeypatch.setitem(sys.modules, "captum", None)
     monkeypatch.setitem(sys.modules, "captum.attr", None)
-    with pytest.raises(ImportError, match="pip install 'captum"):
+    with pytest.raises(ImportError, match=r"thekaveh-nnx\[viz\].*pip install 'captum"):
         attribute(tiny_model, tiny_input, method="saliency", target=0)
 
 

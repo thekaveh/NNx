@@ -1388,3 +1388,11 @@ def test_raw_html_images_resolve_from_each_site_page(tmp_path: Path):
     assert '<img src="assets/nnx-poster.png"' in home
     assert '<img src="../assets/nnx-poster.png"' in overview
     assert (site / "assets" / "nnx-poster.png").is_file()
+
+
+def test_api_reference_summaries_render_sphinx_roles_as_code():
+    from scripts.docs.build_api_reference import _plain_roles
+
+    assert _plain_roles("Result of an :func:`lr_finder` sweep.") == "Result of an `lr_finder` sweep."
+    assert _plain_roles("A :class:`~nnx.models.ModelSpec` spec.") == "A `ModelSpec` spec."
+    assert _plain_roles("See :meth:`nnx.NNModel.train`.") == "See `nnx.NNModel.train`."

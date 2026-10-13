@@ -1580,3 +1580,44 @@ def test_a_trainer_step_fn_refuses_optimizer_knobs_it_never_applies(knob, tmp_pa
     )
     with pytest.raises(ValueError, match="never applies"):
         Trainer(model=_supervised_model()).train(params=params, trainer_step_fn=_supervised_step)
+
+
+def test_a_schedule_whose_optimizer_waits_an_epoch_steps_without_a_torch_warning(tmp_path, monkeypatch):
+    """The "head" optimizer is not stepped in epoch 0 (a warm-up freeze);
+    its epoch-clock schedule still advances, without torch's misleading
+    "lr_scheduler.step() before optimizer.step()" warning."""
+    import warnings
+
+    def head_waits(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        model = ctx.model
+        model.net.train()
+        for optimizer in ctx.optimizers.values():
+            optimizer.zero_grad()
+        (x,), y = model.net.unpack_batch(ctx.batch)
+        loss = model.loss_fn(model.net(x), y)
+        loss.backward()
+        ctx.optimizers["body"].step()
+        if ctx.epoch_idx > 0:
+            ctx.optimizers["head"].step()
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+    monkeypatch.chdir(tmp_path)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message=r"Detected call of `lr_scheduler\.step\(\)`")
+        Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=head_waits)
+
+
+def test_a_refused_owner_pair_never_runs_a_writer_only_factory(tmp_path, monkeypatch):
+    """Both trainer_step_fn and objective is refused before any callback
+    factory runs (a TensorBoard factory writes when it is built)."""
+    from nnx.distributed import writer_only
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    built = []
+    factory = writer_only(lambda: built.append(1))
+    with pytest.raises(ValueError):
+        Trainer(_gan_like_model()).train(
+            _two_optimizer_params(1), trainer_step_fn=_two_step, objective=supervised_objective(), callbacks=[factory]
+        )
+    assert built == []

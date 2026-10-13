@@ -101,7 +101,7 @@ in tests that mutate the environment, or to re-stamp git state.
 class nnx.LRFinderResult(*, lrs: 'list[float]', losses: 'list[float]', suggested_lr: 'float', figure: 'go.Figure') -> 'None'
 ```
 
-Result of an :func:`lr_finder` sweep.
+Result of an `lr_finder` sweep.
 
 **Details**
 
@@ -169,7 +169,8 @@ Raises:
     ImportError: Plotly (the ``plots`` extra, ``pip install
         "thekaveh-nnx[plots]"``) is not installed — raised before any
         data, model or RNG state is touched.
-    ValueError: on invalid arguments (``num_iter < 2``,
+    ValueError: on invalid arguments (``num_iter < 2``, a non-finite
+        ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
         ``start_lr <= 0``, ``end_lr <= start_lr``).
 ```
 
@@ -321,7 +322,7 @@ Convenience wrapper around :func:`nnx.finetune.freezing.freeze`
 nnx.nn.nn_model.NNModel.unfreeze(self, *patterns: 'str') -> 'int'
 ```
 
-Mirror of :meth:`freeze` — set ``requires_grad=True`` on matching parameters.
+Mirror of `freeze` — set ``requires_grad=True`` on matching parameters.
 
 ##### `nnx.nn.nn_model.NNModel.export_state_dict`
 
@@ -1314,7 +1315,7 @@ property nnx.prediction.PredictionResult.kind
 property nnx.prediction.PredictionResult.class_axis
 ```
 
-The class axis of :attr:`logits` / :attr:`probabilities`, non-negative.
+The class axis of `logits` / `probabilities`, non-negative.
 
 ##### `nnx.prediction.PredictionResult.labels`
 
@@ -1356,7 +1357,7 @@ Decoded class names (categorical results with ``spec.labels``).
 nnx.prediction.prediction_from_logits(logits: 'Any', spec: 'ProbabilitySpec', *, sample_ids: 'Any' = None) -> 'PredictionResult'
 ```
 
-Build a :class:`PredictionResult` from raw logits.
+Build a `PredictionResult` from raw logits.
 
 **Details**
 
@@ -1380,7 +1381,7 @@ float32, integer logits give float64.
 class nnx.prediction.PredictionValidationError
 ```
 
-An invalid :class:`ProbabilitySpec`, or logits / sample ids that do not satisfy one (wrong label count, invalid class axis, non-finite logits, misaligned sample ids).
+An invalid `ProbabilitySpec`, or logits / sample ids that do not satisfy one (wrong label count, invalid class axis, non-finite logits, misaligned sample ids).
 
 
 ### 2.5. Optimizer construction and registered factories (`nnx.optimizers`)
@@ -1583,7 +1584,7 @@ Versioned, YAML-safe representation (defaults omitted).
 nnx.tasks.TaskSpec.from_state(state: 'Mapping[str, Any]') -> 'TaskSpec'
 ```
 
-Rebuild a spec from :meth:`state`, rejecting an unknown version or key.
+Rebuild a spec from `state`, rejecting an unknown version or key.
 
 ##### `nnx.tasks.TaskSpec.probability_spec`
 
@@ -1591,7 +1592,7 @@ Rebuild a spec from :meth:`state`, rejecting an unknown version or key.
 nnx.tasks.TaskSpec.probability_spec(self) -> 'Optional[ProbabilitySpec]'
 ```
 
-The :class:`~nnx.prediction.ProbabilitySpec` this task implies: categorical softmax or multilabel (bernoulli) sigmoid over axis 1, or ``None`` for regression (no probabilities).
+The `ProbabilitySpec` this task implies: categorical softmax or multilabel (bernoulli) sigmoid over axis 1, or ``None`` for regression (no probabilities).
 
 
 #### `nnx.tasks.TaskAdapter`
@@ -1600,7 +1601,7 @@ The :class:`~nnx.prediction.ProbabilitySpec` this task implies: categorical soft
 class nnx.tasks.TaskAdapter(spec: 'TaskSpec') -> 'None'
 ```
 
-Validation, masking, loss units, decoding and metrics for one :class:`TaskSpec` kind. Obtain one with :func:`task_adapter`.
+Validation, masking, loss units, decoding and metrics for one `TaskSpec` kind. Obtain one with `task_adapter`.
 
 ##### `nnx.tasks.TaskAdapter.check_model`
 
@@ -1624,7 +1625,7 @@ Reject a runtime ``model.loss_fn`` that cannot score this task.
 nnx.tasks.TaskAdapter.prepare(self, output: 'torch.Tensor', target: 'torch.Tensor') -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor]'
 ```
 
-Validate one batch and return ``(output, target, valid)``: tensors shaped for the loss plus a boolean mask of the targets that count. Raises :class:`TaskValidationError` before any backward pass for a shape, dtype or value the task rejects.
+Validate one batch and return ``(output, target, valid)``: tensors shaped for the loss plus a boolean mask of the targets that count. Raises `TaskValidationError` before any backward pass for a shape, dtype or value the task rejects.
 
 ##### `nnx.tasks.TaskAdapter.loss_terms`
 
@@ -1656,7 +1657,7 @@ Decoded predictions for raw ``predict()`` logits (numpy).
 nnx.tasks.TaskAdapter.accumulator(self, *, keep_arrays: 'bool' = False, bounded: 'bool' = False) -> 'TaskMetricAccumulator'
 ```
 
-A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it. ``bounded=True`` keeps only counts and sums, so memory does not grow with the number of samples; it cannot keep arrays.
+A fresh `TaskMetricAccumulator`; pass ``keep_arrays=True`` when ``extra_metrics`` will be computed from it. ``bounded=True`` keeps only counts and sums, so memory does not grow with the number of samples; it cannot keep arrays.
 
 ##### `nnx.tasks.TaskAdapter.record`
 
@@ -1725,7 +1726,7 @@ No public description is currently available.
 class nnx.tasks.TaskValidationError
 ```
 
-An invalid :class:`TaskSpec`, a model the task cannot drive, or a batch whose outputs / targets do not satisfy the declared task.
+An invalid `TaskSpec`, a model the task cannot drive, or a batch whose outputs / targets do not satisfy the declared task.
 
 
 #### `nnx.tasks.task_adapter`
@@ -1825,7 +1826,7 @@ Ordered, uniquely named set of the components of one training run.
 nnx.components.ComponentRegistry.discover(*sources: 'Any', explicit: 'Iterable[Any]' = ()) -> 'ComponentRegistry'
 ```
 
-Register every source that implements :class:`StatefulComponent` (callbacks, step functions), in order — ``None`` and lists are flattened, anything else is ignored — then every ``explicit`` component, which must implement the protocol (``TypeError`` otherwise). An object that appears more than once (say, a callback also passed through ``components=[...]``) is registered once.
+Register every source that implements `StatefulComponent` (callbacks, step functions), in order — ``None`` and lists are flattened, anything else is ignored — then every ``explicit`` component, which must implement the protocol (``TypeError`` otherwise). An object that appears more than once (say, a callback also passed through ``components=[...]``) is registered once.
 
 ##### `nnx.components.ComponentRegistry.register`
 
@@ -1865,7 +1866,7 @@ A plan that restores nothing: every component keeps its fresh state (weights-onl
 nnx.components.ComponentRegistry.plan(self, saved: 'Optional[Mapping[str, Any]]') -> '_Plan'
 ```
 
-Validate saved component metadata against the registered components **without mutating anything**; raise one :class:`ComponentRestoreError` listing every problem.
+Validate saved component metadata against the registered components **without mutating anything**; raise one `ComponentRestoreError` listing every problem.
 
 ##### `nnx.components.ComponentRegistry.restore`
 
@@ -2148,7 +2149,7 @@ No public description is currently available.
 class nnx.monitors.MonitorTracker(spec: 'MonitorSpec', *, warn_missing: 'bool' = False) -> 'None'
 ```
 
-Applies one :class:`MonitorSpec` epoch by epoch: returns each epoch's :class:`MonitorRecord` and remembers the best value.
+Applies one `MonitorSpec` epoch by epoch: returns each epoch's `MonitorRecord` and remembers the best value.
 
 **Details**
 
@@ -2376,7 +2377,7 @@ The microbatch's weighted loss over its unmasked terms.
 class nnx.objectives.Objective(*, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-Base class for objectives: override :meth:`__call__`.
+Base class for objectives: override `__call__`.
 
 **Details**
 
@@ -2442,7 +2443,7 @@ and never updated.
 nnx.objectives.supervised_objective(*, nonfinite: 'str' = 'fail') -> 'SupervisedObjective'
 ```
 
-The standard supervised loss as an objective (see :class:`SupervisedObjective`).
+The standard supervised loss as an objective (see `SupervisedObjective`).
 
 
 #### `nnx.objectives.kd_objective`
@@ -2451,7 +2452,7 @@ The standard supervised loss as an objective (see :class:`SupervisedObjective`).
 nnx.objectives.kd_objective(teacher: 'NNModel', *, alpha: 'float' = 0.5, temperature: 'float' = 4.0, nonfinite: 'str' = 'fail') -> 'KDObjective'
 ```
 
-Knowledge distillation as an objective (see :class:`KDObjective`) — the objective counterpart of ``kd_train_step_factory``, which stays available (and unchanged) as the imperative step.
+Knowledge distillation as an objective (see `KDObjective`) — the objective counterpart of ``kd_train_step_factory``, which stays available (and unchanged) as the imperative step.
 
 
 #### `nnx.objectives.UpdateEvent`
@@ -2604,7 +2605,7 @@ Sorted ``(id, version)`` pairs currently registered.
 nnx.models.resolve_model_factory(spec: 'ModelSpec') -> 'ModelFactory'
 ```
 
-Look ``spec`` up in the registry. Never imports anything: an unregistered id or version raises :class:`MissingModelFactoryError` naming what is registered.
+Look ``spec`` up in the registry. Never imports anything: an unregistered id or version raises `MissingModelFactoryError` naming what is registered.
 
 
 #### `nnx.models.build_module`
@@ -2711,7 +2712,7 @@ Fingerprint of ``module``'s state-dict names, shapes and dtypes plus its ``repr`
 class nnx.decisions.Option(id: 'str', description: 'str') -> 'None'
 ```
 
-One answer of a :class:`Choice` or one level of a :class:`Score`.
+One answer of a `Choice` or one level of a `Score`.
 
 **Details**
 
@@ -2818,7 +2819,7 @@ What a model may see: the prompt and the option texts in order — never the boo
 nnx.decisions.question_from_state(state: 'Mapping[str, Any]') -> 'Union[Choice, Boolean, Score]'
 ```
 
-Rebuild a question from :meth:`Question.state`, by its ``kind``; malformed state raises :class:`InvalidDecisionRequest`.
+Rebuild a question from `Question.state`, by its ``kind``; malformed state raises `InvalidDecisionRequest`.
 
 
 #### `nnx.decisions.ChoiceResult`
@@ -2827,7 +2828,7 @@ Rebuild a question from :meth:`Question.state`, by its ``kind``; malformed state
 class nnx.decisions.ChoiceResult(question_digest: 'str', distribution: 'tuple[tuple[str, float], ...]', provider: 'Optional[str]' = None, raw: 'Any' = None) -> 'None'
 ```
 
-A validated answer to a :class:`Choice`: ``distribution`` in the question's option order. ``raw`` is the provider's own output, kept apart from the normalized fields (and from equality).
+A validated answer to a `Choice`: ``distribution`` in the question's option order. ``raw`` is the provider's own output, kept apart from the normalized fields (and from equality).
 
 ##### `nnx.decisions.ChoiceResult.probabilities`
 
@@ -2852,7 +2853,7 @@ The most probable option id (the first one on ties).
 class nnx.decisions.BooleanResult(question_digest: 'str', p_true: 'float', provider: 'Optional[str]' = None, raw: 'Any' = None) -> 'None'
 ```
 
-A validated answer to a :class:`Boolean`: one ``p_true`` in ``[0, 1]``.
+A validated answer to a `Boolean`: one ``p_true`` in ``[0, 1]``.
 
 ##### `nnx.decisions.BooleanResult.p_false`
 
@@ -2869,7 +2870,7 @@ No public description is currently available.
 class nnx.decisions.ScoreResult(question_digest: 'str', distribution: 'tuple[tuple[str, float], ...]', provider: 'Optional[str]' = None, vendor_score: 'Optional[float]' = None, raw: 'Any' = None) -> 'None'
 ```
 
-A validated answer to a :class:`Score`: ``distribution`` over the levels in the question's order (lowest first).
+A validated answer to a `Score`: ``distribution`` over the levels in the question's order (lowest first).
 
 **Details**
 
@@ -2929,7 +2930,7 @@ apart from the normalized fields.
 class nnx.decisions.Capabilities(primitives: 'frozenset[str]', modalities: 'frozenset[str]', dynamic_labels: 'bool' = False, labels: 'Optional[tuple[str, ...]]' = None, max_batch: 'Optional[int]' = None, inference: 'bool' = True, training: 'bool' = False, export: 'bool' = False) -> 'None'
 ```
 
-What a provider declares it can do. :meth:`check` rejects anything else with :class:`UnsupportedCapability` before any model call or network I/O.
+What a provider declares it can do. `check` rejects anything else with `UnsupportedCapability` before any model call or network I/O.
 
 **Details**
 
@@ -2954,7 +2955,7 @@ Attributes:
 nnx.decisions.Capabilities.check(self, question: 'Question', *, modality: 'str', batch_size: 'int', label_ids: 'Optional[Sequence[str]]' = None) -> 'None'
 ```
 
-Raise :class:`UnsupportedCapability` unless this provider serves ``question`` for a batch of ``batch_size`` ``modality`` inputs.
+Raise `UnsupportedCapability` unless this provider serves ``question`` for a batch of ``batch_size`` ``modality`` inputs.
 
 **Details**
 
@@ -2971,7 +2972,7 @@ the provider's own mapping of them — must be exactly the declared
 class nnx.decisions.DecisionProvider(*args, **kwargs)
 ```
 
-Anything that answers typed decision questions: it declares :class:`Capabilities` and answers one question for a batch of inputs with validated results, one per input.
+Anything that answers typed decision questions: it declares `Capabilities` and answers one question for a batch of inputs with validated results, one per input.
 
 ##### `nnx.decisions.DecisionProvider.capabilities`
 
@@ -3051,7 +3052,7 @@ No public description is currently available.
 nnx.decisions.FixedHeadProvider.check(self, question: 'Question', inputs: 'Any') -> 'None'
 ```
 
-Every check :meth:`decide` makes before calling the model — the question, the inputs' modality and batch size, and the label space (through ``option_map``) or a Boolean's identity (its digest) — so a caller (a decision job) can validate a request without calling the model.
+Every check `decide` makes before calling the model — the question, the inputs' modality and batch size, and the label space (through ``option_map``) or a Boolean's identity (its digest) — so a caller (a decision job) can validate a request without calling the model.
 
 ##### `nnx.decisions.FixedHeadProvider.decide`
 
@@ -3136,7 +3137,7 @@ Answer ``question`` for every text in ``inputs``.
 class nnx.decisions.JevProvider(client: 'Any' = None, *, async_client: 'Any' = None, model: 'Optional[str]' = None, api_key: 'Optional[str]' = None, base_url: 'Optional[str]' = None, timeout: 'Optional[float]' = None, retry: 'Any' = None, max_batch: 'Optional[int]' = None, name: 'str' = 'jev') -> 'None'
 ```
 
-A :class:`~nnx.decisions.DecisionProvider` for Jev models through the TypeSafe SDK. See the module docstring for translation, confidence, metadata, retry and lifecycle semantics.
+A `DecisionProvider` for Jev models through the TypeSafe SDK. See the module docstring for translation, confidence, metadata, retry and lifecycle semantics.
 
 **Details**
 
@@ -3193,7 +3194,7 @@ Every check made before a request: the question, the inputs and the provider's c
 nnx.decisions.JevProvider.close(self) -> 'None'
 ```
 
-Close the sync client the provider built (never an injected one). A built async client needs :meth:`aclose` (``async with``).
+Close the sync client the provider built (never an injected one). A built async client needs `aclose` (``async with``).
 
 ##### `nnx.decisions.JevProvider.aclose`
 
@@ -3225,7 +3226,7 @@ Answer every question for every text: one ``system_one`` call per text holding a
 nnx.decisions.JevProvider.adecide(self, question: 'Question', inputs: 'Any') -> 'list[DecisionResult]'
 ```
 
-:meth:`decide` through the async client.
+`decide` through the async client.
 
 ##### `nnx.decisions.JevProvider.adecide_many`
 
@@ -3233,7 +3234,7 @@ nnx.decisions.JevProvider.adecide(self, question: 'Question', inputs: 'Any') -> 
 nnx.decisions.JevProvider.adecide_many(self, questions: 'Sequence[Question]', inputs: 'Any') -> 'list[list[DecisionResult]]'
 ```
 
-:meth:`decide_many` through the async client (absent — ``None`` — when only a sync client was injected).
+`decide_many` through the async client (absent — ``None`` — when only a sync client was injected).
 
 
 #### `nnx.decisions.DecisionError`
@@ -3332,7 +3333,7 @@ The service answered with data that does not fit the request: a body the SDK can
 class nnx.decisions.DecisionJob(node: '_Node') -> 'None'
 ```
 
-An immutable, deferred description of decision work — see the module docstring. Build with :meth:`ask` and :meth:`collect`, transform with :meth:`map`, chain with :meth:`then`; run with :meth:`run` / :meth:`arun`.
+An immutable, deferred description of decision work — see the module docstring. Build with `ask` and `collect`, transform with `map`, chain with `then`; run with `run` / `arun`.
 
 ##### `nnx.decisions.DecisionJob.ask`
 
@@ -3364,7 +3365,7 @@ This job with ``fn`` applied to its value (pure: no provider calls).
 nnx.decisions.DecisionJob.then(self, fn: 'Callable[[Any], Follow]') -> 'DecisionJob'
 ```
 
-A dependent job: after this one succeeds, ``fn(value)`` returns a :class:`Follow` (the next job and its state), run once.
+A dependent job: after this one succeeds, ``fn(value)`` returns a `Follow` (the next job and its state), run once.
 
 ##### `nnx.decisions.DecisionJob.question_ids`
 
@@ -3488,7 +3489,7 @@ One input row's answer: ``"answered"``, or ``"abstained"`` when the question's a
 class nnx.decisions.JobError(message: 'str', *, outcomes: 'Optional[Mapping[str, QuestionOutcome]]' = None) -> 'None'
 ```
 
-Base of the decision-job errors. ``outcomes`` maps question ids to every :class:`QuestionOutcome` known when the error was raised (answered, failed, skipped or cancelled — a request already sent says so), in scheduling order; ``completed`` is the answered subset. Both are empty when the job was refused before any call.
+Base of the decision-job errors. ``outcomes`` maps question ids to every `QuestionOutcome` known when the error was raised (answered, failed, skipped or cancelled — a request already sent says so), in scheduling order; ``completed`` is the answered subset. Both are empty when the job was refused before any call.
 
 **Details**
 
@@ -3506,7 +3507,7 @@ and an answer's provider ``raw`` output that would not is dropped.
 class nnx.decisions.InvalidJob(message: 'str', *, outcomes: 'Optional[Mapping[str, QuestionOutcome]]' = None) -> 'None'
 ```
 
-A job that cannot run as described: duplicate question ids, an unsupported question, a token cap the provider cannot enforce, a continuation that returns something other than a :class:`Follow`.
+A job that cannot run as described: duplicate question ids, an unsupported question, a token cap the provider cannot enforce, a continuation that returns something other than a `Follow`.
 
 
 #### `nnx.decisions.JobFailed`
@@ -3639,7 +3640,7 @@ One JSON object per line (strict JSON, sorted keys).
 nnx.decisions.benchmark.read_records(path: 'Union[str, os.PathLike[str]]') -> 'list[Record]'
 ```
 
-The records of a JSONL file written by :func:`write_records`.
+The records of a JSONL file written by `write_records`.
 
 
 #### `nnx.decisions.benchmark.Budget`
@@ -3713,7 +3714,7 @@ Args:
 class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0, sample_set: 'Optional[str]' = None) -> 'None'
 ```
 
-A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared :class:`Resources`.
+A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared `Resources`.
 
 ##### `nnx.decisions.benchmark.BenchmarkReport.state`
 
@@ -3769,7 +3770,7 @@ Write the JSON report atomically (serialized first: a report that cannot be writ
 nnx.decisions.benchmark.BenchmarkReport.load_state(path: 'Union[str, os.PathLike[str]]') -> 'dict[str, Any]'
 ```
 
-A saved report's JSON state (for :func:`compare_reports`).
+A saved report's JSON state (for `compare_reports`).
 
 
 #### `nnx.decisions.benchmark.SliceReport`
@@ -3862,7 +3863,7 @@ No public description is currently available.
 nnx.decisions.benchmark.bootstrap_interval(samples: 'Sequence[Sample]', records: 'Sequence[Record]', *, metric: 'str', seed: 'int', slice: 'str' = 'in_family', resamples: 'int' = 1000, level: 'float' = 0.95, epsilon: 'Optional[float]' = None, provider: 'Optional[str]' = None) -> 'Interval'
 ```
 
-Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows of ``slice`` (of ``provider``'s records, as :func:`evaluate` selects them), resampling grouping units — every row of a drawn unit comes along — with ``numpy.random.default_rng(seed)``. The bounds are resampled values (no interpolation); a non-finite bound (an exact NLL of ``+inf``) flags the interval degenerate.
+Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows of ``slice`` (of ``provider``'s records, as `evaluate` selects them), resampling grouping units — every row of a drawn unit comes along — with ``numpy.random.default_rng(seed)``. The bounds are resampled values (no interpolation); a non-finite bound (an exact NLL of ``+inf``) flags the interval degenerate.
 
 
 #### `nnx.decisions.benchmark.Interval`
@@ -3888,7 +3889,7 @@ Strict JSON: a non-finite bound is written as MetricValue writes it.
 nnx.decisions.benchmark.compare_reports(a: 'Union[BenchmarkReport, Mapping[str, Any]]', b: 'Union[BenchmarkReport, Mapping[str, Any]]') -> 'dict[str, dict[str, Optional[float]]]'
 ```
 
-``b - a`` per slice and metric, for two reports of the same split and metric identity and — when both record it — the same sample set (a :class:`BenchmarkReport` or a saved report's state); anything else raises :class:`BenchmarkError`. A metric unavailable on either side has no delta.
+``b - a`` per slice and metric, for two reports of the same split and metric identity and — when both record it — the same sample set (a `BenchmarkReport` or a saved report's state); anything else raises `BenchmarkError`. A metric unavailable on either side has no delta.
 
 
 #### `nnx.decisions.benchmark.permute_options`
@@ -4083,7 +4084,7 @@ nnx.result.Err.recover(self, fn: 'Callable[[E], Result[T, F]]') -> 'Result[T, F]
 nnx.result.Err.unwrap(self) -> 'NoReturn'
 ```
 
-Raise :class:`UnwrapError` carrying the error (and chaining it when it is an exception).
+Raise `UnwrapError` carrying the error (and chaining it when it is an exception).
 
 
 #### `nnx.result.UnwrapError`
@@ -4092,7 +4093,7 @@ Raise :class:`UnwrapError` carrying the error (and chaining it when it is an exc
 class nnx.result.UnwrapError(error: 'Any') -> 'None'
 ```
 
-:meth:`Err.unwrap` was called; ``error`` is the typed error (and the ``__cause__`` when it is an exception).
+`Err.unwrap` was called; ``error`` is the typed error (and the ``__cause__`` when it is an exception).
 
 
 #### `nnx.result.BoundaryError`
@@ -4166,7 +4167,7 @@ another ``model_id``) raises before the provider is called.
 nnx.result.inspect_bundle_result(path: 'Union[str, os.PathLike[str]]') -> 'Result[Any, BoundaryError]'
 ```
 
-Summarize the run bundle at ``path`` with :func:`nnx.bundles.inspect_bundle` — manifest and JSON records only: it never unpickles a checkpoint, loads a tensor, calls a factory or a registry.
+Summarize the run bundle at ``path`` with `nnx.bundles.inspect_bundle` — manifest and JSON records only: it never unpickles a checkpoint, loads a tensor, calls a factory or a registry.
 
 **Details**
 
@@ -4189,7 +4190,7 @@ Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Conce
 class nnx.compilation.CompileSpec(*, backend: 'str' = 'inductor', mode: 'Optional[str]' = None, fullgraph: 'bool' = False, dynamic: 'Optional[bool]' = None, on_failure: 'str' = 'error') -> 'None'
 ```
 
-What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of :data:`COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``).
+What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of `COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``).
 
 ##### `nnx.compilation.CompileSpec.options`
 
@@ -4275,7 +4276,7 @@ No public description is currently available.
 class nnx.compilation.CompileFailed(message: 'str', record: 'CompileRecord') -> 'None'
 ```
 
-A compiled forward failed to compile under ``on_failure="error"``; ``__cause__`` is torch's error and ``record`` the run's :class:`CompileRecord` (effective state ``failed``).
+A compiled forward failed to compile under ``on_failure="error"``; ``__cause__`` is torch's error and ``record`` the run's `CompileRecord` (effective state ``failed``).
 
 
 Bounded forward benchmarks and profiling (`nnx.benchmarking`):
@@ -4423,7 +4424,7 @@ Join the process group ``torchrun`` described in the environment (``env://``) an
 nnx.distributed.shutdown(*, timeout_seconds: 'float' = 60.0) -> 'None'
 ```
 
-Leave the process group together, then destroy it: the counterpart of :func:`init_process_group`, called once training is over.
+Leave the process group together, then destroy it: the counterpart of `init_process_group`, called once training is over.
 
 **Details**
 
@@ -4540,7 +4541,7 @@ What a resume must match: the dataset size, world, kind, policy, shuffle and see
 class nnx.distributed.ShardedLoader(dataset: 'Any', batch_size: 'int', partition: 'RankPartition', *, collate_fn: 'Optional[Callable[[list[Any]], Any]]' = None) -> 'None'
 ```
 
-A re-iterable loader over one rank's :class:`RankPartition` of a map-style dataset (``DataLoader`` underneath, in-process, ordered). ``set_epoch`` reseeds a train partition; ``ids()`` names the dataset rows this rank serves this epoch.
+A re-iterable loader over one rank's `RankPartition` of a map-style dataset (``DataLoader`` underneath, in-process, ordered). ``set_epoch`` reseeds a train partition; ``ids()`` names the dataset rows this rank serves this epoch.
 
 ##### `nnx.distributed.ShardedLoader.set_epoch`
 
@@ -4722,7 +4723,7 @@ Every trial of the study (priors included), the ``best`` completed one, how many
 class nnx.provenance.ExperimentManifest(task: 'Optional[Mapping[str, Any]]' = None, labels: 'Optional[Sequence[str]]' = None, model: 'Optional[Mapping[str, Any]]' = None, data: 'Mapping[str, Any]' = <factory>, splits: 'Mapping[str, Any]' = <factory>, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Mapping[str, Any]' = <factory>) -> 'None'
 ```
 
-The declared intent of an experiment. Everything is JSON-like and immutable; :meth:`fingerprint` is the SHA-256 of its canonical bytes (with :data:`FORMAT`), so changing the task, the label order, a split's digest or the objective's version changes it.
+The declared intent of an experiment. Everything is JSON-like and immutable; `fingerprint` is the SHA-256 of its canonical bytes (with `FORMAT`), so changing the task, the label order, a split's digest or the objective's version changes it.
 
 **Details**
 
@@ -4938,7 +4939,7 @@ Compare two plans field by field — manifests, provenance records, ``NNRun``\ s
 class nnx.provenance.ProvenanceComparison(fields: 'tuple[FieldComparison, ...]') -> 'None'
 ```
 
-Every compared field. :attr:`verified_equal` is true only when both sides have provenance and every field is ``equal`` or ``verified`` — declared or unknown identities and absent provenance never count as verified equality.
+Every compared field. `verified_equal` is true only when both sides have provenance and every field is ``equal`` or ``verified`` — declared or unknown identities and absent provenance never count as verified equality.
 
 ##### `nnx.provenance.ProvenanceComparison.differences`
 
@@ -5243,7 +5244,7 @@ No public description is currently available.
 nnx.preprocessing.Standardizer.from_state(state: 'Mapping[str, Any]') -> 'Standardizer'
 ```
 
-Rebuild from :meth:`state`, rejecting anything malformed with :class:`PreprocessingError` (bad lengths, non-finite values, non-positive scales, missing or mistyped entries).
+Rebuild from `state`, rejecting anything malformed with `PreprocessingError` (bad lengths, non-finite values, non-positive scales, missing or mistyped entries).
 
 ##### `nnx.preprocessing.Standardizer.canonical_bytes`
 
@@ -5339,7 +5340,7 @@ The base dataset's class names (dataset-wide, like its labels).
 property nnx.preprocessing.SplitView.reconstructible
 ```
 
-Whether the transform can be rebuilt from :meth:`state` alone.
+Whether the transform can be rebuilt from `state` alone.
 
 ##### `nnx.preprocessing.SplitView.state`
 
@@ -5405,7 +5406,7 @@ on ``T`` (constant logits), or the search does not converge.
 class nnx.calibration.CalibrationFit(status: 'str', calibrator: 'Optional[TemperatureCalibrator]', reason: 'Optional[str]', config: 'Mapping[str, Any]', split: 'Mapping[str, Any]') -> 'None'
 ```
 
-The outcome of :func:`fit_temperature`: ``status == "ok"`` with a ``calibrator``, or ``"failed"`` with ``calibrator=None`` and a ``reason``. ``config`` and ``split`` are recorded either way (read-only). Compared and hashed by identity; compare the calibrators themselves.
+The outcome of `fit_temperature`: ``status == "ok"`` with a ``calibrator``, or ``"failed"`` with ``calibrator=None`` and a ``reason``. ``config`` and ``split`` are recorded either way (read-only). Compared and hashed by identity; compare the calibrators themselves.
 
 ##### `nnx.calibration.CalibrationFit.ok`
 
@@ -5421,7 +5422,7 @@ No public description is currently available.
 nnx.calibration.CalibrationFit.require(self) -> 'TemperatureCalibrator'
 ```
 
-The calibrator, or :class:`CalibrationFitError` with the reason.
+The calibrator, or `CalibrationFitError` with the reason.
 
 
 #### `nnx.calibration.TemperatureCalibrator`
@@ -5460,7 +5461,7 @@ The split ids, and that their disjointness is unverified.
 property nnx.calibration.TemperatureCalibrator.id
 ```
 
-The calibrator id: :meth:`digest`.
+The calibrator id: `digest`.
 
 ##### `nnx.calibration.TemperatureCalibrator.transform`
 
@@ -5519,7 +5520,7 @@ No public description is currently available.
 nnx.calibration.TemperatureCalibrator.from_state(state: 'Mapping[str, Any]') -> 'TemperatureCalibrator'
 ```
 
-Rebuild from :meth:`state`, rejecting anything malformed with :class:`CalibrationError`.
+Rebuild from `state`, rejecting anything malformed with `CalibrationError`.
 
 ##### `nnx.calibration.TemperatureCalibrator.digest`
 
@@ -5680,7 +5681,7 @@ No public description is currently available.
 nnx.calibration.CalibrationMetrics.from_state(state: 'Mapping[str, Any]') -> 'CalibrationMetrics'
 ```
 
-Rebuild from :meth:`state`; malformed entries raise :class:`CalibrationError`.
+Rebuild from `state`; malformed entries raise `CalibrationError`.
 
 
 #### `nnx.calibration.ReliabilityBin`
@@ -5705,7 +5706,7 @@ No public description is currently available.
 nnx.calibration.ReliabilityBin.from_state(state: 'Mapping[str, Any]') -> 'ReliabilityBin'
 ```
 
-Rebuild from :meth:`state`; malformed entries raise :class:`CalibrationError`.
+Rebuild from `state`; malformed entries raise `CalibrationError`.
 
 
 #### `nnx.calibration.negative_log_likelihood`
@@ -5794,7 +5795,7 @@ Calibration inputs, configuration or a serialized state that cannot be used as d
 class nnx.calibration.CalibrationFitError
 ```
 
-:meth:`CalibrationFit.require` on a failed fit.
+`CalibrationFit.require` on a failed fit.
 
 
 #### `nnx.calibration.CalibrationMismatchError`
@@ -5886,7 +5887,7 @@ No public description is currently available.
 nnx.abstention.AbstentionPolicy.from_state(state: 'Mapping[str, Any]') -> 'AbstentionPolicy'
 ```
 
-Rebuild from :meth:`state`; anything malformed — including a non-deployable threshold such as a curve's accept-none endpoint — raises :class:`AbstentionError`.
+Rebuild from `state`; anything malformed — including a non-deployable threshold such as a curve's accept-none endpoint — raises `AbstentionError`.
 
 ##### `nnx.abstention.AbstentionPolicy.from_json`
 
@@ -6153,7 +6154,7 @@ leak it. The ceiling is empirical — met on this split, not guaranteed.
 class nnx.abstention.ThresholdSelection(status: 'str', policy: 'Optional[AbstentionPolicy]', points: 'tuple[CurvePoint, ...]', kind: 'str', risk_ceiling: 'float', split_id: 'str', labels: 'tuple[str, ...]', model_id: 'str', input_field: 'str' = 'probabilities', calibrator_id: 'Optional[str]' = None, test_split_id: 'Optional[str]' = None, basis: 'str' = 'empirical', calibration_override: 'Optional[Mapping[str, Any]]' = None) -> 'None'
 ```
 
-The outcome of :func:`select_threshold`.
+The outcome of `select_threshold`.
 
 **Details**
 
@@ -6176,7 +6177,7 @@ under which the calibrated probabilities tuned on were produced, if any.
 nnx.abstention.ThresholdSelection.require(self) -> 'AbstentionPolicy'
 ```
 
-The chosen policy, or :class:`AbstentionError`.
+The chosen policy, or `AbstentionError`.
 
 ##### `nnx.abstention.ThresholdSelection.state`
 
@@ -6272,7 +6273,7 @@ No public description is currently available.
 nnx.abstention.scores(probabilities: 'Any', *, kind: 'str') -> 'tuple[np.ndarray, np.ndarray]'
 ```
 
-``(prediction, score)`` per row of categorical ``(N, C)`` probabilities: the first class of maximal probability and the policy score (the top probability, or the top-two margin). A prediction's own ``decoded`` class is kept by :meth:`AbstentionPolicy.apply` and :func:`select_threshold` instead.
+``(prediction, score)`` per row of categorical ``(N, C)`` probabilities: the first class of maximal probability and the policy score (the top probability, or the top-two margin). A prediction's own ``decoded`` class is kept by `AbstentionPolicy.apply` and `select_threshold` instead.
 
 
 #### `nnx.abstention.decide`
@@ -6399,7 +6400,7 @@ No public description is currently available.
 nnx.plans.ExperimentPlan.with_train(self, train: 'NNTrainParams') -> 'ExperimentPlan'
 ```
 
-The training parameters. Loaders inside them are borrowed, and :meth:`with_data` overrides them. ``extra_metrics`` is copied into a read-only mapping.
+The training parameters. Loaders inside them are borrowed, and `with_data` overrides them. ``extra_metrics`` is copied into a read-only mapping.
 
 ##### `nnx.plans.ExperimentPlan.with_epochs`
 
@@ -6485,7 +6486,7 @@ Seed every RNG before the factories run and the model is built, and again (as ``
 nnx.plans.ExperimentPlan.with_callbacks(self, *callbacks: 'Any') -> 'ExperimentPlan'
 ```
 
-Borrowed callback instances (or legacy ``fn(idps)`` callables), shared by every fit; they replace any earlier ones. A callable whose one parameter is required is a legacy callback, called with the history each epoch. One that can be called with no arguments reads as a factory and is reported: pass callback-making functions to :meth:`with_callback_factories`.
+Borrowed callback instances (or legacy ``fn(idps)`` callables), shared by every fit; they replace any earlier ones. A callable whose one parameter is required is a legacy callback, called with the history each epoch. One that can be called with no arguments reads as a factory and is reported: pass callback-making functions to `with_callback_factories`.
 
 ##### `nnx.plans.ExperimentPlan.with_callback_factories`
 
@@ -6557,7 +6558,7 @@ No public description is currently available.
 nnx.plans.ExperimentPlan.validate(self) -> 'PlanValidation'
 ```
 
-Every configuration problem as a field-path :class:`Diagnostic`.
+Every configuration problem as a field-path `Diagnostic`.
 
 **Details**
 
@@ -6614,7 +6615,7 @@ for a ``BatchNorm`` net in train mode.
 nnx.plans.ExperimentPlan.fit(self, *, attempt: 'Optional[str]' = None) -> 'FitResult'
 ```
 
-Train one attempt and return its :class:`FitResult`.
+Train one attempt and return its `FitResult`.
 
 **Details**
 
@@ -6647,7 +6648,7 @@ group.
 class nnx.plans.FitResult(model: 'NNModel', run: 'NNRun', metrics: 'Mapping[str, SplitMetrics]', attempt_id: 'str') -> 'None'
 ```
 
-One fit: the trained ``model``, its persisted ``run`` (the ``NNModel.train`` return value), the final epoch's ``metrics`` per split (``"train"`` and ``"val"``, see :class:`SplitMetrics`) and the ``attempt_id`` folded into the run's salt.
+One fit: the trained ``model``, its persisted ``run`` (the ``NNModel.train`` return value), the final epoch's ``metrics`` per split (``"train"`` and ``"val"``, see `SplitMetrics`) and the ``attempt_id`` folded into the run's salt.
 
 
 #### `nnx.plans.SplitMetrics`
@@ -6693,7 +6694,7 @@ A probe's forward pass on one example batch: the network's raw output shape and 
 class nnx.plans.PlanValidation(diagnostics: 'tuple[Diagnostic, ...]' = ()) -> 'None'
 ```
 
-The result of :meth:`ExperimentPlan.validate`: every :class:`Diagnostic` at once, in field order.
+The result of `ExperimentPlan.validate`: every `Diagnostic` at once, in field order.
 
 ##### `nnx.plans.PlanValidation.ok`
 
@@ -6717,7 +6718,7 @@ No public description is currently available.
 nnx.plans.PlanValidation.raise_for_errors(self) -> 'None'
 ```
 
-Raise :class:`PlanError` listing every diagnostic, if any.
+Raise `PlanError` listing every diagnostic, if any.
 
 
 #### `nnx.plans.Diagnostic`
@@ -6735,7 +6736,7 @@ One configuration problem at a field ``path`` (``"data.train"``, ``"train.monito
 class nnx.plans.PlanError(diagnostics: 'tuple[Diagnostic, ...]') -> 'None'
 ```
 
-A plan that cannot be fitted or probed. ``diagnostics`` lists every problem :meth:`ExperimentPlan.validate` found.
+A plan that cannot be fitted or probed. ``diagnostics`` lists every problem `ExperimentPlan.validate` found.
 
 **Details**
 
@@ -6779,7 +6780,7 @@ Stop the stream and drop its references to the loader's iterator and the model. 
 class nnx.streaming.PredictionBatch(logits: 'np.ndarray', classes: 'np.ndarray', sample_ids: 'np.ndarray') -> 'None'
 ```
 
-One loader batch of :meth:`NNModel.iter_predict <nnx.NNModel.iter_predict>`.
+One loader batch of `NNModel.iter_predict <nnx.NNModel.iter_predict>`.
 
 **Details**
 
@@ -6848,7 +6849,7 @@ longer describes one set of samples and refuses further use.
 nnx.streaming.StreamingMetrics.for_task(metrics: 'Sequence[MetricSpec]', task: 'TaskSpec', *, materialize: 'bool' = False) -> 'StreamingMetrics'
 ```
 
-Accumulators for a model's :class:`~nnx.TaskSpec`: categorical (with the task's ``ignore_index``), multilabel (bernoulli at the task's threshold) or regression (continuous), with the task's labels.
+Accumulators for a model's `TaskSpec`: categorical (with the task's ``ignore_index``), multilabel (bernoulli at the task's threshold) or regression (continuous), with the task's labels.
 
 ##### `nnx.streaming.StreamingMetrics.metrics`
 
@@ -6951,7 +6952,7 @@ Add one batch of raw model outputs (class axis 1): softmax (categorical), sigmoi
 nnx.streaming.StreamingMetrics.merge(self, other: 'StreamingMetrics') -> 'StreamingMetrics'
 ```
 
-A new accumulation covering both inputs' samples; neither input changes, and later updates to either never reach the result. Raises :class:`MetricMergeError` for different declarations.
+A new accumulation covering both inputs' samples; neither input changes, and later updates to either never reach the result. Raises `MetricMergeError` for different declarations.
 
 ##### `nnx.streaming.StreamingMetrics.finalize`
 
@@ -6968,7 +6969,7 @@ The metrics over every sample seen, as a read-only snapshot. Repeatable, and nev
 class nnx.streaming.MetricSnapshot(count: 'int', values: 'Mapping[str, float]' = <factory>, unavailable: 'tuple[str, ...]' = ()) -> 'None'
 ```
 
-A finalized :class:`StreamingMetrics`: read-only values that later updates never change.
+A finalized `StreamingMetrics`: read-only values that later updates never change.
 
 **Details**
 
@@ -7019,7 +7020,7 @@ step are unchanged.
 class nnx.streaming.StreamClosedError
 ```
 
-A closed or already consumed :class:`PredictionStream` was used again.
+A closed or already consumed `PredictionStream` was used again.
 
 
 #### `nnx.streaming.MetricMergeError`
@@ -7028,7 +7029,7 @@ A closed or already consumed :class:`PredictionStream` was used again.
 class nnx.streaming.MetricMergeError
 ```
 
-Two :class:`StreamingMetrics` with different declarations were merged: other metrics (id, version or config), other probability semantics, other task labels, another decision threshold or another ignore index.
+Two `StreamingMetrics` with different declarations were merged: other metrics (id, version or config), other probability semantics, other task labels, another decision threshold or another ignore index.
 
 
 ### 2.19. Run bundles (`nnx.bundles`)
@@ -7073,7 +7074,7 @@ primitives are refused before anything is written.
 nnx.bundles.inspect_bundle(path: 'Union[str, os.PathLike[str]]') -> 'BundleInfo'
 ```
 
-Summarize the bundle at ``path`` from its manifest, ``state.json`` and calibrator records (each checked against its manifest size and SHA-256). Tensor payloads are not read or checked — :func:`validate_bundle` checks them. Never unpickles, calls a factory or downloads.
+Summarize the bundle at ``path`` from its manifest, ``state.json`` and calibrator records (each checked against its manifest size and SHA-256). Tensor payloads are not read or checked — `validate_bundle` checks them. Never unpickles, calls a factory or downloads.
 
 
 #### `nnx.bundles.validate_bundle`
@@ -7082,7 +7083,7 @@ Summarize the bundle at ``path`` from its manifest, ``state.json`` and calibrato
 nnx.bundles.validate_bundle(path: 'Union[str, os.PathLike[str]]') -> 'BundleInfo'
 ```
 
-Check the whole bundle at ``path`` and summarize it: every listed payload present, a regular file inside the published generation directory with the manifest's size and SHA-256, nothing unlisted, one generation id throughout, strict JSON without duplicate keys, and safetensors headers holding exactly the tensors ``state.json`` references. No tensor is read before all of that passes (a calibrator with a fingerprint ``model_id`` is then checked against the weights); nothing is unpickled, and no factory is called. Raises :class:`BundleIntegrityError` (or :class:`BundleError` for a path that is not a bundle).
+Check the whole bundle at ``path`` and summarize it: every listed payload present, a regular file inside the published generation directory with the manifest's size and SHA-256, nothing unlisted, one generation id throughout, strict JSON without duplicate keys, and safetensors headers holding exactly the tensors ``state.json`` references. No tensor is read before all of that passes (a calibrator with a fingerprint ``model_id`` is then checked against the weights); nothing is unpickled, and no factory is called. Raises `BundleIntegrityError` (or `BundleError` for a path that is not a bundle).
 
 
 #### `nnx.bundles.reconstruct_bundle`
@@ -7131,7 +7132,7 @@ checked against the rebuilt weights.
 class nnx.bundles.BundleInfo(path: 'str', version: 'int', generation: 'str', capability: 'str', source_run_id: 'str', source_checkpoint: 'str', epoch: 'int', model: 'str', model_params: 'Mapping[str, Any]', components: 'Mapping[str, Any]' = <factory>, calibrators: 'tuple[Mapping[str, Any], ...]' = (), payloads: 'Mapping[str, Any]' = <factory>, verified: 'bool' = False) -> 'None'
 ```
 
-A bundle's summary, from :func:`inspect_bundle` (``verified=False``: only the manifest and ``state.json`` were checked) or :func:`validate_bundle` / :func:`reconstruct_bundle` (``verified=True``).
+A bundle's summary, from `inspect_bundle` (``verified=False``: only the manifest and ``state.json`` were checked) or `validate_bundle` / `reconstruct_bundle` (``verified=True``).
 
 **Details**
 
@@ -7160,7 +7161,7 @@ Attributes:
 class nnx.bundles.ReconstructedBundle(model: 'NNModel', info: 'BundleInfo', calibrators: 'tuple[TemperatureCalibrator, ...]', _checkpoint: 'NNCheckpoint', _training_state: 'Optional[dict[str, Any]]', _excluded: 'tuple[str, ...]' = ()) -> 'None'
 ```
 
-A model rebuilt from a validated bundle, its calibrators and — for a ``"resume"`` bundle — the training state :meth:`resume` continues from.
+A model rebuilt from a validated bundle, its calibrators and — for a ``"resume"`` bundle — the training state `resume` continues from.
 
 ##### `nnx.bundles.ReconstructedBundle.capability`
 
@@ -7184,7 +7185,7 @@ The checkpoint label a resumed run records as its parent checkpoint (``"bundle-<
 nnx.bundles.ReconstructedBundle.resume(self, params: 'NNTrainParams', **train_kwargs: 'Any') -> 'NNRun'
 ```
 
-Continue training :attr:`model` from the bundle's training state: ``model.train(params, **train_kwargs)`` as a stateful resume of the bundle's run and checkpoint — the optimizer, scheduler, GradScaler, RNG and component state are restored and epoch numbering continues, exactly as resuming the original run on disk would. ``params`` must not name a resume source of its own.
+Continue training `model` from the bundle's training state: ``model.train(params, **train_kwargs)`` as a stateful resume of the bundle's run and checkpoint — the optimizer, scheduler, GradScaler, RNG and component state are restored and epoch numbering continues, exactly as resuming the original run on disk would. ``params`` must not name a resume source of its own.
 
 **Details**
 
@@ -7240,7 +7241,7 @@ What a reconstruction needs and was not given (a model factory, a component), ev
 class nnx.transforms.TransformRecipe(operations: 'tuple[TransformOp, ...]', materialization: "Literal['fresh', 'in_place']" = 'in_place') -> 'None'
 ```
 
-An ordered, immutable list of :class:`TransformOp`.
+An ordered, immutable list of `TransformOp`.
 
 **Details**
 
@@ -7267,7 +7268,7 @@ The operations as checkpoint transforms, in order.
 nnx.transforms.TransformRecipe.validate(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'None'
 ```
 
-Check the whole recipe as :meth:`materialize` would — against ``model`` in place, or against the fresh base ``model`` describes — mutating nothing, and raise one :class:`RecipeError` naming every problem. ``optimizers`` are checked for an in-place materialization (a fresh base's parameters belong to no existing optimizer).
+Check the whole recipe as `materialize` would — against ``model`` in place, or against the fresh base ``model`` describes — mutating nothing, and raise one `RecipeError` naming every problem. ``optimizers`` are checked for an in-place materialization (a fresh base's parameters belong to no existing optimizer).
 
 ##### `nnx.transforms.TransformRecipe.materialize`
 
@@ -7275,7 +7276,7 @@ Check the whole recipe as :meth:`materialize` would — against ``model`` in pla
 nnx.transforms.TransformRecipe.materialize(self, model: 'NNModel', *, optimizers: 'Iterable[torch.optim.Optimizer]' = ()) -> 'NNModel'
 ```
 
-Validate the whole recipe (as :meth:`validate`), then apply it — to ``model`` itself (``"in_place"``, returned) or to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned). The operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model — and the global random streams a fresh base or a LoRA initialization draws from — as they were.
+Validate the whole recipe (as `validate`), then apply it — to ``model`` itself (``"in_place"``, returned) or to a fresh registered base built from ``model``'s descriptor (``"fresh"``, returned). The operations are recorded on the returned model, so its checkpoints and Hub saves rebuild the same topology. Transactional: a failure leaves the model — and the global random streams a fresh base or a LoRA initialization draws from — as they were.
 
 
 #### `nnx.transforms.TransformOp`
@@ -7284,7 +7285,7 @@ Validate the whole recipe (as :meth:`validate`), then apply it — to ``model`` 
 class nnx.transforms.TransformOp(id: 'str', targets: 'tuple[str, ...]', config: 'Mapping[str, Any]' = <factory>, version: 'int' = 1) -> 'None'
 ```
 
-One recorded operation: ``id`` (``"lora"`` or ``"low_rank"``), ``version``, the explicit ``targets`` (dotted paths under ``model.net``) and an immutable ``config``. Build one with :func:`lora` or :func:`low_rank`.
+One recorded operation: ``id`` (``"lora"`` or ``"low_rank"``), ``version``, the explicit ``targets`` (dotted paths under ``model.net``) and an immutable ``config``. Build one with `lora` or `low_rank`.
 
 ##### `nnx.transforms.TransformOp.state`
 
@@ -7292,7 +7293,7 @@ One recorded operation: ``id`` (``"lora"`` or ``"low_rank"``), ``version``, the 
 nnx.transforms.TransformOp.state(self) -> 'dict[str, Any]'
 ```
 
-The JSON-ready form a checkpoint records (``options`` of its :class:`~nnx.nn.params.nn_checkpoint.NNCheckpointTransform`).
+The JSON-ready form a checkpoint records (``options`` of its `NNCheckpointTransform`).
 
 ##### `nnx.transforms.TransformOp.checkpoint_transform`
 
@@ -7308,7 +7309,7 @@ No public description is currently available.
 nnx.transforms.TransformOp.from_checkpoint_transform(transform: 'NNCheckpointTransform') -> 'TransformOp'
 ```
 
-The operation a checkpoint recorded; malformed options raise a :class:`RecipeError`.
+The operation a checkpoint recorded; malformed options raise a `RecipeError`.
 
 
 #### `nnx.transforms.lora`
@@ -7317,7 +7318,7 @@ The operation a checkpoint recorded; malformed options raise a :class:`RecipeErr
 nnx.transforms.lora(*targets: 'str', r: 'int' = 8, alpha: 'float' = 16.0, dropout: 'float' = 0.0) -> 'TransformOp'
 ```
 
-Wrap each ``nn.Linear`` at ``targets`` in a :class:`~nnx.peft.LoRALinear` (``r``, ``alpha``, ``dropout`` as for ``apply_lora_to``). Targets are explicit module paths, not globs.
+Wrap each ``nn.Linear`` at ``targets`` in a `LoRALinear` (``r``, ``alpha``, ``dropout`` as for ``apply_lora_to``). Targets are explicit module paths, not globs.
 
 
 #### `nnx.transforms.low_rank`
@@ -7478,7 +7479,7 @@ nnx.precision.ResolvedPrecision.output(self, tensor: 'torch.Tensor') -> 'torch.T
 nnx.precision.ResolvedPrecision.record(self) -> 'dict[str, Any]'
 ```
 
-The run-inspection mapping: requested and effective precision, the fallback reason, TF32 (separately), and what the policy covers — never :mod:`nnx.lr_finder` or :mod:`nnx.diffusion.sampling`.
+The run-inspection mapping: requested and effective precision, the fallback reason, TF32 (separately), and what the policy covers — never `nnx.lr_finder` or `nnx.diffusion.sampling`.
 
 ##### `nnx.precision.ResolvedPrecision.from_record`
 
@@ -7637,7 +7638,7 @@ No public description is currently available.
 nnx.comparison.summarize(observations: 'Iterable[Observation]') -> 'Summary'
 ```
 
-Group ``observations`` into poolable groups (same metric, split, selection rule, configuration, data and split identity) and summarize each; see :class:`GroupSummary`. Duplicate attempts are refused: an attempt gives one observation per metric, so the same attempt observed on two splits or under two selection rules belongs in two summaries. A known identity never pools with an unknown one.
+Group ``observations`` into poolable groups (same metric, split, selection rule, configuration, data and split identity) and summarize each; see `GroupSummary`. Duplicate attempts are refused: an attempt gives one observation per metric, so the same attempt observed on two splits or under two selection rules belongs in two summaries. A known identity never pools with an unknown one.
 
 
 #### `nnx.comparison.Summary`
@@ -7646,7 +7647,7 @@ Group ``observations`` into poolable groups (same metric, split, selection rule,
 class nnx.comparison.Summary(groups: 'tuple[GroupSummary, ...]') -> 'None'
 ```
 
-A stratified summary: one :class:`GroupSummary` per poolable group, and the fields that differ between groups (``differing``).
+A stratified summary: one `GroupSummary` per poolable group, and the fields that differ between groups (``differing``).
 
 ##### `nnx.comparison.Summary.differing`
 
@@ -7670,7 +7671,7 @@ No public description is currently available.
 nnx.comparison.Summary.pooled(self) -> 'GroupSummary'
 ```
 
-The single group, when every observation may be pooled; otherwise :class:`IncompatibleObservations` naming the differing fields.
+The single group, when every observation may be pooled; otherwise `IncompatibleObservations` naming the differing fields.
 
 ##### `nnx.comparison.Summary.state`
 
@@ -7832,7 +7833,7 @@ No public description is currently available.
 class nnx.comparison.ComparisonReport(summary: 'Summary', comparisons: 'tuple[PairedComparison, ...]' = ()) -> 'None'
 ```
 
-A summary of ``observations`` and any paired comparisons, as one artifact: :meth:`table` (machine-readable rows), :meth:`text` (a concise view), :meth:`state` / :meth:`save` / :meth:`load` (strict JSON, ``nnx.comparison/1``).
+A summary of ``observations`` and any paired comparisons, as one artifact: `table` (machine-readable rows), `text` (a concise view), `state` / `save` / `load` (strict JSON, ``nnx.comparison/1``).
 
 ##### `nnx.comparison.ComparisonReport.build`
 
@@ -8083,7 +8084,7 @@ No public description is currently available.
 class nnx.lm_tasks.CausalLMObjective(task: 'CausalLMTask', *, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-The task's training objective (see :meth:`CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens the run's objective has scored (counted from 0 for each fresh run, restored on a stateful resume; a window the engine then skips — a non-finite loss, an AMP overflow — is still counted). Pass a fresh objective to a ``weights_only`` resume: it restores no component state, so a reused instance keeps its own count.
+The task's training objective (see `CausalLMTask.objective`): a ``"token_ce"`` term per microbatch — the cross-entropy sum over valid positions (smoothed when the task smooths) over the valid count. Its record's ``loss`` is that microbatch's term value and ``metrics`` its unsmoothed ``nll`` and ``token_accuracy``. Checkpointed as component ``"lm.causal_task"``: the task configuration and the valid tokens the run's objective has scored (counted from 0 for each fresh run, restored on a stateful resume; a window the engine then skips — a non-finite loss, an AMP overflow — is still counted). Pass a fresh objective to a ``weights_only`` resume: it restores no component state, so a reused instance keeps its own count.
 
 ##### `nnx.lm_tasks.CausalLMObjective.component_spec`
 
@@ -8124,7 +8125,7 @@ No public description is currently available.
 class nnx.lm_tasks.CausalLMEval(task: 'CausalLMTask') -> 'None'
 ```
 
-The task's ``eval_step_fn`` (see :meth:`CausalLMTask.eval_step`): total valid-token NLL over the valid-token count for the whole validation loader, its perplexity and token accuracy. The model runs in eval mode and every submodule's training flag is restored.
+The task's ``eval_step_fn`` (see `CausalLMTask.eval_step`): total valid-token NLL over the valid-token count for the whole validation loader, its perplexity and token accuracy. The model runs in eval mode and every submodule's training flag is restored.
 
 
 #### `nnx.lm_tasks.perplexity`
@@ -8206,7 +8207,7 @@ No public description is currently available.
 nnx.ranking.RankingTask.metric_specs(self) -> 'list[Any]'
 ```
 
-``MetricSpec``\ s declaring this task's metrics — registered ids ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a ``MonitorSpec`` can select on them. :meth:`eval_step` computes them; a declaration under another name finds no value.
+``MetricSpec``\ s declaring this task's metrics — registered ids ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a ``MonitorSpec`` can select on them. `eval_step` computes them; a declaration under another name finds no value.
 
 ##### `nnx.ranking.RankingTask.split`
 
@@ -8255,7 +8256,7 @@ Metrics over complete queries from ``(query, candidate, score, relevance)`` rows
 class nnx.ranking.RankingObjective(task: 'RankingTask', *, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-The pairwise logistic objective of a :class:`RankingTask` (see the module docstring); checkpointed as component ``"ranking.task"`` with the task configuration and the run's training units — pairs (``weighting="pair"``) or queries (``"query"``) scored, from 0 for each fresh run and restored on resume (a window the engine then skips is still counted).
+The pairwise logistic objective of a `RankingTask` (see the module docstring); checkpointed as component ``"ranking.task"`` with the task configuration and the run's training units — pairs (``weighting="pair"``) or queries (``"query"``) scored, from 0 for each fresh run and restored on resume (a window the engine then skips is still counted).
 
 ##### `nnx.ranking.RankingObjective.component_spec`
 
@@ -8296,7 +8297,7 @@ No public description is currently available.
 class nnx.ranking.RankingEval(task: 'RankingTask') -> 'None'
 ```
 
-The :class:`RankingTask`'s ``eval_step_fn``: buffers the validation stream (at most ``max_buffered`` rows), groups it by query and reports the per-query metrics (see the module docstring), with the pairwise loss over the same queries as the record's ``loss``.
+The `RankingTask`'s ``eval_step_fn``: buffers the validation stream (at most ``max_buffered`` rows), groups it by query and reports the per-query metrics (see the module docstring), with the pairwise loss over the same queries as the record's ``loss``.
 
 
 #### `nnx.ranking.pairwise_logistic_loss`
@@ -8422,7 +8423,7 @@ A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed
 class nnx.graph_tasks.GraphClassifier(encoder: 'nn.Module', pool: 'Any' = 'mean', head: 'Optional[nn.Module]' = None, *, input_dim: 'Optional[int]' = None) -> 'None'
 ```
 
-``encoder`` (node rows from ``(x, edge_index)``) → :class:`GraphPool` → optional ``head``: one output row per graph.
+``encoder`` (node rows from ``(x, edge_index)``) → `GraphPool` → optional ``head``: one output row per graph.
 
 **Details**
 
@@ -8521,7 +8522,7 @@ strings are acceptable.
 nnx.graph_tasks.graph_classifier_spec(*, input_dim: 'int', num_classes: 'int', hidden_dims: 'Sequence[int]' = (32,), encoder: 'str' = 'graph_conv', pool: 'str' = 'mean', activation: 'str' = 'relu', dropout: 'float' = 0.0, seed: 'int' = 0) -> 'Any'
 ```
 
-The registered recipe of a :class:`GraphClassifier`: ``encoder`` convolutions (``"graph_conv"`` GCN, ``"graph_sage"``, ``"graph_att"`` GAT) over ``hidden_dims``, ``pool`` and a linear head to ``num_classes``. Pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module from the run.
+The registered recipe of a `GraphClassifier`: ``encoder`` convolutions (``"graph_conv"`` GCN, ``"graph_sage"``, ``"graph_att"`` GAT) over ``hidden_dims``, ``pool`` and a linear head to ``num_classes``. Pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module from the run.
 
 
 #### `nnx.graph_tasks.check_graph_batch`
@@ -8662,7 +8663,7 @@ Re-derive this split from the graph with its own seed and policy; a mismatch (di
 class nnx.link_tasks.LinkTask(split: 'LinkSplit', mode: 'Optional[str]' = None, train_negatives: 'Optional[int]' = None, max_candidates: 'int' = 1000000, version: 'int' = 1) -> 'None'
 ```
 
-Link existence (``mode="binary"``) or edge categories (``"edge_label"``) over a :class:`LinkSplit` (see the module docstring).
+Link existence (``mode="binary"``) or edge categories (``"edge_label"``) over a `LinkSplit` (see the module docstring).
 
 **Details**
 
@@ -8790,7 +8791,7 @@ The candidates' ids, one per output row.
 nnx.link_tasks.link_predictor_spec(*, input_dim: 'int', hidden_dims: 'Sequence[int]' = (32,), encoder: 'str' = 'graph_conv', decoder: 'str' = 'dot', num_categories: 'Optional[int]' = None, activation: 'str' = 'relu', dropout: 'float' = 0.0, seed: 'int' = 0) -> 'Any'
 ```
 
-The registered recipe of a :class:`LinkPredictor` (pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module).
+The registered recipe of a `LinkPredictor` (pass it as ``NNModelParams(net=...)``; a reload rebuilds the same module).
 
 
 #### `nnx.link_tasks.link_metrics`
@@ -9749,7 +9750,7 @@ No public description is currently available.
 class nnx.nn.params.nn_vit_params.NNViTParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None, image_size: 'int', patch_size: 'int', d_model: 'int', n_layers: 'int', in_channels: 'int' = 3, ffn_mult: 'int' = 4, attn_dropout: 'float' = 0.0, resid_dropout: 'float' = 0.0) -> 'None'
 ```
 
-Parameters for :class:`~nnx.nn.net.vit_nn.ViTNN`, built by ``Nets.VIT``.
+Parameters for `ViTNN`, built by ``Nets.VIT``.
 
 ##### `nnx.nn.params.nn_vit_params.NNViTParams.n_patches`
 
@@ -9847,7 +9848,7 @@ with a paired on-disk artifact.
 nnx.nn.params.nn_tokenizer_params.NNTokenizerParams.from_state(state: 'dict') -> 'NNTokenizerParams'
 ```
 
-Load from a state dict produced by :meth:`state`. The single required key is ``path``; the tokenizer is reconstructed from the file the path points to.
+Load from a state dict produced by `state`. The single required key is ``path``; the tokenizer is reconstructed from the file the path points to.
 
 **Details**
 
@@ -10193,7 +10194,7 @@ between replacements leaves the previous generation resumable.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.resume_point(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-The manifest stamping this checkpoint's resume point — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint without a manifest. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — :meth:`verify` checks both and returns the one that matches.
+The manifest stamping this checkpoint's resume point — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint without a manifest. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — `verify` checks both and returns the one that matches.
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.verify`
 
@@ -10201,7 +10202,7 @@ The manifest stamping this checkpoint's resume point — ``generation``, ``check
 nnx.nn.params.nn_checkpoint.NNCheckpoint.verify(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises :class:`ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). No file is unpickled to decide and nothing is written: a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
+Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). No file is unpickled to decide and nothing is written: a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_training_state`
 
@@ -10587,7 +10588,7 @@ its own epochs, and its lineage is its own history.
 nnx.history.export_history_csv(run_id: 'str', path: 'Union[str, os.PathLike[str]]', root: 'Optional[str]' = None, *, lineage: 'bool' = False) -> 'int'
 ```
 
-Write a run's committed history (see :func:`iter_history`) to ``path`` in the legacy ``idps.csv`` layout — the same columns, order and index ``NNRun.save`` writes — atomically. Returns the number of records. The export holds the records in memory while it builds the table; stream :func:`iter_history` for histories that do not fit.
+Write a run's committed history (see `iter_history`) to ``path`` in the legacy ``idps.csv`` layout — the same columns, order and index ``NNRun.save`` writes — atomically. Returns the number of records. The export holds the records in memory while it builds the table; stream `iter_history` for histories that do not fit.
 
 
 #### `nnx.history.migrate_history`
@@ -11235,7 +11236,7 @@ Should be overridden by all subclasses.
 class nnx.nn.moe.MoELinear(in_features: 'int', out_features: 'int', *, num_experts: 'int', top_k: 'int' = 2)
 ```
 
-Sparse top-k Mixture-of-Experts drop-in for :class:`nn.Linear`.
+Sparse top-k Mixture-of-Experts drop-in for `nn.Linear`.
 
 **Details**
 
@@ -12322,7 +12323,7 @@ Returns:
 nnx.finetune.freezing.unfreeze(module: 'nn.Module', *patterns: 'str') -> 'int'
 ```
 
-Mirror of :func:`freeze` — set ``requires_grad=True`` on matching parameters. Returns the count newly unfrozen.
+Mirror of `freeze` — set ``requires_grad=True`` on matching parameters. Returns the count newly unfrozen.
 
 
 #### `nnx.finetune.freezing.frozen`
@@ -12392,7 +12393,7 @@ Returns:
 class nnx.finetune.loading.LoadPretrainedResult(loaded_keys: 'list[str]', missing_keys: 'list[str]', unexpected_keys: 'list[str]') -> 'None'
 ```
 
-Outcome of a :func:`load_pretrained` call.
+Outcome of a `load_pretrained` call.
 
 **Details**
 
@@ -12410,7 +12411,7 @@ confirming the load did what you intended.
 class nnx.finetune.param_groups.NNParamGroupSpec(*, name_pattern: 'str', lr: 'Optional[float]' = None, lr_multiplier: 'Optional[float]' = None, weight_decay: 'Optional[float]' = None) -> 'None'
 ```
 
-One row in :attr:`NNOptimParams.param_groups`.
+One row in `NNOptimParams.param_groups`.
 
 **Details**
 
@@ -12606,7 +12607,7 @@ strings are acceptable.
 nnx.peft.lora.apply_lora_to(module: 'nn.Module', *name_patterns: 'str', r: 'int' = 8, alpha: 'float' = 16.0, dropout: 'float' = 0.0) -> 'int'
 ```
 
-Wrap every :class:`nn.Linear` submodule whose dotted name matches any of ``name_patterns`` with a :class:`LoRALinear`. Returns the number of layers wrapped.
+Wrap every `nn.Linear` submodule whose dotted name matches any of ``name_patterns`` with a `LoRALinear`. Returns the number of layers wrapped.
 
 **Details**
 
@@ -12814,7 +12815,7 @@ strings are acceptable.
 nnx.peft.dora.apply_dora_to(module: 'nn.Module', *name_patterns: 'str', r: 'int' = 8, alpha: 'float' = 16.0, dropout: 'float' = 0.0) -> 'int'
 ```
 
-Wrap every :class:`nn.Linear` submodule whose dotted name matches any of ``name_patterns`` with a :class:`DoRALinear`. Returns the number of layers wrapped.
+Wrap every `nn.Linear` submodule whose dotted name matches any of ``name_patterns`` with a `DoRALinear`. Returns the number of layers wrapped.
 
 **Details**
 
@@ -12935,7 +12936,7 @@ strings are acceptable.
 nnx.peft.ia3.apply_ia3_to(module: 'nn.Module', *name_patterns: 'str') -> 'int'
 ```
 
-Wrap every :class:`nn.Linear` submodule whose dotted name matches any of ``name_patterns`` with an :class:`IA3Linear`. Returns the number of layers wrapped.
+Wrap every `nn.Linear` submodule whose dotted name matches any of ``name_patterns`` with an `IA3Linear`. Returns the number of layers wrapped.
 
 **Details**
 
@@ -13027,7 +13028,7 @@ checkpoint — don't trigger a missing-keys error.
 class nnx.peft.prefix.PrefixTuner(model: 'TransformerNN', *, n_prefix: 'int' = 10, n_layers: 'Optional[int]' = None)
 ```
 
-Wrap a :class:`TransformerNN` with learnable per-layer K/V prefixes.
+Wrap a `TransformerNN` with learnable per-layer K/V prefixes.
 
 **Details**
 
@@ -13096,7 +13097,7 @@ is the iterator you hand to an optimizer.
 nnx.peft.prefix.PrefixTuner.prefix_state_dict(self) -> 'dict'
 ```
 
-Return a state-dict containing only the prefix tensors, keyed for round-trip via :meth:`load_prefix_weights`.
+Return a state-dict containing only the prefix tensors, keyed for round-trip via `load_prefix_weights`.
 
 **Details**
 
@@ -13158,7 +13159,7 @@ Returns:
 class nnx.peft.prompt.PromptTuner(model: 'TransformerNN', *, n_prompt_tokens: 'int' = 20)
 ```
 
-Wrap a :class:`TransformerNN` with a learnable soft prompt.
+Wrap a `TransformerNN` with a learnable soft prompt.
 
 **Details**
 
@@ -13235,7 +13236,7 @@ is the iterator you hand to an optimizer.
 nnx.peft.prompt.PromptTuner.prompt_state_dict(self) -> 'dict'
 ```
 
-Return a state-dict containing only the soft-prompt tensor, keyed for round-trip via :meth:`load_prompt_weights`. Only the tuner-owned ``soft_prompt`` entry qualifies — never anything under ``model.*``, even if a nested base module's name happens to contain the marker.
+Return a state-dict containing only the soft-prompt tensor, keyed for round-trip via `load_prompt_weights`. Only the tuner-owned ``soft_prompt`` entry qualifies — never anything under ``model.*``, even if a nested base module's name happens to contain the marker.
 
 
 #### `nnx.peft.prompt.save_prompt_weights`
@@ -13411,7 +13412,7 @@ the remaining weights (0.5 twice leaves 0.75 zero).
 nnx.prune.semi_structured.semi_structured_24(net: 'nn.Module', *, layer_pattern: 'str' = '*') -> 'int'
 ```
 
-Swap each matched :class:`nn.Linear`'s weight with a 2:4 semi-structured sparse tensor via :func:`torchao.sparsity.sparsify_`.
+Swap each matched `nn.Linear`'s weight with a 2:4 semi-structured sparse tensor via `torchao.sparsity.sparsify_`.
 
 **Details**
 
@@ -13578,7 +13579,7 @@ Raises:
 nnx.surgery.drop_layer.drop_layer(model: 'nn.Module', *, layer_name: 'Union[str, list[str]]', importance: 'Callable[[nn.Module], float] | None' = None) -> 'nn.Module'
 ```
 
-Replace a named layer with :class:`nn.Identity`.
+Replace a named layer with `nn.Identity`.
 
 **Details**
 
@@ -13733,7 +13734,7 @@ Raises:
 nnx.quantize.qat.qat_train_step_factory(base_step: 'Optional[TrainStepFn]' = None, qat_config: 'str' = '8da4w') -> 'TrainStepFn'
 ```
 
-Return a :class:`TrainStepFn` that runs ``base_step`` against a fake-quantized model.
+Return a `TrainStepFn` that runs ``base_step`` against a fake-quantized model.
 
 **Details**
 
@@ -13865,7 +13866,7 @@ Describe the completed conversion so checkpoint loaders can replay it.
 class nnx.diffusion.schedules.NoiseSchedulers(Enum)
 ```
 
-Diffusion noise-schedule factory. Enum-as-factory pattern (like :class:`nnx.Nets`, :class:`nnx.Optims`): each enum variant's ``__call__`` constructs the underlying :class:`NoiseSchedule`.
+Diffusion noise-schedule factory. Enum-as-factory pattern (like `nnx.Nets`, `nnx.Optims`): each enum variant's ``__call__`` constructs the underlying `NoiseSchedule`.
 
 ##### `nnx.diffusion.schedules.NoiseSchedulers.LINEAR`
 
@@ -13999,7 +14000,7 @@ Returns:
 nnx.diffusion.training.diffusion_train_step_factory(schedule: 'NoiseSchedule') -> 'TrainStepFn'
 ```
 
-Build a DDPM noise-prediction :class:`TrainStepFn`.
+Build a DDPM noise-prediction `TrainStepFn`.
 
 **Details**
 
@@ -14034,7 +14035,7 @@ Returns:
 nnx.diffusion.objective.diffusion_objective(schedule: 'NoiseSchedule', *, seed: 'Optional[int]' = None, noise_fn: 'Optional[NoiseFn]' = None, nonfinite: 'str' = 'fail') -> 'DiffusionObjective'
 ```
 
-DDPM noise prediction as an objective (see :class:`DiffusionObjective`) — the objective counterpart of :func:`diffusion_train_step_factory`, which stays available (and unchanged) as the imperative step.
+DDPM noise prediction as an objective (see `DiffusionObjective`) — the objective counterpart of `diffusion_train_step_factory`, which stays available (and unchanged) as the imperative step.
 
 
 #### `nnx.diffusion.objective.DiffusionObjective`
@@ -14164,7 +14165,7 @@ Each factory returns a `TrainStepFn` for the `train_step_fn=` hook on `NNModel.t
 nnx.paradigms.distillation.kd_train_step_factory(teacher: 'NNModel', *, alpha: 'float' = 0.5, temperature: 'float' = 4.0) -> 'TrainStepFn'
 ```
 
-Build a knowledge-distillation :class:`TrainStepFn`.
+Build a knowledge-distillation `TrainStepFn`.
 
 **Details**
 
@@ -14199,7 +14200,7 @@ Raises:
 nnx.paradigms.distillation.feature_kd_train_step_factory(teacher: 'NNModel', *, auxiliary_layers: 'dict[str, str]', alpha: 'float' = 0.5, beta: 'float' = 0.5, temperature: 'float' = 4.0) -> 'TrainStepFn'
 ```
 
-Build a FitNets-style feature-distillation :class:`TrainStepFn`.
+Build a FitNets-style feature-distillation `TrainStepFn`.
 
 **Details**
 
@@ -14342,7 +14343,7 @@ No public description is currently available.
 class nnx.paradigms.offline_distillation.TeacherDataset(records: 'Iterable[TeacherRecord]', inputs: 'Mapping[str, Any]', *, candidates: 'Sequence[str]', schema_digest: 'str') -> 'None'
 ```
 
-:class:`TeacherRecord`\ s joined to the student's ``inputs`` (a mapping from sample id to its input tensor) and aligned to the student's output order ``candidates`` (see the module docstring).
+`TeacherRecord`\ s joined to the student's ``inputs`` (a mapping from sample id to its input tensor) and aligned to the student's output order ``candidates`` (see the module docstring).
 
 **Details**
 
@@ -14388,7 +14389,7 @@ No public description is currently available.
 nnx.paradigms.offline_distillation.TeacherDataset.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'DataLoader'
 ```
 
-A ``DataLoader`` of :class:`TeacherBatch`\ es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores).
+A ``DataLoader`` of `TeacherBatch`\ es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores).
 
 ##### `nnx.paradigms.offline_distillation.TeacherDataset.objective`
 
@@ -14396,7 +14397,7 @@ A ``DataLoader`` of :class:`TeacherBatch`\ es; ``shuffle`` draws its order from 
 nnx.paradigms.offline_distillation.TeacherDataset.objective(self, *, alpha: 'float' = 0.5, nonfinite: 'str' = 'fail') -> 'OfflineDistillationObjective'
 ```
 
-This dataset's :class:`OfflineDistillationObjective` — refused here, before any optimizer exists, for a partly labelled dataset (any ``alpha``: its batches would mix labelled and unlabelled rows) and, with ``alpha < 1`` (a hard term), for one without labels.
+This dataset's `OfflineDistillationObjective` — refused here, before any optimizer exists, for a partly labelled dataset (any ``alpha``: its batches would mix labelled and unlabelled rows) and, with ``alpha < 1`` (a hard term), for one without labels.
 
 ##### `nnx.paradigms.offline_distillation.TeacherDataset.eval_step`
 
@@ -14404,7 +14405,7 @@ This dataset's :class:`OfflineDistillationObjective` — refused here, before an
 nnx.paradigms.offline_distillation.TeacherDataset.eval_step(self) -> 'OfflineDistillationEval'
 ```
 
-An ``eval_step_fn`` for ``NNModel.train`` over a validation loader of this dataset's kind (see :class:`OfflineDistillationEval`).
+An ``eval_step_fn`` for ``NNModel.train`` over a validation loader of this dataset's kind (see `OfflineDistillationEval`).
 
 
 #### `nnx.paradigms.offline_distillation.TeacherBatch`
@@ -14413,7 +14414,7 @@ An ``eval_step_fn`` for ``NNModel.train`` over a validation loader of this datas
 class nnx.paradigms.offline_distillation.TeacherBatch(inputs: 'torch.Tensor', teacher: 'torch.Tensor', target: 'torch.Tensor', labelled: 'torch.Tensor', sample_ids: 'tuple[str, ...]', schema_digest: 'str', candidates: 'tuple[str, ...]') -> 'None'
 ```
 
-A microbatch of a :class:`TeacherDataset`: the student's ``inputs``, the ``teacher`` probabilities ``(rows, candidates)`` in the dataset's candidate order, the hard ``target`` indices (``-1`` where unlabelled), the ``labelled`` row mask, the ``sample_ids``, and the dataset's ``schema_digest`` and ``candidates`` (the order of the probability columns), which an objective or evaluation checks against its own.
+A microbatch of a `TeacherDataset`: the student's ``inputs``, the ``teacher`` probabilities ``(rows, candidates)`` in the dataset's candidate order, the hard ``target`` indices (``-1`` where unlabelled), the ``labelled`` row mask, the ``sample_ids``, and the dataset's ``schema_digest`` and ``candidates`` (the order of the probability columns), which an objective or evaluation checks against its own.
 
 
 #### `nnx.paradigms.offline_distillation.OfflineDistillationObjective`
@@ -14422,7 +14423,7 @@ A microbatch of a :class:`TeacherDataset`: the student's ``inputs``, the ``teach
 class nnx.paradigms.offline_distillation.OfflineDistillationObjective(*, schema_digest: 'str', candidates: 'Sequence[str]', alpha: 'float' = 0.5, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-``alpha · KL(teacher ‖ student) + (1 − alpha) · CE(student, label)`` over stored teacher distributions (see the module docstring). Build it with :meth:`TeacherDataset.objective`.
+``alpha · KL(teacher ‖ student) + (1 − alpha) · CE(student, label)`` over stored teacher distributions (see the module docstring). Build it with `TeacherDataset.objective`.
 
 **Details**
 
@@ -14480,7 +14481,7 @@ Nothing to restore: the checked identity is the whole state.
 class nnx.paradigms.offline_distillation.OfflineDistillationEval(*, schema_digest: 'str', candidates: 'Sequence[str]') -> 'None'
 ```
 
-An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a validation loader of :class:`TeacherBatch`\ es: its ``metrics`` are ``teacher_kl``, ``teacher_agreement`` and — with labelled records — ``label_accuracy`` and ``label_nll``.
+An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a validation loader of `TeacherBatch`\ es: its ``metrics`` are ``teacher_kl``, ``teacher_agreement`` and — with labelled records — ``label_accuracy`` and ``label_nll``.
 
 **Details**
 
@@ -14500,7 +14501,7 @@ denominator.
 nnx.paradigms.offline_distillation.evaluate_offline(model: 'NNModel', data: 'Union[TeacherDataset, Iterable[TeacherBatch]]', *, batch_size: 'int' = 256) -> 'DistillationReport'
 ```
 
-Score ``model`` against a :class:`TeacherDataset` (or a loader of its batches): teacher agreement, imitation loss and labelled quality, each with its own denominator (see :class:`DistillationReport`). Runs in eval mode under ``no_grad`` and restores the model's modes.
+Score ``model`` against a `TeacherDataset` (or a loader of its batches): teacher agreement, imitation loss and labelled quality, each with its own denominator (see `DistillationReport`). Runs in eval mode under ``no_grad`` and restores the model's modes.
 
 
 #### `nnx.paradigms.offline_distillation.DistillationReport`
@@ -14563,7 +14564,7 @@ No public description is currently available.
 nnx.paradigms.offline_distillation.read_teacher_records(path: 'Union[str, os.PathLike[str]]') -> 'list[TeacherRecord]'
 ```
 
-The records of a JSONL file written by :func:`write_teacher_records`; a malformed line — a number too large for a float included — raises :class:`TeacherRecordError` naming ``path:line``.
+The records of a JSONL file written by `write_teacher_records`; a malformed line — a number too large for a float included — raises `TeacherRecordError` naming ``path:line``.
 
 
 #### `nnx.paradigms.offline_distillation.write_teacher_records`
@@ -14592,7 +14593,7 @@ A teacher record, dataset or batch that cannot train or be scored.
 nnx.paradigms.contrastive.simclr_train_step_factory(*, temperature: 'float' = 0.5) -> 'TrainStepFn'
 ```
 
-Build a SimCLR :class:`TrainStepFn`.
+Build a SimCLR `TrainStepFn`.
 
 **Details**
 
@@ -14654,7 +14655,7 @@ Raises:
 nnx.paradigms.augmentation.mixup_train_step_factory(*, alpha: 'float' = 0.4) -> 'TrainStepFn'
 ```
 
-Build a Mixup :class:`TrainStepFn`.
+Build a Mixup `TrainStepFn`.
 
 **Details**
 
@@ -14683,7 +14684,7 @@ Raises:
 nnx.paradigms.augmentation.cutmix_train_step_factory(*, alpha: 'float' = 1.0) -> 'TrainStepFn'
 ```
 
-Build a CutMix :class:`TrainStepFn` for 4D image batches.
+Build a CutMix `TrainStepFn` for 4D image batches.
 
 **Details**
 
@@ -14714,7 +14715,7 @@ Raises:
 nnx.paradigms.moe.moe_train_step_factory(*, aux_loss_weight: 'float' = 0.01) -> 'TrainStepFn'
 ```
 
-Build an MoE-aware supervised :class:`TrainStepFn`.
+Build an MoE-aware supervised `TrainStepFn`.
 
 **Details**
 
@@ -14757,7 +14758,7 @@ Walkthrough at [I-JEPA](jepa.md). The `ViTNN` encoder is documented in §4.
 nnx.paradigms.jepa.jepa_train_step_factory(target_encoder: 'nn.Module', predictor: 'nn.Module', mask_fn: 'Callable[[int, torch.device], tuple[torch.Tensor, torch.Tensor]]', *, ema_momentum: 'float' = 0.996) -> 'TrainStepFn'
 ```
 
-Build an I-JEPA :class:`TrainStepFn`.
+Build an I-JEPA `TrainStepFn`.
 
 **Details**
 
@@ -14814,7 +14815,7 @@ Raises:
 class nnx.paradigms.jepa.JEPATrainStep(step: 'TrainStepFn', target_encoder: 'nn.Module', ema_momentum: 'float') -> 'None'
 ```
 
-The I-JEPA step returned by :func:`jepa_train_step_factory`.
+The I-JEPA step returned by `jepa_train_step_factory`.
 
 **Details**
 
@@ -14861,7 +14862,7 @@ No public description is currently available.
 nnx.paradigms.jepa_objective.jepa_objective(target_encoder: 'nn.Module', predictor: 'nn.Module', mask_fn: 'MaskFn', *, ema_momentum: 'float' = 0.996, nonfinite: 'str' = 'fail') -> 'JEPAObjective'
 ```
 
-I-JEPA latent prediction as an objective (see :class:`JEPAObjective`) — the objective counterpart of :func:`jepa_train_step_factory`, which stays available (and unchanged) as the imperative step.
+I-JEPA latent prediction as an objective (see `JEPAObjective`) — the objective counterpart of `jepa_train_step_factory`, which stays available (and unchanged) as the imperative step.
 
 
 #### `nnx.paradigms.jepa_objective.JEPAObjective`
@@ -15123,7 +15124,7 @@ Walkthrough at [DPO](dpo.md).
 nnx.paradigms.dpo.dpo_train_step_factory(ref_model: 'NNModel', *, beta: 'float' = 0.1, pad_token_id: 'Optional[int]' = None) -> 'TrainStepFn'
 ```
 
-Build a Direct Preference Optimization :class:`TrainStepFn`.
+Build a Direct Preference Optimization `TrainStepFn`.
 
 **Details**
 
@@ -15316,7 +15317,7 @@ Returns:
 nnx.embeddings.contrastive_trainer.text_contrastive_train_step_factory(*, temperature: 'float' = 0.5) -> 'TrainStepFn'
 ```
 
-Build a :class:`TrainStepFn` for text-pair contrastive training.
+Build a `TrainStepFn` for text-pair contrastive training.
 
 **Details**
 
@@ -15650,7 +15651,7 @@ The profile's ``NNModel`` (CPU, FP32) with deterministic weights; the caller's g
 nnx.export_conformance.exit_code(report: 'Mapping[str, Any]') -> 'int'
 ```
 
-0 when every profile passed, else the exit code of the first failing profile's failure class (:data:`EXIT_CODES`).
+0 when every profile passed, else the exit code of the first failing profile's failure class (`EXIT_CODES`).
 
 
 #### `nnx.export_conformance.save_report`
@@ -15803,7 +15804,7 @@ Add a TemperatureScaling processor with the given temperature.
 nnx.generation.LogitsChainBuilder.custom(self, processor: 'LogitsProcessor') -> 'LogitsChainBuilder'
 ```
 
-Append a user-supplied LogitsProcessor after the canonical group. Useful for logit-bias / forbidden-token / domain-specific adjustments. Multiple `.custom(...)` calls append in order.
+Append a user-supplied LogitsProcessor after the canonical group. Useful for logit-bias / forbidden-token / domain-specific adjustments. Multiple `.custom(...)` calls append in order. Not with ``temperature(0.0)`` (greedy): its ±inf argmax markers must not be re-filtered, so ``build()`` refuses the pair; use `OrderedLogitsPipeline` with the custom stage before greedy.
 
 ##### `nnx.generation.LogitsChainBuilder.build`
 
@@ -15819,6 +15820,12 @@ Construct the LogitsChain with processors in canonical order.
 Standard processors that were chained are emitted in the
 fixed `_CANONICAL_ORDER`; custom processors come after, in
 the order they were added.
+
+Raises:
+    ValueError: for custom processors after ``temperature(0.0)``:
+        greedy turns the logits into ±inf argmax markers, which a
+        logit bias or a token ban would corrupt (the chain would pick
+        a banned or arbitrary token).
 ```
 
 
@@ -15876,7 +15883,7 @@ nnx.generation.OrderedLogitsPipeline.state(self) -> 'dict[str, Any]'
 nnx.generation.OrderedLogitsPipeline.from_state(state: 'Mapping[str, Any]') -> 'OrderedLogitsPipeline'
 ```
 
-Rebuild a pipeline from :meth:`state`. A custom entry is decoded only by a codec registered in this process for its tag.
+Rebuild a pipeline from `state`. A custom entry is decoded only by a codec registered in this process for its tag.
 
 
 #### `nnx.generation.LogitsStage`
@@ -15950,7 +15957,7 @@ No public description is currently available.
 class nnx.generation.CustomStage(function: 'Callable[[torch.Tensor, list[int]], torch.Tensor]', tag: 'Optional[str]' = None) -> 'None'
 ```
 
-A user callable ``(logits, token_history) -> logits`` at a declared position. Its state belongs to the caller: the pipeline keeps this reference and never copies it. ``tag`` names the :class:`LogitsStageCodec` that can serialize it; without a registered codec the stage is runtime-only.
+A user callable ``(logits, token_history) -> logits`` at a declared position. Its state belongs to the caller: the pipeline keeps this reference and never copies it. ``tag`` names the `LogitsStageCodec` that can serialize it; without a registered codec the stage is runtime-only.
 
 ##### `nnx.generation.CustomStage.processor`
 
@@ -15967,7 +15974,7 @@ No public description is currently available.
 class nnx.generation.LogitsStageCodec(tag: 'str', encode: 'Callable[[Callable[..., Any]], Mapping[str, Any]]', decode: 'Callable[[Mapping[str, Any]], Callable[[torch.Tensor, list[int]], torch.Tensor]]') -> 'None'
 ```
 
-How to serialize custom stages tagged ``tag``: ``encode(function)`` returns a JSON-like mapping, ``decode(mapping)`` returns the callable. Registered in-process with :func:`register_logits_stage_codec`; data never names code to import.
+How to serialize custom stages tagged ``tag``: ``encode(function)`` returns a JSON-like mapping, ``decode(mapping)`` returns the callable. Registered in-process with `register_logits_stage_codec`; data never names code to import.
 
 
 #### `nnx.generation.register_logits_stage_codec`

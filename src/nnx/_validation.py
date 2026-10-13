@@ -80,10 +80,13 @@ def require_finite_real(
 
 def plain_real(value: Any) -> Any:
     """``value`` as a plain Python number for ``state()``: a validated real of
-    another type (a NumPy scalar, say) becomes ``float``, so ``run.yaml``
+    another type (a NumPy scalar, say) becomes ``int`` or ``float``, so ``run.yaml``
     can serialize it. Python ``int`` and ``float`` are kept as given, so
     existing run ids (an md5 of ``state()``) never shift."""
-    return value if type(value) in (int, float) else float(value)
+    if type(value) in (int, float):
+        return value
+    # A NumPy integer is the same setting as the Python int (and run id).
+    return int(value) if isinstance(value, numbers.Integral) else float(value)
 
 
 def require_count(

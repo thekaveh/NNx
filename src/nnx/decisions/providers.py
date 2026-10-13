@@ -193,7 +193,12 @@ class FixedHeadProvider:
         adapter = getattr(self.model, "task_adapter", None)
         spec = getattr(adapter, "spec", None)
         kind = getattr(spec, "kind", None)
-        if kind == "regression":
+        regression_loss = isinstance(
+            self.model.loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
+        )
+        if kind == "regression" or (kind is None and regression_loss):
+            # A regression loss without a task still trains a regression head:
+            # a softmax of its outputs is no probability distribution.
             raise UnsupportedCapability("a regression head justifies no decision primitive")
         task_labels = getattr(spec, "labels", None)
         if self.labels is not None and task_labels is not None and tuple(self.labels) != tuple(task_labels):

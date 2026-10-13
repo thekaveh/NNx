@@ -150,6 +150,8 @@ def test_heads_serve_only_the_primitives_they_justify():
         binary.decide(_animals("cat", "dog", "fox"), X)
     with pytest.raises(UnsupportedCapability, match="regression head"):
         FixedHeadProvider(_classifier(1, Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)))
+    with pytest.raises(UnsupportedCapability, match="regression head"):  # a regression loss without a task
+        FixedHeadProvider(_classifier(2, Losses.MEAN_SQUARED_ERROR), labels=("lo", "hi"))
     with pytest.raises(UnsupportedCapability, match="multi-output Bernoulli"):
         FixedHeadProvider(_classifier(3, Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(3)))
 

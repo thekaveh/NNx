@@ -16,6 +16,15 @@ updates:
     schedule:
       interval: "weekly"
     groups:
+      # The exact-pinned release tools move on their own, so a bump that
+      # needs the ledger (docs/external-contracts.md) updated never holds
+      # back the other dependencies.
+      release-tools:
+        patterns:
+          - "setuptools"
+          - "wheel"
+          - "twine"
+          - "pip-audit"
       python-dependencies:
         patterns:
           - "*"

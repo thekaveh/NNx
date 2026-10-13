@@ -818,3 +818,11 @@ def test_link_metrics_refuses_targets_outside_the_declared_domain():
         link_metrics([[0.5, 0.5], [0.1, 0.9]], [0, 2])
     with pytest.raises(LinkTaskError, match="class indices"):
         link_metrics([[0.5, 0.5], [0.1, 0.9]], [0, 0.5])
+
+
+def test_link_metrics_refuses_logits_passed_as_probabilities():
+    with pytest.raises(LinkTaskError, match="from_logits=True"):
+        link_metrics([5.0, -3.0], [1, 0])
+    with pytest.raises(LinkTaskError, match="from_logits=True"):
+        link_metrics([[2.0, -1.0], [0.1, 0.9]], [0, 1])
+    assert link_metrics([5.0, -3.0], [1, 0], from_logits=True)["accuracy"].value == 1.0

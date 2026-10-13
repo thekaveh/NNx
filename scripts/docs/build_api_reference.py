@@ -120,8 +120,24 @@ def _class_members(value: type) -> list[tuple[str, Any]]:
     return members
 
 
+_ROLE = re.compile(r":[a-z]+:`(~?)([^`]+)`")
+
+
+def _plain_roles(text: str) -> str:
+    """Sphinx roles as Markdown code spans: ``:func:`nnx.lr_finder``` reads
+    as `nnx.lr_finder` (and ``:class:`~nnx.models.ModelSpec``` as
+    `ModelSpec`) on GitHub, the site and the wiki, which render no roles."""
+
+    def code(match: re.Match[str]) -> str:
+        target = match.group(2)
+        return f"`{target.rsplit('.', 1)[-1] if match.group(1) else target}`"
+
+    return _ROLE.sub(code, text)
+
+
 def _render_entry(path: str, value: Any, *, heading_level: int = 4) -> list[str]:
     summary, details = _documentation(value)
+    summary = _plain_roles(summary)  # the details are a literal text block
     rendered = [
         f"{'#' * heading_level} `{path}`",
         "",

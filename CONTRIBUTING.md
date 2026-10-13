@@ -167,7 +167,14 @@ The end-to-end flow:
 
     Each time the workflow creates or updates the Release PR, it dispatches the required CI and security checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`).
 
-    The post-release sync of `main` into `develop` runs `python3 scripts/release/finalize_changelog.py CHANGELOG.md`. It moves the curated notes under the new version heading in place of the generated list. It leaves `[Unreleased]` empty. Keep `[Unreleased]` curated: it becomes the release notes.
+    The post-release sync of `main` into `develop` finalizes the CHANGELOG against the one the release shipped:
+
+    ```bash
+    git show vX.Y.Z:CHANGELOG.md > /tmp/released-changelog.md
+    python3 scripts/release/finalize_changelog.py CHANGELOG.md --released /tmp/released-changelog.md
+    ```
+
+    It moves the shipped curated notes under the new version heading in place of the generated list. Entries added on `develop` after the release stay in `[Unreleased]`. An entry changed on both sides is refused, to be fixed by hand. Keep `[Unreleased]` curated: it becomes the release notes.
 
     Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
 

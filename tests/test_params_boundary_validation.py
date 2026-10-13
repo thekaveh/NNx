@@ -203,6 +203,15 @@ def test_an_integer_momentum_accepted_at_construction_is_valid_at_train_time():
     assert NNOptimParams(name=Optims.ADAM, max_lr=0.1, momentum=(0, 0), weight_decay=0).is_valid()
 
 
+def _trainer_optims():
+    from nnx import NNOptimParams, Optims
+
+    return {"main": NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0)}
+
+
+_TRAINER_OPTIMS = _trainer_optims()
+
+
 @pytest.mark.parametrize("flag", ["save_phase_checkpoints", "overwrite_existing"])
 @pytest.mark.parametrize("bad", [0, 1, "false"])
 def test_train_params_flags_must_be_bools(flag, bad):
@@ -212,11 +221,21 @@ def test_train_params_flags_must_be_bools(flag, bad):
     with pytest.raises(ValueError, match=flag):
         NNTrainParams(n_epochs=1, **{flag: bad})
     with pytest.raises(ValueError, match=flag):
-        NNTrainerParams(n_epochs=1, **{flag: bad})
+        NNTrainerParams(n_epochs=1, optims=_TRAINER_OPTIMS, **{flag: bad})
 
 
 def test_trainer_auto_step_schedulers_must_be_a_bool():
     from nnx.trainer import NNTrainerParams
 
     with pytest.raises(ValueError, match="auto_step_schedulers"):
-        NNTrainerParams(n_epochs=1, auto_step_schedulers="false")
+        NNTrainerParams(n_epochs=1, optims=_TRAINER_OPTIMS, auto_step_schedulers="false")
+
+
+def test_a_numpy_integer_setting_keeps_the_python_int_run_identity():
+    import numpy as np
+
+    from nnx import NNOptimParams, Optims
+
+    plain = NNOptimParams(name=Optims.SGD, max_lr=1, momentum=0.9, weight_decay=0)
+    numpy = NNOptimParams(name=Optims.SGD, max_lr=np.int64(1), momentum=0.9, weight_decay=np.int64(0))
+    assert numpy.state() == plain.state()

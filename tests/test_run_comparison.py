@@ -1317,3 +1317,33 @@ def test_round_five_edges(monkeypatch):
     with pytest.raises(ComparisonError, match="malformed|'b'") as caught:
         ComparisonReport.from_state(state)
     assert "does not hold" not in str(caught.value)
+
+
+def test_one_comparison_reads_each_runs_files_once(tmp_path, monkeypatch):
+    """A child listed before its parent: each run's run.yaml and provenance
+    are read once in the call, listed or an ancestor, so one observation
+    never mixes two reads of an attempt."""
+    from collections import Counter
+
+    from nnx import comparison
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    parent = _model().train(params=_fit_params(3, n_epochs=1), provenance=MANIFEST)
+    child = _model().train(params=_fit_params(3, n_epochs=1, resume_from_run_id=parent.id), provenance=MANIFEST)
+    provenance_reads, state_reads = Counter(), Counter()
+    real_provenance, real_state = comparison._provenance, comparison._read_run_state
+
+    def provenance(run_id, root):
+        provenance_reads[run_id] += 1
+        return real_provenance(run_id, root)
+
+    def state(run_id, root):
+        state_reads[run_id] += 1
+        return real_state(run_id, root)
+
+    monkeypatch.setattr(comparison, "_provenance", provenance)
+    monkeypatch.setattr(comparison, "_read_run_state", state)
+    observations_from_runs([child.id, parent.id], metric=Metric("loss", "minimize"))
+    assert provenance_reads == Counter({child.id: 1, parent.id: 1})
+    assert state_reads == Counter({child.id: 1, parent.id: 1})

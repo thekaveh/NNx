@@ -30,13 +30,12 @@ def phase_tag(idx_epoch: int, n_epochs: int) -> Optional[Checkpoints]:
     Single source of truth used by both `NNModel.train` and
     `nnx.trainer.Trainer` so the phase-boundary semantics stay in lock-step.
 
-    **Small-`n_epochs` caveat (silent, by design):** with `n_epochs <= 5`,
-    the Q1 epoch index collides with FIRST (epoch 0) and is therefore never
-    written — FIRST always takes precedence in the `elif` chain. For
-    `n_epochs == 1` or `2`, Q2 and Q3 also miss (their indices are
-    negative or zero). Callers who need every quartile guaranteed should
-    train for at least `n_epochs >= 6`; below that, expect partial
-    coverage. The caveat is intentional rather than buggy because changing
+    **Small-`n_epochs` caveat (silent, by design):** with `n_epochs <= 7`,
+    the Q1 epoch index is 0 (or negative) and collides with FIRST, so Q1 is
+    never written — FIRST always takes precedence. Q2 is also missing for
+    `n_epochs <= 3`, and Q3 for `n_epochs <= 2` (their indices are negative
+    or zero). Callers who need every quartile should train for at least
+    `n_epochs >= 8`; below that, expect partial coverage. The caveat is intentional rather than buggy because changing
     the index math would shift run.id-relevant trajectories for anyone
     already relying on the current schedule.
     """

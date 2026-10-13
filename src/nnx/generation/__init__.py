@@ -13,8 +13,8 @@ Public surface:
     negative scores.
   * :func:`apply_chain` — run a list of LogitsProcessors over a logits
     tensor in order.
-  * :class:`LogitsChain` — frozen container for an ordered list of
-    processors with a single :meth:`__call__` entry point.
+  * :class:`LogitsChain` — an ordered list of processors with a single
+    :meth:`~LogitsChain.apply` entry point.
   * :class:`LogitsChainBuilder` — fluent builder for ``LogitsChain``;
     matches the :class:`nnx.NNTransformerParamsBuilder` convention.
   * :func:`sample_next_token` — sample one next token given prepared
@@ -33,9 +33,11 @@ Public surface:
     :func:`registered_logits_stage_codecs` — the in-process codec registry
     (data never names code to import).
 
-The chain design mirrors HF transformers' ``LogitsProcessorList`` — the
-caller composes the processors in the order they want them applied, and
-the model only needs to know how to plug the chain in. This keeps
+The chain design mirrors HF transformers' ``LogitsProcessorList``. The
+builder sorts the standard processors into a canonical order (custom ones
+after them); :class:`OrderedLogitsPipeline` and :func:`apply_chain` apply
+processors in the caller's own order. The model only needs to know how to
+plug the chain in. This keeps
 :class:`GenerativeNNModel.generate` readable: the loop is "forward, run
 chain, sample, append, repeat."
 """

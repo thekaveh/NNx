@@ -1073,10 +1073,10 @@ def _run_identity(
     checkpoint generation (else attempt and start epoch), so only siblings
     of that checkpoint pool; without a record, the lineage is unknown and
     names nothing shared — an unknown lineage never pools. Errors in an
-    ancestor's files are raised, as for the run's own. ``provenances``
-    holds the provenance records already read in this call, by run id:
-    each run's files are read once, so one observation never mixes two
-    attempts."""
+    ancestor's files are raised, as for the run's own. ``provenances`` is
+    the call's file cache (run states and provenance records by run id):
+    each run's files are read once per call, listed or an ancestor, so one
+    observation never mixes two attempts."""
     return _resolve(run_id, root, cache, (), known, {} if provenances is None else provenances)[0]
 
 
@@ -1096,13 +1096,11 @@ def _resolve(
         raise ComparisonError(f"run {path[0]}: its lineage is a cycle ({' -> '.join((*path, run_id))})")
     if len(path) > MAX_LINEAGE:
         raise ComparisonError(f"run {path[0]}: a lineage of more than {MAX_LINEAGE} ancestors")
-    run_state, run_path = known if known is not None else _read_run_state(run_id, root)
-    provenances = {} if provenances is None else provenances
+    files = {} if provenances is None else provenances
+    run_state, run_path = known if known is not None else _cached_state(files, run_id, root)
 
     def read_provenance(rid: str) -> Any:
-        if rid not in provenances:
-            provenances[rid] = _provenance(rid, root)
-        return provenances[rid]
+        return _cached_provenance(files, rid, root)
 
     parent = _parent(run_state)
     lineage, ancestors = None, 0
@@ -1240,6 +1238,22 @@ def _raw_metric_value(edp: Any, name: str) -> Optional[float]:
     return None
 
 
+def _cached_state(files: dict[Any, Any], run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
+    """``_read_run_state``, read once per comparison call."""
+    key = ("state", run_id)
+    if key not in files:
+        files[key] = _read_run_state(run_id, root)
+    return files[key]
+
+
+def _cached_provenance(files: dict[Any, Any], run_id: str, root: Optional[str]) -> Any:
+    """``_provenance``, read once per comparison call."""
+    key = ("provenance", run_id)
+    if key not in files:
+        files[key] = _provenance(run_id, root)
+    return files[key]
+
+
 def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
     """A run's ``run.yaml`` and its directory."""
     import yaml
@@ -1263,7 +1277,9 @@ def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any]
     return run_state, run_path
 
 
-def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, Optional[int], bool, str]:
+def _read_run(
+    run_id: str, root: Optional[str], files: Optional[dict[Any, Any]] = None
+) -> tuple[Mapping[str, Any], list[Any], Any, Optional[int], bool, str]:
     """A run's ``run.yaml``, records, provenance, committed epoch (``None``:
     not filtered), whether that epoch is known, and its directory. Under the
     history protocol LAST commits the history, and the attempt record names
@@ -1274,8 +1290,9 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     from .nn.params.nn_iteration_data_point import NNIterationDataPoint
     from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE
 
-    run_state, run_path = _read_run_state(run_id, root)
-    provenance = _provenance(run_id, root)
+    files = {} if files is None else files
+    run_state, run_path = _cached_state(files, run_id, root)
+    provenance = _cached_provenance(files, run_id, root)
     attempt = None if provenance is None else provenance.attempt
     last = None if attempt is None else attempt.last_committed
     if last is not None and not isinstance(last, Mapping):
@@ -1389,8 +1406,9 @@ def observations_from_runs(
 
     observations = []
     identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
+    files: dict[Any, Any] = {}  # every run.yaml / provenance read in this call, read once
     for run_id in run_ids:
-        run_state, idps, provenance, committed, known, run_path = _read_run(run_id, root)
+        run_state, idps, provenance, committed, known, run_path = _read_run(run_id, root, files)
         source = "history journal" if has_journal(run_path) else "idps.csv"
         attempt = None if provenance is None else provenance.attempt
         status = "unknown" if attempt is None else attempt.status
@@ -1466,9 +1484,7 @@ def observations_from_runs(
                 config=(
                     config[run_id]
                     if config is not None
-                    else _run_identity(
-                        run_id, root, identities, known=(run_state, run_path), provenances={run_id: provenance}
-                    )
+                    else _run_identity(run_id, root, identities, known=(run_state, run_path), provenances=files)
                 ),
                 data=data,
                 split_id=None if manifest is None else _identities(manifest.splits),

@@ -560,6 +560,10 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
         raise LinkTaskError(f"{p.shape[0]} predictions for {y.shape[0]} targets")
     if y.shape[0] == 0:
         return {"bce" if p.ndim == 1 else "nll": MetricValue(None, "no candidates")}
+    if not from_logits and not ((p >= 0.0) & (p <= 1.0)).all():  # NaN fails both
+        raise LinkTaskError(
+            "probabilities must lie in [0, 1]; pass logits (LinkPrediction.logits) with from_logits=True"
+        )
     if p.ndim == 2:
         # Categorical targets are class indices 0..C-1 (a fraction or an
         # out-of-range index would index the wrong column or raise).
