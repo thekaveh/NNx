@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [dependency-groups]
 release = [
     "setuptools==84.0.0",
-    "wheel==0.47.0",
+    "wheel==0.48.0",
     "twine==7.0.0",
 ]
 docs-publish = [
@@ -114,7 +114,7 @@ dev = [
     # between minor versions; without a ceiling, a fresh `pip install -e
     # .[dev]` six months from now can fail CI on rules that didn't
     # exist when the codebase was written.
-    "ruff>=0.6,<0.17",
+    "ruff>=0.6,<0.18",
     "pyright>=1.1.380",    # CI runs `pyright --warnings`; pin here so locals match
     "pre-commit>=3.7,<5",
     "pip-audit==2.10.1",
@@ -198,7 +198,7 @@ docs = [
     "mkdocs-material>=9.5",
     # Keep a ceiling so docs rendering remains reproducible across
     # Pygments formatter changes; 2.20.0 includes the current security fix.
-    "Pygments<2.21",
+    "Pygments<2.22",
 ]
 
 [project.urls]

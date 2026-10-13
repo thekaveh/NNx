@@ -72,7 +72,7 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
         workflow = path.read_text(encoding="utf-8")
         assert "pip install -r requirements-tools.txt" not in workflow, path
         if "uv " in workflow:
-            assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in workflow, path
+            assert "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7" in workflow, path
 
 
 def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
