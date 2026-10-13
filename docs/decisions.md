@@ -27,7 +27,7 @@ results[0].distribution                         # (("sp-fox", 0.01), ("sp-cat", 
 results[0].top                                  # "sp-cat"
 ```
 
-[`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs
+[`examples/decision_fixed_head.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_fixed_head.py) runs
 this end to end on a deterministic local model.
 
 ## 1. Questions
@@ -220,7 +220,7 @@ provider.decide(Boolean("This review is positive."), texts)
 - **Transfer is empirical.** These are zero-shot scores from a model trained
   for another task, not calibrated probabilities. How well they transfer to
   a decision task stays empirical. Measure it on labelled records, as
-  [`examples/decision_nli.py`](../examples/decision_nli.py) does: accuracy,
+  [`examples/decision_nli.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_nli.py) does: accuracy,
   macro-F1, categorical NLL and Brier, with the split, revision and settings
   recorded.
 
@@ -324,7 +324,7 @@ topic[0].raw                    # {"provider": "jev", "model": "jev-1.13.0", "re
 
 Ordinary tests need no credentials or network. `tests/test_decision_jev.py`
 drives a recording fake of `system_one` that returns real SDK responses.
-[`examples/decision_jev.py`](../examples/decision_jev.py) runs real SDK clients
+[`examples/decision_jev.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_jev.py) runs real SDK clients
 over an offline mock transport, sync and async.
 
 The opt-in live smoke, `scripts/smoke_jev_live.py`, sends one request to the
@@ -468,7 +468,7 @@ a job is immutable and describes provider requests. It is not an
 `ExperimentPlan` (`nnx.plans`). A plan compiles a training run, while a job
 only asks questions of an already-trained or hosted provider.
 
-[`examples/decision_jobs.py`](../examples/decision_jobs.py) runs batching, a
+[`examples/decision_jobs.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_jobs.py) runs batching, a
 continuation, fail-fast and the async path end to end.
 
 ## 8. Benchmarking providers
@@ -588,7 +588,7 @@ print(report.text())
 
 It is not a leaderboard. No paid remote run is a default, and it never
 tunes a threshold or a prompt on test outcomes.
-[`examples/decision_benchmark_offline.py`](../examples/decision_benchmark_offline.py)
+[`examples/decision_benchmark_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_benchmark_offline.py)
 collects once and replays with sockets disabled.
 
 ## 9. Offline teacher distributions
@@ -641,7 +641,7 @@ student.train(params=..., objective=data.objective(alpha=0.7))
   its teacher perfectly is wrong wherever the teacher is.
 
 See [Concepts §10.1](concepts.md#101-knowledge-distillation) and
-[`examples/offline_teacher_distillation.py`](../examples/offline_teacher_distillation.py).
+[`examples/offline_teacher_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/offline_teacher_distillation.py).
 
 ## 10. Errors
 
@@ -732,7 +732,7 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
       checker.
 
 See [Concepts §27](concepts.md#27-errors-as-values-nnxresult) and
-[`examples/result_boundaries.py`](../examples/result_boundaries.py).
+[`examples/result_boundaries.py`](https://github.com/thekaveh/NNx/blob/main/examples/result_boundaries.py).
 
 ## 11. Consumers
 

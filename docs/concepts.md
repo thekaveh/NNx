@@ -1420,7 +1420,7 @@ print(evaluate_offline(student, held_out).text())               # agreement, imi
 - **Reports** keep three things apart, each with its own denominator. **Teacher agreement** and **imitation loss** cover every record. **Labelled quality** (accuracy, NLL) covers the labelled records only: imitating a teacher is not being right. In the training loop, `dataset.eval_step()`'s record `loss` is the imitation loss whatever `alpha`. Monitor `label_accuracy` or `label_nll` by name to select or stop on quality.
 - **Offline.** Records, inputs and the student are local: dataset iteration, training and evaluation reach no network. The live factories, `kd_objective` and `born_again_train` keep their logit / temperature contract and refuse these records.
 
-See [`examples/offline_teacher_distillation.py`](../examples/offline_teacher_distillation.py) and [Typed decisions §9](decisions.md#9-offline-teacher-distributions).
+See [`examples/offline_teacher_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/offline_teacher_distillation.py) and [Typed decisions §9](decisions.md#9-offline-teacher-distributions).
 
 See [`examples/10_knowledge_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/10_knowledge_distillation.py) for a teacher→student distillation flow on a tabular toy task. SimCLR (§10.2) and Mixup / CutMix (§10.3) follow the same factory-plus-`train_step_fn` pattern.
 
@@ -2119,7 +2119,7 @@ It restores the model's modes and raises typed errors (`UnsupportedCapability`, 
 - Jev's `confidence` is kept as provider confidence, never a correctness probability.
 - Caller-injected clients are never closed.
 
-Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](../examples/decision_fixed_head.py) runs it end to end.
+Importing the package starts no backend and needs no hosted-SDK extra. The full guide is [`docs/decisions.md`](decisions.md); [`examples/decision_fixed_head.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_fixed_head.py) runs it end to end.
 
 **Decision jobs** describe several questions before asking any. `DecisionJob.ask`, `collect`, `map` and `then` build an immutable tree that calls no provider, runs no callback and draws no RNG. `run(provider, state=..., limits=...)` and `await arun(...)` are the only effect boundaries. They borrow the provider without closing it:
 
@@ -2135,7 +2135,7 @@ Independent questions over one state share calls: `ceil(count / cap)`, with `cap
 
 The job is fail-fast. `JobFailed` carries the completed outcomes plus the failed and skipped ids, and has no partial value. Cancellation (`arun(cancel=event)`) stops scheduling and reports requests already sent as `sent`, never as rolled back. `map`'s identity and composition laws hold only for a deterministic provider. That provider must answer each question the same whatever it is batched with.
 
-The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §7](decisions.md#7-decision-jobs-batching-and-chaining) and [`examples/decision_jobs.py`](../examples/decision_jobs.py).
+The job is neither `LogitsChainBuilder` (a mutable builder of decoding processors, re-sorted on `build()`) nor an `ExperimentPlan` (§20, which compiles a training run). See [`docs/decisions.md` §7](decisions.md#7-decision-jobs-batching-and-chaining) and [`examples/decision_jobs.py`](https://github.com/thekaveh/NNx/blob/main/examples/decision_jobs.py).
 
 ## 18. Fitted calibration (`nnx.calibration`)
 
@@ -2234,7 +2234,7 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
   (predictions, monitors, provenance, decisions). The NLL / Brier terms and
   the softmax are the same code the named metrics and `predict_proba` use.
 
-See [`examples/calibration_offline.py`](../examples/calibration_offline.py).
+See [`examples/calibration_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/calibration_offline.py).
 
 ## 19. Abstention and risk-coverage (`nnx.abstention`)
 
@@ -2330,7 +2330,7 @@ test probabilities ──► policy.apply(...) ──► AbstentionResult (accep
   exists only on the curve: it is not deployable, and no policy can hold or
   load it.
 
-See [`examples/abstention_offline.py`](../examples/abstention_offline.py).
+See [`examples/abstention_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/abstention_offline.py).
 
 
 ## 20. Experiment plans (`nnx.plans`)
@@ -2495,7 +2495,7 @@ provenance manifest.
 - Each fit builds its own model; `FitResult.model` is the trained one.
 - Runs are written under `<cwd>/runs`, as by `NNModel.train`.
 
-See [`examples/experiment_plan.py`](../examples/experiment_plan.py).
+See [`examples/experiment_plan.py`](https://github.com/thekaveh/NNx/blob/main/examples/experiment_plan.py).
 
 ## 21. Streaming prediction and mergeable metrics (`nnx.streaming`)
 
@@ -2623,7 +2623,7 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
     Accuracy is then the exact-row accuracy, and the averages run over the
     labels.
 
-See [`examples/prediction_stream.py`](../examples/prediction_stream.py).
+See [`examples/prediction_stream.py`](https://github.com/thekaveh/NNx/blob/main/examples/prediction_stream.py).
 
 ## 22. Run bundles (`nnx.bundles`)
 
@@ -2740,7 +2740,7 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   §3](hub.md#3-three-artifact-formats-and-their-trust-boundaries) and
   `SECURITY.md`).
 
-See [`examples/run_bundle.py`](../examples/run_bundle.py).
+See [`examples/run_bundle.py`](https://github.com/thekaveh/NNx/blob/main/examples/run_bundle.py).
 
 ## 23. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
@@ -2885,7 +2885,7 @@ without a training seed.
 
 This is about **your own runs**. The comparison against other toolkits is a
 separate page: [`docs/comparison.md`](comparison.md). See
-[`examples/compare_seeds.py`](../examples/compare_seeds.py).
+[`examples/compare_seeds.py`](https://github.com/thekaveh/NNx/blob/main/examples/compare_seeds.py).
 
 
 ## 24. Query-grouped ranking (`nnx.ranking`)
@@ -2968,7 +2968,7 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
 
 NNx does not manage retrieval indexes. `export_to_faiss` writes an index
 and returns its path, and the caller maps FAISS positions to its own
-document ids. [`examples/ranking_offline.py`](../examples/ranking_offline.py)
+document ids. [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py)
 does this before an ID-aligned evaluation.
 
 ## 25. Graph-level classification (`nnx.graph_tasks`)
@@ -3015,7 +3015,7 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
   classifier (`to_onnx`, `netron_export`) is refused before anything is
   written; `export_state_dict()` keeps the weights.
 
-See [`examples/graph_classification_offline.py`](../examples/graph_classification_offline.py).
+See [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).
 
 
 ## 26. Link and edge prediction (`nnx.link_tasks`)
@@ -3108,7 +3108,7 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 
 Homogeneous static graphs only: temporal and heterogeneous graphs,
 distributed sampling and knowledge-graph ranking are out of scope. See
-[`examples/link_prediction_offline.py`](../examples/link_prediction_offline.py).
+[`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).
 
 ## 27. Errors as values (`nnx.result`)
 
@@ -3197,10 +3197,11 @@ deliberately narrow and **guarantees no speedup**:
   is therefore never replayed.
 - **Recorded.** `CompileRecord` holds the request and what took effect. The
   request is the backend, `mode` / `fullgraph` / `dynamic`, the policy and
-  the torch version. The effect is one of: `pending` (no compiled forward
-  has run yet), `compiled` (with `capture` `full` or `partial` and the
-  `graph_breaks` count), `eager` with the `restart` (phase, epoch, batch,
-  error), or `failed`.
+  the torch version. The effect is one of these:
+  - `pending`: no compiled forward has run yet.
+  - `compiled`, with `capture` `full` or `partial` and the `graph_breaks` count.
+  - `eager`, with the `restart` (phase, epoch, batch, error).
+  - `failed`.
 - **Where the record lives.** The same record is on `NNRun.compile`, in
   `metadata.yaml` and in each stateful checkpoint's training state. With a
   provenance manifest, it is also in `attempt.json`. It is never in the run
@@ -3223,7 +3224,7 @@ stdev.
 `profile_forward` runs `torch.profiler` with a finite `wait / warmup /
 active / repeat` schedule into an explicit `output_dir`. The profiler is
 closed on success, error and cancellation, and never runs inside a timed
-region. See [`examples/benchmark_compile.py`](../examples/benchmark_compile.py).
+region. See [`examples/benchmark_compile.py`](https://github.com/thekaveh/NNx/blob/main/examples/benchmark_compile.py).
 
 ## 29. Budgeted experiment search (`nnx.search`)
 
@@ -3288,4 +3289,4 @@ memory when `None`). This process is the study's only writer. Inside a
 process group of more than one rank (`torchrun`), `search()` raises
 `RuntimeError` before loading or creating a study. No rank therefore runs a
 study of its own. Samplers keep their own limits. See
-[`examples/search_offline.py`](../examples/search_offline.py).
+[`examples/search_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/search_offline.py).

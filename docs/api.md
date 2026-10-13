@@ -3456,7 +3456,8 @@ What a run may do.
 ```text
 Attributes:
     max_questions: the most questions per provider call (``None``: the
-        provider's own cap; a provider without one answers one per call).
+        provider's own cap, or any number when it declares none; a
+        provider without ``decide_many`` answers one per call).
     max_tokens: the most tokens per provider call — enforceable only by
         a provider with ``count_tokens(questions, state)``; any other is
         refused before any call.
@@ -4180,7 +4181,8 @@ Ask ``provider`` ``question`` for ``inputs``.
 **Details**
 
 ```text
-``Ok`` holds the results, one per input — or, with an abstention
+``Ok`` holds the results, one per input (an answer of another count,
+question, kind or option order is an ``"invalid_decision_response"``) — or, with an abstention
 ``policy`` (and the ``model_id`` it was tuned for), each row's
 ``SelectiveDecision``: an abstention is a success whose probabilities
 and reason are kept. Only the provider's own failures are errors:
@@ -4826,7 +4828,7 @@ nnx.provenance.ExperimentManifest.fingerprint(self) -> 'str'
 nnx.provenance.ExperimentManifest.for_model(model: 'Any', *, train: 'Any' = None, data: 'Optional[Mapping[str, Any]]' = None, splits: 'Optional[Mapping[str, Any]]' = None, objective: 'Optional[Mapping[str, Any]]' = None, config: 'Optional[Mapping[str, Any]]' = None, preprocessing: 'Any' = None) -> 'ExperimentManifest'
 ```
 
-A manifest from an existing model's declarations: its task and label order, its model descriptor and built-in net params, its recorded transformation recipe when it has one, and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer``, recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
+A manifest from an existing model's declarations: its task and label order, its model descriptor and built-in net params, its recorded transformation recipe when it has one, and — when given — the training configuration (``NNTrainParams.state()`` without ``n_epochs``, ``resume_epochs`` and the resume lineage, which describe an attempt; loaders are never read) and a fitted ``nnx.preprocessing.Standardizer``, recorded as ``config["preprocessing"]``: its schema, frozen statistics and fit-membership identity, never recomputed. Builds no model and iterates no loader.
 
 
 #### `nnx.provenance.IdentityRef`
@@ -7211,7 +7213,7 @@ No public description is currently available.
 property nnx.bundles.ReconstructedBundle.resume_checkpoint
 ```
 
-The checkpoint label a resumed run records as its parent checkpoint (``"bundle-<generation>_e<epoch>"``).
+The checkpoint label a resumed run records as its parent checkpoint (``"bundle-<generation[:16]>_e<epoch>"``: the first 16 hex characters of the generation).
 
 ##### `nnx.bundles.ReconstructedBundle.resume`
 
@@ -12856,7 +12858,7 @@ first restricted to the keys ``module``'s own LoRA wrappers register
 (derived from the destination, not from the source's key names), so
 a full checkpoint — or one carrying colliding ``*.base.*`` keys —
 can never overwrite a frozen base tensor. A wrong-shaped owned key
-still raises the native size-mismatch error.
+raises a size-mismatch ``RuntimeError`` before anything is copied.
 ```
 
 
@@ -13704,10 +13706,14 @@ Returns:
 Raises:
     KeyError: if ``after_layer_name`` is not a submodule.
     TypeError: if the layer is neither a ReLU-in-Sequential nor a
-        Linear-in-FeedFwdNN-like ModuleList.
-    ValueError: if the activation effective at the insertion site is
-        anything other than ReLU. Sigmoid / tanh / GELU break
-        function-preservation.
+        Linear-in-FeedFwdNN-like ModuleList (a non-ReLU activation in a
+        Sequential is this case).
+    ValueError: if the activation effective at a FeedFwdNN insertion
+        site is anything other than ReLU (sigmoid / tanh / GELU break
+        function-preservation); if the ReLU is not fed by an
+        ``nn.Linear`` through elementwise / norm modules only; or if the
+        Sequential is a subclass or carries its own parameters, buffers
+        or hooks.
 ```
 
 
@@ -15649,7 +15655,7 @@ Walk a ``TransformerNN`` and return ``{gguf_name: numpy_array}``.
 The caller (``write_gguf``) then iterates this dict and calls
 ``GGUFWriter.add_tensor`` for each entry. Splitting the iteration
 here (rather than inlining it into the writer) keeps the naming
-convention testable in isolation — see ``test_gguf_writer.py``.
+convention testable in isolation.
 
 Args:
     net: A ``TransformerNN`` instance.

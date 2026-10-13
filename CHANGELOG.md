@@ -90,6 +90,13 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - A `resume_epochs="planned"` resume keeps the plan's provenance fingerprint.
     - Link tasks refuse a message graph with a repeated edge, and training negatives that cannot fit at `LinkTask` construction.
     - `FixedHeadProvider` checks label strings and refuses a non-2-D categorical output as a request error.
+    - Library warnings (EarlyStopping, `predict` over a shuffling loader) no longer crash in a REPL, `python -c` or a notebook.
+    - An objective epoch whose every window is dropped as non-finite reports a NaN training loss, so EarlyStopping counts it; an objective whose terms are all detached is refused instead of training nothing.
+    - `load_lora_weights` / `load_ia3_weights` / `load_prefix_weights` change nothing when they refuse a wrong-shaped key.
+    - The diffusion objective refuses a denoiser output of the wrong shape; bf16 / fp16 denoisers train in their own dtype.
+    - `decide_result` returns an `invalid_decision_response` error for an answer of the wrong count or question; `question_from_state` refuses keys its kind does not take.
+    - A numeric setting given as an integer too large for a float raises a `ValueError` naming the field.
+    - A failed eager re-run under `compile=` restores the model's RNG and buffers before its error propagates.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

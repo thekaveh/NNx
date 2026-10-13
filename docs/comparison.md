@@ -216,10 +216,12 @@ Data parallelism is opt-in and single-node (`nnx.distributed`). `torchrun`
 launches the processes, and PyTorch's `DistributedDataParallel` averages
 gradients. NNx makes every update equal the union batch's and keeps one
 writer rank for artifacts. On every rank together, it refuses what it does
-not cover. That means custom steps or objectives, mixed precision,
-`compile=`, a history journal, graph nets, batch normalization,
-topology-changing callbacks (QAT), loaders not built by `nnx.distributed`,
-or an undeclared callback.
+not cover:
+
+- custom steps or objectives, mixed precision and `compile=`;
+- a history journal, graph nets and batch normalization;
+- topology-changing callbacks (QAT) and loaders not built by `nnx.distributed`;
+- an undeclared callback.
 
 `torch.compile` is opt-in and deliberately narrow (`nnx.compilation`). It
 covers the built-in train step's full-precision (FP32) forward on built-in

@@ -250,7 +250,7 @@ another's files:
   and id) and an unknown bundle version.
 
 See [Concepts §22](concepts.md#22-run-bundles-nnxbundles) and
-[`examples/run_bundle.py`](../examples/run_bundle.py).
+[`examples/run_bundle.py`](https://github.com/thekaveh/NNx/blob/main/examples/run_bundle.py).
 
 ## 4. What this does NOT do
 
