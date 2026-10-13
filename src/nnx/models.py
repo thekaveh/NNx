@@ -13,7 +13,7 @@
       from nnx.models import ModelSpec, register_model_factory
 
       register_model_factory("my.encoder", 1, lambda config: Encoder(**config))
-      model = NNModel(params=NNModelParams(net=ModelSpec("my.encoder", 1, {"width": 16}), loss=Losses.MSE))
+      model = NNModel(params=NNModelParams(net=ModelSpec("my.encoder", 1, {"width": 16}), loss=Losses.MEAN_SQUARED_ERROR))
 
   Construction runs under ``torch.manual_seed(spec.seed)`` with the ambient
   RNG state captured and restored, so the same spec always initializes the

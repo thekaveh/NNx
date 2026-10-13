@@ -286,8 +286,12 @@ def test_round_two_read_only_mappings_copy_and_pickle():
 
 
 def test_round_three_the_effective_seed_and_orphan_identity_are_checked():
-    inherited = _plan().with_train(NNTrainParams(n_epochs=1, seed=-5))
-    assert inherited.validate().paths == ("train.seed",)  # the seed set_seed would receive
+    # The training parameters refuse a seed set_seed would not accept at
+    # construction; the plan still checks its own seed, which overrides it.
+    with pytest.raises(ValueError, match="seed"):
+        NNTrainParams(n_epochs=1, seed=-5)
+    assert _plan().with_seed(-5).validate().paths == ("seed",)
+    assert _plan().with_seed(2**32).validate().paths == ("seed",)
     identity_only = ExperimentPlan().with_net(NET).with_model(MODEL).with_train(TRAIN).with_data(None, identity="x")
     assert {"data.train"} <= set(identity_only.validate().paths)
 

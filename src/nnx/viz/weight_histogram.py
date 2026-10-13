@@ -60,7 +60,8 @@ def weight_histogram(
         model = model.net
     # numel() > 0: the docstring promises empty tensors are skipped
     # (a zero-size histogram subplot renders as a confusing blank).
-    params = [(n, p.detach().cpu().flatten().numpy()) for n, p in model.named_parameters() if p.numel() > 0]
+    # .float(): NumPy has no bfloat16.
+    params = [(n, p.detach().cpu().float().flatten().numpy()) for n, p in model.named_parameters() if p.numel() > 0]
     n = len(params)
     if n == 0:
         raise ValueError("weight_histogram: model has no named parameters to plot.")

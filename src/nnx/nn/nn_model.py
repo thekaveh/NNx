@@ -234,6 +234,18 @@ def _check_resume_horizon(
             f"resuming {kind}{owner} requires scheduler.total_steps to be set explicitly "
             "to one shared horizon covering the original and resumed epochs"
         )
+    # On the epoch clock the default warm-up is a tenth of *this* session's
+    # n_epochs, and it lives in the LambdaLR closure, not in the restored
+    # scheduler state: a resume would silently warm up over another length.
+    if (
+        str(kind) == "linear_warmup_decay"
+        and not uses_update_clock(scheduler_params)
+        and getattr(scheduler_params, "warmup_steps", None) is None
+    ):
+        raise ValueError(
+            f"resuming {kind}{owner} on the epoch clock requires scheduler.warmup_steps to be set explicitly "
+            "(its default is a tenth of each session's n_epochs, so the resumed schedule would differ)"
+        )
     # An optimizer_update clock counts updates, not epochs: its horizon is
     # checked against the restored update count (SchedulerClock).
     if start_epoch is not None and not uses_update_clock(scheduler_params) and start_epoch + n_epochs > total_steps:
@@ -2581,6 +2593,18 @@ class NNModel(_HubMixinBase):
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
 
+    def _check_default_step_loss(self) -> None:
+        """The default step without a task scores classification (argmax
+        predictions, accuracy / F1): refuse a regression loss before any run
+        is reserved, rather than failing in the metrics on the first batch."""
+        regression_losses = (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
+        if getattr(self, "task_adapter", None) is None and isinstance(self.loss_fn, regression_losses):
+            raise ValueError(
+                f"the default training step scores classification and cannot score {type(self.loss_fn).__name__} "
+                "targets: declare the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass "
+                "train_step_fn / objective"
+            )
+
     def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
         """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
         when the model built its module (a shape is ``None`` for an
@@ -3335,6 +3359,8 @@ class NNModel(_HubMixinBase):
         if params is None:
             raise ValueError("train params must be non-None")
         self._check_task_preflight()
+        if train_step_fn is None and objective is None:
+            self._check_default_step_loss()
         # FEAT-028: the precision policy is resolved once, before any run is
         # reserved; the loop, validation and prediction reuse it.
         precision = self._precision_for_training(train_step_fn)

@@ -56,7 +56,7 @@ class VisUtils:
       (notebook / browser / etc.); set to a string like ``"png"`` or
       ``"browser"`` to pin behavior in non-default environments.
 
-    See the README §1.2 "Visualization" bullet and `docs/concepts.md`
+    See README §4.6 "Visualization" and `docs/concepts.md`
     for usage examples.
     """
 
@@ -403,9 +403,13 @@ class VisUtils:
         from sklearn.metrics import classification_report as _sk_report
 
         target_names = [str(c) for c in class_names] if class_names is not None else None
+        # labels=...: as in confusion_matrix, a named class absent from the
+        # data keeps its row instead of shifting the names (or raising).
+        report_labels = list(range(len(class_names))) if class_names is not None else None
         report = _sk_report(
             Y_true,
             Y_pred,
+            labels=report_labels,
             target_names=target_names,
             output_dict=True,
             zero_division=cast(Any, 0),

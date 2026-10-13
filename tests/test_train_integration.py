@@ -964,6 +964,38 @@ def test_finite_horizon_scheduler_resume_requires_explicit_total_steps(tmp_path,
         NNModel(net_params=net_params, params=model_params).train(params=params)
 
 
+def test_warmup_decay_resume_on_the_epoch_clock_requires_explicit_warmup_steps(tmp_path, monkeypatch):
+    """The default warm-up is a tenth of each session's n_epochs and is not
+    in the restored scheduler state, so a resume must name it explicitly."""
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+
+    def params(warmup_steps):
+        return NNTrainParams(
+            n_epochs=1,
+            train_loader=train_loader,
+            resume_from_run_id="prior-run",
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            scheduler=NNSchedulerParams(
+                kind=Schedulers.LINEAR_WARMUP_DECAY,
+                total_steps=40,
+                warmup_steps=warmup_steps,
+                min_lr=0.0,
+                factor=0.5,
+                patience=0,
+                cooldown=0,
+                threshold=0.0,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="requires scheduler.warmup_steps"):
+        NNModel(net_params=net_params, params=model_params).train(params=params(None))
+    with pytest.raises(Exception) as other:  # past the check: the source run does not exist
+        NNModel(net_params=net_params, params=model_params).train(params=params(3))
+    assert "warmup_steps" not in str(other.value)
+
+
 def test_finite_horizon_resume_rejects_insufficient_explicit_horizon(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     train_loader, _ = _make_tiny_loaders()
@@ -2353,3 +2385,28 @@ def test_fp16_scaler_state_round_trips_a_resume(tmp_path, monkeypatch):
     resume = replace(_train_params(train_loader, None, 1), resume_from_run_id=parent.id)
     NNModel(net_params=net_params, params=fp16_params).train(params=resume)
     assert _CpuScaler.loaded == [{"scale": saved_scale}]  # the scaler continues from the checkpoint
+
+
+def test_default_step_refuses_a_regression_loss_without_a_task_before_any_run(tmp_path, monkeypatch):
+    """The default step scores classification; an MSE model without a task
+    is refused with a hint before a run directory exists, and the same model
+    with a regression task trains."""
+    from dataclasses import replace
+
+    from nnx import TaskSpec
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params(output_dim=1)
+    mse = replace(model_params, loss=Losses.MEAN_SQUARED_ERROR)
+    X, y = torch.randn(16, 8), torch.randn(16, 1)
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=[(X, y)],
+        optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+    )
+    with pytest.raises(ValueError, match="TaskSpec.regression"):
+        NNModel(net_params=net_params, params=mse).train(params=params)
+    assert not (tmp_path / "runs").exists()
+    with_task = replace(mse, task=TaskSpec.regression(1))
+    run = NNModel(net_params=net_params, params=with_task).train(params=params)
+    assert run.idps[-1].train_edp.loss is not None

@@ -126,3 +126,10 @@ def test_activation_map_leaves_eval_mode_alone():
     model.eval()
     activation_map(model, torch.randn(1, 3, 4, 4), "conv1")
     assert model.training is False
+
+
+def test_activation_map_renders_a_bfloat16_activation():
+    """NumPy has no bfloat16: a bf16 module's activation renders in float32."""
+    net = nn.Sequential(nn.Linear(4, 3), nn.ReLU()).to(torch.bfloat16)
+    fig = activation_map(net, torch.randn(2, 4, dtype=torch.bfloat16), "0")
+    assert isinstance(fig, go.Figure) and len(fig.data) == 1

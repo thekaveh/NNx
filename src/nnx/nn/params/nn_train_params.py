@@ -23,6 +23,31 @@ def _validate_resume_mode(mode: object, owner: str) -> None:
         raise ValueError(f"{owner}.resume_mode must be one of {', '.join(repr(m) for m in RESUME_MODES)}, got {mode!r}")
 
 
+def _checkpoint_tag(value: object, owner: str) -> Optional[str]:
+    """``resume_from_checkpoint`` as the plain tag string it serializes as:
+    a :class:`Checkpoints` member becomes its value (so the enum and the
+    string name one run identity and dump as YAML), and anything that is not
+    a ``Checkpoints`` tag or a ``ModelCheckpoint`` stem ``"<tag>_e<epoch>"``
+    fails here instead of after training starts."""
+    import re
+
+    from ..enum.checkpoints import Checkpoints
+    from .nn_checkpoint import _MODEL_CHECKPOINT_TAG
+
+    if value is None:
+        return None
+    if isinstance(value, Checkpoints):
+        return value.value
+    if isinstance(value, str) and (
+        value in {c.value for c in Checkpoints} or re.fullmatch(rf"{_MODEL_CHECKPOINT_TAG}_e[0-9]+", value)
+    ):
+        return value
+    raise ValueError(
+        f"{owner}.resume_from_checkpoint must be a Checkpoints tag "
+        f"({', '.join(c.value for c in Checkpoints)}) or a ModelCheckpoint file stem '<tag>_e<epoch>', got {value!r}"
+    )
+
+
 def _validate_resume_epochs(epochs: object, owner: str) -> None:
     if epochs not in RESUME_EPOCHS:
         raise ValueError(
@@ -153,8 +178,18 @@ class NNTrainParams:
                 domain_message=f"NNTrainParams requires n_epochs >= 1, got {self.n_epochs}",
             ),
         )
-        if self.data_id is not None and not self.data_id.strip():
-            raise ValueError("NNTrainParams.data_id must be non-empty when provided")
+        if self.seed is not None:
+            # set_seed feeds Python, NumPy and torch, whose common domain
+            # is [0, 2**32 - 1]; a bool or fraction would otherwise fail
+            # only when train() starts (or hash as a different run).
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNTrainParams", minimum=0, maximum=2**32 - 1)
+            )
+        if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
+            raise ValueError(f"NNTrainParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
+        object.__setattr__(
+            self, "resume_from_checkpoint", _checkpoint_tag(self.resume_from_checkpoint, "NNTrainParams")
+        )
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainParams")

@@ -41,6 +41,7 @@ from . import (
     decisions,
     distributed,
     embeddings,
+    export_conformance,
     graph_tasks,
     history,
     interop,
@@ -347,6 +348,8 @@ __all__ = [
     "CompileFailed",
     # Bounded forward benchmarks and profiling (FEAT-029)
     "benchmarking",
+    # Labelled ONNX export conformance records
+    "export_conformance",
     # Single-node DDP under torchrun (train(distributed=...); FEAT-030)
     "distributed",
     # Budgeted experiment search through Optuna (the `optuna` extra; FEAT-033)

@@ -231,6 +231,19 @@ def test_trainer_fits_are_recorded_attempts_too():
 # --- review hardening -------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("content", [[], "text", {"format": "x", "manifest": []}])
+def test_provenance_that_is_not_a_json_object_is_unreadable_not_a_crash(tmp_path, content):
+    """Valid JSON of the wrong shape is a ValueError (which run loading
+    tolerates), not an AttributeError that escapes it."""
+    run = _model().train(params=_params(1, data_id=f"shape-{type(content).__name__}"), provenance=PLAN)
+    with open(os.path.join("runs", run.id, "provenance.json"), "w", encoding="utf-8") as handle:
+        json.dump(content, handle)
+    with pytest.raises(ValueError, match="JSON object"):
+        load_provenance(run.id)
+    with pytest.warns(RuntimeWarning, match="unreadable provenance ignored"):
+        assert NNRun.load(run.id).provenance is None
+
+
 def test_unreadable_provenance_never_breaks_loading_or_resuming(tmp_path):
     run = _model().train(params=_params(1, data_id="corrupt"), provenance=PLAN)
     path = os.path.join("runs", run.id, "provenance.json")

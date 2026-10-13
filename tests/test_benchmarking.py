@@ -169,3 +169,19 @@ def test_report_is_frozen():
     assert isinstance(report, BenchmarkReport) and report.stdev_seconds == 0.0
     with pytest.raises(AttributeError):
         report.repeats = 5  # type: ignore[misc]
+
+
+def test_a_bfloat16_module_benchmarks_and_digests_its_weights():
+    """NumPy has no bfloat16: the weights digest reads raw bytes, so a bf16
+    module is benchmarked like any other (and its digest is stable)."""
+    net = torch.nn.Linear(4, 2).to(torch.bfloat16)
+    first = benchmarking._weights_digest(net)
+    assert first == benchmarking._weights_digest(net)
+    fp32 = torch.nn.Linear(4, 2)
+    expected = benchmarking.hashlib.sha256()
+    for name, tensor in sorted(fp32.state_dict().items()):
+        expected.update(name.encode("utf-8"))
+        expected.update(tensor.detach().numpy().tobytes())
+    assert benchmarking._weights_digest(fp32) == expected.hexdigest()  # fp32 digests are unchanged
+    report = benchmark_forward(net, torch.randn(3, 4, dtype=torch.bfloat16), warmup=1, repeats=2)
+    assert isinstance(report, BenchmarkReport)

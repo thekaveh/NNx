@@ -82,7 +82,9 @@ def _weights_digest(net: torch.nn.Module) -> str:
     digest = hashlib.sha256()
     for name, tensor in sorted(net.state_dict().items()):
         digest.update(name.encode("utf-8"))
-        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+        # Raw bytes through a uint8 view: NumPy has no bfloat16, and the
+        # bytes of every other dtype are unchanged by the view.
+        digest.update(tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()
 
 

@@ -62,3 +62,10 @@ def test_weight_histogram_raises_on_paramless_module():
     # debugging a "where did my model go" issue).
     with pytest.raises(ValueError, match="no named parameters"):
         weight_histogram(nn.ReLU())
+
+
+def test_weight_histogram_accepts_a_bfloat16_module():
+    import torch
+
+    fig = weight_histogram(nn.Linear(4, 2).to(torch.bfloat16))
+    assert isinstance(fig, go.Figure) and len(fig.data) == 2  # weight and bias

@@ -177,6 +177,8 @@ def _activation_to_figure(
     """
     go = require("plotly.graph_objects", "nnx.viz.activation_map")
     make_subplots = require("plotly.subplots", "nnx.viz.activation_map").make_subplots
+    # NumPy has no bfloat16 (and Plotly wants plain floats): render in float32.
+    act = act.detach().cpu().float()
     if act.ndim == 4:
         # (N, C, H, W) — show the first sample, up to max_channels.
         sample = act[0]

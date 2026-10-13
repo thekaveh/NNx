@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import signal
 import tempfile
 import threading
@@ -79,6 +80,15 @@ def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) ->
     from .nn_run import _validate_run_id
 
     _validate_run_id(run)
+    # ``type`` names the file; like ``run`` it can arrive from the public
+    # API, so a string must be a filename-safe tag (no separators).
+    if not isinstance(type, Checkpoints) and not (
+        isinstance(type, str) and re.fullmatch(_MODEL_CHECKPOINT_TAG, type) is not None
+    ):
+        raise ValueError(
+            f"checkpoint type must be a Checkpoints member or a filename-safe tag "
+            f"(letters, digits, '.', '_' or '-'), got {type!r}"
+        )
     base = root if root is not None else "."
     return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
 
@@ -531,10 +541,11 @@ class NNCheckpoint:
                   with ``MissingModelFactoryError`` before anything is
                   written.
 
-        Both formats write to ``<path>.tmp`` first and rename into place
-        so a KeyboardInterrupt during the underlying save can never leave
-        a half-written checkpoint at the destination — matching the
-        atomicity guarantee NNRun.save offers for YAML/CSV.
+        Both formats write to a hidden temporary file beside ``path``
+        (``.<name>.<random>``), flush it to disk and rename it into place,
+        so an interrupted save can never leave a half-written checkpoint at
+        the destination — matching the atomicity guarantee NNRun.save
+        offers for YAML/CSV.
         """
         if format == "safetensors":
             self._require_portable()  # before any directory or file is created
@@ -597,6 +608,8 @@ class NNCheckpoint:
         os.close(fd)
         try:
             save_file(tensors, tmp, metadata=metadata)
+            with open(tmp, "rb+") as handle:  # durable before the rename, like the pickle path
+                _full_fsync(handle.fileno())
             os.replace(tmp, path)
         finally:
             if os.path.exists(tmp):
@@ -923,10 +936,10 @@ class NNCheckpoint:
         when no sidecar exists (e.g., checkpoints written before resume
         support was added).
 
-        Loaded with ``weights_only=True`` — the optimizer state-dict
-        contains only tensors and standard scalar/dict/list types, so the
-        strict loader works AND it removes the arbitrary-code-execution
-        risk that the main NNCheckpoint.from_file documents."""
+        The sidecar itself is read with ``weights_only=True``. Locating it
+        reads the checkpoint through :meth:`load_training_state`, which
+        loads a pickle-format checkpoint with ``NNCheckpoint.from_file``:
+        trust the run directory as you would for ``from_file``."""
         state = NNCheckpoint.load_training_state(run, type, root=root)
         return None if state is None else state["optimizer"]
 

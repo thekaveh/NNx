@@ -339,6 +339,25 @@ def test_r3_nnrun_load_rejects_path_traversal_run_ids(tmp_path, monkeypatch):
             NNRun.load(id=bad_id)
 
 
+def test_checkpoint_readers_and_writers_reject_a_path_shaped_type(tmp_path, monkeypatch):
+    """The checkpoint ``type`` names the file under ``runs/<id>/checkpoints``
+    and arrives from the public API like ``run`` does: a traversal-shaped
+    string must not resolve outside the run, for a read (which unpickles)
+    or for a write."""
+    from nnx import Checkpoints, NNCheckpoint
+    from nnx.nn.params.nn_checkpoint import _checkpoint_path
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "outside.pt").write_bytes(b"not a checkpoint")
+    for bad in ("../../../outside", "../best", "a/b", "a\\b", "", ".hidden", 3):
+        with pytest.raises(ValueError, match="checkpoint type"):
+            _checkpoint_path("a" * 32, bad)
+        with pytest.raises(ValueError, match="checkpoint type"):
+            NNCheckpoint.load(run="a" * 32, type=bad)
+    assert _checkpoint_path("a" * 32, Checkpoints.BEST).endswith("best.pt")
+    assert _checkpoint_path("a" * 32, "custom_e3").endswith("custom_e3.pt")  # a ModelCheckpoint file stem
+
+
 def test_r3_nnrun_load_accepts_normal_md5_id(tmp_path, monkeypatch):
     """The traversal guard must not reject normal md5-hex run ids
     (32 lowercase-hex chars, no separators) that legitimate callers

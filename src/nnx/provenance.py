@@ -492,6 +492,8 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
         return None
     with open(manifest_path, encoding="utf-8") as handle:
         stored = json.load(handle)
+    if not isinstance(stored, Mapping) or not isinstance(stored.get("manifest"), Mapping):
+        raise ValueError(f"{manifest_path}: a provenance manifest must be a JSON object holding a manifest object")
     if stored.get("format") != FORMAT:
         raise ValueError(f"unsupported provenance format {stored.get('format')!r} in {manifest_path}")
     manifest = ExperimentManifest.from_state(stored["manifest"])
@@ -501,7 +503,10 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
     attempt_path = os.path.join(run_path, ATTEMPT_FILE)
     if os.path.isfile(attempt_path):
         with open(attempt_path, encoding="utf-8") as handle:
-            attempt = Attempt.from_state(json.load(handle))
+            attempt_state = json.load(handle)
+        if not isinstance(attempt_state, Mapping):
+            raise ValueError(f"{attempt_path}: an attempt record must be a JSON object")
+        attempt = Attempt.from_state(attempt_state)
     return ProvenanceRecord(manifest=manifest, fingerprint=stored["fingerprint"], attempt=attempt)
 
 

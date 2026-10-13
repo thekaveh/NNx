@@ -75,3 +75,9 @@ def test_confusion_matrix_aligns_labels_when_class_absent():
     assert z[:, 1].sum() == 0
     # The real counts sit where the names say they do.
     assert z[0][0] == 1 and z[0][2] == 1 and z[2][2] == 1 and z[2][0] == 1
+
+
+def test_classification_report_keeps_a_named_class_absent_from_the_data():
+    df = VisUtils.classification_report([0, 0, 2], [0, 2, 2], class_names=["a", "b", "c"])
+    assert {"a", "b", "c"} <= set(df.index)
+    assert df.loc["b", "support"] == 0 and df.loc["c", "support"] == 1
