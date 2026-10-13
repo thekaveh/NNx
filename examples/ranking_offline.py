@@ -27,7 +27,9 @@ FAISS index file for a text corpus and returns its path, and the caller
 keeps the parallel list of document IDs, exactly as done here. Without
 ``faiss`` installed the same top-M search runs in NumPy.
 
-Fully offline, CPU only.
+Fully offline, CPU only. On macOS the script sets ``KMP_DUPLICATE_LIB_OK``
+and ``OMP_NUM_THREADS`` before importing torch, because the ``faiss-cpu``
+and ``torch`` wheels each bundle an OpenMP runtime.
 
 Run:
     python examples/ranking_offline.py
@@ -39,7 +41,17 @@ script itself runs end to end there as a subprocess.
 
 from __future__ import annotations
 
+import os
 import random
+import sys
+
+# macOS: the faiss-cpu and torch wheels each bundle an OpenMP runtime, and
+# a process that loads both aborts ("OMP: Error #15") or crashes in the
+# FAISS search. Tolerating the duplicate and running one OpenMP thread,
+# set before either library loads, avoids it. Linux needs neither.
+if sys.platform == "darwin":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 import torch

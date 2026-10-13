@@ -42,7 +42,7 @@ Three kinds exist; the kind is always declared, never inferred:
   non-classification loss module assigned to ``model.loss_fn``).
 
 Language-model, ranking, link-prediction and structured-prediction tasks
-are out of scope; ``Nets.TRANSFORMER`` models are rejected. Models without
+are out of scope; ``Nets.TRANSFORMER`` and ``Nets.VIT`` models are rejected. Models without
 a task keep the legacy classification behaviour and serialization.
 """
 

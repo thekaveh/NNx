@@ -69,3 +69,17 @@ def test_weight_histogram_accepts_a_bfloat16_module():
 
     fig = weight_histogram(nn.Linear(4, 2).to(torch.bfloat16))
     assert isinstance(fig, go.Figure) and len(fig.data) == 2  # weight and bias
+
+
+def test_weight_histogram_renders_a_model_with_many_tensors():
+    """Plotly caps subplot spacing at 1 / (rows - 1): 50 tensors (17 rows)
+    used to raise ValueError."""
+    model = nn.Sequential(*[nn.Linear(2, 2) for _ in range(25)])
+    fig = weight_histogram(model)
+    assert len(fig.data) == 50
+
+
+@pytest.mark.parametrize("bad", [{"cols": 0}, {"bins": 0}, {"cols": True}])
+def test_weight_histogram_validates_its_grid_arguments(bad):
+    with pytest.raises(ValueError, match="positive integer"):
+        weight_histogram(nn.Linear(2, 2), **bad)

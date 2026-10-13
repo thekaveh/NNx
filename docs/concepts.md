@@ -722,7 +722,7 @@ default step, `evaluate()`, `predict()` and `predict_proba()`:
 - **Model checks.** The model itself is checked at construction. The loss
   must suit the task (`CROSS_ENTROPY` / `NEGATIVE_LOG_LIKELIHOOD`,
   `BINARY_CROSS_ENTROPY`, `MEAN_SQUARED_ERROR`), and a declared width must
-  equal `output_dim`. `Nets.TRANSFORMER` is out of scope; language-model,
+  equal `output_dim`. `Nets.TRANSFORMER` and `Nets.VIT` are out of scope; language-model,
   ranking, link and structured-prediction tasks are separate work.
   `NNModel.train` and `Trainer.train` re-check the live `loss_fn` before
   touching any loader.
@@ -1531,7 +1531,7 @@ The companion `nnx.viz` subpackage covers **model-internals** viz — the model 
 
 `nnx.viz.activation_map(model, x, layer_name)` registers a forward hook on the named submodule and runs `model(x)` under `torch.no_grad()`. It returns a Plotly heatmap. For 4D conv activations `(N, C, H, W)` that is a grid of per-channel heatmaps; for 2D dense activations, a single `(N, F)` heatmap. Pass a dotted name from `model.named_modules()` (`"layers.0"`, `"conv1"`, etc.); a typo raises `ValueError` and lists the first available names so you can fix it.
 
-`nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)`. The figure renders the attribution as a Plotly heatmap (3-/4-D image-shaped inputs are mean-pooled over channels first).
+`nnx.viz.attribute(model, x, *, method, target, **method_kwargs)` is a Captum-backed input-attribution wrapper with single string-keyed dispatch over six methods: `integrated_gradients`, `gradient_shap`, `deep_lift`, `saliency`, `input_x_gradient`, `occlusion`. Returns `(attribution_tensor, plotly.Figure)`. The figure renders the first sample's attribution as a Plotly heatmap: a 4-D input is mean-pooled over channels first, and a 3-D input is shown as is.
 
 Captum is lazy-imported at the call site, so `summary` and `netron_export` keep working without it; the missing-dep path raises a clear `ImportError`. Sensible per-method defaults (`baselines=zeros` for GradientShap, `sliding_window_shapes` for Occlusion) preserve the one-call ergonomics. Requires the `viz` extra (`pip install thekaveh-nnx[viz]` pulls in `captum` alongside `torchinfo`).
 

@@ -49,8 +49,12 @@ def weight_histogram(
         Empty parameter tensors are skipped from the grid.
 
     Raises:
-        ValueError: If `model` has no named parameters (nothing to plot).
+        ValueError: If `model` has no named parameters (nothing to plot),
+            or if `bins` or `cols` is not a positive integer.
     """
+    for name, value in (("bins", bins), ("cols", cols)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"weight_histogram: {name} must be a positive integer, got {value!r}")
     go = require("plotly.graph_objects", "nnx.viz.weight_histogram")
     make_subplots = require("plotly.subplots", "nnx.viz.weight_histogram").make_subplots
     # Local import to avoid a circular import at package init time.
@@ -70,8 +74,9 @@ def weight_histogram(
         rows=rows,
         cols=cols,
         subplot_titles=[name for name, _ in params],
-        vertical_spacing=0.08,
-        horizontal_spacing=0.05,
+        # Plotly needs spacing <= 1 / (n - 1): shrink it for large grids.
+        vertical_spacing=min(0.08, 0.5 / max(rows - 1, 1)),
+        horizontal_spacing=min(0.05, 0.5 / max(cols - 1, 1)),
     )
     for idx, (_name, vals) in enumerate(params):
         r, c = idx // cols + 1, idx % cols + 1

@@ -39,16 +39,13 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
-    Activations,
     Callback,
     Devices,
     DiffusionMLP,
     Losses,
-    Nets,
     NNModel,
     NNModelParams,
     NNOptimParams,
-    NNParams,
     NNSchedulerParams,
     NNTrainParams,
     NoiseSchedulers,
@@ -85,11 +82,11 @@ def objective_mode() -> dict:
     fields.
     """
     set_seed(0)
+    # As in main(): the run records the real net, so its checkpoints reload.
     model = NNModel(
-        net_params=NNParams(input_dim=2, output_dim=2, hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        module=DiffusionMLP(input_dim=2, hidden_dims=[32, 32], time_embed_dim=16),
+        params=NNModelParams(device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
     )
-    model.net = DiffusionMLP(input_dim=2, hidden_dims=[32, 32], time_embed_dim=16).to(model.device)
     schedule = NoiseSchedulers.LINEAR(T=50)
     objective = diffusion_objective(schedule, seed=0)
     untouched: list[bool] = []

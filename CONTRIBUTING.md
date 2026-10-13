@@ -155,7 +155,7 @@ NNx uses [release-please](https://github.com/googleapis/release-please-action) f
 
 The end-to-end flow:
 
-1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Before 1.0, `feat:` and `fix:` both trigger a patch bump (`0.X.Y`; `bump-patch-for-minor-pre-major` in `release-please-config.json`). A minor bump (`0.X.0`) needs a `Release-As: 0.X.0` footer on a commit.
+1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Before 1.0, `feat:` and `fix:` both trigger a patch bump (`0.X.Y`; `bump-patch-for-minor-pre-major` in `release-please-config.json`). A breaking change (`!` or a `BREAKING CHANGE:` footer) bumps the minor version (`0.X.0`; `bump-minor-pre-major`). To force a minor bump otherwise, add a `Release-As: 0.X.0` footer to a commit.
 
    The Release PR carries only release-please's own commit. Nothing else pushes to it, because the `main` ruleset holds a PR for review when a bot made its latest push. That holds even for a verified commit, so each release PR needs one approval.
 

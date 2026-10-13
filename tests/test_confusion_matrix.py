@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import pytest
 
 from nnx.vis_utils import VisUtils
 
@@ -91,3 +92,11 @@ def test_classification_report_scores_labels_that_are_not_class_indices():
     assert df.loc["dog", "recall"] == 1.0
     one_based = VisUtils.classification_report([1, 2, 2], [1, 2, 2], class_names=["x", "y"])
     assert one_based.loc["x", "support"] == 1 and one_based.loc["y", "f1-score"] == 1.0
+
+
+@pytest.mark.parametrize("labels", [[1, 2, 3, 3], ["a", "b", "c", "c"]], ids=["one-based", "strings"])
+def test_confusion_matrix_refuses_labels_that_are_not_class_indices(labels):
+    """class_names[i] names class index i: a 1-based id or a string label
+    would be dropped (or shift every name), so it is refused."""
+    with pytest.raises(ValueError, match="class indices"):
+        VisUtils.confusion_matrix(np.array(labels), np.array(labels), class_names=["a", "b", "c"])

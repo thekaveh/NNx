@@ -22,6 +22,8 @@ pip install "thekaveh-nnx[embeddings]"
 
 Pulls in `faiss-cpu` and `sentence-transformers`. Both are optional at import time: `import nnx.embeddings` works even without them — the `ImportError` is deferred to the call site that actually needs each one.
 
+On macOS, the `faiss-cpu` and `torch` wheels each bundle their own OpenMP runtime. A process that loads both can abort ("OMP: Error #15") or crash inside a FAISS search. Set `KMP_DUPLICATE_LIB_OK=TRUE` and `OMP_NUM_THREADS=1` before you import either library. [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py) shows how.
+
 ## 3. Quickstart
 
 ```python

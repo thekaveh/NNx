@@ -142,6 +142,10 @@ def test_example_imports_without_running_main(example):
 def test_representative_examples_run_end_to_end(name, tmp_path):
     env = os.environ.copy()
     env["NNX_TQDM_DISABLE"] = "1"
+    # conftest sets these for the in-process FAISS tests; a user's shell
+    # does not, so an example that needs them must set them itself.
+    env.pop("KMP_DUPLICATE_LIB_OK", None)
+    env.pop("OMP_NUM_THREADS", None)
     subprocess.run(
         [sys.executable, str(ROOT / "examples" / name)],
         cwd=tmp_path,

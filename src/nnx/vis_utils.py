@@ -353,7 +353,9 @@ class VisUtils:
     ):
         """Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays
         of integer class labels. If `class_names` is provided, axis labels use
-        the named classes; otherwise integer indices."""
+        the named classes, and every label must be a class index
+        ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise
+        integer indices."""
         go = require("plotly.graph_objects", "nnx.vis_utils.VisUtils")
         from sklearn.metrics import confusion_matrix as _sk_cm
 
@@ -363,6 +365,16 @@ class VisUtils:
         # PRESENT in the data, so an absent class silently shifts every
         # later row/column onto the wrong name.
         cm_labels = list(range(len(class_names))) if class_names is not None else None
+        if cm_labels is not None:
+            # class_names[i] names class index i: any other label would be
+            # dropped from the matrix (or every name shifted), so refuse it.
+            present = set(Y_true.ravel().tolist()) | set(Y_pred.ravel().tolist())
+            stray = sorted((v for v in present if isinstance(v, bool) or v not in cm_labels), key=repr)
+            if stray:
+                raise ValueError(
+                    f"confusion_matrix: with class_names, labels must be class indices 0..{len(cm_labels) - 1}; "
+                    f"got {stray[:5]!r}"
+                )
         cm = _sk_cm(Y_true, Y_pred, labels=cm_labels)
         if normalize:
             row_sums = cm.sum(axis=1, keepdims=True)

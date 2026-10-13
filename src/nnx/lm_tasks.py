@@ -25,7 +25,8 @@ checked before any forward pass.
   windows normalize by the window's valid tokens. An all-masked microbatch
   contributes nothing, and an all-masked window takes no optimizer or
   scaler step (its gradients are cleared; schedulers still advance once per
-  epoch, and a plateau scheduler skips an epoch whose validation record is
+  epoch on the default epoch clock, or once per committed update on the
+  ``optimizer_update`` clock, and a plateau scheduler skips an epoch whose validation record is
   unavailable). The task configuration is
   checkpointed component state (``"lm.causal_task"``): a resume with another
   configuration is refused before the first resumed update.

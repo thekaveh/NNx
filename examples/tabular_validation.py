@@ -116,7 +116,8 @@ def tabular_validation_workflow() -> dict:
     X, y = next(iter(ds.train_loader))
     logits = model.net(X)
     loss = model.loss_fn(logits, y)
-    reference = F.cross_entropy(logits, y)
+    # By hand: the mean negative log-probability of each row's true class.
+    reference = -F.log_softmax(logits, dim=-1)[torch.arange(len(y)), y].mean()
     assert torch.isfinite(loss) and torch.allclose(loss, reference), (loss, reference)
     loss.backward()
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.net.parameters())

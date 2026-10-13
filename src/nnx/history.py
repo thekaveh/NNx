@@ -47,7 +47,8 @@ is refused before training, as is an unknown ``history_access``.
 **Lineage.** A resumed run owns its own run directory and chunk files; its
 parent is never written. ``iter_history(run_id, lineage=True)`` yields the
 parent's committed records up to the checkpoint the child resumed from
-(following ``resume_from_run_id`` / ``parent_run_id``, recursively), then
+(following the recorded resume, recursively; runs recorded before resume
+status fall back to ``parent_run_id``), then
 the child's — never the parent's later epochs, never an epoch twice.
 """
 

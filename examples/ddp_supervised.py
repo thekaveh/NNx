@@ -5,6 +5,12 @@ one GPU per process over NCCL)::
 
     torchrun --standalone --nproc_per_node=2 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out
 
+On macOS, a host name that resolves to an unreachable address makes the
+rendezvous retry without end; launch over the loopback instead::
+
+    GLOO_SOCKET_IFNAME=lo0 torchrun --nnodes=1 --nproc_per_node=2 --master_addr=127.0.0.1 \
+        --master_port=29500 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out
+
 Six labelled rows with stable ids (0-5) train a small classifier:
 
   1. ``nnx.distributed.train_loader`` deals each epoch's seeded permutation

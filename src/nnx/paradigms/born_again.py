@@ -77,9 +77,9 @@ def born_again_train(
         ValueError: if ``generations < 1``; if ``generations > 1`` and the
             optimizer accumulates gradients or ``alpha`` / ``temperature``
             are out of range. Nothing is trained.
-        TypeError: if ``generations > 1`` and a keyword is not a
-            :func:`kd_train_step_factory` parameter, or the training loader
-            holds stored teacher records.
+        TypeError: if the training loader holds stored teacher records
+            (for any ``generations``), or if ``generations > 1`` and a
+            keyword is not a :func:`kd_train_step_factory` parameter.
         PrecisionUnsupportedError: if ``generations > 1`` and the model's
             precision is reduced: the KD generations run in full
             precision only, so nothing is trained.

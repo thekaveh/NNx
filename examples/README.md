@@ -153,6 +153,7 @@ Notes for section 2.1:
 **`ddp_supervised.py`**
 
 - Run `torchrun --standalone --nproc_per_node=2 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out`. It trains six rows with stable ids (0-5) through `nnx.distributed.train_loader` / `validation_loader` and `train(distributed=DDP())`.
+- On macOS, if the host name resolves to an unreachable address, use the loopback instead: `GLOO_SOCKET_IFNAME=lo0 torchrun --nnodes=1 --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out`.
 - Each rank prints its validation ids (together 0-5 exactly once), the shared run id and whether it owns the artifacts (rank 0 only). It then leaves the process group with `nnx.distributed.shutdown()`.
 - `--inject-failure` makes rank 1 raise in epoch 1. The launch exits non-zero within the process-group timeout, leaving no worker behind.
 - CUDA claims need a real two-GPU run.
@@ -204,7 +205,7 @@ Notes for section 2.1:
 - A `Choice` normalizes entailment logits across the candidates (`log(3)` / `0` → `(0.75, 0.25)`).
 - A `Boolean` takes each text's own contradiction-vs-entailment softmax (`0` / `log(4)` → `0.8`).
 - Reports accuracy, macro-F1 and categorical NLL / Brier on a small labelled split. The report records the split, the model revision and the provider's settings (`calibrated: false`).
-- Also shows a `Score`, and an invalid request refused with the call counter at zero.
+- A `Score` (unsupported) and an invalid request are refused with the call counter at zero.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (end-to-end run and bounded helper `decision_nli_workflow()`, `-k decision_nli`).
 
 **`custom_module.py`**
@@ -357,7 +358,7 @@ Notes for section 2.1:
 - It rejects finite values outside an integer dtype's range (`300` → `int8` would wrap).
 - It rejects finite values that overflow `float16` during conversion, for both features and a floating `target_dtype` target.
 - It ignores non-finite values in unselected columns. On rejection, it leaves the DataFrame and global RNG untouched.
-- A valid frame then drives one classification step whose loss matches a hand-computed cross-entropy reference. A regression dataset keeps `(N, 1)` targets.
+- A valid frame then gives a classification loss that matches cross-entropy computed by hand from the logits. A regression dataset keeps `(N, 1)` targets.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py`; bounded helper `tabular_validation_workflow()` (`-k tabular_validation`, temporary working directory).
 
 **`03_custom_metrics.py`**
