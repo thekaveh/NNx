@@ -608,3 +608,30 @@ def test_lr_finder_rejects_live_persistent_worker_iterator_before_mutation():
     assert model.training is False
     for name, value in model.state_dict().items():
         assert torch.equal(value, before[name])
+
+
+def test_a_negative_loss_sweeps_like_a_positive_one():
+    """Divergence is measured from the minimum: a constant shift of the
+    loss (a negative NLL, say) records the same number of points."""
+    counts = []
+    for shift in (0.0, -10.0):
+        model, loader = _tiny_model_and_loader()
+        result = lr_finder(
+            model,
+            loader,
+            loss_fn=lambda out, y, s=shift: nn.functional.cross_entropy(out, y) + s,
+            start_lr=1e-6,
+            end_lr=1e-2,
+            num_iter=12,
+        )
+        counts.append(len(result.lrs))
+    assert counts[1] == counts[0] > 1
+
+
+@pytest.mark.parametrize(
+    "bad", [{"end_lr": math.inf}, {"start_lr": math.nan}, {"diverge_threshold": math.nan}], ids=str
+)
+def test_non_finite_sweep_arguments_are_refused(bad):
+    model, loader = _tiny_model_and_loader()
+    with pytest.raises(ValueError, match="finite"):
+        lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=5, **bad)

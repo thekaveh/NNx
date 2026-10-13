@@ -228,3 +228,45 @@ def test_one_cycle_keeps_each_param_groups_own_peak():
     Schedulers.ONE_CYCLE(scaled, NNSchedulerParams(kind=Schedulers.ONE_CYCLE, max_lr=1e-2, **base), n_epochs=10)
     # The default group peaks at exactly max_lr; the backbone keeps its 1/100.
     assert [group["max_lr"] for group in scaled.param_groups] == pytest.approx([1e-4, 1e-2])
+
+
+def test_one_cycle_peaks_against_a_factory_optimizers_configured_base_lr():
+    """A registered factory builds its optimizer without an lr, so its
+    defaults["lr"] is the class default: the peaks follow the config's
+    max_lr (the default group's rate), as for a built-in optimizer."""
+    import torch
+
+    from nnx import NNParamGroupSpec, NNSchedulerParams, Schedulers
+    from nnx.optimizers import (
+        NNOptimFactoryParams,
+        OptimizerFactorySpec,
+        build_optimizer,
+        register_optimizer_factory,
+        unregister_optimizer_factory,
+    )
+
+    register_optimizer_factory("test.adam_default_lr", 1, lambda groups, config: torch.optim.Adam(groups))
+    try:
+        net = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+        optimizer = build_optimizer(
+            net,
+            NNOptimFactoryParams(
+                factory=OptimizerFactorySpec(id="test.adam_default_lr", version=1),
+                max_lr=0.1,
+                param_groups=[NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.5)],
+            ),
+        )
+        params = NNSchedulerParams(
+            kind=Schedulers.ONE_CYCLE,
+            max_lr=1.0,
+            min_lr=0.0,
+            factor=0.5,
+            patience=0,
+            cooldown=0,
+            threshold=0.0,
+            total_steps=10,
+        )
+        Schedulers.ONE_CYCLE(optimizer, params, n_epochs=10)
+        assert sorted(group["max_lr"] for group in optimizer.param_groups) == pytest.approx([0.5, 1.0])
+    finally:
+        unregister_optimizer_factory("test.adam_default_lr", 1)

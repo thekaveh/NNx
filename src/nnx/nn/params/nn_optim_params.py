@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import numbers
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Union
 
@@ -253,14 +254,15 @@ class NNOptimParams:
         )
 
     def is_valid(self) -> bool:
+        # Any real number (an int 0 included) that __post_init__ accepted;
+        # the stored value is kept as given so run ids never shift.
+        def real(x: object) -> bool:
+            return isinstance(x, numbers.Real) and not isinstance(x, bool)
+
         if self.name in _SGD_FAMILY:
-            return isinstance(self.momentum, float)
+            return real(self.momentum)
         if self.name in _ADAM_FAMILY:
-            return (
-                isinstance(self.momentum, tuple)
-                and len(self.momentum) == 2
-                and all(isinstance(x, float) for x in self.momentum)
-            )
+            return isinstance(self.momentum, tuple) and len(self.momentum) == 2 and all(real(x) for x in self.momentum)
         # Unknown enum variant — refuse rather than implicitly returning None
         # (which would short-circuit `not params.optim.is_valid()` in train()).
         return False

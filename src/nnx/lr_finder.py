@@ -28,6 +28,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ._optional import require
+from ._validation import require_finite_real
 from .nn.params.nn_checkpoint import _snapshot_state_dict
 from .utils import _capture_training_modes, _restore_training_modes
 
@@ -113,7 +114,8 @@ def lr_finder(
         ImportError: Plotly (the ``plots`` extra, ``pip install
             "thekaveh-nnx[plots]"``) is not installed — raised before any
             data, model or RNG state is touched.
-        ValueError: on invalid arguments (``num_iter < 2``,
+        ValueError: on invalid arguments (``num_iter < 2``, a non-finite
+            ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
             ``start_lr <= 0``, ``end_lr <= start_lr``).
     """
     # The plot is the finder's output: without the plots extra, fail before
@@ -121,6 +123,8 @@ def lr_finder(
     require("plotly.graph_objects", "nnx.lr_finder")
     if num_iter < 2:
         raise ValueError(f"lr_finder num_iter must be >= 2, got {num_iter}")
+    for name, value in (("start_lr", start_lr), ("end_lr", end_lr), ("diverge_threshold", diverge_threshold)):
+        require_finite_real(value, name, owner="lr_finder")
     if start_lr <= 0:
         raise ValueError(f"lr_finder start_lr must be > 0, got {start_lr}")
     if end_lr <= start_lr:
@@ -241,7 +245,9 @@ def lr_finder(
             # the backward+step keeps the diverging gradients out of the
             # parameter trajectory (which we restore anyway, but cheaper to
             # skip when we can).
-            if smoothed_min is not None and smoothed_loss > diverge_threshold * smoothed_min:
+            # Measured from the minimum, so a negative loss (a Gaussian NLL,
+            # a shifted objective) diverges by the same rule as a positive one.
+            if smoothed_min is not None and smoothed_loss - smoothed_min > (diverge_threshold - 1) * abs(smoothed_min):
                 break
 
             loss.backward()

@@ -86,7 +86,9 @@ class Schedulers(Enum):
                 # multipliers are relative to), so the default group peaks at
                 # exactly max_lr and spec order never changes a peak.
                 group_lrs = [float(group["lr"]) for group in optimizer.param_groups]
-                base_lr = float(optimizer.defaults.get("lr", group_lrs[0]))
+                # build_optimizer records the config's max_lr; a hand-built
+                # optimizer falls back to its own default LR.
+                base_lr = float(getattr(optimizer, "_nnx_base_lr", optimizer.defaults.get("lr", group_lrs[0])))
                 if params.max_lr is None:
                     max_lr: Any = group_lrs if len(group_lrs) > 1 else group_lrs[0]
                 elif len(group_lrs) > 1 and base_lr > 0:

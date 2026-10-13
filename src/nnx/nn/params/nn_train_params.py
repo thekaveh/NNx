@@ -192,6 +192,11 @@ class NNTrainParams:
             )
         if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
             raise ValueError(f"NNTrainParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
+        # Flags are real bools: a truthy string would act as True while
+        # run.yaml recorded the string (and shifted the run id).
+        for flag in ("save_phase_checkpoints", "overwrite_existing"):
+            if not isinstance(getattr(self, flag), bool):
+                raise ValueError(f"NNTrainParams.{flag} must be a bool, got {getattr(self, flag)!r}")
         object.__setattr__(
             self,
             "resume_from_checkpoint",

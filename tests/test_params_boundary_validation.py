@@ -192,3 +192,31 @@ def test_numpy_scalars_become_plain_floats_in_state():
         yaml.safe_dump(p.state())  # raised RepresenterError for NumPy scalars
     assert NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0).state()["dropout_prob"] == 0
     assert type(NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0).dropout_prob) is int
+
+
+def test_an_integer_momentum_accepted_at_construction_is_valid_at_train_time():
+    """momentum=0 (plain SGD) and betas=(0, 0) pass construction, so
+    is_valid() (which train() checks) must accept them too."""
+    from nnx import NNOptimParams, Optims
+
+    assert NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0, weight_decay=0).is_valid()
+    assert NNOptimParams(name=Optims.ADAM, max_lr=0.1, momentum=(0, 0), weight_decay=0).is_valid()
+
+
+@pytest.mark.parametrize("flag", ["save_phase_checkpoints", "overwrite_existing"])
+@pytest.mark.parametrize("bad", [0, 1, "false"])
+def test_train_params_flags_must_be_bools(flag, bad):
+    from nnx import NNTrainParams
+    from nnx.trainer import NNTrainerParams
+
+    with pytest.raises(ValueError, match=flag):
+        NNTrainParams(n_epochs=1, **{flag: bad})
+    with pytest.raises(ValueError, match=flag):
+        NNTrainerParams(n_epochs=1, **{flag: bad})
+
+
+def test_trainer_auto_step_schedulers_must_be_a_bool():
+    from nnx.trainer import NNTrainerParams
+
+    with pytest.raises(ValueError, match="auto_step_schedulers"):
+        NNTrainerParams(n_epochs=1, auto_step_schedulers="false")
