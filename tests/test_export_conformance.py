@@ -942,4 +942,4 @@ def test_the_profile_model_and_inputs_are_fp32_under_any_default_dtype():
     finally:
         torch.set_default_dtype(previous)
     fp32 = build_model()
-    assert all(torch.equal(a, b) for a, b in zip(model.net.parameters(), fp32.net.parameters()))
+    assert all(torch.equal(a, b) for a, b in zip(model.net.parameters(), fp32.net.parameters(), strict=True))
