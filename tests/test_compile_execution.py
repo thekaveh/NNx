@@ -575,6 +575,25 @@ def test_a_bug_in_the_forward_is_the_users_error_not_a_compile_failure():
         assert "shapes cannot be multiplied" in str(caught.value) or "mat1" in str(caught.value)
 
 
+def test_the_users_forward_error_leaves_the_buffers_as_found():
+    """The eager re-run that tells a user error from a compile failure runs
+    the forward's side effects again; they are undone before it propagates."""
+    wrong = [(torch.randn(4, 5), torch.randint(0, 3, (4,)))]  # 5 features into a 4-input net
+    for policy in ("error", "eager"):
+        model = _feed_fwd()
+        model.net.register_buffer("calls", torch.zeros(()))
+
+        def bump(module, args):
+            module.calls += 1
+
+        model.net.register_forward_pre_hook(bump)
+        torch._dynamo.reset()
+        with pytest.raises(RuntimeError) as caught:
+            model.train(params=_params(wrong), compile=CompileSpec(backend="aot_eager", on_failure=policy))
+        assert not isinstance(caught.value, CompileFailed)
+        assert model.net.calls.item() == 0, policy
+
+
 def test_mode_is_for_inductor_only():
     with pytest.raises(ValueError, match="inductor"):
         CompileSpec(backend="aot_eager", mode="max-autotune")

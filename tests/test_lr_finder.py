@@ -635,3 +635,10 @@ def test_non_finite_sweep_arguments_are_refused(bad):
     model, loader = _tiny_model_and_loader()
     with pytest.raises(ValueError, match="finite"):
         lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=5, **bad)
+
+
+@pytest.mark.parametrize("num_iter", [3.0, 2.9, True])
+def test_a_non_integer_num_iter_is_a_value_error_before_the_sweep(num_iter):
+    model, loader = _tiny_model_and_loader()
+    with pytest.raises(ValueError, match="num_iter"):
+        lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=num_iter)

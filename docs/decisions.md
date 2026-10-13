@@ -130,7 +130,8 @@ what it can answer:
 - **A Boolean head's question.** A one-logit head is one probability bound to
   no prompt, so `question=Boolean(...)` names the question it was trained for.
   It is required for such a head and refused for a categorical one (which
-  answers by its labels).
+  answers by its labels). `ordinal=` and `option_map=` are refused for a
+  one-logit head: a Boolean has no options to order or map.
 - **Other Booleans.** Any other Boolean — another digest, however close its
   wording — raises `UnsupportedCapability` before the `model_calls` counter
   advances. So a decision job refuses it and a benchmark records it

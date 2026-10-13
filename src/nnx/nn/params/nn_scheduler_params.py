@@ -50,13 +50,15 @@ class NNSchedulerParams:
         # Fail-fast on out-of-range numeric fields. None of these are emitted
         # into state() when at their defaults, so validation never shifts a
         # run.id — same [[params-boundary-validation]] contract as the other
-        # params dataclasses. `factor` is the LR multiplier (the torch
-        # ReduceLROnPlateau ctor additionally requires factor < 1, which it
-        # enforces itself for that variant); `patience`/`cooldown` are epoch
+        # params dataclasses. `factor` is the LR multiplier (a plateau
+        # scheduler reduces the LR, so it also needs factor < 1, checked here
+        # rather than by torch at the first fit); `patience`/`cooldown` are epoch
         # counts; `min_lr`/`threshold` are non-negative bounds. Present
         # (non-None) variant knobs are positive step/length counts.
         # Real-valued fields: finite first, then the domain (FIX-020).
         require_finite_real(self.factor, "factor", owner="NNSchedulerParams", minimum=0.0, exclusive_min=True)
+        if self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU) and not self.factor < 1:
+            raise ValueError(f"NNSchedulerParams requires factor < 1 for a plateau scheduler, got {self.factor!r}")
         require_finite_real(self.min_lr, "min_lr", owner="NNSchedulerParams", minimum=0.0)
         require_finite_real(self.threshold, "threshold", owner="NNSchedulerParams", minimum=0.0)
         if self.max_lr is not None:

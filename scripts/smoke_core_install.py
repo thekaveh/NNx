@@ -86,7 +86,9 @@ def _core_round_trip(workdir: Path) -> None:
             )
         )
         before = model.predict(X).logits
-        reloaded = nnx.NNModel.from_checkpoint(nnx.NNCheckpoint.load(run=run.id, type=nnx.Checkpoints.LAST))
+        checkpoint = nnx.NNCheckpoint.load(run=run.id, type=nnx.Checkpoints.LAST)
+        assert checkpoint is not None, "the run wrote no LAST checkpoint"
+        reloaded = nnx.NNModel.from_checkpoint(checkpoint)
     finally:
         os.chdir(cwd)
     assert np.allclose(reloaded.predict(X).logits, before), "a reloaded checkpoint predicts differently"
@@ -154,7 +156,7 @@ def _absent_feature(extra: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--profile", choices=sorted(PROFILES), required=True)
     parser.add_argument("--output", type=Path, default=None, help="where to write the JSON report")
     args = parser.parse_args(argv)

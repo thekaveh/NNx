@@ -11,6 +11,7 @@ fields; and a ``sample`` preview never perturbs the objective's generator.
 from __future__ import annotations
 
 import copy
+import math
 import os
 
 import pytest
@@ -507,12 +508,19 @@ def test_a_denoiser_of_the_wrong_output_shape_is_refused():
         def forward(self, x, t):
             return self.linear(x).squeeze(-1)
 
-    model = NNModel(module=Squeezed(), params=Params(loss=Losses.MEAN_SQUARED_ERROR))
-    with pytest.raises(ValueError, match="noise of the input's shape"):
-        model.train(_params([_points(4)[:, :1]]), objective=diffusion_objective(SCHEDULE))
+    from nnx.diffusion import diffusion_train_step_factory
+
+    for how in (
+        {"objective": diffusion_objective(SCHEDULE)},
+        {"train_step_fn": diffusion_train_step_factory(SCHEDULE)},
+    ):
+        model = NNModel(module=Squeezed(), params=Params(loss=Losses.MEAN_SQUARED_ERROR))
+        with pytest.raises(ValueError, match="noise of the input's shape"):
+            model.train(_params([_points(4)[:, :1]]), **how)
 
 
-def test_a_bf16_denoiser_trains_in_its_own_dtype():
+@pytest.mark.parametrize("path", ["step", "objective"])
+def test_a_bf16_denoiser_trains_in_its_own_dtype(path):
     from nnx import NNModelParams as Params
     from nnx.diffusion import diffusion_train_step_factory
 
@@ -521,5 +529,10 @@ def test_a_bf16_denoiser_trains_in_its_own_dtype():
         module=DiffusionMLP(input_dim=2, hidden_dims=[8], time_embed_dim=4).to(torch.bfloat16),
         params=Params(loss=Losses.MEAN_SQUARED_ERROR),
     )
-    run = model.train(_params([_points(4).to(torch.bfloat16)]), train_step_fn=diffusion_train_step_factory(SCHEDULE))
-    assert all(idp.train_edp.loss is not None for idp in run.idps)
+    how = (
+        {"train_step_fn": diffusion_train_step_factory(SCHEDULE)}
+        if path == "step"
+        else {"objective": diffusion_objective(SCHEDULE)}
+    )
+    run = model.train(_params([_points(4).to(torch.bfloat16)]), **how)
+    assert all(idp.train_edp.loss is not None and math.isfinite(idp.train_edp.loss) for idp in run.idps)

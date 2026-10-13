@@ -4,6 +4,10 @@
     "scripts/docs",
     "scripts/check_feature_composition.py",
     "scripts/composition_plugin.py",
+    "scripts/check_export_conformance.py",
+    "scripts/normalize_sdist.py",
+    "scripts/smoke_core_install.py",
+    "scripts/smoke_jev_live.py",
     "scripts/release"
   ],
   "exclude": [

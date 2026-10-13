@@ -246,9 +246,9 @@ clipping.
 - **Learning-rate finder** (`plots` extra). `nnx.lr_finder` runs an
   exponential sweep, suggests a one-cycle `max_lr` and restores the model and
   RNG state afterwards.
-- **Run plots** (`plots` extra). `VisUtils` returns Plotly figures: confusion
-  matrix, classification report, line and scatter plots, and t-SNE of
-  checkpoint logits.
+- **Run plots** (`plots` extra). `VisUtils` returns Plotly figures (confusion
+  matrix, line and scatter plots, t-SNE of checkpoint logits) and a
+  classification-report DataFrame.
 - **Model internals** (`viz` extra). `nnx.viz` provides `summary`,
   `weight_histogram`, `activation_map`, `attribute` (Captum), `gradient_flow`
   and `netron_export`, which also needs the `onnx` extra.

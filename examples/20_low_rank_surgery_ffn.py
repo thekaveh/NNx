@@ -437,7 +437,7 @@ def recipe_reconstruction_workflow() -> dict:
         optimizer.step()
 
     idp = NNIterationDataPoint(
-        lr=1e-2, iter_idx=4, epoch_idx=0, batch_idx=4, train_edp=NNEvaluationDataPoint(loss=float(loss))
+        lr=1e-2, iter_idx=4, epoch_idx=0, batch_idx=4, train_edp=NNEvaluationDataPoint(loss=float(loss.detach()))
     )
     checkpoint = NNCheckpoint(
         idp=idp,

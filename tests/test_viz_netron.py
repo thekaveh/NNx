@@ -121,13 +121,12 @@ def test_netron_export_launch_true_invokes_netron_start(tmp_path, tiny_feedfwd, 
 
 def test_netron_export_launch_true_without_netron_raises(tmp_path, tiny_feedfwd, monkeypatch):
     # Simulate `netron` not being installed so we can verify the
-    # ImportError message names the correct extra. The export itself
-    # still has to succeed before the import is attempted, so the file
-    # should exist on disk even though the launch step failed.
+    # ImportError message names the correct extra. The import is checked
+    # before the export, so a missing viewer leaves no file on disk.
     import sys
 
     monkeypatch.setitem(sys.modules, "netron", None)
     out = tmp_path / "missing_netron.onnx"
     with pytest.raises(ImportError, match=r"viz-interactive"):
         netron_export(tiny_feedfwd, str(out), torch.randn(1, 4), launch=True)
-    assert out.exists()
+    assert not out.exists()

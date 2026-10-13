@@ -885,3 +885,38 @@ def test_an_objective_whose_every_term_is_detached_is_refused(tmp_path, monkeypa
             params=NNTrainParams(n_epochs=1, train_loader=[(X, Y)], optim=_sgd(1), save_phase_checkpoints=False),
             objective=detached,
         )
+
+
+def test_a_window_dropped_for_non_finite_gradients_is_left_out_of_the_epoch_loss(tmp_path, monkeypatch):
+    """Finite terms, non-finite gradients: the engine drops the window, and
+    so does the whole-epoch loss (the pre-commit term flag missed it)."""
+    import torch.nn.functional as F
+
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    xs, ys = torch.tensor([[1.0], [2.0]]), torch.tensor([0, 1])
+    calls = iter(range(100))
+
+    class InfGradFirst:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            return _inf_gradient_objective(ctx) if next(calls) == 0 else supervised_objective()(ctx)
+
+    model = _linear()
+    with torch.no_grad():  # window 1 is dropped, so window 2 sees the initial weights
+        expected = F.cross_entropy(model.net(xs[1:]), ys[1:]).item()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(xs[i : i + 1], ys[i : i + 1]) for i in range(2)],
+            optim=_sgd(1),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="gradient-drop",
+        ),
+        objective=InfGradFirst(),
+    )
+    assert run.idps[-1].train_summary.loss == pytest.approx(expected)

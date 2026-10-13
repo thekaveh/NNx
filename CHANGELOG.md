@@ -97,6 +97,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `decide_result` returns an `invalid_decision_response` error for an answer of the wrong count or question; `question_from_state` refuses keys its kind does not take.
     - A numeric setting given as an integer too large for a float raises a `ValueError` naming the field.
     - A failed eager re-run under `compile=` restores the model's RNG and buffers before its error propagates.
+    - The diffusion step and both JEPA paths refuse a prediction of the wrong shape instead of broadcasting it into the loss.
+    - `ExperimentManifest(config=None)` reloads with its fingerprint, so the run keeps its provenance.
+    - Construction refuses a plateau scheduler `factor >= 1`, `ModelCheckpoint` epochs that can never match, and non-string `NNTrainerParams` optimizer / scheduler names; `lr_finder` refuses a non-integer `num_iter` before the sweep.
+    - `netron_export(launch=True)` checks for `netron` before writing the ONNX file.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

@@ -556,7 +556,7 @@ def render(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--check", action="store_true", help="validate the registry, its references and the page")
     parser.add_argument("--run", action="store_true", help="execute the scenarios and write --report")
     parser.add_argument("--render", action="store_true", help="write docs/feature-composition.md from --report")

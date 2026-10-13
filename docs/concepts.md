@@ -324,7 +324,7 @@ Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output m
 
 ## 4. What lands on disk
 
-Every `model.train(params)` creates a run directory under `runs/<id>/`. The `id` is the md5 of the pre-id `{model, net, train[, trainer][, salt][, transforms]}` partial dict, where `transforms` is a recorded `nnx.transforms` recipe:
+Every `model.train(params)` creates a run directory under `runs/<id>/`. The `id` is the md5 of the pre-id `{model[, net], train[, trainer][, salt][, transforms]}` partial dict, where `transforms` is a recorded `nnx.transforms` recipe:
 
 ```
 runs/<id>/
@@ -494,7 +494,8 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   only the provenance files: no model is loaded, no loader iterated and no
   file hashed. It reports each field by a stable path (`data.train`,
   `labels[1]`, `config.lr`). The status is `equal`, `different`, `missing`,
-  `unknown`, `declared` (equal but unverified) or `verified` (equal digests).
+  `unknown`, `declared` (equal but unverified), `verified` (equal digests)
+  or `absent` (one side has no provenance).
   Values compare by their canonical bytes, so `1` and `1.0` differ exactly as
   their fingerprints do.
 - **Comparison results.** `verified_equal` holds only when both sides have
@@ -1823,7 +1824,7 @@ NNModel(net_params=..., params=...).train(params=NNTrainParams(
 
 A checkpoint resumes only when its generation-addressed sidecar matches the checkpoint's recorded generation and optimizer topology. For a registered optimizer factory, the sidecar must also match its recorded id, version and config (§3.1).
 
-Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. Their weights still load, but optimizer, scheduler, scaler, epoch, and RNG state restart from configured defaults with a warning. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
+Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. A checkpoint with no sidecar restores its weights only: epoch numbering continues after its epoch, and the optimizer, scheduler, scaler and RNG state start fresh with a warning. A legacy optimizer-only sidecar also restores the optimizer state. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
 
 ### 14.1. Component state
 
@@ -3179,9 +3180,9 @@ deliberately narrow and **guarantees no speedup**:
   re-runs *that forward* eagerly, from the RNG state and buffers it started
   with, and finishes the run eager.
 - **Eager re-run errors.** A failure the eager re-run hits too is the
-  forward's own error (a shape mistake, for example); it propagates
-  unchanged, and the model's RNG and buffers are left as the failed call
-  found them. Under `on_failure="error"`, a compile failure leaves them so too.
+  forward's own error, a shape mistake for example. It propagates unchanged.
+  The model's RNG and buffers are left as the failed call found them. Under
+  `on_failure="error"`, a compile failure leaves them so too.
 - **Recompile limit.** Hitting dynamo's recompile limit is a failure, never a
   silent eager fallback (torch >= 2.6 reports it). The limit is per code
   object and process-wide. Each fit therefore gets it afresh, on top of the

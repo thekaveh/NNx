@@ -430,3 +430,19 @@ def test_a_library_warning_from_a_main_without_a_loader_warns_and_never_crashes(
     assert done.returncode == 0, done.stderr
     assert "survived" in done.stdout
     assert ("probe warning" in done.stderr) == (filters == "default")
+
+
+def test_a_plateau_factor_of_one_or_more_is_refused_at_construction():
+    from nnx import NNSchedulerParams
+
+    with pytest.raises(ValueError, match="factor < 1 for a plateau"):
+        NNSchedulerParams(min_lr=1e-7, factor=1.5, patience=1, cooldown=0, threshold=1e-3)
+
+
+@pytest.mark.parametrize("epochs", [["3"], [-1], [2.5], 3, "3"])
+def test_model_checkpoint_epochs_that_never_match_are_refused(epochs):
+    from nnx.nn.callbacks import ModelCheckpoint
+
+    with pytest.raises(ValueError, match="epochs"):
+        ModelCheckpoint(epochs=epochs)
+    assert ModelCheckpoint(epochs=[0, 2]).epochs == {0, 2}

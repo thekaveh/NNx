@@ -189,8 +189,10 @@ class FixedHeadProvider:
         model: the trained :class:`~nnx.NNModel`.
         labels: one name per output class, in column order; defaults to the
             model's ``TaskSpec`` labels, and must equal them when both exist.
-        option_map: request option id → head label (a bijection).
-        ordinal: whether the class order is meaningful (enables Score).
+        option_map: request option id → head label (a bijection);
+            categorical heads only.
+        ordinal: whether the class order is meaningful (enables Score);
+            categorical heads only.
         max_batch: the most inputs per call.
         name: the provider name recorded on results.
         question: the :class:`Boolean` a Bernoulli head was trained to

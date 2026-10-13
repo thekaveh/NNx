@@ -315,3 +315,12 @@ def test_a_planned_resume_keeps_the_plan_fingerprint():
         model, train=NNTrainParams(n_epochs=5, resume_from_run_id="a" * 32, resume_epochs="planned")
     )
     assert base.fingerprint() == planned.fingerprint()
+
+
+def test_a_manifest_with_config_none_reloads_with_its_fingerprint():
+    """from_state read a missing config as {}: a None config reloaded with a
+    different fingerprint and the run's provenance was dropped as corrupt."""
+    from nnx.provenance import ExperimentManifest
+
+    manifest = ExperimentManifest(config=None)
+    assert ExperimentManifest.from_state(manifest.state()).fingerprint() == manifest.fingerprint()

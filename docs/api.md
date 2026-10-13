@@ -170,7 +170,7 @@ Raises:
     ImportError: Plotly (the ``plots`` extra, ``pip install
         "thekaveh-nnx[plots]"``) is not installed — raised before any
         data, model or RNG state is touched.
-    ValueError: on invalid arguments (``num_iter < 2``, a non-finite
+    ValueError: on invalid arguments (``num_iter`` not an integer >= 2, a non-finite
         ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
         ``start_lr <= 0``, ``end_lr <= start_lr``,
         ``diverge_threshold <= 1``, ``ema_alpha`` outside ``(0, 1)``), a
@@ -3055,8 +3055,10 @@ Args:
     model: the trained :class:`~nnx.NNModel`.
     labels: one name per output class, in column order; defaults to the
         model's ``TaskSpec`` labels, and must equal them when both exist.
-    option_map: request option id → head label (a bijection).
-    ordinal: whether the class order is meaningful (enables Score).
+    option_map: request option id → head label (a bijection);
+        categorical heads only.
+    ordinal: whether the class order is meaningful (enables Score);
+        categorical heads only.
     max_batch: the most inputs per call.
     name: the provider name recorded on results.
     question: the :class:`Boolean` a Bernoulli head was trained to
@@ -8087,7 +8089,8 @@ shifted with them. ``"pre_shifted"`` takes ``(inputs, targets[,
 loss_mask])`` or a mapping ``{"inputs", "targets", "loss_mask"?}``.
 A loss mask (boolean, or 0/1 except in the ``(ids, loss_mask)``
 tuple) covers the ids (``"shift_inputs"``) or the targets
-(``"pre_shifted"``). A mapping's ``attention_mask`` is never a loss
+(``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
+way (the ids, or the targets when pre-shifted). It is never a loss
 mask, but a position it pads that would still be scored is refused.
 ```
 

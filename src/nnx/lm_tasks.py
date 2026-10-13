@@ -189,7 +189,8 @@ class CausalLMTask:
         loss_mask])`` or a mapping ``{"inputs", "targets", "loss_mask"?}``.
         A loss mask (boolean, or 0/1 except in the ``(ids, loss_mask)``
         tuple) covers the ids (``"shift_inputs"``) or the targets
-        (``"pre_shifted"``). A mapping's ``attention_mask`` is never a loss
+        (``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
+        way (the ids, or the targets when pre-shifted). It is never a loss
         mask, but a position it pads that would still be scored is refused."""
         if isinstance(batch, Mapping):
             return self._split_mapping(batch)

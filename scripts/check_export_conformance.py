@@ -37,7 +37,7 @@ from pathlib import Path
 def main(argv: list[str] | None = None) -> int:
     from nnx.export_conformance import PROFILES, exit_code, run_profiles, save_report, summary_lines
 
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--output", required=True, type=Path, help="where to write the JSON report")
     parser.add_argument(
         "--artifacts", type=Path, help="directory for the exported files (default: <output stem>-artifacts)"

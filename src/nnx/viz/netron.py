@@ -97,6 +97,17 @@ def netron_export(
     out_names = ["output"]
     dynamic_axes = {n: {0: "batch"} for n in in_names + out_names} if dynamic_batch else None
 
+    netron = None
+    if launch:
+        # Lazy import — keeps `netron` out of required deps. Checked before
+        # the export, so a missing viewer writes no file.
+        try:
+            import netron  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                "netron_export(launch=True) requires the `netron` package. "
+                "Install via `pip install thekaveh-nnx[viz-interactive]` (or `pip install netron`)."
+            ) from e
     training_modes = _capture_training_modes(net)
     net.eval()
     try:
@@ -128,16 +139,7 @@ def netron_export(
     finally:
         _restore_training_modes(training_modes)
 
-    if launch:
-        # Lazy import — keeps `netron` out of required deps. Only users
-        # who actually want the interactive viewer pay the install cost.
-        try:
-            import netron  # type: ignore[import-not-found]
-        except ImportError as e:
-            raise ImportError(
-                "netron_export(launch=True) requires the `netron` package. "
-                "Install via `pip install thekaveh-nnx[viz-interactive]` (or `pip install netron`)."
-            ) from e
+    if netron is not None:
         netron.start(path)
 
     return path

@@ -28,7 +28,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ._optional import require
-from ._validation import require_finite_real
+from ._validation import require_count, require_finite_real
 from .nn.params.nn_checkpoint import _snapshot_state_dict
 from .utils import _capture_training_modes, _restore_training_modes
 
@@ -115,7 +115,7 @@ def lr_finder(
         ImportError: Plotly (the ``plots`` extra, ``pip install
             "thekaveh-nnx[plots]"``) is not installed — raised before any
             data, model or RNG state is touched.
-        ValueError: on invalid arguments (``num_iter < 2``, a non-finite
+        ValueError: on invalid arguments (``num_iter`` not an integer >= 2, a non-finite
             ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
             ``start_lr <= 0``, ``end_lr <= start_lr``,
             ``diverge_threshold <= 1``, ``ema_alpha`` outside ``(0, 1)``), a
@@ -125,8 +125,7 @@ def lr_finder(
     # The plot is the finder's output: without the plots extra, fail before
     # any data, model or RNG state is touched (FEAT-031).
     require("plotly.graph_objects", "nnx.lr_finder")
-    if num_iter < 2:
-        raise ValueError(f"lr_finder num_iter must be >= 2, got {num_iter}")
+    num_iter = require_count(num_iter, "num_iter", owner="lr_finder", minimum=2)
     for name, value in (("start_lr", start_lr), ("end_lr", end_lr), ("diverge_threshold", diverge_threshold)):
         require_finite_real(value, name, owner="lr_finder")
     if start_lr <= 0:

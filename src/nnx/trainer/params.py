@@ -164,6 +164,9 @@ class NNTrainerParams:
             value = getattr(self, name)
             if not isinstance(value, Mapping):
                 raise ValueError(f"NNTrainerParams.{name} must be a mapping of name -> params, got {value!r}")
+            bad_keys = [key for key in value if not isinstance(key, str) or not key]
+            if bad_keys:  # names are sorted, serialized and used in component names
+                raise ValueError(f"NNTrainerParams.{name} names must be non-empty strings, got {bad_keys!r}")
             wrong = sorted(str(key) for key, item in value.items() if not isinstance(item, kinds))
             if wrong:
                 expected = " / ".join(kind.__name__ for kind in kinds)

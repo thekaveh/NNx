@@ -27,7 +27,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, first_input, imperative_step
+from .._step_helpers import finalize_step, first_input, full_precision, imperative_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -94,7 +94,12 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
 
         eps_pred = m.net(x_t, t)
-        loss = F.mse_loss(eps_pred, eps)
+        if eps_pred.shape != eps.shape:  # mse_loss would broadcast (a warning) and train on a wrong loss
+            raise ValueError(
+                f"the denoiser must predict noise of the input's shape {tuple(eps.shape)}, got {tuple(eps_pred.shape)}"
+            )
+        # Widened like the objective's error: reduced-precision MSE is not on every CPU torch (2.4 has no bf16).
+        loss = F.mse_loss(full_precision(eps_pred), full_precision(eps))
         loss_val = finalize_step(loss, ctx, paradigm="diffusion")
 
         return NNEvaluationDataPoint(

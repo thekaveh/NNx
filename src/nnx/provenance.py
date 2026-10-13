@@ -285,6 +285,8 @@ class ExperimentManifest:
             object.__setattr__(self, "labels", tuple(self.labels))
         # Validate (rejecting anything not JSON-like, by path) and copy into
         # immutable form: the caller's dicts can no longer change the plan.
+        if self.config is None:  # from_state reads a missing config as {}: one fingerprint for both
+            object.__setattr__(self, "config", {})
         for name in ("task", "model", "objective", "config"):
             object.__setattr__(self, name, _freeze(_canonical(getattr(self, name), f"$.{name}")))
 

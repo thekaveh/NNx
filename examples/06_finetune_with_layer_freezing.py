@@ -128,6 +128,7 @@ def main():
 
     set_seed(42)  # distribution B uses a different seed
     loader_b = _make_loaders()
+    before = {name: p.detach().clone() for name, p in fine.net.named_parameters()}
     run_b = fine.train(
         params=train_params_template(lr=1e-3).with_train_loader(loader_b),
     )
@@ -135,7 +136,9 @@ def main():
     first_loss = run_b.idps[0].train_edp.loss
     # First and last minibatch; random labels, so no learning is expected.
     print(f"\nFine-tune loss (first → last minibatch): {first_loss:.4f} → {last_loss:.4f}")
-    print(f"  trained {len(run_b.idps)} iterations on the head only")
+    changed = sorted(name for name, p in fine.net.named_parameters() if not torch.equal(p, before[name]))
+    assert changed and all(name.startswith("layers.2.") for name in changed), changed
+    print(f"  trained {len(run_b.idps)} iterations; changed parameters: {changed} (the head only)")
 
 
 if __name__ == "__main__":

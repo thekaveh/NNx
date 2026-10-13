@@ -251,6 +251,11 @@ class JEPAObjective(Objective):
         with torch.no_grad():
             target_embeds = self.target_encoder(x)[:, target_positions, :]
         predicted = self.predictor(context_embeds, context_positions, target_positions)
+        if predicted.shape != target_embeds.shape:  # a broadcast would train on a wrong loss silently
+            raise ValueError(
+                f"the predictor must return the target embeddings' shape {tuple(target_embeds.shape)}, "
+                f"got {tuple(predicted.shape)}"
+            )
         error = full_precision(predicted) - full_precision(target_embeds)
         term = LossTerm(_TERM, error.pow(2).sum(), error.numel(), "mean")
         value = term.value

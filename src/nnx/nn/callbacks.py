@@ -497,7 +497,13 @@ class ModelCheckpoint(Callback):
                 f"ModelCheckpoint tag must be a non-empty filename-safe slug "
                 f"containing only letters, digits, '.', '_', or '-'; got {tag!r}"
             )
-        self.epochs = set(epochs or [])
+        if epochs is not None and (isinstance(epochs, (str, bytes)) or not hasattr(epochs, "__iter__")):
+            raise ValueError(f"ModelCheckpoint epochs must be a list of epoch numbers, got {epochs!r}")
+        # Entries that never match an epoch (strings, negatives) would save nothing silently.
+        self.epochs = {
+            require_count(epoch, f"epochs[{i}]", owner="ModelCheckpoint", minimum=0)
+            for i, epoch in enumerate(epochs or [])
+        }
         self.tag = tag
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:

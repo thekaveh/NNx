@@ -356,9 +356,10 @@ offline.
       scored) shift with the ids.
     - Batches for `"pre_shifted"`: `(inputs, targets[, loss_mask])` or
       `{"inputs", "targets", "loss_mask"?}`.
-    - A mapping's `attention_mask` is never a loss mask. However, a padded
-      position it marks that would still be scored is refused (declare
-      `pad_id`, use `labels=-100` or a `loss_mask`). `extra_metrics` do not
+    - A mapping's `attention_mask` is never a loss mask. Like a loss mask,
+      it covers the ids (`"shift_inputs"`) or the targets (`"pre_shifted"`).
+      A padded position it marks that would still be scored is refused
+      (declare `pad_id`, use `labels=-100` or a `loss_mask`). `extra_metrics` do not
       apply to the task and are refused. Half-precision logits are widened to
       float32 for the reported NLL.
     - A run with no monitor elects BEST from the validation NLL. An epoch

@@ -429,6 +429,11 @@ def jepa_train_step_factory(
 
         # Predict target embeddings from context.
         predicted_embeds = predictor(context_embeds, context_positions, target_positions)
+        if predicted_embeds.shape != target_embeds.shape:  # mse_loss would broadcast and train on a wrong loss
+            raise ValueError(
+                f"the predictor must return the target embeddings' shape {tuple(target_embeds.shape)}, "
+                f"got {tuple(predicted_embeds.shape)}"
+            )
 
         loss = F.mse_loss(predicted_embeds, target_embeds)
         loss_val = finalize_step(loss, ctx, paradigm="jepa")
