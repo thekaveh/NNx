@@ -551,7 +551,9 @@ def validate_list_markup(source: Path, text: str) -> None:
             continue
         first = lines[block_start - 1]
         if number > block_start and not _LIST_ITEM.match(first) and not first.lstrip().startswith(("#", "|", "<", ">")):
-            problems.append(f"{source}:{number}: a list item directly under a paragraph line needs a blank line before it")
+            problems.append(
+                f"{source}:{number}: a list item directly under a paragraph line needs a blank line before it"
+            )
             block_start = number
         if len(item.group(1)) in (2, 3):
             problems.append(f"{source}:{number}: indent a nested list item four spaces")
