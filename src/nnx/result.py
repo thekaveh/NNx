@@ -276,7 +276,9 @@ def decide_result(
         from .decisions.schema import Boolean
 
         if isinstance(question, Boolean):
-            raise TypeError("decide_result(policy=...): an abstention policy applies to a Choice or Score, not a Boolean")
+            raise TypeError(
+                "decide_result(policy=...): an abstention policy applies to a Choice or Score, not a Boolean"
+            )
         policy._check(tuple(question.option_ids), model_id, "probabilities", None)
     context = {"question": question.digest(), "provider": type(provider).__name__}
     try:

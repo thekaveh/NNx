@@ -988,9 +988,12 @@ def _classification_edp_for_loss(
     loss: float,
     extra_metrics: Optional[Mapping[str, Callable]],
 ) -> NNEvaluationDataPoint:
-    if isinstance(loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)):
-        # Without a task the default steps score classification (argmax
-        # predictions, accuracy / F1), which a regression target cannot be.
+    regression_loss = isinstance(
+        loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
+    )
+    if regression_loss and target.is_floating_point() and not torch.equal(target, target.round()):
+        # Without a task the default steps score classification (accuracy /
+        # F1 of the predictions), which continuous targets cannot be.
         raise ValueError(
             f"the default steps score classification and cannot score {type(loss_fn).__name__} targets: declare "
             "the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass train_step_fn / objective"
