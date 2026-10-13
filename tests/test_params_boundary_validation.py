@@ -581,6 +581,15 @@ def test_numpy_strings_and_bools_in_configs_are_stored_as_plain_values():
     yaml.safe_dump(MetricSpec("acc", config={"k": np.str_("x")}).state())
     plain = ExperimentManifest(config={"on": True, "s": "x"})
     assert ExperimentManifest(config={"on": np.True_, "s": np.str_("x")}).fingerprint() == plain.fingerprint()
+    # NumPy-string keys and decision ids too.
+    yaml.safe_dump(ModelSpec("my.enc", 1, {np.str_("k"): 1}).state())
+    assert (
+        ExperimentManifest(config={np.str_("k"): 1}).fingerprint() == ExperimentManifest(config={"k": 1}).fingerprint()
+    )
+    from nnx.decisions import ChoiceResult
+
+    result = ChoiceResult("d", ((np.str_("a"), 0.5), (np.str_("b"), 0.5)))
+    assert all(type(option_id) is str for option_id, _ in result.distribution)
 
 
 def test_link_categories_refuse_a_bare_string():
@@ -713,3 +722,76 @@ def test_deepen_refuses_a_feed_fwd_subclass_with_its_own_forward():
     net = Residual(NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU))
     with pytest.raises(ValueError, match="stock forward"):
         deepen(net, after_layer_name="layers.0")
+
+
+def test_a_registered_run_renders_its_factory():
+    from nnx.models import ModelSpec
+    from nnx.nn.params.nn_run import _descriptor_fields
+
+    a = dict(_descriptor_fields(ModelSpec("acme.encoder", 1, {"width": 4})))
+    b = dict(_descriptor_fields(ModelSpec("other.decoder", 3, {"width": 4})))
+    assert a["factory"] == "acme.encoder@v1" and b["factory"] == "other.decoder@v3"
+
+
+def _binary_ffn(seed: int = 0):
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+
+    torch.manual_seed(seed)
+    return NNModel(
+        net_params=NNParams(input_dim=3, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY),
+    )
+
+
+def test_alpha_zero_distillation_trains_a_binary_head(tmp_path, monkeypatch):
+    """alpha=0 is plain supervised training: the single-logit refusal of the
+    soft term must not block it (a cycle-15 regression)."""
+    import torch
+
+    from nnx import NNOptimParams, NNTrainParams
+    from nnx.paradigms.distillation import feature_kd_train_step_factory, kd_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loader = [(torch.randn(4, 3), torch.randint(0, 2, (4, 1)).float())]
+    teacher = _binary_ffn(1)
+    for i, step in enumerate(
+        (
+            kd_train_step_factory(teacher, alpha=0.0),
+            feature_kd_train_step_factory(teacher, auxiliary_layers={"layers.0": "layers.0"}, alpha=0.0, beta=0.5),
+        )
+    ):
+        params = NNTrainParams(
+            n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build(), data_id=f"kd{i}"
+        )
+        _binary_ffn().train(params=params, train_step_fn=step)
+
+
+def test_born_again_refuses_a_binary_head_before_generation_zero(tmp_path, monkeypatch):
+    import os
+
+    import torch
+
+    from nnx import NNOptimParams, NNTrainParams
+    from nnx.paradigms.born_again import born_again_train
+
+    monkeypatch.chdir(tmp_path)
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=[(torch.randn(4, 3), torch.randint(0, 2, (4, 1)).float())],
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+    )
+    with pytest.raises(ValueError, match="single output"):
+        born_again_train(_binary_ffn(), train_params=params, generations=2)
+    assert not os.path.exists("runs")
+
+
+def test_wildcard_peft_refuses_a_transformer_encoder_layer():
+    import torch
+
+    from nnx import apply_lora_to
+
+    with pytest.raises(ValueError, match="TransformerEncoderLayer"):
+        apply_lora_to(torch.nn.TransformerEncoderLayer(8, 2, 16, batch_first=True), "linear*", r=2)

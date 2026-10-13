@@ -728,9 +728,16 @@ class Trainer:
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
                 _set_loader_epoch(params.train_loader, idx_epoch)
-                for cb in normalized_callbacks:
-                    cb.on_epoch_begin(ctx)
-                _refuse_update_listeners(ctx)
+                try:
+                    for cb in normalized_callbacks:
+                        cb.on_epoch_begin(ctx)
+                    _refuse_update_listeners(ctx)
+                except BaseException:
+                    # Before the first batch nothing has trained: a resume's
+                    # loaded state goes back as it was.
+                    if local_epoch == 0 and rollback is not None:
+                        rollback()
+                    raise
 
                 records.begin_epoch()
                 for clock in clocks.values():
@@ -1030,7 +1037,7 @@ class Trainer:
         net = self.model.net
         training_state = source.training_state
         if training_state is None:
-            _restore_weights_only(
+            loaded_from = _restore_weights_only(
                 net,
                 source,
                 train_loader,
@@ -1038,6 +1045,10 @@ class Trainer:
                 fresh="optimizer, scheduler, RNG and component state",
                 stacklevel=4,
             )
+
+            def rollback_weights() -> None:
+                _rollback_resume(net, loaded_from[0], loaded_from[1], train_loader)
+
             status = ResumeStatus(
                 mode="weights_only",
                 source_run_id=params.resume_from_run_id,
@@ -1046,7 +1057,7 @@ class Trainer:
                 fresh_components=registry.names,
                 **_manifest_lineage(source.manifest),
             )
-            return source.checkpoint.idp.epoch_idx + 1, None, status, None
+            return source.checkpoint.idp.epoch_idx + 1, None, status, rollback_weights
 
         saved_optimizers = training_state["optimizers"]
         saved_schedulers = training_state.get("schedulers") or {}

@@ -297,7 +297,7 @@ scenarios:
     group: inference-export
     features: [ordered logits pipeline, KV cache]
     entry_point: GenerativeNNModel.generate(logits_pipeline=...)
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [tokenizers]}
     expected: A pipeline equals the explicit processor list, cached and uncached.
     tests:
       - tests/test_ordered_logits_pipeline.py::test_generate_with_a_pipeline_equals_the_explicit_processor_list

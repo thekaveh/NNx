@@ -120,6 +120,14 @@ def born_again_train(
         bound = inspect.signature(distillation.kd_train_step_factory).bind(teacher=model, **kd_kwargs)
         bound.apply_defaults()
         _check_kd_weights(bound.arguments["alpha"], bound.arguments["temperature"])
+        # A single-logit head has no class distribution to distill: the KD
+        # step would refuse it at generation 1, after generation 0 trained.
+        width = getattr(getattr(model.net, "params", None), "output_dim", None)
+        if width == 1 and bound.arguments["alpha"] > 0:
+            raise ValueError(
+                "born_again_train distills generations 1+ over class logits, but the head has a single output; "
+                "use a 2-class head or generations=1"
+            )
     runs: list[NNRun] = []
     teacher: NNModel | None = None
     initial_state = copy.deepcopy(model.net.state_dict())

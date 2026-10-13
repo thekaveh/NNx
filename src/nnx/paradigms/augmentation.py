@@ -24,7 +24,13 @@ import math
 import torch
 
 from .._step_helpers import finalize_step, imperative_step, predicted_labels
-from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
+from ..nn.nn_model import (
+    TrainStepContext,
+    TrainStepFn,
+    _classification_metric_tensors,
+    _loss_input,
+    _single_input_batch,
+)
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
@@ -42,11 +48,21 @@ def _unpack_supervised(ctx: TrainStepContext) -> tuple[torch.Tensor, torch.Tenso
     return _single_input_batch(ctx.model, ctx.batch, who="mixup / cutmix")
 
 
-def _weighted_acc(Y_hat: torch.Tensor, Y_a: torch.Tensor, Y_b: torch.Tensor, lam: float) -> float:
+def _weighted_acc(
+    loss_fn: torch.nn.Module, Y_hat: torch.Tensor, Y_a: torch.Tensor, Y_b: torch.Tensor, lam: float
+) -> float:
     """Lam-weighted accuracy — Mixup's standard "fractional correctness"
     metric. Useful as an ``error`` signal even though it's not a
-    standard top-1 accuracy."""
-    return float(lam * (Y_hat == Y_a).float().mean().item() + (1.0 - lam) * (Y_hat == Y_b).float().mean().item())
+    standard top-1 accuracy. Targets are read as the default step reads
+    them (probability / soft targets, ignored rows)."""
+
+    def accuracy(target: torch.Tensor) -> float:
+        scored_target, scored_prediction = _classification_metric_tensors(loss_fn, target, Y_hat)
+        if scored_target.numel() == 0:
+            return 0.0
+        return float((scored_prediction == scored_target).float().mean().item())
+
+    return lam * accuracy(Y_a) + (1.0 - lam) * accuracy(Y_b)
 
 
 def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
@@ -96,7 +112,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
         Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
-        acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
+        acc = _weighted_acc(m.loss_fn, Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0,
             recall=0.0,
@@ -175,7 +191,7 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
         Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
-        acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
+        acc = _weighted_acc(m.loss_fn, Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0,
             recall=0.0,

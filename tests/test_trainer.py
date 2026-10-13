@@ -1655,14 +1655,21 @@ def test_an_objective_run_refuses_unstepped_default_schedulers(tmp_path, monkeyp
         Trainer(_gan_like_model()).train(params, objective=supervised_objective())
 
 
-def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchanged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hook", ["on_train_begin", "on_epoch_begin"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchanged(hook, mode, tmp_path, monkeypatch):
     """The resume loaded the checkpoint into the caller's model before the
-    callback refusal: it is handed back as it was."""
+    callback refusal (at train or first-epoch begin, either resume mode): it
+    is handed back as it was."""
     from nnx import Callback
 
     class Listening(Callback):
-        def on_train_begin(self, ctx) -> None:
-            ctx.update_listeners.append(lambda ctx: None)
+        pass
+
+    def register(self, ctx) -> None:
+        ctx.update_listeners.append(lambda ctx: None)
+
+    setattr(Listening, hook, register)
 
     monkeypatch.chdir(tmp_path)
     first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
@@ -1670,6 +1677,54 @@ def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchan
     before = {key: value.clone() for key, value in model.net.state_dict().items()}
     with pytest.raises(ValueError, match="update_listeners"):
         Trainer(model).train(
-            params=_two_optimizer_params(2, run_id=first.id), trainer_step_fn=_two_step, callbacks=[Listening()]
+            params=_two_optimizer_params(2, run_id=first.id, mode=mode),
+            trainer_step_fn=_two_step,
+            callbacks=[Listening()],
         )
     assert all(torch.equal(value, before[key]) for key, value in model.net.state_dict().items())
+
+
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_nnmodel_hands_a_resumed_model_back_when_on_train_begin_raises(mode, tmp_path, monkeypatch):
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import (
+        Activations,
+        Callback,
+        Devices,
+        Losses,
+        Nets,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNParams,
+        NNTrainParams,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,))), batch_size=4)
+
+    def model() -> NNModel:
+        return NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    def params(**resume) -> NNTrainParams:
+        return NNTrainParams(
+            n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build(), **resume
+        )
+
+    class Boom(Callback):
+        def on_train_begin(self, ctx) -> None:
+            raise RuntimeError("boom")
+
+    first = model().train(params=params())
+    target = model()
+    before = {key: value.clone() for key, value in target.net.state_dict().items()}
+    with pytest.raises(RuntimeError, match="boom"):
+        target.train(params=params(resume_from_run_id=first.id, resume_mode=mode), callbacks=[Boom()])
+    assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())

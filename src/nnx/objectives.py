@@ -358,15 +358,18 @@ class KDObjective(Objective):
                 teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)
             )
         rows = int(student.shape[0])
-        soft = LossTerm(
-            "distillation",
-            softened_kl(student, teacher_logits, self.temperature) * rows,  # batchmean × rows = row sum
-            rows,
-            "mean",
-            self.alpha,
-        )
         hard = _supervised_terms(model, student, Y, "supervised", 1.0 - self.alpha)
-        result = ObjectiveResult((soft, hard))
+        terms: tuple[LossTerm, ...] = (hard,)
+        if self.alpha > 0:  # alpha=0 is plain supervised training: no soft term (a binary head has none)
+            soft = LossTerm(
+                "distillation",
+                softened_kl(student, teacher_logits, self.temperature) * rows,  # batchmean × rows = row sum
+                rows,
+                "mean",
+                self.alpha,
+            )
+            terms = (soft, hard)
+        result = ObjectiveResult(terms)
         loss = result.loss()
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
@@ -375,7 +378,7 @@ class KDObjective(Objective):
             loss=loss if loss is not None else math.nan,
             extra_metrics=ctx.extra_metrics,
         )
-        return ObjectiveResult((soft, hard), record)
+        return ObjectiveResult(terms, record)
 
 
 @contextlib.contextmanager

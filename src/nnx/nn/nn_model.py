@@ -463,10 +463,12 @@ def _load_resume_source(
 
 def _restore_weights_only(
     net: torch.nn.Module, source: _ResumeSource, train_loader: Any, mode: str, *, fresh: str, stacklevel: int = 3
-) -> None:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load only the source weights (restoring the net on failure); warn
     unless ``resume_mode="weights_only"`` asked for exactly this. The
-    warning is attributed ``stacklevel`` frames up (``train()`` by default)."""
+    warning is attributed ``stacklevel`` frames up (``train()`` by default).
+    Returns the pre-load net and RNG snapshots, so a later refusal can hand
+    the caller's model back unchanged."""
     net_snapshot = _snapshot_state_dict(net.state_dict())
     rng_snapshot = _capture_rng_state(train_loader)
     try:
@@ -482,6 +484,7 @@ def _restore_weights_only(
             RuntimeWarning,
             stacklevel=stacklevel,
         )
+    return net_snapshot, rng_snapshot
 
 
 def _rollback_resume(
@@ -3844,7 +3847,7 @@ class NNModel(_HubMixinBase):
                         session_epochs = _session_epochs(
                             params, start_epoch, None, f"resume_from_run_id={params.resume_from_run_id!r}"
                         )
-                        _restore_weights_only(
+                        previous_net_state, previous_rng_state = _restore_weights_only(
                             self.net,
                             source,
                             train_loader,

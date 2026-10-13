@@ -119,6 +119,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - A refused or failing `on_train_begin` after a resume hands the model back unchanged (NNModel and Trainer).
     - `deepen` refuses a `FeedFwdNN` / `ConvNN` subclass with its own forward; wildcard LoRA / DoRA / IA3 refuse a `MultiheadAttention` projection; `ExperimentManifest` keeps labels given as a one-shot iterable.
     - `generate()` validates `stop` (a list of non-empty strings) and `seed`.
+    - A weights-only resume, and a refusal at the first `on_epoch_begin`, also hand the model back unchanged.
+    - A `FeedFwdNN` on graph split batches scores only the split's seed rows, as the graph nets do.
+    - Distillation with `alpha=0` trains a binary head again; `born_again_train` refuses a single-logit head before generation 0; distillation, MoE and Mixup / CutMix records read probability, soft and ignored targets as the default step does.
+    - Wildcard PEFT refuses `TransformerEncoderLayer` / `TransformerDecoderLayer` projections; benchmark `Record.execution` must be strict JSON; a registered run's summary shows its factory.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

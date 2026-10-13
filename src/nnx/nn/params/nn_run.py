@@ -130,7 +130,11 @@ def _descriptor_fields(descriptor: object) -> list[tuple[str, str]]:
     kind = str(fields.pop("kind", ""))
     rows = [("kind", kind)]
     if kind == "registered":
-        rows += [("config", json.dumps(fields.get("config", {}), sort_keys=True)), ("seed", str(fields.get("seed")))]
+        rows += [
+            ("factory", f"{fields.get('id')}@v{fields.get('version')}"),  # what selects the architecture
+            ("config", json.dumps(fields.get("config", {}), sort_keys=True)),
+            ("seed", str(fields.get("seed"))),
+        ]
     else:
         rows += [("module", str(fields.get("module"))), ("reconstructible", "False")]
     return rows

@@ -278,7 +278,9 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.benchmark.BenchmarkError
 
-Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27):
+### 2.12. Errors as values at fallible boundaries (`nnx.result`)
+
+Opt-in; see Concepts §27.
 
 @api nnx.result.Ok
 
@@ -294,7 +296,9 @@ Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27
 
 @api nnx.result.inspect_bundle_result
 
-Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
+### 2.13. Opt-in compilation (`nnx.compilation`)
+
+`train(compile=...)` compiles the built-in FP32 forward; see Concepts §28.
 
 @api nnx.compilation.CompileSpec
 
@@ -302,7 +306,9 @@ Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Conce
 
 @api nnx.compilation.CompileFailed
 
-Bounded forward benchmarks and profiling (`nnx.benchmarking`):
+### 2.14. Forward benchmarks and profiling (`nnx.benchmarking`)
+
+Bounded forward benchmarks and profiling.
 
 @api nnx.benchmarking.benchmark_forward
 
@@ -316,7 +322,9 @@ Bounded forward benchmarks and profiling (`nnx.benchmarking`):
 
 @api nnx.benchmarking.ProfileReport
 
-Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture §3):
+### 2.15. Single-node data parallelism (`nnx.distributed`)
+
+Under torchrun; see Architecture §3.
 
 @api nnx.distributed.init_process_group
 
@@ -336,7 +344,9 @@ Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture
 
 @api nnx.distributed.DistributedFailure
 
-Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Concepts §29):
+### 2.16. Budgeted experiment search (`nnx.search`)
+
+Through Optuna (extra `optuna`); see Concepts §29.
 
 @api nnx.search.search
 
@@ -354,7 +364,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.search.SearchResult
 
-### 2.12. Experiment provenance (`nnx.provenance`)
+### 2.17. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest
 
@@ -378,7 +388,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.provenance.FieldComparison
 
-### 2.13. Reproducible splits (`nnx.data_splits`)
+### 2.18. Reproducible splits (`nnx.data_splits`)
 
 @api nnx.data_splits.plan_split
 
@@ -388,7 +398,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.data_splits.SplitError
 
-### 2.14. Train-fitted preprocessing (`nnx.preprocessing`)
+### 2.19. Train-fitted preprocessing (`nnx.preprocessing`)
 
 @api nnx.preprocessing.Standardizer
 
@@ -398,7 +408,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.preprocessing.PreprocessingError
 
-### 2.15. Fitted classifier calibration (`nnx.calibration`)
+### 2.20. Fitted classifier calibration (`nnx.calibration`)
 
 @api nnx.calibration.fit_temperature
 
@@ -430,7 +440,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.calibration.CalibrationMismatchError
 
-### 2.16. Abstention and risk-coverage (`nnx.abstention`)
+### 2.21. Abstention and risk-coverage (`nnx.abstention`)
 
 @api nnx.abstention.AbstentionPolicy
 
@@ -462,7 +472,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.abstention.AbstentionSchemaError
 
-### 2.17. Experiment plans (`nnx.plans`)
+### 2.22. Experiment plans (`nnx.plans`)
 
 @api nnx.plans.ExperimentPlan
 
@@ -478,7 +488,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.plans.PlanError
 
-### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+### 2.23. Streaming prediction and mergeable metrics (`nnx.streaming`)
 
 @api nnx.streaming.PredictionStream
 
@@ -496,7 +506,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.streaming.MetricMergeError
 
-### 2.19. Run bundles (`nnx.bundles`)
+### 2.24. Run bundles (`nnx.bundles`)
 
 @api nnx.bundles.export_bundle
 
@@ -518,7 +528,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.bundles.BundleReconstructionError
 
-### 2.20. Replayable transformation recipes (`nnx.transforms`)
+### 2.25. Replayable transformation recipes (`nnx.transforms`)
 
 @api nnx.transforms.TransformRecipe
 
@@ -532,7 +542,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.transforms.RecipeError
 
-### 2.21. Execution precision (`nnx.precision`)
+### 2.26. Execution precision (`nnx.precision`)
 
 @api nnx.precision.PrecisionPolicy
 
@@ -548,7 +558,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.precision.full_precision_only
 
-### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+### 2.27. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
 @api nnx.comparison.Metric
 
@@ -576,7 +586,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.comparison.IncompatibleObservations
 
-### 2.23. Causal language-model task (`nnx.lm_tasks`)
+### 2.28. Causal language-model task (`nnx.lm_tasks`)
 
 @api nnx.lm_tasks.CausalLMTask
 
@@ -588,7 +598,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.lm_tasks.LMTaskError
 
-### 2.24. Query-grouped ranking (`nnx.ranking`)
+### 2.29. Query-grouped ranking (`nnx.ranking`)
 
 @api nnx.ranking.RankingTask
 
@@ -608,7 +618,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.ranking.RankingError
 
-### 2.25. Graph-level classification (`nnx.graph_tasks`)
+### 2.30. Graph-level classification (`nnx.graph_tasks`)
 
 @api nnx.graph_tasks.GraphCollection
 
@@ -624,7 +634,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.graph_tasks.GraphTaskError
 
-### 2.26. Link and edge prediction (`nnx.link_tasks`)
+### 2.31. Link and edge prediction (`nnx.link_tasks`)
 
 @api nnx.link_tasks.split_links
 

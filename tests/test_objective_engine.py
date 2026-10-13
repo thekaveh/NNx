@@ -929,7 +929,10 @@ def test_trainer_refuses_a_stop_requested_at_an_update(tmp_path, monkeypatch):
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
 
     class StopAtUpdate(Callback):
+        calls = 0
+
         def on_optimizer_update(self, ctx, event):
+            StopAtUpdate.calls += 1
             ctx.stop_at_update = True
 
     params = (
@@ -957,5 +960,6 @@ def test_trainer_refuses_a_stop_requested_at_an_update(tmp_path, monkeypatch):
     before = model.net.layers[0].weight.detach().clone()
     with pytest.raises(ValueError, match="should_stop in on_epoch_end"):
         Trainer(model).train(params=params, objective=supervised_objective(), callbacks=[StopAtUpdate()])
-    # Refused at the first update: one window stepped, not the whole epoch.
+    # Refused at the first update event, not after the whole epoch.
+    assert StopAtUpdate.calls == 1
     assert not torch.equal(model.net.layers[0].weight, before)

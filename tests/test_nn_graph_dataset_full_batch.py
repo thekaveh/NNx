@@ -534,3 +534,24 @@ def test_fetching_cora_retries_a_transient_failure(monkeypatch):
     monkeypatch.setattr(torch_geometric.datasets, "Planetoid", Down)
     with pytest.raises(OSError, match="down"):
         _fetch_cora(attempts=2, first_wait=0.0)
+
+
+def test_an_mlp_on_a_graph_split_batch_scores_only_the_seed_rows():
+    """FeedFwdNN reads PyG node batches too: it scored every node (other
+    splits' labels included) where a GNN scores the split's seed rows."""
+    pytest.importorskip("torch_geometric")
+    from torch_geometric.data import Data
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams
+    from nnx.nn.dataset.nn_graph_dataset import _full_batch_loader
+
+    data = Data(x=torch.randn(10, 3), edge_index=torch.tensor([[0, 1], [1, 2]]), y=torch.randint(0, 2, (10,)))
+    mask = torch.zeros(10, dtype=torch.bool)
+    mask[:4] = True
+    (batch,) = _full_batch_loader(data, mask)
+    mlp = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    _, Y, logits = mlp._fwd_outputs(batch)
+    assert logits.shape[0] == Y.shape[0] == 4

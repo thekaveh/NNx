@@ -18,8 +18,9 @@ explicit log-softmax/NLL reference.
 ``precision_workflow`` trains the same classifier under an
 explicit ``PrecisionPolicy``: ``"fp32"`` (the default, bounded and CPU-only)
 or ``"bf16"`` — gated: it runs only where :func:`nnx.precision_support`
-reports bf16 verified or supported on the device (CPU qualifies; on a CUDA
-host without bf16 support it is skipped). It prints the run's precision
+reports bf16 verified or supported on the device. The command line always
+runs on CPU, where bf16 is verified; a caller passing a device without bf16
+support gets ``None`` and a skipped line. It prints the run's precision
 record (requested, effective, fallback reason, TF32) and checks that
 predictions keep their float32 schema.
 

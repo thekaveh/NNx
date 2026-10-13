@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -54,6 +55,15 @@ class FeedFwdNN(nn.Module):
         X = self.layers[-1](X)
 
         return X
+
+    def seed_count(self, batch) -> Optional[int]:
+        """The seed rows of a PyG NeighborLoader / full-graph split batch,
+        as ``GraphNNBase.seed_count``: this net also reads PyG node batches,
+        whose other rows belong to other splits and must not be scored."""
+        if isinstance(batch, (list, tuple)) or getattr(batch, "input_id", None) is None:
+            return None
+        n = getattr(batch, "batch_size", None)
+        return int(n) if n is not None else None
 
     def unpack_batch(self, batch):
         if isinstance(batch, (list, tuple)):

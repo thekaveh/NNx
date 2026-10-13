@@ -31,9 +31,15 @@ import math
 import torch
 import torch.nn.functional as F
 
-from .._metrics import classification_edp
 from .._step_helpers import finalize_step, imperative_step, predicted_labels, softened_kl
-from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
+from ..nn.nn_model import (
+    NNModel,
+    TrainStepContext,
+    TrainStepFn,
+    _classification_edp_for_loss,
+    _loss_input,
+    _single_input_batch,
+)
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
@@ -116,14 +122,16 @@ def kd_train_step_factory(
 
         # KL(teacher || student) with both softened by T — the standard
         # Hinton direction (see softened_kl for the F.kl_div contract).
-        soft_loss = softened_kl(student_logits, teacher_logits, temperature)
+        # alpha=0 is plain supervised training: no soft term (a binary head has none).
+        soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
         hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
-        return classification_edp(
-            Y=Y,
-            Y_hat=predicted_labels(m.loss_fn, student_logits),
+        return _classification_edp_for_loss(
+            loss_fn=m.loss_fn,
+            target=Y,
+            prediction=predicted_labels(m.loss_fn, student_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )
@@ -272,14 +280,16 @@ def feature_kd_train_step_factory(
         # to how many pairs the user provided.
         feature_loss = feature_loss / len(auxiliary_layers)
 
-        soft_loss = softened_kl(student_logits, teacher_logits, temperature)
+        # alpha=0 is plain supervised training: no soft term (a binary head has none).
+        soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
         hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")
 
-        return classification_edp(
-            Y=Y,
-            Y_hat=predicted_labels(m.loss_fn, student_logits),
+        return _classification_edp_for_loss(
+            loss_fn=m.loss_fn,
+            target=Y,
+            prediction=predicted_labels(m.loss_fn, student_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )

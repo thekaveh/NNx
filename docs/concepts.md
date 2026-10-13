@@ -318,7 +318,7 @@ A runtime module trains, evaluates, predicts, checkpoints and resumes like any m
 
 Subclass `BatchAdapter` for other layouts. Implement `split(batch) -> (args, kwargs, target)`, and `output(raw)` to extract the tensor from a non-tensor return value (the default requires a tensor). `nnx.viz.summary(model, batch=...)` and `VisUtils.two_dim_tsne_checkpoint_logits(..., batch_adapter=..., module=...)` take the same adapters. A keyword-input model given a synthetic `input_size`, or a runtime checkpoint without `module=`, fails before the module or any data is touched. A borrowed module keeps its identity, state keys and every submodule's training mode.
 
-**What renders.** A registered or runtime run has no built-in `NNParams`. `run.yaml` omits `net`, and `model.net` holds the descriptor mapping (`kind: registered | runtime`). `str(run)` and the notebook table show the descriptor instead of dims, dropout and activation. The descriptor fields are `kind`, `config` and `seed`, or `module` and `reconstructible=False`. `NNRun.load` restores the same descriptor.
+**What renders.** A registered or runtime run has no built-in `NNParams`. `run.yaml` omits `net`, and `model.net` holds the descriptor mapping (`kind: registered | runtime`). `str(run)` and the notebook table show the descriptor instead of dims, dropout and activation. The descriptor fields are `kind`, `factory` (`id@vN`), `config` and `seed`, or `module` and `reconstructible=False`. `NNRun.load` restores the same descriptor.
 
 Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module from its `example_input`. Task adapters (§6.3) check the loss up front and the output width on the first batch. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
 
@@ -674,8 +674,9 @@ unavailable BEST baseline.
 A validation *task record* can be unavailable: every target masked
 (`status="empty"`), or no error and no loss. Such a record ends the walk
 instead. The epoch has no signal, the plateau step is skipped, and the
-training metrics are never compared in its place. The raw observations are
-retained unchanged in the live history and checkpoint payloads. A CSV cannot
+training metrics are never compared in its place.
+
+The raw observations are retained unchanged in the live history and checkpoint payloads. A CSV cannot
 tell NaN from absent, so CSV readback maps NaN cells to `None`. A NaN `extra`
 or `metrics` value reads back as an absent key, and a record whose values were
 all NaN reads back as no record. A history journal (§4.5) keeps NaN.
@@ -1516,7 +1517,7 @@ save_lora_weights(model.net, "lora.pt")    # tiny checkpoint, lora_A/B only
 
 The `apply_lora_to` mutation is **idempotent**. A second call against patterns that already match LoRA-wrapped layers is a no-op (the inner `.base` is excluded from the walk).
 
-**Shared modules.** `apply_lora_to`, `apply_dora_to` and `apply_ia3_to` match patterns against *every* registration path, not only the first one `named_modules()` reports. They group paths by registration slot: the `(parent, attribute)` pair a wrapper replaces. A `Linear` inside a container that is itself registered under several names has one slot. It is selected when any of its paths matches, wrapped once and counted once, and every path sees the same wrapper.
+**Shared modules.** `apply_lora_to`, `apply_dora_to` and `apply_ia3_to` match patterns against *every* registration path, not only the first one `named_modules()` reports. They group paths by registration slot: the `(parent, attribute)` pair a wrapper replaces. A `Linear` inside a container that is itself registered under several names has one slot. It is selected when any of its paths matches, wrapped once and counted once, and every path sees the same wrapper. A `Linear` that its parent reads directly is refused: the `out_proj` of `nn.MultiheadAttention` and the `linear1` / `linear2` of torch's Transformer layers. Select other projections.
 
 A `Linear` may be registered directly under more than one name. Examples are `m.a = m.b = linear`, or a layer that is both the `.base` of an existing wrapper and registered elsewhere. It cannot be wrapped without splitting it into independent layers. So selecting *any* of its names raises a `ValueError` naming every alias.
 

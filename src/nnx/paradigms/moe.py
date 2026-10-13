@@ -28,10 +28,15 @@ import math
 
 import torch
 
-from .._metrics import classification_edp
 from .._step_helpers import finalize_step, imperative_step, predicted_labels
 from ..nn.moe import MoELinear
-from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
+from ..nn.nn_model import (
+    TrainStepContext,
+    TrainStepFn,
+    _classification_edp_for_loss,
+    _loss_input,
+    _single_input_batch,
+)
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
@@ -107,9 +112,10 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         loss = supervised_loss + aux_loss_weight * aux_loss
         loss_val = finalize_step(loss, ctx, paradigm="moe")
 
-        return classification_edp(
-            Y=Y,
-            Y_hat=predicted_labels(m.loss_fn, Y_hat_logits),
+        return _classification_edp_for_loss(
+            loss_fn=m.loss_fn,
+            target=Y,
+            prediction=predicted_labels(m.loss_fn, Y_hat_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )

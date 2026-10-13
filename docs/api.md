@@ -3993,7 +3993,9 @@ class nnx.decisions.benchmark.BenchmarkError
 A malformed sample, record, budget or report, or reports that cannot be compared.
 
 
-Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27):
+### 2.12. Errors as values at fallible boundaries (`nnx.result`)
+
+Opt-in; see Concepts §27.
 
 #### `nnx.result.Ok`
 
@@ -4221,7 +4223,9 @@ str).
 ```
 
 
-Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
+### 2.13. Opt-in compilation (`nnx.compilation`)
+
+`train(compile=...)` compiles the built-in FP32 forward; see Concepts §28.
 
 #### `nnx.compilation.CompileSpec`
 
@@ -4318,7 +4322,9 @@ class nnx.compilation.CompileFailed(message: 'str', record: 'CompileRecord') -> 
 A compiled forward failed to compile under ``on_failure="error"``; ``__cause__`` is torch's error and ``record`` the run's `CompileRecord` (effective state ``failed``).
 
 
-Bounded forward benchmarks and profiling (`nnx.benchmarking`):
+### 2.14. Forward benchmarks and profiling (`nnx.benchmarking`)
+
+Bounded forward benchmarks and profiling.
 
 #### `nnx.benchmarking.benchmark_forward`
 
@@ -4446,7 +4452,9 @@ class nnx.benchmarking.ProfileReport(*, output_dir: 'str', trace_files: 'tuple[s
 A finished profile: where its traces were written, the schedule and step count, and the top operators by self time.
 
 
-Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture §3):
+### 2.15. Single-node data parallelism (`nnx.distributed`)
+
+Under torchrun; see Architecture §3.
 
 #### `nnx.distributed.init_process_group`
 
@@ -4616,7 +4624,9 @@ class nnx.distributed.DistributedFailure
 Raised on every rank when another rank failed (preflight, a non-finite loss, a step-count mismatch, a writer-side commit): the failing rank raises its own error, the others this one naming it.
 
 
-Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Concepts §29):
+### 2.16. Budgeted experiment search (`nnx.search`)
+
+Through Optuna (extra `optuna`); see Concepts §29.
 
 #### `nnx.search.search`
 
@@ -4754,7 +4764,7 @@ class nnx.search.SearchResult(*, study_name: 'str', outcomes: 'tuple[TrialOutcom
 Every trial of the study (priors included), the ``best`` completed one, how many this call asked, and why it stopped (``"budget"``, ``"deadline"`` or ``"exhausted"`` — a sampler ran out of points).
 
 
-### 2.12. Experiment provenance (`nnx.provenance`)
+### 2.17. Experiment provenance (`nnx.provenance`)
 
 #### `nnx.provenance.ExperimentManifest`
 
@@ -5014,7 +5024,7 @@ class nnx.provenance.FieldComparison(path: 'str', status: 'str', left: 'Any' = N
 One field of a comparison: a stable dotted ``path`` and a ``status`` — ``equal``, ``different``, ``missing`` (on one side only), ``unknown`` (an unknown identity), ``declared`` (equal *declared* identities: unverified), ``verified`` (equal digests) or ``absent`` (no provenance at all).
 
 
-### 2.13. Reproducible splits (`nnx.data_splits`)
+### 2.18. Reproducible splits (`nnx.data_splits`)
 
 #### `nnx.data_splits.plan_split`
 
@@ -5196,7 +5206,7 @@ class nnx.data_splits.SplitError
 A split that cannot be planned or replayed as asked.
 
 
-### 2.14. Train-fitted preprocessing (`nnx.preprocessing`)
+### 2.19. Train-fitted preprocessing (`nnx.preprocessing`)
 
 #### `nnx.preprocessing.Standardizer`
 
@@ -5408,7 +5418,7 @@ class nnx.preprocessing.PreprocessingError
 Preprocessing that cannot be fitted, loaded or applied as declared.
 
 
-### 2.15. Fitted classifier calibration (`nnx.calibration`)
+### 2.20. Fitted classifier calibration (`nnx.calibration`)
 
 #### `nnx.calibration.fit_temperature`
 
@@ -5846,7 +5856,7 @@ class nnx.calibration.CalibrationMismatchError
 Logits whose label schema or model id differ from the calibrator's, without a named ``override``.
 
 
-### 2.16. Abstention and risk-coverage (`nnx.abstention`)
+### 2.21. Abstention and risk-coverage (`nnx.abstention`)
 
 #### `nnx.abstention.AbstentionPolicy`
 
@@ -6377,7 +6387,7 @@ class nnx.abstention.AbstentionSchemaError
 A declared schema — labels, model id, probability field, calibrator or sample ids — that contradicts the policy's, the prediction's own, or itself (calibrated probabilities without their calibrator, say).
 
 
-### 2.17. Experiment plans (`nnx.plans`)
+### 2.22. Experiment plans (`nnx.plans`)
 
 #### `nnx.plans.ExperimentPlan`
 
@@ -6786,7 +6796,7 @@ catches it.
 ```
 
 
-### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+### 2.23. Streaming prediction and mergeable metrics (`nnx.streaming`)
 
 #### `nnx.streaming.PredictionStream`
 
@@ -7071,7 +7081,7 @@ class nnx.streaming.MetricMergeError
 Two `StreamingMetrics` with different declarations were merged: other metrics (id, version or config), other probability semantics, other task labels, another decision threshold or another ignore index.
 
 
-### 2.19. Run bundles (`nnx.bundles`)
+### 2.24. Run bundles (`nnx.bundles`)
 
 #### `nnx.bundles.export_bundle`
 
@@ -7272,7 +7282,7 @@ class nnx.bundles.BundleReconstructionError(problems: 'Iterable[str]') -> 'None'
 What a reconstruction needs and was not given (a model factory, a component), every problem listed in ``problems``; raised before any model is allocated.
 
 
-### 2.20. Replayable transformation recipes (`nnx.transforms`)
+### 2.25. Replayable transformation recipes (`nnx.transforms`)
 
 #### `nnx.transforms.TransformRecipe`
 
@@ -7387,7 +7397,7 @@ class nnx.transforms.RecipeError(problems: 'Sequence[_Problem]') -> 'None'
 A recipe that does not fit a model, or a malformed operation. ``problems`` lists ``(operation index, operation id, target, reason)``; the message names each.
 
 
-### 2.21. Execution precision (`nnx.precision`)
+### 2.26. Execution precision (`nnx.precision`)
 
 #### `nnx.precision.PrecisionPolicy`
 
@@ -7594,7 +7604,7 @@ keeps that refusal when it is marked too (or built with
 ```
 
 
-### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+### 2.27. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
 #### `nnx.comparison.Metric`
 
@@ -8026,7 +8036,7 @@ class nnx.comparison.IncompatibleObservations(message: 'str', *, fields: 'Sequen
 Observations that may not be pooled or paired: ``fields`` names what differs.
 
 
-### 2.23. Causal language-model task (`nnx.lm_tasks`)
+### 2.28. Causal language-model task (`nnx.lm_tasks`)
 
 #### `nnx.lm_tasks.CausalLMTask`
 
@@ -8204,7 +8214,7 @@ class nnx.lm_tasks.LMTaskError
 A task configuration or a batch the task rejects.
 
 
-### 2.24. Query-grouped ranking (`nnx.ranking`)
+### 2.29. Query-grouped ranking (`nnx.ranking`)
 
 #### `nnx.ranking.RankingTask`
 
@@ -8424,7 +8434,7 @@ class nnx.ranking.RankingError
 A configuration, batch or query the ranking task rejects.
 
 
-### 2.25. Graph-level classification (`nnx.graph_tasks`)
+### 2.30. Graph-level classification (`nnx.graph_tasks`)
 
 #### `nnx.graph_tasks.GraphCollection`
 
@@ -8610,7 +8620,7 @@ class nnx.graph_tasks.GraphTaskError
 A graph collection, batch or classifier setting NNx rejects.
 
 
-### 2.26. Link and edge prediction (`nnx.link_tasks`)
+### 2.31. Link and edge prediction (`nnx.link_tasks`)
 
 #### `nnx.link_tasks.split_links`
 
@@ -10834,6 +10844,14 @@ Should be overridden by all subclasses.
     instead of this since the former takes care of running the
     registered hooks while the latter silently ignores them.
 ```
+
+##### `nnx.nn.net.feed_fwd_nn.FeedFwdNN.seed_count`
+
+```python
+nnx.nn.net.feed_fwd_nn.FeedFwdNN.seed_count(self, batch) -> 'Optional[int]'
+```
+
+The seed rows of a PyG NeighborLoader / full-graph split batch, as ``GraphNNBase.seed_count``: this net also reads PyG node batches, whose other rows belong to other splits and must not be scored.
 
 ##### `nnx.nn.net.feed_fwd_nn.FeedFwdNN.unpack_batch`
 

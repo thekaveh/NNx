@@ -512,7 +512,20 @@ def test_a_number_too_large_for_a_float_is_a_record_error(tmp_path):
 def test_an_fp64_student_scores_in_its_own_dtype():
     """The dataset casts inputs to the default dtype; an fp64 student crashed
     (Float vs Double) and its loss was taken in fp32."""
+    import nnx.paradigms.offline_distillation as offline
+
     model = _model()
     model.net.double()
-    report = evaluate_offline(model, _dataset())
-    assert report.agreement is not None
+    seen = []
+    original = offline.F.log_softmax
+
+    def spy(tensor, *args, **kwargs):
+        seen.append(tensor.dtype)
+        return original(tensor, *args, **kwargs)
+
+    offline.F.log_softmax = spy
+    try:
+        report = evaluate_offline(model, _dataset())
+    finally:
+        offline.F.log_softmax = original
+    assert report.agreement is not None and seen and set(seen) == {torch.float64}

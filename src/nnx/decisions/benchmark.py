@@ -411,6 +411,14 @@ class Record:
             _text(getattr(self, name), f"Record.{name}", optional=True)
         if not isinstance(self.execution, Mapping):
             raise BenchmarkError(f"Record.execution must be a mapping, got {self.execution!r}")
+        # Strict JSON with string keys, as write_records needs it (a NumPy
+        # scalar, a NaN or an int key would fail or change on the round trip).
+        if not all(isinstance(key, str) for key in self.execution):
+            raise BenchmarkError(f"Record.execution keys must be strings, got {list(self.execution)!r}")
+        try:
+            json.dumps(dict(self.execution), allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise BenchmarkError(f"Record.execution must be strict JSON: {error}") from error
         object.__setattr__(self, "execution", dict(self.execution))
 
     def state(self) -> dict[str, Any]:
