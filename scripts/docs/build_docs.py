@@ -793,7 +793,8 @@ def _github_heading_slug(heading: str) -> str:
     kept = "".join(
         character for character in visible if character.isalnum() or character in "_- " or character.isspace()
     )
-    return re.sub(r"\s+", "-", kept)
+    # GitHub turns each space into a hyphen (no collapsing): "A & B" -> "a--b".
+    return re.sub(r"\s", "-", kept)
 
 
 def _anchors(source: Path, surface: str) -> set[str]:
@@ -812,12 +813,12 @@ def _anchors(source: Path, surface: str) -> set[str]:
 
     def add_heading(heading: str) -> None:
         slug = _github_heading_slug(heading)
-        duplicate_separator = "-" if surface == "wiki" else "_"
+        # GitHub (repository and wiki) numbers repeated headings "-1", "-2".
         suffix = counts.get(slug, 0)
-        candidate = slug if suffix == 0 else f"{slug}{duplicate_separator}{suffix}"
+        candidate = slug if suffix == 0 else f"{slug}-{suffix}"
         while candidate in generated_anchors:
             suffix += 1
-            candidate = f"{slug}{duplicate_separator}{suffix}"
+            candidate = f"{slug}-{suffix}"
         counts[slug] = suffix + 1
         generated_anchors.add(candidate)
         anchors.add(candidate)

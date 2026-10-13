@@ -679,8 +679,18 @@ def test_automatic_heading_ids_match_python_markdown(tmp_path: Path, heading: st
 
 
 def test_wiki_automatic_heading_ids_decode_entities(tmp_path: Path):
-    (tmp_path / "Page.md").write_text("# A &amp; B\n\n[heading](#a-b)\n", encoding="utf-8")
+    # GitHub keeps one hyphen per space: "A & B" -> "a--b" (the live wiki
+    # renders "Changed — PyPI distribution name" as #changed--pypi-...).
+    (tmp_path / "Page.md").write_text("# A &amp; B\n\n[heading](#a--b)\n", encoding="utf-8")
 
+    validate_links(tmp_path, "wiki")
+    (tmp_path / "Page.md").write_text("# A &amp; B\n\n[heading](#a-b)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken wiki anchor"):
+        validate_links(tmp_path, "wiki")
+
+
+def test_repeated_headings_number_like_github(tmp_path: Path):
+    (tmp_path / "Page.md").write_text("## Changed\n\n## Changed\n\n[second](#changed-1)\n", encoding="utf-8")
     validate_links(tmp_path, "wiki")
 
 

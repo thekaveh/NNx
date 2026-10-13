@@ -152,8 +152,9 @@ jobs:
         # PyPI uploads are permanent (yank-not-delete), so a typo'd tag
         # (v0.2.1 against a 0.2.0 pyproject) must abort BEFORE publish —
         # verify-published would only catch the mismatch after the
-        # irreversible upload. The tag_name guard (here and on the publish
-        # jobs) refuses a dispatch with an empty tag.
+        # irreversible upload. With an empty tag_name these checks and the
+        # publish jobs are skipped: such a dispatch is a dry run that tests
+        # and builds only.
         if: inputs.tag_name != ''
         run: |
           tag_version="${RELEASE_TAG#v}"
