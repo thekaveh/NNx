@@ -16,4 +16,14 @@ NNx pickle checkpoints use `torch.load(..., weights_only=False)` to reconstruct 
 
 Optimizer and training-state sidecars use `weights_only=True`, but they must still accompany a trusted NNx checkpoint and pass the generation-stamp validation performed by `NNCheckpoint.load_training_state()`.
 
-To share a run, export it as a **run bundle** (`nnx.bundles.export_bundle`): export reads your own pickle checkpoint and writes its weights, training state and calibrators as safetensors plus schema-validated JSON. The bundle readers (`inspect_bundle`, `validate_bundle`, `reconstruct_bundle`) never unpickle, import code named by the bundle or download anything. They check every payload's SHA-256 and size, the generation id, and that no payload is missing, unlisted, symlinked or outside the bundle before any tensor is read, and a registered module is rebuilt only from factories the caller supplies. A bundle is data, but it is still a model: reconstruction builds the architecture its parameters describe (as `from_pretrained` builds the one `config.json` describes), so read an untrusted bundle's `inspect_bundle(...).model_params` first, and validate where it came from before serving its predictions.
+To share a run, export it as a **run bundle** (`nnx.bundles.export_bundle`). Export reads your own pickle checkpoint. It writes the checkpoint's weights, training state and calibrators as safetensors plus schema-validated JSON.
+
+The bundle readers (`inspect_bundle`, `validate_bundle`, `reconstruct_bundle`) never unpickle, import code named by the bundle or download anything. Before any tensor is read, they check:
+
+- every payload's SHA-256 and size;
+- the generation id;
+- that no payload is missing, unlisted, symlinked or outside the bundle.
+
+A registered module is rebuilt only from factories the caller supplies.
+
+A bundle is data, but it is still a model. Reconstruction builds the architecture its parameters describe, as `from_pretrained` builds the one `config.json` describes. Read an untrusted bundle's `inspect_bundle(...).model_params` first. Validate where it came from before serving its predictions.

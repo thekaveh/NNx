@@ -17,11 +17,10 @@ with `brew install cairo` on macOS or `sudo apt-get install libcairo2` on
 Debian/Ubuntu. CairoSVG itself is pinned in the `docs-publish` dependency group.
 
 `--all-extras` installs every optional stack, including the `vision`,
-`graph` and `plots` domains that `import nnx` never loads (FEAT-031). A
-change to the core / extra split is checked against an installed wheel per
-profile with `scripts/smoke_core_install.py` (CI's `installed-profiles` job;
-run it from a clean environment outside the checkout with `PYTHONPATH`
-unset).
+`graph` and `plots` domains that `import nnx` never loads. A change to the
+core / extra split is checked against an installed wheel per profile with
+`scripts/smoke_core_install.py` (CI's `installed-profiles` job). Run it from a
+clean environment outside the checkout with `PYTHONPATH` unset.
 
 Verify a clean baseline:
 
@@ -89,12 +88,14 @@ uv run pytest -n logical --dist loadgroup --cov=nnx --cov-report=term-missing  #
 ### 5.1. Feature combinations
 
 `docs/feature-composition.yaml` records which feature **combinations** are
-verified, unsupported or unverified, each with a stable scenario ID (`TC-01`,
-`CR-03`, `MT-01`, ...), its profile and the pytest node ids that prove it;
-[Feature composition](docs/feature-composition.md) renders it. When a change
-moves a boundary — what two features do together, what is refused, a test
-being renamed — review the scenario IDs it touches (`grep` the registry for the
-feature or the test file) and update their `status`, `expected` and `tests`:
+verified, unsupported or unverified. Each has a stable scenario ID (`TC-01`,
+`CR-03`, `MT-01`, ...), its profile and the pytest node ids that prove it.
+[Feature composition](docs/feature-composition.md) renders it.
+
+A change can move a boundary: what two features do together, what is
+refused, or a test being renamed. Review the scenario IDs such a change
+touches; `grep` the registry for the feature or the test file. Update their
+`status`, `expected` and `tests`:
 
 ```bash
 uv run python scripts/check_feature_composition.py --check                 # schema, unique IDs, every node id collected
@@ -103,22 +104,22 @@ uv run python scripts/check_feature_composition.py --render                # ref
 ```
 
 An import, a skip, an xfail or a setup / teardown failure is never proof of a
-combination: a verified scenario lists tests that assert its behaviour and pass
-in every phase; an unsupported one links an executed negative test (or the
+combination. A verified scenario lists tests that assert its behaviour and pass
+in every phase. An unsupported one links an executed negative test (or the
 exact documented limitation). The CI `feature-composition` job fails when a
 verified row fails or loses coverage.
 
-The gate is strict only on the published profile's OS (Linux): there, `--run`
+The gate is strict only on the published profile's OS (Linux). There, `--run`
 also fails when an extra in the profile's `dependencies` (under
-`evidence_profiles`) is not installed, so run it after `uv sync --all-extras`.
+`evidence_profiles`) is not installed. Run it after `uv sync --all-extras`.
 Elsewhere, rows needing a missing extra are simply not judged.
 
 #### GPU evidence
 
 The registry publishes two evidence profiles: `cpu` (the CI docs job) and
-`cuda`. The CUDA rows (TC-06 FP16 AMP, TC-10 BF16 AMP, TC-11 two-GPU NCCL
-DDP) are verified only by a report from the `cuda` profile; on CPU their tests
-skip and the page shows them *unverified*. To produce that report:
+`cuda`. The CUDA rows are TC-06 FP16 AMP, TC-10 BF16 AMP and TC-11 two-GPU
+NCCL DDP. They are verified only by a report from the `cuda` profile. On CPU
+their tests skip and the page shows them *unverified*. To produce that report:
 
 - **GPU runner:** register a self-hosted runner with the labels `self-hosted,
   linux, x64, gpu` (two CUDA devices for TC-11), and set the repository
@@ -150,20 +151,47 @@ Tests live under `tests/`. The `conftest.py` registers a handful of hygiene fixt
 
 ## 7. Releases
 
-NNx uses [release-please](https://github.com/googleapis/release-please-action) for automated version bumps, changelog updates, and tagging. Contributors don't touch versions or tags — just write a [Conventional Commit](https://www.conventionalcommits.org/)-style PR title (`feat:`, `fix:`, `chore:`, `docs:`, etc.) and add a one-line entry under `[Unreleased]` in `CHANGELOG.md` for any user-visible change.
+NNx uses [release-please](https://github.com/googleapis/release-please-action) for automated version bumps, changelog updates, and tagging. Contributors don't touch versions or tags. Write a [Conventional Commit](https://www.conventionalcommits.org/)-style PR title (`feat:`, `fix:`, `chore:`, `docs:`, etc.). For any user-visible change, add a one-line entry under `[Unreleased]` in `CHANGELOG.md`.
 
 The end-to-end flow:
 
 1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Pre-1.0, `feat:` triggers a minor bump (`0.X.0`); `fix:` and most other types trigger a patch bump (`0.X.Y`).
-   The Release PR carries only release-please's own commit: nothing else pushes to it, because the `main` ruleset holds a PR whose latest push comes from a bot for an approving review, even when that commit is verified. release-please bumps the version in `pyproject.toml` (its Python updater), on the lines marked `x-release-please-version` (the `__version__` fallback in `src/nnx/__init__.py`, the `nnx.__version__` line of `docs/api.md` and the version line of `README.md` / `PYPI_README.md`), and the package's version in `uv.lock` (a toml updater), so the lock and the API-reference check stay consistent. The workflow then dispatches the required checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`). The post-release sync of `main` into `develop` runs `python3 scripts/release/finalize_changelog.py CHANGELOG.md`, which moves the curated notes under the new version heading in place of the generated list and leaves `[Unreleased]` empty. Keep `[Unreleased]` curated: it becomes the release notes. A change to `[Unreleased]` that reaches `main` only through hidden commit types (`docs:`, `chore:`, `test:`) does not refresh the Release PR until the next visible one.
-2. A maintainer reviews and merges the Release PR when ready to ship. Release Please explicitly dispatches the required CI and security checks for its managed branch, then creates the tag and draft release and dispatches the top-level `release.yml` workflow with the immutable release commit and tag.
-3. `release.yml` verifies the Release Please commit belongs to `main`, runs the full test matrix, builds the package, publishes through PyPI trusted publishing (gated by the `pypi` GitHub Environment's approval rule), and verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment. Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
 
-The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit:** after development resumes, such an artifact can contain code newer than the release while still carrying the last release number. Use editable installs for local source work. Distributable artifacts must come from Release Please's dispatched release workflow, which verifies tag/version and tag/commit agreement before publishing; direct tag pushes do not publish packages.
+   The Release PR carries only release-please's own commit; nothing else pushes to it. The `main` ruleset holds a PR for an approving review when its latest push comes from a bot. This holds even when that commit is verified.
+
+   release-please bumps the version in three places, so the lock and the API-reference check stay consistent:
+
+   - `pyproject.toml`, through its Python updater.
+   - The lines marked `x-release-please-version`: the `__version__` fallback in `src/nnx/__init__.py`, the `nnx.__version__` line of `docs/api.md` and the version line of `README.md` / `PYPI_README.md`.
+   - The package's version in `uv.lock`, through a toml updater.
+
+   The workflow then dispatches the required checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`).
+
+   The post-release sync of `main` into `develop` runs `python3 scripts/release/finalize_changelog.py CHANGELOG.md`. It moves the curated notes under the new version heading in place of the generated list. It leaves `[Unreleased]` empty. Keep `[Unreleased]` curated: it becomes the release notes.
+
+   Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
+2. A maintainer reviews and merges the Release PR when ready to ship. Release Please explicitly dispatches the required CI and security checks for its managed branch. It then creates the tag and draft release. It dispatches the top-level `release.yml` workflow with the immutable release commit and tag.
+3. `release.yml` runs these steps:
+   - It verifies the Release Please commit belongs to `main`.
+   - It runs the full test matrix and builds the package.
+   - It publishes through PyPI trusted publishing, gated by the `pypi` GitHub Environment's approval rule.
+   - It verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
+
+   Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
+
+The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit.** After development resumes, such an artifact can contain code newer than the release. It still carries the last release number. Use editable installs for local source work. Distributable artifacts must come from Release Please's dispatched release workflow, which verifies tag/version and tag/commit agreement before publishing. Direct tag pushes do not publish packages.
 
 ### 7.1. CI runner image
 
-Every workflow job runs on one pinned GitHub-hosted image, `ubuntu-26.04` (`tests/test_ci_runner_image.py` checks it), except the opt-in self-hosted GPU evidence job (§5.1), and never on a moving label such as `ubuntu-latest`, which GitHub re-points to new Ubuntu releases without a change in this repository. Moving to a new image is a deliberate pull request: change every `runs-on` and the test's `RUNNER` together, let that pull request's CI run on the new image (plus the release scripts — `scripts/release/finalize_changelog.py` runs on the image's system `python3`), and note the result. apt steps carry their own short `timeout-minutes`, so a package-mirror stall fails fast instead of consuming the job's budget.
+Every workflow job runs on one pinned GitHub-hosted image, `ubuntu-26.04` (`tests/test_ci_runner_image.py` checks it). The exception is the opt-in self-hosted GPU evidence job (§5.1). Jobs never run on a moving label such as `ubuntu-latest`. GitHub re-points such a label to new Ubuntu releases without a change in this repository.
+
+Moving to a new image is a deliberate pull request:
+
+1. Change every `runs-on` and the test's `RUNNER` together.
+2. Let that pull request's CI run on the new image. Also run the release scripts there; `scripts/release/finalize_changelog.py` runs on the image's system `python3`.
+3. Note the result.
+
+apt steps carry their own short `timeout-minutes`, so a package-mirror stall fails fast instead of consuming the job's budget.
 
 ## 8. Things we won't merge
 
