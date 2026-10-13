@@ -342,6 +342,14 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["errors"]["trainer"] = None
         except BaseException as error:  # noqa: BLE001
             out["errors"]["trainer"] = f"{type(error).__name__}: {error}"
+        try:
+            plain = model().train(
+                params(torch.utils.data.DataLoader(train_set(), batch_size=4), None, n_epochs=1, data_id="plain")
+            )
+            out["plain_run"] = plain.id
+            out["errors"]["plain"] = None
+        except BaseException as error:  # noqa: BLE001
+            out["errors"]["plain"] = f"{type(error).__name__}: {error}"
         out["factory_calls"] = len(built)
         out["study_written"] = os.path.exists("study.db")
         out["runs"] = sorted(n for n in os.listdir("runs") if not n.startswith(".")) if os.path.isdir("runs") else []

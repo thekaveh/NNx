@@ -59,7 +59,8 @@ Scope: one node, FP32, the default train and validation steps, one
 optimizer, a fixed topology without batch normalization, map-style datasets. Out: multi-node or elastic
 runs, FSDP / DeepSpeed, mixed precision, ``compile=``, custom steps or
 objectives, history journals, graph neighbour sampling. ``ExperimentPlan.fit``,
-``nnx.search.search`` and ``Trainer.train`` train in one process and refuse a
+``nnx.search.search``, ``Trainer.train`` and ``NNModel.train`` without
+``distributed=DDP()`` train in one process and refuse a
 group of more than one rank.
 
 Recipe::

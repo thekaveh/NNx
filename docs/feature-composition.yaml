@@ -124,7 +124,7 @@ scenarios:
   - id: TC-09
     group: training-controls
     features: [DDP, budgeted search, experiment plans]
-    entry_point: nnx.search.search / ExperimentPlan.fit under torchrun
+    entry_point: nnx.search.search / ExperimentPlan.fit / Trainer.train / NNModel.train without DDP() under torchrun
     profile: {device: cpu, dtype: fp32, dependencies: []}
     expected: Refused on every rank of a multi-rank group before any study, factory call or run; a one-rank group behaves as no group.
     tests:

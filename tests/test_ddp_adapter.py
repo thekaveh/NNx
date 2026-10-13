@@ -407,7 +407,7 @@ def test_single_process_entry_points_refuse_a_multi_rank_group(tmp_path):
     out = tmp_path / "entries"
     launch("single_process_entries", out)
     for result in results(out):
-        for entry in ("fit", "search", "trainer"):
+        for entry in ("fit", "search", "trainer", "plain"):
             assert result["errors"][entry].startswith("RuntimeError: "), result["errors"]
             assert "single process" in result["errors"][entry] and "world size 2" in result["errors"][entry]
         assert result["factory_calls"] == 0 and not result["study_written"] and result["runs"] == []
@@ -422,6 +422,7 @@ def test_single_process_entry_points_run_in_a_one_rank_group(tmp_path):
     (result,) = results(out, nproc=1)
     assert result["errors"]["fit"] is None and result["fit_run"] in result["runs"]
     assert result["errors"]["trainer"] is None and result["trainer_run"] in result["runs"]
+    assert result["errors"]["plain"] is None and result["plain_run"] in result["runs"]
     if importlib.util.find_spec("optuna") is not None:
         assert result["errors"]["search"] is None and result["search_states"] == ["completed"]
         assert result["study_written"]

@@ -609,7 +609,8 @@ Every such update increments the callback context's `committed_updates`. It
 also calls each function in `ctx.update_listeners`; a callback appends one in
 `on_train_begin`. Setting `ctx.stop_at_update = True` from a listener stops
 training right after that batch. Set in `on_epoch_end`, it stops at that epoch
-boundary.
+boundary. This is an `NNModel.train` feature: `Trainer.train` refuses a
+callback that registers an update listener (use `on_optimizer_update` there).
 
 On an epoch's last batch, the epoch completes and commits as usual. Inside an
 epoch, the epoch in progress is **discarded, never committed**. LAST, its

@@ -3364,6 +3364,11 @@ class NNModel(_HubMixinBase):
         # Checked before anything else: one owner per optimizer update.
         _check_update_owner(train_step_fn, objective)
         if distributed is None:
+            from ..distributed import _refuse_multi_rank
+
+            # Under torchrun without DDP() every rank would train its own copy
+            # into the same run directory.
+            _refuse_multi_rank("NNModel.train() without distributed=DDP()")
             # nnx.distributed.writer_only(...) without DDP: simply built, so
             # every later check sees the real callback (FEAT-030).
             callbacks = _writer_owned_callbacks(callbacks)

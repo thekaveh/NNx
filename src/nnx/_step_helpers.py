@@ -98,8 +98,10 @@ def finalize_step(
     each loss component, cycling zero_grad/step boundaries), which is
     out of scope for the v1 paradigm factories.
 
-    **CPU caveat**: the AMP rejection only fires when ``ctx.scaler`` is
-    non-None, which on CPU it never is — :meth:`NNModel._build_grad_scaler`
+    **CPU caveat** (the legacy ``mixed_precision`` flag; an explicit
+    reduced ``precision=`` is refused on every device): the legacy flag's
+    AMP rejection only fires when ``ctx.scaler`` is non-None, which on CPU
+    it never is — :meth:`NNModel._build_grad_scaler`
     returns None whenever ``device.type != "cuda"`` regardless of
     ``NNModelParams.mixed_precision``. A CPU user setting
     ``mixed_precision=True`` therefore gets the same silent no-op as

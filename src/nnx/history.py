@@ -810,6 +810,11 @@ class _JournalHistory:
         self._writer.rollback()
 
     def finish(self, run: NNRun) -> NNRun:
+        if not os.path.exists(os.path.join(self.directory, _MANIFEST)):
+            # Stopped before its first committed epoch: publish the empty
+            # journal, so the run loads with no records (as an eager run's
+            # empty idps.csv does) instead of pointing at nothing.
+            self._writer.publish()
         return self._run(run).save()
 
 

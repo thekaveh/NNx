@@ -1507,3 +1507,17 @@ def test_lr_monitor_keeps_one_history_entry_per_epoch_on_the_update_clock(tmp_pa
     assert len(monitor.history) == 3
     assert [k for k, _ in monitor.update_history] == list(range(1, 13))
     assert monitor.history[-1] == pytest.approx(monitor.update_history[-1][1])
+
+
+def test_trainer_refuses_update_listeners_it_would_never_call(tmp_path, monkeypatch):
+    """Update-boundary listeners (and ctx.stop_at_update) are an
+    NNModel.train feature; under Trainer they would silently never fire."""
+    from nnx import Callback
+
+    class Listening(Callback):
+        def on_train_begin(self, ctx) -> None:
+            ctx.update_listeners.append(lambda ctx: None)
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="update_listeners"):
+        Trainer(_gan_like_model()).train(_two_optimizer_params(1), trainer_step_fn=_two_step, callbacks=[Listening()])

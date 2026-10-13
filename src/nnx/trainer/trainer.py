@@ -638,6 +638,13 @@ class Trainer:
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
             callback_lifecycle.start()
+            if ctx.update_listeners:
+                # Update-boundary listeners and ctx.stop_at_update are an
+                # NNModel.train feature; here they would silently never fire.
+                raise ValueError(
+                    "a callback registered ctx.update_listeners, which Trainer.train does not deliver (nor "
+                    "ctx.stop_at_update): use Callback.on_optimizer_update, or train with NNModel.train"
+                )
             # FEAT-005: reset hooks have run once; restore the validated
             # component states (all-or-nothing) before the first resumed epoch.
             if component_plan is not None:

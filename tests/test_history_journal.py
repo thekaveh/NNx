@@ -1243,3 +1243,26 @@ def test_a_stopped_epoch_is_absent_from_the_full_history_even_after_its_chunks_w
     assert seen["full"] == committed
     # a journal run keeps its retention window in memory
     assert [(idp.epoch_idx, idp.batch_idx) for idp in NNRun.load(run.id).idps] == committed[-4:]
+
+
+@pytest.mark.parametrize("chunk_size", [2, 4])
+def test_a_run_stopped_before_its_first_committed_epoch_loads_with_no_records(tmp_path, monkeypatch, chunk_size):
+    """A stop inside epoch 0 commits no epoch: the journal is published
+    empty, so the run loads (as an eager run's empty idps.csv does)."""
+    monkeypatch.chdir(tmp_path)
+
+    class StopInEpochZero(Callback):
+        def on_train_begin(self, ctx) -> None:
+            ctx.update_listeners.append(self.on_update)
+
+        def on_update(self, ctx) -> None:
+            if ctx.committed_updates == 3:
+                ctx.stop_at_update = True
+
+    run = _model().train(
+        params=_params(2, validate=False),
+        callbacks=[StopInEpochZero()],
+        history=HistoryJournal(retention=4, chunk_size=chunk_size),
+    )
+    assert list(iter_history(run.id)) == []
+    assert NNRun.load(run.id).idps == []
