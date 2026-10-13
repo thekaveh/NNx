@@ -182,18 +182,18 @@ a signal to lock onto. The other classification fields stay zero.
 
 ### 4.5. Sharp edges
 
-* **`NNModelParams.mixed_precision=True`** is rejected by the
+* **`NNModelParams.mixed_precision=True`** is rejected by
   `NNModel.train` with `PrecisionUnsupportedError` when it resolves to FP16
   on CUDA, before any step runs, because the JEPA step is full-precision
   only. Off CUDA the legacy flag falls back to full
   precision.
   AMP requires per-loss scaler bookkeeping that JEPA's custom step
   doesn't implement.
-* **`NNOptimParams.accumulate_grad_batches != 1`** is also rejected
-  for the same reason. JEPA's reference recipe uses large batches
-  rather than accumulation. If you need accumulation (or mixed
-  precision), train with `jepa_objective` (§5). Its EMA advances
-  once per committed update.
+* **`NNOptimParams.accumulate_grad_batches != 1`** raises `ValueError`
+  at the first step. The imperative JEPA step does not implement
+  gradient accumulation. JEPA's reference recipe uses large batches
+  instead. If you need accumulation (or mixed precision), train with
+  `jepa_objective` (§5). Its EMA advances once per committed update.
 * **Resume-from-checkpoint** restores the EMA target encoder too.
   `jepa_train_step_factory` returns a `JEPATrainStep`, a
   checkpointable component named `jepa.target_encoder`
@@ -201,16 +201,16 @@ a signal to lock onto. The other classification fields stay zero.
   checkpoint's training state carries the target encoder's weights.
   A stateful warm resume puts them back, frozen and in eval mode.
 
-  Four epochs and a 2 + 2 split with `resume_from_run_id`
-  end with identical encoder, predictor, target encoder, optimizer
-  and scheduler state. Build the resumed session's step with the
-  factory as usual; the restore overwrites the freshly copied
-  target.
+    Four epochs and a 2 + 2 split with `resume_from_run_id`
+    end with identical encoder, predictor, target encoder, optimizer
+    and scheduler state. Build the resumed session's step with the
+    factory as usual; the restore overwrites the freshly copied
+    target.
 
-  The component is required. A current checkpoint written without it
-  fails before anything is restored. A checkpoint written before
-  component state existed resumes with a fresh target copy and a
-  warning.
+    The component is required. A current checkpoint written without it
+    fails before anything is restored. A checkpoint written before
+    component state existed resumes with a fresh target copy and a
+    warning.
 
 ## 5. Objective mode
 
@@ -232,10 +232,10 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   therefore combine as `(sum_1 + sum_2) / (count_1 + count_2)`, and
   uneven microbatches give exactly the full-batch update.
 
-  The record carries the loss and `metrics={"latent_mse": ...}`, with no
-  classification fields. Masks are checked before any forward pass. They
-  must be complementary `BoolTensor[n_patches]` with at least one context
-  and one target patch.
+    The record carries the loss and `metrics={"latent_mse": ...}`, with no
+    classification fields. Masks are checked before any forward pass. They
+    must be complementary `BoolTensor[n_patches]` with at least one context
+    and one target patch.
 
 * **Update.** The shared engine owns backward, accumulation, mixed
   precision, clipping and the optimizer step, with the objective's
@@ -245,10 +245,10 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   stepped, from the updated online weights, and before callbacks see the
   update event. It never runs per microbatch and never for a skipped window.
 
-  `ema_momentum` is fixed in `[0, 1)`. `ema_updates` counts this run's EMA
-  steps and continues across a stateful resume. A `Trainer` with separate
-  encoder and predictor optimizers still advances it once per committed
-  update.
+    `ema_momentum` is fixed in `[0, 1)`. `ema_updates` counts this run's EMA
+    steps and continues across a stateful resume. A `Trainer` with separate
+    encoder and predictor optimizers still advances it once per committed
+    update.
 
 * **Ownership, checked before any run is reserved.** These rules apply:
     - The predictor must be a submodule of `model.net` whose trainable
@@ -260,10 +260,10 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
       e.g. QAT) are refused. The imperative step passed as `objective=` is
       refused too.
 
-  A callback that renames the net's parameters without declaring it is not
-  detected. An example is `torch.nn.utils.prune`, which turns `weight` into
-  `weight_orig`. `update_ema` then raises a `KeyError` naming the parameter
-  at the next committed update.
+    A callback that renames the net's parameters without declaring it is not
+    detected. An example is `torch.nn.utils.prune`, which turns `weight` into
+    `weight_orig`. `update_ema` then raises a `KeyError` naming the parameter
+    at the next committed update.
 
 * **Checkpoints and resume.** `JEPAObjective` is a checkpointable
   component named `jepa.objective`. It holds the spec (loss, momentum),
@@ -272,10 +272,10 @@ model.train(params=NNTrainParams(..., optim=NNOptimParams(..., accumulate_grad_b
   weights are saved once, with the net, in LAST and in `ModelCheckpoint`
   snapshots.
 
-  Two epochs and one epoch plus a stateful resume end in the same encoder,
-  predictor, target and counter. A saved state with a second predictor
-  payload, another predictor reference or another spec is rejected
-  before anything is restored.
+    Two epochs and one epoch plus a stateful resume end in the same encoder,
+    predictor, target and counter. A saved state with a second predictor
+    payload, another predictor reference or another spec is rejected
+    before anything is restored.
 
 `examples/16_ijepa_image_plumbing.py --objective` trains the demo this
 way, and its bounded `objective_mode()` helper checks one EMA step per

@@ -286,6 +286,13 @@ def test_repository_docs_have_no_placeholder_markers_or_tracked_ignored_files():
     [
         ("A paragraph line.\n- an item that joins it\n", "blank line"),
         ("- **Parent.**\n  - a child the site flattens\n", "four spaces"),
+        ("- an item\n\n  a paragraph that ends the list\n", "indent a paragraph"),
+        ("1. a step\n\n   a paragraph that ends the list\n", "indent a paragraph"),
+        (
+            "- **Parent.**\n\n  A paragraph that ends the list.\n\n    - an item the site renders as code\n",
+            "indent a paragraph",
+        ),
+        ("- an item\n\n  ```bash\n  make docs\n  ```\n", "indent fenced code"),
     ],
 )
 def test_list_markup_the_site_renders_differently_is_refused(tmp_path: Path, text: str, problem: str):
@@ -297,6 +304,11 @@ def test_list_markup_the_site_renders_like_github_is_accepted(tmp_path: Path):
     build_docs.validate_list_markup(
         tmp_path / "page.md",
         "A paragraph.\n\n- an item\n  continued\n- **Parent.**\n    - a child\n\n```\nnot\n- a list\n```\n",
+    )
+    build_docs.validate_list_markup(
+        tmp_path / "page.md",
+        "- **Parent.**\n\n    A paragraph inside the item.\n\n    - a child\n\n    ```bash\n    make docs\n"
+        "      indented\n    ```\n\n    More text.\n\nA paragraph after the list.\n\n  ```\n  code\n  ```\n",
     )
 
 

@@ -316,8 +316,8 @@ offline.
     - An optional per-position **loss mask** (never an attention mask).
     - Label **smoothing** for the objective, and its **version**.
 
-  Bad shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
-  before any forward pass.
+    Bad shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
+    before any forward pass.
 
     - The ignore id, the padding id and the loss mask select **one set of
       valid positions**. The objective's denominator, the NLL and the token
@@ -364,8 +364,8 @@ offline.
       unavailable first epoch, though, stands in until one has a value.
       Declare `MonitorSpec("nll")` to elect only epochs with a value.
 
-  A custom `train_step_fn` still works for anything else (diffusion / KD /
-  SimCLR / Mixup / CutMix follow that pattern).
+    A custom `train_step_fn` still works for anything else (diffusion / KD /
+    SimCLR / Mixup / CutMix follow that pattern).
 
 - **`NNRun` content-addressed persistence** — TRANSFORMER runs hash the
   same way as any other run. The `omit-when-default` invariant on
@@ -377,15 +377,15 @@ offline.
   pattern-match against every registration path of your config
   (`named_modules(remove_duplicate=False)`).
 
-  With tied embeddings the output head's weight *is* the token embedding.
-  `"*"` also wraps `lm_head`, so it freezes the embedding too; target the
-  attention / MLP projections by name to keep training it. A `Linear`
-  registered under two names is rejected before anything is wrapped.
+    With tied embeddings the output head's weight *is* the token embedding.
+    `"*"` also wraps `lm_head`, so it freezes the embedding too; target the
+    attention / MLP projections by name to keep training it. A `Linear`
+    registered under two names is rejected before anything is wrapped.
 
-  Each wrapper inherits the train/eval mode of the projection it wraps.
-  Injecting a dropout-bearing adapter into an `eval()` model therefore keeps
-  `generate()` deterministic. Modes are runtime state and never
-  serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+    Each wrapper inherits the train/eval mode of the projection it wraps.
+    Injecting a dropout-bearing adapter into an `eval()` model therefore keeps
+    `generate()` deterministic. Modes are runtime state and never
+    serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
 
 - **Callbacks** — `EarlyStopping`, `ModelCheckpoint`,
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
@@ -397,41 +397,41 @@ offline.
   A nonzero `attn_dropout` in train mode takes the manual, seed-deterministic
   path.
 
-  For FP16/BF16 layers, that path accumulates the scaled scores, additive
-  mask, softmax and dropout in FP32; FP32 and FP64 keep their own dtype. It
-  casts the attention result back to the value dtype before the output
-  projection. A half or bf16 model therefore trains with dropout and returns
-  logits in its own dtype.
+    For FP16/BF16 layers, that path accumulates the scaled scores, additive
+    mask, softmax and dropout in FP32; FP32 and FP64 keep their own dtype. It
+    casts the attention result back to the value dtype before the output
+    projection. A half or bf16 model therefore trains with dropout and returns
+    logits in its own dtype.
 
-  The same rule covers the rectangular prefix/cache masks
-  built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
-  bf16 autocast are the lanes exercised by the test suite; other
-  backend/dtype combinations are not claimed until run on that hardware.
+    The same rule covers the rectangular prefix/cache masks
+    built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
+    bf16 autocast are the lanes exercised by the test suite; other
+    backend/dtype combinations are not claimed until run on that hardware.
 
 - **RMSNorm precision** — every `RMSNorm` computes the mean of squares in
   at least FP32. This covers each block's `norm1` / `norm2` and the final
   `norm_out`. FP16/BF16 inputs are promoted to FP32, and FP32 and FP64 keep
   their own dtype (the same rule as the manual attention path above).
 
-  The norms of a `.double()` model therefore keep FP64 range and precision:
-  a `1e30` activation normalises to unit RMS instead of collapsing to zero.
-  The normalised value is cast back to the input dtype before the weight
-  multiply. The output dtype therefore still follows the input/weight
-  promotion. Parameters, `eps` (the `1e-6` the GGUF writer exports) and
-  checkpoint keys are unchanged.
+    The norms of a `.double()` model therefore keep FP64 range and precision:
+    a `1e30` activation normalises to unit RMS instead of collapsing to zero.
+    The normalised value is cast back to the input dtype before the weight
+    multiply. The output dtype therefore still follows the input/weight
+    promotion. Parameters, `eps` (the `1e-6` the GGUF writer exports) and
+    checkpoint keys are unchanged.
 
-  Double attention is covered too. For FP64 queries, the dropout-free SDPA
-  path upcasts the FP32 additive causal mask (and `PrefixTuner`'s
-  prefix/cache mask) to FP64. CPU `scaled_dot_product_attention` silently
-  mis-applies an FP32 mask to FP64 queries once the sequence reaches the
-  kernel's vector width (8 tokens on AVX2, 16 on AVX512). FP16/BF16/FP32
-  queries are unaffected and receive the mask unchanged.
+    Double attention is covered too. For FP64 queries, the dropout-free SDPA
+    path upcasts the FP32 additive causal mask (and `PrefixTuner`'s
+    prefix/cache mask) to FP64. CPU `scaled_dot_product_attention` silently
+    mis-applies an FP32 mask to FP64 queries once the sequence reaches the
+    kernel's vector width (8 tokens on AVX2, 16 on AVX512). FP16/BF16/FP32
+    queries are unaffected and receive the mask unchanged.
 
-  The RoPE cos/sin tables are computed in FP32 at construction and only
-  cast by `.double()`, so a double model's rotations carry FP32-level
-  rounding. `from_checkpoint` rebuilds the net in the default dtype. Call
-  `.double()` and reload the FP64 `net_state` to restore a double model
-  exactly.
+    The RoPE cos/sin tables are computed in FP32 at construction and only
+    cast by `.double()`, so a double model's rotations carry FP32-level
+    rounding. `from_checkpoint` rebuilds the net in the default dtype. Call
+    `.double()` and reload the FP64 `net_state` to restore a double model
+    exactly.
 
 - **KV cache** — `TransformerBlock` exposes a `use_cache` kwarg whose
   off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
@@ -440,9 +440,9 @@ offline.
   A fixed 256-token CPU regression threshold requires at least 1.2× over
   full recomputation. Results on other workloads and hardware vary.
 
-  Once
-  generation slides past the window, the cache is rebuilt each step for
-  RoPE-position correctness and the cost converges to the full-recompute path.
+    Once
+    generation slides past the window, the cache is rebuilt each step for
+    RoPE-position correctness and the cost converges to the full-recompute path.
 
 ## 7. Scope explicit
 
@@ -457,7 +457,7 @@ The decoder-only LM path covers:
   test requiring at least a 1.2× speedup over full recomputation.
 - CPU-friendly TinyStories-class training (sub-30-min runs).
 - Integrations built on the LM path:
-    - `Prefix-Tuner` / `Prompt-Tuner` PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+    - `PrefixTuner` / `PromptTuner` PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
     - `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)).
     - Experimental NNx-tagged GGUF export for inspection or patched runtimes (see
       [`docs/gguf.md`](gguf.md)).

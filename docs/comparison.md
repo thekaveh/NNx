@@ -232,7 +232,7 @@ issue.
 
 ## 6. Primary comparison sources
 
-- [Lightning checkpoint resume](https://lightning.ai/docs/pytorch/stable/common/checkpointing_basic.html)
+- [Lightning checkpoint resume](https://lightning.ai/docs/pytorch/stable/common/checkpointing_basic.html),
   [Lightning `Tuner.lr_find`](https://lightning.ai/docs/pytorch/stable/api/pytorch_lightning.tuner.tuning.Tuner.html),
   and [Lightning gradient inspection](https://lightning.ai/docs/pytorch/stable/debug/debugging_intermediate.html)
 - [Hugging Face generation](https://huggingface.co/docs/transformers/main_classes/text_generation),

@@ -74,8 +74,9 @@ first trained model, see the [README](../README.md#2-install) and the
   `runs/<id>/history/`, with lazy tail reads and CSV export.
 - **Experiment plans.** An immutable `ExperimentPlan` branches a configuration
   (`with_epochs`, `with_seed`, `with_data`, ...). `validate()` reports every
-  problem without reading data, `probe(batch)` runs one forward pass and
-  restores the ambient state, and `fit()` trains a distinct attempt. See
+  problem without reading data. `probe(batch)` runs an eval-mode no-grad
+  forward pass, plus a train-mode loss pass when the batch has a target. It
+  then restores the ambient state. `fit()` trains a distinct attempt. See
   `examples/experiment_plan.py`.
 - **Budgeted search** (`optuna` extra). `nnx.search.search(plan, space, ...)`
   runs a sequential Optuna study over an experiment plan; each trial fits a new

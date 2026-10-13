@@ -130,14 +130,14 @@ their tests skip and the page shows them *unverified*. To produce that report:
   page from both reports.
 - **Manual run** on a Linux machine with Python 3.12 and CUDA:
 
-  ```bash
-  uv sync --frozen --all-extras --python 3.12
-  uv run python scripts/check_feature_composition.py --run --report composition-cuda.json
-  uv run python scripts/check_feature_composition.py --render --report composition.json --report composition-cuda.json
-  ```
+    ```bash
+    uv sync --frozen --all-extras --python 3.12
+    uv run python scripts/check_feature_composition.py --run --report composition-cuda.json
+    uv run python scripts/check_feature_composition.py --render --report composition.json --report composition-cuda.json
+    ```
 
-  Each `--report` counts for the profile it ran on; a report from a profile the
-  registry does not list, or from other sources, renders *unverified*.
+    Each `--report` counts for the profile it ran on; a report from a profile the
+    registry does not list, or from other sources, renders *unverified*.
 
 Change `docs/external-contracts.md` and the matrix rows only from executed
 evidence: a CUDA report whose listed tests passed in every phase.
@@ -157,28 +157,28 @@ The end-to-end flow:
 
 1. Every merge to `main` updates a long-lived "Release" PR maintained by `release-please.yml`. The PR accumulates the next version + `CHANGELOG.md` diff based on the conventional-commit types since the last tag. Before 1.0, `feat:` and `fix:` both trigger a patch bump (`0.X.Y`; `bump-patch-for-minor-pre-major` in `release-please-config.json`). A breaking change (`!` or a `BREAKING CHANGE:` footer) bumps the minor version (`0.X.0`; `bump-minor-pre-major`). To force a minor bump otherwise, add a `Release-As: 0.X.0` footer to a commit.
 
-   The Release PR carries only release-please's own commit. Nothing else pushes to it, because the `main` ruleset holds a PR for review when a bot made its latest push. That holds even for a verified commit, so each release PR needs one approval.
+    The Release PR carries only release-please's own commit. Nothing else pushes to it, because the `main` ruleset holds a PR for review when a bot made its latest push. That holds even for a verified commit, so each release PR needs one approval.
 
-   release-please bumps the version in three places, so the lock and the API-reference check stay consistent:
+    release-please bumps the version in three places, so the lock and the API-reference check stay consistent:
 
     - `pyproject.toml`, through its Python updater.
     - The lines marked `x-release-please-version`: the `__version__` fallback in `src/nnx/__init__.py`, the `nnx.__version__` line of `docs/api.md` and the version line of `README.md` / `PYPI_README.md`.
     - The package's version in `uv.lock`, through a toml updater.
 
-   The workflow then dispatches the required checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`).
+    Each time the workflow creates or updates the Release PR, it dispatches the required CI and security checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`).
 
-   The post-release sync of `main` into `develop` runs `python3 scripts/release/finalize_changelog.py CHANGELOG.md`. It moves the curated notes under the new version heading in place of the generated list. It leaves `[Unreleased]` empty. Keep `[Unreleased]` curated: it becomes the release notes.
+    The post-release sync of `main` into `develop` runs `python3 scripts/release/finalize_changelog.py CHANGELOG.md`. It moves the curated notes under the new version heading in place of the generated list. It leaves `[Unreleased]` empty. Keep `[Unreleased]` curated: it becomes the release notes.
 
-   Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
+    Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
 
-2. A maintainer reviews and merges the Release PR when ready to ship. Release Please explicitly dispatches the required CI and security checks for its managed branch. It then creates the tag and draft release. It dispatches the top-level `release.yml` workflow with the immutable release commit and tag.
+2. A maintainer reviews and merges the Release PR when ready to ship. Release Please then creates the tag and draft release. It publishes the curated notes as the release body. It then dispatches the top-level `release.yml` workflow with the immutable release commit and tag.
 3. `release.yml` runs these steps:
     - It verifies the Release Please commit belongs to `main`.
     - It runs the full test matrix and builds the package.
     - It publishes through PyPI trusted publishing, gated by the `pypi` GitHub Environment's approval rule.
     - It verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
 
-   Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
+    Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
 
 The `[project]` version is intentionally static and managed by release-please. **Do not distribute wheels or sdists built from an untagged commit.** After development resumes, such an artifact can contain code newer than the release. It still carries the last release number. Use editable installs for local source work. Distributable artifacts must come from Release Please's dispatched release workflow, which verifies tag/version and tag/commit agreement before publishing. Direct tag pushes do not publish packages.
 

@@ -219,12 +219,12 @@ and experimental context.
   (negated chosen−rejected log-prob gap, so lower is better — same
   monotone direction as `loss`).
 
-  It also stores three values in `idp.train_edp.extra`. `reward_chosen`
-  and `reward_rejected` are the batch-mean implicit rewards
-  `beta * (policy_logp - reference_logp)`. `reward_accuracy` is the
-  fraction of pairs where the chosen reward exceeds the rejected reward
-  (range 0–1, higher is better). Track the reward margin alongside
-  accuracy; accuracy alone can hide collapsing reward magnitudes.
+    It also stores three values in `idp.train_edp.extra`. `reward_chosen`
+    and `reward_rejected` are the batch-mean implicit rewards
+    `beta * (policy_logp - reference_logp)`. `reward_accuracy` is the
+    fraction of pairs where the chosen reward exceeds the rejected reward
+    (range 0–1, higher is better). Track the reward margin alongside
+    accuracy; accuracy alone can hide collapsing reward magnitudes.
 
 - **Generation** — after training, `policy.generate(prompt=..., ...)`
   produces text from the tuned policy with the standard sampling

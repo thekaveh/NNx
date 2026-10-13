@@ -346,7 +346,7 @@ Artifacts are still written under `<cwd>/runs/<id>/`. Use `os.path.abspath(f"run
 
 ### 4.1. The `runs/best` pointer
 
-The `runs/best` symlink points at the lowest-error run across all runs in the directory. For paradigm runs whose steps don't produce a supervised error, it uses the lowest loss. In a runs root mixing both kinds, the comparison is between unlike metrics. That is an accepted trade-off against a `best` pointer paradigm runs could never claim. On Windows without developer mode it's a `POINTER.txt` file instead.
+The `runs/best` symlink points at the lowest-error run across all runs in the directory. For paradigm runs whose steps don't produce a supervised error, it uses the lowest loss. In a runs root mixing both kinds, the comparison is between unlike metrics. That is an accepted trade-off against a `best` pointer paradigm runs could never claim. On Windows without developer mode, `runs/best` is a directory that holds a `POINTER.txt` file with the run's path.
 
 Only a run with a *committed* BEST checkpoint can own the pointer. That means a real run directory with `run.yaml`, loadable history and a parseable BEST. Under the history protocol, the BEST epoch must also be no later than the committed LAST. `best`, `.leases`, bare reservations and malformed artifacts are never candidates.
 
@@ -1166,15 +1166,25 @@ run = trainer.train(
 
 **Builder shape (composes the optimizer and scheduler Builders):**
 
-The same GAN recipe via the composite Builder. The `.scheduler("d", ...)`
-without a prior `.optimizer("d", ...)` would fail at `.build()` time
+The same GAN recipe via the composite Builder. The `.scheduler("D", ...)`
+without a prior `.optimizer("D", ...)` would fail at `.build()` time
 with an actionable error naming the typo:
 
 ```python
-from nnx import NNTrainerParams, NNOptimParams, NNSchedulerParams
+from nnx import NNTrainerParams, NNOptimParams, NNParamGroupSpec, NNSchedulerParams
 
-g_optim = NNOptimParams.builder().adam(max_lr=2e-4, betas=(0.5, 0.999), weight_decay=0.0).build()
-d_optim = NNOptimParams.builder().adam(max_lr=2e-4, betas=(0.5, 0.999), weight_decay=0.0).build()
+g_optim = (
+    NNOptimParams.builder()
+    .adam(max_lr=2e-4, betas=(0.5, 0.999), weight_decay=0.0)
+    .param_groups([NNParamGroupSpec(name_pattern="G.*")])
+    .build()
+)
+d_optim = (
+    NNOptimParams.builder()
+    .adam(max_lr=2e-4, betas=(0.5, 0.999), weight_decay=0.0)
+    .param_groups([NNParamGroupSpec(name_pattern="D.*")])
+    .build()
+)
 plateau = NNSchedulerParams.builder().reduce_on_plateau(
     min_lr=1e-7, factor=0.5, patience=2, cooldown=1, threshold=1e-3
 ).build()
@@ -1182,10 +1192,11 @@ plateau = NNSchedulerParams.builder().reduce_on_plateau(
 trainer_params = (
     NNTrainerParams.builder()
     .n_epochs(50)
-    .optimizer("g", g_optim)
-    .optimizer("d", d_optim)
-    .scheduler("g", plateau)
-    .scheduler("d", plateau)
+    .train_loader(loader)
+    .optimizer("G", g_optim)
+    .optimizer("D", d_optim)
+    .scheduler("G", plateau)
+    .scheduler("D", plateau)
     .build()
 )
 ```
@@ -1237,6 +1248,8 @@ See [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/mai
 Every Trainer checkpoint carries a training-state sidecar. It holds each named optimizer's and scheduler's state, the completed epoch, the RNG streams and the registered components (§14.1). The final LAST checkpoint, written after `on_train_end`, carries all of it too. Resume with the same controls `NNTrainParams` has:
 
 ```python
+first = Trainer(model).train(params=trainer_params, trainer_step_fn=gan_step)  # the earlier run
+
 params = (NNTrainerParams.builder()
           .n_epochs(2)
           .optimizer("G", g_optim).optimizer("D", d_optim)
@@ -1306,7 +1319,7 @@ timesteps and noise yourself.
 
 ### 9.1. Noise schedules
 
-`NoiseSchedulers` is an enum-as-factory matching the rest of the library (`Optims`, `Schedulers`, `Nets`). `NoiseSchedulers.LINEAR(T, beta_min, beta_max)` and `NoiseSchedulers.COSINE(T, s)` each return a `NoiseSchedule`. That is a frozen dataclass of precomputed tensors (`betas`, `alphas`, `alphas_cumprod`, `sqrt_alphas_cumprod`, `sqrt_one_minus_alphas_cumprod`, `posterior_variance`).
+`NoiseSchedulers` is an enum-as-factory matching the rest of the library (`Optims`, `Schedulers`, `Nets`). `NoiseSchedulers.LINEAR(T=1000, beta_min=1e-4, beta_max=2e-2)` and `NoiseSchedulers.COSINE(T=1000, s=0.008)` each return a `NoiseSchedule`. That is a frozen dataclass of precomputed tensors (`betas`, `alphas`, `alphas_cumprod`, `sqrt_alphas_cumprod`, `sqrt_one_minus_alphas_cumprod`, `posterior_variance`). Pass the arguments after `T` by keyword.
 
 The factory builds tensors on CPU; the train step and sampler migrate them to `model.device` on first use. There's no `state()` / `from_state()` round-trip. The tensors are recoverable from `(kind, T, beta_min, beta_max | s)`. So on-disk runs reconstruct the schedule from the call arguments rather than serializing the tensors.
 
@@ -1399,7 +1412,7 @@ step_fn = simclr_train_step_factory(temperature=0.5)
 model.train(params=..., train_step_fn=step_fn)
 ```
 
-`nt_xent_loss(z1, z2, temperature)` is exposed as a standalone for users wanting to compose the loss into other pipelines. The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
+`nt_xent_loss(z1, z2, temperature=0.5)` is exposed as a standalone for users wanting to compose the loss into other pipelines. Pass `temperature` by keyword. The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
 
 ### 10.3. Mixup / CutMix
 
@@ -1525,7 +1538,7 @@ See [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main
 
 ## 12. Model-internals visualization
 
-`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). Every figure here is Plotly. `VisUtils`, `activation_map`, `weight_histogram`, `gradient_flow` and `attribute` need the `plots` extra (the `viz` extra includes it). They say so in an `ImportError` before any work runs. `VisUtils.classification_report` (a DataFrame) and `summary` do not need it.
+`nnx.vis_utils` covers **run-output** viz (training curves, confusion matrices, t-SNE of checkpoint logits). Every figure here is Plotly. `VisUtils`, `activation_map`, `weight_histogram`, `gradient_flow`, `attribute` and `nnx.lr_finder` need the `plots` extra (the `viz` extra includes it). They say so in an `ImportError` before any work runs. `VisUtils.classification_report` (a DataFrame) and `summary` do not need it.
 
 The companion `nnx.viz` subpackage covers **model-internals** viz — the model itself, not what the run produced. Six primitives ship today: `summary`, `weight_histogram`, `activation_map`, `attribute`, `gradient_flow`, and `netron_export`.
 
@@ -1590,6 +1603,10 @@ result.figure.show()
 ```
 
 `suggested_lr` is the LR at the steepest descent point of the EMA-smoothed loss curve — the Smith (2017) heuristic. Plug it into `NNOptimParams.max_lr` for the real training run.
+
+The sweep stops early when the loss diverges. That happens when the smoothed loss exceeds `diverge_threshold` (default `4.0`, must be above 1) times the lowest smoothed loss so far.
+
+`lr_finder` needs the `plots` extra (`pip install "thekaveh-nnx[plots]"`), because its result includes a Plotly figure. Without the extra it raises `ImportError` before it touches any data, model or RNG state.
 
 ### 13.2. Non-destructive contract for inference and inspection helpers
 
@@ -1949,11 +1966,13 @@ rather than replacing it:
   rotary positional embeddings, SwiGLU FFN, tied input/output embeddings,
   fused QKV projection). Sits at the same level as `FeedFwdNN` / `GraphConvNN`
   / `GraphSageNN` / `GraphAttNN` and is selected via `Nets.TRANSFORMER`.
-- **`NNTransformerParams`** + **`NNTokenizerParams`** — params subclasses that
-  add the LM-specific shape knobs (`vocab_size`, `n_layers`, `d_model`,
-  `max_seq_len`, `ffn_mult`, `rope_base`, `tie_embeddings`, `attn_dropout`,
+- **`NNTransformerParams`** — a params subclass that adds the LM-specific
+  shape knobs (`vocab_size`, `n_layers`, `d_model`, `max_seq_len`,
+  `ffn_mult`, `rope_base`, `tie_embeddings`, `attn_dropout`,
   `resid_dropout`). Every optional field omits itself from `state()` at
   default, the invariant covered in §2.2.
+- **`NNTokenizerParams`** — a frozen dataclass that holds the tokenizer
+  and the path of its saved JSON file. It has no shape knobs.
 - **`GenerativeNNModel`** — a thin subclass of `NNModel` adding
   `generate(prompt, *, max_new_tokens, temperature, top_k, top_p,
   repetition_penalty, stop, seed, use_cache, logits_chain, on_token,
@@ -1963,10 +1982,10 @@ rather than replacing it:
   The fixed 256-token CPU regression test requires at least a 1.2×
   improvement over full recomputation; other workloads and hardware vary.
 
-  Greedy decoding is available via `temperature=0`; the default `temperature=1.0` samples the full softmax. The scalar kwargs
-  build the standard processor chain. `logits_chain=LogitsChain.builder()...`
-  is the power-user path for custom `nnx.generation.LogitsProcessor`s (see
-  §2.4).
+    Greedy decoding is available via `temperature=0`; the default `temperature=1.0` samples the full softmax. The scalar kwargs
+    build the standard processor chain. `logits_chain=LogitsChain.builder()...`
+    is the power-user path for custom `nnx.generation.LogitsProcessor`s (see
+    §2.4).
 
 The LM path stays optional behind the `lm` extra (`pip install "thekaveh-nnx[lm]"` —
 pulls `tokenizers` + `datasets`); the rest of NNx works without it. See
@@ -2114,12 +2133,12 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
   the model already fits. It must not be the final test split either: the
   report needs that one untouched.
 
-  `fit_temperature` rejects a `split_id` equal to `train_split_id` or
-  `test_split_id`. `report` rejects the calibration or training split as
-  held-out data. Different ids do not prove the rows are
-  disjoint, because arrays and loaders carry no such guarantee. The
-  calibrator therefore records `split["disjointness"] == "unverified"` with
-  that note.
+    `fit_temperature` rejects a `split_id` equal to `train_split_id` or
+    `test_split_id`. `report` rejects the calibration or training split as
+    held-out data. Different ids do not prove the rows are
+    disjoint, because arrays and loaders carry no such guarantee. The
+    calibrator therefore records `split["disjointness"] == "unverified"` with
+    that note.
 
 - **Fitting.** The fit takes categorical `(N, C)` logits, `C >= 2`, integer
   targets in range, and one label per class. Non-finite logits are rejected,
@@ -2156,7 +2175,7 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
     - the ordered `labels`, the `sample_ids` and the `calibrator_id` (the
       calibrator's digest).
 
-  The model, `predict()` and the run are never touched.
+    The model, `predict()` and the run are never touched.
 
 - **Metrics.** The module provides four metrics:
     - `negative_log_likelihood`: mean `-log p[target]`. The default floor
@@ -2324,10 +2343,10 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
     - The parameter objects are immutable and shared between branches.
     - Collections are copied into tuples and read-only mappings, so a sibling
       or a later edit to the caller's own dict cannot reach another plan.
-- **Validate: pure.** `validate()` returns every problem as a field-path
-  `Diagnostic`: `model`, `net`, `model.net`, `train`, `data.train`,
-  `data.val`, `data.identity`, `seed`, `callbacks[i]`,
-  `callback_factories[i]`, `objective`, `resume.*`,
+- **Validate: pure.** `validate()` returns every problem as a
+  `Diagnostic` with a field path. Example paths are `model`, `net`,
+  `model.net`, `train`, `data.train`, `data.val`, `data.identity`, `seed`,
+  `callbacks[i]`, `callback_factories[i]`, `objective`, `resume.*`,
   `train.overwrite_existing`, `train.metrics[i]` and `train.monitor`.
     - It reports conflicts statically, such as a resume alongside
       `train.parent_run_id`, or a validation monitor with no validation data.
@@ -2396,9 +2415,9 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
     5. call `model.train(...)` with the plan's seed, data, data identity
        (`NNTrainParams.data_id`) and resume.
 
-  So it matches `set_seed(s); NNModel(...).train(NNTrainParams(seed=s, ...))`
-  on weights, history and callback order. `NNModel.train` returns an
-  `NNRun` as usual, and plans add no field to any params class.
+    So it matches `set_seed(s); NNModel(...).train(NNTrainParams(seed=s, ...))`
+    on weights, history and callback order. `NNModel.train` returns an
+    `NNRun` as usual, and plans add no field to any params class.
 
 - **Attempts.** Every fit is a distinct attempt. Its id (random unless
   `fit(attempt="...")` names it) is folded into the run's `salt` as
@@ -2470,17 +2489,17 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
   another iterable of batches; in-memory arrays and tensors stay with
   `predict()`. Use the stream in a `with` block:
 
-  ```python
-  with model.iter_predict(loader) as stream:
-      for batch in stream:
-          sink.write(batch.sample_ids, batch.classes)
-  ```
+    ```python
+    with model.iter_predict(loader) as stream:
+        for batch in stream:
+            sink.write(batch.sample_ids, batch.classes)
+    ```
 
-  Batches arrive in loader order. Concatenated (`concatenate_predictions`),
-  they are exactly the eager result: `predict()`'s logits and classes and
-  `predict_proba()`'s sample ids. The graph seed-row slicing is the same.
-  So is the categorical, multilabel (the task's threshold) and continuous
-  decoding.
+    Batches arrive in loader order. Concatenated (`concatenate_predictions`),
+    they are exactly the eager result: `predict()`'s logits and classes and
+    `predict_proba()`'s sample ids. The graph seed-row slicing is the same.
+    So is the categorical, multilabel (the task's threshold) and continuous
+    decoding.
 
 - **Batch types and edge cases.** Each batch is the `PredictionResult` that
   `predict_proba()` would build for it. That holds with a `ProbabilitySpec`,
@@ -2540,10 +2559,10 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
       outputs along axis 1);
     - the same decision threshold and the same `ignore_index`.
 
-  Anything else raises `MetricMergeError`, since the sums would describe
-  different quantities. A custom accumulator's `merge(other)` adds `other`
-  in place and returns `None`. It keeps nothing of `other` that a later
-  update could change.
+    Anything else raises `MetricMergeError`, since the sums would describe
+    different quantities. A custom accumulator's `merge(other)` adds `other`
+    in place and returns `None`. It keeps nothing of `other` that a later
+    update could change.
 
 - **Stored scores.** A rank metric such as AUROC depends on the order of
   every score and is never additive. A registered metric whose accumulator
@@ -2560,22 +2579,22 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
     - the same classification or task metrics, and the declared metrics that
       monitors and BEST selection read.
 
-  `EvalStepContext.metrics` carries the run's declared metrics to the step.
-  The step refuses `extra_metrics` (callables on the full arrays) and a
-  stored-score metric when training starts, before any run is reserved.
-  `ExperimentPlan.validate()` reports both under `train.extra_metrics` /
-  `train.metrics[i]`.
+    `EvalStepContext.metrics` carries the run's declared metrics to the step.
+    The step refuses `extra_metrics` (callables on the full arrays) and a
+    stored-score metric when training starts, before any run is reserved.
+    `ExperimentPlan.validate()` reports both under `train.extra_metrics` /
+    `train.metrics[i]`.
 
-  These early checks apply to `streaming_eval_step` itself or a
-  `functools.partial` of it. A step that wraps it is a step of its own. The
-  streaming step then refuses at its first call, before reading a validation
-  batch.
+    These early checks apply to `streaming_eval_step` itself or a
+    `functools.partial` of it. A step that wraps it is a step of its own. The
+    streaming step then refuses at its first call, before reading a validation
+    batch.
 
-  The default validation step and `evaluate()` stay eager, and `evaluate()`
-  raises on an empty loader. A model without a task scores multi-output
-  (`BCEWithLogitsLoss`) indicators row by row, as `evaluate()` does.
-  Accuracy is then the exact-row accuracy, and the averages run over the
-  labels.
+    The default validation step and `evaluate()` stay eager, and `evaluate()`
+    raises on an empty loader. A model without a task scores multi-output
+    (`BCEWithLogitsLoss`) indicators row by row, as `evaluate()` does.
+    Accuracy is then the exact-row accuracy, and the averages run over the
+    labels.
 
 See [`examples/prediction_stream.py`](../examples/prediction_stream.py).
 
@@ -2634,11 +2653,11 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
     - calibrator labels matching the task's;
     - safetensors headers holding exactly the tensors `state.json` references.
 
-  Only then is a calibrator's fingerprint `model_id` checked, against the
-  weights hashed straight from the payload; no tensor is built. An export
-  runs the same checks on its staged generation before publishing it.
-  Neither inspection nor validation unpickles, calls a model factory or
-  downloads, even beside a legacy `last.pt`.
+    Only then is a calibrator's fingerprint `model_id` checked, against the
+    weights hashed straight from the payload; no tensor is built. An export
+    runs the same checks on its staged generation before publishing it.
+    Neither inspection nor validation unpickles, calls a model factory or
+    downloads, even beside a legacy `last.pt`.
 
 - **Reconstruct.** `reconstruct_bundle(path, factories=..., components=...)`
   validates, then rebuilds the model. A registered module is built from the
@@ -2865,8 +2884,8 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
     - an optional `group_size` (every query must have exactly that many
       candidates) and a `version`.
 
-  Query and candidate ids are integers or strings, kept as host values. A
-  candidate's identity therefore survives sorting, device moves and reloads.
+    Query and candidate ids are integers or strings, kept as host values. A
+    candidate's identity therefore survives sorting, device moves and reloads.
 
 - **Rejected before any update:**
     - mismatched lengths or mixed id types;
@@ -2948,8 +2967,8 @@ GraphCollection(graphs, ids, targets | unlabeled=[...])  ──loader()──►
     - `ptr` and the batch vector are consistent, and no edge crosses graphs;
     - each graph has one target.
 
-  It pools node rows into graph rows: `"mean"` or `"sum"`, graph-local and
-  invariant to node order.
+    It pools node rows into graph rows: `"mean"` or `"sum"`, graph-local and
+    invariant to node order.
 
 - **The recipe.** `graph_classifier_spec(input_dim, num_classes,
   hidden_dims, encoder="graph_conv" | "graph_sage" | "graph_att", pool=...)`
@@ -3038,8 +3057,8 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   one-class set reports them unavailable with the reason, so
   `MonitorSpec("auroc")` never elects it BEST.
 - **Metrics from logits.** The metrics are computed from the float64
-  logits, never from probabilities. For a confident model, probabilities
-  round to exactly 0 or 1 beyond `|logit|` ≈ 16.6 in float32 (36.7 in
+  logits, never from probabilities. For a confident model, a probability
+  rounds to exactly 1 beyond a logit of about 16.6 in float32 (36.7 in
   float64). That rounding ties candidates the logits tell apart and clips
   their loss. The BCE therefore comes from the logits (the NLL from their
   log-softmax), and AUROC / AP rank the logits themselves.

@@ -725,7 +725,7 @@ base = (ExperimentPlan()
 short, long = base.with_epochs(2), base.with_epochs(10)   # base, short and long stay unchanged
 
 base.validate().raise_for_errors()   # every problem at once; reads no loader, builds no model
-base.probe(next(iter(make_train_loader())))  # one no-grad forward pass on a temporary model
+base.probe(next(iter(make_train_loader())))  # temporary model: eval no-grad forward, plus a train-mode loss pass if the batch has a target
 result = base.fit()                  # FitResult(model, run, metrics, attempt_id)
 result.metrics["val"].values["loss"] # from the run's final epoch; no second loader pass
 child = base.with_epochs(20).resuming(result.run.id).fit()  # a new run; the parent stays intact

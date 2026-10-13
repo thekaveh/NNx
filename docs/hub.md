@@ -137,14 +137,14 @@ This writes three files into `./my-model/`:
   model built from a registered factory (§2.6) has no `net_params`; its
   `params.net` is the `ModelSpec` descriptor.
 
-  A recorded recipe (`nnx.transforms`, see
-  [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
-  can change a model's topology. Such a model writes its ordered operations
-  to `"transforms"`, each with its id, version, targets and config. Without
-  a recipe that list is empty.
-  It is saved only while its topology is exactly its base plus that recipe.
-  Unrecorded surgery is refused before anything is written, rather than
-  failing at load.
+    A recorded recipe (`nnx.transforms`, see
+    [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
+    can change a model's topology. Such a model writes its ordered operations
+    to `"transforms"`, each with its id, version, targets and config. Without
+    a recipe that list is empty.
+    It is saved only while its topology is exactly its base plus that recipe.
+    Unrecorded surgery is refused before anything is written, rather than
+    failing at load.
 
 - `README.md` — auto-generated model card from the mixin.
 

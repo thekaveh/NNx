@@ -108,7 +108,7 @@ of those ids. Providers call it **before any model call or network I/O**.
 ## 4. The fixed-head adapter
 
 `FixedHeadProvider(model, labels=None, option_map=None, ordinal=False,
-max_batch=None, question=None)` adapts a trained `NNModel`. The head decides
+max_batch=None, name="nnx.fixed_head", question=None)` adapts a trained `NNModel`. The head decides
 what it can answer:
 
 | Head | Answers |
@@ -249,8 +249,8 @@ with JevProvider(model="jev-1.13.0") as provider:          # TYPESAFE_API_KEY fr
         texts,                                              # one system_one request per text
     )
 topic[0].distribution          # (("t-bill", 0.7), ("t-ship", 0.3)), in the question's order
-topic[0].raw                    # {"provider": "jev", "model": "jev-1.13.0", "request_id": ..., "usage": {...},
-                                #  "provider_confidence": 0.7}
+topic[0].raw                    # {"provider": "jev", "model": "jev-1.13.0", "requested_model": "jev-1.13.0",
+                                #  "request_id": ..., "usage": {...}, "provider_confidence": 0.7}
 ```
 
 - **Translation.** The prompt is the `instructions`, and each question
@@ -691,13 +691,13 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
 ```
 
 - `validate_decision_request_result(kind, prompt, options)` builds the
-  question from plain data inside its boundary. Exactly
+  question from plain data inside its boundary. Any
   `InvalidDecisionRequest` becomes `Err(code="invalid_decision_request")`,
   and the provider is never called. That covers duplicate or empty ids, too
   few options, an empty prompt and an unknown kind.
 - `decide_result(provider, question, inputs, policy=None, model_id=None)`
   maps three error types to codes:
-    - exactly `InvalidDecisionResponse` — an answer that does not fit the
+    - any `InvalidDecisionResponse` — an answer that does not fit the
       question, such as a `JevMalformedResponse` — becomes
       `"invalid_decision_response"`;
     - any other `ProviderFailure` (an outage, a timeout, a refused

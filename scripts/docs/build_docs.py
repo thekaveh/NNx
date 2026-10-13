@@ -529,26 +529,43 @@ _FENCE = re.compile(r"^\s*(?:```|~~~)")
 def validate_list_markup(source: Path, text: str) -> None:
     """Refuse list markup that GitHub renders as a list but the site's
     Python-Markdown does not: a list started directly under a paragraph line
-    (it joins the paragraph) and a nested item indented two or three spaces
-    (it flattens into its parent list)."""
+    (it joins the paragraph), a nested item indented two or three spaces
+    (it flattens into its parent list), and a paragraph or fenced code block
+    after a blank line inside a list indented one to three spaces (it ends
+    the list, so later four-space items render as code)."""
     problems: list[str] = []
     block_start: int | None = None
     fenced = False
+    in_list = False
+    after_blank = False
     lines = text.splitlines()
     for number, line in enumerate(lines, start=1):
+        indent = len(line) - len(line.lstrip(" "))
         if _FENCE.match(line):
-            fenced, block_start = not fenced, None
+            if not fenced and in_list and after_blank:
+                if indent == 0:
+                    in_list = False
+                elif indent < 4:
+                    problems.append(f"{source}:{number}: indent fenced code inside a list item four spaces")
+            fenced, block_start, after_blank = not fenced, None, False
             continue
         if fenced:
             continue
         if not line.strip():
-            block_start = None
+            block_start, after_blank = None, True
             continue
+        item = _LIST_ITEM.match(line)
+        if in_list and after_blank and item is None:
+            if indent == 0:
+                in_list = False
+            elif indent < 4:
+                problems.append(f"{source}:{number}: indent a paragraph inside a list item four spaces")
+        after_blank = False
         if block_start is None:
             block_start = number
-        item = _LIST_ITEM.match(line)
         if item is None:
             continue
+        in_list = True
         first = lines[block_start - 1]
         if number > block_start and not _LIST_ITEM.match(first) and not first.lstrip().startswith(("#", "|", "<", ">")):
             problems.append(

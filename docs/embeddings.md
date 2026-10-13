@@ -202,7 +202,9 @@ Persists the backbone's `state_dict()` to disk for HuggingFace Hub / sentence-tr
 
 - **NT-Xent loss** — `nnx.nt_xent_loss` (the SimCLR objective). The trainer reuses this for in-batch contrastive learning.
 - **`finalize_step` helper** — the `text_contrastive_train_step_factory` path routes through `nnx._step_helpers.finalize_step` for NaN-guard, grad-clip, and the standard paradigm-factory contract (no AMP, no gradient accumulation).
-- **Freezing / LoRA** — both compose cleanly. `nnx.freeze(backbone, "encoder.layer.0.*")` excludes those parameters from the optimizer; `nnx.apply_lora_to(backbone, "*.dense")` then adds trainable LoRA residuals on the still-trainable subset. The optimizer in `train_contrastive` collects only `requires_grad=True` parameters, so both layered composition works.
+- **Freezing / LoRA** — both compose with the trainer. A `SentenceTransformer` prefixes its parameter names with the module index (for example `0.model.embeddings...`), so start patterns with `*`. `nnx.freeze(backbone, "*encoder.layer.0.*")` excludes those parameters from the optimizer. The optimizer in `train_contrastive` collects only `requires_grad=True` parameters.
+
+    `nnx.apply_lora_to(backbone, "*.dense")` wraps every matched `Linear`, including frozen ones. Each wrapper freezes its base layer and adds trainable LoRA parameters. To keep a frozen block free of adapters, use patterns that do not match it.
 
 ## 6. What this is NOT
 
