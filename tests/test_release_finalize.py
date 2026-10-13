@@ -45,11 +45,23 @@ def test_the_curated_notes_replace_the_generated_list_as_the_manual_finalize_did
     assert finalize(before) == after
 
 
-def test_finalizing_is_idempotent_and_leaves_a_develop_changelog_alone():
+def test_finalizing_is_idempotent_and_the_repository_changelog_is_finalizable():
     after = (FIXTURES / "after.md").read_text(encoding="utf-8")
     assert finalize(after) == after
-    develop = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")  # [Unreleased] first: nothing to finalize
-    assert finalize(develop) == develop
+    # On develop it is already final; on a release PR (FIX-033: not finalized
+    # there) it holds exactly one release section above [Unreleased]. Either
+    # way finalizing succeeds and is a fixed point.
+    current = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert finalize(finalize(current)) == finalize(current)
+
+
+def test_the_release_notes_are_the_curated_notes_of_an_unfinalized_release_commit():
+    """FIX-033: the release commit is release-please's own, not finalized; the
+    published notes are the curated [Unreleased] notes it carries."""
+    before = (FIXTURES / "before.md").read_text(encoding="utf-8")
+    after = (FIXTURES / "after.md").read_text(encoding="utf-8")
+    version = after.split("## [", 2)[2].split("]", 1)[0]  # the first release section of the finalized fixture
+    assert release_notes(before, version) == release_notes(after, version)
 
 
 def test_without_curated_notes_the_generated_list_stays():
@@ -110,11 +122,37 @@ def test_the_api_reference_version_line_is_bumped_by_release_please():
     )
 
 
-def test_the_release_workflow_finalizes_the_release_branch():
+def test_the_release_workflow_publishes_the_curated_notes_and_never_commits():
+    """FIX-033: a bot push to a release PR makes the main ruleset ask for an
+    approval, verified or not (#475), so the workflow commits nothing; the
+    release notes are folded from the release commit at publish time."""
     workflow = (ROOT / ".github" / "workflows" / "release-please.yml").read_text(encoding="utf-8")
-    assert "python3 scripts/release/finalize_changelog.py CHANGELOG.md\n" in workflow
-    assert "uv.lock CHANGELOG.md\n" in workflow  # both committed (through the API, FIX-033)
     assert '--release-notes "$RELEASE_TAG"' in workflow and "gh release edit" in workflow
+    for push in ("git push", "git commit", "api_commit", "git/commits", "uv lock"):
+        assert push not in workflow, push
+    assert 'gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"' in workflow
+
+
+def test_release_please_bumps_the_lockfile_version_itself():
+    """FIX-033: release-please's toml updater bumps the package's version in
+    uv.lock (one line), so the release PR's lock stays consistent with
+    pyproject.toml without a lockfile refresh commit."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
+
+    config = json.loads((ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+    updaters = config["packages"]["."]["extra-files"]
+    assert {
+        "type": "toml",
+        "path": "uv.lock",
+        "jsonpath": "$.package[?(@.name.value=='thekaveh-nnx')].version",
+    } in updaters
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    ours = [entry for entry in lock["package"] if entry["name"] == "thekaveh-nnx"]
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert [entry["version"] for entry in ours] == [project["version"]]
 
 
 def test_release_please_bumps_the_readme_version_line_and_its_pypi_copy_alike():

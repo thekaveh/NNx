@@ -57,10 +57,12 @@ def test_draft_release_please_forces_tag_creation():
     assert config["force-tag-creation"] is True
 
 
-def test_privileged_release_please_job_installs_only_pinned_uv_action():
+def test_privileged_release_please_job_installs_no_tools():
+    """FIX-033: the write-privileged job no longer refreshes the lock, so it
+    installs nothing (release-please bumps uv.lock's version itself)."""
     workflow = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
-    assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in workflow
-    assert "pip install -r requirements-tools.txt" not in workflow
+    assert "setup-uv" not in workflow
+    assert "pip install" not in workflow
 
 
 def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
@@ -70,7 +72,7 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
         workflow = path.read_text(encoding="utf-8")
         assert "pip install -r requirements-tools.txt" not in workflow, path
         if "uv " in workflow:
-            assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in workflow, path
+            assert "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7" in workflow, path
 
 
 def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
@@ -261,8 +263,7 @@ def test_release_publication_has_one_managed_entry_point():
     assert "releases/{os.environ['RELEASE_ID']}" in workflow
     assert "releases/tags/{os.environ['RELEASE_TAG']}" not in workflow
     assert "Verify new immutable release attestation" in workflow
-    assert "uv lock" in release_please
-    assert "chore: refresh release lockfile" in release_please
+    assert "uv lock" not in release_please  # FIX-033: release-please bumps uv.lock itself
 
 
 def test_pypi_lists_the_current_distribution_name():

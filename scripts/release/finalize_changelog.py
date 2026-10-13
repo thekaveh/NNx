@@ -1,14 +1,16 @@
-"""Finalize a release-please branch's CHANGELOG (FIX-029).
+"""Finalize the CHANGELOG after a release (FIX-029, FIX-033).
 
-release-please opens its release PR with a generated commit list under the
-new version heading, above the curated ``## [Unreleased]`` notes. NNx
-publishes the curated notes: this moves them under the version heading in
-place of the generated list and leaves ``## [Unreleased]`` empty above it —
-the finalize that used to be a hand-made commit on every release PR (v0.2.3,
-v0.3.0, v0.4.0). Without curated notes the generated list stays. A
-changelog whose first section is already ``[Unreleased]`` (develop, or a
-release branch finalized before) is left unchanged, so running it again is a
-no-op.
+release-please's release commit puts a generated commit list under the new
+version heading, above the curated ``## [Unreleased]`` notes. NNx publishes
+the curated notes: this moves them under the version heading in place of the
+generated list and leaves ``## [Unreleased]`` empty above it. Without curated
+notes the generated list stays. A changelog whose first section is already
+``[Unreleased]`` is left unchanged, so running it again is a no-op.
+
+Nothing commits to a release PR but release-please itself (FIX-033), so the
+release workflow publishes the folded notes (``--release-notes``) and the
+post-release sync of ``main`` into ``develop`` runs this to fold them into
+the file.
 
 Usage::
 
@@ -75,9 +77,12 @@ def finalize(text: str) -> str:
 
 
 def release_notes(text: str, version: str) -> str:
-    """The body of the ``## [<version>]`` section — the curated notes the
-    GitHub release publishes (release-please would use its generated list)."""
-    lines = text.split("\n")
+    """The body of the ``## [<version>]`` section once finalized — the curated
+    notes the GitHub release publishes (release-please would use its generated
+    list). The release commit is not finalized yet (FIX-033: no commit but
+    release-please's own lands on a release PR), so the curated
+    ``[Unreleased]`` notes are folded in here as :func:`finalize` would."""
+    lines = finalize(text).split("\n")
     headings = _headings(lines)
     start = next((i for i in headings if lines[i].startswith(f"## [{version}]")), None)
     if start is None:
