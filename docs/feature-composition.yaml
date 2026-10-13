@@ -11,7 +11,9 @@
 #                 negative tests (or `limitation` cites the exact documented
 #                 limitation when no test can exercise it).
 #   unverified  - claimed by neither: no executed evidence on the profiles CI
-#                 runs (e.g. CUDA AMP on a CPU runner).
+#                 runs (e.g. IE-05, ONNX Runtime parity owned by another job).
+#                 A CUDA row a CPU runner cannot execute keeps its status and
+#                 renders unverified only for lack of evidence.
 # Evidence (which tests passed, at which source digest, on which profile) is
 # stored apart: a run's JSON report (the CI `feature-composition-report`
 # artifact), rendered into docs/feature-composition.md by
@@ -105,7 +107,7 @@ scenarios:
     group: training-controls
     features: [DDP, torch.compile]
     entry_point: NNModel.train(distributed=DDP(), compile=CompileSpec())
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
     expected: Refused on every rank before any run starts.
     tests:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
@@ -115,7 +117,7 @@ scenarios:
     group: training-controls
     features: [DDP, HistoryJournal]
     entry_point: NNModel.train(distributed=DDP(), history=HistoryJournal(...))
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
     expected: Refused on every rank before any run starts; DDP keeps the eager history.
     tests:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
@@ -125,7 +127,7 @@ scenarios:
     group: training-controls
     features: [DDP, budgeted search, experiment plans]
     entry_point: nnx.search.search / ExperimentPlan.fit / Trainer.train / NNModel.train without DDP() under torchrun
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
     expected: Refused on every rank of a multi-rank group before any study, factory call or run; a one-rank group behaves as no group.
     tests:
       - tests/test_ddp_adapter.py::test_single_process_entry_points_refuse_a_multi_rank_group

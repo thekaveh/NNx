@@ -24,6 +24,7 @@ Returning a Plotly `Figure` keeps the module consistent with
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Union
 
 import torch
@@ -81,7 +82,8 @@ def activation_map(
 
     Raises:
         ValueError: If `layer_name` doesn't resolve to a submodule of `model`,
-            or if `max_channels` or `cols` is not a positive integer.
+            or if `max_channels` or `cols` is not a positive integer, or
+            if the layer returns a mapping that holds no tensor.
         RuntimeError: If the forward hook on `layer_name` never fires
             (the layer is not reached by this input's forward path).
     """
@@ -119,6 +121,11 @@ def activation_map(
             captured["v"] = out.detach().cpu()
         elif isinstance(out, (tuple, list)) and out and isinstance(out[0], torch.Tensor):
             captured["v"] = out[0].detach().cpu()
+        elif isinstance(out, Mapping):
+            tensors = [value for value in out.values() if isinstance(value, torch.Tensor)]
+            if not tensors:
+                raise ValueError(f"activation_map: layer {layer_name!r} returned a mapping without a tensor")
+            captured["v"] = tensors[0].detach().cpu()
         else:
             # Last-ditch: try to coerce.
             captured["v"] = torch.as_tensor(out).detach().cpu()

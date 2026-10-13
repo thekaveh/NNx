@@ -763,3 +763,51 @@ def test_validate_reports_an_update_clock_budget_a_custom_step_cannot_plan():
     train = NNTrainParams(n_epochs=2, scheduler=scheduler)
     report = _plan().with_train(train).with_step_fns(train_step_fn=lambda ctx: None).validate()
     assert "train.scheduler" in report.paths
+
+
+def test_validate_reports_an_update_clock_budget_over_a_loader_without_a_length():
+    from torch.utils.data import IterableDataset
+
+    from nnx import NNSchedulerParams, Schedulers
+
+    class _Stream(IterableDataset):
+        def __iter__(self):
+            yield torch.randn(4), torch.tensor(0)
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+    plan = (
+        _plan()
+        .with_train(NNTrainParams(n_epochs=2, scheduler=scheduler))
+        .with_data(DataLoader(_Stream(), batch_size=2))
+    )
+    report = plan.validate()
+    assert "train.scheduler" in report.paths
+    assert "with a length" in report.diagnostics[report.paths.index("train.scheduler")].message
+
+
+@pytest.mark.parametrize("owner", ["default_step", "objective"])
+def test_validate_accepts_an_update_clock_budget_nnx_plans_itself(owner):
+    from nnx import NNSchedulerParams, Schedulers
+    from nnx.objectives import supervised_objective
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+    plan = _plan().with_train(NNTrainParams(n_epochs=2, scheduler=scheduler))
+    if owner == "objective":
+        plan = plan.with_objective(supervised_objective())
+    assert "train.scheduler" not in plan.validate().paths

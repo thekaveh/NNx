@@ -1228,8 +1228,9 @@ def _sample_set(samples: Sequence[Sample]) -> str:
 class Interval:
     """A percentile bootstrap interval of one metric, resampling the
     declared grouping units (``unit="group"``) with ``seed``. ``degenerate``
-    flags a sample that cannot vary: fewer than two units, or every
-    resample giving the same value (``low == high``)."""
+    flags an interval of no width: fewer than two units, every resample
+    giving the same value, or bounds that coincide (``low == high``) while
+    the resamples still vary."""
 
     metric: str
     estimate: Optional[float]
@@ -1317,8 +1318,10 @@ def bootstrap_interval(
     reason = None
     if not (math.isfinite(low) and math.isfinite(high)):
         reason = "a resample gave a non-finite value"
-    elif low == high:
+    elif drawn_values.min() == drawn_values.max():
         reason = "every resample gave the same value"
+    elif low == high:
+        reason = "the interval bounds coincide"
     return Interval(
         estimate=statistic(rows),
         low=low,

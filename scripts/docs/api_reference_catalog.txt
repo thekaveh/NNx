@@ -1091,7 +1091,9 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 @api nnx.vis_utils members=confusion_matrix,classification_report,multi_line_plot,scatter_plot,two_dim_tsne_checkpoint_logits,generate_colors,get_scatter_plot_vm
 
-@api nnx.vis_utils.VisUtils
+Each function above is also a `VisUtils` static method of the same name (`VisUtils.confusion_matrix` is `nnx.vis_utils.confusion_matrix`).
+
+@api nnx.vis_utils.VisUtils members=
 
 ### 19.2. Model-internals viz (`nnx.viz`)
 

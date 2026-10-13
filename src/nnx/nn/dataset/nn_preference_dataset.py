@@ -233,7 +233,8 @@ class NNPreferenceDataset(NNDatasetBase):
         # input_dim / output_dim: there's no "feature dimension" for a
         # raw text-pair dataset — report the tokenizer's vocab size so
         # downstream sizing checks have a number to look at.
-        vocab_size = int(self.tokenizer.vocab_size)  # type: ignore[attr-defined]
+        # The full length (added tokens included), so an embedding sized from it covers the pad id.
+        vocab_size = int(vocab) if vocab is not None else int(self.tokenizer.vocab_size)  # type: ignore[attr-defined]
         object.__setattr__(self, "input_dim", vocab_size)
         object.__setattr__(self, "output_dim", vocab_size)
 

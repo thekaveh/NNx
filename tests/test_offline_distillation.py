@@ -529,3 +529,19 @@ def test_an_fp64_student_scores_in_its_own_dtype():
     finally:
         offline.F.log_softmax = original
     assert report.agreement is not None and seen and set(seen) == {torch.float64}
+
+
+def test_a_teacher_dataset_takes_read_only_and_reversed_numpy_inputs():
+    import warnings
+
+    import numpy as np
+
+    teacher = [(0.75, 0.25), (0.2, 0.8)]
+    records = [_record(f"s{i}", teacher[i], label="cat") for i in range(2)]
+    read_only = np.array([1.0, 2.0])
+    read_only.flags.writeable = False  # pandas' .to_numpy()
+    inputs = {"s0": read_only, "s1": np.arange(2.0)[::-1]}  # a negative-stride view
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        dataset = TeacherDataset(records, inputs, candidates=CANDIDATES, schema_digest=SCHEMA)
+    assert len(dataset) == 2

@@ -36,7 +36,8 @@ from .logits_processors import (
 )
 
 # Canonical processor order. Used by LogitsChainBuilder.build() to
-# sort whatever the user chained into the conventional HF sequence.
+# sort whatever the user chained into NNx's order (see the module
+# docstring: temperature last, unlike Hugging Face transformers).
 # Custom processors (added via .custom()) go AFTER this group, in
 # the order they were added.
 _CANONICAL_ORDER: tuple[type[LogitsProcessor], ...] = (

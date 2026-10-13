@@ -322,6 +322,26 @@ def test_a_preference_pad_id_is_checked_against_the_full_tokenizer_length():
             return [0, 1]
 
     kwargs = dict(prompts=["p"] * 10, chosen=["c"] * 10, rejected=["r"] * 10, tokenizer=_Added(), seed=0)
-    NNPreferenceDataset(**kwargs, pad_token_id=4)  # the added pad: inside len(tokenizer)
+    added = NNPreferenceDataset(**kwargs, pad_token_id=4)  # the added pad: inside len(tokenizer)
+    assert added.input_dim == added.output_dim == 5  # an embedding sized from it covers the pad
     with pytest.raises(ValueError, match="outside the vocabulary"):
         NNPreferenceDataset(**kwargs, pad_token_id=5)
+
+    class _VocabSize:  # no __len__: vocab_size decides
+        vocab_size = 4
+
+        def encode(self, text):
+            return [0, 1]
+
+    class _Raw:  # a raw tokenizers.Tokenizer: get_vocab_size() decides
+        def get_vocab_size(self):
+            return 4
+
+        def encode(self, text):
+            return [0, 1]
+
+    for tokenizer in (_VocabSize(), _Raw()):
+        kwargs["tokenizer"] = tokenizer
+        NNPreferenceDataset(**kwargs, pad_token_id=3)
+        with pytest.raises(ValueError, match="outside the vocabulary"):
+            NNPreferenceDataset(**kwargs, pad_token_id=4)

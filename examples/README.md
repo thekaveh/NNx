@@ -493,7 +493,7 @@ Notes for section 2.8:
 
 | Example | What it demonstrates |
 |---|---|
-| `19_prune_synthetic_classifier.py` | Magnitude prune a small synthetic-data classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then fine-tune and re-prune, which recovers part of the drop at 50% sparsity. Demonstrates `nnx.prune.magnitude_prune`. |
+| `19_prune_synthetic_classifier.py` | Magnitude prune a small synthetic-data classifier at 50% sparsity (`bake=True` keeps state_dict keys intact), evaluate the pruned accuracy, then fine-tune and re-prune. That recovers part of the drop at 50% sparsity. Demonstrates `nnx.prune.magnitude_prune`. |
 | `20_low_rank_surgery_ffn.py` | Train a wide FFN, low-rank-factorize the widest Linear at rank=8 via `nnx.surgery.low_rank_factorize`, then refine to recover accuracy. Shows the caller is responsible for swapping the returned `nn.Sequential` back into the `ModuleList`. |
 
 Notes for section 2.10:

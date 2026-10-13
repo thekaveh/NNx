@@ -64,6 +64,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Union
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -71,6 +72,7 @@ from torch.utils.data import DataLoader
 from .._step_helpers import full_precision
 from ..components import ComponentSpec
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
+from ..utils import _writable
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -359,7 +361,8 @@ class TeacherDataset(torch.utils.data.Dataset):
             distribution = record.distribution()
             rows.append([distribution[candidate] for candidate in self.candidates])  # aligned by id
             targets.append(-1 if record.label is None else index[record.label])
-            tensors.append(torch.as_tensor(inputs[record.sample_id]))
+            value = inputs[record.sample_id]
+            tensors.append(torch.as_tensor(_writable(value) if isinstance(value, np.ndarray) else value))
         questions = sorted({record.question_id for record in records})
         if len(questions) > 1:
             raise TeacherRecordError(f"a teacher dataset answers one question; its records answer {questions}")

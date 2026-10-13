@@ -1837,3 +1837,81 @@ def test_a_moe_forward_reads_resolved_activations_not_the_params():
     assert len(net._hidden) == 2
     net.__dict__["_params"] = None  # a forward that touched the params object would fail
     assert net(torch.randn(5, 3)).shape == (5, 2)
+
+
+def test_a_confusion_matrix_without_names_labels_the_classes_present():
+    pytest.importorskip("plotly")
+    from nnx.vis_utils import VisUtils
+
+    fig = VisUtils.confusion_matrix([0, 2, 2], [0, 2, 0])
+    assert list(fig.data[0].x) == [0, 2] and list(fig.data[0].y) == [0, 2]
+
+
+def test_a_standardizer_call_on_a_dataframe_checks_the_column_order():
+    import pandas as pd
+
+    from nnx.preprocessing import PreprocessingError, Standardizer
+
+    frame = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [10.0, 20.0, 40.0]})
+    standardizer = Standardizer.fit(frame, rows=range(3))
+    with pytest.raises(PreprocessingError, match="column order"):
+        standardizer(frame[["b", "a"]])
+
+
+def test_activation_map_takes_the_first_tensor_of_a_mapping_output():
+    import torch
+
+    pytest.importorskip("plotly")
+    from nnx.viz import activation_map
+
+    class Keyed(torch.nn.Module):
+        def forward(self, x):
+            return {"out": x * 2}
+
+    class Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.keyed = Keyed()
+
+        def forward(self, x):
+            return self.keyed(x)["out"]
+
+    fig = activation_map(Net(), torch.randn(2, 3), "keyed")
+    assert fig is not None
+
+
+def test_an_explicit_default_train_step_records_the_declared_training_metrics(tmp_path, monkeypatch):
+    from nnx import MetricSpec, MonitorSpec
+    from nnx.nn.nn_model import default_train_step
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    params = _one_epoch(metrics=[MetricSpec("accuracy")], monitor=MonitorSpec(metric="accuracy", split="train"))
+    run = _tiny_classifier().train(params=params, train_step_fn=default_train_step)  # as qat_train_step_factory returns
+    summary = run.idps[-1].train_summary
+    assert summary is not None and "accuracy" in summary.metrics
+
+
+def test_an_unscorable_batch_on_one_rank_stops_every_rank():
+    import torch
+
+    from nnx.nn.nn_model import _agreed_scorable_target
+
+    class _OtherRankRefused:
+        def gather(self, value):
+            return [value, True]  # rank 1 refused its batch
+
+    with pytest.raises(ValueError, match=r"rank\(s\) \[1\]"):
+        _agreed_scorable_target(_OtherRankRefused(), torch.nn.MSELoss(), torch.tensor([0.0, 1.0]))
+
+
+@pytest.mark.parametrize("beta", [True, "0.1", None])
+def test_dpo_refuses_a_beta_that_is_not_a_real_number(beta):
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams
+    from nnx.paradigms.dpo import dpo_train_step_factory
+
+    ref = NNModel(module=torch.nn.Linear(2, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    with pytest.raises(ValueError, match="beta"):
+        dpo_train_step_factory(ref, beta=beta)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pytest
 
 pytest.importorskip("torch_geometric")
@@ -575,3 +576,26 @@ def test_paradigm_steps_on_a_graph_split_batch_read_only_the_seed_rows():
     )
     X, Y = _single_input_batch(mlp, batch, who="kd")  # the KD / Mixup / CutMix / MoE steps' reader
     assert X.shape[0] == Y.shape[0] == 4
+
+
+def test_predict_takes_a_full_graph_loader_list_like_evaluate(tmp_path, monkeypatch):
+    pytest.importorskip("torch_geometric")
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams, ProbabilitySpec
+
+    monkeypatch.chdir(tmp_path)
+    ds = NNGraphDataset(ds_class=_TinyFullBatch, sampler="full")
+    model = NNModel(
+        net_params=NNParams(
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            input_dim=ds.input_dim,
+            output_dim=ds.output_dim,
+            hidden_dims=[8],
+        ),
+        params=NNModelParams(net=Nets.GRAPH_CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    streamed = np.concatenate([batch.logits for batch in model.iter_predict(ds.test_loader)])
+    np.testing.assert_allclose(model.predict(ds.test_loader).logits, streamed, rtol=1e-6)
+    assert model.predict_proba(ds.test_loader, ProbabilitySpec(kind="categorical")).probabilities.shape[0] == len(
+        streamed
+    )

@@ -948,3 +948,21 @@ def test_an_empty_heldout_slice_reports_no_eligible_rows_for_selective_metrics()
     for name in ("selective_coverage", "selective_risk"):
         assert metric(report, name, "heldout").reason == "no eligible rows"
         assert metric(report, name, "heldout").denominator == 0
+
+
+def test_coinciding_bounds_over_varying_resamples_are_named_as_such():
+    # 40 units, one wrong: the 2.5% and 97.5% bounds can meet while resamples still vary.
+    samples = [Sample(f"u{i}", AB, f"text {i}", "a") for i in range(40)]
+    records = [
+        Record(
+            f"u{i}",
+            AB.digest(),
+            "stub",
+            "answered",
+            distribution=(("a", 0.1), ("b", 0.9)) if i == 0 else (("a", 0.9), ("b", 0.1)),
+        )
+        for i in range(40)
+    ]
+    interval = bootstrap_interval(samples, records, metric="accuracy", seed=0, resamples=200, level=0.05)
+    assert interval.low == interval.high == 0.975  # this seed's draw
+    assert interval.degenerate and interval.reason == "the interval bounds coincide"

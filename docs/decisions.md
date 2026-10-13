@@ -117,7 +117,7 @@ what it can answer:
 | categorical (softmax over `C` classes) | `Choice`; also `Score` with `ordinal=True`, whose levels must follow the head's class order |
 | one Bernoulli logit (`BCEWithLogitsLoss`, or a one-output multilabel task) | the one `Boolean` it was trained for (`question=`) |
 | regression | nothing — rejected at construction |
-| multi-output multilabel | nothing — rejected at construction when the head's width is known (a task's count or a built-in net's `output_dim`); otherwise refused on the first call, after the model ran |
+| multi-output multilabel | nothing — rejected at construction when the head's width is known (a task's count or a built-in net's `output_dim`). Otherwise it is refused on the first call, after the model ran. |
 
 - **Label space.** `labels` names the head's columns in order. It defaults to
   the model's `TaskSpec` labels and must equal them when both are given.
@@ -568,9 +568,9 @@ print(report.text())
   declared stays `null`.
 - **Intervals.** `bootstrap_interval` resamples grouping units (whole
   groups, never single rows of one) with a recorded seed. It runs over the
-  same provider's records `evaluate` scores. It flags a degenerate sample:
-  fewer than two units, no variation, or a non-finite bound such as an exact
-  NLL of `+inf`.
+  same provider's records `evaluate` scores. It flags a degenerate interval:
+  fewer than two units, no variation, bounds that coincide, or a non-finite
+  bound such as an exact NLL of `+inf`. The reason says which.
 - **Variant ids.** Perturbation helpers give each variant a distinct id, or
   the `id=` you pass. The id is the original id, the kind and a digest of
   the change. The

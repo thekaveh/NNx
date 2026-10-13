@@ -624,6 +624,16 @@ def _replay_transforms(model: NNModel, transforms: Sequence[NNCheckpointTransfor
             ) from error
 
 
+def _is_batch_list(X: Any) -> bool:
+    """A list of graph batches (``NNGraphDataset(sampler="full")``'s loaders),
+    not rows: every item is a PyG-style batch with node features and edges."""
+    return (
+        isinstance(X, (list, tuple))
+        and len(X) > 0
+        and all(hasattr(item, "x") and hasattr(item, "edge_index") for item in X)
+    )
+
+
 def _parametrized_prefix(key: str) -> str:
     """Where a parametrization moves ``key`` (``X.name`` ->
     ``X.parametrizations.name.original*``; a top-level ``name`` has no ``X.``)."""
@@ -1247,6 +1257,22 @@ def _agreed_step_loss(
     if failed:
         raise FloatingPointError(f"non-finite training loss on rank(s) {failed}: every rank stops before the update")
     return value
+
+
+def _agreed_scorable_target(ddp: Any, loss_fn: torch.nn.Module, target: torch.Tensor) -> None:
+    """``_check_scorable_target`` decided on every rank together: one rank's
+    unscorable batch must not leave the others waiting in the backward's
+    gradient all-reduce."""
+    refusal: Optional[ValueError] = None
+    try:
+        _check_scorable_target(loss_fn, target)
+    except ValueError as caught:
+        refusal = caught
+    failed = [rank for rank, bad in enumerate(ddp.gather(refusal is not None)) if bad]
+    if refusal is not None:
+        raise refusal
+    if failed:
+        raise ValueError(f"rank(s) {failed} cannot score their batch's targets: every rank stops before the update")
 
 
 def _global_window_check(
@@ -2150,11 +2176,13 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             terms = _step_loss_terms(model, ctx.batch, accumulation_state, accumulate_grad_batches, precision)
         if ddp is None:
             loss_value = _record_step_loss(terms, accumulation_state, should_step=should_step)
+            if adapter is None:
+                _check_scorable_target(model.loss_fn, terms.target)  # before any backward or update
         else:
             # Every rank decides together — before any gradient collective.
             loss_value = _agreed_step_loss(ddp, terms, accumulation_state, should_step=should_step)
-        if adapter is None:
-            _check_scorable_target(model.loss_fn, terms.target)  # before any backward or update
+            if adapter is None:
+                _agreed_scorable_target(ddp, model.loss_fn, terms.target)
         # FEAT-029: a compiled fit's backward may compile on first use; its
         # failure is recorded honestly (never retried).
         session = getattr(model, "_compile_session", None)
@@ -3519,7 +3547,7 @@ class NNModel(_HubMixinBase):
             metrics=params.metrics,
             monitor=params.monitor,
             callbacks=callbacks,
-            default_train_step=train_step_fn is None and objective is None,
+            default_train_step=objective is None and train_step_fn in (None, default_train_step),
             default_eval_step=eval_step_fn is None,
             has_val_loader=params.val_loader is not None,
             owner="NNTrainParams",
@@ -3734,7 +3762,9 @@ class NNModel(_HubMixinBase):
         metric_domain, metric_ignore_index, metric_threshold, _ = _metric_context(self)
         # Declared metrics over the training epoch need the default step's
         # outputs; step functions and objectives record them on validation.
-        train_metrics = params.metrics if train_step_fn is None and objective is None else ()
+        # The default step, passed explicitly (qat_train_step_factory returns it) or not.
+        uses_default_step = objective is None and train_step_fn in (None, default_train_step)
+        train_metrics = params.metrics if uses_default_step else ()
         component_plan = None
         resume_status = ResumeStatus()
         previous_net_state: Optional[dict[str, Any]] = None
@@ -4650,7 +4680,7 @@ class NNModel(_HubMixinBase):
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
         try:
-            if batches or isinstance(X, DataLoader):
+            if batches or isinstance(X, DataLoader) or _is_batch_list(X):
                 logits_chunks: list[np.ndarray] = []
                 id_chunks: list[np.ndarray] = []
                 # Eval mode once for the whole call; a stream restores it per batch.

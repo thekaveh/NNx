@@ -377,11 +377,12 @@ class VisUtils:
         # labels=...: without it sklearn orders rows by the classes
         # PRESENT in the data, so an absent class silently shifts every
         # later row/column onto the wrong name.
-        cm_labels = list(range(len(class_names))) if class_names is not None else None
-        if cm_labels is not None:
+        present = set(Y_true.ravel().tolist()) | set(Y_pred.ravel().tolist())
+        # Without class_names the axes name the labels present, in sorted order.
+        cm_labels = list(range(len(class_names))) if class_names is not None else sorted(present)
+        if class_names is not None:
             # class_names[i] names class index i: any other label would be
             # dropped from the matrix (or every name shifted), so refuse it.
-            present = set(Y_true.ravel().tolist()) | set(Y_pred.ravel().tolist())
             stray = sorted((v for v in present if isinstance(v, bool) or v not in cm_labels), key=repr)
             if stray:
                 raise ValueError(
@@ -394,8 +395,7 @@ class VisUtils:
             row_sums[row_sums == 0] = 1
             cm = cm / row_sums
 
-        n_classes = cm.shape[0]
-        labels = class_names if class_names is not None else list(range(n_classes))
+        labels = class_names if class_names is not None else cm_labels
 
         fig = go.Figure(
             data=go.Heatmap(

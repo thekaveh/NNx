@@ -14,7 +14,7 @@ This is the unique compositional payoff of pairing surgery primitives with a tra
 
 | Primitive | Op | Function-preserving? | Returns |
 |---|---|---|---|
-| `widen(model, *, layer_name, new_width)` | Net2WiderNet — grow `out_features`, rescale the consumer's incoming columns | yes — for a Linear inside `nn.Sequential` or `FeedFwdNN.layers` whose path to the next Linear holds only elementwise ops (activations, `Dropout`, `Identity`); eval-mode parity when dropout > 0; Softmax / LayerNorm / BatchNorm boundaries, other containers and aliased modules are rejected | fresh `nn.Module` |
+| `widen(model, *, layer_name, new_width)` | Net2WiderNet — grow `out_features`, rescale the consumer's incoming columns | yes — for a Linear inside `nn.Sequential` or `FeedFwdNN.layers` whose path to the next Linear holds only elementwise ops (activations, `Dropout`, `Identity`). Parity is in eval mode when dropout > 0. Softmax / LayerNorm / BatchNorm boundaries, other containers and aliased modules are rejected. | fresh `nn.Module` |
 | `deepen(model, *, after_layer_name)` | Net2DeeperNet — identity-init Linear after a ReLU | yes (ReLU only) | fresh `nn.Module` |
 | `drop_layer(model, *, layer_name, importance=None)` | Replace named layer with `nn.Identity` | no — chain-preserving only | fresh `nn.Module` |
 | `low_rank_factorize(linear, *, rank, method='svd')` | SVD truncation: Linear → `Sequential(Linear, Linear)` | yes at max rank, approximate below | fresh `nn.Sequential` |

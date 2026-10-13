@@ -3986,7 +3986,7 @@ Bootstrap ``metric`` (accuracy, macro-F1, NLL or Brier) over the eligible rows o
 class nnx.decisions.benchmark.Interval(metric: 'str', estimate: 'Optional[float]', low: 'Optional[float]', high: 'Optional[float]', level: 'float', seed: 'int', resamples: 'int', units: 'int', degenerate: 'bool', unit: 'str' = 'group', method: 'str' = 'percentile bootstrap, grouping units resampled with replacement', reason: 'Optional[str]' = None) -> 'None'
 ```
 
-A percentile bootstrap interval of one metric, resampling the declared grouping units (``unit="group"``) with ``seed``. ``degenerate`` flags a sample that cannot vary: fewer than two units, or every resample giving the same value (``low == high``).
+A percentile bootstrap interval of one metric, resampling the declared grouping units (``unit="group"``) with ``seed``. ``degenerate`` flags an interval of no width: fewer than two units, every resample giving the same value, or bounds that coincide (``low == high``) while the resamples still vary.
 
 ##### `nnx.decisions.benchmark.Interval.state`
 
@@ -16719,6 +16719,8 @@ x/y slices so the plotting function stays simple.
 ```
 
 
+Each function above is also a `VisUtils` static method of the same name (`VisUtils.confusion_matrix` is `nnx.vis_utils.confusion_matrix`).
+
 #### `nnx.vis_utils.VisUtils`
 
 ```python
@@ -16751,117 +16753,6 @@ keyword defaults fixed when the class is defined: pass ``renderer=`` /
 See README §4.6 "Visualization" and `docs/concepts.md`
 for usage examples.
 ```
-
-##### `nnx.vis_utils.VisUtils.generate_colors`
-
-```python
-nnx.vis_utils.VisUtils.generate_colors(n)
-```
-
-Return `n` distinct hex-color strings spaced evenly around the HSV hue circle.
-
-**Details**
-
-```text
-Uses 60% saturation and 95% brightness for legend readability. `endpoint=False`
-keeps the first and last hues maximally distinct — the hue circle wraps (0.0 ==
-1.0 == red), so a closed interval would hand the first and last class identical
-colors. Used by every other VisUtils method that draws categorical groups.
-```
-
-##### `nnx.vis_utils.VisUtils.multi_line_plot`
-
-```python
-nnx.vis_utils.VisUtils.multi_line_plot(x, yss, title, yss_legend, x_axis_label, y_axis_label, x_ticks_inc=20, label_size=12, title_size=14, fig_size: 'tuple' = (1000, 600), margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0}, renderer=None)
-```
-
-Render a multi-group line chart and return the Plotly Figure.
-
-**Details**
-
-```text
-Each group in `yss` is drawn with a distinct color; each line within
-a group uses a distinct dash style. `yss_legend` is a (group_labels,
-line_labels) tuple — group_labels name the colored groups (one per
-entry in `yss`), line_labels name the dash styles shared across
-groups. Both legends are added as no-trace markers so the legend
-reads cleanly; data traces carry "group (line)" hover names.
-
-Returns the Figure. If `renderer` is non-None, also calls
-`fig.show(renderer=renderer)` so notebook callers see the chart
-inline; pass `renderer=None` (the default) for headless usage.
-```
-
-##### `nnx.vis_utils.VisUtils.scatter_plot`
-
-```python
-nnx.vis_utils.VisUtils.scatter_plot(vm, renderer=None, fig_size: 'tuple' = (1000, 600), label_size: 'int' = 12, title_size: 'int' = 14, margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0})
-```
-
-Render a colored scatter plot from a view-model dict and return the Plotly Figure.
-
-**Details**
-
-```text
-`vm` is the structure produced by `get_scatter_plot_vm`: title, xs/ys
-column views, plus a `ts` group axis carrying labels + colors per
-category. Honors `renderer` the same way as `multi_line_plot`.
-```
-
-##### `nnx.vis_utils.VisUtils.get_scatter_plot_vm`
-
-```python
-nnx.vis_utils.VisUtils.get_scatter_plot_vm(data, title, col_xs, label_xs, col_ys, label_ys, col_ts, labels_ts, colors_ts, uni_ts)
-```
-
-Build the view-model dict consumed by `scatter_plot`.
-
-**Details**
-
-```text
-Splits the input dataframe by the categorical column `col_ts`, attaches
-per-category colors and labels, and precomputes the per-category
-x/y slices so the plotting function stays simple.
-```
-
-##### `nnx.vis_utils.VisUtils.two_dim_tsne_checkpoint_logits`
-
-```python
-nnx.vis_utils.VisUtils.two_dim_tsne_checkpoint_logits(checkpoint: 'NNCheckpoint', ds: 'NNDataset', n_samples: 'int', random_state: 'int | None' = 0, renderer: 'str | None' = None, fig_size: 'tuple' = (1000, 600), title_size: 'int' = 14, label_size: 'int' = 12, margin_size={'l': 15, 'r': 15, 't': 30, 'b': 15, 'pad': 0}, *, module: 'Any' = None, batch_adapter: 'Any' = None)
-```
-
-Project the first `n_samples` test logits of `checkpoint` to 2D via t-SNE and render them colored by ground-truth class.
-
-**Details**
-
-```text
-Useful for eyeballing class separability of an intermediate
-checkpoint — pass the BEST checkpoint to see how well-trained the
-decision space ended up. Returns the Plotly Figure.
-
-A registered module is rebuilt through its factory and
-batches are split by its batch adapter (``batch_adapter=`` overrides
-it). A runtime-only checkpoint needs ``module=`` — the weights are
-loaded into it (its identity, state keys and training modes are
-kept) — and fails with ``MissingModelFactoryError`` before any data
-is read otherwise.
-```
-
-##### `nnx.vis_utils.VisUtils.confusion_matrix`
-
-```python
-nnx.vis_utils.VisUtils.confusion_matrix(Y_true, Y_pred, class_names=None, title: 'str' = 'Confusion matrix', normalize: 'bool' = False)
-```
-
-Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays of integer class labels. If `class_names` is provided, axis labels use the named classes, and every label must be a class index ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise integer indices.
-
-##### `nnx.vis_utils.VisUtils.classification_report`
-
-```python
-nnx.vis_utils.VisUtils.classification_report(Y_true, Y_pred, class_names=None) -> 'pd.DataFrame'
-```
-
-Per-class precision / recall / f1 / support as a DataFrame. Use the return value for tabular display (`print(df.to_string())` or notebook auto-display) or to feed back into downstream analysis.
 
 
 ### 19.2. Model-internals viz (`nnx.viz`)
@@ -16908,7 +16799,8 @@ Returns:
 
 Raises:
     ValueError: If `layer_name` doesn't resolve to a submodule of `model`,
-        or if `max_channels` or `cols` is not a positive integer.
+        or if `max_channels` or `cols` is not a positive integer, or
+        if the layer returns a mapping that holds no tensor.
     RuntimeError: If the forward hook on `layer_name` never fires
         (the layer is not reached by this input's forward path).
 ```

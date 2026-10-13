@@ -13,7 +13,7 @@ from typing import Any, get_origin
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "scripts" / "docs" / "api_reference_catalog.txt"
 OUTPUT = ROOT / "docs" / "api.md"
-ENTRY = re.compile(r"^@api\s+(\S+?)(?:\s+members=([A-Za-z0-9_,]+))?\s*$")
+ENTRY = re.compile(r"^@api\s+(\S+?)(?:\s+members=([A-Za-z0-9_,]*))?\s*$")
 
 
 def _documentation(value: Any) -> tuple[str, str]:
@@ -187,7 +187,8 @@ def render() -> str:
             rendered.append(line)
             continue
         path = match.group(1)
-        explicit_members = match.group(2).split(",") if match.group(2) else None
+        # "members=" with no names renders the entry alone (its members are documented elsewhere).
+        explicit_members = None if match.group(2) is None else [name for name in match.group(2).split(",") if name]
         value = _locate(path)
         if value is None:
             raise ValueError(f"cannot resolve API catalog entry: {path}")

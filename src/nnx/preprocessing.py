@@ -363,12 +363,15 @@ class Standardizer:
 
     def __call__(self, sample: Any) -> torch.Tensor:
         """Standardize one sample (a 1-D row) or a batch (2-D) exactly like
-        :meth:`transform`. A pandas ``Series`` row is checked against the
-        fitted column names and order; any other 1-D row is positional."""
+        :meth:`transform`. A pandas ``Series`` row or ``DataFrame`` batch is
+        checked against the fitted column names and order; any other input
+        is positional."""
         import pandas as pd
 
         if isinstance(sample, pd.Series):
             return self.transform(sample.to_frame().T.infer_objects())[0]
+        if isinstance(sample, pd.DataFrame):  # checked against the fitted column names and order
+            return self.transform(sample)
         if isinstance(sample, torch.Tensor):
             return self.transform(sample.reshape(1, -1))[0] if sample.dim() == 1 else self.transform(sample)
         array = np.asarray(sample)
