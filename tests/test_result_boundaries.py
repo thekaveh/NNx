@@ -181,7 +181,7 @@ def test_a_policy_that_does_not_fit_is_refused_before_the_provider_is_called():
         (other_labels, "m", AbstentionSchemaError),
         (TOPIC, "another-model", AbstentionSchemaError),
         (Boolean("Spam?"), "m", TypeError),
-        (TOPIC, "m", TypeError),  # with a ThresholdSelection below
+        (TOPIC, "m", TypeError),  # with a non-AbstentionPolicy `policy` below
     ):
         provider = Spy()
         given = policy if (question, error) != (TOPIC, TypeError) else object()  # not an AbstentionPolicy

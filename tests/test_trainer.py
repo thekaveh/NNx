@@ -566,8 +566,10 @@ def test_trainer_with_val_loader_evaluates(tmp_path, monkeypatch):
         trainer_step_fn=_supervised_step,
     )
     # Last idp of each epoch carries val_edp; earlier idps don't.
+    assert len(run.idps) == 4  # 32 samples / batch_size 8, one epoch
     assert run.idps[-1].val_edp is not None
     assert run.idps[-1].val_edp.loss is not None
+    assert all(i.val_edp is None for i in run.idps[:-1])
 
 
 def test_trainer_dispatches_non_plateau_scheduler(tmp_path, monkeypatch):
@@ -1175,8 +1177,8 @@ def test_trainer_task_preflight_fails_before_consuming_the_loader(tmp_path, monk
 
 
 def _assert_same_records(loaded, expected):
-    """Reloaded idps.csv records equal the originals up to pandas' float
-    parsing (the CSV reader is not bit-exact for every double)."""
+    """Reloaded idps.csv records equal the originals bit for bit: the
+    loader parses floats round-trip, so no tolerance is needed."""
     assert len(loaded) == len(expected)
     for got, want in zip(loaded, expected, strict=True):
         for edp_got, edp_want in ((got.train_edp, want.train_edp), (got.val_edp, want.val_edp)):
@@ -1186,12 +1188,7 @@ def _assert_same_records(loaded, expected):
             state_got, state_want = edp_got.state(), edp_want.state()
             assert state_got.keys() == state_want.keys()
             for key, value in state_want.items():
-                if isinstance(value, float):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                elif isinstance(value, dict):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                else:
-                    assert state_got[key] == value, key
+                assert state_got[key] == value, key
 
 
 # --- FEAT-005: two-optimizer Trainer warm resume ---------------------------

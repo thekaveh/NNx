@@ -742,8 +742,8 @@ def test_regression_task_records_reach_tensorboard_and_wandb_without_classificat
 
 
 def _assert_same_records(loaded, expected):
-    """Reloaded idps.csv records equal the originals up to pandas' float
-    parsing (the CSV reader is not bit-exact for every double)."""
+    """Reloaded idps.csv records equal the originals bit for bit: the
+    loader parses floats round-trip, so no tolerance is needed."""
     assert len(loaded) == len(expected)
     for got, want in zip(loaded, expected, strict=True):
         for edp_got, edp_want in ((got.train_edp, want.train_edp), (got.val_edp, want.val_edp)):
@@ -753,12 +753,7 @@ def _assert_same_records(loaded, expected):
             state_got, state_want = edp_got.state(), edp_want.state()
             assert state_got.keys() == state_want.keys()
             for key, value in state_want.items():
-                if isinstance(value, float):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                elif isinstance(value, dict):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                else:
-                    assert state_got[key] == value, key
+                assert state_got[key] == value, key
 
 
 # --- FEAT-005: ModelCheckpoint files declare weights-only capability --------

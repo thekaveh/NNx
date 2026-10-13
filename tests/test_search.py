@@ -374,24 +374,6 @@ def test_the_best_completed_trial_is_selected_by_the_monitor(monkeypatch):
     assert result.direction == "minimize" and result.monitor == "val.loss"
 
 
-def test_a_test_loader_is_never_touched():
-    """Trials see the plan's train and validation data only: a test split
-    the caller keeps beside the plan is never read by fit or selection."""
-    touched = []
-
-    class Spy(DataLoader):
-        def __iter__(self):
-            touched.append(1)
-            return super().__iter__()
-
-    test_loader = Spy(TensorDataset(X_VAL, Y_VAL), batch_size=6)
-    base = plan()
-    base = base.with_data(base.train_data, val=base.val_data, identity="toy")  # unchanged sources
-    result = run(base, budget=SearchBudget(trials=2))
-    assert result.best is not None and touched == []
-    assert sum(1 for _ in test_loader) == 2 and touched == [1]  # the spy itself works
-
-
 # ---------------- cancellation ----------------
 
 

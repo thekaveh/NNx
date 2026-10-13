@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -67,7 +68,8 @@ def _model():
 def test_f1_resume_loads_weights_and_optimizer_state(tmp_path, monkeypatch):
     """Run A for 1 epoch, save checkpoints + opt sidecar; Run B resumes
     from A's LAST and continues training. Run B's starting weights should
-    equal Run A's ending weights."""
+    equal Run A's ending weights, and its optimizer should start from
+    A's saved Adam state (step counts and moment buffers), not empty."""
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(7)
 
@@ -111,6 +113,7 @@ def test_f1_resume_loads_weights_and_optimizer_state(tmp_path, monkeypatch):
     class _StopAtStart(Callback):
         def on_epoch_begin(self, ctx):
             captured["weights"] = {k: v.clone() for k, v in ctx.model.net.state_dict().items()}
+            captured["optimizer"] = copy.deepcopy(ctx.optimizer.state_dict())
             ctx.should_stop = True
 
     model_b.train(
@@ -126,6 +129,19 @@ def test_f1_resume_loads_weights_and_optimizer_state(tmp_path, monkeypatch):
     # At epoch_begin (before any batch step), weights should equal A's last.
     for k in weights_after_a:
         assert torch.equal(captured["weights"][k], weights_after_a[k]), f"resume weights diverge from source on {k}"
+
+    # The optimizer state was restored from A's sidecar too: a fresh Adam
+    # has an empty ``state`` until its first step, so equality with the
+    # saved (non-empty) state proves the sidecar was loaded.
+    saved = torch.load(last_pt.parent / "last.pt.opt.pt", weights_only=False)["optimizer"]
+    restored = captured["optimizer"]
+    assert saved["state"], "fixture degenerate: run A saved an empty optimizer state"
+    assert restored["state"].keys() == saved["state"].keys(), "resumed optimizer state was not restored"
+    for idx, want in saved["state"].items():
+        got = restored["state"][idx]
+        assert got.keys() == want.keys(), idx
+        for name, value in want.items():
+            assert torch.equal(torch.as_tensor(got[name]), torch.as_tensor(value)), f"optimizer state {idx}/{name}"
 
 
 def test_f1_resume_from_missing_run_id_raises(tmp_path, monkeypatch):
@@ -889,7 +905,7 @@ def test_f5_tensorboard_callback_writes_events(tmp_path, monkeypatch):
 
     tb_dir = tmp_path / "tb_logs"
     cb = TensorBoardCallback(log_dir=str(tb_dir))
-    model.train(
+    run = model.train(
         params=NNTrainParams(
             n_epochs=1,
             train_loader=loader,
@@ -898,9 +914,21 @@ def test_f5_tensorboard_callback_writes_events(tmp_path, monkeypatch):
         ),
         callbacks=[cb],
     )
-    # SummaryWriter creates at least one tfevents file in log_dir.
-    event_files = list(tb_dir.glob("events.out.tfevents.*"))
-    assert len(event_files) >= 1
+    # SummaryWriter creates the tfevents file in __init__, so its mere
+    # existence proves nothing: read it back and check the logged scalars.
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    assert list(tb_dir.glob("events.out.tfevents.*"))
+    events = EventAccumulator(str(tb_dir))
+    events.Reload()
+    tags = set(events.Tags()["scalars"])
+    assert {"train/loss", "lr"} <= tags, tags
+    assert not any(tag.startswith("val/") for tag in tags), tags  # no val_loader, no val scalars
+    (loss_event,) = events.Scalars("train/loss")
+    assert loss_event.step == 0
+    assert loss_event.value == pytest.approx(run.idps[-1].train_edp.loss, rel=1e-6)
+    (lr_event,) = events.Scalars("lr")
+    assert lr_event.step == 0 and lr_event.value == pytest.approx(1e-2, rel=1e-6)
 
 
 # --- F6: WandbCallback construction ---------------------------------------

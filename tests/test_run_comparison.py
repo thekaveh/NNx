@@ -900,6 +900,7 @@ def test_a_completed_parents_stopping_epoch_is_an_outcome_and_an_unknown_lineage
         for seed in (0, 1, 2)
     ]
     epochs = {len({idp.epoch_idx for idp in parent.idps}) for parent in parents}
+    assert len(epochs) > 1, f"fixture degenerate: every parent stopped after the same number of epochs {epochs}"
     children = [
         _model().train(
             params=_fit_params(10 + i, resume_from_run_id=p.id, resume_mode="weights_only"), provenance=MANIFEST

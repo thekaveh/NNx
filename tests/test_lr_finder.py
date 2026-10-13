@@ -125,10 +125,21 @@ def test_lr_finder_restores_python_and_numpy_rng():
     expected_python = random.random()
     expected_numpy = np.random.random()
 
+    draws: list[int] = []
+
+    def rng_consuming_loss(logits, targets):
+        # Advance BOTH host streams inside the sweep, so the test fails
+        # unless lr_finder really restores them afterwards.
+        random.random()
+        np.random.random()
+        draws.append(1)
+        return nn.functional.cross_entropy(logits, targets)
+
     random.seed(17)
     np.random.seed(23)
-    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+    lr_finder(model, loader, loss_fn=rng_consuming_loss, num_iter=2)
 
+    assert draws, "the sweep never called loss_fn, so no RNG stream advanced"
     assert random.random() == expected_python
     assert np.random.random() == expected_numpy
 

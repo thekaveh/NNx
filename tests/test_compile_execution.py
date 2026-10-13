@@ -339,19 +339,29 @@ def test_resume_rebuilds_the_wrapper():
 
 
 def test_export_summary_and_tying_survive_a_compiled_fit(tmp_path):
-    pytest.importorskip("onnx")
-    from nnx.viz import summary
-
+    # Dependency-free claims first; each optional extra gates only the
+    # assertions after it, so a missing extra never hides the core ones.
     model = _transformer()
     run = model.train(params=_params(_lm_batches()), compile=FAST)
     assert model.net.lm_head.weight is model.net.tok_embed.weight
-    assert "OptimizedModule" not in str(summary(model, input_data=_lm_batches()[0][0]))
-    model.save_pretrained(tmp_path / "hub")
-    from_hub = NNModel.from_pretrained(tmp_path / "hub")
-    _assert_same_weights(model, from_hub)
     reloaded = NNModel.from_checkpoint(NNCheckpoint.load(run.id, Checkpoints.LAST))
     assert reloaded.net.lm_head.weight is reloaded.net.tok_embed.weight
     _assert_same_weights(model, reloaded)
+
+    pytest.importorskip("safetensors")
+    pytest.importorskip("huggingface_hub")
+    model.save_pretrained(tmp_path / "hub")
+    from_hub = NNModel.from_pretrained(tmp_path / "hub")
+    _assert_same_weights(model, from_hub)
+
+    pytest.importorskip("torchinfo")
+    from nnx.viz import summary
+
+    assert "OptimizedModule" not in str(summary(model, input_data=_lm_batches()[0][0]))
+
+
+def test_onnx_export_after_a_compiled_fit(tmp_path):
+    pytest.importorskip("onnx")
     ff = _feed_fwd()
     ff.train(params=_params(_ff_batches()), compile=FAST)
     ff.to_onnx(str(tmp_path / "ff.onnx"), _ff_batches()[0][0])

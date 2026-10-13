@@ -409,7 +409,7 @@ def test_early_stopping_named_monitor_state_round_trips():
     other = EarlyStopping(monitor=MonitorSpec(metric="nll", min_delta=0.02), patience=3)
     other._bind_metrics((MetricSpec("nll"),))
     assert other.check_component_state(state, version=1)
-    assert fresh.selected_monitor is None or fresh.selected_monitor == "val.nll"
+    assert fresh.selected_monitor == "val.nll"  # an explicit monitor is selected from construction
 
 
 def _trainer_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
