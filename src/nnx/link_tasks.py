@@ -992,8 +992,10 @@ class LinkTask:
                 # A repeated message edge is a different aggregation, though
                 # its set of pairs matches.
                 extra, missing = sorted(messages - allowed)[:5], sorted(allowed - messages)[:5]
+                repeated = edge_index.shape[1] - len(messages)
                 raise LinkTaskError(
-                    f"the message graph must be the split's training topology (unexpected {extra}, missing {missing})"
+                    f"the message graph must be the split's training topology (unexpected {extra}, missing {missing}, "
+                    f"{repeated} repeated edge(s))"
                 )
         pairs = [(int(u), int(v)) for u, v in batch.edge_label_index.t().tolist()]
         targets = batch.edge_label.tolist()

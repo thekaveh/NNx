@@ -460,6 +460,9 @@ A custom `eval_step_fn` may report `error=nan` with a finite `loss`. It
 therefore still drives scheduling and BEST through its loss. The rejection is
 reported once per epoch as a `RuntimeWarning`.
 
+An unavailable validation record (an empty split, or one with neither an
+error nor a loss) ends the walk: that epoch gets no signal, and the training
+values do not stand in ([Concepts §6.2](concepts.md#62-custom-evaluation)).
 An epoch with no finite signal at all skips the plateau step instead of
 feeding it NaN. Its checkpoint counts as an unavailable baseline that the
 next finite epoch (or run) replaces. Raw NaN/inf observations stay in the run

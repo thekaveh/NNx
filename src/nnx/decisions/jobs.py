@@ -250,7 +250,8 @@ class Limits:
 
     Attributes:
         max_questions: the most questions per provider call (``None``: the
-            provider's own cap; a provider without one answers one per call).
+            provider's own cap, or any number when it declares none; a
+            provider without ``decide_many`` answers one per call).
         max_tokens: the most tokens per provider call — enforceable only by
             a provider with ``count_tokens(questions, state)``; any other is
             refused before any call.
@@ -562,6 +563,35 @@ def _modality(state: Any) -> tuple[str, int]:
     )
 
 
+def _check_results(question: Any, results: Any, rows: Optional[int], label: str) -> tuple[DecisionResult, ...]:
+    """``results`` checked as ``question``'s answers: a sequence of decision
+    results, one per input row (when ``rows`` is known), each carrying the
+    question's digest, kind and options in order."""
+    if isinstance(results, (str, bytes)) or not isinstance(results, Sequence):
+        raise InvalidDecisionResponse(
+            f"{label}: expected a sequence of results (one per input row), got {type(results).__name__}"
+        )
+    results = tuple(results)
+    if rows is not None and len(results) != rows:
+        raise InvalidDecisionResponse(f"{label}: {len(results)} results for {rows} input rows")
+    digest = question.digest()
+    options = None if isinstance(question, Boolean) else tuple(question.option_ids)
+    wrong = [
+        i
+        for i, result in enumerate(results)
+        if not isinstance(result, (ChoiceResult, BooleanResult, ScoreResult))
+        or result.question_digest != digest
+        or result.kind != question.kind
+        or (options is not None and tuple(i for i, _ in getattr(result, "distribution", ())) != options)
+    ]
+    if wrong:
+        raise InvalidDecisionResponse(
+            f"{label}: results {wrong} do not answer it (another question's digest or kind, options other than "
+            "its own in its order, or not a decision result)"
+        )
+    return results
+
+
 @dataclass
 class _Ready:
     ask: _Ask
@@ -827,34 +857,10 @@ class _Runner:
             rows: Optional[int] = _modality(chunk[0].state)[1]
         except UnsupportedCapability:  # a provider-specific input: its row count is the provider's to check
             rows = None
-        checked = []
-        for item, results in zip(chunk, answers, strict=True):
-            if isinstance(results, (str, bytes)) or not isinstance(results, Sequence):
-                raise InvalidDecisionResponse(
-                    f"question {item.ask.id!r}: expected a sequence of results (one per input row), got "
-                    f"{type(results).__name__}"
-                )
-            results = tuple(results)
-            if rows is not None and len(results) != rows:
-                raise InvalidDecisionResponse(f"question {item.ask.id!r}: {len(results)} results for {rows} input rows")
-            question = item.ask.question
-            digest = question.digest()
-            options = None if isinstance(question, Boolean) else tuple(question.option_ids)
-            wrong = [
-                i
-                for i, result in enumerate(results)
-                if not isinstance(result, (ChoiceResult, BooleanResult, ScoreResult))
-                or result.question_digest != digest
-                or result.kind != question.kind
-                or (options is not None and tuple(i for i, _ in getattr(result, "distribution", ())) != options)
-            ]
-            if wrong:
-                raise InvalidDecisionResponse(
-                    f"question {item.ask.id!r}: results {wrong} do not answer it (another question's digest or "
-                    "kind, options other than its own in its order, or not a decision result)"
-                )
-            checked.append(results)
-        return checked
+        return [
+            _check_results(item.ask.question, results, rows, f"question {item.ask.id!r}")
+            for item, results in zip(chunk, answers, strict=True)
+        ]
 
     def _call(self, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
         questions = [item.ask.question for item in chunk]

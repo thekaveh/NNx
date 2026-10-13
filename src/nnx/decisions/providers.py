@@ -4,7 +4,7 @@ fixed-head NNx adapter."""
 from __future__ import annotations
 
 import numbers
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Union, runtime_checkable
 
@@ -226,13 +226,15 @@ class FixedHeadProvider:
             # a softmax of its outputs is no probability distribution.
             raise UnsupportedCapability("a regression head justifies no decision primitive")
         task_labels = getattr(spec, "labels", None)
-        if self.labels is not None and task_labels is not None and tuple(self.labels) != tuple(task_labels):
+        if isinstance(self.labels, Iterable) and task_labels is not None and tuple(self.labels) != tuple(task_labels):
             raise InvalidDecisionRequest(
                 f"labels {tuple(self.labels)} disagree with the model's task labels {tuple(task_labels)}"
             )
         labels = self.labels if self.labels is not None else task_labels
         if isinstance(labels, (str, bytes)):  # one value, not a set of its characters
             raise InvalidDecisionRequest(f"labels must be a sequence of strings, not the string {labels!r}")
+        if labels is not None and not isinstance(labels, Iterable):
+            raise InvalidDecisionRequest(f"labels must be a sequence of strings, got {type(labels).__name__}")
         if labels is not None and not all(isinstance(x, str) and x for x in tuple(labels)):
             raise InvalidDecisionRequest(f"labels must be non-empty strings, got {tuple(labels)!r}")
         width = _head_width(self.model, spec)
@@ -249,6 +251,10 @@ class FixedHeadProvider:
                 )
             if not isinstance(self.question, Boolean):
                 raise InvalidDecisionRequest(f"question must be a Boolean, got {type(self.question).__name__}")
+            if self.ordinal or self.option_map is not None:  # a Boolean has no options to order or map
+                raise InvalidDecisionRequest(
+                    "ordinal= and option_map= apply to a categorical head, not a Bernoulli one"
+                )
             self._head = "bernoulli"
             self.labels = tuple(labels) if labels is not None else None
             return

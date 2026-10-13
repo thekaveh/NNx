@@ -17,7 +17,6 @@ Two layers of coverage:
 
 from __future__ import annotations
 
-import importlib.util
 import zlib
 
 import pytest
@@ -337,11 +336,8 @@ def test_embed_texts_batches_match_unbatched():
 
 
 # -------------------------------------------------------------------------
-# Sentence-transformers integration — skip-gracefully when unavailable.
+# Sentence-transformers integration (hermetic: a fake backbone stands in).
 # -------------------------------------------------------------------------
-
-
-HAS_SBERT = importlib.util.find_spec("sentence_transformers") is not None
 
 
 def test_is_sentence_transformer_negatives():

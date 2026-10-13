@@ -1,8 +1,11 @@
 """Shared pytest configuration for the nnx test suite.
 
-Today this file registers session-wide hygiene (suppressing tqdm output
-so pytest's runs stay clean) and per-test env_snapshot cache resets so
-tests that chdir don't pollute each other's metadata.yaml. When other
+Today this file sets the OpenMP environment (``KMP_DUPLICATE_LIB_OK``,
+``OMP_NUM_THREADS``), registers session-wide hygiene (suppressing tqdm
+output so pytest's runs stay clean) and per-test env_snapshot cache resets
+so tests that chdir don't pollute each other's metadata.yaml, and provides
+the ``skip_on_dynamo_dispatch_error`` and ``rmsnorm_fp64_oracle`` fixtures
+shared by the compile and RMSNorm tests. When other
 real shared fixtures emerge from repeated boilerplate across multiple
 tests, add them here. Don't add fixtures pre-emptively — unused fixtures
 are dead code that mislead future contributors about what's shared in

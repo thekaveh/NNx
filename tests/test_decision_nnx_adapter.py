@@ -307,3 +307,14 @@ def test_fixed_head_labels_and_output_shapes_are_decision_errors():
     )
     with pytest.raises(InvalidDecisionRequest, match="rows, classes"):
         seg.decide(_animals("cat", "dog", "fox"), X)
+
+
+def test_a_bernoulli_head_refuses_categorical_settings_and_labels_must_be_iterable():
+    from nnx.decisions import InvalidDecisionRequest
+
+    bce = _classifier(1, Losses.BINARY_CROSS_ENTROPY)
+    for extra in ({"ordinal": True}, {"option_map": {"x": "y"}}):
+        with pytest.raises(InvalidDecisionRequest, match="categorical head, not a Bernoulli"):
+            FixedHeadProvider(bce, question=Boolean("Is it a cat?"), **extra)
+    with pytest.raises(InvalidDecisionRequest, match="sequence of strings, got int"):
+        FixedHeadProvider(_classifier(3, Losses.CROSS_ENTROPY), labels=3)

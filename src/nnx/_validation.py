@@ -65,8 +65,10 @@ def require_finite_real(
         )
     try:
         real = float(value)
-    except OverflowError:  # an int too large for a float is not finite either
-        real = math.inf
+    except OverflowError as exc:
+        raise ValueError(
+            f"{owner} requires {field} to be a finite real number, got an integer too large for a float"
+        ) from exc
     if not math.isfinite(real):
         raise ValueError(
             f"{owner} requires {field} to be finite{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"

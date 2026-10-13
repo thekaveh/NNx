@@ -313,3 +313,35 @@ def test_the_exception_apis_are_unchanged(tmp_path):
         bundles.inspect_bundle(tmp_path / "nowhere")
     with pytest.raises(InvalidDecisionRequest):
         Choice("Topic?", (("a", "x"), ("a", "y")))
+
+
+def test_an_answer_of_the_wrong_count_or_question_is_an_invalid_response_err():
+    """decide_result checks answers as DecisionJob does: one result of this
+    question per input row."""
+    short = decide_result(Spy(), TOPIC, ["a", "b", "c"])
+    assert short.is_err and short.error.code == "invalid_decision_response"
+    assert "1 results for 3 input rows" in str(short.error.cause)
+
+    other = Choice("Other?", (("x", "x"), ("y", "y")))
+
+    class Elsewhere(Spy):
+        def decide(self, question, inputs):
+            return super().decide(other, inputs)
+
+    wrong = decide_result(Elsewhere(), TOPIC, ["a"])
+    assert wrong.is_err and wrong.error.code == "invalid_decision_response"
+    assert decide_result(Spy(), TOPIC, ["a"]).is_ok
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"kind": "boolean", "prompt": "p", "options": [["a", "a"], ["b", "b"]]},
+        {"kind": "choice", "prompt": "p", "options": [["a", "a"], ["b", "b"]], "levels": ["x"]},
+    ],
+)
+def test_question_state_with_keys_of_another_kind_is_refused(state):
+    from nnx.decisions.schema import question_from_state
+
+    with pytest.raises(InvalidDecisionRequest, match="does not take"):
+        question_from_state(state)

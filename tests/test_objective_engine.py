@@ -832,3 +832,39 @@ def test_an_epoch_whose_every_window_is_dropped_has_a_nonfinite_loss(tmp_path, m
     summary = run.idps[-1].train_summary
     assert summary is not None and summary.loss is not None and math.isnan(summary.loss)
     assert run.idps[-1].selection.status == "nonfinite"
+
+
+def test_a_finite_microbatch_in_a_dropped_window_is_left_out_of_the_epoch_loss(tmp_path, monkeypatch):
+    """The rule is per window: a finite microbatch sharing a window with a
+    non-finite one is dropped with it (it never reaches an update)."""
+    import torch.nn.functional as F
+
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    xs, ys = torch.tensor([[1.0], [2.0], [4.0], [1.0]]), torch.tensor([0, 1, 1, 0])
+    calls = iter(range(100))
+
+    class NaNSecond:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            result = supervised_objective()(ctx)
+            return _nan_objective(ctx) if next(calls) == 1 else result
+
+    model = _linear()
+    with torch.no_grad():  # window 1 is dropped, so window 2 sees the initial weights
+        expected = F.cross_entropy(model.net(xs[2:]), ys[2:]).item()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(xs[i : i + 1], ys[i : i + 1]) for i in range(4)],
+            optim=_sgd(2),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="window-rule",
+        ),
+        objective=NaNSecond(),
+    )
+    assert run.idps[-1].train_summary.loss == pytest.approx(expected)

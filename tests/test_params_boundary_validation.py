@@ -8,8 +8,11 @@ nn.Linear / nn.Dropout or making training a silent no-op far from the
 field's origin. Validation must never touch `state()` — it only rejects
 invalid configs, so a valid config still hashes to the same run.id.
 
-The transformer-specific dimensions live in
-`test_nn_transformer_params_builder.py`; the scheduler-field guards live
+The file also holds later boundary regressions found by maintenance
+reviews (optimizer momentum shapes, a warm-up past the default horizon,
+overflowing integers, predict input dtypes, library warnings from a
+loader-less `__main__`). The transformer-specific dimensions live in
+`test_nn_transformer_params_builder.py`; most scheduler-field guards live
 in `test_nn_scheduler_params_builder.py`; the NNTrainerParams `n_epochs`
 guard lives in `test_trainer_params.py`.
 """
@@ -407,3 +410,23 @@ def test_multi_line_plot_refuses_more_lines_than_dash_styles():
     xs = [0, 1]
     with pytest.raises(ValueError, match="at most 4 lines"):
         VisUtils.multi_line_plot(xs, [[[0, 1]] * 5], "t", (["g"], [str(i) for i in range(5)]), "x", "y")
+
+
+@pytest.mark.parametrize("filters", ["default", "ignore"])
+def test_a_library_warning_from_a_main_without_a_loader_warns_and_never_crashes(filters):
+    """`python -c` / a REPL / a notebook `__main__` has no source loader:
+    looking its line up raised ImportError (ValueError in IPython) before any
+    filter ran, aborting train() / predict() instead of warning."""
+    import subprocess
+    import sys
+
+    code = (
+        f"import warnings; warnings.simplefilter({filters!r})\n"
+        "from nnx.nn.callbacks import _warn_at_user_frame\n"
+        "_warn_at_user_frame('probe warning', UserWarning)\n"
+        "print('survived')\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    assert "survived" in done.stdout
+    assert ("probe warning" in done.stderr) == (filters == "default")

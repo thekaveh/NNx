@@ -569,7 +569,8 @@ print(report.text())
   fewer than two units, no variation, or a non-finite bound such as an exact
   NLL of `+inf`.
 - **Variant ids.** Perturbation helpers give each variant a distinct id, or
-  the `id=` you pass. The id is the kind plus a digest of the change. The
+  the `id=` you pass. The id is the original id, the kind and a digest of
+  the change. The
   digest is the same in every process for text, numeric arrays and tensors,
   tuples of them and JSON-able values. An input with no stable digest needs
   `id=`.

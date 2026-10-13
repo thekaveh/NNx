@@ -516,3 +516,14 @@ def test_deepen_refuses_an_adapted_layer_feeding_the_relu():
     apply_lora_to(model, "2")
     with pytest.raises(ValueError, match="not an nn.Linear"):
         deepen(model, after_layer_name="3")
+
+
+def test_deepen_walks_back_through_a_norm_to_the_feeding_linear():
+    """Linear -> BatchNorm1d -> ReLU is supported: the norm is skipped when
+    sizing the inserted identity Linear, and the output is preserved."""
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.ReLU(), nn.Linear(8, 2)).eval()
+    x = torch.randn(5, 4)
+    deeper = deepen(model, after_layer_name="2").eval()
+    assert len(deeper) == 6
+    torch.testing.assert_close(deeper(x), model(x))

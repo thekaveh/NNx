@@ -849,3 +849,14 @@ def test_a_task_whose_training_negatives_cannot_fit_is_refused_at_construction()
     split = split_links(edges, 6, val=1, test=1, seed=0)
     with pytest.raises(LinkTaskError, match="training negatives requested"):
         LinkTask(split, train_negatives=50)
+
+
+def test_a_repeated_message_edge_is_not_the_training_topology():
+    """A duplicated edge keeps the set of pairs but changes the aggregation."""
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    (batch,) = list(task.loader("val", x, batch_size=10_000))
+    bad = batch.clone()
+    bad.edge_index = torch.cat([batch.edge_index, batch.edge_index[:, :1]], dim=1)
+    with pytest.raises(LinkTaskError, match="1 repeated edge"):
+        task.check_batch(bad)

@@ -76,7 +76,7 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
     The caller (``write_gguf``) then iterates this dict and calls
     ``GGUFWriter.add_tensor`` for each entry. Splitting the iteration
     here (rather than inlining it into the writer) keeps the naming
-    convention testable in isolation — see ``test_gguf_writer.py``.
+    convention testable in isolation.
 
     Args:
         net: A ``TransformerNN`` instance.

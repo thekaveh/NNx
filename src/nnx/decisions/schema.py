@@ -231,6 +231,9 @@ def question_from_state(state: Mapping[str, Any]) -> Union[Choice, Boolean, Scor
     missing = [key for key in required if key not in state]
     if missing:
         raise InvalidDecisionRequest(f"{kind} state is missing {missing}")
+    extra = sorted(str(key) for key in state if key != "kind" and key not in required)
+    if extra:  # dropping them would answer a different question from the one meant
+        raise InvalidDecisionRequest(f"{kind} state has keys a {kind} question does not take: {extra}")
     if kind == Choice.kind:
         return Choice(state["prompt"], state["options"])
     if kind == Boolean.kind:
