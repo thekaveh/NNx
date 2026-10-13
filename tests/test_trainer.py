@@ -1653,3 +1653,23 @@ def test_an_objective_run_refuses_unstepped_default_schedulers(tmp_path, monkeyp
     params = replace(_two_optimizer_params(1), schedulers={}, auto_step_schedulers=False)
     with pytest.raises(ValueError, match="would never step"):
         Trainer(_gan_like_model()).train(params, objective=supervised_objective())
+
+
+def test_a_refused_on_train_begin_after_a_resume_leaves_the_model_and_rng_unchanged(tmp_path, monkeypatch):
+    """The resume loaded the checkpoint into the caller's model before the
+    callback refusal: it is handed back as it was."""
+    from nnx import Callback
+
+    class Listening(Callback):
+        def on_train_begin(self, ctx) -> None:
+            ctx.update_listeners.append(lambda ctx: None)
+
+    monkeypatch.chdir(tmp_path)
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    model = _gan_like_model()
+    before = {key: value.clone() for key, value in model.net.state_dict().items()}
+    with pytest.raises(ValueError, match="update_listeners"):
+        Trainer(model).train(
+            params=_two_optimizer_params(2, run_id=first.id), trainer_step_fn=_two_step, callbacks=[Listening()]
+        )
+    assert all(torch.equal(value, before[key]) for key, value in model.net.state_dict().items())

@@ -164,6 +164,13 @@ class GenerativeNNModel(NNModel):
         """
         # A count: a negative value returned the prompt silently, a float failed late in range().
         max_new_tokens = require_count(max_new_tokens, "max_new_tokens", owner="GenerativeNNModel.generate", minimum=0)
+        if seed is not None:  # a float or bool seed was truncated / accepted silently
+            seed = require_count(seed, "seed", owner="GenerativeNNModel.generate", minimum=0, maximum=2**64 - 1)
+        if stop is not None:
+            # A bare string would be read character by character; an empty
+            # stop string matches at once.
+            if isinstance(stop, (str, bytes)) or not all(isinstance(s, str) and s for s in stop):
+                raise ValueError(f"GenerativeNNModel.generate stop must be a list of non-empty strings, got {stop!r}")
         if logits_chain is not None and logits_pipeline is not None:
             raise ValueError(
                 "pass either logits_chain (a LogitsChain) or logits_pipeline (an OrderedLogitsPipeline), not both"

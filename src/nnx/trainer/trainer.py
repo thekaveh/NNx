@@ -386,7 +386,7 @@ class Trainer:
                 accumulate_grad_batches, an objective run's optimizers share
                 a parameter, an objective run sets
                 auto_step_schedulers=False, or a callback registers update
-                listeners.
+                listeners or sets ctx.stop_at_update.
             RuntimeError: in a process group of more than one rank.
         """
         from ..distributed import _refuse_multi_rank
@@ -701,8 +701,13 @@ class Trainer:
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
-            callback_lifecycle.start()
-            _refuse_update_listeners(ctx)
+            try:
+                callback_lifecycle.start()
+                _refuse_update_listeners(ctx)
+            except BaseException:
+                if rollback is not None:  # a resume loaded state: hand it back unchanged
+                    rollback()
+                raise
             # FEAT-005: reset hooks have run once; restore the validated
             # component states (all-or-nothing) before the first resumed epoch.
             if component_plan is not None:

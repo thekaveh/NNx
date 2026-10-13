@@ -150,7 +150,7 @@ A change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) can produce
 - `widen` raises a `ValueError` naming the boundary *before* anything is allocated. It does so for width-dependent ops, other containers (registration order is not data flow), a container subclass with its own forward, hooks on the container or on the path from the layer to its consumer, missing consumers, and aliases (modules registered under more than one path). The source model, its module identities and the RNG are untouched.
 - With dropout configured, the `widen` parity promise is for eval mode. A stochastic training forward is not identical by construction.
 - `deepen` rejects any activation other than ReLU: a `ValueError` at a `FeedFwdNN` site, a `TypeError` for a non-ReLU target in an `nn.Sequential`. The ReLU must be fed by an `nn.Linear` through elementwise or norm modules only; any other module in between is refused with a `ValueError`. The identity-Linear trick only function-preserves through ReLU. For sigmoid / tanh / GELU networks, structurally similar insertions silently produce a drifted forward output.
-- `deepen` rebuilds an `nn.Sequential` as a plain `nn.Sequential` of the same children. It therefore refuses a subclass with its own `forward`, and a container with its own parameters, buffers or hooks. These would be dropped.
+- `deepen` rebuilds an `nn.Sequential` as a plain `nn.Sequential` of the same children. It therefore refuses a subclass with its own `forward`, and a container with its own parameters, buffers or hooks. These would be dropped. It also refuses a target ReLU with hooks, and a `ModuleList` that is not the `layers` / `fcs` of a stock `FeedFwdNN` / `ConvNN`.
 - On a `FeedFwdNN`, the `deepen` check reads the activation actually applied at the insertion site — `params.activation_for(i)`. So a per-layer override wins over the scalar default in both directions.
 - On a `FeedFwdNN`, `deepen` returns a network with updated immutable `params`:
     - One more `hidden_dims` entry at the site.
@@ -198,7 +198,7 @@ model = NNModel(module=net, params=model_params)  # a fresh model over the expan
 # zero gradient. (Zeroing .grad AFTER default_train_step(ctx) would
 # be too late — that helper already stepped the optimizer.)
 keep = (~frozen_mask).unsqueeze(1)
-new_emb.weight.register_hook(lambda g: g * keep.to(g.dtype))
+new_emb.weight.register_hook(lambda g: g * keep.to(device=g.device, dtype=g.dtype))
 
 # One more trap: Adam applies weight decay INSIDE step() — after the
 # hook — so the frozen rows would still drift under the default

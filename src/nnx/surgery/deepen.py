@@ -107,9 +107,10 @@ def deepen(
         ValueError: if the activation effective at a FeedFwdNN insertion
             site is anything other than ReLU (sigmoid / tanh / GELU break
             function-preservation); if the ReLU is not fed by an
-            ``nn.Linear`` through elementwise / norm modules only; or if the
+            ``nn.Linear`` through elementwise / norm modules only; if the
             Sequential is a subclass or carries its own parameters, buffers
-            or hooks.
+            or hooks, or the target ReLU has hooks; or if a ModuleList is not
+            the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN.
     """
     new_model = copy.deepcopy(model)
     target = get_module(new_model, after_layer_name)
@@ -282,8 +283,19 @@ def _insert_after_linear_in_module_list(
     # The grandparent (e.g. FeedFwdNN) must declare ReLU as its activation.
     # We walk up one level and read either `.params.activation` (NNx's
     # FeedFwdNN contract) or refuse.
-    grandparent_path, _, _ = parent_path.rpartition(".")
+    grandparent_path, _, list_attr = parent_path.rpartition(".")
     grandparent = new_model if not grandparent_path else new_model.get_submodule(grandparent_path)
+    from ..nn.net.conv_nn import ConvNN
+    from ..nn.net.feed_fwd_nn import FeedFwdNN
+
+    # As widen: registration order is the data flow only for the stock
+    # forward over FeedFwdNN.layers / ConvNN.fcs (a subclass may add residuals).
+    proven = {"layers": FeedFwdNN, "fcs": ConvNN}.get(list_attr)
+    if proven is None or not isinstance(grandparent, proven) or type(grandparent).forward is not proven.forward:
+        raise ValueError(
+            f"deepen: {parent_path!r} is not FeedFwdNN.layers / ConvNN.fcs under the stock forward "
+            f"({type(grandparent).__name__}); its data flow cannot be proven"
+        )
     _check_relu_activation(grandparent, parent_path, idx)
 
     new_linear = _identity_linear(

@@ -286,9 +286,12 @@ class ExperimentManifest:
         object.__setattr__(self, "data", _FrozenConfig(_refs(self.data, owner="data")))
         object.__setattr__(self, "splits", _FrozenConfig(_refs(self.splits, owner="splits")))
         if self.labels is not None:
-            if isinstance(self.labels, str) or not all(isinstance(label, str) for label in self.labels):
+            if isinstance(self.labels, (str, bytes)):
                 raise TypeError(f"labels must be a sequence of strings, got {self.labels!r}")
-            object.__setattr__(self, "labels", tuple(self.labels))
+            labels = tuple(self.labels)  # once: a one-shot iterable would be consumed by the check
+            if not all(isinstance(label, str) for label in labels):
+                raise TypeError(f"labels must be a sequence of strings, got {self.labels!r}")
+            object.__setattr__(self, "labels", tuple(str(label) for label in labels))
         # Validate (rejecting anything not JSON-like, by path) and copy into
         # immutable form: the caller's dicts can no longer change the plan.
         if self.config is None:  # from_state reads a missing config as {}: one fingerprint for both

@@ -646,3 +646,70 @@ def test_temperature_scaling_does_not_overflow_half_precision_logits():
     scaled = TemperatureScaling(1e-4)(logits, [])
     assert torch.isfinite(scaled).all()
     assert int(sample_next_token(scaled, generator=torch.Generator().manual_seed(0))) == 1
+
+
+@pytest.mark.parametrize("kwargs", [{"stop": "END"}, {"stop": [""]}, {"seed": 0.7}, {"seed": True}, {"seed": -1}])
+def test_generate_validates_stop_and_seed(kwargs):
+    from nnx import GenerativeNNModel
+
+    with pytest.raises(ValueError, match="stop|seed"):
+        GenerativeNNModel.generate(object(), "hi", **kwargs)  # type: ignore[arg-type]
+
+
+def test_softened_kl_refuses_single_logit_and_mismatched_shapes():
+    """A softmax over one logit is always 1 (a zero soft loss that trains
+    nothing); a mismatched teacher would broadcast."""
+    import torch
+
+    from nnx._step_helpers import softened_kl
+
+    with pytest.raises(ValueError, match="at least 2 class logits"):
+        softened_kl(torch.randn(4, 1), torch.randn(4, 1), 4.0)
+    with pytest.raises(ValueError, match="student's shape"):
+        softened_kl(torch.randn(4, 10), torch.randn(4, 1), 4.0)
+
+
+def test_paradigm_predictions_threshold_a_bce_head():
+    import torch
+
+    from nnx._step_helpers import predicted_labels
+
+    logits = torch.tensor([[3.0], [2.0], [1.0], [-2.0]])
+    assert predicted_labels(torch.nn.BCEWithLogitsLoss(), logits).flatten().tolist() == [1, 1, 1, 0]
+    assert predicted_labels(torch.nn.CrossEntropyLoss(), torch.tensor([[0.0, 1.0]])).tolist() == [1]
+
+
+def test_experiment_manifest_keeps_one_shot_labels():
+    from nnx.provenance import ExperimentManifest
+
+    once = ExperimentManifest(labels=(x for x in ["cat", "dog"]))
+    assert once.labels == ("cat", "dog")
+    assert once.fingerprint() == ExperimentManifest(labels=["cat", "dog"]).fingerprint()
+
+
+def test_wildcard_peft_refuses_a_multihead_attention_projection():
+    import torch
+
+    from nnx import apply_lora_to
+
+    class WithAttention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = torch.nn.MultiheadAttention(8, 2, batch_first=True)
+            self.head = torch.nn.Linear(8, 2)
+
+    with pytest.raises(ValueError, match="MultiheadAttention"):
+        apply_lora_to(WithAttention(), "*", r=2)
+
+
+def test_deepen_refuses_a_feed_fwd_subclass_with_its_own_forward():
+    from nnx import Activations, deepen
+    from nnx.nn.net.feed_fwd_nn import FeedFwdNN
+
+    class Residual(FeedFwdNN):
+        def forward(self, x):
+            return super().forward(x) + 0.0
+
+    net = Residual(NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU))
+    with pytest.raises(ValueError, match="stock forward"):
+        deepen(net, after_layer_name="layers.0")

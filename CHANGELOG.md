@@ -114,6 +114,11 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `deepen` refuses a hooked target ReLU; `widen` looks only at hooks on the path to its consumer.
     - `Trainer` refuses a `stop_at_update` set in `on_optimizer_update` at that update, with advice that applies.
     - `NNPreferenceDataset` validates its lengths and pad id before encoding; `NNCheckpoint.to_file` refuses an unknown format before creating a directory; `split_links` refuses a bare-string `categories`.
+    - Knowledge distillation refuses single-logit heads (the soft loss was always 0) and a teacher of another shape; distillation, Mixup / CutMix and MoE steps threshold a BCE head's predictions instead of taking an argmax over one logit.
+    - Run comparison reads `idps.csv` floats exactly (the default parser was off by one ULP on about one value in five).
+    - A refused or failing `on_train_begin` after a resume hands the model back unchanged (NNModel and Trainer).
+    - `deepen` refuses a `FeedFwdNN` / `ConvNN` subclass with its own forward; wildcard LoRA / DoRA / IA3 refuse a `MultiheadAttention` projection; `ExperimentManifest` keeps labels given as a one-shot iterable.
+    - `generate()` validates `stop` (a list of non-empty strings) and `seed`.
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 

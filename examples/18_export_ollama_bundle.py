@@ -74,10 +74,10 @@ def main() -> None:
             "top_p": 0.95,
             "stop": ["<eos>"],
         },
-        # Optional Go-template carried by the generated Modelfile.
-        # The TinyStories model has no chat structure, so we keep it
-        # minimal here.
-        template="{{ .Prompt }}",
+        # Optional Go-template carried by the generated Modelfile. The
+        # TinyStories model has no chat structure, so it stays minimal; the
+        # SYSTEM text reaches the model only through {{ .System }}.
+        template="{{ if .System }}{{ .System }}\n{{ end }}{{ .Prompt }}",
     )
 
     print(f"[ollama] Modelfile: {mf_path}")

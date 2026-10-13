@@ -51,7 +51,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 from ._artifacts import atomic_write, check_keys, parse_json, read_text
 
@@ -1323,7 +1323,9 @@ def _read_run(
     else:
         csv_path = os.path.join(run_path, "idps.csv")
         try:
-            rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
+            # round_trip: the default parser misreads about one float in five by one ULP.
+            frame = pd.read_csv(csv_path, float_precision=cast(Any, "round_trip")) if os.path.isfile(csv_path) else None
+            rows = [] if frame is None else frame.to_dict(orient="records")
             last_rows: dict[Any, Any] = {}
             for row in rows:  # only each epoch's last record is ever read
                 last_rows[row.get("epoch_idx")] = row

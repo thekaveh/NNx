@@ -29,7 +29,7 @@ import math
 import torch
 
 from .._metrics import classification_edp
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, imperative_step, predicted_labels
 from ..nn.moe import MoELinear
 from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -109,7 +109,7 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
 
         return classification_edp(
             Y=Y,
-            Y_hat=Y_hat_logits.argmax(dim=-1),
+            Y_hat=predicted_labels(m.loss_fn, Y_hat_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )

@@ -346,7 +346,7 @@ class KDObjective(Objective):
         _freeze_teacher(teacher)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
-        from ._step_helpers import softened_kl
+        from ._step_helpers import predicted_labels, softened_kl
         from .nn.nn_model import _classification_edp_for_loss, _single_input_batch
 
         model = ctx.model
@@ -371,7 +371,7 @@ class KDObjective(Objective):
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
             target=Y,
-            prediction=student.detach().argmax(dim=-1),
+            prediction=predicted_labels(model.loss_fn, student.detach()),
             loss=loss if loss is not None else math.nan,
             extra_metrics=ctx.extra_metrics,
         )

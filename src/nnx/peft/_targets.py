@@ -122,9 +122,11 @@ def select_linear_slots(
     ]
     # A wrapper in ``refuse_inside`` reads its .base as an nn.Linear
     # (weight / bias) in forward: wrapping that base would break it.
-    foreign = [path for slot in matched if isinstance(slots[slot][0], refuse_inside) for path in slots[slot][1]]
+    # torch's MultiheadAttention reads out_proj.weight directly as well.
+    refused = (*tuple(refuse_inside), nn.MultiheadAttention)
+    foreign = [path for slot in matched if isinstance(slots[slot][0], refused) for path in slots[slot][1]]
     if foreign:
-        wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refuse_inside))][0]).__name__
+        wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refused))][0]).__name__
         raise ValueError(
             f"{helper}: {_listed(foreign)} are the base of a {wrapper}, which reads its base's weight "
             "directly; wrapping it would break that layer. Nothing was modified."

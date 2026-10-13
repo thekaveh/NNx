@@ -876,7 +876,7 @@ Raises:
         accumulate_grad_batches, an objective run's optimizers share
         a parameter, an objective run sets
         auto_step_schedulers=False, or a callback registers update
-        listeners.
+        listeners or sets ctx.stop_at_update.
     RuntimeError: in a process group of more than one rank.
 ```
 
@@ -13720,9 +13720,10 @@ Raises:
     ValueError: if the activation effective at a FeedFwdNN insertion
         site is anything other than ReLU (sigmoid / tanh / GELU break
         function-preservation); if the ReLU is not fed by an
-        ``nn.Linear`` through elementwise / norm modules only; or if the
+        ``nn.Linear`` through elementwise / norm modules only; if the
         Sequential is a subclass or carries its own parameters, buffers
-        or hooks.
+        or hooks, or the target ReLU has hooks; or if a ModuleList is not
+        the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN.
 ```
 
 

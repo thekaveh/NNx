@@ -32,7 +32,7 @@ import torch
 import torch.nn.functional as F
 
 from .._metrics import classification_edp
-from .._step_helpers import finalize_step, imperative_step, softened_kl
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, softened_kl
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -123,7 +123,7 @@ def kd_train_step_factory(
 
         return classification_edp(
             Y=Y,
-            Y_hat=student_logits.argmax(dim=-1),
+            Y_hat=predicted_labels(m.loss_fn, student_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )
@@ -279,7 +279,7 @@ def feature_kd_train_step_factory(
 
         return classification_edp(
             Y=Y,
-            Y_hat=student_logits.argmax(dim=-1),
+            Y_hat=predicted_labels(m.loss_fn, student_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )

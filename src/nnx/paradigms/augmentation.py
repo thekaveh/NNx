@@ -23,7 +23,7 @@ import math
 
 import torch
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, imperative_step, predicted_labels
 from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -95,7 +95,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
-        Y_hat = Y_hat_logits.argmax(dim=-1)
+        Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0,
@@ -174,7 +174,7 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
-        Y_hat = Y_hat_logits.argmax(dim=-1)
+        Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
         acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0,

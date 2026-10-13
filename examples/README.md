@@ -48,7 +48,7 @@ python -m pytest "tests/test_examples_smoke.py::test_representative_examples_run
 
 ## 2. Catalog
 
-Grouped by topic, from foundational to most specialized. The numbered prefixes record the order in which the examples were added, not their place below.
+Grouped by topic, from foundational to most specialized. §2.1 also holds the offline, decision, graph and evaluation examples that have no section of their own. The numbered prefixes record the order in which the examples were added, not their place below.
 
 Each table gives a short summary per example. The notes after a table list each example's helpers, what they check and how the tests run them. In the notes, `-k <selector>` means `tests/test_examples_smoke.py -k <selector>`.
 
@@ -72,7 +72,6 @@ Each table gives a short summary per example. The notes after a table list each 
 | `decision_nli.py` | A local label-conditioned baseline: `NLIProvider` scores texts against candidate descriptions supplied at inference. Fully offline. |
 | `custom_module.py` | Arbitrary modules and registered model factories: train from a registered `Encoder` factory, and train a wrapped keyword-only module in place. Offline, CPU. |
 | `history_journal.py` | Bounded training history with an append journal (`HistoryJournal`), covering resume, reload, the notebook chart and CSV export. Offline, CPU. |
-| `offline_teacher_distillation.py` | Offline teacher distributions: stored teacher probabilities are written to JSONL, aligned in a `TeacherDataset` and used to train and evaluate a student. Offline, CPU. |
 | `optimizer_factories.py` | Registered optimizer factories and AdamW: a custom factory and a built-in `Optims.ADAMW` each own a disjoint parameter group in one CPU `Trainer` update. |
 | `abstention_offline.py` | Abstention policies from supplied arrays: select a threshold on validation, save and reload the policy, and apply it to test rows. Offline, CPU, no model needed. |
 | `calibration_offline.py` | Fitted temperature calibration from supplied arrays, with save and reload and before/after reporting on held-out data. Offline, CPU, no model needed. |
@@ -81,7 +80,6 @@ Each table gives a short summary per example. The notes after a table list each 
 | `run_bundle.py` | Portable, data-only run bundles: export, inspect, validate, reconstruct and resume a run. Offline, CPU; every run and bundle is written under a temporary directory. |
 | `compare_seeds.py` | Multi-seed summaries and a paired comparison of two configurations, saved and reloaded as strict JSON. Offline, CPU. |
 | `experiment_plan.py` | Immutable fluent experiment plans: branch, validate, probe, fit and resume an `ExperimentPlan`. Offline, CPU; every run is written under a temporary directory. |
-| `ordered_logits_pipeline.py` | Ordered logits pipelines: stage order, immutable edits, serialization and seeded generation. Requires the `lm` extra; offline, CPU. |
 | `prediction_stream.py` | Streaming prediction with `iter_predict` and mergeable metrics with `StreamingMetrics`, including a streaming validation step. Offline, CPU; runs under a temporary directory. |
 | `ranking_offline.py` | Query-grouped ranking: retrieve candidates, train a pairwise scorer with `RankingTask.objective()` and evaluate held-out queries per complete query. Offline, CPU. |
 | `regression_task.py` | Task adapters: `NNModelParams(task=TaskSpec.regression(2))` makes the default step, `evaluate()` and `predict()` regression-aware. Also shows a multilabel batch. Offline, CPU. |
@@ -227,14 +225,6 @@ Notes for section 2.1:
 - `export_history_csv` writes the legacy CSV layout. `lineage=True` puts the parent's committed prefix before the child's records (25 rows, each epoch once).
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (end-to-end run and bounded helper `history_journal_workflow()`, `-k history_journal`).
 
-**`offline_teacher_distillation.py`**
-
-- A teacher's stored probabilities over three candidates are exported in two different candidate orders. Each export carries sample and question ids, teacher revision, schema digest, semantics and declared training rights.
-- They are written to and read back from JSONL. A `TeacherDataset` joins them to the student's inputs by sample id and aligns them by candidate id.
-- The student trains with `dataset.objective(alpha=0.7)`: `KL(teacher ‖ student)` plus a hard cross-entropy at temperature 1, no `T²`. `dataset.eval_step()` validates each epoch.
-- The LAST checkpoint is reloaded. `evaluate_offline` reports teacher agreement, imitation loss and labelled accuracy / NLL, each with its own denominator, beside how often the teacher itself was right.
-- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (end-to-end run and bounded helper `offline_teacher_distillation_workflow()`, `-k offline_teacher`).
-
 **`optimizer_factories.py`**
 
 - `register_optimizer_factory` + `NNOptimFactoryParams(OptimizerFactorySpec(id, version, config))` give a custom SGD factory the `layers.0.*` group. A built-in `Optims.ADAMW` (decoupled weight decay) owns the disjoint `layers.1.*` group.
@@ -298,14 +288,6 @@ Notes for section 2.1:
 - `fit()` matches the equally seeded imperative `set_seed(7); NNModel(...).train(...)` on weights and history.
 - Two fits of one plan are two attempts with two run directories. `resuming(parent_id)` continues in a child run that records the parent as its lineage. The parent's artifacts stay byte-for-byte intact.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (end-to-end run and bounded helper `experiment_plan_workflow()`, `-k experiment_plan`).
-
-**`ordered_logits_pipeline.py`**
-
-- The order oracle: on logits `[2, 1, 0]`, temperature 0.5 then top-p 0.8 keeps one finite logit, and the reverse keeps two. Each equals `apply_chain` over the same list.
-- Immutable `append` / `prepend`: a duplicated temperature equals one combined stage. A zero-temperature stage is refused anywhere but last.
-- A versioned `state()` / `from_state()` round trip serializes a custom stage through a registered `LogitsStageCodec`.
-- Seeded `generate(logits_pipeline=...)` on a tiny local-tokenizer transformer matches the explicit processor list on the cached and uncached paths.
-- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `ordered_logits_pipeline_workflow()`, `-k ordered_logits_pipeline`). It is not in the extras-free end-to-end list, since step 4 needs the `lm` extra.
 
 **`prediction_stream.py`**
 
@@ -466,8 +448,17 @@ Notes for section 2.5:
 | Example | What it demonstrates |
 |---|---|
 | `11_tinystories_lm.py` | Decoder-only LM end-to-end: train a tiny BPE tokenizer and build a `TransformerNN`. Train next-token prediction with the causal-LM task, then sample with `GenerativeNNModel.generate()` (KV-cache enabled by default). CPU-friendly. Requires `pip install "thekaveh-nnx[lm]"`. |
+| `ordered_logits_pipeline.py` | Ordered logits pipelines: stage order, immutable edits, serialization and seeded generation. Requires the `lm` extra; offline, CPU. |
 
 Notes for section 2.7:
+
+**`ordered_logits_pipeline.py`**
+
+- The order oracle: on logits `[2, 1, 0]`, temperature 0.5 then top-p 0.8 keeps one finite logit, and the reverse keeps two. Each equals `apply_chain` over the same list.
+- Immutable `append` / `prepend`: a duplicated temperature equals one combined stage. A zero-temperature stage is refused anywhere but last.
+- A versioned `state()` / `from_state()` round trip serializes a custom stage through a registered `LogitsStageCodec`.
+- Seeded `generate(logits_pipeline=...)` on a tiny local-tokenizer transformer matches the explicit processor list on the cached and uncached paths.
+- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (bounded helper `ordered_logits_pipeline_workflow()`, `-k ordered_logits_pipeline`). It is not in the extras-free end-to-end list, since step 4 needs the `lm` extra.
 
 **`11_tinystories_lm.py`**
 
@@ -543,3 +534,14 @@ Notes for section 2.12:
 |---|---|
 | `23_born_again_distillation.py` | Iterated self-distillation across G=3 generations via `born_again_train`. Each generation distills from the previous via Hinton-style KD (Furlanello et al., ICML 2018) and prints its validation accuracy. A 5-epoch synthetic run does not reproduce the paper's result. |
 | `24_feature_kd.py` | FitNets-style feature distillation via `feature_kd_train_step_factory` with one paired teacher→student auxiliary layer (shape-matched: teacher `layers.1` output 32 → student `layers.0` output 32). |
+| `offline_teacher_distillation.py` | Offline teacher distributions: stored teacher probabilities are written to JSONL, aligned in a `TeacherDataset` and used to train and evaluate a student. Offline, CPU. |
+
+Notes for section 2.13:
+
+**`offline_teacher_distillation.py`**
+
+- A teacher's stored probabilities over three candidates are exported in two different candidate orders. Each export carries sample and question ids, teacher revision, schema digest, semantics and declared training rights.
+- They are written to and read back from JSONL. A `TeacherDataset` joins them to the student's inputs by sample id and aligns them by candidate id.
+- The student trains with `dataset.objective(alpha=0.7)`: `KL(teacher ‖ student)` plus a hard cross-entropy at temperature 1, no `T²`. `dataset.eval_step()` validates each epoch.
+- The LAST checkpoint is reloaded. `evaluate_offline` reports teacher agreement, imitation loss and labelled accuracy / NLL, each with its own denominator, beside how often the teacher itself was right.
+- Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (end-to-end run and bounded helper `offline_teacher_distillation_workflow()`, `-k offline_teacher`).

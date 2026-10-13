@@ -3945,7 +3945,14 @@ class NNModel(_HubMixinBase):
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
-            callback_lifecycle.start()
+            try:
+                callback_lifecycle.start()
+            except BaseException:
+                # A refused or failing on_train_begin after a resume loaded
+                # state: hand the caller's model and RNG back unchanged.
+                if previous_net_state is not None and previous_rng_state is not None:
+                    _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
+                raise
             # FEAT-033: under DDP, whether any rank listens for updates (and
             # may request a stop at one) is agreed once, not per batch.
             ddp_listening = ddp is not None and any(ddp.gather(bool(ctx.update_listeners)))

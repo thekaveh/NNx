@@ -1347,3 +1347,21 @@ def test_one_comparison_reads_each_runs_files_once(tmp_path, monkeypatch):
     observations_from_runs([child.id, parent.id], metric=Metric("loss", "minimize"))
     assert provenance_reads == Counter({child.id: 1, parent.id: 1})
     assert state_reads == Counter({child.id: 1, parent.id: 1})
+
+
+def test_a_csv_run_is_read_with_round_trip_floats(tmp_path, monkeypatch):
+    """pandas' default parser misreads about one float in five by one ULP:
+    an observation must equal the run's own recorded value exactly."""
+    import pandas as pd
+
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    run = _fit(0.1, 5)
+    csv_path = os.path.join("runs", run.id, "idps.csv")
+    frame = pd.read_csv(csv_path)
+    exact = "0.43929912390488113"  # the default parser returns 0.4392991239048811
+    frame["val_edp.loss"] = frame["val_edp.loss"].astype(object)
+    frame.loc[:, "val_edp.loss"] = exact
+    frame.to_csv(csv_path, index=False)
+    (found,) = observations_from_runs([run.id], metric=LOSS)
+    assert found.value == float(exact)

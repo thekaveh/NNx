@@ -152,11 +152,11 @@ evidence: a CUDA report whose listed tests passed in every phase.
 
 - Push to your fork and open a PR against `develop`.
 - Fill in the PR template (Summary / Test plan).
-- Wait for every CI job to go green (lint + format + tests + mkdocs on Python
-  3.10 through 3.14, plus the feature-composition, export-conformance,
-  installed-profile and `floor-deps` lanes). The branch ruleset requires only
-  `lint-and-test` and `pip-audit` on 3.10–3.12, so an armed auto-merge does
-  not wait for the other lanes: check them before arming it.
+- Wait for every CI job to go green. The jobs are lint, format, tests and
+  mkdocs on Python 3.10–3.14. They also include the feature-composition,
+  export-conformance, installed-profile and `floor-deps` lanes.
+- The branch ruleset requires only `lint-and-test` and `pip-audit` on
+  3.10–3.12. Check the other lanes before you arm auto-merge.
 - Address review comments by pushing new commits; pull requests merge with a merge commit.
 
 ## 7. Releases

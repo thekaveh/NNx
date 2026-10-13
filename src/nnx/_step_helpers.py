@@ -170,6 +170,15 @@ def finalize_step(
     return loss_val
 
 
+def predicted_labels(loss_fn: Any, logits: torch.Tensor) -> torch.Tensor:
+    """Hard predictions as the default step makes them: a non-negative logit
+    for a ``BCEWithLogitsLoss`` head (an argmax over one logit is always 0),
+    otherwise the last-axis argmax."""
+    if isinstance(loss_fn, torch.nn.BCEWithLogitsLoss):
+        return (logits >= 0).to(dtype=torch.long)
+    return logits.argmax(dim=-1)
+
+
 def softened_kl(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
@@ -186,6 +195,16 @@ def softened_kl(
     distillation and feature-KD factories so the direction of the KL
     and the ``T²`` scaling can't drift between them.
     """
+    if student_logits.shape != teacher_logits.shape:  # a broadcast would distill a wrong target silently
+        raise ValueError(
+            f"distillation needs teacher logits of the student's shape {tuple(student_logits.shape)}, got "
+            f"{tuple(teacher_logits.shape)}"
+        )
+    if student_logits.shape[-1] < 2:  # a softmax over one logit is always 1: the soft loss is 0
+        raise ValueError(
+            "distillation needs at least 2 class logits per row; a single-logit (binary) head has no class "
+            "distribution to soften"
+        )
     return F.kl_div(
         F.log_softmax(student_logits / temperature, dim=-1),
         F.softmax(teacher_logits / temperature, dim=-1),

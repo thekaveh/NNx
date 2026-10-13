@@ -141,8 +141,8 @@ symlinked artifact or artifact folder never verifies.
 
 ## 5. CI evidence
 
-The required `export-conformance` job in `.github/workflows/ci.yml` runs
-in four steps:
+The `export-conformance` job in `.github/workflows/ci.yml` (a CI lane, not a
+required check; see CONTRIBUTING §6) runs in four steps:
 
 1. It imports `nnx` in a core-only environment and checks that `onnx`,
    `onnxruntime` and `onnxscript` are absent.

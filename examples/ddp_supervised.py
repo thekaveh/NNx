@@ -21,7 +21,7 @@ Six labelled rows with stable ids (0-5) train a small classifier:
      process training on the ranks' union batch; every rank returns the
      same run id and the same global records.
   3. Only the writer rank (0) holds the run lease and writes
-     ``<output>/runs/<id>/``; the other rank writes nothing.
+     ``<output>/runs/<id>/``; the other rank writes nothing under ``runs/``.
   4. ``nnx.distributed.shutdown()`` leaves the process group together: a
      bounded teardown barrier, then the group is destroyed.
 

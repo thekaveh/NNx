@@ -21,7 +21,7 @@ The diagram has eight layers, top-to-bottom:
 2. **`NNModel` / `Trainer`** (cyan) — the two public entry classes.
 3. **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** (orange bus) — the training-loop extension hooks.
 4. **Specialization subpackages** (amber) — `nnx.diffusion`, `nnx.paradigms`, `nnx.quantize`, and `nnx.embeddings` provide hook-compatible factories. The diffusion, paradigm and embeddings steps share their finalization in `nnx._step_helpers`. Other subpackages compose around the loop without claiming a hook relationship. These are the model transforms (`nnx.finetune`, `nnx.peft`, `nnx.prune`, `nnx.surgery`), exchange formats (`nnx.interop`), inference utilities (`nnx.generation`) and diagnostics (`nnx.viz`).
-5. **Training-loop internals** (emerald) — the epoch × batch dispatch and the inline NaN guard + grad-clip in `default_train_step`. They also include `_step_scheduler` and `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). `_step_scheduler` is the Schedulers enum dispatch: once per epoch, or once per committed optimizer update on the `optimizer_update` clock (§2.5).
+5. **Training-loop internals** (emerald) — the epoch × batch dispatch and the inline NaN guard + grad-clip in `default_train_step`. They also include `_step_scheduler` and `_save_checkpoints` (FIRST/Q1/Q2/Q3/LAST/BEST cadence). `_step_scheduler` steps an epoch-clock scheduler once per epoch. An `optimizer_update`-clock scheduler is stepped by its clock after each committed update (§2.5).
 
     Note: the shared `finalize_step` helper lives under the **Specialization subpackages** layer (Layer 4, in `nnx._step_helpers`). Only paradigm, diffusion and embeddings step-fn factories invoke it — not the supervised loop, which has its own inline NaN+clip path.
 
@@ -488,8 +488,9 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   its parent's attempt and checkpoint generation, and leaves the parent's
   files untouched. `NNRun.save` never rewrites them, and both files are written
   atomically, so an interrupted write leaves the previous record. An attempt
-  that fails before its first committed epoch releases its reservation like
-  any failed fit, so no record remains.
+  that fails before writing any run file releases its reservation. A failed
+  first LAST commit keeps the run, with a `failed` attempt and no committed
+  checkpoint.
 - **Comparing.** `compare(a, b)` takes manifests, runs or run ids. It reads
   only the provenance files: no model is loaded, no loader iterated and no
   file hashed. It reports each field by a stable path (`data.train`,

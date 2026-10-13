@@ -116,9 +116,12 @@ export_ollama_modelfile(
         "top_p": 0.95,
         "stop": ["<eos>"],
     },
-    template="{{ .Prompt }}",
+    template="{{ if .System }}{{ .System }}\n{{ end }}{{ .Prompt }}",
 )
 ```
+
+A `SYSTEM` message reaches the model only through `{{ .System }}` in the
+template, so a template without it drops the system prompt.
 
 The generated directory contains `model.gguf` and `Modelfile`; it may also
 contain `tokenizer.json` when the tokenizer was saved there.
