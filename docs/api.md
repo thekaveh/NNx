@@ -1389,6 +1389,15 @@ class nnx.prediction.PredictionValidationError
 An invalid `ProbabilitySpec`, or logits / sample ids that do not satisfy one (wrong label count, invalid class axis, non-finite logits, misaligned sample ids).
 
 
+#### `nnx.prediction.NonFiniteLogitsError`
+
+```python
+class nnx.prediction.NonFiniteLogitsError
+```
+
+The logits hold NaN or +-inf: the model's output, not the request, is at fault (a decision provider reports it as a provider failure).
+
+
 ### 2.5. Optimizer construction and registered factories (`nnx.optimizers`)
 
 #### `nnx.optimizers.build_optimizer`

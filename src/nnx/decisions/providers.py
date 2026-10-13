@@ -332,20 +332,29 @@ class FixedHeadProvider:
         if batch_size == 0:
             return []
 
-        from ..prediction import PredictionValidationError, ProbabilitySpec, prediction_from_logits
+        from ..prediction import (
+            NonFiniteLogitsError,
+            PredictionValidationError,
+            ProbabilitySpec,
+            prediction_from_logits,
+        )
 
         kind = "bernoulli" if self._head == "bernoulli" else "categorical"
         spec = ProbabilitySpec(kind=kind, class_axis=1, labels=caps.labels)
         self.model_calls += 1
         try:
             prediction = self.model.predict_proba(inputs, spec)
+        except NonFiniteLogitsError as error:  # the backend failed on a valid request
+            raise ProviderFailure(f"{self.name}: the model produced non-finite logits: {error}") from error
         except PredictionValidationError as error:
             raise InvalidDecisionRequest(f"{self.name}: the head's output does not fit its labels: {error}") from error
         except Exception as error:  # the backend failed on a valid, supported request
             raise ProviderFailure(f"{self.name}: the model failed to predict: {error}") from error
         logits = np.asarray(prediction.logits)
         if kind == "bernoulli" and (logits.ndim != 2 or logits.shape[1] != 1):
-            raise UnsupportedCapability(
+            # Known only once the head ran (its width was unknown at
+            # construction): a misconfigured adapter, as on the categorical path.
+            raise InvalidDecisionRequest(
                 f"a Boolean needs a one-output head; this head produced shape {tuple(logits.shape)}"
             )
         # Recomputed in float64 so half-precision logits still sum to 1 within 1e-6.

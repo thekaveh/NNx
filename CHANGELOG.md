@@ -80,6 +80,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - Decision providers and `Capabilities` check their settings at construction (`max_batch`, `ordinal`, `name`, primitives).
     - The imperative JEPA step refuses a predictor outside `model.net` (it was never updated).
     - Re-applying an adapter in a mixed LoRA / IA3 stack wraps nothing again.
+    - `FixedHeadProvider` reports non-finite logits as a `ProviderFailure` (new `nnx.prediction.NonFiniteLogitsError`) and a too-wide Bernoulli head as an `InvalidDecisionRequest`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)

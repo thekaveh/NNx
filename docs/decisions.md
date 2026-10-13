@@ -501,7 +501,7 @@ print(report.text())
     - `redescribe` (new label descriptions);
     - `add_distractors` and `add_none_of_the_above`;
     - `add_context` (long irrelevant context);
-    - `rewrite_input` (multilingual or adversarial state).
+    - `rewrite_input` (a multilingual or adversarial rewrite of the text input).
 - **Replay format.** One `Record` per provider output, one JSON object per
   line (`nnx.decision-record/1`, strict JSON). Each record holds:
     - sample id, question digest, provider and status;

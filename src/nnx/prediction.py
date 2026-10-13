@@ -40,6 +40,7 @@ from ._probability import softmax_, to_numpy
 __all__ = [
     "PredictionResult",
     "PredictionValidationError",
+    "NonFiniteLogitsError",
     "ProbabilitySpec",
     "prediction_from_logits",
 ]
@@ -51,6 +52,11 @@ class PredictionValidationError(ValueError):
     """An invalid :class:`ProbabilitySpec`, or logits / sample ids that do
     not satisfy one (wrong label count, invalid class axis, non-finite
     logits, misaligned sample ids)."""
+
+
+class NonFiniteLogitsError(PredictionValidationError):
+    """The logits hold NaN or +-inf: the model's output, not the request,
+    is at fault (a decision provider reports it as a provider failure)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +264,7 @@ def prediction_from_logits(
     axis = _check_spec_fits(array, spec)
     finite = np.isfinite(array)
     if not finite.all():
-        raise PredictionValidationError(
+        raise NonFiniteLogitsError(
             f"logits contain {int(finite.size - np.count_nonzero(finite))} non-finite value(s) (NaN or ±inf); "
             "probabilities would be undefined — replace masked logits with a large finite negative value"
         )

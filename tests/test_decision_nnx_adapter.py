@@ -194,7 +194,7 @@ def test_multi_output_bernoulli_heads_are_rejected_with_or_without_a_task():
         FixedHeadProvider(_classifier(3, Losses.BINARY_CROSS_ENTROPY))  # no task: the net's width decides
     wide = NNModel(module=nn.Linear(2, 3), params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
     provider = FixedHeadProvider(wide, question=Boolean("Is it a cat?"))  # width unknown until the head runs
-    with pytest.raises(UnsupportedCapability, match="one-output head"):
+    with pytest.raises(InvalidDecisionRequest, match="one-output head"):
         provider.decide(Boolean("Is it a cat?"), X)
 
 
@@ -272,3 +272,18 @@ def test_capabilities_refuse_malformed_declarations(bad):
     fields = {"primitives": {"choice"}, "modalities": {"text"}, **bad}
     with pytest.raises(InvalidDecisionRequest):
         Capabilities(**fields)
+
+
+def test_non_finite_logits_are_a_provider_failure():
+    """NaN logits are the backend failing on a valid request, not a
+    malformed request (decide_result returns Err("provider_failure"))."""
+    from torch import nn
+
+    from nnx.decisions import ProviderFailure
+
+    model = NNModel(module=nn.Linear(2, 3), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    with torch.no_grad():
+        model.net.weight.fill_(float("nan"))
+    provider = FixedHeadProvider(model, labels=("cat", "dog", "fox"))
+    with pytest.raises(ProviderFailure, match="non-finite"):
+        provider.decide(_animals("cat", "dog", "fox"), X)
