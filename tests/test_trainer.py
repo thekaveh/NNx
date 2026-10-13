@@ -1539,3 +1539,32 @@ def test_trainer_refuses_a_late_update_listener_or_stop(hook, tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match="update_listeners or set ctx.stop_at_update"):
         Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=_two_step, callbacks=[Late()])
+
+
+def test_an_objective_run_refuses_optimizers_sharing_a_parameter(tmp_path, monkeypatch):
+    """Every committed window steps every optimizer, so in FP32 too a
+    parameter two scopes share would take two updates per window."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(_supervised_loader(16))
+        .optimizer(
+            "all", NNOptimParams.builder().sgd(max_lr=0.1).param_groups([NNParamGroupSpec(name_pattern="*")]).build()
+        )
+        .optimizer(
+            "bias",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.bias")])
+            .build(),
+        )
+        .build()
+    )
+    with pytest.raises(ValueError, match="share a parameter.*step twice"):
+        Trainer(_gan_like_model()).train(params, objective=supervised_objective())
+    assert not (tmp_path / "runs").exists() or not [
+        p for p in (tmp_path / "runs").iterdir() if not p.name.startswith(".")
+    ]

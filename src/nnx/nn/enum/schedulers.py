@@ -82,12 +82,15 @@ class Schedulers(Enum):
             case Schedulers.ONE_CYCLE:
                 # One peak per param group: each group's own LR, or an
                 # explicit max_lr scaled by the group's LR relative to the
-                # first (a one-group optimizer gets exactly that max_lr).
+                # optimizer's base LR (the default group, which NNParamGroupSpec
+                # multipliers are relative to), so the default group peaks at
+                # exactly max_lr and spec order never changes a peak.
                 group_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+                base_lr = float(optimizer.defaults.get("lr", group_lrs[0]))
                 if params.max_lr is None:
                     max_lr: Any = group_lrs if len(group_lrs) > 1 else group_lrs[0]
-                elif len(group_lrs) > 1 and group_lrs[0] > 0:
-                    max_lr = [params.max_lr * lr / group_lrs[0] for lr in group_lrs]
+                elif len(group_lrs) > 1 and base_lr > 0:
+                    max_lr = [params.max_lr * lr / base_lr for lr in group_lrs]
                 else:
                     max_lr = params.max_lr
                 total_steps = budget(params.total_steps, "total_steps")

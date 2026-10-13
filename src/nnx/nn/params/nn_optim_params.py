@@ -4,7 +4,7 @@ import ast
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from ..._validation import require_count, require_finite_real
+from ..._validation import plain_real, require_count, require_finite_real
 from ..enum.optims import Optims
 from .nn_params import _ImmutableList
 
@@ -91,6 +91,10 @@ def _validate_optim_scalars(obj: Any, owner: str) -> None:
         minimum=0.0,
         domain_message=f"weight_decay must be non-negative, got {weight_decay} (use 0 to disable).",
     )
+    # NumPy scalars become plain floats, so state() serializes (run.yaml).
+    for name in ("max_lr", "weight_decay", "grad_clip_norm"):
+        if getattr(obj, name) is not None:
+            object.__setattr__(obj, name, plain_real(getattr(obj, name)))
 
 
 def _validate_optim_param_groups(obj: Any) -> None:
@@ -180,6 +184,12 @@ class NNOptimParams:
                 )
         else:
             require_finite_real(self.momentum, "momentum", owner="NNOptimParams", minimum=0.0)
+        momentum = self.momentum
+        object.__setattr__(
+            self,
+            "momentum",
+            tuple(plain_real(beta) for beta in momentum) if isinstance(momentum, tuple) else plain_real(momentum),
+        )
         # eps is the Adam-family denominator term: finite and > 0, and
         # rejected on SGD variants rather than silently ignored.
         eps = require_finite_real(self.eps, "eps", owner="NNOptimParams", minimum=0.0, exclusive_min=True)

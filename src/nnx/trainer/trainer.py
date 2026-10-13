@@ -379,14 +379,15 @@ class Trainer:
         # The Trainer has no DDP path: under torchrun every rank would train
         # its own copy into the same run directory.
         _refuse_multi_rank("Trainer.train()")
+        # One owner per optimizer update, decided before anything else (so
+        # before any callback factory runs).
+        _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
+        _check_provenance(provenance)
         from ..nn.nn_model import _writer_owned_callbacks
 
         # Without DDP, writer_only() callbacks are built now, so the history
         # and monitor preflights see (and bind) the real callbacks.
         callbacks = _writer_owned_callbacks(callbacks)
-        # One owner per optimizer update, decided before anything else.
-        _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
-        _check_provenance(provenance)
         _check_history(history, callbacks)
         if _recipe_transforms(self.model._topology_transforms):
             # FEAT-016: a recipe model's topology must be its base plus its
@@ -471,6 +472,10 @@ class Trainer:
             _check_objective_run(objective, self.model, optimizers=optimizers, callbacks=callbacks)
         if precision.uses_scaler:  # only an objective runs a reduced policy here
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
+        elif objective is not None:
+            # Every committed window steps every optimizer: a shared
+            # parameter would take two updates per window.
+            check_scaler_ownership(optimizers, consequence="which each committed update would step twice")
         # The fp16 loss scaler, through the model's hook as NNModel.train builds
         # it, checked against the policy before any run is reserved.
         scaler = self.model._build_grad_scaler() if precision.uses_scaler else None

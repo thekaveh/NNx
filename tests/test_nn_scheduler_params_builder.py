@@ -206,16 +206,18 @@ def test_builder_rejects_invalid_one_cycle_max_lr():
 
 def test_one_cycle_keeps_each_param_groups_own_peak():
     """OneCycle with several param groups peaks each group at its own LR
-    (or the explicit max_lr scaled by the group's ratio), never one shared
-    value taken from the first group."""
+    (or the explicit max_lr scaled by the group's ratio to the base LR),
+    never one shared value taken from the first group."""
     import torch
 
     from nnx import NNSchedulerParams, Schedulers
 
     def groups():
+        # The specific group first and the default (base-LR) group last, as
+        # build_param_groups orders them.
         backbone, head = torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)
         return torch.optim.SGD(
-            [{"params": backbone.parameters(), "lr": 1e-5}, {"params": head.parameters(), "lr": 1e-3}]
+            [{"params": backbone.parameters(), "lr": 1e-5}, {"params": head.parameters(), "lr": 1e-3}], lr=1e-3
         )
 
     base = dict(min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0, total_steps=10)
@@ -224,4 +226,5 @@ def test_one_cycle_keeps_each_param_groups_own_peak():
     assert [group["max_lr"] for group in own.param_groups] == [1e-5, 1e-3]
     scaled = groups()
     Schedulers.ONE_CYCLE(scaled, NNSchedulerParams(kind=Schedulers.ONE_CYCLE, max_lr=1e-2, **base), n_epochs=10)
-    assert [group["max_lr"] for group in scaled.param_groups] == pytest.approx([1e-2, 1.0])
+    # The default group peaks at exactly max_lr; the backbone keeps its 1/100.
+    assert [group["max_lr"] for group in scaled.param_groups] == pytest.approx([1e-4, 1e-2])

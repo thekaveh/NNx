@@ -264,7 +264,9 @@ def _release_empty_reservation(run_path: str) -> None:
         return
     # Provenance files (FEAT-019) are reservation bookkeeping too: an attempt
     # that failed before its first committed epoch leaves nothing behind.
-    bookkeeping = (_HISTORY_PROTOCOL_FILE, _PROVENANCE_MANIFEST_FILE, _PROVENANCE_ATTEMPT_FILE)
+    bookkeeping = (_HISTORY_PROTOCOL_FILE, _PROVENANCE_MANIFEST_FILE, _PROVENANCE_ATTEMPT_FILE, ".run.lock")
+    # ".run.lock" is NNRun.save's lock: a first save that failed before
+    # writing any run file leaves only it behind.
     temps = tuple(f".{name}." for name in bookkeeping)
     entries = os.listdir(run_path)
     # A history journal (FEAT-036) written before the first run.yaml holds no

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional
 
-from ..._validation import require_count, require_finite_real
+from ..._validation import plain_real, require_count, require_finite_real
 from ..enum.schedulers import Schedulers
 
 if TYPE_CHECKING:
@@ -68,6 +68,10 @@ class NNSchedulerParams:
                 exclusive_min=True,
                 domain_message=f"NNSchedulerParams requires max_lr > 0 when set, got {self.max_lr}",
             )
+        # NumPy scalars become plain floats, so state() serializes (run.yaml).
+        for name in ("factor", "min_lr", "threshold", "max_lr"):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, plain_real(getattr(self, name)))
         # Epoch counts: nonnegative integers, normalized to plain `int`
         # (FIX-021); zero is a valid "react immediately" setting for both.
         for name in ("patience", "cooldown"):

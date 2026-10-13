@@ -153,3 +153,42 @@ def test_a_lineage_tag_must_be_yaml_storable():
 
     with pytest.raises(ValueError, match="resume_from_checkpoint"):
         NNTrainParams(n_epochs=1, parent_run_id="a" * 32, resume_from_checkpoint=pathlib.Path("x"))
+
+
+def test_numpy_scalars_become_plain_floats_in_state():
+    """A NumPy scalar passes validation; it must reach state() as a plain
+    float, or run.yaml (yaml.safe_dump) fails after the first epoch. Python
+    ints stay ints, so existing run ids never shift."""
+    import numpy as np
+    import yaml
+
+    from nnx import NNOptimParams, NNParams, NNSchedulerParams, NNTransformerParams, Optims
+
+    params = [
+        NNParams(
+            input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=np.float64(0.1), dropout_probs=[np.float32(0.5)]
+        ),
+        NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+            attn_dropout=np.float64(0.1),
+            resid_dropout=np.float32(0.0),
+            rope_base=np.float64(1e4),
+        ),
+        NNSchedulerParams(
+            min_lr=np.float64(1e-6), factor=np.float32(0.5), patience=1, cooldown=0, threshold=np.float64(0.0)
+        ),
+        NNOptimParams(
+            name=Optims.ADAM, max_lr=np.float32(1e-3), momentum=(np.float64(0.9), 0.999), weight_decay=np.float64(0.0)
+        ),
+    ]
+    for p in params:
+        yaml.safe_dump(p.state())  # raised RepresenterError for NumPy scalars
+    assert NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0).state()["dropout_prob"] == 0
+    assert type(NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0).dropout_prob) is int

@@ -388,10 +388,14 @@ def _holds_gradient(optimizer: torch.optim.Optimizer) -> bool:
     return any(param.grad is not None for group in optimizer.param_groups for param in group["params"])
 
 
-def check_scaler_ownership(optimizers: Mapping[str, torch.optim.Optimizer]) -> None:
-    """Refuse optimizers sharing a parameter under a loss scaler: it
-    unscales per optimizer, so a shared parameter's gradient would be
-    unscaled twice (FEAT-028)."""
+def check_scaler_ownership(
+    optimizers: Mapping[str, torch.optim.Optimizer],
+    *,
+    consequence: str = "which an fp16 loss scaler would unscale twice",
+) -> None:
+    """Refuse optimizers sharing a parameter: a loss scaler unscales per
+    optimizer (FEAT-028), and an objective's committed window steps every
+    optimizer, so a shared parameter would be unscaled / stepped twice."""
     owners: dict[int, str] = {}
     for name, optimizer in optimizers.items():
         for group in optimizer.param_groups:
@@ -399,8 +403,8 @@ def check_scaler_ownership(optimizers: Mapping[str, torch.optim.Optimizer]) -> N
                 first = owners.setdefault(id(param), name)
                 if first != name:
                     raise ValueError(
-                        f"optimizers {first!r} and {name!r} share a parameter, which an fp16 loss scaler would "
-                        "unscale twice; give each parameter to one optimizer (non-overlapping param_groups)"
+                        f"optimizers {first!r} and {name!r} share a parameter, {consequence}; "
+                        "give each parameter to one optimizer (non-overlapping param_groups)"
                     )
 
 

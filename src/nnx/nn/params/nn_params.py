@@ -6,7 +6,7 @@ import numbers
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..._validation import require_count
+from ..._validation import plain_real, require_count
 from ..enum.activations import Activations
 
 
@@ -123,6 +123,7 @@ class NNParams:
             )
         if not _is_probability(self.dropout_prob):
             raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob!r}")
+        object.__setattr__(self, "dropout_prob", plain_real(self.dropout_prob))
 
         # Per-layer overrides (#85): length must equal the number of hidden
         # layers; dropout entries must be valid probabilities.
@@ -139,6 +140,7 @@ class NNParams:
                 )
             if not all(_is_probability(q) for q in self.dropout_probs):
                 raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
+            object.__setattr__(self, "dropout_probs", [plain_real(q) for q in self.dropout_probs])
 
         if self.activations is not None:
             object.__setattr__(self, "activations", _ImmutableList(self.activations))

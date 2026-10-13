@@ -164,6 +164,36 @@ def test_a_fit_that_fails_before_any_commit_releases_its_reservation():
     assert rerun.provenance.attempt.status == "completed"
 
 
+@pytest.mark.parametrize("failing", ["run.yaml"])
+def test_a_fit_whose_first_run_save_fails_releases_its_reservation(monkeypatch, failing):
+    """A first run.yaml write that fails leaves only NNRun.save's lock: the
+    reservation is released, so a retry of the same run is not refused with
+    "already exists". (A failed first LAST commit keeps an empty history,
+    like the eager run; tests/test_history_journal.py pins that.)"""
+    from nnx.nn.params import nn_run
+
+    real_save = NNCheckpoint.save
+
+    def save(self, run, type, *args, **kwargs):
+        if type == Checkpoints.LAST:
+            raise OSError("disk full")
+        return real_save(self, run, type, *args, **kwargs)
+
+    def dump(*args, **kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patched:
+        if failing == "last":
+            patched.setattr(NNCheckpoint, "save", save)
+        else:
+            patched.setattr(nn_run.yaml, "safe_dump", dump)
+        with pytest.raises(OSError, match="disk full"):
+            _model().train(params=_params(2, data_id="commit"), provenance=PLAN)
+    assert [name for name in os.listdir("runs") if not name.startswith(".")] == []
+    rerun = _model().train(params=_params(2, data_id="commit"), provenance=PLAN)
+    assert rerun.provenance.attempt.status == "completed"
+
+
 def test_a_failed_status_write_never_masks_the_training_error(monkeypatch):
     from nnx import provenance
 

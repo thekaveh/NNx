@@ -29,8 +29,9 @@ def _checkpoint_tag(value: object, owner: str, *, resuming: bool) -> Any:
     string name one run identity and dump as YAML). When a resume will read
     it (``resuming``), anything that is not a ``Checkpoints`` tag or a
     ``ModelCheckpoint`` stem ``"<tag>_e<epoch>"`` fails here instead of after
-    training starts; otherwise it is lineage metadata and is kept as given,
-    so runs saved with any value still load."""
+    training starts. Otherwise it is lineage metadata: a tag string or None
+    (``run.yaml`` stores one or null), and any string is kept as given, so
+    runs saved with any tag still load."""
     import re
 
     from ..enum.checkpoints import Checkpoints
