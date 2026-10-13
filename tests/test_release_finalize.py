@@ -18,11 +18,13 @@ from pathlib import Path
 
 import pytest
 
+from tests._repo_files import repo_file
+
 # Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
 # so a packager running its suite skips this module instead of failing collection.
-pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+repo_file("scripts", "release", "finalize_changelog.py")
 
-from scripts.release.finalize_changelog import finalize, release_notes
+from scripts.release.finalize_changelog import finalize, release_notes  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures" / "release_finalize"

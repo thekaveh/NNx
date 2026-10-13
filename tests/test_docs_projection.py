@@ -6,13 +6,15 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests._repo_files import repo_file
+
 # Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
 # so a packager running its suite skips this module instead of failing collection.
-pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+repo_file("scripts", "docs", "build_docs.py")
 
-import scripts.docs.build_docs as build_docs
-from scripts.docs.build_api_reference import render as render_api_reference
-from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links
+import scripts.docs.build_docs as build_docs  # noqa: E402
+from scripts.docs.build_api_reference import render as render_api_reference  # noqa: E402
+from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links  # noqa: E402
 
 TAGLINE = "Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support."
 SUPPORT_LINE = "Transparent orchestration for durable experiments, with your models and step logic left in your hands."

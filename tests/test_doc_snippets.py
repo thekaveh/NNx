@@ -879,12 +879,12 @@ def test_documented_trainer_disjoint_optimizer_groups():
     """The GAN example's scoped optimizers own disjoint parameter sets that
     together cover the model (built without running the example's main)."""
     import runpy
-    from pathlib import Path
 
     from nnx.finetune import build_param_groups
+    from tests._repo_files import repo_file
 
     example = runpy.run_path(
-        str(Path(__file__).resolve().parents[1] / "examples" / "09_gan_with_trainer.py"),
+        str(repo_file("examples", "09_gan_with_trainer.py")),
         run_name="__nnx_doc_snippet__",
     )
     net = example["MiniGAN"]()

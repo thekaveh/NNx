@@ -36,6 +36,7 @@ from nnx.decisions import (  # noqa: E402
     UnsupportedCapability,
 )
 from nnx.decisions import jev as jev_module  # noqa: E402
+from tests._repo_files import repo_file  # noqa: E402
 
 TOPIC = Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"), ("t-tech", "technology")))
 SPAM = Boolean("Is this spam?")
@@ -481,9 +482,8 @@ def test_the_live_smoke_is_opt_in_and_pins_a_version(monkeypatch, capsys):
     """CI has no credentials: without a key the live smoke refuses before
     building a client, and it pins a model version, never an alias."""
     import importlib.util
-    from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "scripts" / "smoke_jev_live.py"
+    path = repo_file("scripts", "smoke_jev_live.py")
     spec = importlib.util.spec_from_file_location("smoke_jev_live", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -496,9 +496,8 @@ def test_the_live_smoke_is_opt_in_and_pins_a_version(monkeypatch, capsys):
 
 def test_the_live_smoke_refuses_an_alias(monkeypatch, capsys):
     import importlib.util
-    from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "scripts" / "smoke_jev_live.py"
+    path = repo_file("scripts", "smoke_jev_live.py")
     spec = importlib.util.spec_from_file_location("smoke_jev_live", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

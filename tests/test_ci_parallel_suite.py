@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from tests._repo_files import repo_file
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
@@ -20,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _pytest_runs(workflow: str, job: str) -> list[str]:
-    steps = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))["jobs"][job][
+    steps = yaml.safe_load(repo_file(".github", "workflows", workflow).read_text(encoding="utf-8"))["jobs"][job][
         "steps"
     ]
     lines = [line.strip() for step in steps for line in str(step.get("run", "")).splitlines()]
@@ -69,10 +71,9 @@ def test_ci_and_release_check_the_lock_against_pyproject():
     run `uv lock --check`, and Dependabot updates the two together."""
     import yaml
 
-    root = Path(__file__).resolve().parents[1]
     for workflow, job in (("ci.yml", "lint-and-test"), ("release.yml", "test")):
-        steps = yaml.safe_load((root / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))["jobs"][job]
+        steps = yaml.safe_load(repo_file(".github", "workflows", workflow).read_text(encoding="utf-8"))["jobs"][job]
         assert any(step.get("run") == "uv lock --check" for step in steps["steps"]), workflow
-    dependabot = yaml.safe_load((root / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    dependabot = yaml.safe_load(repo_file(".github", "dependabot.yml").read_text(encoding="utf-8"))
     ecosystems = {update["package-ecosystem"] for update in dependabot["updates"]}
     assert "uv" in ecosystems and "pip" not in ecosystems

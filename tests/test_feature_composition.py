@@ -13,11 +13,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests._repo_files import repo_file
+
 # Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
 # so a packager running its suite skips this module instead of failing collection.
-pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+repo_file("scripts", "check_feature_composition.py")
 
-from scripts import check_feature_composition as fc
+from scripts import check_feature_composition as fc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 

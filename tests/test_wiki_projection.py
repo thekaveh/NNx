@@ -2,12 +2,14 @@ from pathlib import Path
 
 import pytest
 
+from tests._repo_files import repo_file
+
 # Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
 # so a packager running its suite skips this module instead of failing collection.
-pytest.importorskip("scripts", reason="needs the repository's scripts/ (not shipped in the sdist)")
+repo_file("scripts", "docs", "build_wiki.py")
 
-import scripts.docs.build_wiki as build_wiki
-from scripts.docs.build_wiki import rewrite_markdown
+import scripts.docs.build_wiki as build_wiki  # noqa: E402
+from scripts.docs.build_wiki import rewrite_markdown  # noqa: E402
 
 
 def test_rewrite_markdown_maps_known_pages_and_local_images(tmp_path: Path):

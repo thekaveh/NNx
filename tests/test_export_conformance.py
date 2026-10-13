@@ -38,6 +38,7 @@ from nnx.export_conformance import (
     verify_artifacts,
 )
 from nnx.nn.nn_model import NNModel
+from tests._repo_files import repo_file
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -377,7 +378,7 @@ def test_core_import_does_not_need_the_runtime_extra():
 
 def _script():
     spec = importlib.util.spec_from_file_location(
-        "check_export_conformance", ROOT / "scripts" / "check_export_conformance.py"
+        "check_export_conformance", repo_file("scripts", "check_export_conformance.py")
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

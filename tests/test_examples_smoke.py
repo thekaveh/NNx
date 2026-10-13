@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from tests._repo_files import repo_file
+
 ROOT = Path(__file__).resolve().parents[1]
+# Every test here runs a script under examples/, which the sdist does not ship.
+repo_file("examples")
 # Unnumbered scripts are outside the numbered glob: register them here so
 # they are imported (without running main) and, below, executed.
 UNNUMBERED_EXAMPLES = [

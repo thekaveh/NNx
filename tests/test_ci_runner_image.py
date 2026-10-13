@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests._repo_files import repo_file
+
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
+WORKFLOWS = sorted(repo_file(".github", "workflows").glob("*.y*ml"))
 RUNNER = "ubuntu-26.04"
 # FEAT-043: the one job that needs hardware no hosted image has (CUDA); it
 # runs only on a registered self-hosted GPU runner, opted in by a variable.
