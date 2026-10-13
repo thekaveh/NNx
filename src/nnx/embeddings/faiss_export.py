@@ -121,8 +121,9 @@ def export_to_faiss(
             insertion. ``None`` (the default) auto-selects: True for
             ``IndexFlatIP`` (cosine via IP), False for everything else.
             Pass an explicit bool to override.
-        device: target device for the encode pass. ``None`` infers
-            from the backbone.
+        device: passed to :func:`embed_texts`, which encodes where the
+            backbone lives; the embeddings are moved to the CPU for the
+            index, so this argument has no effect on the result.
 
     Returns:
         The string path written. Same value as ``str(out_path)`` —

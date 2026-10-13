@@ -20,7 +20,6 @@ Internal; not part of the public API.
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Callable, Mapping
 from typing import Optional
 
@@ -112,33 +111,33 @@ def _resolve_scheduler_metric(
     value, source, rejected = _resolve_metric_with_provenance(val_edp, train_edp)
     if value is not None:
         if rejected:
-            warnings.warn(
+            from .nn.callbacks import _warn_at_user_frame
+
+            _warn_at_user_frame(
                 f"epoch {epoch_idx}: ignoring non-finite metric(s) {', '.join(rejected)}; "
                 f"using {source}={value} for ReduceLROnPlateau",
-                RuntimeWarning,
-                stacklevel=3,
             )
         return value
     if "val_edp=unavailable" in rejected:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: the validation record is unavailable "
             "(every target was masked, or it holds no error or loss)",
-            RuntimeWarning,
-            stacklevel=3,
         )
     elif rejected:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: every candidate metric is "
             f"non-finite ({', '.join(rejected)})",
-            RuntimeWarning,
-            stacklevel=3,
         )
     else:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: no metric available "
             "(error and loss are absent on both the validation and training data points)",
-            RuntimeWarning,
-            stacklevel=3,
         )
     return None
 

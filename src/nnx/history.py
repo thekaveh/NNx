@@ -61,7 +61,6 @@ import json
 import math
 import os
 import tempfile
-import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -787,12 +786,12 @@ class _JournalHistory:
                 except Exception as exc:  # noqa: BLE001 — re-raised unless tolerant
                     if not tolerant:
                         raise
-                    warnings.warn(
+                    from .nn.callbacks import _warn_at_user_frame
+
+                    _warn_at_user_frame(
                         f"the history journal could not be read back for on_train_end ({type(exc).__name__}: "
                         f"{exc}); callbacks declaring history_access='full' get the last {self.spec.retention} "
                         "records",
-                        RuntimeWarning,
-                        stacklevel=4,
                     )
                     held.append(self._view)
             return held[0]
@@ -1107,19 +1106,19 @@ def _parent_prefix(
     from .nn.params.nn_run import _committed_epoch
 
     if parent == "best":
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"run {run_id} resumed from the runs/best pointer, which may name another run by now: its lineage "
             f"starts at {run_id}",
-            RuntimeWarning,
-            stacklevel=4,
         )
         return
     parent_path = _run_path(parent, root)
     if not os.path.isfile(os.path.join(parent_path, "run.yaml")):
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"run {run_id} resumed from run {parent}, which is no longer saved: its lineage starts at {run_id}",
-            RuntimeWarning,
-            stacklevel=4,
         )
         return
     try:
@@ -1138,20 +1137,20 @@ def _parent_prefix(
     )
     first = _first_epoch(run_id, root, committed, readers)
     if resumed is None and first is None:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"cannot tell where run {run_id} branched from run {parent} (the checkpoint it resumed from is "
             f"unreadable and {run_id} has no committed record): its lineage starts at {run_id}",
-            RuntimeWarning,
-            stacklevel=4,
         )
         return
     if resumed is None:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"the checkpoint run {run_id} resumed from (or run {parent}'s LAST) is unreadable: its lineage uses "
             f"run {parent}'s records "
             f"before {run_id}'s first record (epoch {first})",
-            RuntimeWarning,
-            stacklevel=4,
         )
     # Each epoch comes from one run: the parent's own records stop where this
     # run — or a descendant below it — takes over.

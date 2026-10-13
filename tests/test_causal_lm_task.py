@@ -524,3 +524,11 @@ def test_a_one_dimensional_attention_mask_is_a_task_error():
     task = CausalLMTask(vocab_size=V, pad_id=0)
     with pytest.raises(LMTaskError, match="attention_mask"):
         task.split({"input_ids": torch.tensor([[1, 2, 3, 0]]), "attention_mask": torch.tensor([1, 1, 1, 0])})
+
+
+@pytest.mark.parametrize("mask", [[[0, 0, 1, 1, 1]], [[1, 0, 1, 1, 1]]], ids=["left", "interior"])
+def test_padding_before_a_real_token_is_refused(mask):
+    # The model never receives the mask: real tokens would attend to the padding.
+    task = CausalLMTask(vocab_size=V, pad_id=0)
+    with pytest.raises(LMTaskError, match="right-pad the batch"):
+        task.split({"input_ids": torch.tensor([[0, 0, 1, 2, 3]]), "attention_mask": torch.tensor(mask)})

@@ -30,11 +30,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe
+from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, set_seed, train_bpe
 from nnx.interop import export_ollama_modelfile
 
 
 def main() -> None:
+    set_seed(0)  # the same weights, so the same GGUF bytes, on every run
     out_dir = Path("artifacts/ollama_bundle")
     out_dir.mkdir(parents=True, exist_ok=True)
 

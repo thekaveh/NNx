@@ -672,6 +672,8 @@ def test_a_validation_monitor_a_custom_evaluator_never_feeds_warns_once(tmp_path
             eval_step_fn=lambda ctx: NNEvaluationDataPoint(loss=1.0),
         )
     assert sum("monitor 'val.nll' has no value" in str(w.message) for w in caught) == 1
+    # attributed to this train() call, so a second run in a notebook warns again
+    assert [w.filename for w in caught if "has no value" in str(w.message)] == [__file__]
 
 
 def test_a_reused_early_stopping_resolves_each_run_from_its_declared_spec():

@@ -135,6 +135,11 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - The unowned-parameter warning names both causes and points at the caller's `train()`; t-SNE projection refuses a non-categorical checkpoint before inference; benchmark digests cover sparse state; an empty held-out benchmark slice reports "no eligible rows".
     - Re-applying IA3 over an IA3 → DoRA stack is a no-op; an Ollama float parameter too large for a float is a `TypeError`.
     - `NNTransformerParams` dropout fields refuse non-numbers like `dropout_prob`.
+    - Training-loop and history warnings (unreported optimizer updates, an unfed monitor, a skipped plateau step, a resume without training state, worker RNG, component rollback and cleanup failures, lineage gaps) point at the caller's `train()`, so a second run in a notebook warns again; `kd_objective` refuses a sequence model's output as the KD step does.
+    - `NNModel.train` refuses a registered net that still carries an unbaked pruning mask (its checkpoints could not rebuild it); `magnitude_prune(bake=False)` refuses a `MultiheadAttention` projection; KD with `alpha=1` ignores the hard labels (an all-ignored batch no longer fails).
+    - A tiny temperature on all-negative logits samples the argmax, not token 0; the QAT "prepared nothing" error names a root `Linear`; the DPO `beta` docstring states the right direction (larger `beta` keeps the policy closer to the reference).
+    - `CausalLMTask` refuses an attention mask with padding before a real token (left padding): the model never receives the mask, so the NLL was not independent of padding. Benchmark weight digests include each tensor's dtype and shape (and a per-channel quantization axis).
+    - A lazy-layer model's final LAST records the materialized optimizer topology, so a materialized module resumes from `last`; `eval_step_fn` runs with the net in eval mode (modes restored after); `to_onnx` refuses a mapping example with a clear `TypeError`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 

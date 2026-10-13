@@ -9,7 +9,6 @@ import json
 import math
 import os
 import re
-import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, replace
@@ -462,11 +461,11 @@ def _load_resume_source(
 
 
 def _restore_weights_only(
-    net: torch.nn.Module, source: _ResumeSource, train_loader: Any, mode: str, *, fresh: str, stacklevel: int = 3
+    net: torch.nn.Module, source: _ResumeSource, train_loader: Any, mode: str, *, fresh: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load only the source weights (restoring the net on failure); warn
     unless ``resume_mode="weights_only"`` asked for exactly this. The
-    warning is attributed ``stacklevel`` frames up (``train()`` by default).
+    warning is attributed to the first caller outside nnx.
     Returns the pre-load net and RNG snapshots, so a later refusal can hand
     the caller's model back unchanged."""
     net_snapshot = _snapshot_state_dict(net.state_dict())
@@ -478,11 +477,11 @@ def _restore_weights_only(
         _restore_rng_state(rng_snapshot, train_loader)
         raise
     if mode != "weights_only":
-        warnings.warn(
+        from .callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"checkpoint has no training-state sidecar; model weights were restored, but {fresh} restart "
             "from their configured defaults",
-            RuntimeWarning,
-            stacklevel=stacklevel,
         )
     return net_snapshot, rng_snapshot
 
@@ -497,10 +496,10 @@ def _rollback_resume(
     try:
         net.load_state_dict(net_state)
     except Exception as error:
-        warnings.warn(
+        from .callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"component restore failed and the model could not be rolled back ({type(error).__name__}: {error})",
-            RuntimeWarning,
-            stacklevel=3,
         )
     _restore_rng_state(rng_state, train_loader)
 
@@ -545,10 +544,10 @@ def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping
         if problems:
             raise ComponentRestoreError(problems)
         if len(registry):
-            warnings.warn(
+            from .callbacks import _warn_at_user_frame
+
+            _warn_at_user_frame(
                 f"checkpoint predates component state; {', '.join(registry.names)} start fresh",
-                RuntimeWarning,
-                stacklevel=3,
             )
         return registry.fresh_plan()
     return registry.plan(saved)
@@ -727,19 +726,19 @@ class _CallbackFinalizer:
 
         if exc is not None:
             for cleanup_error in cleanup_errors:
-                warnings.warn(
+                from .callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"on_train_end cleanup failed while handling {type(exc).__name__}: {cleanup_error}",
-                    RuntimeWarning,
-                    stacklevel=2,
                 )
             return False
 
         if cleanup_errors:
             for cleanup_error in cleanup_errors[1:]:
-                warnings.warn(
+                from .callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"additional on_train_end cleanup failed: {cleanup_error}",
-                    RuntimeWarning,
-                    stacklevel=2,
                 )
             raise cleanup_errors[0]
         return False
@@ -821,7 +820,8 @@ class EvalStepContext:
     can pass ``eval_step_fn: Callable[[EvalStepContext], NNEvaluationDataPoint]``
     to ``NNModel.train()`` to replace the built-in classification ``evaluate()``
     for non-classification paradigms (next-token LM perplexity, DPO margins,
-    regression MAE, ...). The step runs under ``torch.no_grad()`` and its
+    regression MAE, ...). The step runs under ``torch.no_grad()`` with the
+    net in eval mode (every submodule's mode is restored after it), and its
     returned EDP becomes ``val_edp`` — recorded on the epoch's last idp and
     persisted through the incremental run save like any built-in val metric.
     """
@@ -1724,11 +1724,11 @@ def _with_attempt(
     try:
         recorder.complete()
     except Exception as record_error:  # the fit succeeded and is saved; do not lose it
-        warnings.warn(
+        from .callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"run {run.id} trained and saved, but its attempt could not be recorded as completed "
             f"({record_error}); attempt.json still reads 'running'",
-            RuntimeWarning,
-            stacklevel=3,
         )
     return result.with_provenance(recorder.record)
 
@@ -2708,6 +2708,17 @@ class NNModel(_HubMixinBase):
             return
         expected_keys = set(base_state)
         actual_keys = _tensor_keys(self.net.state_dict())
+        reparameterized = sorted(
+            key[: -len("_orig")]
+            for key in actual_keys - expected_keys
+            if key.endswith("_orig") and key[: -len("_orig")] in expected_keys
+        )
+        if reparameterized:
+            raise ValueError(
+                f"{', '.join(reparameterized[:5])} carry a pruning reparameterization (weight_orig + weight_mask, "
+                "e.g. magnitude_prune(bake=False)) that the checkpoints could not rebuild; bake the masks first "
+                "(torch.nn.utils.prune.remove), or train the pruned net as NNModel(module=...)"
+            )
         if _replaced_layers(actual_keys, expected_keys)[1]:
             raise ValueError(
                 "low-rank surgery topology has no reconstruction recipe; train before surgery, "
@@ -2746,11 +2757,20 @@ class NNModel(_HubMixinBase):
 
         Returns the path written. Network is put in eval mode for tracing.
         A network that declares ``onnx_export_unsupported`` (a graph
-        classifier) is refused before anything is written.
+        classifier) is refused before anything is written, and so is a
+        mapping example: the export passes positional inputs only, so a
+        keyword-input module (``KeywordInputs``) needs a positional wrapper.
         """
         unsupported = getattr(self.net, "onnx_export_unsupported", None)
         if unsupported:
             raise NotImplementedError(f"to_onnx(): {unsupported}")
+        if isinstance(example_input, Mapping) or (
+            isinstance(example_input, (tuple, list)) and any(isinstance(e, Mapping) for e in example_input)
+        ):
+            raise TypeError(
+                "to_onnx() passes positional tensor inputs only; export a keyword-input module through a wrapper "
+                "module whose forward takes them positionally"
+            )
         if dynamo:
             # Lazy-import: keep `onnxscript` out of NNx's required deps so
             # plain `pip install thekaveh-nnx[onnx]` (legacy path) still works. If
@@ -3605,7 +3625,7 @@ class NNModel(_HubMixinBase):
             eval_step_fn: optional override for the per-epoch VALIDATION
                 pass (#86), symmetric with train_step_fn. When set (and a
                 val_loader is present), each epoch calls
-                ``eval_step_fn(EvalStepContext(...))`` under no-grad and
+                ``eval_step_fn(EvalStepContext(...))`` under no-grad in eval mode and
                 records its EDP as val_edp — instead of the built-in
                 classification ``evaluate()`` (which argmaxes logits and is
                 meaningless for LM/DPO/regression val). When None (default),
@@ -3830,11 +3850,11 @@ class NNModel(_HubMixinBase):
                             _restore_rng_state(rng_snapshot, train_loader)
                             raise
                         if warn_worker_rng:
-                            warnings.warn(
+                            from .callbacks import _warn_at_user_frame
+
+                            _warn_at_user_frame(
                                 "exact warm-resume continuity requires train_loader.num_workers=0; "
                                 "worker-local RNG state cannot be reconstructed",
-                                RuntimeWarning,
-                                stacklevel=2,
                             )
                         resume_status = ResumeStatus(
                             mode="stateful",
@@ -3942,6 +3962,7 @@ class NNModel(_HubMixinBase):
         ctx.committed_updates = int(restored_counters.get("committed_updates") or 0)
         stopped_mid_epoch = False
         pre_transform_net_state: Optional[dict[str, Any]] = None
+        final_optimizer_topology = resume_optimizer_topology
         pre_transform_rng_state: Optional[dict[str, Any]] = None
         # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
         # the progress bar doesn't pollute output. Same env var works as
@@ -4093,16 +4114,23 @@ class NNModel(_HubMixinBase):
                     # #86: pluggable validation step (mirrors train_step_fn) —
                     # LM/DPO/regression val metrics computed INSIDE the loop so
                     # they persist through the incremental run save below.
-                    with torch.no_grad():
-                        val_edp = eval_step_fn(
-                            EvalStepContext(
-                                model=self,
-                                val_loader=params.val_loader,
-                                extra_metrics=params.extra_metrics,
-                                epoch_idx=idx_epoch,
-                                metrics=params.metrics,
+                    # Eval mode, as evaluate() scores: dropout off, no batch-norm
+                    # statistics from validation batches; the modes come back after.
+                    eval_training_modes = _capture_training_modes(self.net)
+                    self.net.eval()
+                    try:
+                        with torch.no_grad():
+                            val_edp = eval_step_fn(
+                                EvalStepContext(
+                                    model=self,
+                                    val_loader=params.val_loader,
+                                    extra_metrics=params.extra_metrics,
+                                    epoch_idx=idx_epoch,
+                                    metrics=params.metrics,
+                                )
                             )
-                        )
+                    finally:
+                        _restore_training_modes(eval_training_modes)
                 elif validate:
                     assert params.val_loader is not None
                     # `metrics=` only when declared: evaluate() overrides written
@@ -4129,13 +4157,14 @@ class NNModel(_HubMixinBase):
                 if clock is not None:
                     # FEAT-014: stepped on committed updates, not here.
                     if clock.count == updates_before_epoch and not owns_windows and engine is None:
-                        warnings.warn(
+                        from .callbacks import _warn_at_user_frame
+
+                        _warn_at_user_frame(
                             f"epoch {idx_epoch}: the step function reported no optimizer update, so the "
                             "optimizer_update-clock scheduler did not step; call ctx.report_update() after each "
                             "optimizer.step() the step function takes itself (default_train_step and finalize_step "
                             "report theirs, and no report is due for an epoch whose updates were all skipped)",
                             UserWarning,
-                            stacklevel=4,
                         )
                 elif record is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
                     _step_monitored_plateau(scheduler, record)
@@ -4240,6 +4269,8 @@ class NNModel(_HubMixinBase):
 
             pre_transform_net_state = _snapshot_state_dict(self.net.state_dict())
             pre_transform_rng_state = _capture_rng_state(train_loader)
+            # Lazy layers materialized during the fit: the shapes at its start are stale.
+            final_optimizer_topology = _optimizer_topology(optimizer, self.net)
 
         # #87: on_train_end callbacks (fired in _CallbackFinalizer.__exit__ as
         # the with-block closed above) may mutate self.net — QAT's convert()
@@ -4276,7 +4307,7 @@ class NNModel(_HubMixinBase):
                     train_loader=train_loader,
                     pre_transform_net_state=pre_transform_net_state,
                     pre_transform_rng_state=pre_transform_rng_state,
-                    resume_optimizer_topology=resume_optimizer_topology,
+                    resume_optimizer_topology=final_optimizer_topology,
                     resume_optimizer_factory=resume_optimizer_factory,
                     registry=registry,
                     final_rng=final_rng,

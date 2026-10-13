@@ -240,12 +240,13 @@ class SchedulerClock:
             period = self.scheduler.T_max  # the live period, a restored one included
             if self.count > period and period != self.configured_period:
                 self._period_warned = True
-                warnings.warn(
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"optimizer {self.owner!r}'s cosine schedule passed its T_max of {period} optimizer updates, "
                     "so its learning rate now rises again; set T_max to cover every update of the run (a "
                     "stateful resume keeps the checkpoint's T_max, so set it in the run that starts the schedule)",
                     UserWarning,
-                    stacklevel=2,
                 )
 
     def report_update(self, *names: Any) -> None:

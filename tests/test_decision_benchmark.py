@@ -938,3 +938,13 @@ def test_an_available_value_carries_a_note_not_an_unavailable_reason():
     noted = MetricValue("selective_coverage", 1.0, 1, note="1 eligible row(s) the policy does not fit are not counted")
     assert noted.state()["reason"] is None and noted.state()["note"].startswith("1 eligible")
     assert "note" not in MetricValue("selective_coverage", 1.0, 1).state()  # earlier reports keep their shape
+
+
+def test_an_empty_heldout_slice_reports_no_eligible_rows_for_selective_metrics():
+    """Not "the policy fits no eligible row": there are simply no rows."""
+    samples, records = fixture()
+    policy = AbstentionPolicy("max_probability", 0.75, labels=("a", "b"), model_id="stub-v1", tuning_split_id="val")
+    report = evaluate(samples, records, split="test-v1", policy=policy, model_id="stub-v1")
+    for name in ("selective_coverage", "selective_risk"):
+        assert metric(report, name, "heldout").reason == "no eligible rows"
+        assert metric(report, name, "heldout").denominator == 0

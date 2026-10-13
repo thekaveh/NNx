@@ -248,7 +248,9 @@ Args:
 
 Returns the path written. Network is put in eval mode for tracing.
 A network that declares ``onnx_export_unsupported`` (a graph
-classifier) is refused before anything is written.
+classifier) is refused before anything is written, and so is a
+mapping example: the export passes positional inputs only, so a
+keyword-input module (``KeywordInputs``) needs a positional wrapper.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
@@ -673,7 +675,8 @@ Mirrors :class:`TrainStepContext` for the per-epoch VALIDATION pass: users
 can pass ``eval_step_fn: Callable[[EvalStepContext], NNEvaluationDataPoint]``
 to ``NNModel.train()`` to replace the built-in classification ``evaluate()``
 for non-classification paradigms (next-token LM perplexity, DPO margins,
-regression MAE, ...). The step runs under ``torch.no_grad()`` and its
+regression MAE, ...). The step runs under ``torch.no_grad()`` with the
+net in eval mode (every submodule's mode is restored after it), and its
 returned EDP becomes ``val_edp`` — recorded on the epoch's last idp and
 persisted through the incremental run save like any built-in val metric.
 ```
@@ -10177,10 +10180,9 @@ Load this run's five phase checkpoints, in cadence order (FIRST, Q1, Q2, Q3, LAS
 **Details**
 
 ```text
-BEST is deliberately excluded: it duplicates whichever phase
-checkpoint won, so including it would double-count. Load it
-directly via ``NNCheckpoint.load(run=run.id,
-type=Checkpoints.BEST)``.
+BEST is not a cadence checkpoint, so it is not in this list (its
+epoch is often none of the phase epochs). Load it directly via
+``NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)``.
 ```
 
 ##### `nnx.nn.params.nn_run.NNRun.save`
@@ -13567,7 +13569,9 @@ Returns:
     ``0`` if ``layer_pattern`` matched nothing.
 
 Raises:
-    ValueError: if ``sparsity`` is outside ``[0, 1)``.
+    ValueError: if ``sparsity`` is outside ``[0, 1)``, or if
+        ``bake=False`` selects a Linear whose parent reads its weight
+        directly (``nn.MultiheadAttention``'s ``out_proj``).
 
 **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
 twice at the same ``sparsity`` is a no-op for the second call —
@@ -15325,9 +15329,9 @@ Args:
         from. Its ``net`` is set to eval mode and every parameter
         has ``requires_grad`` cleared on factory call. Must share
         ``vocab_size`` and tokenization with the policy.
-    beta: temperature on the implicit reward. Larger ``beta`` makes
-        the loss sharper (closer to a hard preference); smaller
-        ``beta`` keeps the policy closer to the reference. The
+    beta: strength of the reference-policy constraint (the scale of
+        the implicit reward). Larger ``beta`` keeps the policy closer
+        to the reference; smaller ``beta`` lets it deviate more. The
         original DPO paper uses 0.1 as the default; values in
         ``[0.01, 0.5]`` are common. Must be > 0.
     pad_token_id: the id the dataset used to right-pad chosen /
@@ -15589,8 +15593,9 @@ Args:
         insertion. ``None`` (the default) auto-selects: True for
         ``IndexFlatIP`` (cosine via IP), False for everything else.
         Pass an explicit bool to override.
-    device: target device for the encode pass. ``None`` infers
-        from the backbone.
+    device: passed to :func:`embed_texts`, which encodes where the
+        backbone lives; the embeddings are moved to the CPU for the
+        index, so this argument has no effect on the result.
 
 Returns:
     The string path written. Same value as ``str(out_path)`` —

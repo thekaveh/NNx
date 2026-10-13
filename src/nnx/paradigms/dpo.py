@@ -55,9 +55,9 @@ def dpo_train_step_factory(
             from. Its ``net`` is set to eval mode and every parameter
             has ``requires_grad`` cleared on factory call. Must share
             ``vocab_size`` and tokenization with the policy.
-        beta: temperature on the implicit reward. Larger ``beta`` makes
-            the loss sharper (closer to a hard preference); smaller
-            ``beta`` keeps the policy closer to the reference. The
+        beta: strength of the reference-policy constraint (the scale of
+            the implicit reward). Larger ``beta`` keeps the policy closer
+            to the reference; smaller ``beta`` lets it deviate more. The
             original DPO paper uses 0.1 as the default; values in
             ``[0.01, 0.5]`` are common. Must be > 0.
         pad_token_id: the id the dataset used to right-pad chosen /

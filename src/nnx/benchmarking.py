@@ -79,11 +79,13 @@ def _synchronize(device: torch.device) -> None:
 
 
 def _feed_digest(digest: Any, value: Any) -> None:
-    """Hash ``value``'s content exactly: plain tensors by their bytes,
-    quantized tensors by their integer values and quantization parameters,
+    """Hash ``value``'s content exactly: every tensor by its dtype and shape,
+    then plain tensors by their bytes, quantized tensors by their integer values and quantization parameters,
     tensor subclasses (torchao) by their dequantized values, containers
     item by item; other leaves by their text."""
     if isinstance(value, torch.Tensor):
+        # Raw bytes alone would equate a (2, 3) and a (3, 2) buffer.
+        digest.update(repr((str(value.dtype), tuple(value.shape))).encode("utf-8"))
         if value.is_sparse:  # no contiguous byte view: hash its coalesced indices and values
             coalesced = value.coalesce()
             _feed_digest(digest, coalesced.indices())
@@ -94,6 +96,7 @@ def _feed_digest(digest: Any, value: Any) -> None:
             if value.qscheme() in (torch.per_tensor_affine, torch.per_tensor_symmetric):
                 digest.update(repr((value.q_scale(), value.q_zero_point())).encode("utf-8"))
             else:
+                digest.update(repr(value.q_per_channel_axis()).encode("utf-8"))
                 _feed_digest(digest, value.q_per_channel_scales())
                 _feed_digest(digest, value.q_per_channel_zero_points())
             return

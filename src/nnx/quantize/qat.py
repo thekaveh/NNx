@@ -198,10 +198,10 @@ class QATLifecycleCallback(Callback):
         before = [type(module) for module in ctx.model.net.modules()]
         self.quantizer.prepare(ctx.model.net)
         if [type(module) for module in ctx.model.net.modules()] == before:
-            # No Linear was eligible (groupsize divides no in_features): a
-            # "QAT" run would silently train plain FP32.
+            # No Linear was swapped: a "QAT" run would silently train plain FP32.
             raise ValueError(
-                f"QAT prepared nothing: groupsize={self.groupsize} divides no nn.Linear's in_features in this net"
+                f"QAT prepared nothing: no child nn.Linear of this net was eligible (groupsize={self.groupsize} "
+                "must divide its in_features, and a net that is itself one nn.Linear has no child to swap)"
             )
         self.is_prepared = True
 

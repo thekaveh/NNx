@@ -43,7 +43,6 @@ right away, and a restore snapshots it with a deep copy.
 from __future__ import annotations
 
 import re
-import warnings
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -371,10 +370,10 @@ class ComponentRegistry:
                 except Exception as rollback_error:  # keep rolling the others back
                     failed.append(f"{name!r} ({type(rollback_error).__name__}: {rollback_error})")
             if failed:
-                warnings.warn(
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"component restore failed and could not roll back {', '.join(failed)}; their state is undefined",
-                    RuntimeWarning,
-                    stacklevel=2,
                 )
             raise
         return tuple(name for name, _, _, _ in plan.to_restore)

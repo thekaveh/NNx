@@ -401,3 +401,42 @@ def test_checkpoint_tsne_keeps_positional_and_keyword_inputs(monkeypatch):
         checkpoint, ds, n_samples=7, renderer=None, module=_MaskedClassifier(), batch_adapter=_MixedAdapter()
     )
     assert captured["rows"] == 7
+
+
+def test_a_materialized_lazy_module_resumes_statefully_from_last():
+    # LAST is written after the fit: its optimizer topology has the materialized shapes.
+    def lazy() -> nn.Module:
+        return nn.Sequential(nn.LazyLinear(8), nn.ReLU(), nn.Linear(8, 2))
+
+    module = lazy()
+    run = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY)).train(params=_params(_loader()))
+    resumed = lazy()
+    resumed(torch.randn(1, 4))  # materialize before a warm resume, as documented
+    model = NNModel(module=resumed, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
+
+
+def test_to_onnx_refuses_a_mapping_example_before_writing(tmp_path):
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    path = tmp_path / "model.onnx"
+    for example in ({"features": torch.randn(2, 4)}, (torch.randn(2, 4), {"mask": torch.ones(2)})):
+        with pytest.raises(TypeError, match="positional tensor inputs only"):
+            model.to_onnx(str(path), example)
+    assert not path.exists()
+
+
+def test_an_eval_step_fn_runs_in_eval_mode_and_the_modes_come_back():
+    from nnx import NNEvaluationDataPoint
+
+    seen = []
+
+    def evaluate(ctx):
+        seen.append(ctx.model.net.training)
+        return NNEvaluationDataPoint(loss=1.0)
+
+    module = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.5), nn.Linear(8, 2))
+    module[1].train()
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.train(params=_params(_loader(), val_loader=_loader(1)), eval_step_fn=evaluate)
+    assert seen == [False, False]

@@ -34,11 +34,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe
+from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, set_seed, train_bpe
 from nnx.interop import write_gguf
 
 
 def main() -> None:
+    set_seed(0)  # the same weights, so the same GGUF bytes, on every run
     # --- 1. Build a tiny tokenizer + model ---
     # In a real flow you'd load these off the NNRun directory produced
     # by `examples/11_tinystories_lm.py`. We construct them inline so

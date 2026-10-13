@@ -1250,3 +1250,321 @@ def test_a_refused_prefix_tuner_leaves_the_model_trainable():
     with pytest.raises(TypeError, match="no floating weight"):
         PrefixTuner(net, n_prefix=2)
     assert all(p.requires_grad for p in net.parameters() if p.is_floating_point())
+
+
+def test_embed_texts_returns_on_the_requested_device_without_moving_the_backbone():
+    import torch
+
+    from nnx.embeddings import embed_texts
+
+    class Bag(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(3, 4)
+
+        def forward(self, texts):
+            return self.lin(torch.ones(len(texts), 3))
+
+    backbone = Bag()
+    out = embed_texts(backbone, ["a", "b"], device="meta")
+    assert out.device.type == "meta" and next(backbone.parameters()).device.type == "cpu"
+
+
+def test_qat_refuses_a_groupsize_that_prepares_nothing(tmp_path, monkeypatch):
+    import torch
+
+    pytest.importorskip("torchao")
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.quantize.qat import QATLifecycleCallback
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=2, hidden_dims=[5], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    with pytest.raises(ValueError, match="prepared nothing"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=[(torch.randn(4, 3), torch.tensor([0, 1, 0, 1]))],
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            ),
+            callbacks=[QATLifecycleCallback(groupsize=32)],
+        )
+
+
+def test_tsne_refuses_a_regression_checkpoint_before_inference(tmp_path, monkeypatch):
+    import torch
+
+    pytest.importorskip("plotly")
+    from nnx import (
+        Activations,
+        Checkpoints,
+        Devices,
+        Losses,
+        Nets,
+        NNCheckpoint,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNTrainParams,
+        TaskSpec,
+    )
+    from nnx.vis_utils import VisUtils
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=1, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)
+        ),
+    )
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(torch.randn(4, 3), torch.randn(4, 1))],
+            optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        )
+    )
+
+    class NeverIterated:
+        output_dim = 1
+
+        @property
+        def test_loader(self):
+            raise AssertionError("inference ran before the refusal")
+
+    with pytest.raises(ValueError, match="colours points by class"):
+        VisUtils.two_dim_tsne_checkpoint_logits(
+            NNCheckpoint.load(run=run.id, type=Checkpoints.LAST), NeverIterated(), n_samples=4
+        )
+
+
+@pytest.mark.parametrize("paradigm", ["mixup", "cutmix", "distillation", "feature distillation", "moe"])
+def test_every_classification_paradigm_step_refuses_sequence_output(paradigm, tmp_path, monkeypatch):
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.paradigms.augmentation import cutmix_train_step_factory, mixup_train_step_factory
+    from nnx.paradigms.distillation import feature_kd_train_step_factory, kd_train_step_factory
+    from nnx.paradigms.moe import moe_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+
+    class Seq(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([torch.nn.Linear(12, 5)])
+
+        def forward(self, x):
+            return self.layers[0](x.reshape(x.shape[0], -1)).unsqueeze(1).expand(-1, 3, -1)  # (B, T, V)
+
+    def build():
+        return NNModel(module=Seq(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+
+    step = {
+        "mixup": lambda: mixup_train_step_factory(),
+        "cutmix": lambda: cutmix_train_step_factory(),
+        "distillation": lambda: kd_train_step_factory(build(), alpha=0.5),
+        "feature distillation": lambda: feature_kd_train_step_factory(
+            build(), auxiliary_layers={"layers.0": "layers.0"}, alpha=0.5, beta=0.5
+        ),
+        "moe": lambda: moe_train_step_factory(),
+    }[paradigm]()
+    X = torch.randn(4, 3, 2, 2) if paradigm == "cutmix" else torch.randn(4, 12)
+    with pytest.raises(ValueError, match=r"scores \(rows, classes\) logits"):
+        build().train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=[(X, torch.tensor([0, 1, 0, 1]))],
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            ),
+            train_step_fn=step,
+        )
+
+
+def test_a_prefix_tuner_places_prefixes_on_a_factorized_projection():
+    import torch
+
+    from nnx import NNTransformerParams, PrefixTuner
+    from nnx.nn.net.transformer_nn import TransformerNN
+    from nnx.surgery import low_rank_factorize
+
+    net = TransformerNN(
+        NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+        )
+    )
+    net.blocks[0].attn.w_qkv = low_rank_factorize(net.blocks[0].attn.w_qkv, rank=4)
+    tuner = PrefixTuner(net, n_prefix=2)
+    assert tuner.prefix_keys[0].dtype == torch.float32
+    tuner(torch.randint(0, 16, (1, 4)))
+
+
+def test_sparse_digests_tell_values_apart():
+    import torch
+
+    from nnx.benchmarking import _weights_digest
+
+    def net(scale):
+        module = torch.nn.Linear(3, 3)
+        torch.nn.init.zeros_(module.weight)
+        torch.nn.init.zeros_(module.bias)
+        module.register_buffer("mask", (torch.eye(3) * scale).to_sparse())
+        return module
+
+    assert _weights_digest(net(1.0)) == _weights_digest(net(1.0))
+    assert _weights_digest(net(1.0)) != _weights_digest(net(2.0))
+
+
+def _tiny_classifier(output_dim=2):
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+
+    return NNModel(
+        net_params=NNParams(
+            input_dim=3, output_dim=output_dim, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def _one_epoch(**extra):
+    import torch
+
+    from nnx import NNOptimParams, NNTrainParams
+
+    return NNTrainParams(
+        n_epochs=1,
+        train_loader=[(torch.randn(4, 3), torch.tensor([0, 1, 0, 1]))],
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        **extra,
+    )
+
+
+def test_kd_objective_refuses_sequence_output_even_when_time_equals_vocab(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import Losses, NNModel, NNModelParams, NNOptimParams, NNTrainParams, kd_objective
+
+    monkeypatch.chdir(tmp_path)
+
+    class Seq(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(3, 8)
+
+        def forward(self, x):
+            return self.lin(x).unsqueeze(1).expand(-1, 8, -1)  # (B, T=8, V=8)
+
+    def build():
+        return NNModel(module=Seq(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+
+    with pytest.raises(ValueError, match=r"kd_objective step scores \(rows, classes\) logits"):
+        build().train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=[(torch.randn(4, 3), torch.tensor([0, 1, 0, 1]))],
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            ),
+            objective=kd_objective(build(), alpha=0.5),
+        )
+
+
+def test_training_refuses_a_pruning_reparameterization_its_checkpoints_cannot_rebuild(tmp_path, monkeypatch):
+    from nnx.prune import magnitude_prune
+
+    monkeypatch.chdir(tmp_path)
+    model = _tiny_classifier()
+    magnitude_prune(model.net, 0.5, bake=False)
+    with pytest.raises(ValueError, match="pruning reparameterization"):
+        model.train(params=_one_epoch())
+    assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())
+
+
+def test_unbaked_pruning_refuses_a_linear_its_parent_reads_directly():
+    import torch
+
+    from nnx.prune import magnitude_prune
+
+    net = torch.nn.Sequential(torch.nn.MultiheadAttention(8, 2), torch.nn.Linear(8, 2))
+    before = {k: v.clone() for k, v in net.state_dict().items()}
+    with pytest.raises(ValueError, match=r"0\.out_proj are read by their parent"):
+        magnitude_prune(net, 0.5, bake=False)
+    assert net.state_dict().keys() == before.keys()
+    assert magnitude_prune(net, 0.5, bake=False, layer_pattern="1") == 1
+
+
+def test_qat_names_the_root_linear_case_when_nothing_was_prepared(tmp_path, monkeypatch):
+    import torch
+
+    pytest.importorskip("torchao")
+    from nnx import Losses, NNModel, NNModelParams
+    from nnx.quantize.qat import QATLifecycleCallback
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(module=torch.nn.Linear(64, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    import nnx
+
+    params = nnx.NNTrainParams(
+        n_epochs=1,
+        train_loader=[(torch.randn(4, 64), torch.tensor([0, 1, 0, 1]))],
+        optim=nnx.NNOptimParams.builder().sgd(max_lr=0.1).build(),
+    )
+    with pytest.raises(ValueError, match="itself one nn.Linear"):
+        model.train(params=params, callbacks=[QATLifecycleCallback(groupsize=32)])
+
+
+def test_a_tiny_temperature_on_negative_logits_still_picks_the_argmax():
+    import torch
+
+    from nnx.generation.logits_processors import TemperatureScaling
+    from nnx.generation.sampling import sample_next_token
+
+    scaled = TemperatureScaling(1e-38)(torch.tensor([[-6.0, -5.0, -7.0]]), [])
+    assert int(sample_next_token(scaled, generator=torch.Generator().manual_seed(0))) == 1
+
+
+@pytest.mark.parametrize("feature", [False, True], ids=["kd", "feature_kd"])
+def test_pure_distillation_ignores_a_fully_masked_label_batch(feature, tmp_path, monkeypatch):
+    import torch
+
+    from nnx import NNOptimParams, NNTrainParams
+    from nnx.paradigms.distillation import feature_kd_train_step_factory, kd_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    teacher = _tiny_classifier()
+    step = (
+        feature_kd_train_step_factory(teacher, auxiliary_layers={"layers.0": "layers.0"}, alpha=1.0, beta=0.5)
+        if feature
+        else kd_train_step_factory(teacher, alpha=1.0)
+    )
+    run = _tiny_classifier().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(torch.randn(4, 3), torch.full((4,), -100))],
+            optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        ),
+        train_step_fn=step,
+    )
+    assert run is not None
+
+
+def test_weight_digests_tell_shapes_apart():
+    import torch
+
+    from nnx.benchmarking import _weights_digest
+
+    def net(shape):
+        module = torch.nn.Module()
+        module.register_buffer("table", torch.arange(6).reshape(shape))
+        return module
+
+    assert _weights_digest(net((2, 3))) != _weights_digest(net((3, 2)))

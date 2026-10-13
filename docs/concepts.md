@@ -320,7 +320,7 @@ Subclass `BatchAdapter` for other layouts. Implement `split(batch) -> (args, kwa
 
 **What renders.** A registered or runtime run has no built-in `NNParams`. `run.yaml` omits `net`, and `model.net` holds the descriptor mapping (`kind: registered | runtime`). `str(run)` and the notebook table show the descriptor instead of dims, dropout and activation. The descriptor fields are `kind`, `factory` (`id@vN`), `config` and `seed`, or `module` and `reconstructible=False`. `NNRun.load` restores the same descriptor.
 
-Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module from its `example_input`. Task adapters (§6.3) check the loss up front and the output width on the first batch. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
+Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module whose forward takes positional tensors, from its `example_input`. It refuses a mapping example (a keyword-input module): wrap such a module in one with a positional forward. Task adapters (§6.3) check the loss up front and the output width on the first batch. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
 
 ## 4. What lands on disk
 
@@ -654,7 +654,8 @@ clock is attached. `nnx.search` uses it for its update caps and deadlines
 ### 6.2. Custom evaluation
 
 `NNModel.train(..., eval_step_fn=...)` accepts the validation-side equivalent of
-`train_step_fn`. NNx calls it once per epoch under `torch.no_grad()`. The hook
+`train_step_fn`. NNx calls it once per epoch under `torch.no_grad()`, with the
+net in eval mode. Every submodule's training mode is restored after the call. The hook
 receives an `EvalStepContext` containing the model, complete `val_loader`,
 `extra_metrics`, and `epoch_idx`. It owns iteration and aggregation across the
 loader and returns one `NNEvaluationDataPoint` for the epoch. NNx persists that
@@ -2057,7 +2058,9 @@ batch ──split()──► inputs, targets, loss_mask ──valid()──► o
 
 The objective's denominator, the NLL and the token accuracy share the valid
 positions. Accumulation therefore normalizes by valid tokens, an all-masked
-window steps nothing, and epoch NLL is independent of batching and padding.
+window steps nothing, and epoch NLL is independent of batching and right
+padding. The model never receives the attention mask, so a batch with padding
+before a real token (left padding) is refused.
 
 Reported NLL and perplexity are unsmoothed. An all-masked validation epoch is
 unavailable rather than zero, and no classification field is fabricated. The

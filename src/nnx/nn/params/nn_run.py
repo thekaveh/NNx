@@ -955,10 +955,9 @@ class NNRun:
         never written — e.g. runs trained with
         ``save_phase_checkpoints=False`` write only LAST and BEST.
 
-        BEST is deliberately excluded: it duplicates whichever phase
-        checkpoint won, so including it would double-count. Load it
-        directly via ``NNCheckpoint.load(run=run.id,
-        type=Checkpoints.BEST)``.
+        BEST is not a cadence checkpoint, so it is not in this list (its
+        epoch is often none of the phase epochs). Load it directly via
+        ``NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)``.
         """
         return [
             NNCheckpoint.load(run=self.id, type=Checkpoints.FIRST, root=root),

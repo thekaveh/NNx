@@ -130,8 +130,10 @@ def kd_train_step_factory(
         # Hinton direction (see softened_kl for the F.kl_div contract).
         # alpha=0 is plain supervised training: no soft term (a binary head has none).
         soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
-        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
+        # alpha=1 is pure distillation: no hard term (an all-ignored batch would make it NaN).
+        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y) if alpha < 1 else 0.0
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
+        assert isinstance(loss, torch.Tensor)  # 0 <= alpha <= 1: at least one term is a tensor
         _check_scorable_target(
             m.loss_fn, Y, paradigm="distillation"
         )  # before the update: a refused batch changes nothing
@@ -295,7 +297,8 @@ def feature_kd_train_step_factory(
 
         # alpha=0 is plain supervised training: no soft term (a binary head has none).
         soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
-        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
+        # alpha=1 is pure distillation: no hard term (an all-ignored batch would make it NaN).
+        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y) if alpha < 1 else 0.0
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
         _check_scorable_target(m.loss_fn, Y, paradigm="feature distillation")
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")

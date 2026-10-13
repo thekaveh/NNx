@@ -35,7 +35,6 @@ multi-optimizer run where it stopped.
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional
@@ -202,12 +201,12 @@ def _warn_full_precision_objective(model: Any) -> None:
     otherwise. Say so when the flag asks for mixed precision where it would
     apply."""
     if getattr(model.params, "mixed_precision", False) and model.device.type == "cuda":
-        warnings.warn(
+        from ..nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             "Trainer.train(objective=...) runs in full precision: Trainer never applies the legacy "
             "mixed_precision=True (NNModel.train(objective=...) does); set "
             "NNModelParams.precision=PrecisionPolicy('fp16') to train the objective in fp16",
-            RuntimeWarning,
-            stacklevel=4,  # Trainer.train -> _trainer_precision -> here
         )
 
 
@@ -857,13 +856,14 @@ class Trainer:
                     if clock.attached and clock.count == updates_before_epoch[name]
                 ]
                 if silent and engine is None:
-                    warnings.warn(
+                    from ..nn.callbacks import _warn_at_user_frame
+
+                    _warn_at_user_frame(
                         f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
                         "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
                         "after each optimizer.step() the step function takes (no report is due for an epoch whose "
                         "updates were all skipped)",
                         UserWarning,
-                        stacklevel=4,
                     )
                 primary_clock = clocks.get(primary)
                 ctx.update_lrs = list(primary_clock.trace) if primary_clock is not None else []
@@ -1045,7 +1045,6 @@ class Trainer:
                 train_loader,
                 params.resume_mode,
                 fresh="optimizer, scheduler, RNG and component state",
-                stacklevel=4,
             )
 
             def rollback_weights() -> None:
@@ -1126,11 +1125,11 @@ class Trainer:
             _restore_rng_state(previous_rng_state, train_loader)
             raise
         if warn_worker_rng:
-            warnings.warn(
+            from ..nn.callbacks import _warn_at_user_frame
+
+            _warn_at_user_frame(
                 "exact warm-resume continuity requires train_loader.num_workers=0; "
                 "worker-local RNG state cannot be reconstructed",
-                RuntimeWarning,
-                stacklevel=4,
             )
 
         def rollback() -> None:

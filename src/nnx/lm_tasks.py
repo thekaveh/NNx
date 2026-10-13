@@ -32,7 +32,8 @@ checked before any forward pass.
   configuration is refused before the first resumed update.
 - :meth:`CausalLMTask.eval_step` — an ``eval_step_fn``: the epoch's
   **unsmoothed** NLL is the total valid-token negative log likelihood over
-  the valid-token count (independent of batching and padding), perplexity is
+  the valid-token count (independent of batching and right padding; the
+  model never receives the attention mask, so left padding is refused), perplexity is
   ``exp(NLL)`` (``+inf`` when it overflows, never a clipped finite value) and
   token accuracy is the top-1 rate. They are the record's ``loss`` and its
   ``metrics`` ``nll`` / ``perplexity`` / ``token_accuracy``; an epoch whose
@@ -253,7 +254,9 @@ class CausalLMTask:
         self, attention_mask: Any, targets: torch.Tensor, loss_mask: Optional[torch.Tensor], *, shift: bool
     ) -> None:
         """An attention mask is never a loss mask, but a position it zeroes
-        that would still be scored is refused (padding scored as tokens)."""
+        that would still be scored is refused (padding scored as tokens).
+        The model never receives the mask, so padding before a real token
+        (left padding) is refused too: real tokens would attend to it."""
         if attention_mask is None:
             return
         if not isinstance(attention_mask, torch.Tensor):
@@ -261,6 +264,11 @@ class CausalLMTask:
         if attention_mask.ndim != 2:  # checked before the shift slices a second axis
             raise LMTaskError(f"attention_mask {tuple(attention_mask.shape)} does not fit the batch's tokens")
         padded = attention_mask == 0
+        if bool((padded[:, :-1] & ~padded[:, 1:]).any()):
+            raise LMTaskError(
+                "attention_mask has padding before a real token (left or interior padding); the model never "
+                "receives the mask, so real tokens would attend to the padding: right-pad the batch"
+            )
         if shift:
             padded = padded[:, 1:]
         if padded.shape != targets.shape:

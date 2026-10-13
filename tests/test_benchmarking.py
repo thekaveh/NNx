@@ -181,7 +181,8 @@ def test_a_bfloat16_module_benchmarks_and_digests_its_weights():
     expected = benchmarking.hashlib.sha256()
     for name, tensor in sorted(fp32.state_dict().items()):
         expected.update(name.encode("utf-8"))
+        expected.update(repr((str(tensor.dtype), tuple(tensor.shape))).encode("utf-8"))
         expected.update(tensor.detach().numpy().tobytes())
-    assert benchmarking._weights_digest(fp32) == expected.hexdigest()  # fp32 digests are unchanged
+    assert benchmarking._weights_digest(fp32) == expected.hexdigest()  # fp32 bytes hash as NumPy's
     report = benchmark_forward(net, torch.randn(3, 4, dtype=torch.bfloat16), warmup=1, repeats=2)
     assert isinstance(report, BenchmarkReport)

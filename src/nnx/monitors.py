@@ -46,7 +46,6 @@ from __future__ import annotations
 import json
 import math
 import numbers
-import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
@@ -619,11 +618,11 @@ class MonitorTracker:
                 # so a monitor that is never fed would silently never
                 # select BEST.
                 self._warn_missing = False
-                warnings.warn(
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"epoch {epoch}: monitor {spec.key!r} has no value, so this epoch makes no BEST / plateau "
                     "decision; a custom step or evaluator must report the metric in its record's metrics",
-                    RuntimeWarning,
-                    stacklevel=3,
                 )
             return MonitorRecord(spec, None, "missing", False)
         current = float(value)

@@ -347,13 +347,14 @@ class KDObjective(Objective):
         _freeze_teacher(teacher)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
-        from ._step_helpers import predicted_labels, softened_kl
+        from ._step_helpers import predicted_labels, require_row_logits, softened_kl
         from .nn.nn_model import _classification_edp_for_loss, _single_input_batch
 
         model = ctx.model
         model.net.train()
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
         student = ctx.full_precision(model._net_forward((X,), {}))
+        require_row_logits(student, "kd_objective")
         with torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
             teacher_logits = ctx.full_precision(
                 teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)

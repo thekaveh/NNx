@@ -346,7 +346,9 @@ offline.
       elected BEST in place of a training loss.
     - `task.eval_step()` reports the epoch's **unsmoothed** NLL as the
       record's `loss` and `metrics["nll"]`. This NLL is the total valid-token
-      NLL over the valid-token count, independent of batching and padding.
+      NLL over the valid-token count, independent of batching and right
+      padding. The model never receives the attention mask, so a batch with
+      padding before a real token (left padding) is refused.
       It also reports
       `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
       clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
