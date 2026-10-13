@@ -1928,24 +1928,27 @@ def test_the_reconstructibility_guard_applies_to_an_explicit_default_step(tmp_pa
         model.train(params=_one_epoch(), train_step_fn=default_train_step)
 
 
-@pytest.mark.parametrize("kind", ["weight_norm", "spectral_norm"])
+@pytest.mark.parametrize("kind", ["weight_norm", "spectral_norm", "legacy_weight_norm", "legacy_spectral_norm"])
 def test_surgery_refuses_a_parametrized_module_it_would_strip(kind):
     import torch
 
     from nnx.surgery import expand_embedding, low_rank_factorize, widen
 
     def parametrized(module):
+        if kind.startswith("legacy_"):
+            return getattr(torch.nn.utils, kind.removeprefix("legacy_"))(module)
         return getattr(torch.nn.utils.parametrizations, kind)(module)
 
-    with pytest.raises(ValueError, match="parametrization"):
+    refused = "parametrization|weight_norm|hooked"  # widen refuses the legacy hooks as hooks
+    with pytest.raises(ValueError, match=refused):
         low_rank_factorize(parametrized(torch.nn.Linear(4, 4)), rank=2)
     net = torch.nn.Sequential(parametrized(torch.nn.Linear(2, 4)), torch.nn.ReLU(), torch.nn.Linear(4, 2))
-    with pytest.raises(ValueError, match="parametrization"):
+    with pytest.raises(ValueError, match=refused):
         widen(net, layer_name="0", new_width=8)
     consumer = torch.nn.Sequential(torch.nn.Linear(2, 4), torch.nn.ReLU(), parametrized(torch.nn.Linear(4, 2)))
-    with pytest.raises(ValueError, match="parametrization"):
+    with pytest.raises(ValueError, match=refused):
         widen(consumer, layer_name="0", new_width=8)
-    with pytest.raises(ValueError, match="parametrization"):
+    with pytest.raises(ValueError, match=refused):
         expand_embedding(parametrized(torch.nn.Embedding(4, 2)), new_num_embeddings=8)
 
 
@@ -1990,3 +1993,35 @@ def test_activation_map_reads_the_first_tensor_of_a_mapping_and_refuses_one_with
     assert [list(row) for row in fig.data[0].z] == (x * 2).tolist()
     with pytest.raises(ValueError, match="without a tensor"):
         activation_map(Net(lambda v: {"meta": 1}), x, "keyed")
+
+
+def test_widen_names_a_parametrized_target_before_its_width_and_spares_other_modules():
+    import torch
+
+    from nnx.surgery import widen
+
+    target = torch.nn.utils.parametrizations.weight_norm(torch.nn.Linear(2, 4))
+    with pytest.raises(ValueError, match="widen target '0'.*parametrization"):
+        widen(torch.nn.Sequential(target, torch.nn.ReLU(), torch.nn.Linear(4, 2)), layer_name="0", new_width=2)
+    # A parametrized module off the target→consumer path is kept as it is.
+    elsewhere = torch.nn.Sequential(
+        torch.nn.Linear(2, 4),
+        torch.nn.ReLU(),
+        torch.nn.Linear(4, 3),
+        torch.nn.utils.parametrizations.weight_norm(torch.nn.Linear(3, 2)),
+    )
+    wider = widen(elsewhere, layer_name="0", new_width=8)
+    assert wider[0].out_features == 8 and hasattr(wider[3], "parametrizations")
+
+
+def test_a_custom_step_may_train_an_unbaked_pruned_registered_net(tmp_path, monkeypatch):
+    # The reconstructibility guard covers the steps NNx owns; a custom step keeps the exemption.
+    from nnx.nn.nn_model import default_train_step
+    from nnx.prune import magnitude_prune
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = _tiny_classifier()
+    magnitude_prune(model.net, 0.5, bake=False)
+    run = model.train(params=_one_epoch(), train_step_fn=lambda ctx: default_train_step(ctx))
+    assert run.idps

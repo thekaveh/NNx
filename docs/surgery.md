@@ -65,8 +65,8 @@ refined = NNModel(
 )
 refined.net.load_state_dict(new_net.state_dict())
 
-# 4. Refine. Even a single epoch is enough to "absorb" the surgery —
-#    function-preservation means the starting point is still good.
+# 4. Refine. A few epochs absorb the surgery — function-preservation
+#    means the starting point is still good.
 train_loader = DataLoader(TensorDataset(torch.randn(256, 8), torch.randint(0, 3, (256,))), batch_size=32, shuffle=True)
 refined.train(params=NNTrainParams(
     n_epochs=3,
@@ -179,7 +179,7 @@ Surgery preserves trainability and modes. Two primitives rebuild an *existing* L
 
 Each replacement module also takes the train/eval mode of the module it replaces, so a mixed root/child configuration survives unchanged.
 
-`widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm` parametrization, which a rebuilt plain module would drop silently. Remove it first with `torch.nn.utils.parametrize.remove_parametrizations`.
+`widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm`, which a rebuilt plain module would drop silently. Remove it first: `torch.nn.utils.parametrize.remove_parametrizations` for the parametrization form, `remove_weight_norm` / `remove_spectral_norm` for the legacy hooks.
 
 Build the optimizer *after* surgery. A frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`. If you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules: trainable, and in the mode of the container they join. Existing layers keep their own modes. `expand_embedding` gives the new table the source table's `requires_grad` flag and mode.
 

@@ -798,3 +798,20 @@ def test_ranking_validation_scores_an_mps_model():
     )
     record = task.eval_step()(_Ctx(model, _loader(_data(3, seed=1), batch_size=5)))
     assert record.metrics
+
+
+def test_ranking_validation_widens_scores_off_the_device(monkeypatch):
+    # Device-agnostic pin of the MPS fix: a score tensor that refuses .double() off the CPU.
+    task = RankingTask(k=(1,), max_relevance=2)
+
+    class _DeviceScores(torch.Tensor):
+        def double(self, *args, **kwargs):
+            raise TypeError("cannot widen on this device")
+
+        def cpu(self, *args, **kwargs):
+            return torch.Tensor(self).as_subclass(torch.Tensor)
+
+    real = RankingTask.scores
+    monkeypatch.setattr(RankingTask, "scores", lambda self, *a, **k: real(self, *a, **k).as_subclass(_DeviceScores))
+    record = task.eval_step()(_Ctx(_scorer(), _loader(_data(3, seed=1), batch_size=5)))
+    assert record.metrics

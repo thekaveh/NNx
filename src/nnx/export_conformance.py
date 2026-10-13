@@ -1253,8 +1253,13 @@ def validate_record(record: Any) -> None:
         problems.append("tolerances must hold rtol and atol")
     elif not all(_finite(v) and v >= 0 for v in tolerances.values()):
         problems.append(f"tolerances must be finite and non-negative, got {dict(tolerances)}")
+    weights_sha = record["config"].get("weights_sha256") if isinstance(record["config"], Mapping) else None
     if not isinstance(record["config"], Mapping) or "weights_sha256" not in record["config"]:
         problems.append("config must carry weights_sha256")
+    elif not (
+        isinstance(weights_sha, str) and len(weights_sha) == 64 and all(c in "0123456789abcdef" for c in weights_sha)
+    ):
+        problems.append("config's weights_sha256 is malformed")
     for key in ("source", "exporter", "opset", "versions", "runtime"):
         if not isinstance(record[key], Mapping):
             problems.append(f"{key} must be a mapping")

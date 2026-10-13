@@ -61,3 +61,16 @@ def test_the_diffusion_schedule_fingerprint_is_device_independent():
 
     schedule = NoiseSchedulers.LINEAR(10)
     assert _schedule_fingerprint(schedule.to("mps")) == _schedule_fingerprint(schedule)
+
+
+def test_a_summary_by_input_size_leaves_an_mps_model_on_its_device():
+    pytest.importorskip("torchinfo")
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams
+    from nnx.viz import summary
+
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.MPS, loss=Losses.CROSS_ENTROPY),
+    )
+    summary(model, input_size=(2, 4))
+    assert all(p.device.type == "mps" for p in model.net.parameters())

@@ -158,6 +158,8 @@ def _valid_record(tmp_path):
         (lambda r: r.update(level="structural"), "level 'structural' contradicts"),
         (lambda r: r.update(status="failed"), "status 'failed' contradicts"),
         (lambda r: r["artifacts"]["files"][0].update(sha256="xyz"), "malformed sha256"),
+        (lambda r: r["config"].update(weights_sha256="x"), "weights_sha256 is malformed"),
+        (lambda r: r["config"].update(weights_sha256=None), "weights_sha256 is malformed"),
         (lambda r: r["tolerances"].update(rtol=float("nan")), "finite"),
         (
             lambda r: (

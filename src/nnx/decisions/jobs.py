@@ -309,8 +309,9 @@ class QuestionOutcome:
     ``kind`` is ``"answered"`` (the provider answered; rows may still
     abstain), ``"failed"`` (its provider call raised — ``error``),
     ``"skipped"`` (never sent: a failure, a limit or the timeout stopped
-    scheduling) or ``"cancelled"`` (the run was cancelled, or a sibling call
-    failed first; ``sent`` says whether the request had already gone out —
+    scheduling) or ``"cancelled"`` (the run was cancelled, a sibling call
+    failed first, or the timeout elapsed while its call was in flight in
+    ``arun``; ``sent`` says whether the request had already gone out —
     a sent request is not rolled back).
     """
 

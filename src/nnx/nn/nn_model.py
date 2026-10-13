@@ -3235,9 +3235,9 @@ class NNModel(_HubMixinBase):
         ``from_state`` constructors, then load ``model.safetensors`` into
         the freshly-built ``self.net``.
 
-        ``map_location`` is forwarded as the safetensors ``device=`` (the
-        net is then moved to ``self.device`` by ``NNModel.__init__``
-        regardless). ``strict`` is forwarded to ``load_state_dict``; it
+        ``map_location`` (default CPU) is forwarded as the safetensors
+        ``device=`` and becomes the model's ``NNModelParams.device``, so a
+        model saved on a GPU or MPS reloads on the CPU unless asked. ``strict`` is forwarded to ``load_state_dict``; it
         defaults to True because the net is instantiated from the same
         config the weights were saved with, so any key mismatch indicates
         a corrupted or hand-edited artifact. Unrecognized ``model_kwargs``

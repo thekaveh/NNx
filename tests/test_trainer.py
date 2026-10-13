@@ -1773,3 +1773,34 @@ def test_nnmodel_rolls_a_resume_back_when_the_first_set_epoch_raises(tmp_path, m
     with pytest.raises(RuntimeError, match="set_epoch failed"):
         target.train(params=params(Breaking(data, batch_size=4), resume_from_run_id=first.id, resume_mode="stateful"))
     assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())
+
+
+def test_a_trainer_run_converted_at_train_end_resumes_statefully(tmp_path, monkeypatch):
+    # The final LAST records the optimizer topology before the conversion renames the parameters.
+    from nnx import Callback
+    from nnx.nn.params.nn_checkpoint import NNCheckpointTransform
+
+    class Convert(Callback):
+        def checkpoint_transforms(self):
+            return (NNCheckpointTransform(name="custom-convert"),)
+
+        def on_train_end(self, ctx) -> None:
+            first = ctx.model.net.layers[0]
+            ctx.model.net.layers[0] = torch.nn.Linear(first.in_features, first.out_features)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def params(**extra):
+        return NNTrainerParams(
+            n_epochs=1,
+            train_loader=_supervised_loader(8),
+            optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)},
+            **extra,
+        )
+
+    first = Trainer(_supervised_model()).train(params=params(), trainer_step_fn=_supervised_step, callbacks=[Convert()])
+    resumed = Trainer(_supervised_model()).train(
+        params=params(resume_from_run_id=first.id, resume_mode="stateful"), trainer_step_fn=_supervised_step
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"

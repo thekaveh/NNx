@@ -126,8 +126,9 @@ def _run_summary(
     # incidental draw whose values never affect the statistics, but
     # which silently shifts any seeded pipeline probing a summary
     # mid-run (the concepts.md idiom). Snapshot/restore RNG around it.
-    # Device mirrors torchinfo's own inference: the model's parameter
-    # device, else CUDA when available.
+    # The dummy is built on the model's own device, passed explicitly:
+    # torchinfo's own inference keeps only a CUDA parameter's device and
+    # would otherwise move an MPS (or, on a CUDA host, a CPU) model.
     param = next(model.parameters(), None)
     if param is not None:
         dev = param.device
@@ -149,6 +150,7 @@ def _run_summary(
             depth=depth,
             col_names=col_names,
             verbose=0,
+            device=dev,
         )
     finally:
         torch.set_rng_state(cpu_rng_state)

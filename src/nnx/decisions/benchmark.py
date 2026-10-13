@@ -1318,7 +1318,7 @@ def bootstrap_interval(
     high = float(np.quantile(drawn_values, 1.0 - tail, method="higher"))
     reason = None
     if not (math.isfinite(low) and math.isfinite(high)):
-        reason = "a resample gave a non-finite value"
+        reason = "an interval bound is non-finite"
     elif drawn_values.min() == drawn_values.max():
         reason = "every resample gave the same value"
     elif low == high:

@@ -105,12 +105,22 @@ def copy_param_roles(src: nn.Module, dst: nn.Module) -> None:
 
 
 def refuse_parametrized(module: nn.Module, what: str) -> None:
-    """A ``torch.nn.utils.parametrize`` parametrization (``weight_norm``,
-    ``spectral_norm``) would be dropped silently, its frozen flags with it."""
+    """A ``weight_norm`` / ``spectral_norm`` (the ``torch.nn.utils.parametrize``
+    forms or the legacy hooks) would be dropped silently by a rebuilt plain
+    module, its frozen flags with it."""
     from torch.nn.utils import parametrize
 
     if parametrize.is_parametrized(module):
         raise ValueError(
-            f"{what} carries a parametrization ({sorted(cast(Any, module).parametrizations)}); a surgery primitive would "
-            "drop it silently. Remove it first (torch.nn.utils.parametrize.remove_parametrizations)"
+            f"{what} carries a parametrization ({sorted(cast(Any, module).parametrizations)}); a surgery primitive "
+            "would drop it silently. Remove it first (torch.nn.utils.parametrize.remove_parametrizations)"
+        )
+    own = {name for name, _ in module.named_parameters(recurse=False)}
+    legacy = sorted(name[: -len("_g")] for name in own if (name.endswith("_g") and f"{name[:-2]}_v" in own)) + sorted(
+        name[: -len("_orig")] for name in own if name.endswith("_orig") and hasattr(module, f"{name[:-5]}_u")
+    )
+    if legacy:
+        raise ValueError(
+            f"{what} carries a legacy weight_norm / spectral_norm on {legacy}; a surgery primitive would drop it "
+            "silently. Remove it first (torch.nn.utils.remove_weight_norm / remove_spectral_norm)"
         )

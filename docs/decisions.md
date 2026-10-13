@@ -447,7 +447,9 @@ result.calls                                           # provider calls made
     - `"failed"` (with `error`);
     - `"skipped"` (never sent: a failure, a limit or the timeout stopped
       scheduling);
-    - `"cancelled"` (with `sent`).
+    - `"cancelled"` (with `sent`): the run was cancelled, a sibling call
+      failed first, or the timeout elapsed while the call was in flight
+      (`arun`).
 - **The provider is borrowed.** `run` and `arun` never close it, and it
   stays usable after a failure or a cancellation.
 - **Serialisation.** A job of `ask` and `collect` only pickles as plain data

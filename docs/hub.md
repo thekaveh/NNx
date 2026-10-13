@@ -160,8 +160,10 @@ model = NNModel.from_pretrained("./my-model")
 recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
 low-rank factors are allocated in their recorded shape (no SVD). It then
 loads the safetensors weights into the freshly-built `self.net`. An unknown
-operation or version is refused before any tensor is loaded. Bit-exact
-round-trip on tensors; `state()` form identical on the params.
+operation or version is refused before any tensor is loaded. Tensors
+round-trip bit-exactly. The params' `state()` round-trips too, except
+`NNModelParams.device`, which is `map_location` (default `"cpu"`), so a model
+saved on a GPU or MPS reloads on the CPU unless you pass `map_location`.
 
 A model can be saved with extra top-level submodules attached to its net,
 such as a JEPA predictor registered as `model.net._jepa_predictor`. It

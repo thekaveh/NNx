@@ -76,7 +76,9 @@ KNOWN_DEPENDENCIES = (
     "tokenizers",
     "huggingface_hub",
 )
-RUN_TIMEOUT_SECONDS = 1800
+# Below the smallest CI job budget (ci.yml feature-composition: 20 min), so a
+# hung scenario fails with this script's diagnostic, not a killed job.
+RUN_TIMEOUT_SECONDS = 900
 
 
 # --- the registry -------------------------------------------------------------------------------
@@ -298,24 +300,29 @@ def run(registry: Mapping[str, Any], *, root: Path = ROOT) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as scratch:
         phases_path = os.path.join(scratch, "phases.json")
         env = {**os.environ, "NNX_COMPOSITION_PHASES": phases_path, "NNX_TQDM_DISABLE": "1"}
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-q",
-                "-p",
-                "no:cacheprovider",
-                "-o",
-                "addopts=",
-                "-p",
-                "scripts.composition_plugin",
-                *nodes,
-            ],
-            cwd=root,
-            env=env,
-            timeout=RUN_TIMEOUT_SECONDS,
-        )
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "-p",
+                    "no:cacheprovider",
+                    "-o",
+                    "addopts=",
+                    "-p",
+                    "scripts.composition_plugin",
+                    *nodes,
+                ],
+                cwd=root,
+                env=env,
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"the scenario tests did not finish within {RUN_TIMEOUT_SECONDS} s: a scenario hangs"
+            ) from error
         if not os.path.exists(phases_path):
             raise RuntimeError("pytest exited before its session finished: no phase record was written")
         with open(phases_path, encoding="utf-8") as handle:

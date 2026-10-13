@@ -723,6 +723,7 @@ class Trainer:
             ctx.run = run
             pre_transform_net_state: Optional[dict[str, Any]] = None
             pre_transform_rng_state: Optional[dict[str, Any]] = None
+            pre_transform_topologies: Optional[dict[str, Any]] = None
             unowned_warned: set[str] = set()
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
@@ -923,6 +924,11 @@ class Trainer:
             # convert modules as the finalizer exits), like NNModel.train.
             pre_transform_net_state = _snapshot_state_dict(self.model.net.state_dict())
             pre_transform_rng_state = _capture_rng_state(train_loader)
+            # The parameter names a resumed optimizer must match: before any
+            # train-end conversion renames them (NNModel.train does the same).
+            pre_transform_topologies = {
+                name: _optimizer_topology(opt, self.model.net) for name, opt in optimizers.items()
+            }
 
         # on_train_end callbacks run as the finalizer exits above and may
         # mutate the net (for example, by converting modules). Refresh LAST
@@ -943,7 +949,10 @@ class Trainer:
                 # FEAT-005: the final post-callback LAST generation keeps every
                 # named optimizer / scheduler and component, so a completed run
                 # resumes the continuous states.
-                **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
+                **{
+                    **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
+                    **({} if pre_transform_topologies is None else {"optimizer_topologies": pre_transform_topologies}),
+                },
                 rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
                 completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,

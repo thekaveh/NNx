@@ -497,7 +497,7 @@ def test_intervals_flag_non_finite_bounds_and_select_one_provider():
     zero = list(records)
     zero[1] = Record("s1", AB.digest(), "stub", "answered", distribution=(("a", 1.0), ("b", 0.0)))
     interval = bootstrap_interval(samples, zero, metric="nll", seed=0, resamples=200)
-    assert interval.degenerate and interval.reason == "a resample gave a non-finite value" and interval.high == math.inf
+    assert interval.degenerate and interval.reason == "an interval bound is non-finite" and interval.high == math.inf
     other = [Record(r.sample_id, r.question_digest, "other", r.status, distribution=r.distribution) for r in records]
     with pytest.raises(BenchmarkError, match="several providers"):
         bootstrap_interval(samples, records + other, metric="accuracy", seed=0)

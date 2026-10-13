@@ -152,7 +152,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `predict` / `predict_proba` take a full-graph loader list (`NNGraphDataset(sampler="full")`) as `evaluate` and `iter_predict` do; `dpo_train_step_factory` refuses a bool or non-numeric `beta`; `NNPreferenceDataset` reports the tokenizer's full length (added tokens included) as its `input_dim` / `output_dim`.
     - `RankingTask.eval_step()` scores an MPS model (its scores widen to float64 on the CPU).
     - An explicit `default_train_step` also gets the checkpoint-reconstructibility guard and a search's `updates_per_trial` cap, as the implicit default step does.
-    - `widen`, `low_rank_factorize` and `expand_embedding` refuse a `weight_norm` / `spectral_norm` parametrized module instead of silently dropping the parametrization and unfreezing its weight.
+    - `widen`, `low_rank_factorize` and `expand_embedding` refuse a `weight_norm` / `spectral_norm` module (parametrization or legacy hook) instead of silently dropping it and unfreezing its weight.
+    - A `Trainer` run whose callbacks convert modules at train end (QAT) resumes statefully from its final LAST: the checkpoint records the optimizer topology from before the conversion, as `NNModel.train` does.
+    - `nnx.viz.summary(model, input_size=...)` builds its dummy input on the model's device instead of moving an MPS (or, on a CUDA host, a CPU) model; `validate_record` refuses a malformed `weights_sha256`.
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 

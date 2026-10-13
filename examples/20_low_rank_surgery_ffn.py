@@ -124,13 +124,11 @@ def widen_supported_workflow() -> dict:
     2. ``Linear -> Softmax -> Linear``: rejected with a ``ValueError``
        naming the width-dependent op; the source model is untouched.
     3. A ``FeedFwdNN`` model with per-layer activation overrides: widen
-       ``layers.0``, rebuild the params with ``dataclasses.replace`` (new
-       width, overrides preserved), load the widened state into a fresh
+       ``layers.0``, adopt the params ``widen`` returns (new width,
+       overrides preserved), load the widened state into a fresh
        ``NNModel``, verify parity, train one epoch with a new optimizer
        and reload the BEST checkpoint for a finite evaluation.
     """
-    from dataclasses import replace
-
     from nnx import Checkpoints, NNCheckpoint
 
     set_seed(0)
@@ -165,8 +163,8 @@ def widen_supported_workflow() -> dict:
     model = NNModel(net_params=net_params, params=model_params)
     model.net.eval()
     wider_net = widen(model.net, layer_name="layers.0", new_width=12)
-    rebuilt_params = replace(net_params, hidden_dims=[12, 6])  # width changes; activations stay aligned
-    assert rebuilt_params.activation_for(0) is Activations.TANH
+    rebuilt_params = wider_net.params  # widen records the new width; the overrides stay aligned
+    assert list(rebuilt_params.hidden_dims) == [12, 6] and rebuilt_params.activation_for(0) is Activations.TANH
     refined = NNModel(net_params=rebuilt_params, params=model_params)
     refined.net.load_state_dict(wider_net.state_dict())
     refined.net.eval()
