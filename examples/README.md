@@ -9,6 +9,8 @@ pip install thekaveh-nnx                # core (covers every example not listed 
 python examples/01_synthetic_classification.py
 ```
 
+**Re-running an example.** Run ids are content-addressed: the same configuration gets the same id. So a training example that saves under `runs/` in the working directory raises `FileExistsError` when re-run there. Delete `runs/`, or run each example in a fresh directory.
+
 The examples track the current source. If one needs a feature that your PyPI release does not have, install the source as shown in the [README](../README.md#2-install).
 
 `01_synthetic_classification.py` and `25_conv_classifier.py` run on the core install alone (CI runs both on the core wheel and sdist).
@@ -284,7 +286,7 @@ Notes for section 2.1:
 - A stratified `plan_split` fixes train / validation / test membership once. Its digest is recorded in each run's provenance, and the test split is never read.
 - Three seeds of two configurations (a narrow and a wide hidden layer) each train in their own run root. Each uses a fresh model, optimizer, callbacks and loader generator. One run is interrupted after its first epoch, a failed attempt.
 - `observations_from_runs` reads the validation loss at the last committed epoch back without loading a model.
-- The `ComparisonReport` shows each configuration's count, mean and sample standard deviation. The failed attempt is listed and counted, but not a value.
+- The `ComparisonReport` shows each configuration's count, mean and sample standard deviation. The failed attempt has no value in the statistics; it is listed and counted as failed.
 - The report also shows the paired `wide - narrow` deltas per seed and a bootstrap interval labelled seed variability. It then saves and reloads as strict JSON.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (end-to-end run and bounded helper `compare_seeds_workflow()`, `-k compare_seeds`).
 

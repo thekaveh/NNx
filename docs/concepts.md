@@ -44,7 +44,9 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 ### 2.1. The round-trip contract
 
-`obj == ParamsClass.from_state(obj.state())` for every params class. This is the persistence contract: anything that survives `NNRun.save → run.yaml → NNRun.load` flows through it.
+`ParamsClass.from_state(obj.state()).state() == obj.state()` for every params class, so the rebuilt object has the same run id. This is the persistence contract: anything that survives `NNRun.save → run.yaml → NNRun.load` flows through it.
+
+The rebuilt object need not equal the original. Runtime-only fields are not carried: loaders, `extra_metrics` and `resume_mode`, for example. Nor are omitted defaults, such as an `activations` list that repeats the net-wide activation. A resume request comes back as `parent_run_id` lineage (§8.4).
 
 ### 2.2. The omit-when-default invariant
 
@@ -331,6 +333,7 @@ runs/<id>/
 ├── idps.csv          # per-iteration metrics, flushed every epoch
 │                     #   (history/ instead with a HistoryJournal — §4.5)
 ├── .history-committed-by-last   # history protocol marker: LAST commits the history
+├── .run.lock         # NNRun.save's lock
 ├── checkpoints/
 │   ├── first.pt      # NNCheckpoint at epoch 0
 │   ├── q1.pt q2.pt q3.pt   # at 1/4, 2/4, 3/4 of n_epochs (every quartile needs n_epochs >= 8)
@@ -338,12 +341,13 @@ runs/<id>/
 │   ├── last.pt.manifest.json        # its SHA-256 manifest (§14.3)
 │   ├── last.pt.opt.<generation>.pt  # immutable matching training state
 │   ├── last.pt.opt.pt    # compatibility copy of the current bundle
-│   ├── best.pt       # lowest-error checkpoint so far
-│   ├── best.pt.manifest.json
-│   └── best.pt.opt.<generation>.pt
+│   ├── last.pt.lock      # serializes this checkpoint's writers
+│   └── best.pt       # lowest-error checkpoint so far
 ```
 
-Each checkpoint also has a `<tag>.pt.lock` file, the lock that serializes its writers.
+Every checkpoint tag `<tag>.pt` (first, q1–q3, last, best) has its own `.manifest.json` and `.lock`. A checkpoint that carries training state also has `.opt.<generation>.pt` and `.opt.pt`.
+
+The runs root holds shared locks too: `runs/.admission.lock`, `runs/.best.lock` and `runs/.leases/<id>.lock`. §4.1 describes their order.
 
 Both `NNModel.train()` and `Trainer.train()` finish with one line such as `Run saved to runs/5c741de80116c9858a7e2a56256cb917 (relative to the working directory)`. It is a *display path*, not artifact provenance. `runs/<id>` is relative to the working directory the run was saved from. No absolute prefix (home directory, worktree, temporary directory or container mount) is printed. So notebook output that captures the line is identical wherever it executes.
 
@@ -626,7 +630,9 @@ training right after that batch. Set in `on_epoch_end`, it stops at that epoch
 boundary.
 
 This is an `NNModel.train` feature. `Trainer.train` refuses a callback that
-registers an update listener; use `on_optimizer_update` there.
+registers an update listener; use `on_optimizer_update` there. `Trainer.train`
+dispatches `on_optimizer_update` only in an objective run (§6.5). In a
+step-function run, `report_update` only advances the scheduler clocks.
 
 On an epoch's last batch, the epoch completes and commits as usual. Inside an
 epoch, the epoch in progress is **discarded, never committed**. LAST, its
@@ -843,8 +849,9 @@ min_delta=0.0, on_missing="skip", on_nonfinite="skip")` names five things:
 
 - the split: `"val"` (the whole validation set) or `"train"` (the
   whole-epoch training summary);
-- the metric: `"loss"`, `"error"` or a declared metric's name (undeclared
-  names fail at construction);
+- the metric: `"loss"`, `"error"` or a declared metric's name (an
+  undeclared name fails when `NNTrainParams` / `NNTrainerParams` is
+  constructed);
 - the direction (`None` takes the metric's natural one);
 - the minimum improvement;
 - the policies.
@@ -1281,7 +1288,7 @@ The resumed run's epochs continue from the saved epoch. Each named optimizer is 
 
 A mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update.
 
-`resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage, and `resume_mode` is runtime-only. So a configuration without them keeps its `state()` and run id. The controls survive `builder()`, `NNTrainerParamsBuilder.from_params`, `state()` / `from_state()` and the `with_*_loader` copies.
+`resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage, and `resume_mode` is runtime-only. So a configuration without them keeps its `state()` and run id. The controls survive `builder()`, `NNTrainerParamsBuilder.from_params` and the `with_*_loader` copies. `from_state()` restores the lineage only (`parent_run_id` and the checkpoint tag), never a resume request or its mode.
 
 A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`. A Trainer checkpoint resumes only through `Trainer.train`. The exception is `resume_mode="weights_only"`, which warm-starts from the weights alone.
 

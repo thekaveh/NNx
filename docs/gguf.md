@@ -131,9 +131,9 @@ The helper validates the Ollama `v0.32.2` tagged-source parameter set:
 - scalar or repeated string `stop`.
 
 Unknown names and mismatched types fail before GGUF generation.
-Parameter strings intentionally use a restricted safe subset that rejects
-quotes and control characters rather than attempting broader Modelfile
-escaping. The helper writes the standard `FROM`, `PARAMETER`, `TEMPLATE`, and
+A string parameter value may not contain a double quote, carriage return,
+line feed or NUL byte. NNx rejects these rather than escaping them; other
+characters pass unchanged. The helper writes the standard `FROM`, `PARAMETER`, `TEMPLATE`, and
 `SYSTEM` directives. Stock `ollama create` still rejects or cannot execute the
 `nnx_transformer` architecture.
 

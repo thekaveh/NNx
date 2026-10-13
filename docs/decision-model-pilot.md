@@ -90,5 +90,5 @@ keep the pilot experimental ([Framework comparison §3.11](comparison.md#311-lab
 |---|---|
 | Mechanics (offline) | Verified by `tests/test_decision_model_pilot.py` and the examples smoke test |
 | Empirical study | **Blocked**: encoder weights, NLI and GLiClass baselines and task-family data not supplied; its training and baseline runs are not part of this repository |
-| Baselines | Fixed supervised head: needs the empirical data; NLI, GLiClass: not available — disclosed, not run |
+| Baselines | The empirical manifest declares four, each on its resource: fixed supervised head (task-family data), embedding (encoder weights), NLI (NLI baseline) and GLiClass (GLiClass baseline). None is run in this repository. Mechanics mode runs none; its NLI and GLiClass entries have no resource and are disclosed as unavailable |
 | Verdict | **No-go** (experimental) |
